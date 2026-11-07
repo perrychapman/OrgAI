@@ -19,6 +19,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # What the npm tarball the CI installs is built with: 'full' ships npm-shrinkwrap.json, 'none' (the script's default).
+  # 'none' here and in release.yml (owner decision 2026-11-06, to revisit): a honoured shrinkwrap made npm 11.12.1
+  # install every platform's Claude runtime (about 2 GB per install). The npm job still dry-runs the full build, so the
+  # shrinkwrap derivation is checked on every PR. Change this and release.yml together to go back to 'full'.
+  NPM_SHRINKWRAP: none
+
 jobs:
   check:
     name: check (${{ matrix.os }})
@@ -45,6 +52,12 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # The real Node host process test needs out/cli, so `npm test` above skips it; run it again on the build, where a
+      # missing bundle fails instead of skipping (Wave 7 WP-E). POSIX only: it skips itself on Windows.
+      - name: Node host integration test
+        run: npx vitest run src/cli/nodeHost.int.test.ts src/cli/daemonNodeHost.int.test.ts src/cli/vaultCli.int.test.ts
+        env:
+          ORGAI_REQUIRE_NODE_HOST_INT: '1'
       - name: e2e (free)
         run: npm run e2e:free
         env:
@@ -84,6 +97,13 @@ jobs:
       # Unpacked app only, no installers: catches electron-builder config and asarUnpack breakage.
       # (`npm run pack`, not `npm pack`, which is npm's own tarball command.)
       - run: npm run pack
+      # The npm tarball from the same out/cli, for pack:verify's (g): the npm orgai must find and drive the packed app.
+      - name: build-npm-package
+        shell: bash
+        run: |
+          args=()
+          if [ "$NPM_SHRINKWRAP" = "full" ]; then args=(--shrinkwrap); fi
+          node scripts/build-npm-package.mjs "${args[@]}"
       # The packaged orgai command (cli-spec 7): --version, doctor, and a mock exec (ORGAI_MOCK=1, no tokens) in-process
       # and through the spawned background app, on a temp data folder. UNVERIFIED until CI runs it: the Windows
       # launcher (cmd.exe running orgai.cmd) and the default-host step (the packaged app spawned with --headless-host).
@@ -91,5 +111,43 @@ jobs:
       # CI, its Windows path has never run anywhere, and a first-run failure should not hide the rest of the pack job's
       # result. A failure still shows on the step (and in the job's annotations). Drop this line once both legs are green.
       - name: pack:verify
-        run: npm run pack:verify
+        run: npm run pack:verify -- --npm
+        continue-on-error: true
+
+  # The orgai npm package (cli-standalone.md 3.4): build it from this commit's CLI bundle and run verify-npm (steps 1-6,
+  # all token-free on the mock; step 7 skips without a codex on PATH) on three OSes. The installs download the pinned
+  # dependencies from the registry. continue-on-error until it has passed once on all three (it has not run in CI yet);
+  # with NPM_SHRINKWRAP 'full' step 1 fails (every platform's Claude runtime is installed; step 1b then skips).
+  npm:
+    name: npm (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-latest]
+    env:
+      GIT_AUTHOR_NAME: OrgAI CI
+      GIT_AUTHOR_EMAIL: ci@orgai.local
+      GIT_COMMITTER_NAME: OrgAI CI
+      GIT_COMMITTER_EMAIL: ci@orgai.local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:scripts
+      - run: npx vite build -c vite.cli.config.ts
+      - name: build-npm-package
+        shell: bash
+        run: |
+          args=()
+          if [ "$NPM_SHRINKWRAP" = "full" ]; then args=(--shrinkwrap); fi
+          # the dry run always derives the full shrinkwrap (what release.yml ships), whatever is installed below
+          node scripts/build-npm-package.mjs --dry-run --shrinkwrap
+          node scripts/build-npm-package.mjs "${args[@]}"
+      - name: verify-npm
+        run: node scripts/verify-npm.mjs
         continue-on-error: true

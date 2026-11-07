@@ -464,6 +464,8 @@ describe('OAuth', () => {
       let release: (v: unknown) => void = () => {}
       refreshTokens.mockImplementation(() => new Promise((r) => (release = r)))
       const all = [svc.refreshIfNeeded({ libraryId: 'mcpl_1' }), svc.refreshIfNeeded({ libraryId: 'mcpl_1' }), svc.prepareForRun(pid, [resolved().spec])]
+      // Wave 7: the refresh awaits SecretStore.prepareWrite() before its request, so the request starts a tick later.
+      await vi.waitFor(() => expect(refreshTokens).toHaveBeenCalled())
       release({ accessToken: 'AT-2', refreshToken: 'RT-2', expiresAt: iso(NOW + 3_600_000) })
       const results = await Promise.all(all)
       expect(refreshTokens).toHaveBeenCalledTimes(1)

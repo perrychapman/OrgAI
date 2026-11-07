@@ -9,7 +9,7 @@
  *
  * Electron-free; relative imports only. Only registry.ts (and its tests) read these.
  */
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 import type { ParamSpec } from './registry'
 
 /** Ids from the renderer (newId() output, virtual project ids, older hand-made ids): windowScope.ts ID_PATTERN. */
@@ -242,6 +242,14 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [HOST_IPC.kitApplyBundle]: OBJECT,
   // [requestId]
   [HOST_IPC.runsFindDecision]: STRING,
+
+  // ---- SECRETS_IPC (Wave 7, cli-standalone.md 5.6) ----
+  // SecretsStatusInput / SecretsInitInput: every field optional, so the input may be left out.
+  [SECRETS_IPC.secretsStatus]: OPTIONAL_NULLABLE_OBJECT,
+  [SECRETS_IPC.secretsInit]: OPTIONAL_NULLABLE_OBJECT,
+  [SECRETS_IPC.secretsReset]: OBJECT,
+  [SECRETS_IPC.secretsUndelete]: OBJECT,
+  [SECRETS_IPC.secretsConfirmDelete]: OBJECT,
 
   // ---- host.* request methods (a plain-object params is normalized to [object] by the gate) ----
   [HOST_METHODS.hostStatus]: OPTIONAL_NULLABLE_OBJECT,

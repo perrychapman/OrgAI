@@ -46,6 +46,8 @@ function setup(over: Partial<ConnectionServiceDeps> = {}, dir?: string) {
     openExternal,
     fetch: proxyFetch,
     anthropicProbe: async () => ({ state: 'connected', detail: 'Claude Code login' }),
+    // Never look for or run a real codex (cli-standalone 6.2 runtime check).
+    codexRuntime: async () => ({ ok: true, binary: { path: '/fake/codex' } }),
     now: () => 1000,
     ...over
   })
@@ -379,6 +381,24 @@ describe('openai ChatGPT login', () => {
     const factory = vi.fn(() => asCodexServer(rpc))
     return { ctx: setup({ codexFactory: factory }), rpc, factory }
   }
+
+  it('the probe checks the Codex runtime for every auth kind: missing or unsupported is an error, never a disconnect (cli-standalone 6.2)', async () => {
+    const refused = { ok: false as const, reason: 'Codex 0.170.0 is not supported; install @openai/codex@0.166.0' }
+    const { factory } = codexSetup()
+    const ctx = setup({ codexFactory: factory, codexRuntime: async () => refused })
+    expect(await ctx.service.test('openai')).toMatchObject({ state: 'error', detail: refused.reason })
+    expect(factory).not.toHaveBeenCalled()
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, connections: { ...s.connections, openai: { ...s.connections.openai, auth: { kind: 'apiKey', envVar: 'ORGAI_TEST_OPENAI_KEY' } } } })
+    vi.stubEnv('ORGAI_TEST_OPENAI_KEY', 'sk-openai')
+    expect(await ctx.service.test('openai')).toMatchObject({ state: 'error', detail: refused.reason })
+    // Codex chosen through ORGAI_CODEX_PATH outside the tested range: connected, with the warning in the detail.
+    const warned = setup({ codexRuntime: async () => ({ ok: true, binary: { path: '/x/codex', source: 'env' }, version: '0.170.0', warning: 'Codex 0.170.0 is not a tested version.' }) })
+    const w = warned.settings.get()
+    warned.settings.set({ ...w, connections: { ...w.connections, openai: { ...w.connections.openai, auth: { kind: 'apiKey', envVar: 'ORGAI_TEST_OPENAI_KEY' } } } })
+    expect(await warned.service.test('openai')).toMatchObject({ state: 'connected', detail: 'Using ORGAI_TEST_OPENAI_KEY. Codex 0.170.0 is not a tested version.' })
+    vi.unstubAllEnvs()
+  })
 
   it('test() reports signed out, then connect after login discovers models and keeps the server until done', async () => {
     const { ctx, rpc } = codexSetup()

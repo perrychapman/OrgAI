@@ -363,10 +363,17 @@ describe('terminalServer', () => {
     for (const junk of ['true', 1, null, {}, []]) expect(normalizeSettings({ terminalServer: junk } as never).terminalServer).toBe(false)
   })
 
-  it("terminalAccessLevel keeps only 'full' (missing = operate)", () => {
+  it("terminalAccessLevel keeps 'full' and an explicit 'operate' (missing = operate)", () => {
     expect(normalizeSettings({})).not.toHaveProperty('terminalAccessLevel')
     expect(normalizeSettings({ terminalAccessLevel: 'full' }).terminalAccessLevel).toBe('full')
-    for (const junk of ['operate', 'FULL', true, 1, null, {}]) expect(normalizeSettings({ terminalAccessLevel: junk } as never)).not.toHaveProperty('terminalAccessLevel')
+    expect(normalizeSettings({ terminalAccessLevel: 'operate' }).terminalAccessLevel).toBe('operate')
+    for (const junk of ['FULL', 'configure', true, 1, null, {}]) expect(normalizeSettings({ terminalAccessLevel: junk } as never)).not.toHaveProperty('terminalAccessLevel')
+  })
+
+  it('terminalAccessLevelChosen keeps only an explicit true (Wave 7)', () => {
+    expect(normalizeSettings({})).not.toHaveProperty('terminalAccessLevelChosen')
+    expect(normalizeSettings({ terminalAccessLevel: 'operate', terminalAccessLevelChosen: true }).terminalAccessLevelChosen).toBe(true)
+    for (const junk of [false, 'true', 1, null]) expect(normalizeSettings({ terminalAccessLevelChosen: junk } as never)).not.toHaveProperty('terminalAccessLevelChosen')
   })
 
   it('reads Terminal access saved on without a choice (an older headless boot) as off; a chosen one stays (review H2)', () => {

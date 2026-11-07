@@ -21,7 +21,8 @@ export function libraryJson(l: McpLibraryInfo): Record<string, unknown> {
     missingSecrets: l.missingSecrets,
     auth: l.auth,
     usedBy: l.usedBy,
-    ...(l.projectSecrets ? { projectSecrets: l.projectSecrets } : {})
+    ...(l.projectSecrets ? { projectSecrets: l.projectSecrets } : {}),
+    ...(l.unreadableSecrets?.length ? { unreadableSecrets: l.unreadableSecrets } : {})
   }
 }
 
@@ -61,6 +62,7 @@ async function libShow(ctx: CliContext, args: string[]): Promise<number> {
       if (l.entry.connectorId) lines.push(`Connector:    ${safeLine(l.entry.connectorId)}${l.entry.connectorVariant ? ` (${safeLine(l.entry.connectorVariant)})` : ''}`)
       if (l.entry.perProjectSecrets) lines.push('Secrets:      per project (each linking project sets its own values)')
       if (l.missingSecrets.length) lines.push(`Missing:      ${l.missingSecrets.map(safeLine).join(', ')}`)
+      for (const u of l.unreadableSecrets ?? []) lines.push(`Unreadable:   ${safeLine(u.name)}: ${safeLine(u.reason)}`)
       lines.push(`Used by:      ${l.usedBy.length ? l.usedBy.map((u) => safeLine(u.projectName)).join(', ') : 'no project'}`)
       for (const p of l.projectSecrets ?? []) if (p.missingSecrets.length) lines.push(`  ${safeLine(p.projectName)} still needs ${p.missingSecrets.map(safeLine).join(', ')}`)
       return lines

@@ -13,6 +13,7 @@ import { ProjectsGrid } from '../components/dashboard/ProjectsGrid'
 import { FactsCards } from '../components/dashboard/FactsCards'
 import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
+import { SecretNotices } from '../components/dashboard/SecretNotices'
 
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
 let consumedNewProjectRequest = 0
@@ -66,6 +67,7 @@ export default function DashboardView(): ReactElement {
       </div>
       <div className="dashboard" data-testid="dashboard">
         <div className="dashboard-grid">
+          <SecretNotices />
           {forgetNotice && (
             <div className="dash-forget-notice">
               <Banner tone="success" testId="forget-notice" onDismiss={() => setForgetNotice(null)}>

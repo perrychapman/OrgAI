@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { RunEvent, RunRecord, RunsSubscribeResult, RunSummary, TranscriptEntry } from '../../shared/types'
 import { resetSkewWarning } from '../runRef'
 import { FakeHostClient, fakeContext, flush, noHost, project, record, summary } from '../testing/fakeContext'
-import { EXIT } from '../types'
+import { EXIT, HOST_STARTING_WAIT_MS } from '../types'
 import { runWatch, watchTimers } from './watch'
 
 const p1 = project('p1', '/work/app', { name: 'App' })
@@ -136,6 +136,7 @@ describe('orgai watch', () => {
     h3.push('runs:event', ev(21, { type: 'run.status', runId: s.id, status: 'finished' }))
     expect(await done).toBe(EXIT.ok)
     expect(f.connectCalls).toHaveLength(3)
+    for (const c of f.connectCalls) expect(c.opts).toMatchObject({ waitStartingMs: HOST_STARTING_WAIT_MS })
     for (const h of [h1, h2, h3]) expect(h.closed).toBe(true)
   })
 

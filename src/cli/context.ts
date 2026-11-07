@@ -8,7 +8,7 @@ import { resolveDataDirs, userChoseDataDir } from './client/locate'
 import { readOnlySnapshot } from './client/readOnlyStore'
 import { resolveProject } from './client/resolveProject'
 import type { SecretOverlay } from './secretOverlay'
-import type { CliContext, CliGlobals, CliIo, InprocHostHandle } from './types'
+import type { CliContext, CliGlobals, CliIo, InprocHostHandle, InprocStartOptions, SecretEnvUse } from './types'
 import { CLI_VERSION } from './version'
 
 export interface BuildContextInput {
@@ -17,8 +17,10 @@ export interface BuildContextInput {
   cwd: string
   platform: NodeJS.Platform
   io: CliIo
-  /** The environment secret overlay (collected and scrubbed by index.ts for --host inproc). */
+  /** The environment secret overlay (collected and scrubbed by index.ts prepareContext). */
   overlay?: SecretOverlay['overlay']
+  /** Environment secrets under --host auto (index.ts planSecretEnv), for ensureHost. */
+  secretEnv?: SecretEnvUse
   /** Where SIGINT / SIGTERM come from (process by default). */
   signalSource?: Pick<NodeJS.Process, 'on' | 'off'>
   pid?: number
@@ -40,6 +42,25 @@ export function quietInproc(ctx: CliContext): void {
   quietContexts.add(ctx)
 }
 
+/**
+ * One in-process host per process at a time: concurrent calls share the start; once that host has closed (a withHost
+ * stopped it), the next call starts a new one, so `orgai init`'s Architect can follow its withHost. A failed start is
+ * forgotten too. The first call's options decide while a host is running.
+ */
+export function reusableInproc(start: (opts: InprocStartOptions) => Promise<InprocHostHandle>): (opts?: InprocStartOptions) => Promise<InprocHostHandle> {
+  let current: Promise<InprocHostHandle> | undefined
+  return (opts = {}) => {
+    if (current) return current
+    const started = start(opts)
+    current = started
+    const forget = (): void => {
+      if (current === started) current = undefined
+    }
+    started.then((h) => h.closed.then(forget, forget), forget)
+    return started
+  }
+}
+
 export function buildContext(input: BuildContextInput): CliContext {
   const { env, cwd, platform, io } = input
   const globals: CliGlobals = { ...input.globals, color: colorEnabled(input.globals, env, io) }
@@ -53,9 +74,27 @@ export function buildContext(input: BuildContextInput): CliContext {
     env
   })
 
-  let inproc: Promise<InprocHostHandle> | undefined
   // The started in-process host's owner key (memory only): connect() proves ownership of that host with it.
   let owner: { key: string; hostInstanceId: string } | undefined
+  const startInproc = reusableInproc((opts) =>
+    import('./inprocHost').then((m) =>
+      m.startInprocHost({
+        userDataDir: paths.userDataDir,
+        dataDir: paths.dataDir,
+        env,
+        mock: env.ORGAI_MOCK === '1',
+        overlay: input.overlay ?? new Map(),
+        ...(opts.background ? { background: opts.background } : {}),
+        ...(opts.shared ? { shared: true } : {}),
+        // The detached Node host (daemon run-node) writes to main.log only; its stdio file keeps what escapes that.
+        ...(opts.hostKind === 'node' ? { hostKind: 'node' as const, quiet: true } : {}),
+        ...(quietContexts.has(ctx) ? { quiet: true } : {})
+      })
+    ).then((h) => {
+      if (h.ownerKey && h.hostInstanceId) owner = { key: h.ownerKey, hostInstanceId: h.hostInstanceId }
+      return h
+    })
+  )
   const ctx: CliContext = {
     globals,
     paths,
@@ -79,23 +118,8 @@ export function buildContext(input: BuildContextInput): CliContext {
     readStore: () => readOnlySnapshot({ dataDir: paths.dataDir }),
     resolveProject: (projects) => resolveProject(projects, { flag: globals.project, cwd, platform }),
     launcher,
-    startInproc: () => {
-      // One in-process host per CLI process.
-      inproc ??= import('./inprocHost').then((m) =>
-        m.startInprocHost({
-          userDataDir: paths.userDataDir,
-          dataDir: paths.dataDir,
-          env,
-          mock: env.ORGAI_MOCK === '1',
-          overlay: input.overlay ?? new Map(),
-          ...(quietContexts.has(ctx) ? { quiet: true } : {})
-        })
-      ).then((h) => {
-        if (h.ownerKey && h.hostInstanceId) owner = { key: h.ownerKey, hostInstanceId: h.hostInstanceId }
-        return h
-      })
-      return inproc
-    },
+    startInproc,
+    ...(input.secretEnv ? { secretEnv: input.secretEnv } : {}),
     signals: {
       onInterrupt(fn) {
         const onInt = (): void => fn('SIGINT')

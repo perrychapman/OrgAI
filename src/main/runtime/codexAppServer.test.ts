@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { trackedChildCount } from '../host/shutdown'
+import { clearCodexVersionCache } from './codexBinary'
 import { CodexAppServer, CodexRpcError, STDERR_TAIL_MAX_CHARS, codexExitMessage, codexHomeDir, maskKeyLike, redactSecrets, resolveCodexBinary } from './codexAppServer'
 import { buildLaunchConfig } from './codexProtocol'
 import { fakeCtx, project } from './testHelpers'
@@ -31,14 +33,14 @@ describe('resolveCodexBinary', () => {
     if (saved !== undefined) process.env.ORGAI_CODEX_PATH = saved
   })
 
-  it('is undefined for a platform without a codex package', () => {
-    expect(resolveCodexBinary('aix', 'ppc64')).toBeUndefined()
-    expect(resolveCodexBinary('darwin', 'ia32')).toBeUndefined()
+  it('is undefined for a platform without a codex package (no PATH)', () => {
+    expect(resolveCodexBinary('aix', 'ppc64', { env: {} })).toBeUndefined()
+    expect(resolveCodexBinary('darwin', 'ia32', { env: {} })).toBeUndefined()
   })
 
   it('never throws for the macOS triples and uses the bare binary name there', () => {
     for (const arch of ['arm64', 'x64']) {
-      const bin = resolveCodexBinary('darwin', arch)
+      const bin = resolveCodexBinary('darwin', arch, { env: {} })
       // Only installed on a Mac; elsewhere the optional dependency is absent and the lookup is undefined.
       if (bin) expect(bin.path.replace(/\\/g, '/')).toMatch(/apple-darwin\/bin\/codex$/)
     }
@@ -59,6 +61,72 @@ describe('request plumbing without a process', () => {
     } finally {
       if (prev === undefined) delete process.env.ORGAI_CODEX_PATH
       else process.env.ORGAI_CODEX_PATH = prev
+    }
+  })
+
+  it('a failed app-server spawn leaves nothing in the shutdown registry (review round 2)', async () => {
+    const before = trackedChildCount('codex app-server')
+    // A hand-made binary (no source) skips the version check, so the spawn itself fails (ENOENT, no 'exit' event).
+    const s = new CodexAppServer({ cwd: tmpdir(), binary: { path: join(tmpdir(), 'orgai-definitely-not-codex', 'codex') } })
+    await expect(s.start()).rejects.toThrow()
+    await s.exited
+    await new Promise((r) => setTimeout(r, 20))
+    expect(trackedChildCount('codex app-server')).toBe(before)
+  })
+
+  it('checks the version of a resolved binary before spawning: refused outside 0.166.x, warned for ORGAI_CODEX_PATH', async () => {
+    const binary = { path: process.execPath, source: 'package' as const }
+    let ran = 0
+    const versionRunner = async (): Promise<string> => {
+      ran++
+      return 'codex-cli 0.199.0'
+    }
+    clearCodexVersionCache()
+    await expect(new CodexAppServer({ binary, versionRunner }).start()).rejects.toThrow('Codex 0.199.0 is not supported; install @openai/codex@0.166.0')
+    expect(ran).toBe(1)
+    clearCodexVersionCache()
+    const warnings: string[] = []
+    // ORGAI_CODEX_PATH: started anyway (here it is Node, so initialize fails), the warning came first.
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-codex-ver-'))
+    try {
+      writeFileSync(join(dir, 'app-server'), 'process.exit(3)')
+      const s = new CodexAppServer({ cwd: dir, binary: { path: process.execPath, source: 'env' }, versionRunner, onWarning: (m) => warnings.push(m) })
+      await expect(s.start()).rejects.toThrow(/exited \(code 3\)/)
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toMatch(/^Codex 0\.199\.0 at .* \(ORGAI_CODEX_PATH\) is not a tested version/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      clearCodexVersionCache()
+    }
+  })
+
+  it('a close() during the version check spawns nothing: start() rejects and exited resolves (review round 1)', async () => {
+    clearCodexVersionCache()
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-codex-close-'))
+    const marker = join(dir, 'spawned')
+    try {
+      // If the app-server were spawned it would write the marker and stay up (2 s, so a regression leaves no orphan).
+      writeFileSync(join(dir, 'app-server'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x'); setTimeout(() => process.exit(0), 2000)`)
+      let release!: (v: string) => void
+      const versionRunner = (): Promise<string> => new Promise((resolve) => (release = resolve))
+      const exits: unknown[] = []
+      const s = new CodexAppServer({ cwd: dir, binary: { path: process.execPath, source: 'package' }, versionRunner })
+      s.onExit((code) => exits.push(code))
+      const started = s.start()
+      await new Promise((r) => setTimeout(r, 10))
+      s.close()
+      release('codex-cli 0.166.0')
+      await expect(started).rejects.toThrow('codex app-server was closed before it started')
+      await expect(s.exited).resolves.toBeUndefined()
+      expect(s.running).toBe(false)
+      await new Promise((r) => setTimeout(r, 300))
+      expect(existsSync(marker)).toBe(false)
+      expect(exits).toEqual([])
+      // A start() after close() rejects at once as well.
+      await expect(s.start()).rejects.toThrow('closed before it started')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      clearCodexVersionCache()
     }
   })
 

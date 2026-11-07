@@ -55,6 +55,7 @@ import type {
   UsageStatus
 } from '@shared/types'
 import { CodexAppServer, codexHomeDir } from '../runtime/codexAppServer'
+import { checkCodexRuntime, type CodexRuntimeCheck } from '../runtime/codexBinary'
 import { listModelPrices, sanitizeModelPrice } from '../runtime/pricing'
 import type { ProjectStore } from '../store/projects'
 import { proxySecretKey, type SecretStore } from '../store/secrets'
@@ -80,6 +81,11 @@ export interface ConnectionServiceDeps {
   fetch?: typeof fetch
   /** Create the (not yet started) Codex app-server client. Default: a CodexAppServer with OrgAI's CODEX_HOME. */
   codexFactory?: () => CodexAppServer
+  /**
+   * Where Codex is and whether its version is supported (cli-standalone 6.2), checked by the OpenAI probe for every
+   * auth kind. Default: codexBinary.ts checkCodexRuntime (a file-system lookup plus a cached `codex --version`).
+   */
+  codexRuntime?: () => Promise<CodexRuntimeCheck>
   now?: () => number
   /** Info-level log line (default console.info; index.ts passes the main log). */
   logInfo?: (message: string) => void
@@ -322,9 +328,8 @@ export class ConnectionService {
   private async discoverRaw(id: ConnectionId): Promise<ProviderModel[] | null | typeof SIGNED_OUT> {
     const proxy = proxyOf(this.settingsNow(), id)
     if (proxy) {
-      const key = this.deps.secrets.get(proxySecretKey(proxy.id))
       if (!proxy.anthropicBaseUrl) throw new Error(`${proxy.name} has no base URL`)
-      if (!key) throw new Error(`${proxy.name} has no API key`)
+      const key = this.proxyKey(proxy, `${proxy.name} has no API key`)
       const models = await fetchProxyModels(proxyModelsUrl(proxy), key, this.deps.fetch ?? fetch, { kind: proxy.kind, connection: proxy.id, baseUrl: proxy.anthropicBaseUrl })
       return models.map((m) => ({ ...m, ...withBaseUrl(proxy, m) }))
     }
@@ -521,6 +526,19 @@ export class ConnectionService {
     return this.list()
   }
 
+  /**
+   * The stored key of a proxy connection, else a throw: a key that is stored but cannot be read here says why with the store's reason
+   * (Wave 7, 5.4: saved by the OrgAI app and not yet shared, a locked or damaged vault), never "no API key" (which would
+   * send the user to type it again); `missing` is the sentence for a key that is not stored at all.
+   */
+  private proxyKey(proxy: ProxyConnection, missing: string): string {
+    const stored = this.deps.secrets.status(proxySecretKey(proxy.id))
+    if (typeof stored === 'object') throw new Error(`The ${proxy.name} API key cannot be read here: ${stored.unreadable.replace(/[.\s]+$/, '')}.`)
+    const key = this.deps.secrets.get(proxySecretKey(proxy.id))
+    if (!key) throw new Error(missing)
+    return key
+  }
+
   private safeMessage(e: unknown): string {
     let msg = e instanceof Error ? e.message : String(e)
     for (const p of this.settingsNow().proxies) {
@@ -592,27 +610,35 @@ export class ConnectionService {
   private async probeOpenAI(): Promise<ConnectionStatus> {
     const auth = this.deps.settings.get().connections.openai.auth
     const checkedAt = this.now()
+    // Every auth kind runs through the Codex CLI: no supported Codex is an error (never a definite disconnect, which
+    // would move an automatic default connection), so the probe and runs agree (cli-standalone 6.2).
+    const runtime = await (this.deps.codexRuntime ?? (() => checkCodexRuntime()))()
+    if (!runtime.ok) return { state: 'error', detail: runtime.reason, checkedAt }
+    const note = runtime.warning ? ` ${runtime.warning}` : ''
     if (auth.kind === 'apiKey') {
       return this.env(auth.envVar)
-        ? { state: 'connected', detail: `Using ${auth.envVar}`, checkedAt }
+        ? { state: 'connected', detail: `Using ${auth.envVar}${note ? `.${note}` : ''}`, checkedAt }
         : { state: 'disconnected', detail: `${auth.envVar} is not set in OrgAI's environment`, checkedAt }
     }
     const state = await this.withCodex((rpc) => readAccount(rpc))
     const a = state.account
     if (a?.type === 'chatgpt') {
       const account = [a.email, a.planType].filter(Boolean).join(' · ') || 'ChatGPT'
-      return { state: 'connected', detail: 'Signed in with ChatGPT', account, checkedAt }
+      return { state: 'connected', detail: `Signed in with ChatGPT${note ? `.${note}` : ''}`, account, checkedAt }
     }
-    if (a) return { state: 'connected', detail: 'Signed in to Codex', checkedAt }
+    if (a) return { state: 'connected', detail: `Signed in to Codex${note ? `.${note}` : ''}`, checkedAt }
     return { state: 'disconnected', detail: 'Not signed in. Sign in with ChatGPT.', checkedAt }
   }
 
   private async probeProxy(conn: ProxyConnection): Promise<ConnectionStatus> {
     const checkedAt = this.now()
     if (!conn.anthropicBaseUrl) return { state: 'disconnected', detail: 'Set the proxy base URL.', checkedAt }
+    // A key that is stored but cannot be read here (Wave 7, 5.4: saved by the app and not yet shared, a locked or damaged
+    // vault, safeStorage failure) is an error with the store's reason, not a definite disconnect: it must not move the
+    // automatic default, and "set it again" would be the wrong advice.
+    const stored = this.deps.secrets.status(proxySecretKey(conn.id))
+    if (typeof stored === 'object') return { state: 'error', detail: stored.unreadable, checkedAt }
     const key = this.deps.secrets.get(proxySecretKey(conn.id))
-    // A key that is stored but cannot be decrypted (safeStorage failure, another OS keyring) is an error, not a
-    // definite disconnect: it must not move the automatic default.
     if (!key && conn.hasApiKey) return { state: 'error', detail: 'The stored key could not be read. Set the API key again.', checkedAt }
     if (!key) return { state: 'disconnected', detail: 'Set an API key.', checkedAt }
     // The list alone answers "reachable and the key works"; prices (LiteLLM /model/info) wait for discovery.
@@ -736,6 +762,12 @@ export class ConnectionService {
     return this.info(c.id)
   }
 
+  /** Throws SecretStore.clearRefusal's sentence for the LiteLLM key (vault damaged; app-only key on a Node host). */
+  private refuseClear(key: string): void {
+    const refusal = this.deps.secrets.clearRefusal(key)
+    if (refusal) throw new Error(refusal)
+  }
+
   async setSecret(input: ConnectionSecretInput): Promise<ConnectionInfo> {
     const id = input?.id
     const proxy = typeof id === 'string' ? proxyOf(this.settingsNow(), id) : undefined
@@ -744,6 +776,8 @@ export class ConnectionService {
       throw new Error('Unknown connection')
     }
     const key = cleanProxyKey(input.apiKey)
+    // An explicit clear is checked before anything changes (Wave 7, 5.5 Deletes).
+    if (!key) this.refuseClear(proxySecretKey(proxy.id))
     const before = this.effectiveDefault()
     this.deps.secrets.set(proxySecretKey(proxy.id), key)
     this.deps.settings.setProxyKeyStored(proxy.id, !!key)
@@ -868,7 +902,9 @@ export class ConnectionService {
       }
       this.setStatus('openai', { state: 'disconnected', detail: 'Signed out', checkedAt })
     } else if (!isBuiltinConnectionId(id)) {
-      this.deps.secrets.delete(proxySecretKey(id))
+      // Removing the key is the user's explicit clear (5.5): refused before anything changes when it cannot be recorded.
+      this.refuseClear(proxySecretKey(id))
+      this.deps.secrets.clear(proxySecretKey(id))
       this.deps.settings.setProxyKeyStored(id, false)
       this.setStatus(id, { state: 'disconnected', detail: 'API key removed', checkedAt })
       this.deps.broadcast({ type: 'connections.changed' })
@@ -1134,9 +1170,8 @@ export class ConnectionService {
     }
     const conn = proxyOf(settings, id)
     if (!conn) throw new Error('This connection no longer exists. Pick another one for the project in Settings > Connections.')
-    const key = this.deps.secrets.get(proxySecretKey(conn.id))
     if (!conn.anthropicBaseUrl) throw new Error(`${conn.name} has no base URL. Set it in Settings > Connections.`)
-    if (!key) throw new Error(`${conn.name} has no API key. Set it in Settings > Connections.`)
+    const key = this.proxyKey(conn, `${conn.name} has no API key. Set it in Settings > Connections.`)
     const baseUrl = normalizeBaseUrl(conn.anthropicBaseUrl)
     // Prices from the catalog (LiteLLM /model/info only); runs on models without one get no estimate.
     const pricing = pricingFromCatalog(this.catalogFor(conn.id))

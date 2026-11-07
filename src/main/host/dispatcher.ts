@@ -3,10 +3,15 @@
  * ipc.ts) and to RPC clients (Wave 2's socket server, the CLI's inproc host). Electron-free; relative imports only
  * (noElectronImport.test.ts).
  *
- * - `invoke` is the trusted in-process desktop path: no gate, no lease (the window is the interactiveClients lease),
- *   and the handler's result is returned as is, so a sync handler stays sync and a sync throw stays a sync throw.
+ * - `invoke` is the trusted in-process desktop path: no gate, and the handler's result is returned as is, so a sync
+ *   handler stays sync and a sync throw stays a sync throw. Wave 7 (cli-standalone.md 4.3): a mutating channel (the
+ *   registry's scope above 'read') is refused with host_draining while the host drains and holds an
+ *   inFlightRpcMutations lease until its promise settles (mutationLease.ts runLeased), like the wire path.
  * - `invokeRpc` is the untrusted wire path: gate (scope, params), refuse transport-owned channels, refuse mutations
- *   while draining, hold an inFlightRpcMutations lease for mutations, map coded errors to HostRpcFailure.
+ *   while draining, hold an inFlightRpcMutations lease for mutations, await SecretStore.prepareWrite() when the
+ *   channel's storesSecret predicate is true (Wave 7), map coded errors to HostRpcFailure.
+ * - mcp:authorize (both paths) is refused while draining but holds no lease for its browser wait; McpService leases
+ *   only its final commit (round 6 item 9, COMMIT_LEASED_CHANNELS).
  *
  * Pushes the handlers make (projects:engagementChanged) go on `events`; the desktop shell forwards them to windows.
  */
@@ -81,6 +86,11 @@ import type {
   RemapResult,
   RunOverrides,
   RunSummary,
+  SecretsConfirmDeleteResult,
+  SecretsInitResult,
+  SecretsResetResult,
+  SecretsStatusResult,
+  SecretsUndeleteResult,
   SetupStartInput,
   SkillApplySuggestionInput,
   SkillContent,
@@ -108,6 +118,7 @@ import {
   IPC,
   MCP_SCOPE_IPC,
   QUICK_PROJECT_ID,
+  SECRETS_IPC,
   SKILLS_PROJECT_ID,
   TEAM_FILES_IPC,
   isVirtualProjectId
@@ -149,6 +160,7 @@ import {
 } from '../store/projectData'
 import { checkProjectPath, type ProjectStore } from '../store/projects'
 import type { SettingsStore } from '../store/settings'
+import { VAULT_MESSAGES, type SecretStoreApi } from '../store/vaultTypes'
 import { checkRunTarget, isValidId } from '../windowScope'
 import { noopActivity } from './activity'
 import {
@@ -195,7 +207,9 @@ import {
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
-import { HostRpcFailure, gateRequest, type GateFn } from './registry'
+import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased } from './mutationLease'
+import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
+import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
 /** One request handler: the call context, then the positional arguments (what ipcRenderer.invoke passed). */
@@ -225,9 +239,6 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'too_many_requests'
 ])
 
-/** How long a client should wait before retrying a mutation refused while the host drains. */
-const DRAINING_RETRY_MS = 1000
-
 /** Used when no env is given (unit tests that only exercise other channels): app:info reports placeholders. */
 const FALLBACK_ENV: HostDispatchEnv = {
   app: { getVersion: () => '0.0.0', getPath: () => '', isPackaged: false },
@@ -247,6 +258,14 @@ export class HostDispatcher {
   private readonly env: HostDispatchEnv
   private readonly gate: GateFn
   private readonly handlers: Record<string, Handler>
+  /** Aborted by quiesce(): the model calls handlers make for a caller (draft:orgChart) stop when the host drains. */
+  private readonly quiesced = new AbortController()
+  /**
+   * Wave 7 (cli-standalone.md 5.6 Reset): RPC calls whose storesSecret predicate fired, from the start of their
+   * prepareWrite() until their handler settled. secrets:reset is refused while any is in flight: a reset between the
+   * preparation and the handler's set() would move secure storage aside under it (VaultNotReady on a Node host).
+   */
+  private secretWritesInFlight = 0
 
   constructor(
     private readonly services: HostServices,
@@ -256,17 +275,35 @@ export class HostDispatcher {
     this.activity = services.activity ?? noopActivity()
     this.env = services.env ?? FALLBACK_ENV
     this.gate = opts.gate ?? gateRequest
-    this.handlers = buildHandlers(services, this.env, this.events)
+    this.handlers = buildHandlers(services, this.env, this.events, this.quiesced.signal, { secretWritesInFlight: () => this.secretWritesInFlight })
+    // Wave 7 integration (5.6 Reset): the store itself refuses resetVault while an MCP sign-in, a token refresh or a
+    // predicate-prepared secret write is in flight, whoever calls it (the secrets:reset handler checks the same first).
+    const busy = (): boolean =>
+      this.secretWritesInFlight > 0 || (services.mcp?.activeAuthorizationCount?.() ?? 0) > 0 || (services.mcp?.refreshingCount?.() ?? 0) > 0
+    ;(services.secrets as { setResetBusyCheck?: (check: () => boolean) => void } | undefined)?.setResetBusyCheck?.(busy)
+  }
+
+  /**
+   * The drain's quiesce step (bootstrap; round 6 item 9): abort the model calls a handler runs for a caller and nothing
+   * else stops (draft:orgChart: a deep-tier completion with no timeout of its own), so a Quit never waits on one; its
+   * mutation lease ends with the rejection. Later calls of those channels are refused anyway (host_draining).
+   * Idempotent.
+   */
+  quiesce(): void {
+    this.quiesced.abort()
   }
 
   /**
    * Desktop path: run the channel's handler with already-structured-cloned args. Returns the handler's result as is
    * (sync stays sync, a sync throw stays a sync throw). An unknown channel throws an Error with code 'unknown_channel'.
+   * A mutating channel (isMutatingChannel) is refused with host_draining while the host drains and holds an
+   * inFlightRpcMutations lease until its result settles (Wave 7, cli-standalone.md 4.3).
    */
   invoke(channel: string, args: unknown[], ctx: InvokeContext): unknown {
     const handler = this.lookup(channel)
     if (!handler) throw unknownChannel(channel)
-    return handler(ctx, ...args)
+    if (!isMutatingChannel(channel)) return handler(ctx, ...args)
+    return runLeased(this.activity, channel, () => handler(ctx, ...args), { lease: !COMMIT_LEASED_CHANNELS.has(channel) })
   }
 
   /**
@@ -278,18 +315,30 @@ export class HostDispatcher {
     if (g.entry.transport) throw new HostRpcFailure('bad_request', `${channel} is handled by the socket server.`)
     // host.stop is a lifecycle call, not store work: it holds no inFlightRpcMutations lease (its own lease would make
     // every drain without force refuse itself) and is never refused while draining (requestDrain joins the drain).
-    const leased = g.mutation && g.channel !== HOST_METHODS.hostStop
-    if (leased && this.activity.state() === 'draining') {
-      throw new HostRpcFailure('host_draining', 'OrgAI is shutting down; try again in a moment.', DRAINING_RETRY_MS)
-    }
+    const mutation = g.mutation && !LIFECYCLE_CHANNELS.has(g.channel)
+    if (mutation && this.activity.state() === 'draining') throw drainingFailure()
     const handler = this.lookup(g.channel)
     if (!handler) throw new HostRpcFailure('unknown_channel', `Unknown channel: ${channel}`)
+    // mcp:authorize leases only its final commit (McpService), not its browser wait (round 6 item 9).
+    const leased = mutation && !COMMIT_LEASED_CHANNELS.has(g.channel)
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
+    let writing = false
     try {
+      // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
+      // inproc hosts create it lazily), inside the mutation lease, so the handler stays synchronous. Clears and calls
+      // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts. From the prepare until the
+      // handler settles the call counts as a secret write in flight (secrets:reset refuses meanwhile).
+      const secrets = this.services.secrets
+      if (secrets && g.entry.storesSecret?.(g.args, this.storesSecretView(secrets))) {
+        writing = true
+        this.secretWritesInFlight += 1
+        await secrets.prepareWrite()
+      }
       return await handler(ctx, ...g.args)
     } catch (err) {
       throw rpcError(err)
     } finally {
+      if (writing) this.secretWritesInFlight -= 1
       release?.()
     }
   }
@@ -305,9 +354,38 @@ export class HostDispatcher {
     return Object.keys(this.handlers)
   }
 
+  /** Read-only host state for the storesSecret predicates (never a secret value). */
+  private storesSecretView(secrets: SecretStoreApi): StoresSecretHostView {
+    const { projects, mcp, runs } = this.services
+    return {
+      project: (projectId) => projects.get(projectId),
+      libraryEntry: (entryId) => mcp.libraryEntries().find((e) => e.id === entryId),
+      secretKeys: (prefix) => secrets.keys(prefix),
+      secretStatus: (key) => secrets.status(key),
+      pendingProposal: (runId, proposalId) => runs.pendingCards(runId).proposals.find((p) => p.id === proposalId),
+      pendingInstall: (runId, requestId) => {
+        const request = runs.pendingCards(runId).mcpInstalls.find((r) => r.id === requestId)
+        const projectId = runs.summary(runId)?.projectId
+        return request && projectId ? { request, projectId } : undefined
+      },
+      authorizeTarget: (target) => mcp.authorizeTargetKind(target as unknown as McpAuthTarget)
+    }
+  }
+
   private lookup(channel: string): Handler | undefined {
     return typeof channel === 'string' && Object.prototype.hasOwnProperty.call(this.handlers, channel) ? this.handlers[channel] : undefined
   }
+}
+
+/**
+ * A channel whose call changes host state (Wave 7, cli-standalone.md 4.3): a registry request entry with a scope above
+ * 'read' that is not a lifecycle call (host.stop). Desktop-only channels are leased by ipc.ts's own wrapper.
+ */
+export function isMutatingChannel(channel: string): boolean {
+  const entry = channelEntry(channel)
+  if (!entry || entry.direction !== 'request') return false
+  if (entry.scope === 'read' || entry.scope === 'desktop_only') return false
+  return !LIFECYCLE_CHANNELS.has(channel)
 }
 
 /** HostRpcFailure as is; an Error coded with a wire code becomes one; anything else is rethrown unchanged. */
@@ -360,7 +438,13 @@ export function checkRunOverrides(
  * Every request handler registerIpc and its register*Ipc helpers had, moved verbatim (same sync / async shape, same
  * error messages). The first handler argument is the InvokeContext instead of the IpcMainInvokeEvent.
  */
-function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus): Record<string, Handler> {
+/** Dispatcher state a handler may read (never a secret). */
+interface DispatcherState {
+  /** RPC calls between their predicate-driven prepareWrite() and the end of their handler (HostDispatcher.invokeRpc). */
+  secretWritesInFlight(): number
+}
+
+function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus, quiesced: AbortSignal, state: DispatcherState): Record<string, Handler> {
   const table: Record<string, Handler> = Object.create(null) as Record<string, Handler>
   const handle = (channel: string, fn: Handler): void => {
     table[channel] = fn
@@ -446,7 +530,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.draftOrgChart, async (_e, req: DraftRequest) => {
     const project = projects.get(req.projectId)
     if (!project) throw new Error('Project not found')
-    return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)))
+    // Stopped by the drain's quiesce (HostDispatcher.quiesce), so Quit never waits on the model.
+    return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)), quiesced)
   })
 
   handle(IPC.runsStart, async (ctx, raw: unknown) => {
@@ -673,6 +758,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerCapabilityIpc(handle, capabilities)
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
+  registerSecretsIpc(handle, services.secrets, mcp, state)
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {
@@ -681,8 +767,9 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   handle(HOST_METHODS.hostStop, (ctx, input?: unknown) => {
     if (!host) throw new HostRpcFailure('desktop_unavailable', 'This host cannot be stopped over RPC.')
-    const i = input && typeof input === 'object' && !Array.isArray(input) ? (input as { force?: unknown }) : {}
-    const stopping = host.stop({ force: i.force === true })
+    const i = input && typeof input === 'object' && !Array.isArray(input) ? (input as { force?: unknown; handoff?: unknown }) : {}
+    // handoff (Wave 7, cli-standalone.md 4.4): passed through; the stricter predicate is WP-F's (activity.ts).
+    const stopping = host.stop({ force: i.force === true, ...(i.handoff === true ? { handoff: true } : {}) })
     // Over the socket, answer as soon as the drain has started: the drain ends by closing the socket server (inproc)
     // or quitting the app, so a reply sent only after it would never reach the client (it waits for daemon.json to
     // go instead). A refusal is answered as before; in-process callers still get the answer once the drain is done.
@@ -980,6 +1067,38 @@ function registerMcpIpc(
   handle(MCP_SCOPE_IPC.connectorPresetsRemove, (_e, input: unknown) => mcp.connectorPresetsRemove(presetRemoveArgs(input)))
 }
 
+
+/**
+ * secrets:* (Wave 7, cli-standalone.md 5.6, 5.7) over the host's SecretStore: inputs rebuilt by secretsArgs.ts, never a
+ * secret value either way. secrets:reset is refused while an MCP sign-in, a token refresh or a predicate-prepared secret
+ * write (invokeRpc) is in flight (the store itself refuses while one of its own writes is, and takes its write queue for
+ * the move).
+ */
+function registerSecretsIpc(
+  handle: Register,
+  secrets: SecretStoreApi | undefined,
+  mcp: Partial<Pick<McpService, 'activeAuthorizationCount' | 'refreshingCount'>>,
+  state: DispatcherState
+): void {
+  const store = (): SecretStoreApi => {
+    if (!secrets) throw new HostRpcFailure('bad_request', 'This OrgAI host has no secret store.')
+    return secrets
+  }
+  handle(SECRETS_IPC.secretsStatus, (_e, input?: unknown): Promise<SecretsStatusResult> => store().statusReport(secretsStatusArgs(input)))
+  handle(SECRETS_IPC.secretsInit, (_e, input?: unknown): Promise<SecretsInitResult> => store().initVault(secretsInitArgs(input)))
+  handle(SECRETS_IPC.secretsReset, (_e, input: unknown): Promise<SecretsResetResult> => {
+    const i = secretsResetArgs(input)
+    const s = store()
+    // 5.6 Reset: refused while an OAuth flow, a token refresh or a secret write is in flight (a call whose storesSecret
+    // predicate prepared the vault and whose handler has not settled yet); the store refuses while its own writes are.
+    if ((mcp.activeAuthorizationCount?.() ?? 0) > 0 || (mcp.refreshingCount?.() ?? 0) > 0 || state.secretWritesInFlight() > 0) {
+      throw new Error(VAULT_MESSAGES.resetBusy)
+    }
+    return s.resetVault(i)
+  })
+  handle(SECRETS_IPC.secretsUndelete, (_e, input: unknown): SecretsUndeleteResult => store().undelete(secretsUndeleteArgs(input)))
+  handle(SECRETS_IPC.secretsConfirmDelete, (_e, input: unknown): SecretsConfirmDeleteResult => store().confirmDeletes(secretsConfirmDeleteArgs(input)))
+}
 
 /**
  * kit:*Bundle (socket only, cli-spec 3.6): the kit's bytes travel with the call as base64, so no main-process file

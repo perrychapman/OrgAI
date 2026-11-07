@@ -17,6 +17,7 @@ import { SegmentedControl } from '../ui/SegmentedControl'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { relativeTime } from '../../lib/remap'
 import ModelList from './ModelList'
+import { appSecretReason } from '@shared/view/secretNotices'
 import TierEditor from './TierEditor'
 import { useConnectionsAnnounce } from './announce'
 import { defaultChangeAnnouncement, defaultMode } from '../../lib/connectionLabel'
@@ -34,7 +35,7 @@ const DISCONNECTED: Record<string, string> = {
 const statusWord = (state: ConnectionInfo['status']['state']): string =>
   state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : state === 'error' ? 'connection error' : 'not connected'
 
-const errText = (e: unknown): string => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
+const errText = (e: unknown): string => appSecretReason(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
 
 export default function ConnectionCard({ info }: { info: ConnectionInfo }): ReactElement {
   const id = info.connection.id
@@ -166,6 +167,8 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
     }
   }
 
+  // The store's reasons for a key that cannot be read name no terminal command (the Dashboard notice has the buttons).
+  const statusDetail = info.status.detail ? appSecretReason(info.status.detail) : undefined
   const detail = useMemo(() => {
     if (state === 'connected') {
       // One-line summary: auth kind, model count, freshness.
@@ -174,12 +177,12 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
       const when = relativeTime(info.status.checkedAt)
       return [info.status.account, auth, models ? `${models.length} models` : '', when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
     }
-    if (state === 'connecting') return info.status.detail ?? 'Waiting for the browser sign-in'
-    if (state === 'error') return info.status.detail ?? 'Something went wrong.'
+    if (state === 'connecting') return statusDetail ?? 'Waiting for the browser sign-in'
+    if (state === 'error') return statusDetail ?? 'Something went wrong.'
     const usesKey = (info.connection as AnthropicConnection | OpenAIConnection).auth?.kind === 'apiKey'
-    if (usesKey && info.status.detail) return `Not connected: ${info.status.detail}`
-    return info.status.detail ?? meta.hint
-  }, [state, info.status, info.connection, id, meta.hint, models])
+    if (usesKey && statusDetail) return `Not connected: ${statusDetail}`
+    return statusDetail ?? meta.hint
+  }, [state, info.status, statusDetail, info.connection, id, meta.hint, models])
 
   return (
     <section ref={card} className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>
@@ -265,8 +268,8 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
         <>
           {state === 'error' && (
             <div className="card-sec">
-              <Banner tone="danger" title="Connection error" actions={<CopyDetails text={info.status.detail ?? ''} />}>
-                {info.status.detail}
+              <Banner tone="danger" title="Connection error" actions={<CopyDetails text={statusDetail ?? ''} />}>
+                {statusDetail}
               </Banner>
             </div>
           )}

@@ -4,6 +4,7 @@ import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
   EngagementChangedEvent,
+  HostHandoffFacts,
   EngagementNoteWriter,
   FolderConfigState,
   RunUsage,
@@ -112,6 +113,7 @@ import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
 import { controlProtectedPaths } from './selfControlGate'
 import { validateSpec } from '../mcp/validate'
+import { ProposalSecretsNotSaved } from '../mcp/proposalSecrets'
 import { assistContext, buildToolsFor } from '../mcp/assist'
 import { skillAssistContext } from '../skills/assist'
 import { generateRunTitle } from '../ai/runTitle'
@@ -648,8 +650,10 @@ export interface RunManagerOptions {
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
     /**
-     * Store an approved MCP proposal's typed secret values (ProposalDecision.secrets) and return the names of its
-     * servers still waiting for a secret (McpService.storeProposalSecrets). projectId null = library session.
+     * The names of an approved MCP proposal's servers still waiting for a secret (McpService.storeProposalSecrets).
+     * projectId null = library session. RunManager calls it with `values` undefined after the apply: the typed values
+     * (ProposalDecision.secrets) go into SetupService.applyProposal / applyLibraryProposal as `secrets`, which store
+     * them before any record changes (round 6 item 10).
      */
     storeProposalSecrets?(projectId: string | null, payload: McpServersProposalPayload, values: Record<string, string> | undefined): string[]
   }
@@ -716,6 +720,9 @@ const INSTALL_EDITABLE = ['name', 'url', 'command', 'args', 'env', 'headers', 's
 const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
 const isStringRecord = (v: unknown): v is Record<string, string> =>
   !!v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every((x) => typeof x === 'string')
+
+/** A proposal approval refused before anything was applied: decideProposal keeps the card pending (Wave 7). */
+class ProposalKeptOpen extends Error {}
 
 /**
  * The requested spec with the user's allowed edits applied. Ids, transport, registry refs, OAuth configs and
@@ -2896,6 +2903,29 @@ export class RunManager {
     return n
   }
 
+  /**
+   * Wave 7 (cli-standalone.md 4.4 step 4): what a `host.stop({ handoff: true })` waits for, stricter than
+   * busyRunCount: every live run in any form counts (working or ending, waiting on the user, held), every paused run
+   * with an auto-resume pending (armed or firing), and every open card. terminalSessions is the socket server's; the
+   * caller fills it.
+   */
+  handoffFacts(): Omit<HostHandoffFacts, 'terminalSessions'> {
+    let workingRuns = 0
+    let waitingRuns = 0
+    let heldRuns = 0
+    let openCards = 0
+    for (const a of this.runs.values()) {
+      openCards += pendingCount(a)
+      const s = a.summary
+      const state = this.activityStateOf(a)
+      // An exec run in flight is working whatever its root does (its follower owns its end), as in busyRunCount.
+      if (state !== 'waiting' || (LIVE_STATUSES.has(s.status) && !!s.overrides?.execMode && !s.execOutcome)) workingRuns++
+      else if (a.held || a.limitHold) heldRuns++
+      else waitingRuns++
+    }
+    return { workingRuns, waitingRuns, heldRuns, pausedRuns: this.activeResumeTimerCount() + this.inFlightResumeCount(), openCards }
+  }
+
   /** runs:listLive: every live run (session open or opening) across all projects, every kind, oldest first. Copies. */
   liveRuns(): RunSummary[] {
     return [...this.runs.values()]
@@ -3214,13 +3244,19 @@ export class RunManager {
           return outcome
         }
         let waitingForSecrets: string[] | undefined
+        // Round 6 item 10: the typed values go into the apply itself, which stores them before it changes any record. Values
+        // the store cannot take now (vault locked, damaged, no secure storage) make it throw ProposalSecretsNotSaved with
+        // the store's own reason (5.4), nothing applied; decideProposal keeps the card open for another try. Over the
+        // socket, the setup:decide storesSecret predicate has prepared (created or reopened) the vault before this runs,
+        // by the same slot rule (proposalSecrets.ts proposalTypedSlots).
+        const secrets = proposal.kind === 'mcpServers' && decision.secrets ? { secrets: decision.secrets } : {}
         {
           try {
             if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
-              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})
-              waitingForSecrets = this.storeProposalSecrets(null, proposal, decision.secrets)
+              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, { ...(active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {}), ...secrets })
+              waitingForSecrets = this.proposalWaitingForSecrets(null, proposal)
             } else if (active.summary.projectId === SKILLS_PROJECT_ID) {
               // Library-scope Skill assistant: skill proposals change the skill library only.
               if (proposal.kind !== 'skills') throw new Error('Only skill proposals can be applied here.')
@@ -3230,13 +3266,16 @@ export class RunManager {
             } else if (active.summary.kind === 'skill-assist' && proposal.kind !== 'skills') {
               throw new Error('Only skill proposals can be applied in a Skill assistant session.')
             } else {
-              const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work' })
-              // Before onApplied: a stored secret lets the server start (enabledServers reads the SecretStore live).
-              waitingForSecrets = this.storeProposalSecrets(active.summary.projectId, proposal, decision.secrets)
+              // The values are stored before onApplied: a stored secret lets the server start (enabledServers reads the
+              // SecretStore live).
+              const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work', ...secrets })
+              waitingForSecrets = this.proposalWaitingForSecrets(active.summary.projectId, proposal)
               onApplied?.(updated)
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
             }
           } catch (e) {
+            // The store refused the values before anything was applied (round 6 item 10): the card keeps waiting for them.
+            if (e instanceof ProposalSecretsNotSaved) throw new ProposalKeptOpen(`${e.message}. Nothing was applied; the card is still open.`)
             const message = (e as Error).message
             logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
             this.broadcast({ type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
@@ -3254,14 +3293,21 @@ export class RunManager {
     })
   }
 
-  /** Store an approved MCP proposal's secret values; the names of its servers still waiting for one. Never throws. */
-  private storeProposalSecrets(projectId: string | null, proposal: Proposal, values: Record<string, string> | undefined): string[] | undefined {
+  /**
+   * The names of an applied MCP proposal's servers still waiting for a secret value (McpService.storeProposalSecrets
+   * without values: the apply already stored what the card carried). Never throws: a failed read names every upserted
+   * server with a secret slot, so the outcome never claims a value was saved.
+   */
+  private proposalWaitingForSecrets(projectId: string | null, proposal: Proposal): string[] | undefined {
     if (proposal.kind !== 'mcpServers' || !this.options.mcp?.storeProposalSecrets) return undefined
     try {
-      return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, values)
+      return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, undefined)
     } catch (e) {
-      log.warn(`Proposal secrets could not be stored: ${(e as Error).message}`)
-      return undefined
+      log.warn(`Could not list the servers waiting for secrets: ${(e as Error).message}`)
+      const named = (Array.isArray(proposal.payload.upsert) ? proposal.payload.upsert : [])
+        .filter((u) => (u?.secretEnv?.length ?? 0) + (u?.secretHeaders?.length ?? 0) > 0 && typeof u.name === 'string')
+        .map((u) => u.name)
+      return named.length ? named : undefined
     }
   }
 
@@ -3272,7 +3318,16 @@ export class RunManager {
     if (this.staleRevision(pending.proposal.revision, opts)) return { status: 'stale-revision', runId, requestId: proposalId }
     active.pendingProposals.delete(proposalId)
     // The broadcast carries the secret-free outcome (with waitingForSecrets), never decision.secrets.
-    const outcome = pending.resolve(decision) ?? proposalOutcome(cleanProposalDecision(decision))
+    let resolved: ProposalOutcome | void
+    try {
+      resolved = pending.resolve(decision)
+    } catch (e) {
+      // Not applied and not answered (the vault cannot take the values now): the card stays open for another try.
+      if (!(e instanceof ProposalKeptOpen)) throw e
+      active.pendingProposals.set(proposalId, pending)
+      throw new Error(e.message)
+    }
+    const outcome = resolved ?? proposalOutcome(cleanProposalDecision(decision))
     // An approval the harness could not apply came back as a revise: say so (applyError).
     const applyError = cleanProposalDecision(decision).behavior === 'approve' && outcome.behavior === 'revise' ? outcome.feedback : undefined
     this.cardResolved(active, 'proposal', proposalId, 'applied', outcome.behavior, opts.decidedBy)
@@ -3685,7 +3740,7 @@ export class RunManager {
   }
 
   /**
-   * The app is quitting and will not wait any longer (index.ts quitGate: the deadline passed, stopAll failed, or a
+   * The app is quitting and will not wait any longer (the shutdown's forced drain, activity.ts: the deadline passed, stopAll failed, or a
    * forced second quit). Synchronously refuses new work, cancels resumes and titles, marks every live run cut by the
    * app (an End session already under way keeps 'user') and writes each summary and record. Safe to call again.
    */

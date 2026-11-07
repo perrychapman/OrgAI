@@ -9,7 +9,7 @@
  *
  * Standalone and pure: no electron import, no file I/O. Wave 1's src/main/host/registry.ts imports it.
  */
-import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 
 // ---------- Safe parse / stringify ----------
 
@@ -83,9 +83,12 @@ export const PUSH_CHANNELS: readonly string[] = [
   TEAM_FILES_IPC.teamFilesChanged
 ]
 
-/** Every channel value the host knows: IPC (with TEMPLATE_ENGAGEMENT_IPC and KNOWLEDGE_IPC), MCP_SCOPE_IPC, KIT_IPC, HOST_IPC. */
+/**
+ * Every channel value the host knows: IPC (with TEMPLATE_ENGAGEMENT_IPC and KNOWLEDGE_IPC), MCP_SCOPE_IPC, KIT_IPC,
+ * HOST_IPC, SECRETS_IPC (Wave 7).
+ */
 export function allChannels(): string[] {
-  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(HOST_IPC)]
+  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 }
 
 /** Every request channel: allChannels() minus PUSH_CHANNELS. */
@@ -372,7 +375,14 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'kit:exportBundle': { note: 'Response rawBytesBase64 is base64 text; bulk.' }, // KitBundleExportInput
   'kit:previewBundle': { note: 'rawBytesBase64 is base64 text; bulk.' }, // KitBundlePreviewInput
   'kit:applyBundle': { note: 'rawBytesBase64 is base64 text; bulk. stale_target_digest on a moved destination.' }, // KitBundleApplyInput
-  'runs:findDecision': {} // [requestId] -> DecisionLookup
+  'runs:findDecision': {}, // [requestId] -> DecisionLookup
+
+  // ---- SECRETS_IPC (Wave 7; never a secret value either way) ----
+  'secrets:status': {}, // [SecretsStatusInput?] -> SecretsStatusResult
+  'secrets:init': {}, // [SecretsInitInput?] -> SecretsInitResult
+  'secrets:reset': {}, // [SecretsResetInput] -> SecretsResetResult
+  'secrets:undelete': {}, // [SecretsUndeleteInput] -> SecretsUndeleteResult
+  'secrets:confirmDelete': {} // [SecretsConfirmDeleteInput] -> SecretsConfirmDeleteResult
 }
 
 // ---------- encode / decode ----------

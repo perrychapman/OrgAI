@@ -14,7 +14,7 @@ import {
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import type { DaemonInfo, HostKind, HostState } from '@shared/types'
+import { HOST_KINDS, type DaemonInfo, type HostKind, type HostState } from '../../shared/types'
 import { HOST_INSTANCE_ID_RE, currentHostInstanceId } from './identity'
 import { renameSyncRetry } from './fsRetry'
 import { processLivenessCachedAsync, selfStartTime, type Liveness } from './processInfo'
@@ -283,7 +283,6 @@ const SOCKET_PATH_MAX = 100
 const DAEMON_JSON_MAX_BYTES = 64 * 1024
 const RUNTIME_DIR_RE = /^orgai-[0-9a-f]{12}$/
 const HOST_STATES: readonly HostState[] = ['starting', 'ready', 'draining']
-const HOST_KINDS: readonly HostKind[] = ['desktop', 'headless-host', 'inproc']
 
 export function runDirOf(dataDir: string): string {
   return join(dataDir, 'run')
@@ -482,6 +481,29 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 
 /** Take ownership of `opts.dataDir` (cli-spec 3.2(2) Step 0). See the module comment. */
 export async function acquireHostOwnership(opts: OwnershipOptions): Promise<HostOwnership> {
+  return (await acquire(opts)) as HostOwnership
+}
+
+/** What {@link withStartupMutex} takes: the ownership options that matter without publishing a host. */
+export type StartupMutexOptions = Omit<OwnershipOptions, 'hostKind' | 'appVersion' | 'listen' | 'onConnection' | 'secretAcl' | 'restrictAcl'>
+
+/**
+ * Run `fn` while holding `<dataDir>/run/startup.mkdir` and while no live host owns the data folder (Wave 7,
+ * cli-standalone.md round 6 item 11: `orgai terminal-access` writes settings this way). The same steps as
+ * {@link acquireHostOwnership} up to the incumbent check (the mutex, then daemon.json re-checked inside it; a live host
+ * throws HostAlreadyRunningError, a mutex held past liveWaitMs HostStartingOrBusyError), then `fn` instead of
+ * publishing: no daemon.json, no secret, no listener. A host starting meanwhile waits on the mutex and boots after `fn`
+ * is done. The mutex is released whether `fn` resolves or throws.
+ */
+export async function withStartupMutex<T>(opts: StartupMutexOptions, fn: () => T | Promise<T>): Promise<T> {
+  let result: { value: T } | undefined
+  await acquire({ ...opts, hostKind: 'inproc', appVersion: '', listen: false }, async () => {
+    result = { value: await fn() }
+  })
+  return (result as { value: T }).value
+}
+
+async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>): Promise<HostOwnership | undefined> {
   const platform = opts.platform ?? process.platform
   const id = opts.hostInstanceId ?? currentHostInstanceId()
   if (!HOST_INSTANCE_ID_RE.test(id)) throw new Error(`Invalid host instance id: ${id}`)
@@ -572,6 +594,12 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     // No live host owns the data dir from here on, and we hold the mutex.
     await sweepLeftovers()
     fault('after-probe')
+    if (underMutex) {
+      // withStartupMutex: the caller's work instead of publishing; nothing of ours to undo but the mutex.
+      await underMutex()
+      removeStartupDir()
+      return undefined
+    }
 
     if (listenNow) {
       // The handshake secret (win32: the run folder and the file restricted to the current user first, review H2 / M8).

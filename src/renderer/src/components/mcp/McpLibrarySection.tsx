@@ -1,3 +1,4 @@
+import { UnreadableSecretsNote } from './UnreadableSecretsNote'
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Ellipsis, KeyRound, Library, Pencil, Plus, Package, ShieldOff, Sparkles, Trash2, TriangleAlert, Users } from 'lucide-react'
@@ -287,6 +288,7 @@ function LibraryRow({
           <IconButton icon={Ellipsis} label={`More actions for ${entry.name}`} size="sm" expanded={menu} onClick={() => setMenu((m) => !m)} />
         </div>
       </div>
+      <UnreadableSecretsNote slots={info.unreadableSecrets} />
       {clashes?.map((c) => (
         <p key={c.envName} className="mcp-row-note mcp-secret-clash" data-testid="mcp-secret-clash">
           <Icon icon={TriangleAlert} size="sm" />

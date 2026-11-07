@@ -5,14 +5,24 @@
 //   npm run pack:verify                                  check release/<unpacked> of this platform
 //   node scripts/verify-pack.mjs --release <dir>         check another release folder
 //   node scripts/verify-pack.mjs --skip-host             leave out the exec through the spawned background app
+//   node scripts/verify-pack.mjs --npm                   also run (g) with release/npm/orgai-<version>.tgz
+//   node scripts/verify-pack.mjs --npm-tarball <tgz>     also run (g) with that tarball
 //
 // Checks, each printed as one ok / fail line; exit 0 only when all pass:
-//   (a) the launcher, the app binary and out/cli/{orgai,tui,inprocHost}.mjs exist; the launcher is executable (POSIX)
+//   (a) the launcher, the app binary and out/cli/{orgai,tui,inprocHost}.mjs exist; the launcher is executable (POSIX);
+//       out/cli/install.json says channel 'app' and package.json's version (Wave 7, cli-standalone.md 3.5)
 //   (b) every package the CLI bundle imports is a Node builtin or unpacked from app.asar
-//   (c) `orgai --version` prints package.json's version
+//   (c) `orgai --version` prints package.json's version and `channel app`
 //   (d) `orgai --output-format json doctor`: launcher ok from the packaged app, node ok, no check failed
 //   (e) `orgai --host inproc exec --create-project` with [mock:exec-plan] in a temp git repo: exit 0, 'completed'
-//   (f) the same exec with the default host (the packaged app spawned with --headless-host), then `orgai daemon stop`
+//   (f) the same exec with the default host (the packaged app spawned with --headless-host), then `orgai daemon status`
+//       must name a running headless-host and `orgai daemon stop` must answer `stopped: true` (exit 0 alone is not
+//       enough: stop also exits 0 when no host was running)
+//   (g) only with --npm / --npm-tarball (Wave 7, cli-standalone.md 3.4 "Packaged integration"): the npm tarball
+//       installed into a temp prefix (`npm i -g <tgz>`, so a shrinkwrap is not applied: this checks discovery, not the
+//       tree), then that npm `orgai --host auto exec` with ORGAI_ELECTRON_PATH at the packed app's binary on its own
+//       temp data folder: the npm CLI must start the packaged app headless and finish the mock run; then its
+//       `orgai daemon status` (a running headless-host) and `daemon stop` (`stopped: true`), as in (f). Needs npm and the registry (the dependencies are downloaded).
 //
 // Environment of every command: this one without ELECTRON_RUN_AS_NODE, ORGAI_SECRET_*, ORGAI_ELECTRON_PATH,
 // ORGAI_APP_ROOT and ORGAI_DATA_DIR, plus ORGAI_DATA_DIR=<temp>, ORGAI_MOCK=1, NO_COLOR=1. HOME is untouched. Writes
@@ -26,6 +36,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { bareImports, isNodeBuiltin, packagedPaths } from './lib/packLayout.mjs'
+import { NPM_PACKAGE_NAME, globalLayout, tarballName } from './lib/npmPackage.mjs'
+import { npmInvocation } from './build-npm-package.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const CHECK_TIMEOUT_MS = 90_000
@@ -43,7 +55,12 @@ export function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--skip-host') out.skipHost = true
-    else if (a === '--release') {
+    else if (a === '--npm') out.npmTarball ??= true
+    else if (a === '--npm-tarball') {
+      const v = argv[++i]
+      if (!v || v.startsWith('--')) throw new Error('--npm-tarball needs a file.')
+      out.npmTarball = v
+    } else if (a === '--release') {
       const v = argv[++i]
       if (!v || v.startsWith('--')) throw new Error('--release needs a folder.')
       out.release = v
@@ -51,7 +68,7 @@ export function parseArgs(argv) {
       const v = a.slice('--release='.length)
       if (!v) throw new Error('--release needs a folder.')
       out.release = v
-    } else throw new Error(`Unknown argument ${a}. Use: verify-pack [--release <dir>] [--skip-host]`)
+    } else throw new Error(`Unknown argument ${a}. Use: verify-pack [--release <dir>] [--skip-host] [--npm | --npm-tarball <tgz>]`)
   }
   return out
 }
@@ -66,6 +83,8 @@ export function verifyEnv(base, userDataDir) {
   out.ORGAI_DATA_DIR = userDataDir
   out.ORGAI_MOCK = '1'
   out.NO_COLOR = '1'
+  // Never create items in the real OS keychain (a script-supplied ORGAI_VAULT_KEY_FILE still wins in the child).
+  out.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
   return out
 }
 
@@ -107,6 +126,28 @@ export function versionMatches(stdout, version) {
     .some((w) => w === version || w === `v${version}`)
 }
 
+/** True when `--version` output names this version and the install channel (`0.1.7 channel app commit ...`). Pure. */
+export function versionChannelMatches(stdout, version, channel = 'app') {
+  return versionMatches(stdout, version) && new RegExp(`(^|\\s)channel ${channel}(\\s|$)`).test(String(stdout ?? '').trim())
+}
+
+/**
+ * What is wrong with the app bundle's install.json (cli-standalone.md 3.5): missing, not JSON, a channel other than
+ * 'app' or another version. Undefined when it is right.
+ */
+export function appInstallInfoProblem(cliBundleDir, version) {
+  const file = path.join(cliBundleDir, 'install.json')
+  let info
+  try {
+    info = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch (e) {
+    return e?.code === 'ENOENT' ? 'out/cli/install.json missing (the app would read as channel dev)' : `out/cli/install.json is not valid JSON (${e.message})`
+  }
+  if (info?.channel !== 'app') return `out/cli/install.json says channel ${JSON.stringify(info?.channel)}, expected "app"`
+  if (info.version !== version) return `out/cli/install.json says version ${JSON.stringify(info.version)}, expected ${version}`
+  return undefined
+}
+
 /**
  * The `orgai --output-format json doctor` document checked: it parses, 'launcher' is ok and names the packaged source,
  * 'node' is ok, and no check is 'fail'. Returns { ok, problems }. Pure.
@@ -146,6 +187,61 @@ export function stopRefusal(stdout) {
   const named = Object.entries(leases).filter(([, n]) => typeof n === 'number' && n > 0).map(([k]) => k)
   if (named.length === 0) return undefined
   return named.every((k) => TRANSIENT_LEASES.includes(k)) ? 'transient' : 'busy'
+}
+
+/**
+ * Plain `daemon stop` (never --force) through `orgai(args)`: a host still busy only with work that settles by itself
+ * (the run title, the Team review after the finished run) is asked again, at most STOP_RETRY_MS.
+ */
+export async function stopHost(orgai, sleep = (ms) => new Promise((r) => setTimeout(r, ms))) {
+  const stopUntil = Date.now() + STOP_RETRY_MS
+  let s = await orgai(['--output-format', 'json', 'daemon', 'stop'])
+  while (s.code !== 0 && stopRefusal(s.stdout) === 'transient' && Date.now() < stopUntil) {
+    await sleep(1000)
+    s = await orgai(['--output-format', 'json', 'daemon', 'stop'])
+  }
+  return s
+}
+
+/** The host kind the packaged app reports when the CLI spawned it in the background (`--headless-host`). */
+export const BACKGROUND_HOST_KIND = 'headless-host'
+
+/**
+ * The `hostKind` of the host an `orgai --output-format json daemon status` document describes, or undefined when it
+ * says no host answered (`running: false`) or is not that document. Pure.
+ */
+export function statusHostKind(stdout) {
+  const doc = parseJson(stdout)
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc) || doc.running !== true) return undefined
+  const kind = doc.status && typeof doc.status === 'object' ? doc.status.hostKind : undefined
+  return typeof kind === 'string' ? kind : undefined
+}
+
+/**
+ * True only when an `orgai --output-format json daemon stop` document says a host was stopped (`stopped: true`).
+ * `daemon stop` also exits 0 when no host was running (`{ stopped: false, running: false }`), so exit 0 alone proves
+ * nothing. Pure.
+ */
+export function hostWasStopped(stdout) {
+  const doc = parseJson(stdout)
+  return !!doc && typeof doc === 'object' && !Array.isArray(doc) && doc.stopped === true
+}
+
+/**
+ * Proof that a background host ran the exec: `daemon status` must name a running `headless-host`, then the stop must
+ * say it stopped one. Reports `<prefix> host kind` and `<prefix> daemon stop`.
+ */
+async function checkBackgroundHost(orgai, report, prefix, stopOk) {
+  const st = await orgai(['--output-format', 'json', 'daemon', 'status'])
+  const kind = statusHostKind(st.stdout)
+  report(
+    `${prefix} host kind`,
+    kind === BACKGROUND_HOST_KIND,
+    kind === BACKGROUND_HOST_KIND ? `a ${BACKGROUND_HOST_KIND} host is running` : `expected a running ${BACKGROUND_HOST_KIND} host, got ${kind ?? 'none'}: ${showRun(st)}`
+  )
+  const s = await stopHost(orgai)
+  const stopped = s.code === 0 && hostWasStopped(s.stdout)
+  report(`${prefix} daemon stop`, stopped, stopped ? stopOk : s.code === 0 ? `exit 0 but no host was stopped: ${showRun(s)}` : showRun(s))
 }
 
 /** `{ outcome, exitCode }` of an `exec --output-format json` document, or undefined. Pure. */
@@ -221,8 +317,11 @@ export async function cleanupDaemon(userDataDir, deps = {}) {
   return pid
 }
 
-/** Runs one command with a timeout; resolves { code, signal, stdout, stderr, timedOut }, never rejects. */
-export function spawnRunner({ command, args, cwd, env, timeoutMs = CHECK_TIMEOUT_MS, windowsVerbatimArguments = false }) {
+/**
+ * Runs one command with a timeout; resolves { code, signal, stdout, stderr, timedOut }, never rejects. `input`, when
+ * given, is written to the child's stdin and stdin is closed (else stdin is ignored).
+ */
+export function spawnRunner({ command, args, cwd, env, timeoutMs = CHECK_TIMEOUT_MS, windowsVerbatimArguments = false, input }) {
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
@@ -246,10 +345,14 @@ export function spawnRunner({ command, args, cwd, env, timeoutMs = CHECK_TIMEOUT
       }
     }, timeoutMs)
     try {
-      child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, windowsVerbatimArguments })
+      child = spawn(command, args, { cwd, env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true, windowsVerbatimArguments })
     } catch (e) {
       done({ code: null, signal: null, stderr: String(e?.message ?? e) })
       return
+    }
+    if (input !== undefined) {
+      child.stdin.on('error', () => {})
+      child.stdin.end(input)
     }
     child.stdout.on('data', (d) => (stdout += d))
     child.stderr.on('data', (d) => (stderr += d))
@@ -347,7 +450,11 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const problemsA = absent.map(([label, p]) => `${label} missing (${p})`)
   if (!absent.some(([label]) => label === 'launcher') && platform !== 'win32' && !isExecutable(paths.launcher))
     problemsA.push(`the launcher is not executable (${paths.launcher})`)
-  report('(a) files', problemsA.length === 0, problemsA.length ? problemsA.join('; ') : `launcher, app binary and ${BUNDLE_FILES.join(', ')} are there`)
+  if (fs.existsSync(paths.cliBundleDir)) {
+    const infoProblem = appInstallInfoProblem(paths.cliBundleDir, version)
+    if (infoProblem) problemsA.push(infoProblem)
+  }
+  report('(a) files', problemsA.length === 0, problemsA.length ? problemsA.join('; ') : `launcher, app binary, ${BUNDLE_FILES.join(', ')} and install.json (channel app) are there`)
 
   // (b) unpacked dependencies
   if (fs.existsSync(paths.cliBundleDir)) {
@@ -367,6 +474,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const launcherThere = fs.existsSync(paths.launcher)
   const skipped = (id) => report(id, false, 'skipped: the launcher is missing')
   const made = []
+  const npmDataDirs = []
   const userDataDir = fs.mkdtempSync(path.join(tmpDir, 'orgai-verify-data-'))
   made.push(userDataDir)
   const childEnv = verifyEnv(env, userDataDir)
@@ -376,11 +484,12 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   }
   try {
     if (!launcherThere) {
-      for (const id of ['(c) --version', '(d) doctor', '(e) exec inproc', ...(opts.skipHost ? [] : ['(f) exec host', '(f) daemon stop'])]) skipped(id)
+      for (const id of ['(c) --version', '(d) doctor', '(e) exec inproc', ...(opts.skipHost ? [] : ['(f) exec host', '(f) host kind', '(f) daemon stop'])]) skipped(id)
     } else {
       // (c)
       const v = await orgai(['--version'], userDataDir)
-      report('(c) --version', v.code === 0 && versionMatches(v.stdout, version), v.code === 0 && versionMatches(v.stdout, version) ? `prints ${version}` : `expected ${version}: ${showRun(v)}`)
+      const vOk = v.code === 0 && versionChannelMatches(v.stdout, version, 'app')
+      report('(c) --version', vOk, vOk ? `prints ${version} channel app` : `expected ${version} channel app: ${showRun(v)}`)
 
       // (d)
       const d = await orgai(['--output-format', 'json', 'doctor'], userDataDir)
@@ -407,19 +516,62 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         await execCase('(e) exec inproc', ['--host', 'inproc'])
         if (!opts.skipHost) {
           await execCase('(f) exec host', [])
-          // Plain `daemon stop` (never --force): a host still busy only with work that settles by itself (the run
-          // title, the Team review after the finished run) is asked again, at most STOP_RETRY_MS.
-          const stopUntil = Date.now() + STOP_RETRY_MS
-          let s = await orgai(['--output-format', 'json', 'daemon', 'stop'], repo)
-          while (s.code !== 0 && stopRefusal(s.stdout) === 'transient' && Date.now() < stopUntil) {
-            await new Promise((r) => setTimeout(r, 1000))
-            s = await orgai(['--output-format', 'json', 'daemon', 'stop'], repo)
+          await checkBackgroundHost((args) => orgai(args, repo), report, '(f)', 'the background app stopped')
+        }
+      }
+    }
+
+    // (g) the npm CLI finds and drives the packed app (only when asked)
+    if (opts.npmTarball !== undefined) {
+      const tgz = opts.npmTarball === true ? path.join(root, 'release', 'npm', tarballName(NPM_PACKAGE_NAME, version)) : path.resolve(opts.npmTarball)
+      if (!fs.existsSync(tgz)) report('(g) npm exec host', false, `no npm tarball at ${tgz}; run node scripts/build-npm-package.mjs first`)
+      else if (!fs.existsSync(paths.appBinary)) report('(g) npm exec host', false, `no app binary at ${paths.appBinary}`)
+      else {
+        const work = fs.mkdtempSync(path.join(tmpDir, 'orgai-verify-npmcli-'))
+        made.push(work)
+        const prefix = path.join(work, 'prefix')
+        const npmData = path.join(work, 'data')
+        const npmRepo = path.join(work, 'repo')
+        for (const d of [prefix, npmData, npmRepo]) fs.mkdirSync(d)
+        npmDataDirs.push(npmData)
+        const npm = npmInvocation(env, process.execPath, platform)
+        const nodeDir = path.dirname(process.execPath)
+        const sep = platform === 'win32' ? ';' : ':'
+        const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+        const withNode = (e) => ({ ...e, [pathKey]: e[pathKey] ? `${nodeDir}${sep}${e[pathKey]}` : nodeDir })
+        const inst = await run({
+          command: npm.command,
+          args: [...npm.prefix, 'install', '--global', '--prefix', prefix, tgz],
+          cwd: work,
+          env: withNode({ ...env, npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false' }),
+          timeoutMs: 15 * 60_000
+        })
+        const bin = globalLayout(platform, prefix).bin
+        if (inst.code !== 0 || !fs.existsSync(bin)) report('(g) npm exec host', false, `npm install -g failed: ${showRun(inst)}`)
+        else {
+          let repoOk = true
+          try {
+            makeFixtureRepo(npmRepo, git)
+          } catch (e) {
+            repoOk = false
+            report('(g) npm exec host', false, `could not make the fixture git repo: ${e.message}`)
           }
-          report('(f) daemon stop', s.code === 0, s.code === 0 ? 'the background app stopped' : showRun(s))
+          if (repoOk) {
+            const npmEnv = withNode({ ...verifyEnv(env, npmData), ORGAI_ELECTRON_PATH: paths.appBinary })
+            const npmOrgai = (args) => run({ ...launchCommand(platform, bin, args, env), cwd: npmRepo, env: npmEnv, timeoutMs: CHECK_TIMEOUT_MS })
+            const r = await npmOrgai(['--host', 'auto', 'exec', '--create-project', '--output-format', 'json', EXEC_PROMPT])
+            const o = execOutcome(r.stdout)
+            const ok = r.code === 0 && o?.outcome === 'completed'
+            report('(g) npm exec host', ok, ok ? "exit 0, outcome 'completed'" : `expected exit 0 and 'completed', got outcome ${o?.outcome ?? 'none'}: ${showRun(r)}`)
+            // exec alone could have run in-process (a --host auto fallback): only a running headless-host that the
+            // stop then stops proves the npm CLI started the packed app.
+            await checkBackgroundHost(npmOrgai, report, '(g) npm', 'the npm orgai started and stopped the packed app headless')
+          }
         }
       }
     }
   } finally {
+    for (const d of npmDataDirs) await cleanupDaemon(d, { log, ...cleanup }).catch((e) => log(`Could not check for a leftover host: ${e.message}`))
     await cleanupDaemon(userDataDir, { log, ...cleanup }).catch((e) => log(`Could not check for a leftover host: ${e.message}`))
     for (const dir of made) {
       try {

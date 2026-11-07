@@ -1,3 +1,4 @@
+import { unavailableCustodianFactory } from './unavailableCustodian'
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,8 +17,10 @@ import {
   mcpSecretKey,
   mcpSecretPrefix,
   READ_ONLY_SECRETS_MESSAGE,
+  openSecretStore,
   type SecretCipher
 } from './secrets'
+import type { SecretStoreApi } from './vaultTypes'
 
 /** Reversible fake of safeStorage: not encryption, but never stores the plain text. */
 const fakeCipher = (available = true): SecretCipher => ({
@@ -161,5 +164,57 @@ describe('SecretStore overlay and read-only mode (cli-spec 3.5)', () => {
     expect(store.get(LITELLM_KEY)).toBe('stored')
     store.delete(LITELLM_KEY)
     expect(store.has(LITELLM_KEY)).toBe(false)
+  })
+})
+
+describe('SecretStore without an opened vault (direct construction, cli-standalone.md 5.4, 5.6)', () => {
+  it('implements SecretStoreApi as an app host in legacy-only mode: status set / unset / unreadable, state absent', async () => {
+    const dir = dataDir()
+    new SecretStore(dir, fakeCipher()).set(LITELLM_KEY, 'sk-1')
+    const store: SecretStoreApi = new SecretStore(dir, fakeCipher())
+    expect(store.status(LITELLM_KEY)).toBe('set')
+    expect(store.status('mcp:p:s:env:NOPE')).toBe('unset')
+    expect(store.state()).toBe('absent')
+    // an app host writes secrets.json while it has no vault, so prepareWrite resolves without a custodian
+    await expect(store.prepareWrite()).resolves.toBeUndefined()
+    expect(store.vaultKeyFiles()).toEqual([])
+    store.attachLeases(() => () => undefined)
+    // an app host may clear a legacy key; nothing failed, so retryOpen does nothing
+    expect(store.clearRefusal(LITELLM_KEY)).toBeUndefined()
+    store.retryOpen('focus')
+    expect(store.state()).toBe('absent')
+    // a value this host cannot decrypt is unreadable, never "unset"
+    const other = new SecretStore(dir, { ...fakeCipher(), decryptString: () => { throw new Error('no') } })
+    expect(other.status(LITELLM_KEY)).toEqual({ unreadable: expect.any(String) })
+  })
+
+  it('statusReport describes the legacy file without a vault; init with the default custodian reports why it cannot', async () => {
+    const dir = dataDir()
+    const empty = new SecretStore(dir, fakeCipher(), { overlay: new Map([['k', 'v']]), platform: 'darwin', env: {} })
+    expect(await empty.statusReport()).toMatchObject({ state: 'absent', scheme: 'keychain', legacyFile: 'missing', counts: { vault: 0, legacy: 0, overlay: 1 }, canWriteBack: true })
+    empty.set(LITELLM_KEY, 'sk-2')
+    const report = await empty.statusReport({ probe: true })
+    expect(report).toMatchObject({ legacyFile: 'ok', counts: { legacy: 1 }, pendingLegacy: 0, softDeletes: [], orphanedKeys: 0, orphanedVaults: [] })
+    expect(report.probe).toMatchObject({ ok: false, kind: 'unavailable' })
+    expect(JSON.stringify(report)).not.toContain('sk-2')
+    await expect(empty.initVault({})).rejects.toThrow(/not available in this build yet/)
+    expect((await empty.resetVault({ confirm: true })).movedTo).toBeNull()
+    expect(empty.undelete({ key: LITELLM_KEY })).toMatchObject({ restored: false })
+    expect(empty.confirmDeletes({ keys: [LITELLM_KEY] })).toEqual({ confirmed: [] })
+    expect(empty.get(LITELLM_KEY)).toBe('sk-2')
+  })
+
+  it('openSecretStore honours read-only and the overlay; an app host without a working custodian stays legacy-only', async () => {
+    const dir = dataDir()
+    const store = await openSecretStore({ dataDir: dir, userDataDir: dir, hostKind: 'inproc', cipher: fakeCipher(), custodian: unavailableCustodianFactory, readOnly: true, overlay: new Map([['k', 'v']]) })
+    expect(store).toBeInstanceOf(SecretStore)
+    expect(store.get('k')).toBe('v')
+    expect(store.available()).toBe(false)
+    const rw = await openSecretStore({ dataDir: dir, userDataDir: dir, hostKind: 'desktop', cipher: fakeCipher(), log: () => undefined, custodian: unavailableCustodianFactory })
+    expect(rw.state()).toBe('absent')
+    rw.set(LITELLM_KEY, 'sk-3')
+    expect(existsSync(join(dir, 'secrets.json'))).toBe(true)
+    expect(existsSync(join(dir, 'vault.json'))).toBe(false)
+    rw.dispose()
   })
 })

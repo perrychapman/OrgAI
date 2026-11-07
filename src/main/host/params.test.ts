@@ -207,6 +207,12 @@ const PAYLOADS: Record<string, unknown[]> = {
   'kit:previewBundle': [{ fileName: 'team.orgai-kit.json', rawBytesBase64: 'e30=' }],
   'kit:applyBundle': [{ rawBytesBase64: 'e30=', digest: 'e'.repeat(64), targetDigest: 'f'.repeat(64), choices: [] }],
   'runs:findDecision': ['perm_1'],
+  // SECRETS_IPC (Wave 7)
+  'secrets:status': [{ probe: true }],
+  'secrets:init': [{ keyFile: '/home/u/orgai.key', importKeyFile: true }],
+  'secrets:reset': [{ confirm: true }],
+  'secrets:undelete': [{ key: 'connection:litellm:apiKey' }],
+  'secrets:confirmDelete': [{ keys: ['connection:litellm:apiKey'] }],
   // host.*
   'host.status': [],
   'host.subscribe': [{ topics: ['connections', 'capabilities'] }],

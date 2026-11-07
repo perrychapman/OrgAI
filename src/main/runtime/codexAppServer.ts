@@ -1,8 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { delimiter, dirname, join } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
+import { trackChildProcess } from '../host/shutdown'
 import { scrubControlEnv } from './childEnv'
+import { checkCodexBinary, lookupCodexBinary, type CodexBinary, type CodexLookupOptions, type CodexVersionRunner } from './codexBinary'
 
 /**
  * A client for `codex app-server`: JSON-RPC 2.0 messages, one JSON object per line, over the child's stdio.
@@ -15,15 +16,6 @@ import { scrubControlEnv } from './childEnv'
  * required and is not sent. The client sends `initialize` and then the `initialized` notification.
  */
 
-const PLATFORM_PACKAGES: Record<string, { pkg: string; triple: string }> = {
-  'linux-x64': { pkg: '@openai/codex-linux-x64', triple: 'x86_64-unknown-linux-musl' },
-  'linux-arm64': { pkg: '@openai/codex-linux-arm64', triple: 'aarch64-unknown-linux-musl' },
-  'darwin-x64': { pkg: '@openai/codex-darwin-x64', triple: 'x86_64-apple-darwin' },
-  'darwin-arm64': { pkg: '@openai/codex-darwin-arm64', triple: 'aarch64-apple-darwin' },
-  'win32-x64': { pkg: '@openai/codex-win32-x64', triple: 'x86_64-pc-windows-msvc' },
-  'win32-arm64': { pkg: '@openai/codex-win32-arm64', triple: 'aarch64-pc-windows-msvc' }
-}
-
 /**
  * OrgAI's own CODEX_HOME under the data dir. The connection service (login, account, models) and the Codex
  * adapter (runs) both use it, so OrgAI keeps its own ChatGPT login and config.toml and never loads the
@@ -33,37 +25,22 @@ export function codexHomeDir(dataDir: string): string {
   return join(dataDir, 'codex')
 }
 
-export interface CodexBinary {
-  /** The native codex executable. */
-  path: string
-  /** Extra PATH directory the CLI expects (bundled rg), when present. */
-  pathDir?: string
-}
+export type { CodexBinary } from './codexBinary'
 
 /**
- * Locate the native codex binary from the per-platform optional dependency (@openai/codex-<platform>-<arch>),
- * mirroring @openai/codex/bin/codex.js. Inside a packaged app the path is rewritten from app.asar to
- * app.asar.unpacked (electron-builder asarUnpack). ORGAI_CODEX_PATH overrides everything. Undefined when
- * no binary is installed for this platform.
+ * The native codex binary (cli-standalone 6.2: ORGAI_CODEX_PATH, the per-platform package, then PATH; shims mapped to
+ * their native package, never spawned). Undefined when none was found; lookupCodexBinary says why.
  */
-export function resolveCodexBinary(platform: string = process.platform, arch: string = process.arch): CodexBinary | undefined {
-  const override = process.env.ORGAI_CODEX_PATH?.trim()
-  if (override) return existsSync(override) ? { path: override } : undefined
-  const target = PLATFORM_PACKAGES[`${platform}-${arch}`]
-  if (!target) return undefined
-  try {
-    const req = createRequire(import.meta.url)
-    const pkgJson = req.resolve(`${target.pkg}/package.json`)
-    const root = dirname(pkgJson).replace(/app\.asar(?!\.unpacked)/, 'app.asar.unpacked')
-    const vendor = join(root, 'vendor', target.triple)
-    const bin = join(vendor, 'bin', platform === 'win32' ? 'codex.exe' : 'codex')
-    if (!existsSync(bin)) return undefined
-    const pathDir = join(vendor, 'codex-path')
-    return { path: bin, ...(existsSync(pathDir) ? { pathDir } : {}) }
-  } catch {
-    return undefined
-  }
+export function resolveCodexBinary(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+  opts: Omit<CodexLookupOptions, 'platform' | 'arch'> = {}
+): CodexBinary | undefined {
+  return lookupCodexBinary({ ...opts, platform, arch }).binary
 }
+
+/** start() after (or during) close(): nothing was spawned. */
+export const CODEX_CLOSED_BEFORE_START = 'codex app-server was closed before it started'
 
 /** How many non-empty stderr lines CodexAppServer keeps for exit errors, and their total length cap. */
 export const STDERR_TAIL_LINES = 10
@@ -126,8 +103,12 @@ export interface CodexAppServerOptions {
   experimentalApi?: boolean
   /** Request timeout, ms. Default 30 s. Turns are long-running but their requests return at once. */
   requestTimeoutMs?: number
-  /** Override the binary (tests). */
+  /** Override the binary (tests). A binary without `source` skips the version check. */
   binary?: CodexBinary
+  /** Runs `codex --version` (tests); default codexBinary.ts defaultCodexVersionRunner. */
+  versionRunner?: CodexVersionRunner
+  /** A warning to show the user (a run warning): Codex chosen through ORGAI_CODEX_PATH outside the tested version. */
+  onWarning?(message: string): void
   /** stderr lines (debug logging), secrets replaced by [redacted] (see `redact`). */
   onStderr?(line: string): void
   /**
@@ -162,8 +143,19 @@ export class CodexAppServer {
 
   /** Spawn the process and run the initialize handshake. Rejects when codex is missing or does not answer. */
   async start(clientVersion = '0.0.0'): Promise<unknown> {
-    const binary = this.options.binary ?? resolveCodexBinary()
-    if (!binary) throw new Error('The Codex CLI is not installed for this platform (@openai/codex optional dependency missing).')
+    if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
+    let binary = this.options.binary
+    if (!binary) {
+      const found = lookupCodexBinary()
+      if (!found.binary) throw new Error(found.problem)
+      binary = found.binary
+    }
+    // The version check covers every start: login, logout, discovery and runs (cli-standalone 6.2). Cached per binary.
+    const check = await checkCodexBinary(binary, { run: this.options.versionRunner })
+    if (!check.ok) throw new Error(check.reason)
+    // close() may land while the version check runs (End session, a cancelled completion): never spawn after it.
+    if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
+    if (check.warning) this.options.onWarning?.(check.warning)
     // codex app-server exits 1 at once when CODEX_HOME names a folder that does not exist.
     // Owner-only: it holds the ChatGPT login (auth.json). The path is used exactly as the child will see it.
     const home = this.options.env?.CODEX_HOME
@@ -174,7 +166,14 @@ export class CodexAppServer {
     if (binary.pathDir) env.PATH = `${binary.pathDir}${delimiter}${env.PATH ?? env.Path ?? ''}`
     const args = ['app-server', ...(this.options.config ?? []).flatMap((c) => ['-c', c])]
     const child = spawn(binary.path, args, { cwd: this.options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    // An agent CLI: ended with the host at the shutdown's hard limit, also when the process table cannot be read (4.3).
+    trackChildProcess(child, 'codex app-server')
     this.child = child
+    // A host that gives up at the shutdown hard limit kills it (host/shutdown.ts); untracked on exit.
+    const untrack = trackChildProcess(child, 'codex app-server')
+    // A failed spawn emits 'error' and 'close' but no 'exit': untrack there too (review round 2).
+    child.once('error', untrack)
+    child.once('close', untrack)
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => this.onData(chunk))
     child.stderr.setEncoding('utf8')
@@ -262,9 +261,17 @@ export class CodexAppServer {
     this.markExited()
   }
 
-  /** Kill the process. Pending requests reject. */
+  /**
+   * Kill the process. Pending requests reject. Before the process exists (start() still checking the version) it marks
+   * the server closed so start() spawns nothing and rejects; `exited` resolves and no exit handler fires.
+   */
   close(): void {
-    if (!this.child || this.closed) return
+    if (this.closed) return
+    if (!this.child) {
+      this.closed = true
+      this.markExited()
+      return
+    }
     try {
       this.child.stdin.end()
       this.child.kill()

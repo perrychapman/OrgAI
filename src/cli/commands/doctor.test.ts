@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FakeHostClient, fakeContext } from '../testing/fakeContext'
 import { EXIT } from '../types'
 import { renderCliShim } from '../../main/host/packagedLayout'
-import { DAEMON_JSON_MAX_BYTES, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
+import { DAEMON_JSON_MAX_BYTES, LAUNCHER_ABSENT_DETAIL, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
+import { runtimeCheckProbes } from '../doctor/runtimeChecks'
 
 const realProbes = { ...doctorProbes }
+const realRuntimeProbes = { ...runtimeCheckProbes }
 let dir: string
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'orgai-doctor-'))
@@ -15,9 +17,14 @@ beforeEach(() => {
   doctorProbes.nodeVersion = () => '22.11.0'
   // Never read the real home folder's shim.
   doctorProbes.homeDir = () => dir
+  // Never look for or run a real claude / codex (runtimeChecks.test.ts covers the group).
+  runtimeCheckProbes.claude = () => ({ ok: true, path: '/fake/claude', source: 'sdk' })
+  runtimeCheckProbes.codexLookup = () => ({ binary: { path: '/fake/codex', source: 'package' } })
+  runtimeCheckProbes.codexCheck = async (binary) => ({ ok: true, binary, version: '0.166.0' })
 })
 afterEach(() => {
   Object.assign(doctorProbes, realProbes)
+  Object.assign(runtimeCheckProbes, realRuntimeProbes)
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -34,7 +41,9 @@ describe('orgai doctor', () => {
     const data = liveDataDir()
     const h = new FakeHostClient({
       'auth:status': () => ({ loggedIn: true, mode: 'subscription', method: 'claude.ai' }),
-      'connections:list': () => [{ connection: { id: 'anthropic', enabled: true, tierModels: {}, auth: { mode: 'apiKey', apiKey: 'sk-secret' } }, status: { state: 'connected' }, modelCount: 3, isDefault: true }]
+      'connections:list': () => [{ connection: { id: 'anthropic', enabled: true, tierModels: {}, auth: { mode: 'apiKey', apiKey: 'sk-secret' } }, status: { state: 'connected' }, modelCount: 3, isDefault: true }],
+      // Wave 7 (secretsChecks): the host's vault report, probe included.
+      'secrets:status': () => ({ state: 'open', scheme: 'keychain', probe: { ok: true }, counts: { vault: 2, legacy: 2, unreadable: 0, overlay: 0 }, pendingLegacy: 0, softDeletes: [], orphanedKeys: 0, orphanedVaults: [], legacyFile: 'ok', canWriteBack: false })
     })
     // The run-dir check looks at POSIX mode bits unless the context platform is win32, so use the real platform here.
     const f = fakeContext({ paths: { userDataDir: dir, dataDir: data }, platform: process.platform, connect: [h], globals: { outputFormat: 'json' }, env: { ORGAI_MOCK: '1' } })
@@ -42,7 +51,7 @@ describe('orgai doctor', () => {
     const j =JSON.parse(f.out())
     expect(j.ok).toBe(true)
     const ids = j.checks.map((c: { id: string }) => c.id)
-    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'auth', 'connections'])
+    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'install-channel', 'orgai-on-path', 'node-certs', 'claude-runtime', 'codex-runtime', 'vault', 'vault-key-store', 'legacy-secrets', 'auth', 'connections'])
     expect(j.checks.every((c: { status: string }) => c.status !== 'fail')).toBe(true)
     expect(j.checks.find((c: { id: string }) => c.id === 'connections').detail).toBe('Anthropic connected (default)')
     expect(f.out()).not.toContain('sk-secret')
@@ -66,6 +75,19 @@ describe('orgai doctor', () => {
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
     expect(f.out()).toMatch(/^ok {4}socket +Skipped: no host is running/m)
     expect(f.connectCalls).toHaveLength(0)
+  })
+
+  it('launcher (Wave 7, 4.1 step 3): found is ok, no app is ok (in-process fallback), a broken install fails naming its path', async () => {
+    const paths = { userDataDir: dir, dataDir: join(dir, 'data') }
+    const found = fakeContext({ paths, launcher: { locate: () => ({ status: 'found', command: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', args: [], source: 'installed' }) } })
+    expect(await runDoctor(found.ctx, [])).toBe(EXIT.ok)
+    expect(found.out()).toMatch(/^ok {4}launcher +\/Applications\/OrgAI\.app\/Contents\/MacOS\/OrgAI \(installed\)/m)
+    const absent = fakeContext({ paths, launcher: { locate: () => ({ status: 'absent', message: 'OrgAI app not found' }) } })
+    expect(await runDoctor(absent.ctx, [])).toBe(EXIT.ok)
+    expect(absent.out()).toContain(LAUNCHER_ABSENT_DETAIL)
+    const broken = fakeContext({ paths, launcher: { locate: () => ({ status: 'broken', path: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', message: 'The OrgAI app at /Applications/OrgAI.app is incomplete' }) } })
+    expect(await runDoctor(broken.ctx, [])).toBe(EXIT.failure)
+    expect(broken.out()).toMatch(/^fail {2}launcher +The OrgAI app at \/Applications\/OrgAI\.app is incomplete/m)
   })
 
   it('never reads an oversized or odd daemon.json whole (review Low)', async () => {

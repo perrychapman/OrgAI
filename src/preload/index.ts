@@ -23,7 +23,7 @@ import type {
   TeamReviewSummary
 } from '../shared/types'
 import { IPC, isMenuAction } from '../shared/types'
-import { KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../shared/types'
+import { KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -336,6 +336,13 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, status: TeamFilesStatus): void => cb(status)
     ipcRenderer.on(TEAM_FILES_IPC.teamFilesChanged, listener)
     return () => ipcRenderer.removeListener(TEAM_FILES_IPC.teamFilesChanged, listener)
+  },
+  secrets: {
+    status: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsStatus, input ?? {}),
+    undelete: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsUndelete, input),
+    confirmDelete: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsConfirmDelete, input),
+    init: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsInit, input ?? {}),
+    reset: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsReset, input)
   }
 }
 
