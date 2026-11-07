@@ -505,7 +505,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       project,
       kind: 'setup',
       prompt: setup.retroPrompt(record),
-      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record)}`
+      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record, project)}`
     })
   })
   handle(

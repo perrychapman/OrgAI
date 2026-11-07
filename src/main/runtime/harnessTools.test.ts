@@ -1367,8 +1367,10 @@ describe('org change: slug, never grants (review H1), mergeOrgChart', () => {
 
   it('sets the slug of an existing role, drops any grant fields, merges and sends the merged roles', async () => {
     const ctx = fakeCtx({ project: proj() })
-    const marker = [{ id: 'merged-marker' } as never]
-    vi.mocked(mergeOrgChart).mockReturnValueOnce({ roles: marker, kept: ['Lead'], added: [], removed: [] })
+    const marker = [{ id: 'merged-marker', name: 'Marker', reportsTo: null } as never]
+    // rolesFromDrafts merges once to find which drafts match existing roles (real), then for the result (marker).
+    const real = vi.mocked(mergeOrgChart).getMockImplementation()!
+    vi.mocked(mergeOrgChart).mockImplementationOnce(real).mockReturnValueOnce({ roles: marker, kept: ['Lead'], added: [], removed: [] })
     const text = await orgCall(ctx, [roleDraft('Boss', { slug: 'lead', mcpServers: ['github'], skills: ['triage'] }), draftRole('Dev', 'Boss')])
     expect(text).toMatch(/^APPROVED\. The org chart was updated for future runs/)
     expect(text).toContain('keep their MCP and skill grants')
