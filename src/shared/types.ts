@@ -34,15 +34,42 @@ export interface ProviderConfig {
 
 // ---------- Connections and model catalog ----------
 
-/**
- * Where model access comes from, independent of the adapter that drives it. 'anthropic' = Claude Code login
- * or an Anthropic API key; 'openai' = ChatGPT (Codex) login or an OpenAI API key; 'litellm' = a LiteLLM proxy
- * that serves Claude-family and OpenAI-family models behind one base URL and key.
- */
-export type ConnectionId = 'anthropic' | 'openai' | 'litellm'
+/** The two built-in connections: 'anthropic' = Claude Code login or an Anthropic API key; 'openai' = ChatGPT (Codex) login or an OpenAI API key. */
+export type BuiltinConnectionId = 'anthropic' | 'openai'
 
-/** Every connection id, in settings display order. */
-export const CONNECTION_IDS: readonly ConnectionId[] = ['anthropic', 'openai', 'litellm']
+/**
+ * Where model access comes from, independent of the adapter that drives it. A built-in id, or the id of one proxy
+ * connection (ProxyConnection: any number of named proxies behind one base URL and key each). Proxy ids are
+ * 'litellm' (the original single LiteLLM record, migrated, id kept so stored projects and run records stay valid) or
+ * `proxy-<8 hex>` (main-generated, stable, `isProxyConnectionId`). The `string & {}` keeps autocomplete for the
+ * built-ins; the type cannot tell you whether a proxy id still exists, so look it up in AppSettings.proxies (a run
+ * record or usage row may name a proxy that was removed).
+ */
+export type ConnectionId = BuiltinConnectionId | (string & {})
+
+/**
+ * The built-in connection ids, in settings display order. NOT every connection: proxies are dynamic. Use
+ * defaults.ts `connectionIds(settings)` for the full list (built-ins first, then proxies in AppSettings.proxies order).
+ */
+export const BUILTIN_CONNECTION_IDS: readonly BuiltinConnectionId[] = ['anthropic', 'openai']
+
+/** True for 'anthropic' and 'openai'. Anything else is a proxy id (adapters use `!isBuiltinConnectionId(id)` for "is a proxy"). */
+export function isBuiltinConnectionId(v: unknown): v is BuiltinConnectionId {
+  return v === 'anthropic' || v === 'openai'
+}
+
+/** @deprecated Built-ins only since proxies became dynamic; kept so old imports compile. Use connectionIds(settings). */
+export const CONNECTION_IDS: readonly BuiltinConnectionId[] = BUILTIN_CONNECTION_IDS
+
+/** Proxy ids: the migrated 'litellm', or `proxy-` + 8 lowercase hex. Shape check only (does not say the proxy exists). */
+export const PROXY_ID_RE = /^(litellm|proxy-[0-9a-f]{8})$/
+export function isProxyConnectionId(v: unknown): v is string {
+  return typeof v === 'string' && PROXY_ID_RE.test(v)
+}
+/** Most proxy connections one profile may hold. */
+export const PROXIES_MAX = 20
+/** Longest proxy display name, in characters. */
+export const PROXY_NAME_MAX = 40
 
 /**
  * The intent behind a role's model, so the model can be remapped when the project's connection changes.
@@ -117,26 +144,66 @@ export interface OpenAIConnection extends ConnectionBase {
 }
 
 /**
- * A LiteLLM proxy. Claude-family models run on the Claude adapter (ANTHROPIC_BASE_URL = baseUrl), other
- * models on the Codex adapter (openai_base_url). The key lives in Electron safeStorage and is set only with
- * connections:setSecret; this record carries only whether one is stored.
+ * What a proxy speaks beyond model listing. 'litellm' adds /model/info prices and /key/info + daily spend (and the
+ * LiteLLM-only key hash filter); 'openai-compatible' (CLIProxyAPI-style gateways and similar) does only
+ * GET <modelsUrl> (OpenAI `{ data: [{ id, object, owned_by, created? }] }`): no prices, no spend. Immutable after create.
  */
-export interface LiteLLMConnection extends ConnectionBase {
-  id: 'litellm'
-  /** Proxy root, e.g. "http://localhost:4000". '' until the user sets it. */
-  baseUrl: string
-  /** A LiteLLM key is stored in safeStorage. Read-only for the renderer: the main process sets it. */
+export type ProxyKind = 'litellm' | 'openai-compatible'
+export const PROXY_KINDS: readonly ProxyKind[] = ['litellm', 'openai-compatible']
+
+/**
+ * One proxy connection (a gateway that serves Claude-family models on an Anthropic-style endpoint and other models on
+ * an OpenAI-style one, behind one key). Persisted in AppSettings.proxies, never with secrets: the key lives in
+ * SecretStore under the proxy id (connections:setSecret) and this record carries only `hasApiKey` (main-owned; the
+ * renderer echoes it back and main ignores it). Claude-family root models run on the Claude adapter
+ * (ANTHROPIC_BASE_URL = anthropicBaseUrl, ANTHROPIC_AUTH_TOKEN = the key), others on the Codex adapter (the `orgai`
+ * provider at effective openaiBaseUrl). `id` and `kind` cannot change; `connections:update` ignores edits to them.
+ * Every URL: https, or http only for loopback / private-network hosts; no credentials, query or fragment in the URL;
+ * at most 2,048 chars; trailing slashes dropped (main refuses with a readable message otherwise).
+ */
+export interface ProxyConnection extends ConnectionBase {
+  /** 'litellm' (migrated original) or `proxy-<8 hex>`. Main-generated at create, never reused after a remove. */
+  id: string
+  /** Display name: trimmed, 1..PROXY_NAME_MAX chars, no control or hidden characters, unique (case-insensitive). */
+  name: string
+  kind: ProxyKind
+  /** The Anthropic / Claude Code base URL (ANTHROPIC_BASE_URL), e.g. "https://proxy.example.com". '' until set. */
+  anthropicBaseUrl: string
+  /** The OpenAI / Codex base URL. Unset or '' = `<anthropicBaseUrl>/v1` (defaults.ts `proxyOpenAIBase`). */
+  openaiBaseUrl?: string
+  /** The model list endpoint (GET, Bearer key). Unset or '' = `<effective openaiBaseUrl>/models` (defaults.ts `proxyModelsUrl`). */
+  modelsUrl?: string
+  /** A key is stored in SecretStore. Read-only for the renderer: the main process sets it. */
   hasApiKey: boolean
 }
 
-/** One app-wide connection record, discriminated by id. Persisted in settings.json; never holds secrets. */
-export type ProviderConnection = AnthropicConnection | OpenAIConnection | LiteLLMConnection
+/** One app-wide connection record. Persisted in settings.json; never holds secrets. Narrow with `isProxyConnection`. */
+export type ProviderConnection = AnthropicConnection | OpenAIConnection | ProxyConnection
 
-/** All connection records, one per ConnectionId. */
+/** The built-in connection records. Proxies are the separate AppSettings.proxies list. */
 export interface ProviderConnections {
   anthropic: AnthropicConnection
   openai: OpenAIConnection
-  litellm: LiteLLMConnection
+}
+
+/** Type guard: a proxy record (it alone has `anthropicBaseUrl`). */
+export function isProxyConnection(c: ProviderConnection | undefined | null): c is ProxyConnection {
+  return !!c && typeof (c as ProxyConnection).anthropicBaseUrl === 'string'
+}
+
+/**
+ * connections:createProxy input. `id` is generated by main. `apiKey` (optional) is stored exactly like
+ * connections:setSecret (at most 4,000 chars, no control or hidden characters) and never echoed back. The new proxy
+ * is `enabled: true` but not connected: call connections:connect (or test) next. Refused with a readable message at
+ * PROXIES_MAX, on a duplicate name, or on an invalid name / URL.
+ */
+export interface ProxyCreateInput {
+  name: string
+  kind?: ProxyKind
+  anthropicBaseUrl: string
+  openaiBaseUrl?: string
+  modelsUrl?: string
+  apiKey?: string
 }
 
 /** connections:list entry: the persisted record plus its live status. */
@@ -169,10 +236,21 @@ export interface ConnectionInfo {
  */
 export type ConnectionDefaultInput = ConnectionId | null
 
-/** connections:setSecret. Only LiteLLM has a stored secret today. null clears the stored key. */
+/** connections:setSecret. Only proxies have a stored secret; `id` must be an existing proxy id. null clears the stored key. */
 export interface ConnectionSecretInput {
-  id: 'litellm'
+  id: string
   apiKey: string | null
+}
+
+/**
+ * connections:removeProxy result. Removal is refused (the promise rejects with a readable message naming up to 5
+ * projects) while any project's connection is this proxy: move them first (projects:remapModels with a connection).
+ * Otherwise it deletes the record, its stored key, its models.json entries and its connection status; a chosen
+ * default that was this proxy returns to automatic. Run records and usage rows that name the id are kept (history).
+ * `connections` is the list after the removal (the same shape as connections:list).
+ */
+export interface ProxyRemoveResult {
+  connections: ConnectionInfo[]
 }
 
 /**
@@ -233,6 +311,12 @@ export interface ProviderModel {
   price?: ModelPrice
   /** LiteLLM: the upstream model the proxy routes this name to (litellm_params.model, e.g. "anthropic/claude-sonnet-4-5"). */
   upstream?: string
+  /**
+   * Proxies: the `owned_by` the models endpoint reported (sanitized: printable, at most 64 chars, untrusted text).
+   * Feeds `family` when the id alone is ambiguous (defaults.ts `proxyModelFamily`); a claude-* id stays Claude family
+   * whatever owned_by says (a gateway may list claude-*-high under 'antigravity').
+   */
+  ownedBy?: string
 }
 
 /**
@@ -314,6 +398,11 @@ export interface AdapterChoice {
 export type ConnectionEvent =
   | { type: 'connection.status'; connection: ConnectionId; status: ConnectionStatus }
   | { type: 'connection.login'; login: ConnectionLoginUpdate }
+  /**
+   * The set of connections or a proxy record changed (connections:createProxy / removeProxy / update of a proxy /
+   * setSecret / a migration). Re-fetch connections:list. Other windows learn of a create or remove only from this.
+   */
+  | { type: 'connections.changed' }
   /**
    * A connection's catalog was (re)discovered: boot, the 24 h schedule, connect, login or models:refresh. Sent after
    * every successful discovery, even when the list is unchanged; `changed` says whether the model ids differ.
@@ -1695,6 +1784,13 @@ export interface AppSettings {
   providerAuth: ProviderAuth
   /** App-wide connection records (no secrets). Filled with defaults for settings saved before connections existed. */
   connections: ProviderConnections
+  /**
+   * Proxy connections, in display order (at most PROXIES_MAX). Main-owned like `connections`: settings:set keeps the
+   * stored list; change it only through connections:createProxy / update / removeProxy / setSecret. A settings.json
+   * saved before proxies existed holds `connections.litellm`; store/settings.ts loads it as the first proxy (id
+   * 'litellm', name "LiteLLM", kind 'litellm', anthropicBaseUrl = its old baseUrl) and drops the old key on the next save.
+   */
+  proxies: ProxyConnection[]
   /**
    * Connection new projects, Chat and the MCP and Skill assistants use. Default 'anthropic'. Consumers read the
    * effective value (ConnectionService `effectiveDefault()`, defaults.ts `effectiveDefaultConnection`), never this
@@ -4046,8 +4142,12 @@ export interface OrgAIApi {
      * tierModels remaps the projects on that connection (a projects.remapped event follows).
      */
     update(connection: ProviderConnection): Promise<ConnectionInfo>
-    /** Store or clear the LiteLLM key in safeStorage. Write-only: the key never comes back. */
+    /** Store or clear one proxy's key in safeStorage. Write-only: the key never comes back. */
     setSecret(input: ConnectionSecretInput): Promise<ConnectionInfo>
+    /** Add a proxy connection (see ProxyCreateInput). Resolves to its ConnectionInfo (not yet connected). */
+    createProxy(input: ProxyCreateInput): Promise<ConnectionInfo>
+    /** Delete a proxy connection (see ProxyRemoveResult for what is refused and what goes). */
+    removeProxy(id: string): Promise<ProxyRemoveResult>
     /** Probe the connection (auth, reachability) without changing its enabled flag or catalog. */
     test(id: ConnectionId): Promise<ConnectionStatus>
     /** Enable and connect: probe, discover models, fill tierModels, remap projects. */
@@ -5295,6 +5395,8 @@ export const IPC = {
   connectionsList: 'connections:list',
   connectionsUpdate: 'connections:update',
   connectionsSetSecret: 'connections:setSecret',
+  connectionsCreateProxy: 'connections:createProxy',
+  connectionsRemoveProxy: 'connections:removeProxy',
   connectionsTest: 'connections:test',
   connectionsConnect: 'connections:connect',
   connectionsLogin: 'connections:login',
