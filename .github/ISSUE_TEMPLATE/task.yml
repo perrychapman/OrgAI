@@ -1,0 +1,53 @@
+name: Task
+description: A scoped piece of work (enhancement, chore or follow-up).
+labels: ["status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Security problems do not go here; see SECURITY.md. Add a type and area label when you triage.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in and what is out.
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files
+      description: Paths or globs the work is expected to touch. These become the claim's files.
+    validations:
+      required: true
+  - type: checkboxes
+    id: hot
+    attributes:
+      label: Hot files touched
+      description: Hot files take one claim at a time.
+      options:
+        - label: src/shared/types.ts
+        - label: src/main/ipc.ts
+        - label: src/main/runtime/runManager.ts
+        - label: src/preload/index.ts
+        - label: src/shared/defaults.ts
+        - label: .orgai/ARCHITECTURE.md
+        - label: CLAUDE.md
+        - label: package.json
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: "Which of unit / e2e (name) / mock / live (with consent) will check it, and what stays unverified."
+    validations:
+      required: true
+  - type: input
+    id: parent
+    attributes:
+      label: Parent issue (optional)
+      placeholder: "#123"
