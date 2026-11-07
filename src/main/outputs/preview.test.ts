@@ -3,13 +3,12 @@ import JSZip from 'jszip'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { OUTPUT_PREVIEW_COLUMNS_MAX, OUTPUT_PREVIEW_IMAGE_MAX_BYTES, OUTPUT_PREVIEW_ROWS_MAX, OUTPUT_PREVIEW_SHEETS_MAX, OUTPUT_PREVIEW_TEXT_MAX_BYTES } from '@shared/types'
 import { markdownToDocx } from './markdownDoc'
-import { DOCX_PREVIEW_MAX_XML_BYTES, previewDocx, previewFile, streamSafeOrder } from './preview'
+import { DOCX_PREVIEW_MAX_XML_BYTES, DOCX_XML_ALLOWANCE, previewDocx, previewFile } from './preview'
 import { renderProduced } from './writers'
-import { zipEntryNames, zipEntrySize, zipVerifyEntries } from './zipGuard'
+import { zipSumSizes, zipVerifyEntries } from './zipGuard'
 
 let dir: string
 beforeEach(() => {
@@ -136,45 +135,21 @@ describe('xlsx', () => {
     if (r.kind !== 'sheets') throw new Error(`expected sheets: ${JSON.stringify(r)}`)
     expect(r.sheets[0].rows[0][0]).toEqual({ v: '=1+1' })
   })
-  it('falls back to a full load when the stream cannot read the zip order', async () => {
+  it('reads a re-ordered workbook correctly with the full load (no streaming reader)', async () => {
     const buf = await book((wb) => {
-      const ws = wb.addWorksheet('Data')
-      ws.addRow(['n', 'text'])
-      ws.addRow([42, 'forced fallback'])
+      wb.addWorksheet('Data').addRow(['n', 'text'])
+      wb.getWorksheet('Data')!.addRow([42, 'forced fallback'])
       wb.addWorksheet('Two').addRow(['second'])
     })
     const src = await JSZip.loadAsync(buf)
     const names = Object.keys(src.files).filter((n) => !src.files[n].dir)
-    const reorder = async (first: string[], last: string[]): Promise<Buffer> => {
-      const mid = names.filter((n) => !first.includes(n) && !last.includes(n))
-      const out = new JSZip()
-      for (const n of [...first, ...mid, ...last]) out.file(n, await src.files[n].async('nodebuffer'))
-      return deflated(out)
-    }
-    const check = async (name: string, data: Buffer): Promise<void> => {
-      const r = await previewFile(f(name, data), 'xlsx')
-      if (r.kind !== 'sheets') throw new Error(`expected sheets: ${JSON.stringify(r)}`)
-      expect(r.sheets.map((s) => s.name)).toEqual(['Data', 'Two'])
-      expect(r.sheets[0].rows[1].map((c) => c.v)).toEqual([42, 'forced fallback'])
-      expect(r.sheets[1].rows[0][0].v).toBe('second')
-    }
-    // workbook.xml and the shared strings after the sheets: exceljs' stream answers wrongly here (measured: one sheet named
-    // Data, string cells empty), so the preview must take the full load
-    const unsafe = await reorder([], ['xl/_rels/workbook.xml.rels', 'xl/workbook.xml', 'xl/sharedStrings.xml'])
-    expect(streamSafeOrder(zipEntryNames(unsafe))).toBe(false)
-    const streamedOnly = new ExcelJS.stream.xlsx.WorkbookReader(Readable.from([unsafe]), { sharedStrings: 'cache', hyperlinks: 'cache', styles: 'cache', worksheets: 'emit', entries: 'emit' })
-    const seen: unknown[] = []
-    try {
-      for await (const sheet of streamedOnly) for await (const row of sheet) seen.push(row.values)
-    } catch {
-      seen.push('threw')
-    }
-    expect(JSON.stringify(seen)).not.toContain('forced fallback') // the stream alone cannot give the right content
-    await check('unsafe.xlsx', unsafe)
-    // the order the stream needs, with the rels before workbook.xml (the reported exceljs trigger)
-    const safe = await reorder(['[Content_Types].xml', 'xl/_rels/workbook.xml.rels', 'xl/workbook.xml', 'xl/sharedStrings.xml'], [])
-    expect(streamSafeOrder(zipEntryNames(safe))).toBe(true)
-    await check('safe.xlsx', safe)
+    const last = ['xl/_rels/workbook.xml.rels', 'xl/workbook.xml', 'xl/sharedStrings.xml']
+    const out = new JSZip()
+    for (const n of [...names.filter((x) => !last.includes(x)), ...last]) out.file(n, await src.files[n].async('nodebuffer'))
+    const r = await previewFile(f('unsafe.xlsx', await deflated(out)), 'xlsx')
+    if (r.kind !== 'sheets') throw new Error(`expected sheets: ${JSON.stringify(r)}`)
+    expect(r.sheets.map((s) => s.name)).toEqual(['Data', 'Two'])
+    expect(r.sheets[0].rows[1].map((c) => c.v)).toEqual([42, 'forced fallback'])
   })
   it('corrupt and bomb files answer none', async () => {
     expect((await previewFile(f('bad.xlsx', Buffer.from('not a zip at all, definitely')), 'xlsx')).kind).toBe('none')
@@ -257,14 +232,23 @@ describe('docx size cut-off', () => {
   it('previews at the threshold and answers none just over it', async () => {
     const md = Array.from({ length: 200 }, (_, i) => `Paragraph ${i} with some words.`).join('\n\n')
     const p = f('cut.docx', await markdownToDocx(md, 'T'))
-    const xml = zipEntrySize(readFileSync(p), 'word/document.xml')
-    if (xml === null) throw new Error('no document.xml')
-    expect(xml).toBeGreaterThan(1000)
+    const sum = zipSumSizes(readFileSync(p), (n) => /\.(xml|rels)$/i.test(n) && !n.startsWith('word/media/'))
+    if (sum === null) throw new Error('no xml parts')
+    const xml = sum - DOCX_XML_ALLOWANCE // threshold at which the cap equals the summed parts
+    expect(sum).toBeGreaterThan(1000)
     expect((await previewDocx(p, xml)).kind).toBe('document')
     const over = await previewDocx(p, xml - 1)
     expect(over).toEqual({ kind: 'none', reason: 'This document is too large to preview here. Open it instead.' })
     expect((await previewFile(p, 'docx')).kind).toBe('document')
-    expect(DOCX_PREVIEW_MAX_XML_BYTES).toBeGreaterThan(xml)
+    expect(DOCX_PREVIEW_MAX_XML_BYTES).toBeGreaterThan(sum)
+  })
+  it('caps a main part that _rels/.rels points at under another name (word/body.xml)', async () => {
+    const z = new JSZip()
+    z.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+    z.file('_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/body.xml"/></Relationships>')
+    z.file('word/body.xml', '<w:document xmlns:w="x"><w:body>' + '<w:p/>'.repeat(2_000) + '</w:body></w:document>')
+    const r = await previewDocx(f('body.docx', await deflated(z)), 5_000 - DOCX_XML_ALLOWANCE)
+    expect(r).toEqual({ kind: 'none', reason: 'This document is too large to preview here. Open it instead.' })
   })
   it('a package with no document.xml keeps the old behaviour (mammoth reports)', async () => {
     const z = new JSZip()
