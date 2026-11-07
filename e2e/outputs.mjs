@@ -574,7 +574,7 @@ async function actionChecks(label) {
   await more.first().click()
   const actions = page.locator('[data-testid=output-actions]')
   await actions.waitFor({ state: 'visible', timeout: 5000 })
-  const ids = ['output-open', 'output-reveal', 'output-save-as', 'output-copy-path', 'output-forget', 'output-delete']
+  const ids = ['output-open', 'output-reveal', 'output-save-as', 'output-copy-path', 'output-rename', 'output-forget', 'output-delete']
   const have = await Promise.all(ids.map(async (id) => (await actions.locator(`[data-testid=${id}]`).count()) > 0))
   check(have.every(Boolean), `${label}: a produced output's actions are Open, Show in folder, Save as, Copy path, Remove and Delete`, ids.filter((_, i) => !have[i]).join(','))
   await page.keyboard.press('Escape')
@@ -584,7 +584,7 @@ async function actionChecks(label) {
   await page.locator('[data-testid=output-detail][data-kind=image]').waitFor({ timeout: 8000 })
   await more.first().click()
   await actions.waitFor({ state: 'visible', timeout: 5000 })
-  check((await actions.locator('[data-testid=output-delete]').count()) === 0 && (await actions.locator('[data-testid=output-forget]').count()) === 1, `${label}: a registered file offers Remove from list but no Delete`)
+  check((await actions.locator('[data-testid=output-delete]').count()) === 1 && (await actions.locator('[data-testid=output-forget]').count()) === 1, `${label}: a registered file offers Remove from list and Delete (outputs 2)`)
   await page.keyboard.press('Escape')
   await actions.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
 }
@@ -601,7 +601,7 @@ async function removeChecks(label) {
   const forgetDlg = page.locator('[data-testid=output-forget-confirm]')
   await forgetDlg.waitFor({ timeout: 5000 })
   const forgetText = clean(await page.locator('dialog[open]').innerText())
-  check(/The file stays at outputs\/.+ It leaves OrgAI's list and cannot be added back from here\./.test(forgetText), `${label}: the Remove confirm says the file stays and the entry cannot come back`, forgetText.slice(0, 200))
+  check(/Remove .+ from OrgAI\?/.test(forgetText) && /The file stays at outputs\/.+ OrgAI's earlier versions and notes are deleted\./.test(forgetText), `${label}: the Remove confirm says the file stays and OrgAI's versions and notes go`, forgetText.slice(0, 200))
   check((await forgetDlg.innerText()).trim() === 'Remove', `${label}: the confirm's primary is Remove`)
   await page.keyboard.press('Escape')
   await forgetDlg.waitFor({ state: 'hidden', timeout: 5000 })

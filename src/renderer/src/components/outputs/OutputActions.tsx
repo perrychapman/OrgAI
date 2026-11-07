@@ -1,15 +1,23 @@
 import type { KeyboardEvent, ReactElement } from 'react'
-import { useId } from 'react'
-import { Copy, ExternalLink, FolderOpen, Link2, MoreHorizontal, Save, Trash2, X } from 'lucide-react'
-import type { RunOutput } from '@shared/types'
+import { useId, useState } from 'react'
+import { Copy, ExternalLink, FolderOpen, Link2, MessageSquareQuote, MoreHorizontal, Pencil, Save, Trash2, X } from 'lucide-react'
+import { OUTPUT_DESCRIPTION_MAX_CHARS, OUTPUT_TITLE_MAX_CHARS, type OutputReviseResult, type RunOutput } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
-import { canDeleteOutput, canOpenOutput, previewCacheFor, previewKey } from '../../lib/outputs'
+import { canDeleteOutput, canOpenOutput, canReviseFallback, mergeOutput, previewCacheFor, previewKey } from '../../lib/outputs'
+import { forgetBody } from '../../lib/outputVersions'
 import { COPY_FAILED, SOURCE_COPIED } from '../../lib/diagramExport'
 import { cleanIpcError } from '../../lib/ipcError'
 import { HIDDEN_OR_CONTROL_RUN, showHidden } from '../../lib/hiddenChars'
+import { Button } from '../ui/Button'
+import { Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
+import { Input } from '../ui/Input'
 import { Popover } from '../ui/Popover'
+import { Textarea } from '../ui/Textarea'
 import { useConfirm } from '../ui/ConfirmDialog'
+import { useDeleteOutputs } from './DeleteOutputs'
+import ReviseDialog from './ReviseDialog'
+import { useOutputDetail } from './outputDetailContext'
 import '../../styles/outputs.css'
 
 /** Arrow keys, Home and End move between the menu's items (the Popover focuses the first one on open). */
@@ -31,9 +39,63 @@ const SOURCE_KINDS: ReadonlySet<string> = new Set(['markdown', 'text', 'csv', 'j
 
 export const OUTPUT_OPEN_HINT = 'OrgAI does not open this kind of file. Show it in its folder instead.'
 
+/** Rename: title and description, no file change and no new version. */
+function RenameDialog({ output, onClose, onDone }: { output: RunOutput; onClose(): void; onDone(o: RunOutput): void }): ReactElement {
+  const [title, setTitle] = useState(output.title)
+  const [description, setDescription] = useState(output.description ?? '')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const save = async (): Promise<void> => {
+    setBusy(true)
+    setError('')
+    try {
+      const o = await window.orgai.outputs.update({ projectId: output.projectId, outputId: output.id, title: title.trim(), description: description.trim() })
+      onDone(o)
+    } catch (e) {
+      setError(cleanIpcError(e))
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Rename output"
+      description="This changes the name and description OrgAI shows. The file keeps its name."
+      testId="output-rename-dialog"
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" testId="output-rename-save" loading={busy} disabled={busy || title.trim() === ''} onClick={() => void save()}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="output-rename-form"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (title.trim()) void save()
+        }}
+      >
+        <label htmlFor="output-rename-title">Name</label>
+        <Input id="output-rename-title" data-testid="output-rename-title" value={title} maxLength={OUTPUT_TITLE_MAX_CHARS} onChange={setTitle} data-autofocus />
+        <label htmlFor="output-rename-description">Description (optional)</label>
+        <Textarea id="output-rename-description" data-testid="output-rename-description" value={description} maxLength={OUTPUT_DESCRIPTION_MAX_CHARS} rows={3} onChange={setDescription} />
+        {error && (
+          <p className="output-versions-error" role="alert" data-testid="output-rename-error">
+            {error}
+          </p>
+        )}
+      </form>
+    </Dialog>
+  )
+}
+
 /**
- * The More actions menu of one output (docs/design/outputs.md section 5): Open, Show in folder, Save as, Copy path,
- * Remove from list and Delete file. Every answer goes to `onNotice` (the surface's polite `output-notice` line).
+ * The More actions menu of one output (docs/design/outputs-2.md section 7): Open, Show in folder, Save as, Copy path,
+ * Rename, Copy source, Ask the team to revise, Remove from list and Delete. Every answer goes to `onNotice`.
  */
 export default function OutputActions({
   output,
@@ -45,10 +107,17 @@ export default function OutputActions({
   onNotice?: (text: string) => void
 }): ReactElement {
   const uid = useId()
+  const ctx = useOutputDetail()
   const { confirm, dialog } = useConfirm()
+  const { deleteOutputs, dialog: deleteDialog } = useDeleteOutputs()
+  const [renaming, setRenaming] = useState(false)
+  const [revising, setRevising] = useState(false)
   const title = plainTitle(output.title)
   const ref = { projectId: output.projectId, outputId: output.id }
-  const notice = (text: string): void => onNotice?.(text)
+  const notice = (text: string): void => {
+    onNotice?.(text)
+    ctx?.announce(text)
+  }
   const run = async (fn: () => Promise<void>): Promise<void> => {
     try {
       await fn()
@@ -68,14 +137,15 @@ export default function OutputActions({
   }
   const open = canOpenOutput(output)
   const missing = output.missing === true
+  const olderVersion = ctx && !ctx.isCurrent ? ctx.version : null
   const copySource = (): void => {
     void run(async () => {
       // The cached preview holds the text; a miss fetches it (and caches it for the viewer).
       const cache = previewCacheFor(output.projectId)
-      const key = previewKey(output)
+      const key = previewKey(output, olderVersion)
       let p = cache.get(key)
       if (!p) {
-        p = await window.orgai.outputs.preview(ref)
+        p = await window.orgai.outputs.preview(olderVersion === null ? ref : { ...ref, version: olderVersion })
         cache.set(key, p)
       }
       if (p.kind !== 'text' && p.kind !== 'svg') {
@@ -99,6 +169,10 @@ export default function OutputActions({
     </button>
   )
 
+  const revise = (): void => {
+    if (ctx) ctx.openRevise()
+    else setRevising(true)
+  }
   const hintId = !open && !missing ? `${uid}-open-hint` : undefined
   return (
     <>
@@ -136,7 +210,6 @@ export default function OutputActions({
                   if ('path' in r) notice(`Saved a copy to ${r.path}.`)
                 })
               })}
-            {!missing && SOURCE_KINDS.has(output.kind) && item('output-copy-source', Copy, 'Copy source', () => { close(); copySource() })}
             {item('output-copy-path', Link2, 'Copy path', () => {
               close()
               void run(async () => {
@@ -144,14 +217,17 @@ export default function OutputActions({
                 notice('Copied the path.')
               })
             })}
+            {item('output-rename', Pencil, 'Rename…', () => { close(); setRenaming(true) })}
+            {!missing && SOURCE_KINDS.has(output.kind) && item('output-copy-source', Copy, 'Copy source', () => { close(); copySource() })}
+            {canReviseFallback(output) && item('output-revise-item', MessageSquareQuote, 'Ask the team to revise…', () => { close(); revise() })}
             {item('output-forget', X, 'Remove from list', () => {
               close()
               void run(async () => {
-                // The index entry is gone for good: the contract has no way to bring it back (docs/design/outputs.md section 12).
                 const ok = await confirm({
-                  title: `Remove ${title} from the list?`,
-                  body: `The file stays at ${showHidden(output.relPath)}. It leaves OrgAI's list and cannot be added back from here.`,
+                  title: `Remove ${title} from OrgAI?`,
+                  body: forgetBody(showHidden(output.relPath)),
                   confirmLabel: 'Remove',
+                  danger: true,
                   confirmTestId: 'output-forget-confirm'
                 })
                 if (ok) removed(await window.orgai.outputs.forget(ref), `Removed ${title} from the list.`)
@@ -161,18 +237,17 @@ export default function OutputActions({
               item(
                 'output-delete',
                 Trash2,
-                'Delete file…',
+                'Delete…',
                 () => {
                   close()
                   void run(async () => {
-                    const ok = await confirm({
-                      title: `Delete ${title}?`,
-                      body: `This deletes ${showHidden(output.relPath)} from the project folder. It cannot be undone.`,
-                      confirmLabel: 'Delete file',
-                      danger: true,
-                      confirmTestId: 'output-delete-confirm'
-                    })
-                    if (ok) removed(await window.orgai.outputs.delete(ref), `Deleted ${title}.`)
+                    const r = await deleteOutputs([output])
+                    if (!r) return
+                    if (r.problems.length) {
+                      notice(r.problems[0])
+                      return
+                    }
+                    removed(r.list ?? [], `Deleted ${title}.`)
                   })
                 },
                 true
@@ -180,7 +255,29 @@ export default function OutputActions({
           </div>
         )}
       </Popover>
+      {renaming && (
+        <RenameDialog
+          output={output}
+          onClose={() => setRenaming(false)}
+          onDone={(o) => {
+            const st = useAppStore.getState()
+            st.setOutputs(output.projectId, mergeOutput(st.outputsByProject[output.projectId], o))
+            setRenaming(false)
+            notice('Renamed.')
+          }}
+        />
+      )}
+      {revising && !ctx && (
+        <ReviseDialog
+          output={output}
+          onClose={(r: OutputReviseResult | null) => {
+            setRevising(false)
+            if (r && !('refused' in r)) notice('Sent to the team. They will add a new version.')
+          }}
+        />
+      )}
       {dialog}
+      {deleteDialog}
     </>
   )
 }
