@@ -17,7 +17,7 @@ export type OnboardingChoice =
   | { kind: 'default' }
   | { kind: 'import'; sources: AgentImportSource[] }
 
-export const QUICK_NOTE = 'No .orgai project files added; read-only unless you enable edits'
+export const QUICK_NOTE = 'No .orgai project files added; read-only start: an edit or command asks'
 /** What "Architect" means (issue #30 L8). */
 export const ARCHITECT_NOTE = 'The Architect is the built-in setup assistant: it interviews you and proposes a team. It uses tokens.'
 export const LEAVE_NOTE = 'Press a key to choose. Esc or q leaves without creating a project.'
@@ -105,7 +105,7 @@ export function Onboarding(props: {
       {line('b0', [{ text: ' ' }])}
       {line('1', [{ text: mark('1') }, { text: '[1]', tone: 'accent' }, { text: ' Quick run in this folder' }])}
       {line('1n', [{ text: `      ${QUICK_NOTE}`, tone: 'dim' }])}
-      {line('1e', [{ text: `      [e] Edits: ${allowEdits ? 'on (each edit still asks)' : 'off'}`, tone: 'dim' }])}
+      {line('1e', [{ text: `      [e] Edits: ${allowEdits ? 'allowed (each still asks)' : 'read-only start (an edit or command asks)'}`, tone: 'dim' }])}
       {line('2', [{ text: mark('2') }, { text: '[2]', tone: 'accent' }, { text: ' Set up project with the Architect' }])}
       {line('2n', [{ text: `      ${ARCHITECT_NOTE}`, tone: 'dim' }])}
       {line('3', [{ text: mark('3') }, { text: '[3]', tone: 'accent' }, { text: ' Create project with default team' }])}

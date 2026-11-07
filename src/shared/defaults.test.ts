@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, connectionConfigured, connectionIds, connectionName, connectionProviderLabel, connectionRecord, connectionInUse, isConnectionId, isKnownConnection, proxyModelFamily, proxyModelsUrl, proxyOf, proxyOpenAIBase, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG, singleRunProject } from './defaults'
+import { DEFAULT_APP_SETTINGS, connectionConfigured, connectionIds, connectionName, connectionProviderLabel, connectionRecord, connectionInUse, isConnectionId, isKnownConnection, proxyModelFamily, proxyModelsUrl, proxyOf, proxyOpenAIBase, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG, singleRunProject } from './defaults'
 import type { Project, ProviderModel, ProxyConnection } from './types'
 import { RUN_KIND_LABELS, VIRTUAL_PROJECT_IDS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from './types'
 import { isSafeId } from './defaults'
@@ -342,29 +342,14 @@ describe('importTierForModel', () => {
 })
 
 describe('quick run tools and permissions', () => {
-  it('removes Edit, Write, Bash and NotebookEdit only with edits off', () => {
-    const tools = ['Read', 'Edit', 'Write', 'Bash', 'NotebookEdit', 'Grep', 'WebFetch'] as const
-    expect(quickRoleTools(tools, false)).toEqual(['Read', 'Grep', 'WebFetch'])
-    expect(quickRoleTools(tools, true)).toEqual([...tools])
-    const input = ['Read', 'Bash'] as ('Read' | 'Bash')[]
-    quickRoleTools(input, false)
-    expect(input).toEqual(['Read', 'Bash'])
+  it('gives the single assistant read, web and edit tools: edits ask instead of being missing', () => {
+    expect(quickRunTools('single')).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Edit', 'Write', 'Bash', 'NotebookEdit'] })
   })
 
-  it('gives the single assistant read and web tools, plus Edit, Write and Bash with edits on', () => {
-    expect(quickRunTools('single', false)).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'] })
-    expect(quickRunTools('single', true)).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Edit', 'Write', 'Bash'] })
-  })
-
-  it('filters the default chart for the default team', () => {
-    const off = quickRunTools('default', false)
-    expect(Object.keys(off).sort()).toEqual(['implementer', 'orchestrator', 'researcher', 'reviewer'])
-    for (const tools of Object.values(off)) {
-      for (const t of ['Edit', 'Write', 'Bash', 'NotebookEdit']) expect(tools).not.toContain(t)
-    }
-    expect(off.researcher).toEqual(['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'])
-    const on = quickRunTools('default', true)
-    for (const role of defaultRoles()) expect(on[role.slug]).toEqual(role.tools)
+  it('gives each default role its own tools for the default team', () => {
+    const t = quickRunTools('default')
+    expect(Object.keys(t).sort()).toEqual(['implementer', 'orchestrator', 'researcher', 'reviewer'])
+    for (const role of defaultRoles()) expect(t[role.slug]).toEqual(role.tools)
   })
 
   it('always uses permission mode default', () => {

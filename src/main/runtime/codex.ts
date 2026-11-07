@@ -57,6 +57,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { isGitRepo } from './worktrees'
 import { canonicalDeep, isInsideEither, isNetworkPath, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { lstatSync } from 'node:fs'
+import { quickEditCard, quickEditFree } from './quickEditCard'
 import { commandReferenceTouch, referenceCommandMessage, referenceFolderMessage, referenceFolderOf, referenceRefusalEntry } from './referenceDirectories'
 
 /**
@@ -1139,13 +1140,18 @@ class CodexSession implements RuntimeSession {
     const chosen = callOpts ? chooseSuggestions(toolName, input, undefined, false, callOpts) : []
     // A restricted run never turns on accept-edits: its folder is not the user's project.
     const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
+    // A Chat (quick) run's covered edit also offers "Allow for session" (quick/sessionEdits.ts). Card only: applyAllowScope
+    // below gets `suggestions` without it, so it never sets sessionAcceptEdits or an acceptForSession answer.
+    const card = touching
+      ? { suggestions, ruleLabels: suggestionLabels(suggestions) }
+      : quickEditCard(this.ctx.run, toolName, input, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path, suggestions)
     try {
       const decision = await this.ctx.requestPermission({
         agentId,
         toolName,
         input,
         summary,
-        ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+        ...(card.suggestions.length ? { suggestions: card.suggestions, ruleLabels: card.ruleLabels } : {}),
         ...(referenceFolder ? { referenceFolder } : {})
       })
       let granted = false
@@ -1341,6 +1347,10 @@ class CodexSession implements RuntimeSession {
       ...(req.reason ? { reason: req.reason } : {}),
       ...(req.grantRoot ? { grantRoot: req.grantRoot } : {})
     }
+    // Chat (quick) session edit grant, after every decline above: concrete changed files all inside the chat's folder
+    // (quick/sessionEdits.ts; a grantRoot or no changes never counts) are accepted for this call only ('accept', never
+    // acceptForSession, so Codex keeps asking OrgAI for the next change).
+    if (quickEditFree(this.ctx, 'Edit', input, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path)) return { decision: 'accept' }
     const { decision, granted } = await this.ask(agentId, 'Edit', input)
     if (decision.behavior === 'deny') return { decision: 'decline' }
     return { decision: this.sessionDecision(granted) }

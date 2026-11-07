@@ -77,6 +77,7 @@ import { strongMentionLinks } from '@shared/knowledgeLinks'
 import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, isBuiltinConnectionId, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
+import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
 import { datum } from './harnessTools'
@@ -317,6 +318,8 @@ interface ActiveRun {
   pendingRules: PendingCardMaps['pendingRules']
   /** Rules granted for this run only (scope 'run'); project grants go to the settings file. */
   runRules: string[]
+  /** Quick runs: the user chose Allow for session on a covered edit; dies with the run (RuntimeContext.quickSessionEdits). */
+  quickSessionEdits?: boolean
   /** The project's (canonical) path, for saving project-scoped grants. */
   projectPath: string
   /** Set for engagements: their saved rules live in OrgAI's data folder, never in the project folder. */
@@ -1807,7 +1810,7 @@ export class RunManager {
             }
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
-        ...(bare
+        ...(bare && !isQuick
           ? {}
           : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => setLive(saved, 'mcpServers', { ids: [req.spec.id], names: [req.spec.name] })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
@@ -1925,6 +1928,13 @@ export class RunManager {
               readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(project.id, ref)
             }
           : {}),
+        ...(isQuick && this.options.skillAssist
+          ? {
+              skillCatalog: () => this.options.skillAssist!.catalog(null),
+              readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(null, ref)
+            }
+          : {}),
+        ...(isQuick ? { quickSessionEdits: () => active.quickSessionEdits === true } : {}),
         ...(kind === 'skill-assist' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(skillScope()),
@@ -3152,6 +3162,19 @@ export class RunManager {
       delete request.suggestions
       delete request.ruleLabels
     } else if ('referenceFolder' in request) delete request.referenceFolder
+    // Fields only RunManager may set: drop whatever an adapter sent.
+    delete request.quickReadOnly
+    delete request.maxScope
+    delete request.workingFolder
+    delete request.workingFolderScratch
+    const quick = active.summary.quick
+    if (quick && !quick.allowEdits && isQuickWriteTool(request.toolName)) request.quickReadOnly = true
+    if (request.referenceFolder) request.maxScope = 'once'
+    else if (this.isRestricted(active.summary)) request.maxScope = 'session'
+    if (quick) {
+      request.workingFolder = quick.folder
+      if (quick.scratch) request.workingFolderScratch = true
+    }
     request.revision = 1
     logPermission(active.summary, request)
     return new Promise((resolve) => {
@@ -3188,11 +3211,24 @@ export class RunManager {
       log.info(`Narrowed a ${narrowed.scope} grant to once: the call touches a reference folder`)
       narrowed = { ...narrowed, scope: 'once' }
     }
+    if (isQuickSessionEditGrant(active.summary, pending.request, narrowed) && !active.quickSessionEdits) {
+      active.quickSessionEdits = true
+      log.info('Quick run: edits allowed for the session in its folder')
+    }
     const effective = narrowed?.behavior === 'allow' ? 'allow' : 'deny'
     this.cardResolved(active, 'permission', requestId, 'applied', effective, opts.decidedBy)
     pending.resolve(narrowed)
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
-    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
+    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(narrowed?.behavior === 'allow' && narrowed.scope ? { scope: narrowed.scope } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
+    if (active.summary.quick && narrowed?.behavior === 'allow' && narrowed.scope === 'session') {
+      const labels = (pending.request.ruleLabels ?? []).map((l) => excerpt(String(l), 80)).filter(Boolean).join(', ')
+      const what = isQuickSessionEditGrant(active.summary, pending.request, narrowed)
+        ? "edits in this chat's folder"
+        : labels
+          ? excerpt(labels, 200)
+          : excerpt(String(pending.request.toolName), 80)
+      systemBlock(active, Date.now(), `You allowed ${what} for this chat.`)
+    }
     this.cardSettled(active)
     return applied(runId, requestId, effective, opts)
   }
@@ -3428,6 +3464,14 @@ export class RunManager {
     setProject: (saved: Project) => void
   ): Promise<McpInstallDecision> {
     const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
+    delete request.runOnly
+    if (active.summary.quick) {
+      // Chat: the server lives in this run only and only the calling agent's role may use it.
+      request.runOnly = true
+      const proj = getProject()
+      const slug = active.record.agents[req.agentId]?.roleSlug ?? (proj.roles.find((r) => r.reportsTo === null) ?? proj.roles[0])?.slug
+      if (slug) request.spec = { ...request.spec, roles: [slug] }
+    }
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
         request,
@@ -3459,11 +3503,12 @@ export class RunManager {
 
   /** Validate an install answer and apply it (save the server or keep it for this run). Never throws. */
   private settleInstall(active: ActiveRun, request: McpInstallRequest, raw: McpInstallDecision, project: Project, setProject: (saved: Project) => void): McpInstallDecision {
-    const scope = raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
+    const quickRun = !!active.summary.quick && project.id === QUICK_PROJECT_ID
+    const scope = quickRun ? 'run' : raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
     const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
     if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
     const refuse = (why: string): McpInstallDecision => ({ approved: false, scope, note: `The harness did not install it: ${why}` })
-    if (isVirtualProjectId(project.id)) return refuse('installs are not available in this session; propose library entries instead.')
+    if (isVirtualProjectId(project.id) && !quickRun) return refuse('installs are not available in this session; propose library entries instead.')
     if (raw.spec !== undefined && (!raw.spec || typeof raw.spec !== 'object' || raw.spec.id !== request.spec.id)) return refuse('the edited server must keep the requested id.')
     const id = request.spec.id
     const taken =
@@ -3472,6 +3517,7 @@ export class RunManager {
       !!this.options.mcp?.libraryEntries?.().some((e) => e.id === id)
     if (taken) return refuse('a server with that id already exists.')
     const spec = mergeInstallEdit(request.spec, raw.spec)
+    if (quickRun && request.spec.roles) spec.roles = [...request.spec.roles]
     const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)]
     const errors = validateSpec(spec, others)
     if (errors.length) return { approved: false, scope, note: `The harness did not install it: ${errors.join(' ')}` }

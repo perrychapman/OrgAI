@@ -199,15 +199,33 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   'harness' (MCP assistant; `McpAssistInput.allowBuild === true`, library scope only, adds a per-run scratch dir
   `RunSummary.buildWorkspace`, Edit/Write/Bash and permission mode 'default') and 'skills' (Skill assistant,
   RunKind 'skill-assist', setup-like, skills:startAssist; propose_skills -> `SkillService.applyProposal`). Quick runs:
-  permission mode always 'default', read-only unless allowEdits, no project MCP/plugins/skills/installs/messaging,
-  grants never written to the folder, Claude `settingSources: []` with no saved-rules allowedTools, tools from
-  `QUICK_TOOL_DEFS` incl. `list_projects` (secret-free ProjectPeek data block). Scratch dirs only under
+  permission mode always 'default', every edit and command asks (see "Chat asks" below), no project
+  MCP/plugins/skills/messaging, installs run-scoped only, grants never written to the folder, Claude
+  `settingSources: []` with no saved-rules allowedTools, tools from `QUICK_TOOL_DEFS` incl. `list_projects`
+  (secret-free ProjectPeek data block), `request_mcp_install`, `list_skill_library`, `read_library_skill`. Scratch dirs only under
   `<data>/quick` (0o700, boot sweep keeps referenced ones). Promote moves the session chain and drops `quick`.
   Mock scripts: a quick run calls `list_projects` once, says "I can see N OrgAI project(s). Tell me what you would
   like to do." and goes idle; follow-ups get "Mock reply to: <text>". A skill-assist run says "I will look at the
   skill library first, then propose a skill.", calls `list_skill_library`, then `propose_skills` (title "Mock skill",
   one create of `mock-skill`, scope 'library' on 'skills', 'project' with the first role's slug on a project), and
   after APPROVED says "The skill is set up." and goes idle. Verified by unit tests and the mock only; no live run.
+  - Chat asks (2026-11-06; ARCHITECTURE.md Assistants "Chat asks instead of being unable"): quick roles always keep
+    Edit / Write / Bash / NotebookEdit (team 'single') or each default role's own tools; `allowEdits` is the user's
+    declaration only (false "read-only start: an edit or command asks", true "edits allowed: each still asks" plus
+    isolateWriters in a git folder) and changes the prompt (`quickChatText`: make the call, OrgAI asks, the user may
+    decline, never work around a refusal). RunManager sets on permission cards (adapter values dropped):
+    `quickReadOnly: true` (read-only start, QUICK_WRITE_TOOLS), `maxScope: 'session'` on trust-restricted runs
+    ('once' with a referenceFolder), `workingFolder` / `workingFolderScratch` on quick runs; `permission.resolved`
+    carries `scope` (narrowed; 'project' on a quick run reads 'session'); a session allow on a quick run writes one
+    harness row ("You allowed <rule> for this chat."). Session edits: `src/main/quick/sessionEdits.ts`
+    (`quickSessionEditSuggestion` on covered edit cards, never sent to a provider; `isQuickSessionEditGrant` in
+    decide(); `RuntimeContext.quickSessionEdits`; `quickEditPreApproved` in every adapter after its deny gates; only
+    inside the folder by lexical and real path, never under .git/.claude/.codex/.agents/.orgai/.vscode/.idea/.github
+    or config files). MCP: `McpInstallRequest.runOnly: true`, approvals narrowed to 'run', `spec.roles` = the caller.
+    Mock markers (quick runs, default script): `[mock:chat-edit]` (list_projects, Edit `<folder>/notes.md` asks;
+    allow writes it and says "I wrote notes.md.", deny says "I did not change anything." and stops; then Bash
+    `npm test` asks, then idle) and `[mock:chat-mcp]` (request_mcp_install of a pinned stdio server, says the answer,
+    idle). Verified by unit tests, fake query() / fake Codex app-server and the mock only; nothing live.
   - Plan nudges (UX M5): `continuation.ts` `planNudgesApply(run)` is false for a quick run with team 'single' (a
     conversation), and RunManager folds it into `RuntimeContext.autoContinue`, so no adapter's ContinuationDriver
     sends set-plan or continue nudges there; interrupt holds and auto-resume are unchanged, team 'default' keeps nudges.

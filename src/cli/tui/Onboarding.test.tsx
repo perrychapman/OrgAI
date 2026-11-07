@@ -96,7 +96,7 @@ describe('Onboarding', () => {
     const m = mount(check([{ source: 'claude', label: 'Claude Code', agentCount: 2 }]))
     await m.send(key('1'))
     await m.send(key('e'))
-    expect(m.r.lastFrame()).toContain('Edits: on')
+    expect(m.r.lastFrame()).toContain('Edits: allowed')
     await m.send(key('1'))
     await m.send(key('2'))
     await m.send(key('3'))

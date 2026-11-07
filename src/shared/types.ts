@@ -1657,6 +1657,12 @@ export interface McpInstallRequest {
   /** Secret names (from spec.secretEnv and spec.secretHeaders) the user must fill to approve. */
   requiredSecrets: string[]
   createdAt: number
+  /**
+   * Set by RunManager on a Chat (quick) run: the server can only be added for this run. An approval with scope
+   * 'project' or 'library' is narrowed to 'run' (nothing is saved to any project or the library), so the card should
+   * offer only "For this chat only" and Deny.
+   */
+  runOnly?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
 }
@@ -2716,7 +2722,7 @@ export const VIRTUAL_PROJECT_LABELS: Record<VirtualProjectId, string> = {
 
 /**
  * Who works on a quick run: 'single' = one built-in assistant (default, model AppSettings.quickRunModel);
- * 'default' = the app's default org chart (defaultRoles), tools filtered through quickRoleTools.
+ * 'default' = the app's default org chart (defaultRoles), each role with its own tools (see quickRunTools).
  */
 export type QuickRunTeam = 'single' | 'default'
 export const QUICK_RUN_TEAMS: readonly QuickRunTeam[] = ['single', 'default']
@@ -2725,8 +2731,9 @@ export const QUICK_RUN_MAX_PROMPT_CHARS = 100_000
 
 /**
  * runs:startQuick input. A project-less work run on the virtual project QUICK_PROJECT_ID (RunSummary.kind 'work',
- * RunSummary.quick set). Never permission mode 'auto' (see quickRunPermissionMode); read-only unless allowEdits;
- * no project MCP servers, plugins or skills; run messaging off.
+ * RunSummary.quick set). Permission mode always 'default' (see quickRunPermissionMode), so every edit and command
+ * asks; the roles keep their edit and command tools whatever allowEdits says. No project MCP servers, plugins or
+ * skills (run-scoped installs through request_mcp_install only, McpInstallRequest.runOnly); run messaging off.
  */
 export interface QuickRunInput {
   prompt: string
@@ -2737,7 +2744,13 @@ export interface QuickRunInput {
   folder?: string
   /** Default 'single'. */
   team?: QuickRunTeam
-  /** Allow Edit, Write and Bash in the folder (each still asks). Default false. A git folder with edits on isolates writers. */
+  /**
+   * The user's up-front declaration. false (default, "read-only start"): the assistant is told the chat is read-only
+   * by default, but an edit or command may still be needed; it makes the call, OrgAI asks the user (the card carries
+   * PermissionRequest.quickReadOnly) and the user may decline. true ("edits allowed"): the assistant is told it may
+   * change files and run commands here; each edit or command still asks, and a git folder isolates writers.
+   * Either way the tools are the same and nothing runs without a card or a grant the user gave in this run.
+   */
   allowEdits?: boolean
   images?: ImageAttachment[]
   /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
@@ -2996,9 +3009,36 @@ export interface PermissionRequest {
    * the card offers Allow once and Deny only ("Touches a reference folder (read only)").
    */
   referenceFolder?: string
+  /**
+   * Set by RunManager (never by an adapter; an adapter's value is dropped) on a Chat (quick) run started read-only
+   * (`QuickRunInfo.allowEdits` false) when the call is an edit or a command (QUICK_WRITE_TOOLS: Edit, Write,
+   * MultiEdit, NotebookEdit, Bash, PowerShell), so the card can say the chat started read-only. Nothing else about the
+   * card changes: the same Allow once / Allow for session / Deny answers apply.
+   */
+  quickReadOnly?: true
+  /**
+   * The widest scope an allow can have, set by RunManager (an adapter's value is dropped): 'session' on
+   * trust-restricted runs (Chat runs and MCP build sessions: a 'project' answer is narrowed to 'session', nothing is
+   * saved), 'once' when `referenceFolder` is set. Absent = 'project' is possible. The card must not offer a scope
+   * wider than this or claim a saved rule.
+   */
+  maxScope?: 'once' | 'session'
+  /**
+   * Chat (quick) runs only, set by RunManager: the chat's working folder (QuickRunInfo.folder, the scratch dir
+   * included; `workingFolderScratch: true` when it is a scratch dir OrgAI made), so the card can say where the call
+   * runs. Agents in a worktree still work under this folder.
+   */
+  workingFolder?: string
+  workingFolderScratch?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
 }
+
+/**
+ * Tools whose calls count as "an edit or a command" on a Chat (quick) run: PermissionRequest.quickReadOnly is set only
+ * for these.
+ */
+export const QUICK_WRITE_TOOLS: readonly string[] = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell']
 
 /** How long an allow decision lasts: this call only, the rest of this run, or every future run of the project. */
 export type PermissionScope = 'once' | 'session' | 'project'
@@ -3238,6 +3278,11 @@ export type RunEvent =
        * rules, allowed folders or permission mode may have changed. Absent on deny, once, session and cancelled.
        */
       savedToProject?: true
+      /**
+       * The allow's scope after RunManager's narrowing ('once', 'session' or 'project'); absent on deny and cancelled.
+       * A Chat card answered "Allow for project" reads 'session' here.
+       */
+      scope?: PermissionScope
       /** Who decided (cli-spec 3.4(4)); absent on cancelled cards and older events. */
       decidedBy?: DecidedBy
     }
