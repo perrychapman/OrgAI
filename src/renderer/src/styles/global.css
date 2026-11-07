@@ -11,6 +11,8 @@
 @import './connectors.css';
 @import './mcp-install.css';
 @import './dashboard.css';
+/* After dashboard.css: the Needs you rows override the shared .dash-row rules. */
+@import './dashboard-needs.css';
 @import './editor.css';
 @import './flow.css';
 @import './run.css';

@@ -47,6 +47,16 @@
 .dash-area:empty {
   display: none;
 }
+/* Quiet states (walk-3 M4). A region with nothing to say is not drawn: Needs you without a decision is hidden
+   (`data-needs-empty`), the band without an open run is hidden (`data-now-empty`, the status sentence says it). */
+.dash-work[data-needs-empty] .dash-area-needs,
+.dash-work[data-now-empty] .dash-area-now,
+.dash-area-now:has(> .dash-now[hidden]) {
+  display: none;
+}
+.dash-section[hidden] {
+  display: none;
+}
 @container dash (min-width: 880px) {
   .dash-work {
     grid-template-columns: minmax(340px, 5fr) minmax(0, 7fr);
@@ -86,14 +96,44 @@
   .dash-area-ended {
     grid-area: ended;
   }
-  /* Band empty: the band is one line and the strip takes the right column under it at its tall size. */
-  .dash-work[data-now-empty] {
+  /* No decision, band live: the band leads on the left, the strip and the lists stack beside it. */
+  .dash-work[data-needs-empty]:not([data-now-empty]) {
+    grid-template-columns: minmax(0, 7fr) minmax(340px, 5fr);
     grid-template-areas:
-      'needs  now'
-      'setup  strip'
-      'paused strip'
-      'ended  strip';
+      'now strip'
+      'now setup'
+      'now paused'
+      'now ended';
     grid-template-rows: auto auto auto 1fr;
+  }
+  .dash-work[data-needs-empty]:not([data-now-empty]) .dash-area-strip {
+    margin-block-start: 0;
+  }
+  /* Decisions, band empty: Needs you left, the strip at its tall size right, the lists full width under both. */
+  .dash-work[data-now-empty]:not([data-needs-empty]) {
+    grid-template-areas:
+      'needs  strip'
+      'setup  setup'
+      'paused paused'
+      'ended  ended';
+    grid-template-rows: auto auto auto 1fr;
+  }
+  .dash-work[data-now-empty]:not([data-needs-empty]) .dash-area-strip {
+    margin-block-start: 0;
+  }
+  /* Both quiet: the strip at its tall size across the page, then the lists side by side. */
+  .dash-work[data-now-empty][data-needs-empty] {
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-areas: none;
+    grid-template-rows: none;
+    gap: var(--space-4);
+  }
+  .dash-work[data-now-empty][data-needs-empty] .dash-area {
+    grid-area: auto;
+    margin-block-start: 0;
+  }
+  .dash-work[data-now-empty][data-needs-empty] .dash-area-strip {
+    grid-column: 1 / -1;
   }
 }
 
@@ -141,6 +181,28 @@
 .dash-count {
   color: var(--text-secondary);
 }
+/* Lists (To set up, Paused, Recently ended) are quiet: a small heading, a mono count, no box (walk-3 / advice 2). */
+[data-testid='dash-setup'] .dash-section-head,
+[data-testid='dash-paused'] .dash-section-head,
+[data-testid='dash-since'] .dash-section-head {
+  min-height: 24px;
+}
+[data-testid='dash-setup'] .dash-section-head h2,
+[data-testid='dash-paused'] .dash-section-head h2,
+[data-testid='dash-since'] .dash-section-head h2 {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+[data-testid='dash-setup'] .dash-count,
+[data-testid='dash-paused'] .dash-count,
+[data-testid='dash-since'] .dash-count {
+  color: var(--text-tertiary);
+}
+/* Amber belongs to the Needs you row alone; its count reads as the alert while a decision waits. */
+[data-testid='dash-needs-you'] .dash-count {
+  color: var(--warning-text);
+}
 .dash-section-action {
   margin-left: auto;
 }
@@ -156,6 +218,13 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+/* Lists run edge to edge, one hairline between rows; Needs you keeps its separate tinted rows. */
+.dash-section:not([data-testid='dash-needs-you']) > .dash-rows {
+  gap: 0;
+}
+.dash-section:not([data-testid='dash-needs-you']) > .dash-rows > li + li {
+  border-top: 1px solid var(--border-default);
 }
 
 /* A row: one full-width native button, plus at most one secondary Button at its right. */
@@ -174,6 +243,21 @@
 }
 .dash-row:hover {
   border-color: var(--border-strong);
+}
+/* A list row has no box: no fill, no border, no radius at rest; hover lifts it to --surface-2. The Needs you rows
+   (.dash-needs-row, dashboard-needs.css) keep the boxed alert look above. */
+.dash-row:not(.dash-needs-row) {
+  min-height: 44px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.dash-row:not(.dash-needs-row):hover {
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+.dash-row:not(.dash-needs-row) .dash-row-main {
+  border-radius: var(--radius-sm);
 }
 .dash-row-main {
   all: unset;
@@ -253,152 +337,6 @@
   display: block;
 }
 
-/* Needs you: warning tint. */
-.dash-needs-row {
-  background: var(--warning-soft);
-  border-color: var(--warning-border);
-  container: needs-row / inline-size;
-}
-.dash-needs-row:hover {
-  border-color: var(--warning);
-}
-.dash-needs-main {
-  align-items: flex-start;
-}
-.dash-needs-main > .dash-row-icon {
-  padding-top: 2px;
-}
-.dash-needs-place {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-small);
-}
-.dash-needs-project {
-  font-weight: var(--weight-semibold);
-  color: var(--text-primary);
-}
-.dash-needs-run {
-  color: var(--text-secondary);
-}
-.dash-needs-ask {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  font-size: var(--text-small);
-  color: var(--text-primary);
-}
-.dash-needs-lead {
-  font-size: var(--text-caption);
-  color: var(--text-secondary);
-}
-/* Clamped only when the row cannot be allowed here: a command that can be allowed is shown whole (review H1). */
-.dash-needs-code {
-  display: block;
-  overflow-wrap: anywhere;
-}
-.dash-needs-code[data-clamp],
-.dash-needs-question {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
-.dash-needs-code {
-  font-family: var(--font-mono);
-  font-size: var(--text-mono);
-  white-space: pre-wrap;
-}
-.dash-needs-object {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* What an inline Allow approves (a URL or query) is shown whole. */
-.dash-needs-object[data-whole] {
-  overflow: visible;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  font-family: var(--font-mono);
-  font-size: var(--text-mono);
-}
-.dash-needs-file {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  column-gap: var(--space-1);
-  min-width: 0;
-}
-/* The file name and the location line wrap whole: they say what Allow once approves (re-check Lows). */
-.dash-needs-row .dash-needs-filename,
-.dash-needs-row .dash-needs-where {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-overflow: clip;
-}
-.dash-needs-where[data-attention] {
-  color: var(--warning-text);
-}
-.dash-needs-filename {
-  flex: none;
-  max-width: 100%;
-  font-weight: var(--weight-semibold);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* The whole folder, left to right, wrapping (review H2: an rtl start-ellipsis cut the root and moved slashes). */
-.dash-needs-folder {
-  min-width: 0;
-  font-size: var(--text-caption);
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-  unicode-bidi: isolate;
-}
-.dash-needs-reference {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-caption);
-  color: var(--text-secondary);
-}
-.dash-needs-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  align-content: center;
-  justify-content: flex-end;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-2) var(--space-2) 0;
-  max-width: 60cqi;
-}
-.dash-needs-deny {
-  color: var(--danger-text, var(--danger));
-}
-.dash-needs-error {
-  grid-column: 1 / -1;
-  margin: 0;
-  padding: 0 var(--space-3) var(--space-2);
-  font-size: var(--text-caption);
-  color: var(--danger-text, var(--danger));
-}
-/* Narrow rows stack the buttons under the ask. */
-@container needs-row (max-width: 360px) {
-  .dash-needs-row[data-has-action='true'] {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .dash-needs-actions {
-    justify-content: flex-start;
-    padding: 0 var(--space-3) var(--space-2);
-    max-width: none;
-  }
-}
-
 /* Status dot: colour always sits beside its word. */
 .dash-dot {
   flex: none;
@@ -429,7 +367,8 @@
   box-shadow: var(--halo-dot-live);
 }
 
-.dash-row-since[data-status='Failed'] {
+/* The one left rule a list keeps: a failed run. */
+.dash-row.dash-row-since[data-status='Failed'] {
   border-left: 2px solid var(--state-error);
 }
 

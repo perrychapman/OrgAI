@@ -290,6 +290,12 @@ describe('statusSentence', () => {
     expect(s({ closedWaiting: 1 })).toBe('Nothing is running. 1 was waiting on you when OrgAI closed.')
     expect(s({ closedWaiting: 2, openRuns: 1, workingRuns: 1, pausedRuns: 1 })).toBe('1 run working. 1 paused. 2 were waiting on you when OrgAI closed.')
   })
+  it('says "Nothing needs you." last, only when asked, never a number', () => {
+    expect(s({ nothingNeedsYou: true })).toBe('Nothing is running. Nothing needs you.')
+    expect(s({ nothingNeedsYou: true, workingAgents: 1, agentRuns: 1, pausedRuns: 1, closedWaiting: 1 })).toBe('1 agent working in 1 run. 1 paused. 1 was waiting on you when OrgAI closed. Nothing needs you.')
+    expect(s({ nothingNeedsYou: false })).toBe('Nothing is running.')
+    expect(s({ firstLaunch: true, nothingNeedsYou: true })).toBe(`Welcome to OrgAI. ${FIRST_LAUNCH_LINE}`)
+  })
   it('welcomes on first launch', () => {
     expect(s({ firstLaunch: true, workingAgents: 4 })).toBe(`Welcome to OrgAI. ${FIRST_LAUNCH_LINE}`)
   })

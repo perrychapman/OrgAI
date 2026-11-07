@@ -6,14 +6,14 @@ import { Button } from '../components/ui/Button'
 import { Banner } from '../components/ui/Banner'
 import { forgetNoticeText } from '../lib/dashboard'
 import { hasParkedDraft } from '../components/dashboard/NewProjectForm'
-import { HeroBand, type DashboardAnnouncement } from '../components/dashboard/HeroBand'
+import { HeroBand, useDecisionTotal, type DashboardAnnouncement } from '../components/dashboard/HeroBand'
 import { EndedRegion, NeedsYouRegion, PausedRegion } from '../components/dashboard/AttentionColumn'
 import { useLastSeen } from '../components/dashboard/useLastSeen'
 import { ProjectsGrid } from '../components/dashboard/ProjectsGrid'
 import { RightNowBand } from '../components/dashboard/RightNowBand'
 import { ActivityStrip } from '../components/dashboard/ActivityStrip'
 import { SetupGaps } from '../components/dashboard/SetupGaps'
-import { useDashCaps } from '../components/dashboard/dashCaps'
+import { useBandBudget, useDashCaps, useShortRegion } from '../components/dashboard/dashCaps'
 import { useLiveRuns } from '../components/dashboard/useDashboardData'
 import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
@@ -60,6 +60,10 @@ export default function DashboardView(): ReactElement {
   const caps = useDashCaps(workEl)
   // No open run: the band is one line and the strip takes its column at the tall size (dashboard-2.md 6.7, 7.5).
   const nowEmpty = useLiveRuns().filter((r) => r.summary.status !== 'paused').length === 0
+  // No decision (the bell's count): Needs you is hidden and the band leads (walk-3 M4).
+  const needsEmpty = useDecisionTotal() === 0
+  const short = useShortRegion(workEl)
+  const bandBudget = useBandBudget(workEl)
 
   return (
     <>
@@ -94,15 +98,15 @@ export default function DashboardView(): ReactElement {
           ) : (
             <>
               {/* DOM order is reading order: needs, now, strip, setup, paused, ended (dashboard-2.md 2.1). */}
-              <div className="dash-work" ref={setWorkEl} data-now-empty={nowEmpty ? '' : undefined}>
+              <div className="dash-work" ref={setWorkEl} data-now-empty={nowEmpty ? '' : undefined} data-needs-empty={needsEmpty ? '' : undefined}>
                 <div className="dash-area dash-area-needs">
                   <NeedsYouRegion caps={caps} onAnnounce={say} />
                 </div>
                 <div className="dash-area dash-area-now">
-                  <RightNowBand caps={caps} onAnnounce={say} />
+                  <RightNowBand caps={caps} budget={bandBudget} onAnnounce={say} />
                 </div>
                 <div className="dash-area dash-area-strip">
-                  <ActivityStrip size={nowEmpty ? 'tall' : 'compact'} />
+                  <ActivityStrip size={nowEmpty ? 'tall' : 'compact'} dense={short && !needsEmpty} />
                 </div>
                 <div className="dash-area dash-area-setup">
                   <SetupGaps caps={caps} />

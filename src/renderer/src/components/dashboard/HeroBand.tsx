@@ -5,13 +5,14 @@ import { useAppStore } from '../../store/useAppStore'
 import { Badge } from '../ui/Badge'
 import { isDevBuild } from '../../lib/buildChannel'
 import { connectionLabel, isProxyId } from '../../lib/connectionLabel'
-import { isWorkingAgent } from '../../lib/agentActivity'
 import { clockLabel, pausedRuns, resetsAtText, resetsInLabel, sinceLastSeen, statusSentence } from '../../lib/dashboard'
-import { statusOfRun } from '../../lib/runStatus'
+import { bandWorkFacts } from '../../lib/dashboardBand'
 import { connectionsInUse, reportsSpend, spendLevel, spendRowLabel, spendSentence } from '../../lib/usage'
 import { SpendBar, tightestWindowRow, usageRows } from '../UsageMeter'
 import { usageIsStale, windowLabel } from './dashboardProjects'
-import { useAllSummaries, useLiveRuns, useNow, useWaitingRuns } from './useDashboardData'
+import { combinedDecisionCount } from '../../lib/needsYou'
+import { useTeamAttentionItems } from '../../lib/menuActions'
+import { useAllSummaries, useBandSnapshot, useNow, useWaitingRuns } from './useDashboardData'
 
 /**
  * The Dashboard's status bar (docs/design/dashboard-2.md section 4): one sentence about the work, the plan limits in use
@@ -72,6 +73,13 @@ function windowEntry(id: ConnectionId, usage: UsageStatus, now: number): LimitEn
   return { id, kind: 'window', level: t.level, name, main: `${windowLabel(t.label)} ${Math.round(t.pct)}%`, resets, pct: Math.min(100, Math.max(0, t.pct)), title }
 }
 
+/** The bell's count: open decisions of runs plus team-files items (lib/needsYou.ts). */
+export function useDecisionTotal(): number {
+  const waiting = useWaitingRuns()
+  const teamItems = useTeamAttentionItems()
+  return useMemo(() => combinedDecisionCount(waiting, teamItems), [waiting, teamItems])
+}
+
 export function HeroBand({
   firstLaunch,
   announce,
@@ -88,25 +96,16 @@ export function HeroBand({
   const defaultConnection = useAppStore((s) => s.defaultConnection)
   const projects = useAppStore((s) => s.projects)
   const usageByConnection = useAppStore((s) => s.usageByConnection)
-  const waiting = useWaitingRuns()
-  const live = useLiveRuns()
+  const snap = useBandSnapshot()
+  const live = snap.runs
   const summaries = useAllSummaries()
   const now = useNow()
 
+  // One source with the band (walk-3 M1): a run waiting on a decision is never "working", nor are its agents.
   const counts = useMemo(() => {
-    const needsYou = new Set(waiting.map((r) => r.summary.id))
-    let workingAgents = 0
-    let agentRuns = 0
-    let workingRuns = 0
-    for (const run of live) {
-      const n = Object.values(run.agents).filter((a) => isWorkingAgent(a.state)).length
-      workingAgents += n
-      if (n > 0) agentRuns += 1
-      const project = projects.find((p) => p.id === run.summary.projectId)
-      if (!needsYou.has(run.summary.id) && statusOfRun(run, project, false).word === 'Running') workingRuns += 1
-    }
-    return { workingAgents, agentRuns, workingRuns }
-  }, [live, waiting, projects])
+    const facts = bandWorkFacts(snap.runs, snap.projects, snap.virtualProjects)
+    return { workingAgents: facts.workingAgents, agentRuns: facts.counts.working, workingRuns: facts.counts.working }
+  }, [snap])
 
   const paused = useMemo(() => pausedRuns(summaries), [summaries])
   const pausedUntil = useMemo(() => {
@@ -118,7 +117,8 @@ export function HeroBand({
     [summaries, lastSeen, clearedAt, now]
   )
 
-  const sentence = statusSentence({ firstLaunch, ...counts, openRuns: live.length, pausedRuns: paused.length, pausedUntil, closedWaiting })
+  const decisions = useDecisionTotal()
+  const sentence = statusSentence({ firstLaunch, nothingNeedsYou: projects.length > 0 && decisions === 0, ...counts,openRuns: live.length, pausedRuns: paused.length, pausedUntil, closedWaiting })
 
   // Limits: one entry per connection in use that reports something, none under the mock adapter or for API keys.
   const entries = useMemo<LimitEntry[]>(() => {

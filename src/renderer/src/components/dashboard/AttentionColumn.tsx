@@ -5,7 +5,7 @@ import { projectKindOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { Cost } from '../ui/Cost'
-import { AttentionSection } from './AttentionSection'
+import { AttentionSection, focusAfterRemoval, headingAfter } from './AttentionSection'
 import type { DashCaps } from './dashCaps'
 import { NeedsRow, needsItemKey, useNewDecisionAnnouncer, type NeedsItem } from './NeedsInline'
 import { useAllSummaries, useNow, useWaitingRuns } from './useDashboardData'
@@ -67,7 +67,7 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
       items={items}
       cap={cap}
       itemKey={needsItemKey}
-      empty="Nothing needs you."
+      quiet
       renderItem={(it) => (
         <NeedsRow
           key={needsItemKey(it)}
@@ -125,11 +125,11 @@ function SinceSection({
   }
 
   const clear = (): void => {
-    // The section disappears: hand focus to the next section's heading (else the previous one) first.
-    const section = document.querySelector('[data-testid=dash-since]')
-    const next = (section?.nextElementSibling ?? section?.previousElementSibling)?.querySelector<HTMLElement>('[data-section-heading]')
+    // The section disappears: hand focus to the next visible section heading after it (else the previous, else the
+    // topbar h1) once React has removed it (spec 12.2).
+    const target = headingAfter(document.querySelector('[data-testid=dash-since]'))
     onMarkAllSeen()
-    next?.focus({ preventScroll: true })
+    focusAfterRemoval(target)
   }
 
   return (

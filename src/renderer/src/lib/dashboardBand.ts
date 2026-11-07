@@ -38,6 +38,32 @@ export interface BandRunIn {
   agents: Record<string, AgentInstance>
   /** `waitingItems(run).length`. */
   decisions: number
+  /** The first open decision's Needs you label ("Allow: Run npm test"), when `decisions` > 0. */
+  firstDecision?: string
+}
+
+/** Characters of a decision label on the band header and the tile caption (walk-3 M5). */
+export const DECISION_LINE_MAX = 64
+
+/**
+ * `text` on one line, at most `max` characters, cut at a word boundary with an ellipsis (never mid-word unless a single
+ * word is longer than most of the room).
+ */
+export function clipAtWord(text: string, max = DECISION_LINE_MAX): string {
+  const t = oneLine(text, Number.MAX_SAFE_INTEGER)
+  if (t.length <= max) return t
+  const room = t.slice(0, Math.max(1, max - 1))
+  const space = room.lastIndexOf(' ')
+  const cut = space >= Math.floor(max * 0.5) ? room.slice(0, space) : room
+  return `${cut.replace(/[\s,;:·-]+$/, '')}…`
+}
+
+/**
+ * What the band header and the project tile say about a run that waits on the user: the Needs you row's own label,
+ * cut at a word boundary, never the raw command or the root's activity (walk-3 M5). Undefined without a decision.
+ */
+export function decisionLine(firstDecision: string | undefined, max = DECISION_LINE_MAX): string | undefined {
+  return firstDecision && firstDecision.trim() ? clipAtWord(firstDecision, max) : undefined
 }
 
 export interface BandAgentRow {
@@ -292,6 +318,40 @@ export interface BandOptions {
   showAllRuns?: boolean
 }
 
+/** What the status sentence and the band's heading counts both read (one source, walk-3 M1). */
+export interface BandWorkFacts {
+  /** Runs per band group; `counts.working` is the band's `data-working`. */
+  counts: Record<BandGroup, number>
+  /** Working agents (starting, thinking, tool, delegating) in runs of the working group only: a run waiting on a decision counts none. */
+  workingAgents: number
+  /** Every open run the band holds. */
+  total: number
+}
+
+type ProjectLookup = (id: string) => Project | undefined
+
+function lookupOf(projects: readonly Project[], virtualProjects: Partial<Record<string, Project>>): ProjectLookup {
+  return (id) => projects.find((p) => p.id === id) ?? (isVirtualProjectId(id) ? virtualProjects[id] : undefined)
+}
+
+function classify(r: BandRunIn, project: Project | undefined): { status: RunStatusView; group: BandGroup } {
+  const status = statusOfRun({ summary: r.summary, plan: r.plan, agents: r.agents }, project, r.decisions > 0)
+  return { status, group: groupOf(status, r.decisions) }
+}
+
+/** The band's run counts and the working agents behind them: the status sentence (4.1) and the heading (6.1) read these. */
+export function bandWorkFacts(runs: readonly BandRunIn[], projects: readonly Project[], virtualProjects: Partial<Record<string, Project>>): BandWorkFacts {
+  const projectOf = lookupOf(projects, virtualProjects)
+  const counts: Record<BandGroup, number> = { working: 0, waiting: 0, idle: 0 }
+  let workingAgents = 0
+  for (const r of runs) {
+    const { group } = classify(r, projectOf(r.summary.projectId))
+    counts[group]++
+    if (group === 'working') workingAgents += Object.values(r.agents).filter((a) => isWorkingAgent(a.state)).length
+  }
+  return { counts, workingAgents, total: runs.length }
+}
+
 /** Projects > runs > rows plus counts (spec 6.8). */
 export function bandModel(
   runs: readonly BandRunIn[],
@@ -301,12 +361,11 @@ export function bandModel(
   caps: BandCaps,
   opts: BandOptions = {}
 ): BandModel {
-  const projectOf = (id: string): Project | undefined => projects.find((p) => p.id === id) ?? (isVirtualProjectId(id) ? virtualProjects[id] : undefined)
+  const projectOf = lookupOf(projects, virtualProjects)
   const counts: Record<BandGroup, number> = { working: 0, waiting: 0, idle: 0 }
   const built = runs.map((r) => {
     const project = projectOf(r.summary.projectId)
-    const status = statusOfRun({ summary: r.summary, plan: r.plan, agents: r.agents }, project, r.decisions > 0)
-    const group = groupOf(status, r.decisions)
+    const { status, group } = classify(r, project)
     counts[group]++
     return { r, project, status, group }
   })
@@ -339,7 +398,7 @@ export function bandModel(
       name: displayRunName(r.summary),
       ...(isVirtualProjectId(r.summary.projectId) || r.summary.quick || r.summary.kind !== 'work' || r.summary.team === 'single' ? { chip: runKindWord(r.summary) } : {}),
       planStep: planStepLabel(r.plan),
-      line2: step ?? (root ? nodeActivity(root, { isRoot: true }) : ''),
+      line2: decisionLine(r.decisions > 0 ? r.firstDecision : undefined) ?? step ?? (root ? nodeActivity(root, { isRoot: true }) : ''),
       decisions: r.decisions,
       suffix: decisionsSuffix(r.decisions),
       rootId: root?.id ?? null,
@@ -360,6 +419,55 @@ export function bandModel(
     p.runs.push(run)
   }
   return { counts, total: runs.length, projects: [...byProject.values()], shownRuns: out.length, hiddenRuns: runs.length - out.length }
+}
+
+/** Measured row heights of the band (dashboard-band.css), for `bandHeightEstimate`. */
+export const BAND_PX = { chrome: 60, project: 28, run: 57, row: 32, button: 36 } as const
+
+/** About how tall the band draws a model: heading and padding, each project's h3, each run's header and rows. */
+export function bandHeightEstimate(model: BandModel, showMoreButton = false): number {
+  let h = BAND_PX.chrome
+  for (const p of model.projects) {
+    h += BAND_PX.project
+    for (const r of p.runs) h += BAND_PX.run + r.rows.length * BAND_PX.row
+  }
+  return showMoreButton ? h + BAND_PX.button : h
+}
+
+/** Never squeeze the band below this many agent rows, whatever the budget says. */
+export const BAND_MIN_AGENT_ROWS = 2
+/** The budget never falls under this: the band is the page's main instrument. */
+export const BAND_BUDGET_FLOOR_PX = 440
+/** How much taller than the other column the band may grow (spec 2.3: no column ends 200 px early). */
+export const BAND_SLACK_PX = 180
+
+/** The band's height budget from the other column's height (px), or undefined when there is no other column. */
+export function bandBudget(otherColumnPx: number): number | undefined {
+  if (!Number.isFinite(otherColumnPx) || otherColumnPx <= 0) return undefined
+  return Math.max(BAND_BUDGET_FLOOR_PX, Math.round(otherColumnPx) + BAND_SLACK_PX)
+}
+
+/** The run cap never falls under this while fitting (the narrow cap). */
+export const BAND_MIN_RUNS = 3
+
+/**
+ * The model for these caps, lowered until the band fits `budget` (px): first the agent-row cap one row at a time down
+ * to `BAND_MIN_AGENT_ROWS`, then the run cap down to `BAND_MIN_RUNS` ("Show N more runs" keeps the rest one click
+ * away; runs sort working, waiting, idle, so the idle ones go first).
+ */
+export function fitBandModel(caps: BandCaps, budget: number | undefined, build: (c: BandCaps) => BandModel): BandModel {
+  let c = caps
+  let model = build(c)
+  if (budget === undefined) return model
+  while (bandHeightEstimate(model) > budget && c.bandAgents > BAND_MIN_AGENT_ROWS) {
+    c = { ...c, bandAgents: c.bandAgents - 1 }
+    model = build(c)
+  }
+  while (bandHeightEstimate(model, model.hiddenRuns > 0) > budget && c.bandRuns > BAND_MIN_RUNS) {
+    c = { ...c, bandRuns: c.bandRuns - 1 }
+    model = build(c)
+  }
+  return model
 }
 
 /** "2 working · 1 waiting for you · 1 idle", empty parts left out. */
@@ -388,6 +496,12 @@ export function doneText(n: number, failed: number): string {
   return failed > 0 ? `${n} done, ${failed} failed` : `${n} done`
 }
 
+/** How long a run has been open, as the header's title and name say it: "started just now", "open for 4 min" (walk-3 L6). */
+export function openedText(startedAt: number, now: number): string {
+  const elapsed = elapsedLabel(startedAt, now)
+  return elapsed === 'just started' ? 'started just now' : `open for ${elapsed}`
+}
+
 /** Spec 6.3 accessible name of a run header. */
 export function runHeadName(run: BandRun, cost: string, now: number): string {
   const parts = [`${run.word}: ${run.name}`, run.projectLabel]
@@ -395,7 +509,7 @@ export function runHeadName(run: BandRun, cost: string, now: number): string {
   if (line) parts.push(line)
   if (run.planStep) parts.push(run.planStep)
   if (cost) parts.push(`cost ${cost}`)
-  parts.push(`open for ${elapsedLabel(run.startedAt, now)}`)
+  parts.push(openedText(run.startedAt, now))
   return parts.join(', ')
 }
 
@@ -414,7 +528,7 @@ export function bandSignature(runs: readonly BandRunIn[], projects: readonly Pro
     parts.push(
       [
         s.id, s.projectId, s.status, s.kind, s.title ?? '', s.prompt ?? '', s.startedAt, s.quick ? 'q' : '', s.team ?? '', s.endedBy ?? '', s.endedWithApp ? 'a' : '',
-        JSON.stringify(runCostInput(s)), r.decisions, r.plan ? `${r.plan.status}/${r.plan.steps.map((x) => `${x.status}:${x.title}`).join('|')}` : '',
+        JSON.stringify(runCostInput(s)), r.decisions, r.firstDecision ?? '', r.plan ? `${r.plan.status}/${r.plan.steps.map((x) => `${x.status}:${x.title}`).join('|')}` : '',
         Object.values(r.agents)
           .map((a) => [a.id, a.parentId ?? '', a.state, a.activity, a.handle ?? '', a.name, a.roleId ?? '', a.roleSlug, a.worktree?.status ?? '', a.worktree?.mergeTarget ?? '', a.startedAt, a.endedAt ?? '', a.usage?.producedNothing ? 'n' : '', a.result ? 'r' : ''].join('~'))
           .join('^')

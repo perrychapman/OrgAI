@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { shellSegments } from './decisionTitle'
 import {
+  commandLines,
+  commandSteps,
+  inlineRefusal,
   ALLOW_ONCE,
   DENY,
   DENY_MESSAGE,
@@ -29,15 +33,52 @@ describe('inlineAllowable', () => {
     expect(inlineAllowable(sh('echo a\u200bb'))).toBe(false)
   })
   it('refuses more than 2 lines or 200 characters', () => {
-    // The card reads any second line as hidden (isHiddenCommand), which is stricter than the 2-line limit.
-    expect(inlineAllowable(sh('a\nb'))).toBe(false)
+    expect(inlineAllowable(sh('a\nb'))).toBe(true)
     expect(inlineAllowable(sh('a\nb\nc'))).toBe(false)
-    // Past about 120 characters the card's own title is clipped, so isHiddenCommand already refuses.
-    expect(inlineAllowable(sh('x'.repeat(100)))).toBe(true)
+    expect(inlineAllowable(sh('x'.repeat(200)))).toBe(true)
     expect(inlineAllowable(sh('x'.repeat(201)))).toBe(false)
   })
-  it('refuses a compound command the card reads as hidden steps', () => {
-    expect(inlineAllowable(sh('cd src && npm test'))).toBe(false)
+  it('allows a compound command whose every step is shown (M2)', () => {
+    const cmd = 'cd C:\\Users\\x\\AppData\\Local\\Temp\\proj\\.claude\\worktrees\\agent-1 && npm test'
+    expect(cmd.length).toBeGreaterThan(70)
+    expect(inlineAllowable(sh(cmd))).toBe(true)
+    expect(commandLines(cmd)).toEqual(['cd C:\\Users\\x\\AppData\\Local\\Temp\\proj\\.claude\\worktrees\\agent-1', '&& npm test'])
+    const a = permissionAsk(sh(cmd), 'w', true)
+    expect(a.object).toBe(commandLines(cmd).join('\n'))
+    expect(a.text).toBe(`w wants to run ${cmd}`)
+    expect(commandLines('a ; b || c')).toEqual(['a', '; b', '|| c'])
+    expect(commandLines('echo "a && b" && c')).toEqual(['echo "a && b"', '&& c'])
+    expect(commandLines('npm test;')).toEqual(['npm test'])
+    expect(commandLines('a && && b')).toEqual(['a', '&&', '&& b'])
+  })
+  it('counts the same steps as shellSegments', () => {
+    for (const c of ['a && b', 'a ; b || c', 'echo "x && y" ; z', 'solo']) {
+      expect(commandSteps(c).flat().map((s) => s.text)).toEqual(shellSegments(c))
+    }
+  })
+  it('allows at most 4 steps', () => {
+    expect(inlineAllowable(sh('a && b && c && d'))).toBe(true)
+    expect(inlineAllowable(sh('a && b && c && d && e'))).toBe(false)
+    expect(inlineRefusal(sh('a && b && c && d && e'))).toBe('5 steps: open it to review')
+  })
+  it('says the true reason for each refusal and agrees with inlineAllowable', () => {
+    const cases: [string, string | null][] = [
+      ['npm test', null],
+      ['cd x && npm test', null],
+      ['npm test\u202e', 'Hidden characters: open it to review'],
+      ['npm  test', 'Extra spaces could hide part of it: open it to review'],
+      ['npm\ttest', 'Extra spaces could hide part of it: open it to review'],
+      ['x'.repeat(240), 'Long command (240 characters): open it to review'],
+      ['a\nb\nc', '3 lines: open it to review'],
+      ['a && b && c && d && e', '5 steps: open it to review']
+    ]
+    for (const [c, reason] of cases) {
+      expect(inlineRefusal(sh(c))).toBe(reason)
+      expect(inlineAllowable(sh(c))).toBe(reason === null)
+    }
+    expect(inlineAllowable({ toolName: 'PowerShell', input: {} })).toBe(false)
+    expect(inlineRefusal({ toolName: 'PowerShell', input: {} })).not.toBeNull()
+    expect(inlineRefusal({ toolName: 'Edit', input: { file_path: 'a' } })).toBeNull()
   })
   it('refuses a shell request without a command', () => {
     expect(inlineAllowable({ toolName: 'PowerShell', input: {} })).toBe(false)
@@ -72,6 +113,7 @@ describe('inlineAllowable', () => {
   it('sets the row mode', () => {
     expect(permissionInlineMode(sh('npm test'))).toBe('allow')
     expect(permissionInlineMode(sh('a\nb\nc'))).toBe('none')
+    expect(permissionInlineMode(sh('cd x && npm test'))).toBe('allow')
   })
 })
 
@@ -106,10 +148,16 @@ describe('permissionAsk', () => {
     const a = permissionAsk(sh('npm test'), 'impl-2')
     expect(a).toMatchObject({ kind: 'shell', lead: 'impl-2 wants to run:', object: 'npm test', long: false, text: 'impl-2 wants to run npm test' })
   })
-  it('flags a long command and shows its first line only', () => {
+  it('flags a long command and shows its first line and its last step', () => {
     const a = permissionAsk(sh('a\nb\nc'), 'x')
     expect(a.long).toBe(true)
-    expect(a.object).toBe('a')
+    expect(a.object).toBe('a\n… c')
+    const long = `cd ${'d/'.repeat(100)} && npm test`
+    const b = permissionAsk(sh(long), 'x')
+    expect(b.long).toBe(true)
+    expect(b.object.split('\n')[1]).toBe('… && npm test')
+    expect(b.object.split('\n')[0].length).toBeLessThanOrEqual(100)
+    expect(permissionAsk(sh('x'.repeat(240)), 'x').object).toHaveLength(100)
   })
   it('writes hidden characters out', () => {
     const a = permissionAsk(sh('echo \u202ehi'), 'x')
@@ -164,5 +212,6 @@ describe('Recently ended and Paused', () => {
     expect(pausedCaption({ autoResume: false })).toBe('waits for you to continue')
     expect(pausedCaption({ autoResume: true })).toBe('waits for you to continue')
     expect(pausedCaption({ autoResume: true, pausedUntil: new Date(2026, 10, 7, 14, 5).getTime() }, 'en-GB')).toBe('resumes at 14:05 if OrgAI stays open')
+    expect(pausedCaption({ autoResume: true, pausedUntil: new Date(2026, 10, 7, 2, 27).getTime() }, 'en-US')).toMatch(/^resumes at 2:27\s?AM if/)
   })
 })

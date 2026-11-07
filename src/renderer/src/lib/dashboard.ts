@@ -238,6 +238,8 @@ export interface StatusInput {
   pausedUntil?: number | null
   /** Runs OrgAI cut while they waited on the user. */
   closedWaiting: number
+  /** True when there are projects and no decision is open (the bell's count is 0): the sentence says so. */
+  nothingNeedsYou?: boolean
 }
 
 /**
@@ -258,6 +260,7 @@ export function statusSentence(input: StatusInput): string {
   }
   const cut = Math.max(0, Math.floor(input.closedWaiting))
   if (cut > 0) parts.push(`${cut} ${cut === 1 ? 'was' : 'were'} waiting on you when OrgAI closed`)
+  if (input.nothingNeedsYou) parts.push('Nothing needs you')
   return `${parts.join('. ')}.`
 }
 

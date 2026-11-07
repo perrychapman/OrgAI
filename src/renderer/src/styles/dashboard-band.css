@@ -6,11 +6,18 @@
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--elev-1);
 }
 .dash-now .dash-section-head {
   justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.dash-now[hidden] {
+  display: none;
 }
 .dash-now-counts {
   margin: 0;
@@ -201,11 +208,12 @@
   line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
 }
+/* Amber stays on the Needs you row (walk-3): a waiting run keeps its amber dot and the word, no tint. */
 .dash-run-cap[data-warn='true'] {
-  color: var(--warning-text);
+  color: var(--text-secondary);
 }
-.dash-run[data-group='waiting'] > .dash-run-head {
-  background: var(--warning-soft);
+.dash-run[data-group='waiting'] .dash-run-head .dash-status {
+  color: var(--warning-text);
 }
 
 /* ---- Agent rows (6.4), reporting lines (3.2) ---- */
@@ -326,7 +334,7 @@
   color: var(--danger-text);
 }
 .dash-agent-row[data-state='waiting'] .dash-activity {
-  color: var(--warning-text);
+  color: var(--text-secondary);
 }
 .dash-agent-row[data-state='failed'] .dash-activity {
   color: var(--danger-text);

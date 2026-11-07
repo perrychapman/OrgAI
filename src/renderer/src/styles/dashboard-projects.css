@@ -67,34 +67,35 @@
   gap: var(--space-1);
   min-width: 0;
   padding: var(--space-3) var(--space-4);
-  background: var(--surface-1);
+  /* No fill, no shadow: the page is the surface. Amber lives only on the Needs you row (designer, walk 3). */
+  background: transparent;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--elev-1);
-  transition: border-color var(--dur-fast);
+  border-radius: var(--radius-md);
+  transition:
+    border-color var(--dur-fast),
+    background-color var(--dur-fast);
 }
 .project-tile:hover,
 .project-tile:has(.project-tile-main:focus-visible) {
+  background: var(--surface-2);
   border-color: var(--border-strong);
-}
-.project-tile[data-state='decisions'] {
-  background: var(--warning-soft);
-  border-color: var(--warning-border);
 }
 .project-tile[data-state='live'] {
   /* The 2 px working edge sits inside the radius, so the corner stays clean. */
-  box-shadow: var(--elev-1), inset 2px 0 0 var(--state-working);
+  box-shadow: inset 2px 0 0 var(--state-working);
 }
 
 .project-tile-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: var(--space-2);
+  /* Room for More, which sits top right (it is last in the DOM, after the chips). */
+  min-height: var(--control-sm);
 }
 .project-tile-title {
   margin: 0;
   min-width: 0;
+  flex: 1 1 auto;
+  padding-right: var(--control-sm);
   font-size: var(--text-title-sm);
   line-height: var(--text-title-sm-lh);
   font-weight: var(--weight-semibold);
@@ -119,7 +120,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
 }
 .project-tile-main:focus-visible {
   outline: none;
@@ -129,8 +130,64 @@
   outline-offset: -2px;
 }
 .project-tile-more {
-  position: relative;
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
   z-index: 1;
+}
+
+/* The team row: a tiny subway line, the root as an interchange, then up to seven roles in chart order. */
+.tile-team {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 14px;
+  margin-top: var(--space-1);
+  min-width: 0;
+}
+.tile-team-marks {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* The line runs from the root's edge to the last mark's centre, behind the marks. */
+.tile-team-marks[data-line]::before {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 5px;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  background: var(--tile-team-line, var(--border-strong));
+}
+.tile-team-root,
+.tile-team-mark {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
+  border-radius: var(--radius-full);
+}
+.tile-team-root {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--role);
+  background: radial-gradient(circle, var(--role) 0 2px, transparent 2.5px);
+}
+.tile-team-mark {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--role);
+  background: color-mix(in oklab, var(--role) 70%, var(--surface-1));
+}
+.tile-team-more {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  line-height: 14px;
+  color: var(--text-tertiary);
 }
 
 /* Dot and text on one grid row: a wrapped text sits beside the dot, never under it (walk-2 L2). */
@@ -144,6 +201,14 @@
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
+}
+/* Only the decision part of the line takes the amber; the dot stays --state-waiting. */
+.project-tile-decisions {
+  color: var(--warning-text);
+}
+.project-tile-run-lead {
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
 }
 .project-tile-status > .badge {
   grid-column: 2;

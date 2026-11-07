@@ -96,6 +96,9 @@
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-1) var(--space-4);
+  /* The instrument's head: a hairline under it (shared with the Right now band). */
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .dash-strip-title {
   margin: 0;
@@ -120,7 +123,7 @@
 }
 .dash-strip-totals dd {
   margin: 0;
-  color: var(--text-primary);
+  color: var(--text-secondary);
 }
 
 .dash-strip-days {
@@ -242,6 +245,12 @@
     display: none;
   }
 }
+/* The initials beside the two end labels would sit on the labels' overhang: gone while a column is under 40 px. */
+@container dash-strip (max-width: 640px) {
+  .dash-strip-initial[data-near-end] {
+    display: none;
+  }
+}
 
 .dash-strip-readout {
   margin: 0;
@@ -255,9 +264,6 @@
 
 /* ---------- To set up (section 8) ---------- */
 
-.dash-setup-row {
-  border-left: 2px solid var(--warning-border);
-}
 .dash-setup-text {
   justify-content: center;
   padding: var(--space-2) var(--space-3);
