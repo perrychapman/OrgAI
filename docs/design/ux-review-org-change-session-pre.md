@@ -160,3 +160,9 @@ Positives worth keeping: the pointer is quiet in both themes (plain line with a 
 - Sidebar run row's accessible name for status; org retrospective (M3); a second project and cross-project jump; an engagement project; run-scoped windows.
 - Reaching `R?` through `runTag` callers while history loads (CLAUDE.md lists it as open); I did not catch a loading moment.
 - macOS, Linux, a real Architect, packaged builds.
+
+### UI Lead follow-up after the re-walk (fc515440)
+
+- M-new-2 fixed: the New run page's "Setup is not finished" state offers "Open the org change session" / "Open the setup session" (`new-run-open-setup`) while an Architect session of the project is live, instead of "Resume setup". Typecheck only; not driven by e2e.
+- L-new-2 fixed: the start notice is now "Org change session started. Its questions and proposals appear here." (no sidebar promise the rail cannot keep).
+- Still open: M-new-1 (focus lands on the card's "Details" button in the compact frame at 1024x640; owned by the DecisionCard / tray focus code, outside this change), L-new-1, L-new-3, L-new-4, L3 (title cut).
