@@ -49,7 +49,8 @@ async function timed<T>(label: string, fn: () => Promise<T>): Promise<{ value: T
   return { value, ms }
 }
 
-describe('preview timings', () => {
+/** Run by hand: OUTPUTS_MEASURE=1 npx vitest run src/main/outputs/preview.measure.test.ts (timings swing 2x under load, so it never gates CI). */
+describe.runIf(process.env.OUTPUTS_MEASURE === '1')('preview timings', () => {
   it('xlsx 10,000 x 26 and 1,000 x 256', async () => {
     console.log(`[measure] machine: ${cpus()[0]?.model ?? '?'} x${cpus().length}, ${process.platform}, node ${process.version}`)
     for (const [rows, cols] of [[10_000, 26], [1_000, 256]] as const) {
