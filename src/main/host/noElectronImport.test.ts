@@ -39,6 +39,7 @@ const PURE_NODE_MODULES = [
   '../runtime/codex',
   '../runtime/mock',
   '../mcp/service',
+  '../reference/appReference',
   '../connections/service',
   '../skills/service',
   '../kit/service',
