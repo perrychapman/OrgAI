@@ -48,7 +48,24 @@ async function until(check: () => boolean, ms: number): Promise<boolean> {
   return check()
 }
 
-/** The host environment: this process's, without any ORGAI_* of the developer's shell, on the mock adapter. */
+/**
+ * host.stop without force is refused while a background task runs. The boot-time `claude auth status` probe counts as
+ * one (it holds the data folder as its cwd), and on a CI runner with the CLI it can still be running a moment after
+ * ready, so a stop sent at once gets { stopping: false, refusedBecause: { backgroundTasks } }. Retry until it is
+ * accepted (the probe is bounded by its own 15 s timeout) and fail with the last refusal.
+ */
+async function stopHost(client: { call<T>(channel: string, args: unknown[]): Promise<T> }): Promise<{ stopping: boolean }> {
+  const end = Date.now() + 25_000
+  let last: { stopping: boolean; refusedBecause?: unknown } = { stopping: false }
+  while (Date.now() < end) {
+    last = await client.call<{ stopping: boolean; refusedBecause?: unknown }>('host.stop', [{ force: false }])
+    if (last.stopping) return last
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  throw new Error(`host.stop stayed refused: ${JSON.stringify(last)}`)
+}
+
+/** The host environment:this process's, without any ORGAI_* of the developer's shell, on the mock adapter. */
 function hostEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ORGAI_')) env[k] = v
@@ -95,7 +112,7 @@ describe.skipIf(!posix || !existsSync(bundle))('Node background host (real proce
     await expect(res.client.call('runs:decide', [{}])).rejects.toThrow(/orgai terminal-access --level full/)
     const status = await res.client.call<HostStatusResult>('host.status', [])
     expect(status).toMatchObject({ hostKind: 'node', state: 'ready', mock: true })
-    await expect(res.client.call('host.stop', [{ force: false }])).resolves.toMatchObject({ stopping: true })
+    await expect(stopHost(res.client)).resolves.toMatchObject({ stopping: true })
     res.client.close()
 
     expect(await l.waitForGone({ timeoutMs: 20_000, hostInstanceId: ready!.hostInstanceId })).toBe(true)
@@ -139,7 +156,7 @@ describe.skipIf(!posix || !existsSync(bundle))('Node background host (real proce
 
     const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
     if (!res.ok) throw new Error(`${res.reason}: ${res.message}`)
-    await res.client.call('host.stop', [{ force: false }])
+    await stopHost(res.client)
     res.client.close()
     expect(await a.waitForGone({ timeoutMs: 20_000, hostInstanceId: ra!.hostInstanceId })).toBe(true)
     expect(await until(() => !alive(ra!.pid), 10_000)).toBe(true)
