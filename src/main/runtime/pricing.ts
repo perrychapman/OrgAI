@@ -166,7 +166,7 @@ export interface PricingContext {
   connection?: ConnectionId
   overrides: readonly ModelPriceOverride[]
   /**
-   * The run's proxy prices (RunConnection.pricing, LiteLLM only). When absent, proxy prices are read from `catalog`
+   * The run's proxy prices (RunConnection.pricing, a proxy that reported prices). When absent, proxy prices are read from `catalog`
    * (models of `connection` with ProviderModel.price).
    */
   pricing?: Record<string, ModelPrice>

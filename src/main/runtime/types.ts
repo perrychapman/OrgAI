@@ -78,7 +78,7 @@ export interface RunConnection {
    * Extra environment for the adapter's child process. The Claude adapter merges it over an isolated copy of
    * process.env (childEnv.ts isolateClaudeEnv: a user's gateway, model and cloud-provider variables never reach a
    * run), so this is the only source of routing variables.
-   * Claude adapter on LiteLLM: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and
+   * Claude adapter on a proxy: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and
    * ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL. On the anthropic connection: ANTHROPIC_API_KEY (copied from
    * the project's auth.envVar) for an API-key project whose variable is set, else empty (the Claude Code login or
    * CLAUDE_CODE_OAUTH_TOKEN authenticates). Secret values here are redacted from logs (collectSecrets).
@@ -88,12 +88,12 @@ export interface RunConnection {
   env?: Record<string, string>
   /** Codex adapter: how it authenticates. 'chatgpt' = the login Codex keeps in CODEX_HOME. */
   codexAuth?: 'chatgpt' | 'apiKey'
-  /** Codex adapter with an API key (OpenAI env var or LiteLLM key). Secret. */
+  /** Codex adapter with an API key (OpenAI env var or proxy key). Secret. */
   apiKey?: string
-  /** Codex adapter on LiteLLM: the OpenAI-compatible base URL ("<litellm baseUrl>/v1"). */
+  /** Codex adapter on a proxy: the OpenAI-compatible base URL ("<proxy baseUrl>/v1"). */
   openaiBaseUrl?: string
   /**
-   * LiteLLM only: token prices by model id from the catalog (ProviderModel.price, read from /model/info). Keys are
+   * Proxy only (a litellm-kind proxy that reported prices): token prices by model id from the catalog (ProviderModel.price, read from /model/info). Keys are
    * the proxy's model names, plus the bare upstream model (litellm_params.model without its "provider/" prefix) when
    * no model name already has it, since a proxy may answer with the upstream name. Look up with pricing.ts
    * `priceFor` (date suffixes and provider prefixes are tolerated). Missing or no match = no estimate (cost 0;
@@ -101,7 +101,7 @@ export interface RunConnection {
    */
   pricing?: Record<string, ModelPrice>
   /**
-   * The connection's tier mapping at run start (AppSettings.connections[connection].tierModels), for tier-driven
+   * The connection's tier mapping at run start (the connection's record, connectionRecord(settings, connection).tierModels), for tier-driven
    * choices inside a run: steering deep/top spawns to the everyday tier near a plan limit, and mapping the tier names
    * of proposed org chart roles. Missing on mock runs. Not secret.
    */
