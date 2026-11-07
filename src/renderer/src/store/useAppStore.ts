@@ -62,6 +62,33 @@ import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTea
 import { displayProject, type RunLayout } from '../lib/assistants'
 import { countsAsSessionChange } from '../lib/chatPermissions'
 import { connectionLabel, setConnectionRegistry } from '../lib/connectionLabel'
+import { bucketPickOf, defaultUsageFilters, parseStoredUsage, storedUsage, type UsageFilters, type UsagePeriod } from '../lib/usageOverview'
+
+/** localStorage key of the Usage page's period and bucket (docs/design/usage-app.md 3.5). */
+const USAGE_STORAGE_KEY = 'orgai.usage.v1'
+
+function initialUsageFilters(): UsageFilters {
+  try {
+    return { ...defaultUsageFilters(), ...parseStoredUsage(window.localStorage.getItem(USAGE_STORAGE_KEY), Date.now()) }
+  } catch {
+    return defaultUsageFilters()
+  }
+}
+
+/** Where the Usage page should land after `openUsage` (a section heading), bumped per request. */
+export interface UsageFocusRequest {
+  section?: 'usage-efficiency' | 'usage-runs'
+  seq: number
+}
+
+export interface OpenUsageOptions {
+  /** Narrow to these projects (replaces the project selection; other narrowings are cleared). */
+  projectIds?: string[]
+  period?: UsagePeriod
+  /** A local day (any time in it): opens on 30 days with the Day chip (Dashboard strip). */
+  day?: number
+  section?: 'usage-efficiency' | 'usage-runs'
+}
 
 /** Project tabs: run (Live), history, knowledge (engagements only), team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
@@ -77,7 +104,7 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'appSettings'
+export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'appSettings' | 'usage'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
 export type SideTab = 'transcript' | 'plan' | 'usage' | 'outputs' | 'knowledge' | 'logs'
 
@@ -281,6 +308,20 @@ interface AppState {
   startLibraryAssist(instruction?: string, allowBuild?: boolean): Promise<RunSummary>
   selectedProjectId: string | null
   view: View
+  /**
+   * The app-wide Usage page's filters (docs/design/usage-app.md 3.5): kept in memory for the window's session; only
+   * period and bucket persist (localStorage orgai.usage.v1).
+   */
+  usageFilters: UsageFilters
+  /** Replace the Usage filters (persists period and bucket). */
+  setUsageFilters(next: UsageFilters): void
+  usageFocus: UsageFocusRequest | null
+  /** Show the Usage page (never changes the selected project); options narrow it (entry points 2, 13). */
+  openUsage(opts?: OpenUsageOptions): void
+  /** A run was opened from the Usage page (7.3); its Usage tab opens wide. Cleared when the user leaves the run view. */
+  usageReturn: { runId: string } | null
+  /** Open a run from the Usage page in its project, on its Usage side tab (7.3). */
+  openUsageRun(projectId: string, runId: string): Promise<void>
   /** Bumped by openNewProject(); the Dashboard opens its New project form when it changes. */
   newProjectRequest: number
   saveStatus: SaveStatus
@@ -881,6 +922,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
+  usageFilters: initialUsageFilters(),
+  usageFocus: null,
+  usageReturn: null,
   newProjectRequest: 0,
   saveStatus: { state: 'idle' },
   selectedRoleId: null,
@@ -1442,10 +1486,42 @@ export const useAppStore = create<AppState>((set, get) => ({
     const view = normalizeView<View>(requested)
     set((s) => {
       const id = view === 'run' ? activeRun(s)?.summary.id : undefined
-      if (!id || !s.unreadByRun[id]) return { view }
+      const leave = view !== 'run' && s.usageReturn ? { usageReturn: null } : {}
+      if (!id || !s.unreadByRun[id]) return { view, ...leave }
       const { [id]: _read, ...unreadByRun } = s.unreadByRun
-      return { view, unreadByRun }
+      return { view, unreadByRun, ...leave }
     })
+  },
+
+  setUsageFilters(next) {
+    set({ usageFilters: next })
+    try {
+      window.localStorage.setItem(USAGE_STORAGE_KEY, storedUsage(next))
+    } catch {
+      // storage unavailable: the choice is kept for this window only
+    }
+  },
+
+  openUsage(opts = {}) {
+    const cur = get().usageFilters
+    let next = cur
+    if (opts.projectIds || opts.day !== undefined || opts.period) {
+      // An entry point that narrows starts from a clean view (only its own narrowing), keeping the bucket choice.
+      next = { ...defaultUsageFilters(), bucket: cur.bucket, period: opts.period ?? (opts.day !== undefined ? { kind: 'days', days: 30 } : cur.period) }
+      if (opts.projectIds) next.projectIds = [...opts.projectIds]
+      if (opts.day !== undefined) next.bucketPick = bucketPickOf({ start: opts.day }, 'day')
+      get().setUsageFilters(next)
+    }
+    const seq = (get().usageFocus?.seq ?? 0) + 1
+    set({ view: 'usage', usageReturn: null, usageFocus: opts.section ? { section: opts.section, seq } : { seq } })
+  },
+
+  async openUsageRun(projectId, runId) {
+    await get().focusRun(projectId, runId)
+    const s = get()
+    const shown = s.selectedProjectId ? s.activeRunByProject[s.selectedProjectId] : undefined
+    if (!shown) return
+    set((st) => ({ view: 'run', usageReturn: { runId: shown }, sideTabByRun: { ...st.sideTabByRun, [shown]: 'usage' } }))
   },
 
   setSaveStatus(status) {

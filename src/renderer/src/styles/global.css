@@ -1,5 +1,7 @@
 /* Entry point: tokens first, then the feature partials, then reset/base. */
 @import './tokens.css';
+/* Shared motion recipes (docs/design/motion.md 2.1): keyframes, .motion-* classes, disclosure and collapse. */
+@import './motion.css';
 @import './shell.css';
 @import './controls.css';
 @import './ui.css';
@@ -87,10 +89,12 @@ textarea {
 
 /* ---------- Animations ---------- */
 
+/* The one live cue (docs/design/motion.md 3.18): animation: breathe var(--dur-pulse) var(--ease-in-out) infinite.
+   Amplitude stays within 0.3 of opacity and 3 % of size. */
 @keyframes breathe {
   0%,
   100% {
-    opacity: 0.45;
+    opacity: 0.7;
     transform: scale(0.97);
   }
   50% {
@@ -118,16 +122,6 @@ textarea {
     opacity: 0.2;
   }
 }
-@keyframes pop-in {
-  from {
-    opacity: 0;
-    transform: scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
 
 /* Reduced motion: system preference, or AppearanceSettings.reduceMotion = 'on' (data-reduce-motion on <html>, set by lib/theme.ts). */
 @media (prefers-reduced-motion: reduce) {
@@ -147,6 +141,25 @@ textarea {
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
   scroll-behavior: auto !important;
+}
+/* Kept as separate rules so a pseudo-element an engine does not know never drops the rules above. */
+@media (prefers-reduced-motion: reduce) {
+  *::backdrop {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *::details-content {
+    transition-duration: 0.01ms !important;
+  }
+}
+[data-reduce-motion='on'] *::backdrop {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
+}
+[data-reduce-motion='on'] *::details-content {
+  transition-duration: 0.01ms !important;
 }
 /* Spinners and skeletons stop entirely instead of looping at 0.01ms. */
 [data-reduce-motion='on'] .spin,

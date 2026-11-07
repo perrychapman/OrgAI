@@ -805,3 +805,76 @@
 .save-project-folder {
   overflow-wrap: anywhere;
 }
+
+/* ---------- Motion: tray, cards, banners (docs/design/motion.md 3.8, 3.10) ----------
+   Entries apply only to arrivals (the components decide); every duration is a token, so reduced motion makes all of this
+   instant. Nothing here blocks input: a leaving node is inert and gone within --dur-fast. */
+
+/* The tray opens (height and opacity) while the user is on the run. Opacity and block size only; interpolate-size is on :root. */
+@keyframes tray-open {
+  from {
+    block-size: 0;
+    padding-block: 0;
+    opacity: 0;
+  }
+}
+.frame-tray[data-arrive='true'] {
+  animation: tray-open var(--dur-base) var(--ease-in-out) backwards;
+}
+/* The tray empties: fade and fold shut together, then the component unmounts it. */
+.frame-tray[data-state='out'] {
+  block-size: 0;
+  min-block-size: 0;
+  padding-block: 0;
+  opacity: 0;
+  overflow: clip;
+  border-top-width: 0;
+  transition:
+    block-size var(--dur-fast) var(--ease-in),
+    padding-block var(--dur-fast) var(--ease-in),
+    opacity var(--dur-fast) var(--ease-in);
+}
+/* The arriving card: 12 px rise plus the one-shot ring on the wrapper, which takes the card's corners. */
+.frame-tray > .decision.motion-ring {
+  border-radius: var(--radius-lg);
+}
+/* Under reduced motion the ring is not drawn at all. */
+@media (prefers-reduced-motion: reduce) {
+  .motion-ring::after {
+    display: none;
+  }
+}
+:root[data-reduce-motion='on'] .motion-ring::after {
+  display: none;
+}
+
+/* Banner presence: a height reveal on arrival, fade plus fold on a leave. Content stays visible, so a role=alert still speaks. */
+@keyframes banner-reveal {
+  from {
+    block-size: 0;
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
+  }
+}
+.banner-presence[data-arrive='true'] {
+  overflow: clip;
+  overflow-clip-margin: 4px;
+  animation: banner-reveal var(--dur-base) var(--ease-out) backwards;
+}
+
+/* A row or banner leaving by the user's own action (Clear, an answered decision, Dismiss): fade and fold, siblings glide up.
+   --leave-gap is the list's row gap, folded away with the row. */
+.leave-collapse[data-state='out'] {
+  block-size: 0;
+  min-block-size: 0;
+  padding-block: 0;
+  margin-block: 0 calc(var(--leave-gap, 0px) * -1);
+  border-width: 0;
+  opacity: 0;
+  overflow: clip;
+  transition:
+    block-size var(--dur-fast) var(--ease-in),
+    padding-block var(--dur-fast) var(--ease-in),
+    margin-block var(--dur-fast) var(--ease-in),
+    opacity var(--dur-fast) var(--ease-in);
+}

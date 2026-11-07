@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ChartColumn, ClipboardCopy, Download } from 'lucide-react'
+import { ArrowUpRight, ChartColumn, ClipboardCopy, Download } from 'lucide-react'
+import { Icon } from './ui/Icon'
 import type { RunKind, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
 import { useAppStore, useProjectSummaries } from '../store/useAppStore'
 import { Cost } from './ui/Cost'
@@ -10,6 +11,7 @@ import { EmptyState } from './ui/EmptyState'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { costView, formatDuration, formatTokens, type CostInput } from '../lib/cost'
 import { cleanIpcError } from '../lib/ipcError'
+import type { UsagePeriod } from '../lib/usageOverview'
 import {
   barFractions,
   bucketLabel,
@@ -35,6 +37,13 @@ import {
 } from '../lib/trends'
 
 type RangeChoice = '7' | '30' | '90' | 'month'
+
+/** Trends' range as the Usage page's period: 7 / 30 days and a month map over; 90 days leaves the page's default. */
+function usagePeriodFor(range: TrendsRange): { period?: UsagePeriod } {
+  if (range.kind === 'month') return { period: { kind: 'months', from: range.month, to: range.month } }
+  if (range.days === 7 || range.days === 30) return { period: { kind: 'days', days: range.days } }
+  return {}
+}
 
 const ALL_KINDS: RunKind[] = ['work', 'setup', 'mcp-assist', 'skill-assist']
 
@@ -66,6 +75,7 @@ export default function UsageTrends({ projectId }: { projectId: string }): React
   const [attempt, setAttempt] = useState(0)
   const [csvStatus, setCsvStatus] = useState<{ text: string; failed: boolean } | null>(null)
   const [csvBusy, setCsvBusy] = useState(false)
+  const openUsage = useAppStore((s) => s.openUsage)
   const projectName = useAppStore((s) => s.projects.find((p) => p.id === projectId)?.name ?? '')
   const months = useMemo(() => monthOptions(Date.now()), [])
   const rangeKey = rangeToKey(range)
@@ -205,6 +215,12 @@ export default function UsageTrends({ projectId }: { projectId: string }): React
           </p>
         </div>
       </div>
+      <p className="trends-see-all">
+        <button type="button" className="link-btn" data-testid="trends-see-all" onClick={() => openUsage({ projectIds: [projectId], ...usagePeriodFor(range) })}>
+          See all projects
+          <Icon icon={ArrowUpRight} size="xs" />
+        </button>
+      </p>
       <div className="trends-scroll" aria-busy={loading}>
         {error ? (
           <Banner

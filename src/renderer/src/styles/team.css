@@ -316,7 +316,7 @@
 }
 .mcp-row.is-flash,
 .cs-row.is-flash {
-  animation: skill-flash 1.8s ease-out;
+  animation: skill-flash calc(var(--dur-slow) * 4) var(--ease-out);
 }
 /* The Evaluate button sits under the folded results. */
 .skill-eval-actions {

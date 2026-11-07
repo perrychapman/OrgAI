@@ -28,6 +28,9 @@ export const ATLAS_SURFACE_IDS = [
   'dashboard-new-project-template',
   'dashboard-new-project-import',
   'dashboard-needs-you',
+  'usage',
+  'usage-efficiency',
+  'usage-runs',
   'app-sidebar',
   'app-needs-you',
   'app-account',
@@ -355,6 +358,43 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
 
   // ----- Shell -----
+  // ----- Usage (app-wide; docs/design/usage-app.md) -----
+  {
+    id: 'usage',
+    label: 'Usage',
+    path: ['Usage'],
+    kind: 'view',
+    scope: 'app',
+    summary: 'App-wide usage: cost over time, by project, model and role, and which runs wasted the most.',
+    reach: [
+      { via: 'sidebar', label: 'Usage' },
+      { via: 'menu', action: 'show-usage' },
+      { via: 'button', label: 'Last 14 days', on: 'dashboard' },
+      { via: 'button', label: 'See all projects', on: 'project-history-trends' },
+      { via: 'button', label: 'All usage', on: 'run-usage' }
+    ],
+    testIds: ['usage-view', 'nav-usage', 'usage-filters', 'usage-summary', 'usage-spend', 'usage-projects-panel', 'usage-models', 'usage-roles']
+  },
+  {
+    id: 'usage-efficiency',
+    label: 'Efficiency',
+    path: ['Usage', 'Efficiency'],
+    kind: 'section',
+    scope: 'app',
+    summary: 'Cache hit, cost per run, tokens per turn, retries, tokens spent with no result, nudges, waiting and idle time, and Team against Ask runs, plus the runs worth a look.',
+    reach: [{ via: 'sidebar', label: 'Usage' }, { via: 'menu', action: 'show-usage' }],
+    testIds: ['usage-efficiency', 'usage-eff-item', 'usage-wasteful']
+  },
+  {
+    id: 'usage-runs',
+    label: 'All runs',
+    path: ['Usage', 'All runs'],
+    kind: 'section',
+    scope: 'app',
+    summary: 'Every run in the Usage page filters with its project, kind, models, tokens, cost and time. A row opens the run on its Usage tab.',
+    reach: [{ via: 'sidebar', label: 'Usage' }, { via: 'menu', action: 'show-usage' }],
+    testIds: ['usage-runs', 'usage-run-row', 'usage-run-open']
+  },
   {
     id: 'app-sidebar',
     label: 'Sidebar',
@@ -1526,5 +1566,6 @@ export const MENU_ACTION_DOCS: Readonly<Record<MenuAction, string>> = {
   'open-run-window': 'Run > Open in new window: shows the run in its own window.',
   'canvas-zoom-in': 'View > Canvas > Zoom in: zooms the live canvas in.',
   'canvas-zoom-out': 'View > Canvas > Zoom out: zooms the live canvas out.',
-  'ask-about-orgai': 'Help > Ask OrgAI about itself…: opens Chat ready for a question about the app.'
+  'ask-about-orgai': 'Help > Ask OrgAI about itself…: opens Chat ready for a question about the app.',
+  'show-usage': 'View > Usage: opens the app-wide Usage page (every project and the assistants).'
 }

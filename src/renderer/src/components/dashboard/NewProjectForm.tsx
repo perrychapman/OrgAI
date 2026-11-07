@@ -6,6 +6,7 @@ import { PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
 import { projectConnection } from '@shared/defaults'
 import { connectionLabel, isProxyId } from '../../lib/connectionLabel'
 import { useAppStore } from '../../store/useAppStore'
+import { useReducedMotion } from '../../lib/canvas'
 import { cleanIpcError } from '../../lib/ipcError'
 import { examplePath } from '../../lib/platform'
 import { effectiveSetupChoice, foundLine, otherToolAgents, setupChoiceLabel, setupSubmitLabel, templateChoiceHint, totalAgents, type SetupChoice } from '../../lib/agentImport'
@@ -260,6 +261,7 @@ export function NewProjectForm({
   const current = check && check.path === checkKey ? check.result : null
   // Before the clone exists the check only answers "may it go there": no setup choice, name or status from it.
   const folderCheck = github && !cloned ? null : current
+  const reducedMotion = useReducedMotion()
   // Only when the clone lands and when its folder check answers, never on every render (it would fight the user's scrolling).
   useEffect(() => {
     if (!cloned || !revealChoice.current) return undefined
@@ -267,7 +269,9 @@ export function NewProjectForm({
     const form = line?.closest('form')
     const choice = form?.querySelector<HTMLElement>('.form-options')
     if (!line || !form || !choice) return undefined
-    const raf = requestAnimationFrame(() => {
+    // The cloned block rises in over --dur-base; scroll once it has settled (never delayed under reduced motion).
+    let raf = 0
+    const scrollToCloned = (): void => {
       scrollWithin(line, 'start')
       const box = scrollContainerOf(line)
       const bar = form.querySelector<HTMLElement>('.form-submit')
@@ -277,10 +281,19 @@ export function NewProjectForm({
         // Never push the cloned line out of the top for it.
         if (over > 0) box.scrollTop += Math.min(over, Math.max(0, c.top - box.getBoundingClientRect().top))
       }
-    })
+    }
+    const run = (): void => {
+      raf = requestAnimationFrame(scrollToCloned)
+    }
+    const wait = reducedMotion ? 0 : 160 + 50 // --dur-base + 50 ms
+    const timer = wait > 0 ? window.setTimeout(run, wait) : undefined
+    if (timer === undefined) run()
     // Keep revealing until the folder check has answered (the choice grows then); once it has, stop.
     if (folderCheck) revealChoice.current = false
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      window.clearTimeout(timer)
+      cancelAnimationFrame(raf)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloned, folderCheck])
   const status = github && !cloned ? null : pathStatus(kind, folder, folderCheck, projectKind ?? 'code')
@@ -293,6 +306,20 @@ export function NewProjectForm({
   const found = engagement && !hasAgents ? null : foundLine(folderCheck)
   const templateList = templates ?? []
   const hasTemplates = templateList.length > 0
+  // Entry motion (spec 3.15): regions that appear after the form was first shown rise in; what is there at first paint,
+  // or comes back with a parked draft, never animates. Regions still unmount (tests and submit read their absence).
+  const formReady = useRef(false)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      formReady.current = true
+    })
+    return () => cancelAnimationFrame(id)
+  }, [])
+  const showsChoice = !team && (hasAgents || hasTemplates)
+  const [choiceEnter, setChoiceEnter] = useState(false)
+  useEffect(() => {
+    setChoiceEnter(showsChoice && formReady.current)
+  }, [showsChoice])
   const choice: SetupChoice = team ? (teamArchitect ? 'architect' : 'team') : effectiveSetupChoice(hasAgents, picked, architect, hasTemplates)
   // The Brief field is for the Architect; a team that is used as it is needs none.
   const askBrief = team ? choice === 'architect' : !hasAgents || choice === 'architect'
@@ -561,7 +588,7 @@ export function NewProjectForm({
   )
 
   const teamPanel = team ? (
-    <TeamFoundPanel found={team} existingName={existingId ? current?.existingProjectName : undefined} blocker={teamBlocker} otherToolAgents={otherToolAgents(folderCheck)} />
+    <TeamFoundPanel animate={formReady.current} found={team} existingName={existingId ? current?.existingProjectName : undefined} blocker={teamBlocker} otherToolAgents={otherToolAgents(folderCheck)} />
   ) : null
 
   return (
@@ -711,6 +738,7 @@ export function NewProjectForm({
       ) : projectKind === null ? null : github ? (
         <>
           <RepoStartPanel
+            animate={formReady.current}
             uid={uid}
             fields={repo}
             onFields={(patch) => setRepo((r) => ({ ...r, ...patch }))}
@@ -808,7 +836,7 @@ export function NewProjectForm({
             />
           )
         ) : hasAgents || hasTemplates ? (
-          <fieldset className="import-choice" data-testid="setup-choice">
+          <fieldset className={choiceEnter ? 'import-choice motion-enter' : 'import-choice'} data-testid="setup-choice">
             <legend>How should the team start?</legend>
             {(hasTemplates
               ? hasAgents

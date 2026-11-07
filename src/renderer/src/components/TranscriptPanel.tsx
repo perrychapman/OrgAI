@@ -50,6 +50,9 @@ import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
+import { arriveClass, followBehavior } from '../lib/transcriptFollow'
+import { useArrival } from '../lib/useArrival'
+import { useReducedMotion } from '../lib/canvas'
 import { collapseSelfHelp, type SelfHelpRow } from '../lib/selfHelpRows'
 import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
 import RunOutputs from './outputs/RunOutputs'
@@ -168,11 +171,11 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
  * A cross-run note. Peer text is untrusted: it is shown as plain text (never Markdown) and the row is styled so it
  * cannot be mistaken for something the user typed.
  */
-function PeerNoteRow({ note, at }: { note: PeerNote; at: number }): ReactElement {
+function PeerNoteRow({ note, at, arrive }: { note: PeerNote; at: number; arrive?: boolean }): ReactElement {
   const index = useRunIndexes().get(note.runId)
   const incoming = note.direction === 'in'
   return (
-    <div className={`entry peer ${incoming ? 'peer-in' : 'peer-out'}`}>
+    <div className={`entry peer ${incoming ? 'peer-in' : 'peer-out'}${arriveClass(arrive)}`}>
       <div className="tag">
         <span>
           {incoming ? 'Note from run' : 'To run'} <span className="run-index">{runTag(index)}</span> ({note.peer})
@@ -184,10 +187,10 @@ function PeerNoteRow({ note, at }: { note: PeerNote; at: number }): ReactElement
   )
 }
 
-function ToolUseRow({ name, input, label }: { name: string; input: unknown; /** A sentence that needed the result (lib/knowledgeRun.ts labels). */ label?: string }): ReactElement {
+function ToolUseRow({ name, input, label, arrive }: { name: string; input: unknown; arrive?: boolean; /** A sentence that needed the result (lib/knowledgeRun.ts labels). */ label?: string }): ReactElement {
   const row = humanizeToolUse(name, input)
   return (
-    <div className="entry tool_use">
+    <div className={`entry tool_use${arriveClass(arrive)}`}>
       <Icon icon={TOOL_ICONS[row.kind]} size="sm" />
       <div className="tool-main">
         <div className="tool-label">{label ?? row.label}</div>
@@ -202,12 +205,12 @@ function ToolUseRow({ name, input, label }: { name: string; input: unknown; /** 
   )
 }
 
-function ToolResultRow({ toolName, content, isError }: { toolName?: string; content: string; isError: boolean }): ReactElement | null {
+function ToolResultRow({ toolName, content, isError, arrive }: { toolName?: string; content: string; isError: boolean; arrive?: boolean }): ReactElement | null {
   const row = humanizeToolResult(toolName, content, isError)
   if (!row) return null
   const failed = isError || !!row.failed
   return (
-    <div className={`entry tool_result${failed ? ' error' : ''}`}>
+    <div className={`entry tool_result${failed ? ' error' : ''}${arriveClass(arrive)}`}>
       <Icon icon={failed ? XCircle : CheckCircle2} size="sm" />
       <div className="tool-main">
         <div className="tool-label">{row.label}</div>
@@ -252,7 +255,7 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
  * The harness row that stands for a knowledge write (section 7): the humanised headline, an "Open" link to the item on
  * the Knowledge tab and the tool's result behind "Show output".
  */
-function KnowledgeWriteRow({ row, body, projectId, runId }: { row: KnowledgeRow; body: string | undefined; projectId: string | undefined; runId: string }): ReactElement {
+function KnowledgeWriteRow({ row, body, projectId, runId, arrive }: { arrive?: boolean; row: KnowledgeRow; body: string | undefined; projectId: string | undefined; runId: string }): ReactElement {
   const open = (): void => {
     if (!projectId || !row.focus) return
     // A run window cannot reach the project's Knowledge tab: its side tab shows the item instead (spec 3.3).
@@ -260,7 +263,7 @@ function KnowledgeWriteRow({ row, body, projectId, runId }: { row: KnowledgeRow;
     else useAppStore.getState().openKnowledgeItem({ projectId, ...row.focus })
   }
   return (
-    <div className="entry system harness knowledge-write-row" data-testid="knowledge-write-row">
+    <div className={`entry system harness knowledge-write-row${arriveClass(arrive)}`} data-testid="knowledge-write-row">
       <Icon icon={Database} size="sm" />
       <div className="tool-main">
         <span className="entry-plain">{row.text}</span>
@@ -287,7 +290,7 @@ function KnowledgeWriteRow({ row, body, projectId, runId }: { row: KnowledgeRow;
  * The harness row that stands for a produce_output / register_output call (docs/design/outputs.md section 7): the
  * sentence, a "Show" link to the item in the Outputs tab when the index has it, and the tool result behind "Show details".
  */
-function OutputWriteRowView({ row, body, runId, tabRunId }: { row: OutputWriteRow; body: string | undefined; runId: string; tabRunId: string }): ReactElement {
+function OutputWriteRowView({ row, body, runId, tabRunId, arrive }: { arrive?: boolean; row: OutputWriteRow; body: string | undefined; runId: string; tabRunId: string }): ReactElement {
   const outputs = useAppStore((s) => {
     const pid = s.runs[runId]?.summary.projectId
     return pid ? s.outputsByProject[pid] : undefined
@@ -300,7 +303,7 @@ function OutputWriteRowView({ row, body, runId, tabRunId }: { row: OutputWriteRo
   const [revising, setRevising] = useState(false)
   const reviseBtn = useRef<HTMLButtonElement>(null)
   return (
-    <div className="entry system harness output-write-row" data-testid="output-write-row" data-state={row.state}>
+    <div className={`entry system harness output-write-row${arriveClass(arrive)}`} data-testid="output-write-row" data-state={row.state}>
       <Icon icon={row.state === 'refused' ? AlertTriangle : Files} size="sm" />
       <div className="tool-main">
         <span className="entry-plain">{text}</span>
@@ -348,9 +351,9 @@ function OutputWriteRowView({ row, body, runId, tabRunId }: { row: OutputWriteRo
  * A knowledge read (spec 3.4): "Recalled N items about <query>" with the tool's answer under "Show output", or the quiet
  * "Added N known items: ..." row. The look of a write row, no Open link.
  */
-function KnowledgeReadRow({ text, body }: { text: string; body: string | undefined }): ReactElement {
+function KnowledgeReadRow({ text, body, arrive }: { text: string; body: string | undefined; arrive?: boolean }): ReactElement {
   return (
-    <div className="entry system harness knowledge-write-row knowledge-read-row" data-testid="knowledge-read-row">
+    <div className={`entry system harness knowledge-write-row knowledge-read-row${arriveClass(arrive)}`} data-testid="knowledge-read-row">
       <Icon icon={Database} size="sm" />
       <div className="tool-main">
         <span className="entry-plain">{text}</span>
@@ -366,9 +369,9 @@ function KnowledgeReadRow({ text, body }: { text: string; body: string | undefin
 }
 
 /** An app_reference lookup or an open_in_app, as one quiet row; the tool's answer sits under "Show output". */
-function SelfHelpRowView({ row }: { row: SelfHelpRow }): ReactElement {
+function SelfHelpRowView({ row, arrive }: { row: SelfHelpRow; arrive?: boolean }): ReactElement {
   return (
-    <div className="entry system harness self-help-row" data-testid="self-help-row" data-tool={row.tool}>
+    <div className={`entry system harness self-help-row${arriveClass(arrive)}`} data-testid="self-help-row" data-tool={row.tool}>
       <Icon icon={row.tool === 'open_in_app' ? ExternalLink : BookOpen} size="sm" />
       <div className="tool-main">
         <span className="entry-plain">{row.text}</span>
@@ -445,6 +448,14 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id) && !selfHelp.hidden.has(e.id) && !outputCalls.hidden.has(e.id)
   const visible = entries.filter(shown)
 
+  // Arrival (motion.md 2.2, 3.11): only rows appended to the newest session while the user follows the end fade in; bursts of more than 6, chain loads, run switches and the first paint never do.
+  const stuck = useRef(true)
+  const reduced = useReducedMotion()
+  const newestStart = items.findIndex((i) => i.kind === 'divider' && i.divider.runId === runId)
+  const arrivalIds = useMemo(() => items.slice(Math.max(newestStart, 0)).flatMap((i) => (i.kind === 'entry' ? [i.entry.id] : [])), [items, newestStart])
+  const isNew = useArrival(arrivalIds, `${runId}:${arrivalIds.length > 0}`, { maxPerBatch: 6 })
+  const arrive = (id: string): boolean => stuck.current && isNew(id)
+
   const rows = items.map((item) => {
     if (item.kind === 'omitted') {
       return (
@@ -467,7 +478,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     switch (b.kind) {
       case 'user':
         return (
-          <div key={e.id} className="entry user">
+          <div key={e.id} className={`entry user${arriveClass(arrive(e.id))}`}>
             <div className="tag">
               <span>You</span>
               <span>{new Date(e.at).toLocaleTimeString()}</span>
@@ -478,42 +489,42 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         )
       case 'text':
         return (
-          <div key={e.id} className="entry text">
+          <div key={e.id} className={`entry text${arriveClass(arrive(e.id))}`}>
             <Markdown text={b.text} />
           </div>
         )
       case 'thinking':
         return (
-          <div key={e.id} className="entry thinking">
+          <div key={e.id} className={`entry thinking${arriveClass(arrive(e.id))}`}>
             {b.text}
           </div>
         )
       case 'tool_use': {
         const sRow = selfHelp.rows.get(e.id)
-        if (sRow) return <SelfHelpRowView key={e.id} row={sRow} />
-        return <ToolUseRow key={e.id} name={b.name} input={b.input} label={knowledge.labels.get(e.id) ?? selfHelp.labels.get(e.id)} />
+        if (sRow) return <SelfHelpRowView key={e.id} row={sRow} arrive={arrive(e.id)} />
+        return <ToolUseRow key={e.id} arrive={arrive(e.id)} name={b.name} input={b.input} label={knowledge.labels.get(e.id) ?? selfHelp.labels.get(e.id)} />
       }
       case 'tool_result': {
         const oRow = outputCalls.rows.get(e.id)
-        if (oRow) return <OutputWriteRowView key={e.id} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
-        return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
+        if (oRow) return <OutputWriteRowView key={e.id} arrive={arrive(e.id)} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
+        return <ToolResultRow key={e.id} arrive={arrive(e.id)} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
       }
       case 'system': {
         const peer = parsePeerNote(b.text)
-        if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
+        if (peer) return <PeerNoteRow key={e.id} arrive={arrive(e.id)} note={peer} at={e.at} />
         const oRow = e.source === 'harness' ? outputCalls.rows.get(e.id) : undefined
-        if (oRow) return <OutputWriteRowView key={e.id} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
+        if (oRow) return <OutputWriteRowView key={e.id} arrive={arrive(e.id)} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
         const harness = e.source === 'harness'
         const sRow = harness ? selfHelp.rows.get(e.id) : undefined
-        if (sRow) return <SelfHelpRowView key={e.id} row={sRow} />
+        if (sRow) return <SelfHelpRowView key={e.id} row={sRow} arrive={arrive(e.id)} />
         const kRow = harness ? knowledge.rows.get(e.id) : undefined
-        if (kRow) return <KnowledgeWriteRow key={e.id} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} runId={runId} />
-        if (harness && knowledge.reads.has(e.id)) return <KnowledgeReadRow key={e.id} text={readRowText(b.text, knowledge.repeats.get(e.id))} body={knowledge.body.get(e.id)} />
+        if (kRow) return <KnowledgeWriteRow key={e.id} arrive={arrive(e.id)} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} runId={runId} />
+        if (harness && knowledge.reads.has(e.id)) return <KnowledgeReadRow key={e.id} arrive={arrive(e.id)} text={readRowText(b.text, knowledge.repeats.get(e.id))} body={knowledge.body.get(e.id)} />
         const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
         const skillBody = skillName ? skillLoads.body.get(e.id) : undefined
         // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
         return (
-          <div key={e.id} className={`entry system${harness ? ' harness' : ''}`}>
+          <div key={e.id} className={`entry system${harness ? ' harness' : ''}${arriveClass(arrive(e.id))}`}>
             <Icon icon={skillName ? BookOpen : harness ? Info : MessageSquare} size="sm" />
             <div className="tool-main">
               {skillName ? <span className="entry-plain">{b.text}</span> : <Markdown text={b.text} />}
@@ -539,7 +550,6 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
 
   // Conversation variant: keep the newest entry in view unless the user scrolled up (within STICK_PX of the end counts as at the end).
   const listRef = useRef<HTMLDivElement>(null)
-  const stuck = useRef(true)
   // The user asked to see a chain member (History, a link, after Send): put its divider at the top once, then let go.
   const focusRun = useAppStore((s) => s.chainFocusRun)
   useEffect(() => {
@@ -556,10 +566,30 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     useAppStore.setState({ chainFocusRun: null })
   }, [focusRun, items, variant, tab])
   const [away, setAway] = useState(false)
+  const prevLast = useRef(lastEntryId)
+  const lastUserScroll = useRef(0)
+  const userScrolled = (): void => {
+    lastUserScroll.current = Date.now()
+  }
+  // A smooth follow in flight (start time, 0 = none): its in-between scroll events are not the user leaving the end
+  // (review M2), so onScroll ignores them until scrollend, a user gesture, or a 1 s safety limit.
+  const autoScroll = useRef(0)
+  const smoothTo = (el: HTMLElement, top: number): void => {
+    autoScroll.current = Date.now()
+    el.addEventListener('scrollend', () => (autoScroll.current = 0), { once: true })
+    el.scrollTo({ top, behavior: 'smooth' })
+  }
   useEffect(() => {
     const el = listRef.current
-    if (variant === 'conversation' && el && stuck.current) el.scrollTop = el.scrollHeight
-  }, [variant, lastEntryId, partial, showThinking])
+    if (variant !== 'conversation' || !el || !stuck.current) return
+    // A new row glides in when the hop is short and the user is not scrolling; streaming text growth just stays pinned.
+    const rowAdded = prevLast.current !== lastEntryId
+    prevLast.current = lastEntryId
+    const delta = el.scrollHeight - el.scrollTop - el.clientHeight
+    const behavior = rowAdded ? followBehavior({ delta, viewportHeight: el.clientHeight, sinceUserScrollMs: Date.now() - lastUserScroll.current, reducedMotion: reduced }) : 'auto'
+    if (behavior === 'smooth') smoothTo(el, el.scrollHeight)
+    else el.scrollTop = el.scrollHeight
+  }, [variant, lastEntryId, partial, showThinking, reduced])
 
   if (variant === 'conversation') {
     const toEnd = (): void => {
@@ -567,7 +597,9 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
       if (!el) return
       stuck.current = true
       setAway(false)
-      el.scrollTop = el.scrollHeight
+      const behavior = followBehavior({ delta: el.scrollHeight - el.scrollTop - el.clientHeight, viewportHeight: el.clientHeight, sinceUserScrollMs: Infinity, reducedMotion: reduced })
+      if (behavior === 'smooth') smoothTo(el, el.scrollHeight)
+      else el.scrollTop = el.scrollHeight
     }
     return (
       <div className="conversation-body" data-testid="conversation-transcript">
@@ -577,8 +609,15 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           role="region"
           tabIndex={0}
           aria-label="Conversation scroll area"
+          onWheel={userScrolled}
+          onTouchMove={userScrolled}
+          onKeyDown={userScrolled}
+          onPointerDown={userScrolled}
           onScroll={(e) => {
             const el = e.currentTarget
+            const started = autoScroll.current
+            if (started && lastUserScroll.current < started && Date.now() - started < 1000) return
+            autoScroll.current = 0
             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX
             stuck.current = atEnd
             setAway(!atEnd)
@@ -597,7 +636,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           </div>
         </div>
         {away && (
-          <div className="conversation-jump">
+          <div className="conversation-jump motion-enter">
             <Button size="sm" variant="secondary" onClick={toEnd} testId="conversation-jump">
               <Icon icon={ArrowDown} size="sm" /> Jump to latest
             </Button>

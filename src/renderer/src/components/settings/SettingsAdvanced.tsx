@@ -56,7 +56,7 @@ export function SettingsAdvanced({ paneKey, children }: { paneKey: SettingsAdvan
     if (details) writeOpen(paneKey, !details.open)
   }
   return (
-    <details className="settings-advanced" data-testid="settings-advanced" data-pane={paneKey} open={initialOpen} onToggle={onToggle}>
+    <details className="settings-advanced motion-none" data-testid="settings-advanced" data-pane={paneKey} open={initialOpen} onToggle={onToggle}>
       <summary className="settings-advanced-summary" onClick={onSummaryClick}>
         <ChevronRight className="settings-advanced-chevron" size={14} aria-hidden="true" />
         Advanced settings

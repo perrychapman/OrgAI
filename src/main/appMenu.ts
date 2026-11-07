@@ -183,6 +183,8 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
       item('show-team', 'Team', 'CmdOrCtrl+3'),
       item('show-project-settings', 'Project settings', 'CmdOrCtrl+4'),
       sep,
+      item('show-usage', 'Usage'),
+      sep,
       item('toggle-sidebar', 'Toggle sidebar', 'CmdOrCtrl+B', true),
       {
         label: 'Canvas',
@@ -363,7 +365,8 @@ const MENU_ACTION_TARGETS: Record<MenuAction, 'main' | 'focused'> = {
   'canvas-fit': 'focused',
   'canvas-zoom-in': 'focused',
   'canvas-zoom-out': 'focused',
-  'ask-about-orgai': 'main'
+  'ask-about-orgai': 'main',
+  'show-usage': 'main'
 }
 
 export function menuActionTarget(action: MenuAction): 'main' | 'focused' {

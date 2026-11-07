@@ -25,6 +25,8 @@ export type RunSideTab = 'transcript' | 'usage' | 'outputs' | 'knowledge'
 
 export type NavTarget =
   | { kind: 'dashboard'; newProject?: true }
+  /** The app-wide Usage page; `section` is the id of the section element whose heading takes focus. */
+  | { kind: 'usage'; section?: 'usage-efficiency' | 'usage-runs' }
   /** App settings: `target` is a pane or section id (requestAppSettingsSection); `advanced` opens that disclosure first. */
   | { kind: 'app'; target: string; advanced?: 'app-general' | 'app-connections' }
   | {
@@ -58,6 +60,9 @@ export const SURFACE_TARGETS: Readonly<Record<AtlasSurfaceId, NavTarget>> = {
   'dashboard-new-project-template': { kind: 'dashboard', newProject: true },
   'dashboard-new-project-import': { kind: 'dashboard', newProject: true },
   'dashboard-needs-you': { kind: 'dashboard' },
+  usage: { kind: 'usage' },
+  'usage-efficiency': { kind: 'usage', section: 'usage-efficiency' },
+  'usage-runs': { kind: 'usage', section: 'usage-runs' },
   'app-sidebar': { kind: 'shell', what: 'sidebar' },
   'app-needs-you': { kind: 'shell', what: 'needs-you' },
   'app-account': { kind: 'shell', what: 'account' },

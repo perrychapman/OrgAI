@@ -16,6 +16,7 @@ import './styles/run-tabs.css'
 import './styles/assistants.css'
 import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
+import UsageView from './views/UsageView'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import Sidebar from './components/Sidebar'
 import RunHistory from './components/RunHistory'
@@ -36,6 +37,7 @@ import ProjectClient from './components/ProjectClient'
 import { FolderTrustPointer } from './components/FolderTrustNotice'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
+import { useBellCue } from './lib/useBellCue'
 
 type SectionView = 'run' | 'history' | 'outputs' | 'knowledge' | 'team' | 'settings'
 const SECTION_VIEWS: readonly string[] = ['run', 'history', 'outputs', 'knowledge', 'team', 'settings']
@@ -61,9 +63,11 @@ export default function App(): ReactElement {
   }, [runsById, selectedId])
   const teamItems = useTeamAttentionItems()
   const teamHere = selectedId ? teamDecisionsFor(teamItems, selectedId).length : 0
+  // The topbar badge pings once when this project's decision count rises (never on mount, never when it falls).
+  const bellCue = useBellCue(waitingHere.count + teamHere, selectedId ?? '')
   const indexes = useRunIndexes()
   const summaries = useProjectSummaries()
-  const { collapsed } = useSidebarCollapsed()
+  const { collapsed, motion: sidebarMotion } = useSidebarCollapsed()
   useRunTabShortcuts()
   // Drag-resizable sidebar: saved width (px) or the 232 px default, clamped so the main area keeps room.
   const [savedSidebarW, setSavedSidebarW] = usePersistedWidth('orgai.sidebarW')
@@ -120,6 +124,7 @@ export default function App(): ReactElement {
   useEffect(() => {
     const where = selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project?.name
     if (view === 'appSettings') document.title = 'App settings · OrgAI'
+    else if (view === 'usage') document.title = 'Usage · OrgAI'
     else if (!where || view === 'projects') document.title = 'OrgAI'
     else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${displayRunName(first)} · OrgAI`
     else document.title = `${where} · OrgAI`
@@ -141,11 +146,18 @@ export default function App(): ReactElement {
           { id: 'settings', label: 'Settings', testId: 'tab-settings' }
         ])
   ]
+  // The view crossfade (docs/design/motion.md 3.3) plays only when the user changed section inside one project that was
+  // already shown: not for the first view, a project switch, a relaunch restore or arriving from the Dashboard.
+  const sectionView = SECTION_VIEWS.includes(view) ? view : null
+  const [seenView, setSeenView] = useState<{ view: string | null; project: string | null; fade: boolean }>({ view: sectionView, project: selectedId, fade: false })
+  if (seenView.view !== sectionView || seenView.project !== selectedId) {
+    setSeenView({ view: sectionView, project: selectedId, fade: seenView.view !== null && sectionView !== null && seenView.project === selectedId })
+  }
   const folder = project && !isVirtual ? folderName(project.path) : ''
   const showFolder = !!project && !!folder && folder !== project.name
 
   return (
-    <div className="app" data-sidebar={collapsed ? 'rail' : 'full'} style={{ '--sidebar-w': `${sidebarW}px` } as CSSProperties}>
+    <div className="app" data-sidebar={collapsed ? 'rail' : 'full'} data-sidebar-motion={sidebarMotion ?? undefined} style={{ '--sidebar-w': `${sidebarW}px` } as CSSProperties}>
       <a
         href="#main-content"
         className="skip-link"
@@ -172,6 +184,8 @@ export default function App(): ReactElement {
         <ErrorBoundary resetKey={`${view}:${selectedId}:${run?.summary.id ?? ''}`} onReset={() => setView('projects')}>
           {view === 'appSettings' ? (
             <AppSettingsView />
+          ) : view === 'usage' ? (
+            <UsageView />
           ) : view === 'projects' || !project ? (
             <DashboardView />
           ) : (
@@ -199,7 +213,11 @@ export default function App(): ReactElement {
                 {view !== 'run' && !(view === 'team' && waitingHere.count === 0) && waitingHere.count + teamHere > 0 && (
                   <button
                     type="button"
-                    className="topbar-needs"
+                    className={`topbar-needs${bellCue.ring ? ' motion-ring' : ''}`}
+                    data-ping={bellCue.ping ? '' : undefined}
+                    onAnimationEnd={(e) => {
+                      if (e.target === e.currentTarget) bellCue.onPingEnd()
+                    }}
                     data-testid="topbar-needs-you"
                     title="Jump to the decision"
                     onClick={() => (waitingHere.first ? void jumpToDecision(project.id, waitingHere.first) : openTeamFilesDecision(project.id))}
@@ -212,6 +230,7 @@ export default function App(): ReactElement {
                 <SaveIndicator />
               </div>
               <AppNavigateBanner />
+              <div className={`view-root${seenView.fade ? ' motion-view' : ''}`} key={view}>
               {view === 'settings' ? (
                 <SettingsView project={project} />
               ) : view === 'outputs' && !isVirtual ? (
@@ -225,6 +244,7 @@ export default function App(): ReactElement {
               ) : (
                 <LiveRunView project={project} />
               )}
+              </div>
             </>
           )}
         </ErrorBoundary>

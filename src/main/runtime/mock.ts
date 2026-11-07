@@ -70,6 +70,13 @@ import { buildRolePrompt } from './prompts'
  * "Architecture diagram" and a markdown "Summary", writes a real 1x1 PNG to `<project>/outputs/logo.png` itself and
  * register_output's it as "Logo", then register_output's '../outside.txt' (main refuses it; the script goes on), says
  * MOCK_OUTPUTS_DONE and plays the default script. Without ctx.outputs it says MOCK_OUTPUTS_NONE instead.
+ * [mock:outputs-all] (outputsSteps(true)): the same, then a 5-slide pptx "Project deck", report.csv, config.json,
+ * logo.svg and the mermaid "Large system map" (80 nodes), "Sequence" and "Broken diagram" (outputsMoreSteps), then
+ * MOCK_OUTPUTS_ALL_DONE. [mock:outputs-v2] (outputsV2Steps): a later run writes the docx, xlsx, deck, architecture
+ * diagram and report.csv again under the same file names with one change each, so each becomes version 2.
+ * Revise requests (OUTPUTS_REVISE_TOKEN, no prompt marker needed): a user message, or a started / continued run's
+ * prompt, carrying OrgAI's "The user wrote (request rev_...):" line makes the root read_output the named output and
+ * produce_output it again at the same file name with a visible change (reviseOutputStep). Peer messages never do.
  *
  *
  * Chat (quick) markers (quick runs, default script): [mock:chat-edit] (chatEditSteps): list_projects, then an Edit of
@@ -167,6 +174,12 @@ export type MockStep =
    * read back, the retire is skipped with a log line; the run never fails on it.
    */
   | { type: 'retireFact'; node: string; fact: string; reason?: string }
+  /**
+   * Answer an output revision request (spec outputs-2 16.7, OUTPUTS_REVISE_TOKEN): parse `message` (parseReviseRequest),
+   * read_output 'read' the named output, then produce_output at the same file name with a visible change, and say
+   * whether the result answered the request. Anything that does not parse is said and nothing is written.
+   */
+  | { type: 'reviseOutput'; message: string }
   /**
    * The root writes a file itself (no tool card, no transcript row; like an agent's own Write): `base64` decoded to
    * `<project folder>/<path>`, parent folders created. A failure is logged at warn and the script goes on.
@@ -815,21 +828,255 @@ export const MOCK_OUTPUT_SUMMARY = '# Summary\n\nThe plan, budget and diagram ar
  * (fileName project-plan), xlsx "Budget" (the tool's `workbook` field), mermaid "Architecture diagram", markdown
  * "Summary"; the root writes MOCK_OUTPUT_PNG_PATH itself (writeFile) and calls register_output "Logo" on it; then
  * register_output '../outside.txt' "Outside", which main refuses (the script goes on); then the done sentence.
+ * With `all` ([mock:outputs-all]) the seven Outputs 2 outputs follow the refused register (outputsMoreSteps) and the
+ * done sentence is MOCK_OUTPUTS_ALL_DONE.
  */
-export function outputsSteps(): MockStep[] {
-  const produce = (args: Record<string, unknown>): MockStep => ({ type: 'harness', name: OUTPUT_TOOLS.produce, args, retryOnRevise: false })
-  const register = (args: Record<string, unknown>): MockStep => ({ type: 'harness', name: OUTPUT_TOOLS.register, args, retryOnRevise: false })
+export function outputsSteps(all = false): MockStep[] {
   return [
     { type: 'text', text: MOCK_OUTPUTS_START },
-    produce({ kind: 'docx', title: 'Project plan', fileName: 'project-plan', description: 'Scope, phases and owners', content: MOCK_OUTPUT_DOCX_MARKDOWN }),
-    produce({ kind: 'xlsx', title: 'Budget', workbook: MOCK_OUTPUT_WORKBOOK }),
-    produce({ kind: 'mermaid', title: 'Architecture diagram', content: MOCK_OUTPUT_MERMAID }),
-    produce({ kind: 'markdown', title: 'Summary', content: MOCK_OUTPUT_SUMMARY }),
+    produceStep({ kind: 'docx', title: 'Project plan', fileName: 'project-plan', description: 'Scope, phases and owners', content: MOCK_OUTPUT_DOCX_MARKDOWN }),
+    produceStep({ kind: 'xlsx', title: 'Budget', workbook: MOCK_OUTPUT_WORKBOOK }),
+    produceStep({ kind: 'mermaid', title: 'Architecture diagram', content: MOCK_OUTPUT_MERMAID }),
+    produceStep({ kind: 'markdown', title: 'Summary', content: MOCK_OUTPUT_SUMMARY }),
     { type: 'writeFile', path: MOCK_OUTPUT_PNG_PATH, base64: MOCK_OUTPUT_PNG_BASE64 },
-    register({ path: MOCK_OUTPUT_PNG_PATH, title: 'Logo', description: 'Written by the mock with its own tools' }),
-    register({ path: '../outside.txt', title: 'Outside' }),
-    { type: 'text', text: MOCK_OUTPUTS_DONE }
+    registerStep({ path: MOCK_OUTPUT_PNG_PATH, title: 'Logo', description: 'Written by the mock with its own tools' }),
+    registerStep({ path: '../outside.txt', title: 'Outside' }),
+    ...(all ? outputsMoreSteps() : []),
+    { type: 'text', text: all ? MOCK_OUTPUTS_ALL_DONE : MOCK_OUTPUTS_DONE }
   ]
+}
+
+function produceStep(args: Record<string, unknown>): MockStep {
+  return { type: 'harness', name: OUTPUT_TOOLS.produce, args, retryOnRevise: false }
+}
+function registerStep(args: Record<string, unknown>): MockStep {
+  return { type: 'harness', name: OUTPUT_TOOLS.register, args, retryOnRevise: false }
+}
+
+// ---------- Outputs 2 (spec outputs-2 section 16.7) ----------
+
+/** Trigger token (work runs of a stored project, default script): the five [mock:outputs] outputs plus the seven Outputs 2 ones. */
+export const OUTPUTS_ALL_TOKEN = '[mock:outputs-all]'
+/** Trigger token: a later run writes the [mock:outputs-all] file names again, so each becomes version 2 (outputsV2Steps). */
+export const OUTPUTS_V2_TOKEN = '[mock:outputs-v2]'
+/**
+ * The revise behaviour's name in the docs. It needs no prompt marker: any user message (or a continued / started run's
+ * prompt) on a default-script work run carrying OrgAI's revise marker line is answered (reviseOutputStep).
+ */
+export const OUTPUTS_REVISE_TOKEN = '[mock:outputs-revise]'
+/** The root's sentence after the [mock:outputs-all] steps (4 + 7 produced, 1 registered). */
+export const MOCK_OUTPUTS_ALL_DONE = 'I produced 12 outputs.'
+export const MOCK_OUTPUTS_V2_START = 'I will update the deliverables.'
+export const MOCK_OUTPUTS_V2_DONE = 'I updated 5 outputs.'
+export const MOCK_REVISE_START = 'I will read the output, then revise it.'
+export const MOCK_REVISE_UNPARSED = 'I could not tell which output that request is about, so I changed nothing.'
+export const MOCK_REVISE_REGISTERED = 'That output is a file the team registered, and I can only revise produced outputs, so I changed nothing.'
+export const MOCK_REVISE_UNREADABLE = 'I could not read that output, so I changed nothing.'
+export const MOCK_REVISE_UNCHANGED = 'I could not change that output, so I left it as it was.'
+export const MOCK_REVISE_NOT_ANSWERED = 'I wrote the output again, but OrgAI did not link it to the request.'
+/** What the root says once produce_output answered the request. */
+export function mockReviseDone(requestId: string): string {
+  return `I revised the output for request ${requestId}.`
+}
+
+/** The 5-slide deck: title, bullets, two-content, the logo image, a table; speaker notes on slides 1 and 3. */
+export const MOCK_OUTPUT_DECK = {
+  size: '16:9',
+  slides: [
+    { layout: 'title', title: 'Project kickoff', subtitle: 'The mock team, November 2026', notes: 'Welcome everyone and introduce the team.' },
+    { layout: 'content', title: 'Goals', bullets: [{ text: 'Ship the first phase' }, { text: 'Design review in week 2', level: 1 }, { text: 'Stay inside the budget' }] },
+    {
+      layout: 'two-content',
+      title: 'Options',
+      left: [{ type: 'bullets', bullets: [{ text: 'Build in house' }, { text: 'Full control', level: 1 }] }],
+      right: [{ type: 'body', text: 'Buy a service\nFaster start' }],
+      notes: 'Recommend building in house.'
+    },
+    { layout: 'image', title: 'Our logo', image: { path: 'outputs/logo.png', alt: 'The mock logo', caption: 'A one-pixel stand-in' } },
+    { layout: 'content', title: 'Timeline', table: { header: true, rows: [['Phase', 'Weeks'], ['Design', '2'], ['Build', '6'], ['Launch', '1']] } }
+  ]
+}
+/** report.csv: a header and 6 rows; the last row's cell '=SUM(C2:C6)' must stay text. */
+export const MOCK_OUTPUT_CSV = 'Item,Owner,Cost\nDesign,Ana,1200\nBuild,Ben,3400\nLaunch,Cleo,800\nReview,Dan,300\nSupport,Eve,500\nTotal,,=SUM(C2:C6)\n'
+export const MOCK_OUTPUT_JSON = JSON.stringify({ name: 'mock-project', version: 1, features: { outputs: true, versions: true }, owners: ['Ana', 'Ben'] }, null, 2) + '\n'
+export const MOCK_OUTPUT_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="12" fill="#3b82f6"/><text x="32" y="40" font-size="20" text-anchor="middle" fill="#ffffff">M</text></svg>\n'
+/** "Large system map": flowchart TD with 80 nodes (a tree, each node under node floor((i - 2) / 3) + 1). */
+export const MOCK_OUTPUT_LARGE_MAP = [
+  'flowchart TD',
+  ...Array.from({ length: 80 }, (_, k) => `  N${k + 1}[Service ${k + 1}]`),
+  ...Array.from({ length: 79 }, (_, k) => `  N${Math.floor(k / 3) + 1} --> N${k + 2}`)
+].join('\n')
+export const MOCK_OUTPUT_SEQUENCE = 'sequenceDiagram\n  participant C as Client\n  participant A as API\n  participant D as Database\n  C->>A: Request\n  A->>D: Query\n  D-->>A: Rows\n  A-->>C: Response'
+/** "Broken diagram": line 2 is a syntax error. */
+export const MOCK_OUTPUT_BROKEN = 'flowchart TD\n  A[Start] --> --> B[\n  B --> C[End]'
+
+/** The seven Outputs 2 outputs ([mock:outputs-all], after the logo PNG exists for the deck's image slide). */
+export function outputsMoreSteps(): MockStep[] {
+  return [
+    produceStep({ kind: 'pptx', title: 'Project deck', fileName: 'project-deck', description: 'Kickoff slides', deck: MOCK_OUTPUT_DECK }),
+    produceStep({ kind: 'csv', title: 'Report', fileName: 'report', content: MOCK_OUTPUT_CSV }),
+    produceStep({ kind: 'json', title: 'Config', fileName: 'config', content: MOCK_OUTPUT_JSON }),
+    produceStep({ kind: 'svg', title: 'Logo drawing', fileName: 'logo', content: MOCK_OUTPUT_SVG }),
+    produceStep({ kind: 'mermaid', title: 'Large system map', content: MOCK_OUTPUT_LARGE_MAP }),
+    produceStep({ kind: 'mermaid', title: 'Sequence', content: MOCK_OUTPUT_SEQUENCE }),
+    produceStep({ kind: 'mermaid', title: 'Broken diagram', content: MOCK_OUTPUT_BROKEN })
+  ]
+}
+
+export const MOCK_OUTPUT_DOCX_MARKDOWN_V2 = MOCK_OUTPUT_DOCX_MARKDOWN.replace(
+  'This plan covers the **scope**, the *phases* and who owns each one.',
+  'This plan, revised after the review, covers the **scope**, the *phases* and who owns each one.'
+)
+/** Budget v2: two cells changed (Design 1200 -> 1500, Launch 800 -> 950). */
+export const MOCK_OUTPUT_WORKBOOK_V2 = {
+  sheets: MOCK_OUTPUT_WORKBOOK.sheets.map((s, i) =>
+    i === 0 ? { ...s, rows: s.rows.map((r) => (r[0] === 'Design' ? ['Design', 1500] : r[0] === 'Launch' ? ['Launch', 950] : r)) } : s
+  )
+}
+/** Deck v2: slide 3 changed and a sixth slide added. */
+export const MOCK_OUTPUT_DECK_V2 = {
+  ...MOCK_OUTPUT_DECK,
+  slides: [
+    ...MOCK_OUTPUT_DECK.slides.map((s, i) => (i === 2 ? { ...s, title: 'Options compared', right: [{ type: 'body', text: 'Buy a service\nFaster start, higher running cost' }] } : s)),
+    { layout: 'section', title: 'Next steps' }
+  ]
+}
+/** architecture.mmd v2: node D renamed. */
+export const MOCK_OUTPUT_MERMAID_V2 = MOCK_OUTPUT_MERMAID.replace('D[Queue]', 'D[Event bus]')
+/** report.csv v2: the Build row changed. */
+export const MOCK_OUTPUT_CSV_V2 = MOCK_OUTPUT_CSV.replace('Build,Ben,3400', 'Build,Ben,3600')
+
+/** [mock:outputs-v2]: the same file names as [mock:outputs-all], each with a change, so each becomes version 2. */
+export function outputsV2Steps(): MockStep[] {
+  return [
+    { type: 'text', text: MOCK_OUTPUTS_V2_START },
+    produceStep({ kind: 'docx', title: 'Project plan', fileName: 'project-plan', description: 'Scope, phases and owners', content: MOCK_OUTPUT_DOCX_MARKDOWN_V2 }),
+    produceStep({ kind: 'xlsx', title: 'Budget', workbook: MOCK_OUTPUT_WORKBOOK_V2 }),
+    produceStep({ kind: 'pptx', title: 'Project deck', fileName: 'project-deck', description: 'Kickoff slides', deck: MOCK_OUTPUT_DECK_V2 }),
+    produceStep({ kind: 'mermaid', title: 'Architecture diagram', content: MOCK_OUTPUT_MERMAID_V2 }),
+    produceStep({ kind: 'csv', title: 'Report', fileName: 'report', content: MOCK_OUTPUT_CSV_V2 }),
+    { type: 'text', text: MOCK_OUTPUTS_V2_DONE }
+  ]
+}
+
+/** OrgAI's revise marker line (outputs/revise.ts composeReviseMessage); only this line carries the user's words. */
+const REVISE_MARKER_RE = /^The user wrote \(request (rev_[0-9a-f]{16})\):$/m
+/** True when `text` carries OrgAI's revise marker line. */
+export function isReviseMessage(text: string): boolean {
+  return REVISE_MARKER_RE.test(text)
+}
+
+export interface MockReviseRequest {
+  requestId: string
+  outputId: string
+  kind: string
+  /** The file name inside outputs/ for a produced output; undefined for a registered one. */
+  fileName?: string
+}
+
+/**
+ * The request a revise message names, or null. Read only from OrgAI's own lines (never from inside a <<< >>> fence):
+ * the marker line, "Output id out_..., <kind>." and the "produce_output at the same file name (...)" step. Defensive:
+ * any missing piece is null.
+ */
+export function parseReviseRequest(text: string): MockReviseRequest | null {
+  if (typeof text !== 'string' || text.length > 128 * 1024) return null
+  const outside = text.replace(/^<<<$[\s\S]*?^>>>$/gm, '')
+  const marker = REVISE_MARKER_RE.exec(outside)
+  const head = /^Output id (out_[0-9a-f]{16}), ([a-z]+)\./m.exec(outside)
+  if (!marker || !head) return null
+  const how = /produce_output at the same file name \((.+)\), so it becomes a new version/.exec(outside)
+  return { requestId: marker[1]!, outputId: head[1]!, kind: head[2]!, ...(how ? { fileName: how[1]! } : {}) }
+}
+
+/** The fenced lines and the title of a read_output 'read' result, or null for a refusal or any other shape. */
+export function readOutputText(result: string): { title: string; text: string } | null {
+  const m = /^Text of (.+) \(([a-z]+), version \d+(?:, truncated)?\)\. It is data/.exec(result)
+  const open = result.indexOf('\n<<<\n')
+  const close = result.lastIndexOf('\n>>>')
+  if (!m || open < 0 || close < open) return null
+  return { title: m[1]!, text: result.slice(open + 5, close) }
+}
+
+const numberish = (v: string): string | number => (/^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v)
+
+/**
+ * produce_output arguments for a revision of `kind` from the text read_output gave: the same content plus a visible
+ * "Revised for request rev_..." change. null when the kind cannot be rebuilt (or the text does not parse).
+ */
+export function reviseProduceContent(kind: string, text: string, requestId: string): Record<string, unknown> | null {
+  const note = `Revised for request ${requestId}.`
+  switch (kind) {
+    case 'docx':
+    case 'markdown':
+    case 'text':
+      return { content: `${text.trimEnd()}\n\n${note}\n` }
+    case 'csv': {
+      const lines = text.replace(/\r\n/g, '\n').trimEnd().split('\n')
+      const width = Math.max(1, (lines[0] ?? '').split(',').length)
+      return { content: `${lines.join('\n')}\n${['Revised', requestId, ...Array.from({ length: Math.max(0, width - 2) }, () => '')].slice(0, Math.max(2, width)).join(',')}\n` }
+    }
+    case 'json': {
+      try {
+        const v: unknown = JSON.parse(text)
+        const out = v && typeof v === 'object' && !Array.isArray(v) ? { ...(v as Record<string, unknown>), revisedFor: requestId } : { value: v, revisedFor: requestId }
+        return { content: JSON.stringify(out, null, 2) + '\n' }
+      } catch {
+        return null
+      }
+    }
+    case 'svg': {
+      const at = text.lastIndexOf('</svg>')
+      if (at < 0) return null
+      return { content: `${text.slice(0, at)}<text x="2" y="10" font-size="6">${note}</text>${text.slice(at)}` }
+    }
+    case 'mermaid': {
+      const first = text.split('\n').find((l) => l.trim())?.trim() ?? ''
+      if (/^(flowchart|graph)\b/.test(first)) return { content: `${text.trimEnd()}\n  REVISED[${note}]` }
+      if (/^sequenceDiagram\b/.test(first)) return { content: `${text.trimEnd()}\n  participant REVISED as ${note}` }
+      return { content: `${text.trimEnd()}\n%% ${note}` }
+    }
+    case 'xlsx': {
+      const sheets: { name: string; rows: (string | number)[][] }[] = []
+      for (const line of text.split('\n')) {
+        const h = /^## Sheet (.+)$/.exec(line)
+        if (h) {
+          sheets.push({ name: h[1]!.slice(0, 31), rows: [] })
+          continue
+        }
+        if (!line.trim() || /^\(\d+ more rows not shown\)$/.test(line)) continue
+        if (!sheets.length) sheets.push({ name: 'Sheet1', rows: [] })
+        sheets.at(-1)!.rows.push(line.split('\t').map(numberish))
+      }
+      if (!sheets.length) return null
+      sheets[0]!.rows.push(['Revised', requestId])
+      return { workbook: { sheets } }
+    }
+    case 'pptx': {
+      type Slide = { layout: 'content'; title: string; bullets?: { text: string; level: 0 | 1 | 2 }[]; body?: string; table?: { rows: string[][] }; notes?: string }
+      const slides: Slide[] = []
+      for (const line of text.split('\n')) {
+        const h = /^## Slide \d+:?\s?(.*)$/.exec(line)
+        if (h) {
+          slides.push({ layout: 'content', title: h[1]!.trim() || 'Slide' })
+          continue
+        }
+        const s = slides.at(-1)
+        if (!s || !line.trim() || /^\[.*\]$/.test(line.trim())) continue
+        const notes = /^Speaker notes: (.*)$/.exec(line)
+        const bullet = /^( *)- (.*)$/.exec(line)
+        if (notes) s.notes = notes[1]!
+        else if (line.includes('\t')) (s.table ??= { rows: [] }).rows.push(line.split('\t'))
+        else if (bullet) (s.bullets ??= []).push({ text: bullet[2]!, level: Math.min(2, Math.floor(bullet[1]!.length / 2)) as 0 | 1 | 2 })
+        else s.body = s.body ? `${s.body}\n${line}` : line
+      }
+      if (!slides.length) return null
+      return { deck: { slides: [...slides, { layout: 'content', title: 'Revised', body: note }] } }
+    }
+    default:
+      return null
+  }
 }
 
 /**
@@ -1315,6 +1562,7 @@ export class MockSession implements RuntimeSession {
         if (!next.harness && next.text.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
         this.emit({ type: 'run.status', runId, status: 'running' })
         if (next.harness) await this.turn(this.continueTurns.shift() ?? [{ type: 'text', text: 'Mock: continuing with the plan.' }])
+        else if (this.answersRevisions() && isReviseMessage(next.text)) await this.turn([{ type: 'text', text: MOCK_REVISE_START }, { type: 'reviseOutput', message: next.text }])
         else await this.turn([{ type: 'text', text: this.script.reply.replace('{text}', next.text) }])
       }
       this.emit({ type: 'run.status', runId, status: 'finished' })
@@ -1420,6 +1668,17 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
       const lead = this.firstSpawnableSlug(this.root)
       return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
+    }
+    if (this.answersRevisions() && isReviseMessage(this.ctx.prompt)) {
+      // A revise request that started or continued this run: answer it and go idle (no default script).
+      return [{ type: 'text', text: MOCK_REVISE_START }, { type: 'reviseOutput', message: this.ctx.prompt }]
+    }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && (this.ctx.prompt.includes(OUTPUTS_ALL_TOKEN) || this.ctx.prompt.includes(OUTPUTS_V2_TOKEN))) {
+      const available = !!this.ctx.outputs && this.tools.some((t) => t.name === OUTPUT_TOOLS.produce)
+      const v2 = this.ctx.prompt.includes(OUTPUTS_V2_TOKEN)
+      if (!available) this.log('info', `Mock ${v2 ? OUTPUTS_V2_TOKEN : OUTPUTS_ALL_TOKEN}: this run has no outputs (not a work run of a stored project), so the output steps are skipped.`)
+      const first: MockStep[] = !available ? [{ type: 'text', text: MOCK_OUTPUTS_NONE }] : v2 ? outputsV2Steps() : outputsSteps(true)
+      return [...first, ...DEFAULT_WORK]
     }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(OUTPUTS_TOKEN)) {
       // The tools are bound on every work run and answer "Outputs are not available" themselves without ctx.outputs.
@@ -1630,6 +1889,8 @@ export class MockSession implements RuntimeSession {
       }
       case 'retireFact':
         return this.retireFactStep(step)
+      case 'reviseOutput':
+        return this.reviseOutputStep(step.message)
       case 'writeFile': {
         const target = join(this.ctx.project.path, step.path)
         try {
@@ -2124,6 +2385,41 @@ export class MockSession implements RuntimeSession {
    * and `retire` it. When the entity or the fact cannot be read back (no graph, a refusal, the fact missing or already
    * retired) the retire is skipped with an info log line, never a failure.
    */
+  /** Revise requests are answered on default-script work runs (never setup-like, quick or custom scripts). */
+  private answersRevisions(): boolean {
+    return !this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK
+  }
+
+  /** The reviseOutput step (see MockStep): read_output, then produce_output at the same file name, through the real tools. */
+  private async reviseOutputStep(message: string): Promise<void> {
+    const req = parseReviseRequest(message)
+    if (!req) {
+      this.log('info', 'Mock [mock:outputs-revise]: the revise request did not parse, so nothing was written.')
+      await this.step({ type: 'text', text: MOCK_REVISE_UNPARSED })
+      return
+    }
+    if (!req.fileName) {
+      await this.step({ type: 'text', text: MOCK_REVISE_REGISTERED })
+      return
+    }
+    const read = await this.harnessStep({ type: 'harness', name: OUTPUT_TOOLS.read, args: { action: 'read', outputId: req.outputId }, retryOnRevise: false })
+    if (this.stopped || this.interrupted) return
+    const got = read === undefined ? null : readOutputText(read)
+    if (!got) {
+      await this.step({ type: 'text', text: MOCK_REVISE_UNREADABLE })
+      return
+    }
+    const content = reviseProduceContent(req.kind, got.text, req.requestId)
+    if (!content) {
+      await this.step({ type: 'text', text: MOCK_REVISE_UNCHANGED })
+      return
+    }
+    const produced = await this.harnessStep({ type: 'harness', name: OUTPUT_TOOLS.produce, args: { kind: req.kind, title: got.title, fileName: req.fileName, ...content }, retryOnRevise: false })
+    if (this.stopped || this.interrupted) return
+    const answered = produced !== undefined && produced.includes(`This answers the user's revision request ${req.requestId}`)
+    await this.step({ type: 'text', text: answered ? mockReviseDone(req.requestId) : produced?.startsWith('REFUSED:') ? MOCK_REVISE_UNCHANGED : MOCK_REVISE_NOT_ANSWERED })
+  }
+
   private async retireFactStep(step: Extract<MockStep, { type: 'retireFact' }>): Promise<void> {
     const got = await this.harnessStep({ type: 'harness', name: KNOWLEDGE_TOOL, args: { action: 'get', name: step.node } })
     if (this.stopped || this.interrupted) return

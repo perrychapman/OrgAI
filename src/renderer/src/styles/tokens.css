@@ -122,6 +122,24 @@
   --neural-node-mix: 88%;
   --neural-node-ink: #e8ebf3;
   --neural-dim-opacity: 0.22;
+
+  /* Usage charts (docs/design/usage-app.md section 5). Measured WCAG ratios (computed from these hex values):
+     dark fills on --surface-1 #12161f: s1 11.96, s2 3.35, s3 13.99, s4 3.55, s5 11.79, other 3.23 (s6 3.49, reserved).
+     Adjacent stack pairs s1-s2 3.57, s2-s3 4.17, s3-s4 3.94, s4-s5 3.32, s5-other 3.65 (all >= 3).
+     Fills alternate bright / mid so neighbours differ by lightness, not only hue. --chart-hatch is the --surface-1 gap
+     colour (it reaches the same ratios against every fill). */
+  --chart-s1: #d4ccff;
+  --chart-s2: #0d6cbc;
+  --chart-s3: #98f5c8;
+  --chart-s4: #9a6200;
+  --chart-s5: #ffc2ba;
+  --chart-s6: #0b7a74;
+  --chart-other: #5e687d;
+  --chart-unknown: var(--text-tertiary);
+  --chart-hatch: var(--surface-1);
+  --chart-grid: var(--border-subtle);
+  --chart-axis: var(--text-tertiary);
+  --chart-focus: var(--accent-text);
 }
 
 /* ---------- 2. Light ---------- */
@@ -225,6 +243,21 @@
   --neural-node-mix: 50%;
   --neural-node-ink: #12151f;
   --neural-dim-opacity: 0.25;
+
+  /* Usage charts. Measured on --surface-1 #fafbfd: s1 12.53, s2 3.06, s3 12.35, s4 3.42, s5 10.33, other 3.09
+     (s6 4.32, reserved). Adjacent pairs s1-s2 4.10, s2-s3 4.04, s3-s4 3.61, s4-s5 3.02, s5-other 3.35 (all >= 3). */
+  --chart-s1: #2a1d86;
+  --chart-s2: #4796d9;
+  --chart-s3: #073a26;
+  --chart-s4: #c07800;
+  --chart-s5: #7a1620;
+  --chart-s6: #14857f;
+  --chart-other: #8890a4;
+  --chart-unknown: var(--text-tertiary);
+  --chart-hatch: var(--surface-1);
+  --chart-grid: var(--border-subtle);
+  --chart-axis: var(--text-tertiary);
+  --chart-focus: var(--accent);
 }
 
 /* ---------- 3. System: light values when the OS prefers light ---------- */
@@ -327,6 +360,20 @@
     --neural-node-mix: 50%;
     --neural-node-ink: #12151f;
     --neural-dim-opacity: 0.25;
+
+    /* Usage charts: same measured values as the light block. */
+    --chart-s1: #2a1d86;
+    --chart-s2: #4796d9;
+    --chart-s3: #073a26;
+    --chart-s4: #c07800;
+    --chart-s5: #7a1620;
+    --chart-s6: #14857f;
+    --chart-other: #8890a4;
+    --chart-unknown: var(--text-tertiary);
+    --chart-hatch: var(--surface-1);
+    --chart-grid: var(--border-subtle);
+    --chart-axis: var(--text-tertiary);
+    --chart-focus: var(--accent);
   }
 }
 

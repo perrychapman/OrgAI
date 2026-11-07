@@ -46,6 +46,9 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
   const [notice, setNotice] = useState<{ text: string; tone: 'warning' | 'danger' } | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Notices (the ended-session line) enter only when they appear while the user is looking, never on mount (motion.md 3.20).
+  const noticesAbsentBefore = useRef(false)
+  if (!notices) noticesAbsentBefore.current = true
   const ref = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const labelId = useId()
@@ -128,7 +131,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             <span className="composer-hint-text">{HINT}</span>
           </span>
         </div>
-        {notices}
+        {notices && <div className={`composer-notices${noticesAbsentBefore.current ? ' motion-enter' : ''}`}>{notices}</div>}
         {notice && (
           <Banner tone={notice.tone} onDismiss={() => setNotice(null)}>
             {notice.text}

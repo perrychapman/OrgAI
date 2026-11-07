@@ -174,3 +174,8 @@
     max-width: none;
   }
 }
+
+/* Rows the user answers leave by fading and folding shut; the list gap folds away with them (cards.css .leave-collapse). */
+.dash-section[data-testid='dash-needs-you'] > .dash-rows {
+  --leave-gap: var(--space-2);
+}

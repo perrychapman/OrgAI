@@ -12,15 +12,18 @@ export function Cost({
   hideEmpty,
   labelled,
   compact,
+  precision,
   className
 }: {
   value: CostInput
   hideEmpty?: boolean
   labelled?: boolean
   compact?: boolean
+  /** 'page': the Usage page's one decimals rule (lib/cost.ts formatUsdPage). */
+  precision?: 'page'
   className?: string
 }): ReactElement | null {
-  const v = costView(value, { compact })
+  const v = costView(value, { compact, precision })
   if (hideEmpty && v.empty) return null
   return (
     <span className={`cost cost-${v.kind}${className ? ` ${className}` : ''}`} title={v.title || undefined}>

@@ -1,0 +1,195 @@
+/*
+ * Motion recipes (docs/design/motion.md 2.1). Imported right after tokens.css, so every partial can use them.
+ * Rules: tokens only (no literal ms or easings), transform and opacity only (disclosure height is the one exception),
+ * nothing blocks input, nothing animates on first paint (callers apply entry classes only to arrivals, lib/useArrival).
+ * Reduced motion: the tokens collapse to 0 distance / 0.01 ms (tokens.css) and global.css forces 0.01 ms, so every
+ * recipe below degrades to an instant change with no per-recipe override.
+ */
+
+:root {
+  /* Lets block-size: auto / height: auto interpolate (disclosures). Chromium 129+. */
+  interpolate-size: allow-keywords;
+}
+
+/* ---------- Keyframes ---------- */
+
+@keyframes motion-rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
+  }
+}
+@keyframes motion-rise-lg {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance));
+  }
+}
+/* A tray card arrives from a little further (12 px, spec 3.8). */
+@keyframes motion-rise-xl {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--motion-distance) * 1.5));
+  }
+}
+@keyframes motion-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(calc(var(--motion-distance-sm) * -1));
+  }
+}
+@keyframes motion-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes motion-pop {
+  from {
+    opacity: 0;
+    transform: scale(var(--motion-scale-from));
+  }
+}
+/* One-shot emphasis on a badge (bell count rising): 1 -> 1.15 -> 1. Never looped. */
+@keyframes motion-ping {
+  40% {
+    transform: scale(calc(1 + (1 - var(--motion-scale-from)) * 3.75));
+  }
+}
+/* One-shot attention ring: drawn on a pseudo-element (opacity + scale only), settles to nothing. */
+@keyframes motion-ring {
+  from {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.02);
+  }
+}
+
+/* ---------- Entries (apply only to arrivals; first paint never animates) ---------- */
+
+.motion-enter {
+  animation: motion-rise var(--dur-base) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--i, 0), 5) * var(--motion-stagger));
+}
+.motion-enter-lg {
+  animation: motion-rise-lg var(--dur-slow) var(--ease-out) backwards;
+}
+.motion-enter-xl {
+  animation: motion-rise-xl var(--dur-slow) var(--ease-out) backwards;
+}
+.motion-enter-x {
+  animation: motion-slide-in var(--dur-base) var(--ease-out) backwards;
+}
+.motion-pop {
+  animation: motion-pop var(--dur-base) var(--ease-out) backwards;
+}
+.motion-fade {
+  animation: motion-fade var(--dur-fade) var(--ease-out) backwards;
+}
+/* A view, pane or tab body swapped by the user: a short fade with a 4 px rise. Key the element by the view so it remounts. */
+.motion-view {
+  animation:
+    motion-fade var(--dur-base) var(--ease-out) backwards,
+    motion-rise var(--dur-base) var(--ease-out) backwards;
+}
+
+/* One-shot attention ring on an arriving element. The element needs position: relative (or any positioned value). */
+.motion-ring {
+  position: relative;
+}
+.motion-ring::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 2px solid var(--accent);
+  pointer-events: none;
+  opacity: 0;
+  animation: motion-ring calc(var(--dur-slow) * 2.3) var(--ease-out) backwards;
+}
+
+/* Bell / badge ping: set data-ping on the element, clear it on animationend. */
+[data-ping] {
+  animation: motion-ping var(--dur-slow) var(--ease-out);
+}
+
+/* ---------- Exits (lib/useExitPresence: data-state='out', inert, aria-hidden) ---------- */
+
+[data-state='out'].motion-exit,
+.motion-exit[data-state='out'] {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-in);
+}
+.motion-exit {
+  transition: opacity var(--dur-fast) var(--ease-in);
+}
+
+/* ---------- Height collapse (spec 2.1): grid 0fr <-> 1fr ---------- */
+/*
+ * <div class="motion-collapse" data-collapsed="true|false"><div>...content...</div></div>
+ * The one child is clipped while it moves. Collapsed content is visibility: hidden at the end of the transition, so it
+ * leaves the tab order and the accessibility tree without the caller adding inert (visibility interpolates discretely
+ * and stays visible for the whole transition in both directions).
+ */
+.motion-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows var(--dur-base) var(--ease-in-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+.motion-collapse > * {
+  min-height: 0;
+  overflow: clip;
+  /* Leaves room for focus rings that sit just outside a child. */
+  overflow-clip-margin: 4px;
+  visibility: visible;
+  transition: visibility var(--dur-base);
+}
+.motion-collapse[data-collapsed='true'] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--dur-base) var(--ease-in-out),
+    opacity var(--dur-fast) var(--ease-in);
+}
+.motion-collapse[data-collapsed='true'] > * {
+  visibility: hidden;
+}
+/* First layout: no transition until the caller marks the region ready (optional; set data-motion-ready after mount). */
+.motion-collapse[data-motion-ready='false'],
+.motion-collapse[data-motion-ready='false'] > * {
+  transition: none;
+}
+
+/* ---------- Native disclosures (spec 3.7) ---------- */
+/*
+ * Opening fades the content in; the layout is final at once and closing is instant (deviation from spec 3.7, which
+ * animated the height both ways). A height reveal kept the box growing for --dur-base after the click, so content that
+ * had just opened overlapped the next row and measured wrong, and a closing transition kept closed content visible and
+ * focusable; both broke the rule that a state is complete when it appears (e2e knowledge-run, team-files, proposals,
+ * connections). `.motion-collapse` still glides height where a region is button-controlled.
+ */
+details::details-content {
+  opacity: 0;
+  transition: none;
+}
+details[open]::details-content {
+  opacity: 1;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+/* Opt out for big content (transcript output, long lists): add .motion-none on the <details>. */
+details.motion-none::details-content {
+  transition: none;
+}
+
+/* ---------- Opt-out ---------- */
+.motion-none,
+.motion-none::before,
+.motion-none::after {
+  animation: none;
+  transition: none;
+}

@@ -68,8 +68,11 @@ export function RepoStartPanel({
   adopted,
   onForgetAdopted,
   announce,
+  animate,
   children
 }: {
+  /** True when the form was already showing before this panel mounted: it rises in. Read once at mount. */
+  animate?: boolean
   uid: string
   fields: RepoFields
   onFields: (patch: Partial<RepoFields>) => void
@@ -81,6 +84,7 @@ export function RepoStartPanel({
   announce: (text: string) => void
   children?: ReactNode
 }): ReactElement {
+  const [enter] = useState(() => !!animate)
   const ids = {
     source: `${uid}-repo-source`,
     sourceMsg: `${uid}-repo-source-msg`,
@@ -222,7 +226,7 @@ export function RepoStartPanel({
   if (adopted && session.status === 'done') {
     const { result } = session
     return (
-      <div className="repo-start" data-testid="repo-start-panel">
+      <div className={enter ? 'repo-start motion-enter' : 'repo-start'} data-testid="repo-start-panel">
         <p id={ids.cloned} className="field-msg ok repo-cloned" tabIndex={-1} data-testid="repo-cloned-line">
           Cloned to <span className="repo-path">{result.path}</span>
           {result.branch ? `, branch ${result.branch}` : ''}. {CLONE_KEPT_NOTE}
@@ -263,7 +267,7 @@ export function RepoStartPanel({
   }
 
   return (
-    <div className="repo-start" data-testid="repo-start-panel">
+    <div className={enter ? 'repo-start motion-enter' : 'repo-start'} data-testid="repo-start-panel">
       <fieldset className="repo-lock" disabled={running}>
         <div className="field">
           <label htmlFor={ids.source}>Repository</label>

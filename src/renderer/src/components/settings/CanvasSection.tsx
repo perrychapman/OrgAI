@@ -107,8 +107,8 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
                 </span>
                 Customise
               </button>
-              {open && (
-                <div id={bodyId}>
+              <div id={bodyId} className="motion-collapse" data-collapsed={open ? 'false' : 'true'}>
+                <div>
                   <SettingsCard>
                     <SettingRow
                       id="canvas-backdrop-row"
@@ -178,7 +178,7 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
                     />
                   </SettingsCard>
                 </div>
-              )}
+              </div>
             </div>
           </div>
         </div>
