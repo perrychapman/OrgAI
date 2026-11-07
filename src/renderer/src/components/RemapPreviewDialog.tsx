@@ -73,11 +73,11 @@ export default function RemapPreviewDialog({
       )}
       {kept.length > 0 && (
         <div data-testid="remap-kept">
-          <p>Not changed (own connection):</p>
+          <p>Not changed (each runs on its own connection):</p>
           <ul className="remap-roles flush">
             {kept.map((k) => (
               <li key={`${k.projectId}-${k.roleId}`} data-testid="remap-kept-role">
-                <span className="remap-role">{k.roleName}</span>
+                <span className="remap-role">{k.roleName}</span>{' '}
                 <span className="muted">stays on {connectionLabel(k.connection)}</span>
               </li>
             ))}

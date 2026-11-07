@@ -54,6 +54,21 @@ describe('remap preview', () => {
     expect(previewRemap({ project: p, connection: 'openai', tierModels: {}, catalog: openai, switching: true }).kept).toBeUndefined()
   })
 
+  it('keeps a role that names the project\'s own connection on a switch, like main (review M1)', () => {
+    const p = project({ a: 'fable', b: 'sonnet', c: 'haiku' })
+    const own = { ...p, provider: { ...p.provider, connection: 'anthropic' as const }, roles: p.roles.map((r, i) => (i === 1 ? { ...r, connection: 'anthropic' as const } : r)) }
+    const res = previewRemap({ project: own, connection: 'openai', tierModels: { everyday: 'gpt-5-mini' }, catalog: openai, switching: true })
+    expect(res.kept?.map((k) => k.roleId)).toEqual([own.roles[1].id])
+    expect(res.changes.map((c) => c.roleId)).not.toContain(own.roles[1].id)
+  })
+
+  it('a mapping edit previews only roles running on the edited connection (review M3)', () => {
+    const p = project({ a: 'fable', b: 'sonnet', c: 'haiku' })
+    const mixed = { ...p, provider: { ...p.provider, connection: 'anthropic' as const }, roles: p.roles.map((r, i) => (i === 1 ? { ...r, connection: 'openai' as const, model: 'gpt-5-mini', tier: 'everyday' as const } : r)) }
+    const onOpenai = previewRemap({ project: mixed, connection: 'openai', tierModels: { everyday: 'gpt-5' }, previousTierModels: { everyday: 'gpt-5-mini' }, catalog: openai, switching: false })
+    expect(onOpenai.changes.map((c) => c.roleId)).toEqual([mixed.roles[1].id])
+  })
+
   it('derives the tier from the model when the role has none', () => {
     expect(roleTier({ model: 'opus' })).toBe('deep')
     expect(roleTier({ model: 'inherit', tier: 'top' })).toBeUndefined()

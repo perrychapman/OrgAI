@@ -490,13 +490,13 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: [PROJ, 'Team'],
     kind: 'tab',
     scope: 'project',
-    summary: 'Edit the org chart: add roles, set prompts, models and tools, drag the layout and use the Team assistant\'s suggestions.',
+    summary: 'Edit the org chart: add roles, set prompts, models and tools, pick what each role runs on (Runs on, under Model), drag the layout and use the Team assistant\'s suggestions.',
     reach: [
       { via: 'tab', label: 'Team' },
       { via: 'menu', action: 'show-team' },
       { via: 'shortcut', label: 'Ctrl/Cmd+3' }
     ],
-    testIds: ['tab-team', 'team-panel-tabs', 'role-model']
+    testIds: ['tab-team', 'team-panel-tabs', 'role-model', 'role-runs-on']
   },
   {
     id: 'project-team-catalog',
@@ -591,10 +591,10 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: [PROJ, 'Settings', 'General', 'Connection'],
     kind: 'section',
     scope: 'project',
-    summary: 'Choose which connection this project runs on and see the models its roles use.',
+    summary: 'Choose the default connection for this project\'s roles and see the models its roles use; a role can run on another connection through Runs on in the Team tab.',
     reach: [{ via: 'deepLink', target: PROJECT_SETTINGS_SECTIONS.connection }],
     settings: ['project.provider'],
-    testIds: ['project-connection-line', 'project-connection-option']
+    testIds: ['project-connection-line', 'project-connection-option', 'project-connection-roles-line']
   },
   {
     id: 'project-settings-engagement-plan',

@@ -1,7 +1,7 @@
 # Multi-provider org charts: bridged reports (phase 1)
 
-Status: built 2026-11-07 in the main process only. No renderer surface yet. Verified by unit tests, fake `query()`, a
-fake Codex app-server and the mock adapter. Nothing has run live.
+Status: built 2026-11-07 in the main process, then the renderer (section "Renderer"). Verified by unit tests, fake
+`query()`, a fake Codex app-server, the mock adapter and e2e/multi-provider.mjs. Nothing has run live.
 
 ## Problem
 
@@ -98,7 +98,7 @@ Neither SDK can route a single subagent to another provider:
 - **Behaviour change:** proxy projects whose reports use the other model family now run those reports as bridged
   sessions on the other adapter. Before this change they went through the root CLI. This needs the proxy to serve
   `/v1/responses` for Codex, which is unverified.
-- **No UI:** the role inspector has no connection picker, no problem notice and no per-connection usage view.
+- **UI:** built 2026-11-07, see "Renderer" below.
 
 ## Unverified live
 
@@ -106,3 +106,67 @@ Neither SDK can route a single subagent to another provider:
   and its auto-background behaviour. Both were found only in the binary's text.
 - That a Codex dynamic-tool answer and a later harness message behave as the fake server does.
 - Real child sessions on Anthropic, OpenAI and a proxy at once, and `runConnectionFor` against real settings.
+
+## Renderer
+
+Built 2026-11-07 from the UX pre-walk (`ux-review-multi-provider-pre.md`, answers 1-4, findings H1, H2, M1-M4, M6).
+
+### What was built
+
+- **Helpers:** `lib/roleConnection.ts` (pure, unit-tested) rebuilds the defaults.ts input from connections:list
+  (`connectionsViewOf`, `connectionStatesOf`) and words role problems in the panel's terms (`roleProblems`,
+  `roleProblemText`). `ownConnection` is main's switch rule: a non-root role with any valid `connection` keeps it on a
+  project switch, even when it equals the project's. `isPinned` means "differs from the project's" and drives tags.
+- **Team role panel:** "Runs on" (`role-runs-on`), a native select, first in the Model fold above Model and Exact
+  model. It never uses the word "Connection", which means MCP services in that panel (H2).
+  - Shown with two or more enabled connections, or when the role is pinned. Never on the root.
+  - Options: "Project default (<name>)" (clears `connection`), every other enabled connection ("(not connected)" when
+    it is not), "<project's> (kept if the project switches)" for an explicit same-connection pin, and a removed or
+    turned-off pin as its own option ("Removed proxy", "<name> (turned off)").
+  - `role-runs-on-problem` (aria-invalid, aria-describedby) shows the problem sentence. `role-runs-on-hint` says the
+    role bills and routes through the other connection, and what a change did to the model.
+  - A change moves a tier role to the same tier there. A custom id the new connection does not serve, or a tier it
+    does not map, falls back like Exact model's "Not set" (saved tier, Everyday, first mapped tier).
+  - Model, Exact model, tier labels, the proxy grouping and hint, and `role-effort` follow the role's connection
+    (`roleTierContext`, `adapterOnConnection`). `role-effort-unsupported` names it ("max is not used on OpenAI").
+- **Chips:** `role-model-chip[data-connection]` reads "Everyday · OpenAI" only when the role runs elsewhere; its title
+  and the node's aria-label say "Runs on OpenAI, not this project's default (Anthropic)". The Model fold summary adds
+  the same tag.
+- **Project settings > General > Connection:** the lead says it is the default for roles.
+  `project-connection-roles-line` reads "4 roles use Anthropic by default · 1 runs on its own connection". Role models
+  rows show each role's connection (`role-model-connection`). The remap dialog lists kept roles under "Not changed
+  (each runs on its own connection)" (`remap-kept`, `remap-kept-role`). Undo restores models and tiers only, so pins
+  are never touched.
+- **Refusal:** `lib/remap.ts` `projectStartRefusal` gives role problems first, then `mixedFamilyRefusal`. Other-family
+  roles on a proxy never refuse: `proxy-family-notice` says they run as bridged reports in their own session.
+  `project-start-refusal` (Project settings) and `new-run-start-refusal` (New run: a warning, Start stays enabled, the
+  run's own refusal is the truth, hidden in Ask mode) show it.
+- **TierEditor:** its preview covers projects with any role on the edited connection, and only those roles, like main.
+- **Live run:** `agent-connection` on agent cards (tooltip and sr-only text in compact styles), in the side panel agent
+  line ("Runs on X") and in FinishedList, when the agent's connection differs from the run's.
+- **Usage:** UsagePanel "By connection" (`usage-connections`, `usage-connection[data-connection]`) with two or more
+  entries; costs through `Cost`, unknown never $0.
+- **Copy:** the App settings Connections lead and the mock-adapter line no longer say one connection per project.
+
+### Checked
+
+- Unit tests: roleConnection, roleModels, remap (kept list, same-connection pins, mapping-edit scope, refusal).
+- `e2e/multi-provider.mjs` (in e2e:free; mock, two mock proxies on `mock-proxy.example.com`, 1024x640 and 1600x1000,
+  dark and light, no page scroll):
+  - pin through `role-runs-on`, Project default clears it, the chip tag and title, the fold summary;
+  - a `[mock:bridged]` run: the tagged agent finishes, the inspector names the provider and the run record holds
+    "Mock bridged report done.";
+  - the roles line and the switch preview's `remap-kept`;
+  - with the proxy turned off: the refusals on Project settings and New run (Start enabled) and
+    `role-runs-on-problem`, at every size and theme.
+- Screenshots looked at by eye: the Team tab at 1024x640 light and the bridged run. The agent card tag was cut to one
+  letter there; now the model gives way first, then the tag and the handle ellipsise (full text in their titles).
+
+### Not seen or open
+
+- A real second provider. The 'disconnected' live-status wording: main refuses only for unknown or not configured
+  connections, so for a merely disconnected one the New run warning says more than the run does.
+- The By connection table and compact node styles with a tag, by eye; screen reader output.
+- Per-connection cost is always labelled computed (the contract carries no source or partial flag per connection).
+- The remap notice after Apply lists only changes, not the kept roles.
+- The role panel's nested scroller with its sticky header (pre-walk M5) is unchanged.

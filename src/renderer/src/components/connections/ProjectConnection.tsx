@@ -18,7 +18,7 @@ import { SettingsSection } from '../settings/SettingsSection'
 import { SettingRow } from '../ui/SettingRow'
 import RemapPreviewDialog from '../RemapPreviewDialog'
 import { otherFamilyRoles, previewRemap, projectStartRefusal, proxyFamilyNotice, roleTier, routeLines, tierMappingLines, FAMILY_LABEL } from '../../lib/remap'
-import { isPinned, pinnedRoles } from '../../lib/roleConnection'
+import { ownConnection } from '../../lib/roleConnection'
 import { connectionKindLabel, connectionLabel, connectionWithAuth, isProxyId } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestModelPrice } from '../../lib/settingsTarget'
 
@@ -83,7 +83,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   const otherFamilies = useMemo(() => (targetIsProxy ? otherFamilyRoles(project, catalog) : []), [targetIsProxy, project, catalog])
   const familyNotice = proxyFamilyNotice(adapter.family, otherFamilies.length)
   const refusal = projectStartRefusal({ ...project, provider: { ...project.provider, connection: target } }, connections, catalog)
-  const pinned = useMemo(() => pinnedRoles(project), [project])
+  const pinned = useMemo(() => project.roles.filter((r) => ownConnection(r) !== undefined), [project])
 
   const change = useMemo(
     () => previewRemap({ project, connection: target, tierModels, catalog, switching: pending !== null && pending !== current }),
@@ -204,7 +204,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   }
 
   // Only roles that follow the project move on a switch; roles on their own connection keep theirs.
-  const tierLines = tierMappingLines(tierModels, pending !== null && pending !== current ? project.roles.filter((r) => !isPinned(r, project)) : project.roles, targetName)
+  const tierLines = tierMappingLines(tierModels, pending !== null && pending !== current ? project.roles.filter((r) => ownConnection(r) === undefined) : project.roles, targetName)
   const routes = targetIsProxy ? routeLines(tierModels, catalog) : []
   const mappingExtra = (
     <div className="remap-mapping" data-testid="remap-mapping">
@@ -345,10 +345,10 @@ export default function ProjectConnection({ project }: { project: Project }): Re
             {project.roles.map((r) => {
               const tier = r.model === 'inherit' ? undefined : roleTier(r)
               return (
-                <li key={r.id} data-pinned={isPinned(r, project) ? 'true' : undefined}>
+                <li key={r.id} data-pinned={ownConnection(r) ? 'true' : undefined}>
                   <span className="remap-role">{r.name}</span>
-                  <span className={isPinned(r, project) ? 'pconn-role-own' : 'muted'} data-testid="role-model-connection">
-                    {isPinned(r, project) ? `Own: ${connectionLabel(roleConnection(r, project))}` : connectionLabel(roleConnection(r, project))}
+                  <span className={ownConnection(r) ? 'pconn-role-own' : 'muted'} data-testid="role-model-connection">
+                    {ownConnection(r) ? `Runs on ${connectionLabel(roleConnection(r, project))} (own)` : connectionLabel(roleConnection(r, project))}
                   </span>
                   <span className="muted">{tier ? MODEL_TIER_OPTIONS.find((o) => o.value === tier)?.label : r.model === 'inherit' ? 'Inherit' : 'Custom'}</span>
                   <span className="mono">{r.model === 'inherit' ? "its parent's model" : r.model}</span>

@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Effort, ModelTier, Project, Role } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { adapterForProject, adapterOnConnection, modelFamily, projectConnection, roleConnection, roleTierContext } from '@shared/defaults'
@@ -8,7 +8,7 @@ import { Button } from './ui/Button'
 import { ModelSelect, type ModelGroup } from './ui/ModelSelect'
 import { connectionLabel, isProxyId } from '../lib/connectionLabel'
 import { roleTier } from '../lib/remap'
-import { connectionsViewOf, isPinned, roleProblems, runsOnOptions, showRunsOn } from '../lib/roleConnection'
+import { connectionsViewOf, isPinned, ownConnection, roleProblems, runsOnOptions, showRunsOn } from '../lib/roleConnection'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { TIER_LABEL, applyExactModel, applyModelChoice, effortView, exactModelGroups, exactModelValue, roleModelChoice, tierOptionLabel } from '../lib/roleModels'
 
@@ -63,6 +63,9 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   const runsOn = showRunsOn(role, project, list)
   const pinned = isPinned(role, project)
   const problem = roleProblems(project, list).find((p) => p.roleId === role.id)
+  // What a Runs on change did to the model, said once under the select (only for the role it was made on).
+  const [movedNote, setMovedNote] = useState<{ roleId: string; text: string } | null>(null)
+  const moved = movedNote?.roleId === role.id ? movedNote.text : null
   const runsOnSelect = runsOn ? (
     <div className="field role-runs-on">
       <label htmlFor={`role-runs-on-${role.id}`}>Runs on</label>
@@ -70,23 +73,38 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
         id={`role-runs-on-${role.id}`}
         className="select"
         data-testid="role-runs-on"
-        value={connection === base ? '' : connection}
-        aria-describedby={problem || pinned ? `role-runs-on-hint-${role.id}` : undefined}
+        value={ownConnection(role) ?? ''}
+        aria-describedby={problem || pinned || moved ? `role-runs-on-hint-${role.id}` : undefined}
+        aria-invalid={problem ? true : undefined}
         onChange={(e) => {
           const v = e.target.value
           const next = v === '' ? undefined : v
+          let note: string | null = null
           updateRoles(project.id, (roles) =>
             roles.map((r) => {
               if (r.id !== role.id) return r
               const moved = { ...r, connection: next }
               if (next === undefined) delete moved.connection
-              // A tier role follows its tier onto the new connection; a custom id or inherit stays as it is.
-              const tier = r.model === 'inherit' ? undefined : roleTier(r)
+              if (r.model === 'inherit') return moved
+              // A tier role follows its tier onto the new connection. A custom id the new connection does not serve (or
+              // a tier it does not map) falls back like Exact model's "Not set": the saved tier, else Everyday, else the
+              // first mapped tier, so a role never keeps a model its new connection cannot run (review M2).
               const target = roleConnection(moved, project)
-              const mapped = tier ? roleTierContext(moved, project, view, useAppStore.getState().models[target]).tierModels[tier] : undefined
-              return tier && mapped && roleModelChoice(r, tierModels) === tier ? { ...moved, model: mapped, tier } : moved
+              const targetCatalog = useAppStore.getState().models[target]
+              const targetTiers = roleTierContext(moved, project, view, targetCatalog).tierModels
+              const choice = roleModelChoice(r, tierModels)
+              const served = choice === 'custom' && !!targetCatalog?.some((m) => m.id === r.model)
+              const unknownCatalog = choice === 'custom' && !targetCatalog
+              if (served || unknownCatalog) return moved
+              const tier = choice === 'custom' || choice === 'inherit' ? undefined : choice
+              const w = tier && targetTiers[tier] ? { model: targetTiers[tier]!, tier } : applyExactModel('', targetTiers, r)
+              if (w.model !== r.model) {
+                note = w.model === 'inherit' ? `Model set to inherit: ${connectionLabel(target)} maps no tier yet.` : `Model set to ${w.tier ? TIER_LABEL[w.tier] : w.model} (${w.model}) on ${connectionLabel(target)}.`
+              }
+              return { ...moved, model: w.model, tier: w.tier }
             })
           )
+          setMovedNote(note ? { roleId: role.id, text: note } : null)
         }}
       >
         {runsOnOptions(role, project, list).map((o) => (
@@ -99,9 +117,10 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
         <span className="hint invalid-text" id={`role-runs-on-hint-${role.id}`} data-testid="role-runs-on-problem">
           {problem.text}
         </span>
-      ) : pinned ? (
-        <span className="hint" id={`role-runs-on-hint-${role.id}`}>
-          Bills and routes through {connectionLabel(connection)}, not the project default.
+      ) : pinned || moved ? (
+        <span className="hint" id={`role-runs-on-hint-${role.id}`} data-testid="role-runs-on-hint">
+          {pinned ? `Bills and routes through ${connectionLabel(connection)}, not the project default.` : ''}
+          {moved ? `${pinned ? ' ' : ''}${moved}` : ''}
         </span>
       ) : null}
     </div>
@@ -133,12 +152,16 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
       <div className="role-model-field stack-2">
         {runsOnSelect}
         <div className="field">
-        <label htmlFor="role-model-disabled" className="sr-only">
+        <label htmlFor={`role-model-disabled-${role.id}`} className="sr-only">
           Model
         </label>
-        <select id="role-model-disabled" className="select" disabled value={role.model} data-testid="role-model">
+        <select id={`role-model-disabled-${role.id}`} className="select" disabled value={role.model} data-testid="role-model">
           <option value={role.model}>{role.model === 'inherit' ? 'Inherit' : 'Custom'}</option>
         </select>
+        {!info ? (
+          <span className="hint">Choose another Runs on to pick a model.</span>
+        ) : (
+          <>
         <span className="hint">Connect {connectionLabel(connection)} to choose a model.</span>
         <Button
           size="sm"
@@ -149,6 +172,8 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
         >
           Open connections
         </Button>
+          </>
+        )}
         </div>
       </div>
     )

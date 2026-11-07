@@ -1,7 +1,7 @@
 import type { ConnectionId, ConnectionInfo, ModelFamily, ModelRef, ModelTier, ProviderModel, Project, RemapChange, RemapResult } from '@shared/types'
 import { MODEL_TIERS, MODEL_TIER_OPTIONS } from '@shared/types'
 import { adapterForFamily, adapterForProject, mixedFamilyRefusal, modelFamily, roleConnection, tierForModel } from '@shared/defaults'
-import { isPinned, roleProblems } from './roleConnection'
+import { isPinned, ownConnection, roleProblems } from './roleConnection'
 
 /** One project's predicted or applied model changes, for the notice and the preview dialog. */
 export interface ProjectChanges {
@@ -68,10 +68,14 @@ export function previewRemap(input: PreviewInput): ProjectChanges {
   for (const role of project.roles) {
     // A role on its own connection does not follow the project: a switch keeps it and its model, and a tier mapping
     // edit of another connection does not touch it.
-    if (isPinned(role, project)) {
-      if (switching) kept.push({ roleId: role.id, roleName: role.name, connection: roleConnection(role, project) })
+    // Same rule as main's remapOne: a switch keeps every non-root role that names a connection (even the target one);
+    // a mapping edit touches only roles that run on the edited connection.
+    const own = ownConnection(role)
+    if (switching && own) {
+      kept.push({ roleId: role.id, roleName: role.name, connection: own })
       continue
     }
+    if (!switching && roleConnection(role, project) !== input.connection) continue
     const tier = roleTier(role)
     if (!tier) continue
     const target = tierModels[tier]

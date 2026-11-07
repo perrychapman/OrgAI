@@ -146,7 +146,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
 
         <McpAuthNotice project={project} />
         <FolderTrustNotice project={project} />
-        {startRefusalText && (
+        {/* Ask runs one assistant on the project's connection and never bridges, so roles' connections do not apply. */}
+        {startRefusalText && !ask && (
           <Banner tone="warning" testId="new-run-start-refusal">
             {startRefusalText} Start still tries; the run reports the same problem if it cannot begin.
           </Banner>

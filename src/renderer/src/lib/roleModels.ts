@@ -34,8 +34,7 @@ export function roleModelChoice(role: Pick<Role, 'model' | 'tier'>, tierModels: 
 /** The fold summary: the tier label, "Inherited" or "Custom", plus " · <connection>" when the role is pinned (`on` its connection, `base` the project's). */
 export function roleModelSummary(role: Pick<Role, 'model' | 'tier'>, tierModels: TierModels, on?: ConnectionId, base?: ConnectionId): string {
   const choice = roleModelChoice(role, tierModels)
-  if (choice === 'inherit') return 'Inherited'
-  const word = choice === 'custom' ? 'Custom' : TIER_LABEL[choice]
+  const word = choice === 'inherit' ? 'Inherited' : choice === 'custom' ? 'Custom' : TIER_LABEL[choice]
   const tag = connectionTag(on, base)
   return tag ? `${word} · ${tag}` : word
 }

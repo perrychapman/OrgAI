@@ -43,6 +43,8 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
   const pinnedOn = on && base && on !== base ? on : undefined
   const chip = roleChipLabel(role, pinnedOn, base)
   const pinnedTitle = pinnedOn && base ? connectionTagTitle(pinnedOn, base) : undefined
+  // Screen readers get the provider too (every node style), not only the tooltip (review M4).
+  const capsLabel = `${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}${pinnedTitle ? `. ${pinnedTitle}` : ''}`
   const tip = compact
     ? [role.name, role.slug, chip, pinnedTitle ?? '', role.canSpawn ? `leads ${reportCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
         .filter(Boolean)
@@ -82,7 +84,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
         </div>
       </div>}
       {compact && (
-        <span className="sr-only" data-testid="role-node-caps" role="img" aria-label={`${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}`} />
+        <span className="sr-only" data-testid="role-node-caps" role="img" aria-label={capsLabel} />
       )}
       {!compact && <div className="meta">
         <span
@@ -95,7 +97,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
         </span>
         {role.canSpawn && <span className="chip">leads {reportCount}</span>}
       </div>}
-      {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={`${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}`}>
+      {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={capsLabel}>
         {parts.length === 0 ? 'No tools' : parts.map((p, i) => (
           <span key={p.key} className="caps-part" aria-hidden="true">
             {i > 0 && <span className="caps-sep"> · </span>}

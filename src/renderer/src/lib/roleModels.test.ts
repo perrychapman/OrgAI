@@ -84,7 +84,7 @@ describe('multi-provider labels', () => {
     expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' })).toBe('Everyday')
     expect(roleModelSummary({ model: 'gpt-x' }, tiers, 'openai', 'anthropic')).toBe('Custom · OpenAI')
     expect(roleModelSummary({ model: 'sonnet' }, tiers, 'openai', 'anthropic')).toBe('Everyday · OpenAI')
-    expect(roleModelSummary({ model: 'inherit' }, tiers, 'openai', 'anthropic')).toBe('Inherited')
+    expect(roleModelSummary({ model: 'inherit' }, tiers, 'openai', 'anthropic')).toBe('Inherited · OpenAI')
   })
   it('names the connection when an effort is dropped', () => {
     expect(effortView('max', 'codex', 'OpenAI').note).toBe('max is not used on OpenAI; Default applies.')

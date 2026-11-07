@@ -55,6 +55,13 @@ describe('roleConnection', () => {
     expect(showRunsOn(project().roles[1], project(), [anthropic, proxy(true)])).toBe(true)
   })
 
+  it('shows a role that names the project\'s own connection as kept, not as the default', () => {
+    const p = project('anthropic')
+    const opts = runsOnOptions(p.roles[1], p, [anthropic, openai, proxy(true)])
+    expect(opts.map((o) => o.value)).toEqual(['', 'anthropic', 'proxy-1234abcd'])
+    expect(opts[1].label).toBe('Anthropic (kept if the project switches)')
+  })
+
   it('reports problems in the role panel words', () => {
     const p = project('proxy-1234abcd')
     const list = [anthropic, openai, proxy(false)]

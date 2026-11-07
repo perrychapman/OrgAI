@@ -1,6 +1,6 @@
 import type { AnthropicConnection, ConnectionId, ConnectionInfo, ConnectionStatus, OpenAIConnection, Project, ProxyConnection, Role, RoleConnectionProblem } from '@shared/types'
 import { isProxyConnection } from '@shared/types'
-import { type ConnectionsView, projectConnection, roleConnection, roleConnectionProblems } from '@shared/defaults'
+import { type ConnectionsView, isConnectionId, projectConnection, roleConnection, roleConnectionProblems } from '@shared/defaults'
 import { connectionLabel } from './connectionLabel'
 
 /**
@@ -52,6 +52,15 @@ export function isPinned(role: Pick<Role, 'connection' | 'reportsTo'>, project: 
   return role.reportsTo !== null && roleConnection(role, project) !== projectConnection(project)
 }
 
+/**
+ * The connection a non-root role names itself (Role.connection, a valid id), even when it equals the project's: main
+ * keeps every such role and its model when the project switches connection (connections service remapOne). undefined =
+ * the role follows the project.
+ */
+export function ownConnection(role: Pick<Role, 'connection' | 'reportsTo'>): ConnectionId | undefined {
+  return role.reportsTo !== null && isConnectionId(role.connection) ? role.connection : undefined
+}
+
 /** Roles that keep their own connection (pinned to another one than the project's), in role order. */
 export function pinnedRoles<R extends Pick<Role, 'connection' | 'reportsTo'>>(project: Pick<Project, 'provider'> & { roles: R[] }): R[] {
   return project.roles.filter((r) => isPinned(r, project))
@@ -81,6 +90,8 @@ export function runsOnOptions(
 ): RunsOnOption[] {
   const own = projectConnection(project)
   const opts: RunsOnOption[] = [{ value: '', label: `Project default (${connectionLabel(own)})` }]
+  // A role that names the project's own connection keeps it when the project switches: show that, never "default".
+  if (ownConnection(role) === own) opts.push({ value: own, label: `${connectionLabel(own)} (kept if the project switches)` })
   const usable = selectableConnections(list).filter((c) => c.connection.id !== own)
   for (const c of usable) {
     const state = c.status.state === 'connected' ? '' : ' (not connected)'
