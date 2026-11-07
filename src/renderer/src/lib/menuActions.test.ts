@@ -242,6 +242,16 @@ describe('shared tables and Ask OrgAI', () => {
   })
 })
 
+describe('usageMenuAnnouncement', () => {
+  const projects = [{ id: 'p1', name: 'Billing' }]
+  it('names the narrowing the page keeps', () => {
+    expect(actions.usageMenuAnnouncement({ usageFilters: { projectIds: [] }, projects })).toBe('Usage, all projects.')
+    expect(actions.usageMenuAnnouncement({ usageFilters: { projectIds: ['p1'] }, projects })).toBe('Usage, Billing.')
+    expect(actions.usageMenuAnnouncement({ usageFilters: { projectIds: ['quick'] }, projects })).toBe('Usage, Chat.')
+    expect(actions.usageMenuAnnouncement({ usageFilters: { projectIds: ['p1', 'p2'] }, projects })).toBe('Usage, 2 projects.')
+  })
+})
+
 describe('shortcuts', () => {
   it('names Ctrl or Cmd', () => {
     expect(actions.keyLabel('Mod', false)).toBe('Ctrl')

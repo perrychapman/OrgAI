@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clampWidth, dragWidth, keyWidth, maxWidthFor, STEP_BIG_PX, STEP_PX } from './panelWidth'
+import { arrivalWidth, clampWidth, dragWidth, keyWidth, maxWidthFor, STEP_BIG_PX, STEP_PX } from './panelWidth'
 
 describe('panelWidth', () => {
   it('clamps into range', () => {
@@ -27,5 +27,13 @@ describe('panelWidth', () => {
     expect(keyWidth(300, 'Home', false, 1, 200, 420)).toBe(200)
     expect(keyWidth(300, 'End', false, 1, 200, 420)).toBe(420)
     expect(keyWidth(300, 'a', false, 1, 200, 420)).toBeNull()
+  })
+})
+
+describe('arrivalWidth', () => {
+  it('is at least the wide width and never narrows a wider saved width', () => {
+    expect(arrivalWidth(null)).toBe(480)
+    expect(arrivalWidth(300)).toBe(480)
+    expect(arrivalWidth(620)).toBe(620)
   })
 })

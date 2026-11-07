@@ -17,6 +17,12 @@ describe('targetScrollTop', () => {
     expect(targetScrollTop('nearest', { ...m, targetTop: -20 })).toBe(80)
     expect(targetScrollTop('nearest', { ...m, targetTop: 700 })).toBe(250)
   })
+  it('leaves room for the scroller\'s scroll-padding-top (a sticky bar)', () => {
+    expect(targetScrollTop('start', { ...m, padTop: 56 })).toBe(344)
+    expect(targetScrollTop('start', { ...m, padTop: 0 })).toBe(400)
+    expect(targetScrollTop('nearest', { ...m, targetTop: 20, padTop: 56 })).toBe(64)
+    expect(targetScrollTop('nearest', m)).toBe(100)
+  })
   it('never scrolls a container that does not overflow', () => {
     expect(targetScrollTop('start', { ...m, current: 0, scrollHeight: 600 })).toBe(0)
   })

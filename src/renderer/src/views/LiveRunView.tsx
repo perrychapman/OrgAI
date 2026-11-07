@@ -168,8 +168,11 @@ function AssistantStart({ id, project }: { id: VirtualProjectId; project: Projec
 function RunView({ project, runId }: { project: Project; runId: string }): ReactElement {
   const run = useAppStore((s) => s.runs[runId])
   const selectedAgentId = useAppStore((s) => s.selectedAgentId)
+  // Arriving from the Usage page in a window under 1100 px: the side panel opens wide so agent names are not clipped.
+  const usageReturnRun = useAppStore((s) => s.usageReturn?.runId ?? null)
+  const usageArrival = useMemo(() => (usageReturnRun === runId && window.innerWidth < 1100 ? runId : null), [usageReturnRun, runId])
   const selectAgent = useAppStore((s) => s.selectAgent)
-  const startRun = useAppStore((s) => s.startRun)
+  const startRun =useAppStore((s) => s.startRun)
   const sendMessage = useAppStore((s) => s.sendMessage)
   const decide = useAppStore((s) => s.decide)
   const decideProposal = useAppStore((s) => s.decideProposal)
@@ -1189,7 +1192,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         />
         )}
 
-        <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId}>
+        <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} arrival={usageArrival}>
           <div className="live-panel">
             <TranscriptPanel
               runId={runId}

@@ -3741,7 +3741,9 @@ export const MENU_ACTIONS = [
   'canvas-zoom-in',
   'canvas-zoom-out',
   /** Help > "Ask OrgAI about itself…": opens Chat ready for a question about the app (section "Self-knowledge"). */
-  'ask-about-orgai'
+  'ask-about-orgai',
+  /** View > Usage: the app-wide Usage page (docs/design/usage-app.md). No accelerator; always enabled. */
+  'show-usage'
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]

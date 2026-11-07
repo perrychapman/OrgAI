@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { BellRing, Briefcase, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { BellRing, Briefcase, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject } from '../lib/assistants'
 import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
@@ -116,6 +116,7 @@ export default function Sidebar({
   const selectedId = useAppStore((s) => s.selectedProjectId)
   const view = useAppStore((s) => s.view)
   const setView = useAppStore((s) => s.setView)
+  const openUsage = useAppStore((s) => s.openUsage)
   const openProject = useAppStore((s) => s.openProject)
   const openAssistant = useAppStore((s) => s.openAssistant)
   const virtualProjects = useAppStore((s) => s.virtualProjects)
@@ -395,6 +396,18 @@ export default function Sidebar({
         >
           <Icon icon={LayoutDashboard} size="sm" />
           {!rail && 'Dashboard'}
+        </button>
+        <button
+          type="button"
+          className={`nav-item ${view === 'usage' ? 'active' : ''}`}
+          data-testid="nav-usage"
+          aria-current={view === 'usage' ? 'page' : undefined}
+          aria-label={rail ? 'Usage' : undefined}
+          title={rail ? 'Usage' : undefined}
+          onClick={() => openUsage()}
+        >
+          <Icon icon={ChartColumn} size="sm" />
+          {!rail && 'Usage'}
         </button>
         {needsCount > 0 && (
           <Popover
