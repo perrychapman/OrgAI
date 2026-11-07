@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Role, RunEvent } from '@shared/types'
+import { BRIDGE_BRIEF_MAX_CHARS } from '@shared/types'
 import { CodexAdapter, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role } from './testHelpers'
@@ -187,6 +188,19 @@ describe('Codex bridged reports', () => {
     const refused = await s.ask('item/tool/call', call('th-1', 'c2', 'spawn_agent', { role: 'analyst', brief: 'Again' }))
     expect(refused.success).toBe(false)
     expect(refused.contentItems[0].text).toBe('Could not start analyst: Concurrent subagent limit reached.')
+  })
+
+  it('L5: a bridged spawn_agent refuses a brief over BRIDGE_BRIEF_MAX_CHARS with delegate_agent\'s wording, and frees the reservation', async () => {
+    const { bridge, spawn } = fakeBridge()
+    const { s } = await start({ bridge })
+    const long = await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_agent', { role: 'analyst', brief: 'x'.repeat(BRIDGE_BRIEF_MAX_CHARS + 1) }))
+    expect(long.success).toBe(false)
+    expect(long.contentItems[0].text).toBe(`REFUSED: the brief is longer than ${BRIDGE_BRIEF_MAX_CHARS} characters. Shorten it.`)
+    expect(spawn).not.toHaveBeenCalled()
+    // At the cap it goes through, and the refused call left no reserved handle behind.
+    const ok = await s.ask('item/tool/call', call('th-1', 'c2', 'spawn_agent', { role: 'analyst', brief: 'x'.repeat(BRIDGE_BRIEF_MAX_CHARS) }))
+    expect(ok.success).toBe(true)
+    expect(spawn).toHaveBeenCalledTimes(1)
   })
 
   it('a report lead spawning it passes its own agent and role ids, and gets the result in its own thread', async () => {

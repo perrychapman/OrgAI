@@ -74,7 +74,7 @@ vi.mock('./prompts', async (importOriginal) => {
   return { ...orig, buildRolePrompt: vi.fn(orig.buildRolePrompt) }
 })
 
-import { ClaudeSession, MCP_RESTART_DELAY_MS, buildAgents, bridgedSpawnDenial } from './claude'
+import { ClaudeSession, MCP_RESTART_DELAY_MS, buildAgents, buildEnv, bridgedRolesOf, bridgedSpawnDenial } from './claude'
 import type { ConfigChange, ConfigChangeResult } from './harnessTools'
 import { harnessToolsFor } from './harnessTools'
 import { buildRolePrompt } from './prompts'
@@ -274,5 +274,60 @@ describe('Claude bridged child session (ctx.bridgedChild)', () => {
     q.emit(result)
     await new Promise((r) => setTimeout(r, 150))
     expect(q.inputs).toHaveLength(1)
+  })
+})
+
+describe('Claude bridged reports: review fixes', () => {
+  /** The chart plus a canSpawn "planner" whose spawnable leaves out the bridged analyst. */
+  const chartWithPlanner = (): Role[] => [
+    ...chart(),
+    role({ id: 'r-plan', slug: 'planner', name: 'Planner', tools: ['Read'], reportsTo: 'r-lead', canSpawn: true, spawnable: ['r-rev'] })
+  ]
+
+  it('M1: delegate_agent is checked against the hook caller\'s own role, before any allow path', async () => {
+    start({ bridge: fakeBridge(), roles: chartWithPlanner() })
+    const q = await firstQuery()
+    const call = (input: Record<string, unknown>, id: string, agent?: { id: string; type: string }) =>
+      preToolUse(q)(hookCall('mcp__orgai__delegate_agent', input, id, agent), 'x', {})
+    // The root (main thread) and the engineer may delegate to the analyst, by slug or id.
+    expect((await call({ role: 'analyst', brief: 'x' }, 'tu-1')).hookSpecificOutput?.permissionDecision).toBe('allow')
+    expect((await call({ role: 'r-ext', brief: 'x' }, 'tu-2', { id: 'a1', type: 'engineer' })).hookSpecificOutput?.permissionDecision).toBe('allow')
+    // A canSpawn role without the analyst in spawnable, and a role that cannot spawn, are denied.
+    const planner = await call({ role: 'analyst', brief: 'x' }, 'tu-3', { id: 'a2', type: 'planner' })
+    expect(planner.hookSpecificOutput).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: 'Role Planner may not delegate to Analyst.' })
+    const reviewer = await call({ role: 'r-ext', brief: 'x' }, 'tu-4', { id: 'a3', type: 'reviewer' })
+    // (A role that cannot spawn is already refused by the harness audience gate, which runs first.)
+    expect(reviewer.hookSpecificOutput?.permissionDecision).toBe('deny')
+    // A role that is not bridged falls through to the tool, which refuses it itself.
+    expect((await call({ role: 'reviewer', brief: 'x' }, 'tu-5', { id: 'a2', type: 'planner' })).hookSpecificOutput?.permissionDecision).toBe('allow')
+  })
+
+  it('L2: a bridged child on another connection never copies the project\'s API key; only RunConnection.env decides', () => {
+    const base = { PATH: '/bin', MY_KEY: 'project-key' }
+    const p = project({ provider: { id: 'codex', label: 'Codex', connection: 'openai', auth: { kind: 'apiKey', envVar: 'MY_KEY' } } })
+    const child = { agentId: 'b1', parentAgentId: ROOT_AGENT_ID, roleId: 'r-ext' }
+    const bare = buildEnv(fakeCtx({ project: p, bridgedChild: child, connection: { connection: 'anthropic', adapter: 'claude', env: {} } }), base)
+    expect(bare.ANTHROPIC_API_KEY).toBeUndefined()
+    const own = buildEnv(fakeCtx({ project: p, bridgedChild: child, connection: { connection: 'anthropic', adapter: 'claude', env: { ANTHROPIC_API_KEY: 'child-key' } } }), base)
+    expect(own.ANTHROPIC_API_KEY).toBe('child-key')
+    // Same connection as the project: the project's key is still copied.
+    const p2 = project({ provider: { id: 'claude', label: 'Claude', auth: { kind: 'apiKey', envVar: 'MY_KEY' } } })
+    const same = buildEnv(fakeCtx({ project: p2, bridgedChild: child, connection: { connection: 'anthropic', adapter: 'claude', env: {} } }), base)
+    expect(same.ANTHROPIC_API_KEY).toBe('project-key')
+  })
+
+  it('L6: when bridge.roles() throws, every non-root role on another connection counts as bridged (fail closed)', () => {
+    const roles = chart().map((r) => (r.id === 'r-ext' ? { ...r, connection: 'openai' } : r))
+    const bridge = {
+      roles: (): BridgedRole[] => {
+        throw new Error('boom')
+      },
+      spawn: vi.fn()
+    }
+    const ctx = fakeCtx({ project: project({ roles }), roles, bridge })
+    expect(bridgedRolesOf(ctx)).toEqual([{ roleId: 'r-ext', slug: 'analyst', name: 'Analyst', connection: 'openai', connectionName: 'OpenAI', adapter: 'codex' }])
+    expect(Object.keys(buildAgents(ctx, [], false)).sort()).toEqual(['engineer', 'lead', 'reviewer'])
+    expect(bridgedSpawnDenial(ctx, 'analyst')).toBe('Analyst runs on OpenAI: call delegate_agent instead')
+    expect(bridgedSpawnDenial(ctx, 'reviewer')).toBeUndefined()
   })
 })

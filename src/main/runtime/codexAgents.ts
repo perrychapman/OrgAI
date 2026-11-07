@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { z } from 'zod'
 import type { AgentInstance, AgentMessage, Role } from '@shared/types'
+import { BRIDGE_BRIEF_MAX_CHARS } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
 import { NETWORK_TOOLS } from './codexEvents'
@@ -301,6 +302,11 @@ export async function callNetworkTool(
       // A bridged role runs in its own child session on another connection (RuntimeContext.bridge), never as a thread.
       const bridged = host.bridgedRole?.(check.role)
       if (bridged) {
+        // Same cap and wording as delegate_agent (the brief becomes the child's first message).
+        if (parsed.data.brief.trim().length > BRIDGE_BRIEF_MAX_CHARS) {
+          net.abort(check.id)
+          return fail(`REFUSED: the brief is longer than ${BRIDGE_BRIEF_MAX_CHARS} characters. Shorten it.`)
+        }
         if (!host.spawnBridged) {
           net.abort(check.id)
           return fail(`Could not start ${check.role.slug}: it runs on ${bridged.connectionName}, which this session cannot reach.`)
