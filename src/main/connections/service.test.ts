@@ -490,8 +490,10 @@ describe('LiteLLM spend and pricing', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
     await ctx.service.connect('litellm')
     const keyInfoCalls = (): number => fetchImpl.mock.calls.filter(([u]) => String(u).endsWith('/key/info')).length
+    const afterConnect = keyInfoCalls() // connect's own probe asks /key/info once (status checks.reportsSpend)
+    expect(afterConnect).toBe(1)
     expect(await ctx.service.probeProxyUsages()).toEqual([]) // not in use: no default, no project
-    expect(keyInfoCalls()).toBe(0)
+    expect(keyInfoCalls()).toBe(afterConnect)
     ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })
     expect(await ctx.service.probeProxyUsages()).toHaveLength(1) // in use as the default connection
     ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'anthropic' })

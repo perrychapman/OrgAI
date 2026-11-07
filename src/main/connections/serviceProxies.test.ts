@@ -374,6 +374,43 @@ describe('models.json and old files', () => {
   })
 })
 
+describe('proxy extras: usedBy, baseUrl, names', () => {
+  it('lists usedBy for a proxy, derives model baseUrl per family and follows URL edits', async () => {
+    const calls: string[] = []
+    const ctx = setup({ fetch: hostFetch({ 'gw.example.com': ['claude-sonnet-4-5', 'gpt-5'] }, calls) })
+    const id = (await ctx.service.createProxy({ name: 'Gateway', anthropicBaseUrl: 'https://gw.example.com', apiKey: KEY_A })).connection.id
+    ctx.projects.save(projectOn('p1', id, 'Alpha'))
+    ctx.projects.save(projectOn('p2', 'anthropic', 'Beta'))
+    const info = (await ctx.service.list()).find((i) => i.connection.id === id)!
+    expect(info.usedBy).toEqual([{ id: 'p1', name: 'Alpha' }])
+    expect((await ctx.service.list()).find((i) => i.connection.id === 'anthropic')!.usedBy).toBeUndefined()
+
+    await ctx.service.connect(id)
+    const byId = (): Record<string, string | undefined> => Object.fromEntries(ctx.service.models({ connection: id }).map((m) => [m.id, m.baseUrl]))
+    expect(byId()).toEqual({ 'claude-sonnet-4-5': 'https://gw.example.com', 'gpt-5': 'https://gw.example.com/v1' })
+    await ctx.service.update({ ...(ctx.settings.get().proxies[0] as ProxyConnection), openaiBaseUrl: 'https://oai.example.com/v1' })
+    expect(byId()['gpt-5']).toBe('https://oai.example.com/v1')
+    expect(byId()['claude-sonnet-4-5']).toBe('https://gw.example.com')
+  })
+
+  it('names the connection on RunConnection and the import model context', async () => {
+    const ctx = setup({ fetch: hostFetch({ 'gw.example.com': ['claude-sonnet-4-5'] }) })
+    const id = (await ctx.service.createProxy({ name: 'Gateway', anthropicBaseUrl: 'https://gw.example.com', apiKey: KEY_A })).connection.id
+    const p = projectOn('p1', id)
+    expect(ctx.service.runConnection(p, { adapter: 'claude', connection: id, family: 'claude', mismatched: [] }).name).toBe('Gateway')
+    expect(ctx.service.runConnection(undefined, { adapter: 'mock', connection: 'anthropic', family: undefined, mismatched: [] }).name).toBe('Anthropic')
+    expect(ctx.service.importModelContext(id).connectionName).toBe('Gateway')
+    expect(ctx.service.importModelContext('openai').connectionName).toBe('OpenAI')
+  })
+
+  it('auto-fills tiers Claude-first on a mixed proxy', async () => {
+    const ctx = setup({ fetch: hostFetch({ 'gw.example.com': ['gpt-5', 'claude-sonnet-4-5'] }) })
+    const id = (await ctx.service.createProxy({ name: 'Gateway', anthropicBaseUrl: 'https://gw.example.com', apiKey: KEY_A })).connection.id
+    await ctx.service.connect(id)
+    expect(ctx.settings.get().proxies[0].tierModels.everyday).toBe('claude-sonnet-4-5')
+  })
+})
+
 describe('mock proxy host (ORGAI_MOCK=1)', () => {
   it('connects with any key without network, lists mixed families and answers the bad key with a 401 text', async () => {
     vi.stubEnv('ORGAI_MOCK', '1')
@@ -396,6 +433,16 @@ describe('mock proxy host (ORGAI_MOCK=1)', () => {
     await ctx.service.setSecret({ id, apiKey: MOCK_BAD_KEY })
     const bad = await ctx.service.connect(id)
     expect(bad.status).toMatchObject({ state: 'error', detail: 'The key was refused (401).' })
+  })
+
+  it('fills status.checks (mock key accepted, bad key reached but refused)', async () => {
+    vi.stubEnv('ORGAI_MOCK', '1')
+    const ctx = setup()
+    const id = (await ctx.service.createProxy({ name: 'Mock proxy', anthropicBaseUrl: `https://${MOCK_PROXY_HOST}`, apiKey: 'whatever' })).connection.id
+    const ok = await ctx.service.connect(id)
+    expect(ok.status.checks).toEqual({ reached: true, keyAccepted: true, modelCount: 9, reportsPrices: false, reportsSpend: false })
+    await ctx.service.setSecret({ id, apiKey: MOCK_BAD_KEY })
+    expect((await ctx.service.test(id)).checks).toEqual({ reached: true, keyAccepted: false, modelCount: null, reportsPrices: null, reportsSpend: null })
   })
 
   it('is an ordinary unreachable host without ORGAI_MOCK', async () => {
