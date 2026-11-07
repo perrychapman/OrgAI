@@ -12,6 +12,8 @@ import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
 import { Input } from '../ui/Input'
+import { Switch } from '../ui/Switch'
+import { CHAT_ASKS_LINE, CHAT_CHANGES_SWITCH, chatChangesHint } from '../../lib/chatPermissions'
 import Composer from '../Composer'
 
 const TEAMS: { value: QuickRunTeam; label: string }[] = [
@@ -80,7 +82,6 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   }
   const clear = (): void => {
     setText('')
-    setAllowEdits(false)
   }
 
   const summary = chatSummaryLine({
@@ -96,6 +97,9 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
     <div className="new-run" data-testid="assistant-start-quick">
       <div className="new-run-inner">
         <EmptyState title={copy.title} description={copy.description} />
+        <p className="muted chat-asks-line" data-testid="chat-asks-line">
+          {CHAT_ASKS_LINE}
+        </p>
 
         <div className="chat-options">
           <div className="chat-folder" data-testid="chat-folder">
@@ -167,29 +171,12 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
 
             <div className="assistant-switch-row">
               <div className="assistant-switch-text">
-                <span id={editsLabel}>Allow edits in this folder</span>
-                {scratch && (
-                  <span className="muted chat-edits-hint" id={editsHint}>
-                    Choose a folder to allow edits.
-                  </span>
-                )}
+                <span id={editsLabel}>{CHAT_CHANGES_SWITCH}</span>
+                <span className="muted chat-edits-hint" id={editsHint}>
+                  {chatChangesHint(scratch, folder ? folderName(folder) : undefined)}
+                </span>
               </div>
-              {/* aria-disabled, not disabled: the switch stays in the tab order and its hint is read. */}
-              <button
-                type="button"
-                role="switch"
-                className="switch"
-                data-testid="chat-allow-edits"
-                aria-checked={allowEdits && !scratch}
-                aria-labelledby={editsLabel}
-                aria-describedby={scratch ? editsHint : undefined}
-                aria-disabled={scratch || undefined}
-                onClick={() => {
-                  if (!scratch) setAllowEdits(!allowEdits)
-                }}
-              >
-                <span className="switch-thumb" />
-              </button>
+              <Switch checked={allowEdits} onChange={setAllowEdits} label={CHAT_CHANGES_SWITCH} describedBy={editsHint} testId="chat-allow-edits" />
             </div>
           </div>
 
@@ -226,7 +213,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
               const problem = pathStatus('existing', typed, fresh)
               if (problem?.blocking) throw new Error(`Cannot start in that folder. ${problem.text} Clear the folder to chat in a scratch area.`)
             }
-            await startQuick({ prompt, ...(typed ? { folder: typed } : {}), team, allowEdits: allowEdits && !scratch, ...(images ? { images } : {}) })
+            await startQuick({ prompt, ...(typed ? { folder: typed } : {}), team, allowEdits,...(images ? { images } : {}) })
           }}
         />
       </div>

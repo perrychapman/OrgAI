@@ -55,8 +55,6 @@ export function quickFolderLabel(quick: QuickRunInfo | undefined): string {
   return folderName(quick.folder)
 }
 
-export const quickAccessLabel = (quick: Pick<QuickRunInfo, 'allowEdits'>): 'edits allowed' | 'read-only' => (quick.allowEdits ? 'edits allowed' : 'read-only')
-
 const PROMOTE_NAME_MAX = 80
 
 /** The name proposed in "Save as project": the folder's name, else the run title, else "Chat". */
@@ -86,11 +84,17 @@ export interface ChatSummaryInput {
 
 /** The muted line on the Chat start page: where it works, what it may do, what runs it, and what it costs. */
 export function chatSummaryLine(i: ChatSummaryInput): string {
-  const where = i.scratch || !i.folderName ? 'Works in a private scratch area' : `Works in ${i.folderName}`
-  const what = i.allowEdits && !i.scratch ? 'Reads and edits files, asks before each edit and command' : 'Reads files, asks before editing'
+  const scratch = i.scratch || !i.folderName
+  const where = scratch ? 'Works in a private scratch area' : `Works in ${i.folderName}`
   const model = i.model || 'the configured model'
   const runs = `Runs on ${model}${i.connection ? ` via ${i.connection}` : ''}`
-  return [where, what, runs, i.mock ? 'Mock run, no tokens' : 'Counts toward your usage'].map((s) => `${s}.`).join(' ')
+  const tail = [runs, i.mock ? 'Mock run, no tokens' : 'Counts toward your usage'].map((s) => `${s}.`).join(' ')
+  const what = i.allowEdits
+    ? `${where}. Ready to make changes; asks before each edit and command.`
+    : scratch
+      ? `${where}. Asks before it changes a file or runs a command.`
+      : `${where}. Reads freely, asks before it changes a file or runs a command.`
+  return `${what} ${tail}`
 }
 
 /** Start-page titles and descriptions. */

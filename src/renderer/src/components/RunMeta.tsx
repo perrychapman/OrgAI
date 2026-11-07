@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Bot, ClipboardList, Clock, Database, Folder, ShieldAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
@@ -18,7 +18,9 @@ import { shortPrompt } from '../lib/runLabels'
 import { autoContinueState } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
 import TeamFilesPointer from './team/TeamFilesPointer'
-import { quickAccessLabel, quickFolderLabel } from '../lib/assistants'
+import { quickFolderLabel } from '../lib/assistants'
+import { CHAT_ACCESS_ANNOUNCEMENT, CHAT_ACCESS_LABEL, CHAT_ACCESS_TITLE, chatAccessState } from '../lib/chatPermissions'
+import { useFrameAnnounce } from './layout/CanvasFrame'
 
 /**
  * The run's quiet metadata line at the start of the canvas toolbar (12 px, tertiary): the run it continues, agents,
@@ -37,6 +39,14 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     return () => clearInterval(t)
   }, [live])
   const wallMs = (summary.endedAt ?? now) - summary.startedAt
+  // The Chat access chip. Turning to 'session' is announced once, never on mount.
+  const announce = useFrameAnnounce()
+  const accessState = summary.quick ? chatAccessState(summary.quick, !!run.sessionChanges) : null
+  const lastAccess = useRef(accessState)
+  useEffect(() => {
+    if (accessState === 'session' && lastAccess.current !== 'session') announce?.(CHAT_ACCESS_ANNOUNCEMENT)
+    lastAccess.current = accessState
+  }, [accessState, announce])
   // The host's run usage is the truth; before the first run.usage event the strip total can lag the agent costs.
   const agentCosts = sumCosts(Object.values(run.agents).map(agentCostInput))
   const own =
@@ -123,7 +133,11 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
             <Icon icon={Folder} size="xs" />
             {quickFolderLabel(summary.quick)}
           </span>
-          <span className="run-meta-item run-meta-access">{quickAccessLabel(summary.quick)}</span>
+          {accessState && (
+            <span className="run-meta-item run-meta-access" data-testid="run-meta-access" data-state={accessState} title={CHAT_ACCESS_TITLE[accessState]}>
+              {CHAT_ACCESS_LABEL[accessState]}
+            </span>
+          )}
         </>
       )}
       {summary.kind === 'mcp-assist' && summary.buildWorkspace && (
