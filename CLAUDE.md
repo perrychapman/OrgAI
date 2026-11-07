@@ -1256,6 +1256,17 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   CLI tool calling against a non-Claude model behind the proxy, and LiteLLM serving `/v1/responses` for non-OpenAI
   models on the Codex side (`scripts/smoke-litellm.mjs` can check later, with consent).
   `ConnectionService.runConnection` builds the per-run `RunConnection` (env, API key, Codex home). Verified by unit tests.
+- Multi-provider org charts (2026-11-07; docs/design/multi-provider.md, ARCHITECTURE.md "Multi-provider org charts (bridged reports)"):
+  - `Role.connection` is read only through `roleConnection`; the root always uses the project's connection.
+    `AdapterChoice.bridged` lists roles that run in a child session (runtime/bridge.ts `BridgedSessions`) on their own
+    adapter and RunConnection (`ConnectionService.runConnectionFor`).
+  - Claude and mock start a bridged role with `delegate_agent`. Codex starts it through `spawn_agent`, which calls
+    `ctx.bridge.spawn`.
+  - A child ctx has `bridgedChild` set: no root-audience tools, a report prompt (`PromptFlags.bridged`) and no
+    worktree. Adapters pass `bridgedRoles`, `bridgeVia` and `bridged` to buildRolePrompt and never give a bridged role
+    a native AgentDefinition or spawn.
+  - Mock marker: `[mock:bridged]`.
+  - Verified by unit tests, fakes and the mock only; nothing live.
 - Proxy connections (2026-11-06; ARCHITECTURE.md "Proxy connections"): the single LiteLLM connection became `AppSettings.proxies` (`ProxyConnection`, kind 'litellm' | 'openai-compatible', at most 20); older text in this file that says `connections.litellm` / `'litellm'` means "a proxy" now (the migrated original keeps id 'litellm' and its key). Use `connectionIds(settings)`, `connectionRecord` / `proxyOf`, `connectionName`, `isBuiltinConnectionId` (never `=== 'litellm'`); `CONNECTION_IDS` is built-ins only. IPC `connections:createProxy` / `removeProxy`, CLI `orgai connections proxy ...`, event `connections.changed`, mock host `mock-proxy.example.com` (key `mock-bad-key` is refused). Never put a real proxy host or key in code, tests or docs. Unit-tested only; the renderer still shows each proxy with the old LiteLLM card (compile fixes only) until the UI pass.
 - Default connection: `projects:create` passes `ConnectionService.prepareNewProject` to `ProjectStore.create`. A new
   project takes the effective default connection (`effectiveDefault()`, see Self-configuration) when `creationConnection` (`defaults.ts`) finds it usable (anthropic
