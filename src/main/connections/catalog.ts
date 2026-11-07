@@ -1,5 +1,5 @@
 import { adapterForFamily, builtinModels, defaultTierModels, tierForModel } from '@shared/defaults'
-import { MODEL_TIERS } from '@shared/types'
+import { MODEL_TIERS, isBuiltinConnectionId } from '@shared/types'
 import { sanitizeModelPrice } from '../runtime/pricing'
 import type { AdapterModelInfo } from '../runtime/types'
 import { validModelId } from './codexAccount'
@@ -174,7 +174,12 @@ export function anthropicModelsToCatalog(list: readonly AdapterModelInfo[]): Pro
  */
 export function suggestTierModels(connection: ConnectionId, catalog: readonly ProviderModel[]): Partial<Record<ModelTier, ModelRef>> {
   const own = catalog.filter((m) => m.connection === connection)
-  const out = defaultTierModels(own)
+  // A mixed proxy serves Claude-family models on the Claude adapter, which maps tiers through ANTHROPIC_DEFAULT_*_MODEL
+  // and runs most roles, so Claude-family ids win a tier when the proxy lists one (stable otherwise: a tier with no
+  // Claude model falls back to whatever the catalog suggests). This is auto-fill only: the user may pick a GPT or other
+  // id per tier (ProviderModel.family tells the UI which adapter route a pick takes).
+  const ordered = isBuiltinConnectionId(connection) ? own : [...own.filter((m) => m.family === 'claude'), ...own.filter((m) => m.family !== 'claude')]
+  const out = defaultTierModels(ordered)
   if (connection === 'anthropic') {
     for (const tier of MODEL_TIERS) {
       const alias = own.find((m) => m.tier === tier && /^[a-z]+$/.test(m.id))

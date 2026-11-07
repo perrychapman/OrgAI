@@ -105,6 +105,24 @@ export interface ConnectionStatus {
   account?: string
   /** When the status was last checked, epoch ms. */
   checkedAt?: number
+  /**
+   * What a proxy probe / test / connect found out (proxies only; never persisted, no secrets). null = not
+   * determined. reached: false on a network failure (DNS, refused, timeout); keyAccepted: false on 401 / 403, true
+   * when the models list answered; modelCount: models in the answer; reportsPrices: any discovered model carries a
+   * price (null until discovery has run: a status probe lists only); reportsSpend: kind 'litellm' and /key/info
+   * answered (false otherwise, null when not checked). The mock proxy host fills sensible values (key
+   * 'mock-bad-key' => reached true, keyAccepted false).
+   */
+  checks?: ConnectionChecks
+}
+
+/** ConnectionStatus.checks. */
+export interface ConnectionChecks {
+  reached: boolean
+  keyAccepted: boolean | null
+  modelCount: number | null
+  reportsPrices: boolean | null
+  reportsSpend: boolean | null
 }
 
 /** Fields every connection record has. */
@@ -225,6 +243,11 @@ export interface ConnectionInfo {
    * connections:list has it. The renderer reads this instead of guessing from AppSettings.defaultConnection.
    */
   isDefault: boolean
+  /**
+   * Proxy entries only: the projects whose connection is this proxy (id and name, at most 50, in project order), so
+   * the UI can show them before a removal (which is refused while any exist). Computed at list time, never stored.
+   */
+  usedBy?: { id: string; name: string }[]
 }
 
 /**
@@ -317,6 +340,12 @@ export interface ProviderModel {
    * whatever owned_by says (a gateway may list claude-*-high under 'antigravity').
    */
   ownedBy?: string
+  /**
+   * Proxy models only: the base URL the model is served through. Family 'claude' -> the proxy's anthropicBaseUrl,
+   * any other family -> defaults.ts `proxyOpenAIBase`. Set at discovery and re-derived from the proxy's current URLs
+   * at catalog-read time (ConnectionService.catalogFor), so a URL change shows at once without a rediscovery.
+   */
+  baseUrl?: string
 }
 
 /**

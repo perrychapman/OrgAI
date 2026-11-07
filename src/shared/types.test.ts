@@ -154,6 +154,22 @@ describe('projectConnection and adapterForProject', () => {
     expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: [] })).toBeNull()
   })
 
+  it('treats every non-built-in id (proxy-0a1b2c3d) as a proxy, exactly like litellm', () => {
+    const p = project()
+    const [root, a] = p.roles
+    const catalog = [
+      { ...litellmModel('team-claude', 'claude'), connection: 'proxy-0a1b2c3d' },
+      { ...litellmModel('team-gpt', 'openai'), connection: 'proxy-0a1b2c3d' }
+    ]
+    const on = (rootModel: string, reportModel: string) =>
+      adapterForProject({ provider: { ...p.provider, connection: 'proxy-0a1b2c3d' }, roles: [{ ...root, model: rootModel }, { ...a, model: reportModel }] }, catalog)
+    expect(on('team-gpt', 'team-claude')).toMatchObject({ adapter: 'codex', connection: 'proxy-0a1b2c3d', family: 'openai', mismatched: [a.id] })
+    expect(on('team-claude', 'team-gpt').adapter).toBe('claude')
+    expect(mixedFamilyRefusal(on('team-claude', 'team-gpt'))).toBeNull()
+    expect(mixedFamilyRefusal(on('inherit', 'team-gpt'))).toBe('no-root-family')
+    expect(mixedFamilyRefusal({ connection: 'proxy-0a1b2c3d', family: 'claude', mismatched: ['r1'] })).toBeNull()
+  })
+
   it('keeps the anthropic and openai catalogs single-family, so a chart picked from them never mixes', () => {
     expect(new Set(builtinModels('anthropic').map((m) => m.family))).toEqual(new Set(['claude']))
     expect(new Set(builtinModels('openai').map((m) => m.family))).toEqual(new Set(['openai']))

@@ -32,6 +32,7 @@ import type {
   AdapterChoice,
   ConnectionEvent,
   AppSettings,
+  ConnectionChecks,
   ConnectionDefaultInput,
   ConnectionId,
   ConnectionInfo,
@@ -63,7 +64,7 @@ import { anthropicStatus } from './anthropicAuth'
 import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, suggestTierModels, tierFromDescription } from './catalog'
 import { cancelLogin, listModels, validModelId, MODEL_TEXT_MAX, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
-import { LITELLM_MAX_MODELS, fetchLiteLLMSpend, fetchProxyModels, normalizeBaseUrl } from './litellm'
+import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMSpend, fetchProxyModels, normalizeBaseUrl } from './litellm'
 import { pricingFromCatalog } from '../runtime/pricing'
 import { remapProject } from './remap'
 import { defaultRefusal, withoutReplaced } from './defaultPick'
@@ -121,6 +122,12 @@ type Tiers = Partial<Record<ModelTier, ModelRef>>
 
 const sameTiers = (a: Tiers, b: Tiers): boolean => JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b))
 const sortKeys = (o: Tiers): [string, string | undefined][] => Object.entries(o).sort(([x], [y]) => x.localeCompare(y))
+
+/** `{ baseUrl }` for a proxy model: claude family -> the Anthropic base URL, else the OpenAI base; {} when that is empty. */
+function withBaseUrl(proxy: ProxyConnection, m: Pick<ProviderModel, 'family'>): { baseUrl?: string } {
+  const url = m.family === 'claude' ? proxy.anthropicBaseUrl.trim().replace(/\/+$/, '') : proxyOpenAIBase(proxy)
+  return url ? { baseUrl: url } : {}
+}
 
 /** discover(): a ChatGPT connection with no signed-in account has nothing to discover (not an error). */
 const SIGNED_OUT = 'signed-out' as const
@@ -244,7 +251,13 @@ export class ConnectionService {
     }
     // OpenAI placeholders stand in until model/list has answered.
     if (id === 'openai') return found.length ? found.map((m) => ({ ...m })) : builtinModels('openai')
-    return found.map((m) => ({ ...m }))
+    // Proxy models: baseUrl is derived here, at read time, from the proxy's current URLs (so a URL change shows at
+    // once, without rediscovery); discovery stamps the same value into the stored entries.
+    const proxy = proxyOf(this.settingsNow(), id)
+    return found.map((m) => {
+      const { baseUrl: _stale, ...rest } = m
+      return proxy ? { ...rest, ...withBaseUrl(proxy, m) } : rest
+    })
   }
 
   /** Every connection's catalog, for adapterForProject. */
@@ -298,7 +311,8 @@ export class ConnectionService {
       const key = this.deps.secrets.get(proxySecretKey(proxy.id))
       if (!proxy.anthropicBaseUrl) throw new Error(`${proxy.name} has no base URL`)
       if (!key) throw new Error(`${proxy.name} has no API key`)
-      return fetchProxyModels(proxyModelsUrl(proxy), key, this.deps.fetch ?? fetch, { kind: proxy.kind, connection: proxy.id, baseUrl: proxy.anthropicBaseUrl })
+      const models = await fetchProxyModels(proxyModelsUrl(proxy), key, this.deps.fetch ?? fetch, { kind: proxy.kind, connection: proxy.id, baseUrl: proxy.anthropicBaseUrl })
+      return models.map((m) => ({ ...m, ...withBaseUrl(proxy, m) }))
     }
     if (id === 'openai') {
       if (this.deps.settings.get().connections.openai.auth.kind !== 'chatgpt') return null
@@ -521,11 +535,19 @@ export class ConnectionService {
     const connection = this.need(id)
     const refreshed = this.refreshedAt[id]
     const error = this.modelsErrors[id]
+    const users = isProxyConnection(connection)
+      ? this.deps.projects
+          .list()
+          .filter((p) => projectConnection(p) === id)
+          .slice(0, 50)
+          .map((p) => ({ id: p.id, name: p.name }))
+      : undefined
     return {
       connection,
       status: this.statuses[id] ?? { state: 'disconnected' },
       modelCount: this.catalogFor(id).length,
       isDefault: id === effective,
+      ...(users ? { usedBy: users } : {}),
       ...(refreshed ? { modelsRefreshedAt: refreshed } : {}),
       ...(error ? { modelsError: error } : {})
     }
@@ -580,8 +602,35 @@ export class ConnectionService {
     if (!key && conn.hasApiKey) return { state: 'error', detail: 'The stored key could not be read. Set the API key again.', checkedAt }
     if (!key) return { state: 'disconnected', detail: 'Set an API key.', checkedAt }
     // The list alone answers "reachable and the key works"; prices (LiteLLM /model/info) wait for discovery.
-    const models = await fetchProxyModels(proxyModelsUrl(conn), key, this.deps.fetch ?? fetch, { kind: conn.kind, connection: conn.id, listOnly: true })
-    return { state: 'connected', detail: `${models.length} model${models.length === 1 ? '' : 's'} available`, checkedAt }
+    let models: ProviderModel[]
+    try {
+      models = await fetchProxyModels(proxyModelsUrl(conn), key, this.deps.fetch ?? fetch, { kind: conn.kind, connection: conn.id, listOnly: true })
+    } catch (e) {
+      const detail = this.safeMessage(e)
+      const refused = /invalid key|\(40[13]\)|\b40[13] from/i.test(detail)
+      const unreachable = !refused && /Could not reach|Timed out|redirected/i.test(detail)
+      const checks: ConnectionChecks = { reached: !unreachable, keyAccepted: refused ? false : null, modelCount: null, reportsPrices: null, reportsSpend: null }
+      return { state: 'error', detail, checkedAt, checks }
+    }
+    // Prices are only known after discovery: until a catalog exists they are undetermined (null).
+    const known = this.discovered[conn.id]
+    const mock = isMockProxyUrl(conn.anthropicBaseUrl) || isMockProxyUrl(proxyModelsUrl(conn))
+    const reportsPrices = mock ? false : known?.length ? known.some((m) => m.price !== undefined) : null
+    let reportsSpend: boolean | null = false
+    if (mock) reportsSpend = false
+    else if (conn.kind === 'litellm') {
+      try {
+        reportsSpend = (await fetchLiteLLMKeyInfo(conn.anthropicBaseUrl, key, this.deps.fetch ?? fetch)) !== null
+      } catch {
+        reportsSpend = false
+      }
+    }
+    return {
+      state: 'connected',
+      detail: `${models.length} model${models.length === 1 ? '' : 's'} available`,
+      checkedAt,
+      checks: { reached: true, keyAccepted: true, modelCount: models.length, reportsPrices, reportsSpend }
+    }
   }
 
   private env(name: string): string | undefined {
@@ -758,6 +807,10 @@ export class ConnectionService {
       try {
         const found = await this.discover(id)
         const results = Array.isArray(found) ? this.applyCatalog(id, found, ['connected', 'catalog']) : this.reapplyTiers(id)
+        if (Array.isArray(found) && status.checks) {
+          // Discovery knows what the list-only probe could not: whether any model carries a price.
+          this.setStatus(id, { ...status, checks: { ...status.checks, modelCount: found.length, reportsPrices: found.some((m) => m.price !== undefined) } })
+        }
         this.broadcastRemaps(results)
       } catch (e) {
         this.setStatus(id, { state: 'error', detail: this.safeMessage(e), checkedAt: this.now() })
@@ -971,8 +1024,8 @@ export class ConnectionService {
   }
 
   /** The agent importer's view of a connection: its catalog and tier mapping (src/main/setup/import/model.ts). */
-  importModelContext(id: ConnectionId): { connection: ConnectionId; catalog: ProviderModel[]; tierModels: Tiers } {
-    return { connection: id, catalog: this.catalogFor(id), tierModels: { ...(this.record(id)?.tierModels ?? {}) } }
+  importModelContext(id: ConnectionId): { connection: ConnectionId; connectionName: string; catalog: ProviderModel[]; tierModels: Tiers } {
+    return { connection: id, connectionName: connectionName(id, this.deps.settings.get()), catalog: this.catalogFor(id), tierModels: { ...(this.record(id)?.tierModels ?? {}) } }
   }
 
   /** Keep provider.id on the adapter the project's models need (mock projects are left alone). Pure. */
@@ -1023,7 +1076,7 @@ export class ConnectionService {
   // ---------- per-run model access ----------
 
   runConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
-    const built = this.buildRunConnection(project, choice)
+    const built = { ...this.buildRunConnection(project, choice), name: connectionName(choice.connection, this.deps.settings.get()) }
     if (choice.adapter === 'mock') return built
     const id = choice.connection
     return {
