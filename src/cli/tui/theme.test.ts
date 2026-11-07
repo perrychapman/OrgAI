@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asciiOnly, glyphs, stateGlyph, stateTone, toneColor } from './theme'
+import { asciiOnly, glyphs, separatorFor, stateGlyph, stateTone, toneColor } from './theme'
 import type { TuiEnv } from './types'
 
 const env = (over: Partial<TuiEnv> = {}): TuiEnv => ({
@@ -18,6 +18,21 @@ describe('theme', () => {
     expect(toneColor(undefined, env())).toBeUndefined()
     expect(toneColor('danger', env())).toBe('red')
     expect(toneColor('ok', env())).toBe('green')
+  })
+
+  it('gives dim no foreground (dimColor alone) and keeps every colour off with colour off', () => {
+    expect(toneColor('dim', env())).toBeUndefined()
+    expect(toneColor('running', env())).toBe('blueBright')
+    expect(toneColor('warn', env())).toBe('magenta')
+    for (const t of ['ok', 'warn', 'danger', 'dim', 'accent', 'running'] as const) expect(toneColor(t, env({ color: false }))).toBeUndefined()
+    expect(toneColor('dim', env())).not.toBe('gray')
+  })
+
+  it('separatorFor: commas for a screen reader, bars in ASCII, else a middle dot', () => {
+    expect(separatorFor(env())).toBe(' · ')
+    expect(separatorFor(env({ screenReader: true }))).toBe(', ')
+    expect(separatorFor(env({ unicode: false }))).toBe(' | ')
+    expect(separatorFor(env({ dumbTerminal: true }))).toBe(' | ')
   })
 
   it('uses Unicode glyphs only on a plain Unicode terminal', () => {

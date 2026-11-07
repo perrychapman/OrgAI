@@ -46,7 +46,8 @@ describe('computeLayout', () => {
     const transcript = split.panes.find((b) => b.pane === 'transcript')
     expect(tree?.column).toBe(0)
     expect(transcript?.column).toBe(1)
-    expect((tree?.width ?? 0) + (transcript?.width ?? 0)).toBe(110)
+    expect(split.gutter).toBe(1)
+    expect((tree?.width ?? 0) + (split.gutter ?? 0) + (transcript?.width ?? 0)).toBe(110)
     expect(tree?.width).toBeGreaterThanOrEqual(28)
     expect(tree?.width).toBeLessThanOrEqual(48)
     const stacked = computeLayout(input({ cols: 109 }))
@@ -144,6 +145,62 @@ describe('computeLayout', () => {
     expect(plan.mode).toBe('stacked')
     expect(plan.panes).toEqual([{ pane: 'transcript', column: 0, width: 90, height: 0 }])
     expect(plan.statusRows + plan.tray.height + plan.composer.height).toBe(3)
+  })
+
+  it('reserves the palette rows between the tray and the composer and honours composer rows 1..7', () => {
+    for (const [cols, rows] of [
+      [120, 40],
+      [100, 30],
+      [80, 24],
+      [70, 24]
+    ] as const) {
+      for (let composerRows = 1; composerRows <= 7; composerRows++) {
+        for (const paletteRows of [0, 6, 9, 30]) {
+          for (const trayRows of [0, 5]) {
+            for (const bufferMode of ['fullscreen', 'inline'] as const) {
+              const inp = input({ cols, rows, composerRows, paletteRows, trayRows, bufferMode })
+              const plan = computeLayout(inp)
+              checkSums(inp, plan)
+              const pal = plan.palette!
+              expect(pal.width).toBe(cols)
+              expect(plan.statusRows + plan.tray.height + pal.height + plan.composer.height).toBeLessThanOrEqual(rows)
+              for (const col of [0, 1] as const) {
+                const h = plan.panes.filter((b) => b.column === col).reduce((a, b) => a + b.height, 0)
+                expect(plan.statusRows + plan.tray.height + pal.height + plan.composer.height + h).toBeLessThanOrEqual(rows)
+              }
+              if (bufferMode === 'fullscreen') {
+                expect(plan.composer.height).toBe(composerRows)
+                if (paletteRows > 0 && composerRows + 1 + paletteRows <= rows) expect(pal.height).toBe(paletteRows)
+              }
+            }
+          }
+        }
+      }
+    }
+    const open = computeLayout(input({ paletteRows: 8, trayRows: 4, composerRows: 2 }))
+    expect(open.palette).toEqual({ width: 120, height: 8 })
+    const closed = computeLayout(input({ composerRows: 2 }))
+    expect(closed.palette).toEqual({ width: 120, height: 0 })
+    // The palette takes its rows from the body.
+    const tr = (p: LayoutPlan): number => p.panes.filter((b) => b.column === 1).reduce((a, b) => a + b.height, 0)
+    expect(tr(closed) - tr(computeLayout(input({ composerRows: 2, paletteRows: 8 })))).toBe(8)
+  })
+
+  it('leaves a 1-column gutter in the split only, widths plus gutter equal cols', () => {
+    for (const cols of [110, 120, 150, 300]) {
+      const plan = computeLayout(input({ cols }))
+      expect(plan.mode).toBe('split')
+      expect(plan.gutter).toBe(1)
+      const w0 = Math.max(...plan.panes.filter((b) => b.column === 0).map((b) => b.width))
+      const w1 = Math.max(...plan.panes.filter((b) => b.column === 1).map((b) => b.width))
+      expect(w0 + 1 + w1).toBe(cols)
+    }
+    for (const cols of [70, 80, 109]) expect(computeLayout(input({ cols })).gutter).toBe(0)
+    expect(computeLayout(input({ cols: 120, bufferMode: 'inline' })).gutter).toBe(0)
+    // One column only: no gutter.
+    const lone = computeLayout(input({ cols: 120, visible: { tree: false, transcript: true, plan: false, worktrees: false } }))
+    expect(lone.gutter).toBe(0)
+    expect(lone.panes[0]?.width).toBe(120)
   })
 
   it('is deterministic and handles tiny and degenerate terminals', () => {
