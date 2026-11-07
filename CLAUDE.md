@@ -208,7 +208,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   like to do." and goes idle; follow-ups get "Mock reply to: <text>". A skill-assist run says "I will look at the
   skill library first, then propose a skill.", calls `list_skill_library`, then `propose_skills` (title "Mock skill",
   one create of `mock-skill`, scope 'library' on 'skills', 'project' with the first role's slug on a project), and
-  after APPROVED says "The skill is set up." and goes idle. Verified by unit tests and the mock only; no live run.
+  after APPROVED says "The skill is set up." and goes idle. Quick-run markers `[mock:self-config]` (says "Let me look that up in OrgAI's reference.", app_reference locate "theme", open_in_app `app-settings-general-appearance`, propose_app_settings appearance.theme light; "Done: the theme is now light." on APPROVED, "The theme is already light." on "Nothing to change", else "Understood; I left the settings alone.") and `[mock:self-config-project]` (list_projects, propose_project_settings maxBudgetUsd 5 for the first id; "Done: that project now has a $5 cap from its next run." on APPROVED, else "Understood; I left the project alone.", "You have no OrgAI projects yet." without one) call the real bound tools, never retry on REVISE, and are ignored on work runs (mockSelfConfig.test.ts). Verified by unit tests and the mock only; no live run.
   - Chat asks (2026-11-06; ARCHITECTURE.md Assistants "Chat asks instead of being unable"): quick roles always keep
     Edit / Write / Bash / NotebookEdit (team 'single') or each default role's own tools; `allowEdits` is the user's
     declaration only (false "read-only start: an edit or command asks", true "edits allowed: each still asks" plus
