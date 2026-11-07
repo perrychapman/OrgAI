@@ -624,27 +624,17 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 /** Role slug of a quick run's single assistant (team 'single'). */
 export const QUICK_ASSISTANT_SLUG = 'assistant'
 
-/** Tools a quick run with edits off never gets. */
-export const QUICK_EDIT_TOOLS: readonly ToolName[] = ['Edit', 'Write', 'Bash', 'NotebookEdit']
-
-/** A role's tools on a quick run: unchanged with edits on; Edit, Write, Bash and NotebookEdit removed with edits off. */
-export function quickRoleTools(tools: readonly ToolName[], allowEdits: boolean): ToolName[] {
-  return allowEdits ? [...tools] : tools.filter((t) => !QUICK_EDIT_TOOLS.includes(t))
-}
-
-const QUICK_SINGLE_TOOLS: readonly ToolName[] = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch']
+const QUICK_SINGLE_TOOLS: readonly ToolName[] = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Edit', 'Write', 'Bash', 'NotebookEdit']
 
 /**
- * Tools per role slug for a quick run. 'single': { assistant: Read, Glob, Grep, WebSearch, WebFetch, plus Edit,
- * Write and Bash with edits on }. 'default': each defaultRoles() role (orchestrator, implementer, reviewer,
- * researcher) with its tools filtered through quickRoleTools.
+ * Tools per role slug for a quick run. Edit and command tools stay whatever allowEdits says: a call asks the user
+ * (permission mode 'default') instead of the tool being missing. 'single': { assistant: Read, Glob, Grep, WebSearch,
+ * WebFetch, Edit, Write, Bash, NotebookEdit }. 'default': each defaultRoles() role with its own tools.
  */
-export function quickRunTools(team: QuickRunTeam, allowEdits: boolean): Record<string, ToolName[]> {
-  if (team === 'single') {
-    return { [QUICK_ASSISTANT_SLUG]: allowEdits ? [...QUICK_SINGLE_TOOLS, 'Edit', 'Write', 'Bash'] : [...QUICK_SINGLE_TOOLS] }
-  }
+export function quickRunTools(team: QuickRunTeam): Record<string, ToolName[]> {
+  if (team === 'single') return { [QUICK_ASSISTANT_SLUG]: [...QUICK_SINGLE_TOOLS] }
   const out: Record<string, ToolName[]> = {}
-  for (const role of defaultRoles()) out[role.slug] = quickRoleTools(role.tools, allowEdits)
+  for (const role of defaultRoles()) out[role.slug] = [...role.tools]
   return out
 }
 

@@ -185,12 +185,11 @@ describe('quickProject', () => {
     expect(p).toMatchObject({ id: 'quick', name: 'Chat', path: '/work', permissionMode: 'default', isolateWriters: false, runMessaging: false, mcpServers: [], plugins: [], skills: [] })
     expect(p.roles).toHaveLength(1)
     expect(p.roles[0]).toMatchObject({ slug: 'assistant', name: 'Assistant', model: 'fast', canSpawn: false, reportsTo: null })
-    expect(p.roles[0].tools).toEqual(quickRunTools('single', false).assistant)
-    expect(p.roles[0].tools).not.toContain('Edit')
-    expect(p.roles[0].tools).not.toContain('Bash')
+    expect(p.roles[0].tools).toEqual(quickRunTools('single').assistant)
+    expect(p.roles[0].tools).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash', 'NotebookEdit']))
   })
 
-  it('gives the single assistant Edit, Write and Bash only with edits on, isolating writers in a git folder', () => {
+  it('keeps Edit, Write and Bash with edits on or off, isolating writers only for edits in a git folder', () => {
     const p = quickProject(settings, info({ allowEdits: true, gitRepo: true }))
     expect(p.roles[0].tools).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash']))
     expect(p.isolateWriters).toBe(true)
@@ -200,12 +199,11 @@ describe('quickProject', () => {
     expect(quickProject({ ...settings, quickRunModel: undefined }, info()).roles[0].model).toBe('everyday')
   })
 
-  it('keeps the default chart for team default and filters its tools', () => {
+  it('keeps the default chart for team default with their own tools', () => {
     const off = quickProject(settings, info({ team: 'default' }))
     expect(off.roles.map((r) => r.slug)).toEqual(defaultRoles().map((r) => r.slug))
-    for (const tools of Object.values(toolsOf(off))) {
-      for (const t of ['Edit', 'Write', 'Bash', 'NotebookEdit']) expect(tools).not.toContain(t)
-    }
+    expect(toolsOf(off).implementer).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash']))
+    expect(off.isolateWriters).toBe(false)
     const on = quickProject(settings, info({ team: 'default', allowEdits: true, gitRepo: true }))
     expect(toolsOf(on).implementer).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash']))
     expect(on.isolateWriters).toBe(true)

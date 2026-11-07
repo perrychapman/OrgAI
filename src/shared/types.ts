@@ -1660,7 +1660,7 @@ export interface McpInstallRequest {
   /**
    * Set by RunManager on a Chat (quick) run: the server can only be added for this run. An approval with scope
    * 'project' or 'library' is narrowed to 'run' (nothing is saved to any project or the library), so the card should
-   * offer only "Add for this chat" and Deny.
+   * offer only "For this chat only" and Deny.
    */
   runOnly?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
@@ -3016,6 +3016,20 @@ export interface PermissionRequest {
    * card changes: the same Allow once / Allow for session / Deny answers apply.
    */
   quickReadOnly?: true
+  /**
+   * The widest scope an allow can have, set by RunManager (an adapter's value is dropped): 'session' on
+   * trust-restricted runs (Chat runs and MCP build sessions: a 'project' answer is narrowed to 'session', nothing is
+   * saved), 'once' when `referenceFolder` is set. Absent = 'project' is possible. The card must not offer a scope
+   * wider than this or claim a saved rule.
+   */
+  maxScope?: 'once' | 'session'
+  /**
+   * Chat (quick) runs only, set by RunManager: the chat's working folder (QuickRunInfo.folder, the scratch dir
+   * included; `workingFolderScratch: true` when it is a scratch dir OrgAI made), so the card can say where the call
+   * runs. Agents in a worktree still work under this folder.
+   */
+  workingFolder?: string
+  workingFolderScratch?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
 }
@@ -3264,6 +3278,11 @@ export type RunEvent =
        * rules, allowed folders or permission mode may have changed. Absent on deny, once, session and cancelled.
        */
       savedToProject?: true
+      /**
+       * The allow's scope after RunManager's narrowing ('once', 'session' or 'project'); absent on deny and cancelled.
+       * A Chat card answered "Allow for project" reads 'session' here.
+       */
+      scope?: PermissionScope
       /** Who decided (cli-spec 3.4(4)); absent on cancelled cards and older events. */
       decidedBy?: DecidedBy
     }
