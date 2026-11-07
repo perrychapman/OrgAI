@@ -1,5 +1,5 @@
 import type { KeyboardEvent, ReactElement } from 'react'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Archive, ArchiveRestore, Pencil, Trash2 } from 'lucide-react'
 import type { EngagementNote, KnowledgeGraph, KnowledgeInferredLink, KnowledgeNode } from '@shared/types'
 import { KNOWLEDGE_NAME_MAX_CHARS, KNOWLEDGE_SUMMARY_MAX_CHARS } from '@shared/types'
@@ -78,6 +78,15 @@ export function KnowledgeDetail({
   onRetryInferred: () => void
   onDismissLink: (linkId: string) => Promise<void>
 }): ReactElement {
+  // The body swaps (fade + 4px rise) when the user selects another item, never on first show or when the same item updates.
+  const bodyKey = mode.kind === 'item' ? mode.item.id : mode.kind
+  const lastBody = useRef(bodyKey)
+  const swapFor = useRef<string | null>(null)
+  if (lastBody.current !== bodyKey) {
+    lastBody.current = bodyKey
+    swapFor.current = bodyKey
+  }
+  const bodyClass = swapFor.current === bodyKey ? 'knowledge-detail-body motion-view' : 'knowledge-detail-body'
   const onHeadingKey = (e: KeyboardEvent<HTMLElement>): void => {
     if (e.key === 'Escape' && e.target === e.currentTarget) {
       e.preventDefault()
@@ -86,7 +95,7 @@ export function KnowledgeDetail({
   }
   if (mode.kind === 'empty') {
     return (
-      <div className="knowledge-detail-body" data-testid="knowledge-detail-body" id="knowledge-detail-body" tabIndex={-1}>
+      <div key={bodyKey} className={bodyClass} data-testid="knowledge-detail-body" id="knowledge-detail-body" tabIndex={-1}>
         <p className="panel-note" data-testid="knowledge-detail-empty">
           Select an item to see its facts, relations and history.
         </p>
@@ -95,7 +104,7 @@ export function KnowledgeDetail({
   }
   if (mode.kind === 'create') {
     return (
-      <div className="knowledge-detail-body" data-testid="knowledge-detail-body" data-id="new" id="knowledge-detail-body" tabIndex={-1}>
+      <div key={bodyKey} className={bodyClass} data-testid="knowledge-detail-body" data-id="new" id="knowledge-detail-body" tabIndex={-1}>
         <h2 id={DETAIL_HEADING_ID} className="knowledge-detail-name" data-testid="knowledge-detail-name" tabIndex={-1} onKeyDown={onHeadingKey}>
           New item
         </h2>
@@ -158,7 +167,7 @@ export function KnowledgeDetail({
   if (item.type === 'note') {
     const note = item.note
     return (
-      <div className="knowledge-detail-body" data-testid="knowledge-detail-body" data-id={item.id} id="knowledge-detail-body" tabIndex={-1}>
+      <div key={bodyKey} className={bodyClass} data-testid="knowledge-detail-body" data-id={item.id} id="knowledge-detail-body" tabIndex={-1}>
         <header className="knowledge-detail-head">
           <h2 id={DETAIL_HEADING_ID} className="knowledge-detail-name" data-testid="knowledge-detail-name" tabIndex={-1} onKeyDown={onHeadingKey}>
             {name}

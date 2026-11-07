@@ -599,3 +599,14 @@
   background: currentColor;
   flex: none;
 }
+
+/* A row appended while the user follows the end (motion.md 3.11): fade + 4px rise, no stagger. */
+.transcript-arrive {
+  animation: motion-rise var(--dur-fade) var(--ease-out) backwards;
+}
+
+.composer-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
