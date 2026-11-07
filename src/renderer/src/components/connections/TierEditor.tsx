@@ -3,7 +3,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { ConnectionInfo, ModelRef, ModelTier, ProviderConnection, ProviderModel } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
-import { defaultTierModels, projectConnection } from '@shared/defaults'
+import { defaultTierModels, projectConnection, roleConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
@@ -62,7 +62,8 @@ export default function TierEditor({
   const affected = useMemo(
     () =>
       projects
-        .filter((p) => projectConnection(p) === id)
+        // Like main's remapConnectionProjects: projects on this connection, and projects with a role running on it.
+        .filter((p) => projectConnection(p) === id || p.roles.some((r) => roleConnection(r, p) === id))
         .map((p) => previewRemap({ project: p, connection: id, tierModels: draft, previousTierModels: saved, catalog: models, switching: false })),
     [projects, id, draft, saved, models]
   )

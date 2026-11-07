@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { setupPending } from '@shared/setup'
-import { projectKindOf } from '@shared/defaults'
+import { projectConnection, projectKindOf } from '@shared/defaults'
+import { projectStartRefusal } from '../lib/remap'
+import { Banner } from './ui/Banner'
 import { newRunLead, projectKindCopy, projectNoun } from '../lib/projectKindCopy'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
@@ -47,6 +49,21 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
     [runs, project.id]
   )
   const indexes = useRunIndexes()
+  const connections = useAppStore((s) => s.connections)
+  const loadConnections = useAppStore((s) => s.loadConnections)
+  const loadModels = useAppStore((s) => s.loadModels)
+  const ownConnection = projectConnection(project)
+  const catalog = useAppStore((s) => s.models[ownConnection])
+  const virtual = isVirtualProjectId(project.id)
+  useEffect(() => {
+    if (virtual) return
+    if (!connections) void loadConnections()
+    if (!catalog) void loadModels(ownConnection)
+  }, [virtual, connections, catalog, ownConnection, loadConnections, loadModels])
+  const startRefusalText = useMemo(
+    () => (virtual || setupPending(project) ? null : projectStartRefusal(project, connections, catalog ?? [])),
+    [virtual, project, connections, catalog]
+  )
   const [busy, setBusy] = useState(false)
   const [setupBusy, setSetupBusy] = useState(false)
   const needsSetup = setupPending(project)
@@ -129,6 +146,12 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
 
         <McpAuthNotice project={project} />
         <FolderTrustNotice project={project} />
+        {/* Ask runs one assistant on the project's connection and never bridges, so roles' connections do not apply. */}
+        {startRefusalText && !ask && (
+          <Banner tone="warning" testId="new-run-start-refusal">
+            {startRefusalText} Start still tries; the run reports the same problem if it cannot begin.
+          </Banner>
+        )}
 
         <Composer
           draftKey={newRunDraftKey(project.id)}
