@@ -68,7 +68,9 @@ export const COMPOSER_ROWS = 3
 export const PANE_ORDER: readonly PaneId[] = ['tree', 'transcript', 'plan', 'worktrees']
 
 export const NOTHING_NEEDS_YOU = 'Nothing needs you'
-export const KEY_DROPPED_NOTICE = 'Press the key again.'
+export const KEY_DROPPED_NOTICE = 'Keys typed before the card had focus were ignored. Read the card, then answer.'
+/** The input queue (held while a focus change commits) overflowed and later input was dropped. */
+export const INPUT_QUEUE_FULL_NOTICE = 'Some input typed while the screen was changing was dropped.'
 export const PRESS_AGAIN ='Press Ctrl+C again to quit'
 /** The Ctrl+C notice of a stopOnQuit session (orgai init and the assistants). */
 export const PRESS_AGAIN_STOP = 'Press Ctrl+C again to stop the session and quit'
@@ -301,6 +303,7 @@ export function App(props: AppProps) {
   const focusRef = useRef<FocusTarget>(launch.onboarding ? 'onboarding' : 'composer')
   const pendingFocus = useRef<FocusTarget | undefined>(undefined)
   const inputQueue = useRef<InputEvent[]>([])
+  const queueOverflowNoted = useRef(false)
   const lastEsc = useRef<number | undefined>(undefined)
   const panesNoticeShown = useRef(false)
   const openedNoticeDone = useRef(false)
@@ -471,11 +474,13 @@ export function App(props: AppProps) {
     pendingFocus.current = undefined
     let queued = inputQueue.current
     inputQueue.current = []
+    queueOverflowNoted.current = false
     if (focus === 'tray') {
       // Keys that were typed before the tray had focus (`/inbox\ry` in one chunk, Alt+D then a key) were not typed at
       // the card, so they never act on it, and the card-swap guard has not seen them: drop the printable ones and keep
       // navigation and Esc. With no card left (it was answered meanwhile) nothing is replayed (never turned into text).
-      const keep = cards.length === 0 ? [] : queued.filter((e) => !(e.type === 'key' && ((e.name === 'char' && !e.ctrl && !e.alt) || e.name === 'enter')))
+      // A queued paste is dropped too: replayed into the tray it could land in an open deny-note or secret field (#35 L2).
+      const keep = cards.length === 0 ? [] : queued.filter((e) => e.type !== 'paste' && !(e.type === 'key' && ((e.name === 'char' && !e.ctrl && !e.alt) || e.name === 'enter')))
       if (keep.length < queued.length && cards.length > 0) notify(KEY_DROPPED_NOTICE, 'dim')
       queued = keep
     }
@@ -1008,6 +1013,11 @@ export function App(props: AppProps) {
     // A focus change is waiting for its commit: hold the input until the new target's handler is registered.
     if (pendingFocus.current !== undefined) {
       if (inputQueue.current.length < 512) inputQueue.current.push(e)
+      else if (!queueOverflowNoted.current) {
+        // Say so once per held period (the flag resets when the queue is replayed), never once per dropped event.
+        queueOverflowNoted.current = true
+        notify(INPUT_QUEUE_FULL_NOTICE, 'dim')
+      }
       return
     }
     const focus = focusRef.current

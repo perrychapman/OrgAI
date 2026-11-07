@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { bindingsFor } from './decisions'
-import { glyphLegend, helpKeyLines, hintItems, KEYMAP, keysFor, paneHint, scopeOf, statusHint, whichKeyLines, type KeyScope } from './keymap'
+import { glyphLegend, helpKeyLines, hintItems, KEYMAP, keysFor, paneHint, scopeOf, statusHint, UNFOCUSED_HINT, whichKeyLines, type KeyScope } from './keymap'
 import { HELP_TEXT, SLASH_COMMANDS } from './slashCommands'
 
 const UNI = { unicode: true, screenReader: false, dumbTerminal: false }
@@ -23,6 +23,14 @@ describe('KEYMAP is the one table', () => {
         expect(text, `${scope}: ${k.label}`).toContain(k.label)
       }
     }
+  })
+
+  it('#35 L4: the tray hint shown while it has no focus is a tray-scope entry of the table', () => {
+    const entry = KEYMAP.find((k) => k.unfocusedHint)
+    expect(entry?.scope).toBe('tray')
+    expect(UNFOCUSED_HINT).toBe(entry?.unfocusedHint)
+    expect(UNFOCUSED_HINT).toBe('Alt+D or F2 to answer')
+    expect(HELP_TEXT).toContain(entry?.keys)
   })
 
   it('has the phase 1 keys and the new ones', () => {

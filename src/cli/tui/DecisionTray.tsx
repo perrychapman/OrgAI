@@ -35,6 +35,7 @@ import {
   type TrayAction,
   type TrayBinding
 } from './decisions'
+import { UNFOCUSED_HINT } from './keymap'
 import { styleFor, type Seg } from './panes/lines'
 import { truncateEnd } from './panes/text'
 import { glyphs, separatorFor } from './theme'
@@ -103,8 +104,6 @@ function bindingKeyOf(e: KeyEvent): string | undefined {
 export const GUARD_SWAPPED_NOTICE = 'The card just changed: wait a moment, then press the key again.'
 export const GUARD_ARRIVED_NOTICE = 'This card only just arrived: wait a moment, then press the key again.'
 
-/** Shown instead of the decision keys while the tray is not focused. */
-const UNFOCUSED_HINT = 'Alt+D or F2 to answer'
 
 function actionFor(card: TrayCard, b: TrayBinding, extra: { text?: string; secrets?: Record<string, string> } = {}): TrayAction | null {
   switch (card.kind) {
