@@ -150,8 +150,8 @@ export function withAppSettingChanges(settings: AppSettings, changes: readonly P
     let target = next as unknown as Record<string, unknown>
     for (const part of parts.slice(0, -1)) target = target[part] as Record<string, unknown>
     const key = parts[parts.length - 1]
-    if (c.to === null) delete target[key]
-    else target[key] = c.to
+    // An own `undefined` (never a delete): settings:set (args.ts settingsSetArgs) clears an optional field only that way.
+    target[key] = c.to === null ? undefined : c.to
   }
   return next
 }

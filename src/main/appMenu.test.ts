@@ -446,15 +446,22 @@ describe('navigateSender', () => {
     expect(main.webContents.send).toHaveBeenCalledWith(IPC.appNavigate, EVENT)
     expect(runWin.webContents.send).not.toHaveBeenCalled()
   })
-  it('creates the main window when closed and queues until its renderer reports ready', () => {
-    const created = win(true)
-    const go = navigateSender(() => null, () => [], () => created)
-    expect(go(EVENT)).toBe(true)
-    expect(created.webContents.send).not.toHaveBeenCalled()
-    setMenuState(created as never, EMPTY_MENU_STATE)
-    expect(created.webContents.send).toHaveBeenCalledWith(IPC.appNavigate, EVENT)
+  it('never takes focus while OrgAI is not the foreground app: flashes and delivers in place (review M2)', () => {
+    const main = { ...win(), flashFrame: vi.fn() }
+    expect(navigateSender(() => null, () => [[main, undefined]])(EVENT)).toBe(true)
+    expect(main.restore).not.toHaveBeenCalled()
+    expect(main.focus).not.toHaveBeenCalled()
+    expect(main.flashFrame).toHaveBeenCalledWith(true)
+    expect(main.webContents.send).toHaveBeenCalledWith(IPC.appNavigate, EVENT)
   })
-  it('refuses an invalid event and answers false with no window to make', () => {
+  it('queues for a main window whose renderer has not reported ready', () => {
+    const fresh = win(true)
+    expect(navigateSender(() => fresh, () => [[fresh, undefined]])(EVENT)).toBe(true)
+    expect(fresh.webContents.send).not.toHaveBeenCalled()
+    setMenuState(fresh as never, EMPTY_MENU_STATE)
+    expect(fresh.webContents.send).toHaveBeenCalledWith(IPC.appNavigate, EVENT)
+  })
+  it('refuses an invalid event and answers false with no main window open (never creates one)', () => {
     const main = win()
     const go = navigateSender(() => null, () => [[main, undefined]])
     expect(go({ ...EVENT, surfaceId: 'nope' } as never)).toBe(false)

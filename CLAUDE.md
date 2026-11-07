@@ -295,6 +295,29 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     project's concurrent edits. Unverified live: settingSources [] on resume, PreToolUse deny precedence,
     `project_doc_max_bytes=0`, the Codex decline text reaching the agent, workspace-write enforcement on Windows.
 
+- Self-knowledge and self-configuration, phase A (2026-11-07; ARCHITECTURE.md Shared contracts, Runtime core
+  "Self-knowledge", Conventions): the atlas `src/shared/view/atlas.ts` (77 surfaces, deep-link id tables, total
+  `APP_SETTING_DOCS` / `PROJECT_SETTING_DOCS` / `MENU_ACTION_DOCS`) and `shortcuts.ts`; the reference service
+  `src/main/reference/appReference.ts` (search / read / locate / status over atlas, docs, `harnessToolCatalog()`,
+  HOST_CHANNEL_REGISTRY, CLI COMMANDS, CONNECTORS and bundled docs); IPC `app:reference` (read) and the desktop-only
+  push `app:navigate`; tools `app_reference` (every run kind; status only on Chat, MCP and Skill assistant runs),
+  `open_in_app` (Chat, setup, assistants; atlas ids only, 20 per run, one per 2 s, a harness row "Opened <path> for
+  you"; the main window only, never reopened, focused only while OrgAI is the foreground app, else flashed),
+  `propose_app_settings` / `propose_project_settings` (Chat only, cards; never main-owned, connection, proxy,
+  auth, terminal, model-price or permission-rule fields, never bypassPermissions); Help > "Ask OrgAI about itself…"
+  (`ask-about-orgai`). New fields, screens and menu actions need their atlas entries (typecheck and atlas.test.ts).
+  How checked: unit tests (atlas.test.ts, appReference.test.ts incl. a fake secret that never reaches status,
+  argsReference / selfKnowledgeHost / registry / jsonRoundTrip / appMenu tests, harnessToolsSelfKnowledge.test.ts,
+  runManagerSelfKnowledge.test.ts, service and prompts tests); `npm run build` was checked to carry the docs in
+  `out/main/index.js` and `out/cli/inprocHost.mjs` (about 0.7 MB each); search measured about 2 ms per query. Not
+  built yet: the renderer (no handler for `app:navigate` or `ask-about-orgai`, so the Help item does nothing; the
+  appSettings card is a one-line APPLY_NOTE placeholder in ProposalCard.tsx; until the real card lands the card title
+  is main-written and names every change and the target project, review H1) and a mock script. Until the renderer
+  handles `app:navigate`, open_in_app answers "Opened <path>" while nothing visible happens (review L6). Unverified: a real
+  window receiving `app:navigate` (fake windows only), any live model using the tools, Codex accepting the four
+  names as dynamic tools, atlas summaries that rest on CLAUDE.md rather than the components. Six proposable app
+  fields (defaultMaxBudgetUsd, defaultKeepRuns, defaultIsolateWriters, opusGuardThreshold, defaultAutoContinue,
+  defaultMaxAutoContinues) have no screen (atlas surface 'none'). `propose_org_change` from Chat was left out.
 - Work-run configuration changes (2026-11-02; see ARCHITECTURE.md Conventions): the work-run root has propose_mcp_servers
   (project-only, enforced in main), list_skill_library, read_library_skill and propose_skills (create / update / link /
   grant / remove, project scope). Approved changes reach the live run through RunManager `setLive` and

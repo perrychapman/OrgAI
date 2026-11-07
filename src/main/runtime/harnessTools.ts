@@ -19,6 +19,7 @@ import { PLAN_TOOLS, finishedCount, remainingSteps } from './continuation'
 import { PERMISSION_HARNESS_TOOLS, type PermissionRuleDecision } from '@shared/types'
 import { isValidRule } from './ruleMatch'
 import { hiddenCharProblem } from '../capabilities/sanitize'
+import { clampText } from '../capabilities/sanitize'
 import { APP_REFERENCE_ACTIONS, APP_REFERENCE_BUDGET_MAX, APP_REFERENCE_BUDGET_MIN, APP_REFERENCE_ID_MAX_CHARS, APP_REFERENCE_QUERY_MAX_CHARS, APP_REFERENCE_TOOL, APP_SETTINGS_PROPOSABLE_FIELDS, APP_SETTINGS_PROPOSAL_MAX_CHANGES, OPEN_IN_APP_TOOL, PROJECT_SETTINGS_PROPOSABLE_FIELDS, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, isVirtualProjectId, type AppSettingChange, type AppSettingValue, type SettingsProposalPayload } from '@shared/types'
 import { SAFE_ID } from '@shared/defaults'
 import { isAtlasSurfaceId } from '@shared/view/atlas'
@@ -237,8 +238,10 @@ const declined = new WeakMap<RuntimeContext, { keys: Set<string>; perKind: Map<s
 /** Fields a repeated proposal differs in without being a different change (fresh ids, times, layout, wording). */
 const VOLATILE_PROPOSAL_KEYS = new Set(['id', 'addedAt', 'rationale', 'position', 'color', 'serverId'])
 
-function proposalKey(req: { kind: string; payload: unknown }): string {
-  return `${req.kind}:${JSON.stringify(req.payload, (k, v) => (VOLATILE_PROPOSAL_KEYS.has(k) ? undefined : v))}`
+function proposalKey(req: { kind: string; payload: unknown; target?: { projectId: string } }): string {
+  // The target project is part of the change (a decline for project A never blocks the same change for project B).
+  const target = req.target ? `@${req.target.projectId}` : ''
+  return `${req.kind}${target}:${JSON.stringify(req.payload, (k, v) => (VOLATILE_PROPOSAL_KEYS.has(k) ? undefined : v))}`
 }
 
 /**
@@ -2608,10 +2611,42 @@ export const proposeAppSettings = defineTool({
       real.push({ field: c.field, from, to: c.value, label: APP_SETTING_FIELD_LABELS[c.field] })
     }
     if (!real.length) return 'Nothing to change: those settings already have these values.'
-    const d = await askProposal(ctx, { kind: 'appSettings', agentId: ROOT_AGENT_ID, title, payload: { changes: real, rationale } })
+    const cardTitle = appSettingsCardTitle(real)
+    if (cardTitle.length > SETTINGS_CARD_TITLE_MAX) return TITLE_TOO_LONG
+    const d = await askProposal(ctx, { kind: 'appSettings', agentId: ROOT_AGENT_ID, title: cardTitle, payload: { changes: real, rationale } })
     return decisionText(d, 'The app settings were changed.')
   }
 })
+
+/**
+ * Card titles for the Chat settings proposals, written by main from the validated changes and the stored project,
+ * never the agent's title (review H1): until the renderer draws the change rows and the target project, the title is
+ * what the card and its fold summary show, so it must name every change and the project.
+ */
+const cardValue = (v: unknown): string => (v === null ? 'none' : clampText(String(v), 60))
+
+/**
+ * The card shows at most this many title characters (ProposalCard `oneLine(title, 200)`); a longer built title is
+ * refused with REVISE so no change can sit past the cut (review H1 re-check).
+ */
+export const SETTINGS_CARD_TITLE_MAX = 200
+
+/** Fields that weaken guards or spend more come first, so even the shorter fold summary shows them. */
+const SENSITIVE_APP_FIELDS: readonly string[] = ['defaultPermissionMode', 'defaultMaxBudgetUsd']
+
+export function appSettingsCardTitle(changes: readonly AppSettingChange[]): string {
+  const ordered = [...changes].sort((a, b) => Number(SENSITIVE_APP_FIELDS.includes(b.field)) - Number(SENSITIVE_APP_FIELDS.includes(a.field)))
+  return `Change app settings: ${ordered.map((c) => `${c.label} ${cardValue(c.from)} → ${cardValue(c.to)}`).join('; ')}`
+}
+
+const TITLE_TOO_LONG = `REVISE. The settings were not shown to the user: the card cannot list that many changes in full. Propose fewer changes per card (its summary must fit ${SETTINGS_CARD_TITLE_MAX} characters), one card after another.`
+
+export function projectSettingsCardTitle(projectName: string, payload: SettingsProposalPayload): string {
+  const parts = PROJECT_SETTINGS_PROPOSABLE_FIELDS.filter((k) => payload[k] !== undefined).map((k) =>
+    k === 'brief' ? 'brief (new text)' : `${k} → ${cardValue(payload[k] ?? null)}`
+  )
+  return `Settings for project "${clampText(projectName, 80) || 'unnamed'}": ${parts.join('; ')}`
+}
 
 const proposeProjectSettingsShape = (() => {
   const s = proposeSettings.inputSchema.shape
@@ -2667,7 +2702,9 @@ export const proposeProjectSettings = defineTool({
       ;(payload as unknown as Record<string, unknown>)[key] = v
     }
     if (Object.keys(payload).every((k) => k === 'rationale')) return 'Nothing to change: no setting was given for that project.'
-    const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title, payload, target: { projectId: project.id, projectName: project.name } })
+    const cardTitle = projectSettingsCardTitle(project.name, payload)
+    if (cardTitle.length > SETTINGS_CARD_TITLE_MAX) return TITLE_TOO_LONG
+    const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title: cardTitle, payload, target: { projectId: project.id, projectName: project.name } })
     return decisionText(d, 'The project settings were applied; they take effect from its next run.')
   }
 })

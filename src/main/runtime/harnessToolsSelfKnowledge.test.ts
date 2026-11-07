@@ -143,8 +143,28 @@ describe('propose_app_settings', () => {
     const text = await call(ctx, { changes: [{ field: 'appearance.theme', value: 'light', from: 'bogus', label: 'Bogus' }] })
     expect(text).toMatch(/^APPROVED\. The app settings were changed\./)
     const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
-    expect(req).toMatchObject({ kind: 'appSettings', agentId: 'root', title: 'T' })
+    // The card title is main-written from the changes, never the agent's title (review H1).
+    expect(req).toMatchObject({ kind: 'appSettings', agentId: 'root', title: 'Change app settings: Theme dark → light' })
     expect(req.payload).toEqual({ rationale: 'R', changes: [{ field: 'appearance.theme', from: 'dark', to: 'light', label: 'Theme' }] })
+  })
+
+  it('refuses a card whose summary would be cut, and puts guard fields first (review H1 re-check)', async () => {
+    const ctx = chatCtx()
+    const many = [
+      { field: 'appearance.theme', value: 'light' },
+      { field: 'appearance.accent', value: '#123456' },
+      { field: 'appearance.canvas.pattern', value: 'blueprint' },
+      { field: 'appearance.canvas.layout', value: 'radial' },
+      { field: 'appearance.canvas.nodeStyle', value: 'hex' },
+      { field: 'communityPrices', value: !SETTINGS.communityPrices },
+      { field: 'defaultPermissionMode', value: 'acceptEdits' }
+    ]
+    expect(await call(ctx, { changes: many })).toMatch(/^REVISE\. .*Propose fewer changes per card/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+    await call(ctx, { changes: [{ field: 'appearance.theme', value: 'light' }, { field: 'defaultPermissionMode', value: 'acceptEdits' }] })
+    const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
+    expect(req.title.length).toBeLessThanOrEqual(200)
+    expect(req.title).toMatch(/^Change app settings: Permission mode for new projects /)
   })
 
   it('drops no-op changes and answers when nothing is left', async () => {
@@ -214,6 +234,24 @@ describe('propose_project_settings', () => {
     await call(ctx, { autoContinue: true, allowRules: ['Bash(rm:*)'] })
     expect(vi.mocked(ctx.requestProposal).mock.calls[0][0].payload).not.toHaveProperty('allowRules')
     expect(await call(ctx, { brief: 'a‮b' })).toMatch(/^REVISE\. .*brief contains a hidden character/)
+  })
+
+  it('the card title is main-written and names the project and every field (review H1)', async () => {
+    const ctx = chatCtx({ storedProject: () => stored({ kind: 'engagement' }) })
+    await call(ctx, { title: 'Harmless tweak', permissionMode: 'auto', client: 'Acme', brief: 'New brief' })
+    const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
+    expect(req.title).toBe('Settings for project "Real project": brief (new text); permissionMode → auto; client → Acme')
+  })
+
+  it('a decline for one project never blocks the same change for another (review L1)', async () => {
+    const ctx = chatCtx({
+      storedProject: (id: string) => (id === 'p_real' || id === 'p_two' ? stored({ id, name: id }) : undefined),
+      requestProposal: vi.fn(async () => ({ behavior: 'decline' as const }))
+    })
+    await call(ctx, { autoContinue: true })
+    expect(await call(ctx, { autoContinue: true })).toMatch(/already proposed this exact change/)
+    await call(ctx, { projectId: 'p_two', autoContinue: true })
+    expect(ctx.requestProposal).toHaveBeenCalledTimes(2)
   })
 
   it('says nothing to change when no field is given', async () => {
