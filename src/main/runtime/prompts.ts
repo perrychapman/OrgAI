@@ -445,9 +445,9 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     if (references) parts.push(references)
     const skills = skillsText(flags.skills, flags.skillTool)
     if (skills) parts.push(skills)
+    parts.push(selfKnowledgeWorkText())
     const brief = briefText(project.brief)
     if (brief) parts.push(brief)
-    parts.push(selfKnowledgeWorkText())
   } else if (role.reportsTo === null) {
     parts.push(selfKnowledgeSetupText())
   }

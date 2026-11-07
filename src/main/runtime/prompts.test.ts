@@ -123,8 +123,8 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, tool hygiene, brief
-    expect(parts).toHaveLength(14)
+    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, tool hygiene, OrgAI reference sentence, brief
+    expect(parts).toHaveLength(15)
   })
 
   it('tells every work-run role to edit with the edit tools and avoid cd chains, never setup runs', () => {

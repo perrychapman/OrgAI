@@ -188,7 +188,7 @@ describe('CodexAdapter session', () => {
     expect(childStart.developerInstructions).toContain('You are engineer.')
     expect(childStart.sandbox).toBe('workspace-write')
     // A report without reports of its own gets only the every-agent tools (request_permission_rules, list_skills, load_skill).
-    expect((childStart.dynamicTools as { name: string }[]).map((t) => t.name)).toEqual(['request_permission_rules', 'list_skills', 'load_skill'])
+    expect((childStart.dynamicTools as { name: string }[]).map((t) => t.name)).toEqual(['request_permission_rules', 'list_skills', 'load_skill', 'app_reference'])
     expect(s.turnStarts('th-2')[0].params.input[0].text).toContain('Build the login form')
     const childId = ctx.events.find((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1')!.agent.id
     expect(lastAgent(ctx, childId)).toMatchObject({ handle: 'engineer-1', parentId: 'root', spawnToolUseId: 'c-spawn', roleSlug: 'engineer' })
