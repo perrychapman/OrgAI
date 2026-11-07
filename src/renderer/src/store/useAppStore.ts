@@ -10,6 +10,8 @@ import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
 import type { KnowledgeFocusRequest } from '../lib/knowledge'
+import { forgetPreviewCache, mergeOutput } from '../lib/outputs'
+import type { RunOutput } from '@shared/types'
 import { addRecalled, cleanRecalledEvent, type RecalledEvent } from '../lib/runKnowledge'
 import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
@@ -76,9 +78,20 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'knowledge' | 'appSettings'
+export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
-export type SideTab = 'transcript' | 'plan' | 'usage' | 'knowledge' | 'logs'
+export type SideTab = 'transcript' | 'plan' | 'usage' | 'outputs' | 'knowledge' | 'logs'
+
+/** A request to open the project's Outputs tab, on one output when it names one (docs/design/outputs.md section 2). */
+export interface OutputsFocusRequest {
+  projectId: string
+  outputId?: string
+}
+
+/** The run Outputs side tab's state per chain: the output shown in the detail, if any. */
+export interface RunOutputsUi {
+  openId: string | null
+}
 
 /** What a request to open one item in a run's Knowledge side tab names (ids first, else kind and name, else a note title). */
 export interface RunKnowledgeRequest {
@@ -206,6 +219,20 @@ interface AppState {
   /** Open the project's Knowledge tab, on one item when the request names one (ids first, else kind and name, else a note title). */
   openKnowledgeItem(req: KnowledgeFocusRequest): void
   clearKnowledgeFocus(): void
+  /** Run outputs per project, newest first (outputs:list; docs/design/outputs.md section 2). Absent = not loaded yet. */
+  outputsByProject: Record<string, RunOutput[]>
+  /** Fetch a project's outputs (outputs:list). A failure keeps the old list. */
+  loadOutputs(projectId: string): Promise<void>
+  /** Replace a project's list (after forget / delete, which answer the list afterwards). */
+  setOutputs(projectId: string, list: RunOutput[]): void
+  /** A pending request to select one output on the project's Outputs tab; OutputsView resolves and clears it. */
+  outputsFocus: OutputsFocusRequest | null
+  openOutputItem(req: OutputsFocusRequest): void
+  clearOutputsFocus(): void
+  /** The run Outputs side tab's state per chain (key: the chain's first run id). */
+  runOutputsByChain: Record<string, RunOutputsUi>
+  /** Show the run's Outputs side tab, on one output when `outputId` is given (null closes the detail). */
+  openRunOutput(runId: string, outputId?: string | null): void
   /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
   projectSettingsPane: Record<string, string>
   setProjectSettingsPane(projectId: string, pane: string): void
@@ -808,6 +835,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   assistantSeed: {},
   mcpFocus: null,
   knowledgeFocus: null,
+  outputsByProject: {},
+  outputsFocus: null,
+  runOutputsByChain: {},
   projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
@@ -1102,6 +1132,42 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
+  openRunOutput(runId, outputId) {
+    set((s) => {
+      const projectId = s.runs[runId]?.summary.projectId ?? ''
+      const key = chainKeyOf(summariesOf(s, projectId), runId)
+      const cur = s.runOutputsByChain[key] ?? { openId: null }
+      const openId = outputId === undefined ? cur.openId : outputId
+      return {
+        runOutputsByChain: { ...s.runOutputsByChain, [key]: { ...cur, openId } },
+        sideTabByRun: { ...s.sideTabByRun, [runId]: 'outputs' }
+      }
+    })
+  },
+
+  async loadOutputs(projectId) {
+    if (!projectId || isVirtualProjectId(projectId) || !window.orgai.outputs) return
+    try {
+      const list = await window.orgai.outputs.list(projectId)
+      if (Array.isArray(list)) get().setOutputs(projectId, list)
+    } catch (e) {
+      console.warn('outputs:list failed', e)
+    }
+  },
+
+  setOutputs(projectId, list) {
+    set((s) => ({ outputsByProject: { ...s.outputsByProject, [projectId]: list } }))
+  },
+
+  openOutputItem(req) {
+    if (get().selectedProjectId !== req.projectId) get().selectProject(req.projectId)
+    set({ view: 'outputs', outputsFocus: req })
+  },
+
+  clearOutputsFocus() {
+    set({ outputsFocus: null })
+  },
+
   openRunKnowledge(runId, request) {
     get().patchRunKnowledge(runId, request ? { request, query: '', openId: null, stack: [] } : {})
     set((s) => ({ sideTabByRun: { ...s.sideTabByRun, [runId]: 'knowledge' } }))
@@ -1240,6 +1306,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     window.orgai.onConnectionEvent((e) => get().handleConnectionEvent(e))
     // Team files: the push keeps every known status fresh; listAttention seeds the ones that need the user.
     window.orgai.onTeamFilesChanged?.((status) => get().setTeamFilesStatus(status))
+    // Outputs: refetch a project's list on any change, only once something has loaded it.
+    window.orgai.onOutputsChanged?.((ev) => {
+      if (ev?.projectId && get().outputsByProject[ev.projectId]) void get().loadOutputs(ev.projectId)
+    })
     void get().loadTeamFilesAttention()
     await get().loadProjects()
     void get().loadAllHistory()
@@ -1273,6 +1343,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(changed ? { history: get().historyByProject[id ?? ''] ?? [] } : {})
     })
     if (id) void settleWorkspace(id)
+    if (id && changed && !isVirtualProjectId(id)) void get().loadOutputs(id)
   },
 
   setView(requested) {
@@ -1409,6 +1480,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   async removeProject(id) {
     const result = await window.orgai.projects.remove(id)
     clearKnowledgePrefs(id)
+    forgetPreviewCache(id)
     set((s) => {
       // H2: the project's runs go with it, so the Dashboard (attention column, hero, tiles, Cost card) stops counting them.
       const gone = new Set<string>()
@@ -1417,6 +1489,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [id]: _hist, ...historyByProject } = s.historyByProject
       const { [id]: _active, ...activeRunByProject } = s.activeRunByProject
       const { [id]: _draft, ...draftPage } = s.draftPage
+      const { [id]: _outputs, ...outputsByProject } = s.outputsByProject
+      const runOutputsByChain = Object.fromEntries(Object.entries(s.runOutputsByChain).filter(([chain]) => !gone.has(chain)))
       const runs = Object.fromEntries(Object.entries(s.runs).filter(([runId]) => !gone.has(runId)))
       const dismissedRuns = Object.fromEntries(Object.entries(s.dismissedRuns).filter(([runId]) => !gone.has(runId))) as Record<string, true>
       const knowledgeRecalledByRun = Object.fromEntries(Object.entries(s.knowledgeRecalledByRun).filter(([runId]) => !gone.has(runId)))
@@ -1436,6 +1510,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         knowledgeRecalledByRun,
         sideTabByRun,
         runKnowledgeByChain,
+        outputsByProject,
+        runOutputsByChain,
         ...(wasSelected ? { history: [] } : {})
       }
     })
@@ -1768,6 +1844,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     // What agents looked up or were given: ids and time only, kept per run for the Knowledge side tab.
+    // A new or updated output (docs/design/outputs.md section 2): merged into a loaded list, else the list is fetched.
+    if (e.type === 'output.created') {
+      const pid = e.output?.projectId
+      if (!pid) return
+      if (get().outputsByProject[pid]) set((s) => ({ outputsByProject: { ...s.outputsByProject, [pid]: mergeOutput(s.outputsByProject[pid], e.output) } }))
+      else void get().loadOutputs(pid)
+      return
+    }
     if (e.type === 'knowledge.recalled') {
       const ev = cleanRecalledEvent(e)
       if (ev) set((s) => ({ knowledgeRecalledByRun: { ...s.knowledgeRecalledByRun, [e.runId]: addRecalled(s.knowledgeRecalledByRun[e.runId], ev) } }))
