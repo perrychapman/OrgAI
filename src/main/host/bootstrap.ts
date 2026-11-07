@@ -13,7 +13,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
-import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
+import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -42,6 +42,7 @@ import { skillsProject } from '../skills/assist'
 import { SkillEvaluationService } from '../skills/evaluation'
 import { SkillService } from '../skills/service'
 import { knowledgeStore } from '../store/knowledge'
+import { createOutputsService } from '../outputs/service'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from '../store/projectData'
 import { ProjectStore } from '../store/projects'
@@ -369,6 +370,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       ...(opts.cliShimStatus ? { cliShim: opts.cliShimStatus } : {})
     }
   })
+  // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
+  const outputs = createOutputsService(dataDir)
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
     selfKnowledge: {
@@ -404,6 +407,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     knowledge: knowledgeStore(dataDir),
     engagementChanged: (event) => events.emit(IPC.projectsEngagementChanged, event),
+    outputs,
+    outputsChanged: (event) => events.emit(OUTPUTS_IPC.outputsChanged, event),
     orgTemplate: (templateId, project) => templates.forRun(templateId, project),
     // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
     buildProject: (summary) => harnessProjectFor(summary, connections.effectiveSettings(), dataDir, mockAdapter),
@@ -599,6 +604,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     templates,
     kit,
     teamFiles,
+    outputs,
     events,
     activity,
     usage: { refresh: () => monitor.refresh() },

@@ -80,7 +80,7 @@ describe('HostEventBus', () => {
 describe('HOST_PUSH_CHANNELS', () => {
   it('plus the five window-targeted channels equals every push channel', () => {
     expect(new Set([...HOST_PUSH_CHANNELS, IPC.appFocusRun, IPC.menuAction, IPC.projectsCloneProgress, TEAM_FILES_IPC.teamFilesChanged, IPC.appNavigate])).toEqual(new Set(PUSH_CHANNELS))
-    expect(HOST_PUSH_CHANNELS).toHaveLength(8)
+    expect(HOST_PUSH_CHANNELS).toHaveLength(9)
     expect(HOST_PUSH_CHANNELS).not.toContain(IPC.appFocusRun)
     expect(HOST_PUSH_CHANNELS).not.toContain(IPC.menuAction)
     expect(HOST_PUSH_CHANNELS).not.toContain(IPC.projectsCloneProgress)

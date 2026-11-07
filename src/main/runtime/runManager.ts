@@ -6,6 +6,10 @@ import type {
   EngagementChangedEvent,
   EngagementNoteWriter,
   FolderConfigState,
+  OutputProduceInput,
+  OutputRegisterInput,
+  OutputsChangedEvent,
+  RunOutput,
   RunUsage,
   UsageStats,
   UsageStatsQuery,
@@ -74,7 +78,7 @@ import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, isBuiltinConnectionId, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, isBuiltinConnectionId, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
@@ -85,6 +89,7 @@ import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateE
 import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
 import { clampText } from '../capabilities/sanitize'
 import { datum } from './harnessTools'
+import type { OutputScope, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -140,6 +145,31 @@ export interface ResolvedAllowedDirectories {
   dropped: string[]
   /** The subset of `dropped` left out as too broad or sensitive (home, a folder holding the project, ~/.ssh ...). */
   unsafe: string[]
+}
+
+/**
+ * The folders an outputs call may touch, from the stored project (types.ts "Run outputs"; api.ts OutputScope): the
+ * project folder, the existing allowed folders (resolveAllowedDirectories: real paths, never the data folder or a
+ * folder inside the project) and the reference folders (never accepted). Used by RunManager at call time and by the
+ * outputs:* handlers.
+ */
+export function outputScopeOf(project: Project, dataDir: string | undefined): OutputScope {
+  const allowed = resolveAllowedDirectories(project.allowedDirectories, { projectPath: project.path, dataDir }).dirs
+  // References are refused by the service, so none is dropped here (one inside the project folder must still count):
+  // both the given and the canonical spelling go in.
+  const references = [
+    ...new Set(
+      (project.referenceDirectories ?? [])
+        .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+        .flatMap((r) => [resolvePath(r.trim()), canonicalPath(resolvePath(r.trim()))])
+    )
+  ]
+  return { projectId: project.id, projectPath: project.path, allowedDirectories: allowed, referenceDirectories: references }
+}
+
+/** The noun of the transcript row "Produced <word> <title>". */
+function producedWord(kind: string): string {
+  return kind === 'docx' ? 'document' : kind === 'xlsx' ? 'workbook' : kind === 'mermaid' || kind === 'svg' ? 'diagram' : 'file'
 }
 
 /** OrgAI's data folder in both spellings (deduped); empty without a data dir. */
@@ -378,6 +408,9 @@ interface ActiveRun {
   /** open_in_app places shown this run and when the last one went out (OPEN_IN_APP_PER_RUN_MAX / OPEN_IN_APP_MIN_INTERVAL_MS). */
   appOpens?: number
   appOpenedAt?: number
+  /** produce_output / register_output successes this run made (OUTPUTS_RUN_MAX); the cap warning is logged once. */
+  outputsMade: number
+  outputsCapWarned?: boolean
   /** Per named receiving agent: node id -> the signature last served in full (knowledge_recall and auto context). In memory only. */
   knowledgeShown: Map<string, Map<string, string>>
   /** Per named receiving agent: node id -> the signature last put in an automatic context block, full or not. In memory only. */
@@ -702,6 +735,14 @@ export interface RunManagerOptions {
    * ('knowledge') (bootstrap.ts emits it on the host's HostEventBus). Missing = no push.
    */
   engagementChanged?: (event: EngagementChangedEvent) => void
+  /**
+   * The run outputs service (outputs/service.ts `createOutputsService(dataDir)`), for RuntimeContext.outputs on work
+   * runs of stored projects (never quick, setup-like, build or virtual-project runs). Missing = the tools say outputs
+   * are not available.
+   */
+  outputs?: OutputsServiceApi
+  /** Push outputs:changed after an agent produced or registered an output (bootstrap.ts emits it on the HostEventBus). Missing = no push. */
+  outputsChanged?: (event: OutputsChangedEvent) => void
   /**
    * A saved team template's roles converted for `project` (setup/templates.ts, the agent-import convert path),
    * for RuntimeContext.orgTemplate on setup runs. null for an unknown id. Missing = templates unavailable.
@@ -1331,6 +1372,7 @@ export class RunManager {
       skillCounts: new Map(),
       skillLoads: 0,
       knowledgeWrites: 0,
+      outputsMade: 0,
       knowledgeShown: new Map(),
       knowledgeContextShown: new Map(),
       knowledgeUsage: { recalls: 0, autoContexts: 0, itemsServed: 0, charsServed: 0 },
@@ -1887,6 +1929,11 @@ export class RunManager {
               knowledge: this.bindKnowledge(active, this.options.knowledge, project.id, () => ctx.roles),
               ...this.bindKnowledgeReads(active, this.options.knowledge, project.id, () => this.options.resolveProject?.(project.id) ?? live)
             }
+          : {}),
+        // Run outputs: work runs of a stored project (code or engagement, team default or single); never Chat, setup-like,
+        // build-session or trust-restricted runs.
+        ...(this.options.outputs && kind === 'work' && !bare && !restricted
+          ? { outputs: this.bindOutputs(active, this.options.outputs, project.id, () => ctx.roles, () => this.options.resolveProject?.(project.id) ?? live) }
           : {}),
         // Saved team templates: Architect setup runs only.
         ...(this.options.orgTemplate && kind === 'setup' && !isVirtualProjectId(project.id)
@@ -2568,6 +2615,68 @@ export class RunManager {
       this.options.engagementChanged?.(event)
     } catch (e) {
       log.warn(`engagementChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /**
+   * RuntimeContext.outputs over the outputs service: the folder scope read from the stored project at call time (so an
+   * allowed folder added mid-run counts at once), the source from the run's agent record, the per-run cap, `output.created`,
+   * one quiet transcript row on the calling agent and the outputs:changed push (never throws into the tool).
+   */
+  private bindOutputs(
+    a: ActiveRun,
+    service: OutputsServiceApi,
+    projectId: string,
+    roles: () => Role[],
+    project: () => Project
+  ): NonNullable<RuntimeContext['outputs']> {
+    const done = async (
+      caller: KnowledgeCaller,
+      call: (scope: OutputScope, source: { runId: string; agentId?: string; role?: string }) => Promise<{ output: RunOutput; created: boolean }>,
+      row: (o: RunOutput) => string
+    ): Promise<RunOutput> => {
+      if (a.outputsMade >= OUTPUTS_RUN_MAX) {
+        if (!a.outputsCapWarned) {
+          a.outputsCapWarned = true
+          log.warn(`Run ${a.summary.id}: output limit (${OUTPUTS_RUN_MAX}) reached; later outputs are refused`)
+        }
+        throw new Error(`The output limit for this run (${OUTPUTS_RUN_MAX}) is reached; nothing was saved.`)
+      }
+      // Reserve the slot before the await so parallel calls cannot pass the check together; release it on failure.
+      let known: ReturnType<RunManager['knowledgeSource']>
+      let output: RunOutput
+      let created: boolean
+      a.outputsMade++
+      try {
+        known = this.knowledgeSource(a, caller, roles())
+        const scope = outputScopeOf(project(), this.options.dataDir)
+        ;({ output, created } = await call(scope, { runId: a.summary.id, agentId: known.agentId, ...(known.role ? { role: known.role } : {}) }))
+      } catch (e) {
+        a.outputsMade--
+        throw e
+      }
+      a.emit({ type: 'output.created', runId: a.summary.id, output })
+      this.knowledgeRow(a, known.agentId, row(output))
+      try {
+        this.options.outputsChanged?.({ projectId, ids: [output.id], what: created ? 'added' : 'updated' })
+      } catch (e) {
+        log.warn(`outputsChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      return output
+    }
+    return {
+      produce: (input: OutputProduceInput, caller) =>
+        done(
+          caller,
+          (scope, source) => service.produce(scope, input, source),
+          (o) => `Produced ${producedWord(o.kind)} ${datum(o.title, 120)}`
+        ),
+      register: (input: OutputRegisterInput, caller) =>
+        done(
+          caller,
+          (scope, source) => service.register(scope, input, source),
+          (o) => `Registered output ${datum(o.title, 120)}`
+        )
     }
   }
 

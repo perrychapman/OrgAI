@@ -35,6 +35,7 @@ import type {
   McpInstallDecision,
   McpServerSpec,
   MergeDecision,
+  OutputRef,
   PermissionDecision,
   PermissionRuleDecision,
   QuestionAnswer,
@@ -67,6 +68,7 @@ import {
   KNOWLEDGE_FACT_MAX_CHARS,
   KNOWLEDGE_LINK_ID_RE,
   KNOWLEDGE_NODE_FACTS_MAX,
+  OUTPUT_ID_RE,
   PROPOSAL_NOTE_MAX_CHARS,
   QUICK_RUN_MAX_PROMPT_CHARS,
   isVirtualProjectId
@@ -1208,4 +1210,22 @@ export function appReferenceArgs(raw: unknown): AppReferenceQuery {
     out.budget = i.budget
   }
   return out
+}
+
+/**
+ * outputs:* inputs (types.ts "Run outputs"), rebuilt field by field: a safe project id (a virtual id passes; the
+ * handler answers it) and an output id matching OUTPUT_ID_RE; extra fields dropped, other shapes refused.
+ */
+export const outputArgs = {
+  projectId(id: unknown): string {
+    if (!isSafeId(id)) throw new Error('Project not found')
+    return id
+  },
+  ref(input: unknown): OutputRef {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Project not found')
+    const i = input as Record<string, unknown>
+    if (!isSafeId(i.projectId)) throw new Error('Project not found')
+    if (typeof i.outputId !== 'string' || !OUTPUT_ID_RE.test(i.outputId)) throw new Error('Output not found')
+    return { projectId: i.projectId, outputId: i.outputId }
+  }
 }

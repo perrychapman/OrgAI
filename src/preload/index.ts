@@ -12,6 +12,7 @@ import type {
   MenuActionEvent,
   MenuState,
   OrgAIApi,
+  OutputsChangedEvent,
   SkillLibraryInfo,
   PermissionDecision,
   Project,
@@ -23,9 +24,9 @@ import type {
   TeamReviewSummary
 } from '../shared/types'
 import { IPC, isMenuAction } from '../shared/types'
-import { KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../shared/types'
 import { SELF_KNOWLEDGE_IPC, type AppNavigateEvent, type AppReferenceQuery } from '../shared/types'
 import { isAtlasSurfaceId } from '../shared/view/atlas'
+import { KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, TEAM_FILES_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -350,6 +351,21 @@ const api: OrgAIApi = {
     }
     ipcRenderer.on(SELF_KNOWLEDGE_IPC.appNavigate, listener)
     return () => ipcRenderer.removeListener(SELF_KNOWLEDGE_IPC.appNavigate, listener)
+  },
+  // ---- Run outputs ----
+  outputs: {
+    list: (projectId) => ipcRenderer.invoke(OUTPUTS_IPC.outputsList, projectId),
+    preview: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsPreview, input),
+    open: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsOpen, ref),
+    reveal: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsReveal, ref),
+    saveAs: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsSaveAs, ref),
+    forget: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsForget, ref),
+    delete: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsDelete, ref)
+  },
+  onOutputsChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: OutputsChangedEvent): void => cb(event)
+    ipcRenderer.on(OUTPUTS_IPC.outputsChanged, listener)
+    return () => ipcRenderer.removeListener(OUTPUTS_IPC.outputsChanged, listener)
   }
 }
 

@@ -201,6 +201,14 @@ const PAYLOADS: Record<string, unknown[]> = {
   'teamFiles:undo': [{ projectId: 'p_abc123' }],
   'teamFiles:commit': [{ projectId: 'p_abc123' }],
   'teamFiles:enable': [{ projectId: 'p_abc123' }],
+  // outputs
+  'outputs:list': ['p_abc123'],
+  'outputs:preview': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
+  'outputs:open': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
+  'outputs:reveal': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
+  'outputs:saveAs': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
+  'outputs:forget': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
+  'outputs:delete': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
   // HOST_IPC
   'runs:subscribe': [{ projectIds: ['p_abc123'], followChains: true, sinceSeq: 12 }],
   'skillLibrary:addFromBundle': [{ name: 'review', files: [{ path: 'SKILL.md', base64: 'IyBSZXZpZXc=' }] }],

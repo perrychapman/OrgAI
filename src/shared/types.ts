@@ -3349,6 +3349,8 @@ export type RunEvent =
    * knowledge_recall, 'auto' = knowledgeContext; a merged event carries the newest call's `via`. `at` is epoch ms.
    */
   | { type: 'knowledge.recalled'; runId: string; agentId: string; nodeIds: string[]; at: number; via: 'recall' | 'auto' }
+  /** An agent produced or registered a deliverable (types.ts "Run outputs"); RunManager emits it after the index write. */
+  | { type: 'output.created'; runId: string; output: RunOutput }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
@@ -7318,4 +7320,295 @@ export type ProjectSettingsProposableField = (typeof PROJECT_SETTINGS_PROPOSABLE
 export interface OrgAIApi {
   /** An agent's open_in_app asked to show a place (SELF_KNOWLEDGE_IPC.appNavigate). Returns an unsubscribe function. */
   onAppNavigate(cb: (event: AppNavigateEvent) => void): () => void
+}
+
+// ---- Run outputs ----
+//
+// Deliverables agents make for the user (documents, workbooks, diagrams, text files, images, any file they wrote) and
+// that OrgAI shows inside its window. Produced files are written by main into `<project folder>/outputs/`; registered
+// files stay where the agent wrote them. The index lives in OrgAI's data folder (`<data>/projects/<id>/outputs.json`),
+// so an engagement's working folder holds only the deliverables. Agents reach this through the produce_output and
+// register_output harness tools (work runs of stored projects, team 'default' and 'single'; never quick, setup-like or
+// trust-restricted runs); the user through the outputs:* channels. Everything here is structured-clone safe.
+
+/** What an output is. docx, xlsx, mermaid, markdown, text, csv, json, svg and image preview inline; pdf and other are open-only. */
+export type OutputKind = 'docx' | 'xlsx' | 'mermaid' | 'markdown' | 'text' | 'csv' | 'json' | 'svg' | 'image' | 'pdf' | 'other'
+
+export const OUTPUT_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image', 'pdf', 'other']
+
+/** Kinds the renderer previews inline (outputs:preview answers kind 'none' for the rest). */
+export const OUTPUT_PREVIEW_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image']
+
+/** Kinds produce_output writes (main renders docx / xlsx; the rest are the text written as the file). */
+export const OUTPUT_PRODUCE_KINDS = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg'] as const
+export type OutputProduceKind = (typeof OUTPUT_PRODUCE_KINDS)[number]
+
+/** File extension main forces per produced kind (without the dot). */
+export const OUTPUT_PRODUCE_EXTENSIONS: Readonly<Record<OutputProduceKind, string>> = {
+  docx: 'docx',
+  xlsx: 'xlsx',
+  mermaid: 'mmd',
+  markdown: 'md',
+  text: 'txt',
+  csv: 'csv',
+  json: 'json',
+  svg: 'svg'
+}
+
+/** Folder (inside the project folder) produced files land in. */
+export const OUTPUTS_DIR_NAME = 'outputs'
+/** Index entries per project; past it the oldest entry is forgotten (its file stays) with a log line. */
+export const OUTPUTS_MAX = 2000
+/** produce_output + register_output successes per run; past it both answer REFUSED. */
+export const OUTPUTS_RUN_MAX = 200
+/** Largest file register_output accepts. */
+export const OUTPUT_FILE_MAX_BYTES = 50 * 1024 * 1024
+/** RunOutput.title length (1..this), one line, no hidden characters. */
+export const OUTPUT_TITLE_MAX_CHARS = 120
+/** RunOutput.description length, no hidden characters (prose: line breaks allowed). */
+export const OUTPUT_DESCRIPTION_MAX_CHARS = 500
+/** Path length cap for a registered path and for the produced `fileName`. */
+export const OUTPUT_PATH_MAX_CHARS = 1024
+/** produce_output text content cap (mermaid, markdown, text, csv, json, svg and the docx Markdown source), UTF-8 bytes. */
+export const OUTPUT_TEXT_MAX_BYTES = 1024 * 1024
+/** produce_output xlsx caps. A string cell starting with '=' is written as text (never a formula). */
+export const OUTPUT_XLSX_MAX_SHEETS = 20
+export const OUTPUT_XLSX_MAX_ROWS = 10_000
+export const OUTPUT_XLSX_MAX_COLUMNS = 256
+export const OUTPUT_XLSX_CELL_MAX_CHARS = 32 * 1024
+/** Excel's own sheet name limit; forbidden characters (: \ / ? * [ ]) are replaced. */
+export const OUTPUT_XLSX_SHEET_NAME_MAX_CHARS = 31
+/** Preview caps. */
+export const OUTPUT_PREVIEW_TEXT_MAX_BYTES = 256 * 1024
+export const OUTPUT_PREVIEW_SHEETS_MAX = 20
+export const OUTPUT_PREVIEW_ROWS_MAX = 500
+export const OUTPUT_PREVIEW_COLUMNS_MAX = 64
+/** One embedded image in a document preview, and all of them together. */
+export const OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+export const OUTPUT_PREVIEW_DOC_IMAGES_TOTAL_BYTES = 10 * 1024 * 1024
+/** An image (or svg) file previewed whole. */
+export const OUTPUT_PREVIEW_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+/** RunOutput.id shape. */
+export const OUTPUT_ID_RE = /^out_[0-9a-f]{16}$/
+
+/**
+ * One deliverable in the project's index. `path` is absolute (inside the project folder or one of
+ * Project.allowedDirectories; produced ones under `<project>/outputs/`); `relPath` is what the user sees (relative to
+ * the project folder, or the absolute path for an allowed folder outside it), forward slashes. `agentId` / `role` come
+ * from RunManager (the run's agent record), never from the agent. `missing` is set by outputs:list when the file is
+ * gone; the entry is kept until the user forgets it.
+ */
+export interface RunOutput {
+  id: string
+  projectId: string
+  runId: string
+  agentId?: string
+  role?: string
+  kind: OutputKind
+  title: string
+  description?: string
+  /** Base name of the file (for a produced file with a sub-path: the last segment only). */
+  fileName: string
+  path: string
+  relPath: string
+  bytes: number
+  /** Epoch ms of the first index write (a re-register or overwrite keeps it and sets updatedAt). */
+  createdAt: number
+  updatedAt?: number
+  source: 'produced' | 'registered'
+  missing?: true
+}
+
+/** produce_output xlsx content: one entry per sheet. */
+export interface OutputSheetInput {
+  name: string
+  columns?: { header: string; width?: number }[]
+  rows: (string | number | boolean | null)[][]
+  /** Excel number formats by column index (e.g. '#,##0.00', '0%', 'yyyy-mm-dd'); a missing entry = General. */
+  numberFormat?: (string | null)[]
+}
+
+export interface OutputWorkbookInput {
+  sheets: OutputSheetInput[]
+}
+
+/**
+ * produce_output input (what the tool hands RuntimeContext.outputs.produce after its own shape checks). `content` is
+ * Markdown (docx; a subset: headings, paragraphs, bold, italic, code, lists one level deep, GFM tables, fenced code,
+ * rules), an OutputWorkbookInput (xlsx), or the file's text (the rest). `fileName` is relative to
+ * `<project>/outputs/` (sub-folders allowed, never `..`, absolute, device or UNC; the kind's extension is forced);
+ * missing = a safe name from the title. An existing file gets a " (2)" style suffix unless `overwrite` is true and
+ * that file's index entry was produced by this run.
+ */
+export interface OutputProduceInput {
+  kind: OutputProduceKind
+  title: string
+  fileName?: string
+  description?: string
+  overwrite?: boolean
+  content: string | OutputWorkbookInput
+}
+
+/**
+ * register_output input: a file the agent wrote itself. `path` absolute or relative to the project folder; it must
+ * be a regular file (no link or junction) whose real path is inside the project folder or an allowed folder, never a
+ * reference folder, OrgAI's data folder or under `.git`, at most OUTPUT_FILE_MAX_BYTES. `kind` missing = from the
+ * extension (outputKindForPath). A path already in the index updates that entry's title / description / kind.
+ */
+export interface OutputRegisterInput {
+  path: string
+  title: string
+  kind?: OutputKind
+  description?: string
+}
+
+/** outputs:preview input. */
+export interface OutputPreviewInput {
+  projectId: string
+  outputId: string
+}
+
+/** outputs:open / reveal / saveAs / forget / delete input. */
+export interface OutputRef {
+  projectId: string
+  outputId: string
+}
+
+/** A run of text in a document preview. `href` only http:, https: or mailto:. */
+export interface DocumentRun {
+  text: string
+  bold?: true
+  italic?: true
+  underline?: true
+  strike?: true
+  code?: true
+  href?: string
+}
+
+/** A block of a document preview. Never HTML: the renderer builds elements from these. */
+export type DocumentBlock =
+  | { type: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6; runs: DocumentRun[] }
+  | { type: 'paragraph'; runs: DocumentRun[] }
+  | { type: 'list'; ordered: boolean; items: DocumentRun[][] }
+  /** rows -> cells -> runs. `headerRows` = how many leading rows are header rows. */
+  | { type: 'table'; rows: DocumentRun[][][]; headerRows?: number }
+  /** dataUrl only data:image/(png|jpeg|gif|webp);base64, within the image caps. */
+  | { type: 'image'; dataUrl: string; alt: string }
+  | { type: 'code'; text: string }
+  | { type: 'rule' }
+  | { type: 'pageBreak' }
+
+/** A cell of a sheet preview: the value (a formula cell's cached result), its formula text and number format. Dates are ISO strings. */
+export interface SheetCell {
+  v: string | number | boolean | null
+  f?: string
+  fmt?: string
+}
+
+export interface SheetPreview {
+  name: string
+  rows: SheetCell[][]
+  /** Rows / columns beyond the preview caps that are not shown (counts). */
+  truncatedRows?: number
+  truncatedCols?: number
+}
+
+/**
+ * outputs:preview result. Never raw HTML, never a throw for a bad file: a corrupt, oversized, missing or open-only
+ * file answers kind 'none' with a plain sentence. 'text' covers markdown, text, csv, json and mermaid source (the
+ * renderer renders markdown and mermaid itself); 'svg' is the SVG source as text (the renderer decides how to show it
+ * safely); 'image' is a data URL of a png / jpeg / gif / webp file.
+ */
+export type OutputPreview =
+  | { kind: 'document'; blocks: DocumentBlock[]; truncated?: true }
+  | { kind: 'sheets'; sheets: SheetPreview[]; truncatedSheets?: number }
+  | { kind: 'text'; text: string; truncated?: true }
+  | { kind: 'svg'; text: string }
+  | { kind: 'image'; dataUrl: string }
+  | { kind: 'none'; reason: string }
+
+/** outputs:saveAs result. */
+export type OutputSaveAsResult = { path: string } | { cancelled: true }
+
+/** outputs:changed push: an agent or the user changed a project's index. */
+export interface OutputsChangedEvent {
+  projectId: string
+  ids: string[]
+  what: 'added' | 'removed' | 'updated'
+}
+
+/** The kind a file's extension implies (register_output without a kind). */
+export function outputKindForPath(path: string): OutputKind {
+  const m = /\.([A-Za-z0-9]+)$/.exec(path)
+  switch (m ? m[1].toLowerCase() : '') {
+    case 'docx':
+      return 'docx'
+    case 'xlsx':
+      return 'xlsx'
+    case 'md':
+    case 'markdown':
+      return 'markdown'
+    case 'txt':
+      return 'text'
+    case 'csv':
+      return 'csv'
+    case 'json':
+      return 'json'
+    case 'svg':
+      return 'svg'
+    case 'mmd':
+    case 'mermaid':
+      return 'mermaid'
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'webp':
+      return 'image'
+    case 'pdf':
+      return 'pdf'
+    default:
+      return 'other'
+  }
+}
+
+/** Harness tool names. */
+export const OUTPUT_TOOLS = { produce: 'produce_output', register: 'register_output' } as const
+
+/** Channels of this section. Not spread into IPC (declared after it); host lists name OUTPUTS_IPC like TEAM_FILES_IPC. */
+export const OUTPUTS_IPC = {
+  /** (projectId) -> RunOutput[] newest first; entries whose file is gone carry missing: true. Scope read. */
+  outputsList: 'outputs:list',
+  /** (OutputPreviewInput) -> OutputPreview. Never rejects for a bad file. Scope read. */
+  outputsPreview: 'outputs:preview',
+  /** (OutputRef) -> '' or an error sentence (shell.openPath). Path re-checked every call. Desktop only. */
+  outputsOpen: 'outputs:open',
+  /** (OutputRef) -> '' or an error sentence (shell.showItemInFolder). Desktop only. */
+  outputsReveal: 'outputs:reveal',
+  /** (OutputRef) -> OutputSaveAsResult (main save dialog, copies the file). Desktop only. */
+  outputsSaveAs: 'outputs:saveAs',
+  /** (OutputRef) -> RunOutput[] afterwards; removes the index entry only. Scope configure. */
+  outputsForget: 'outputs:forget',
+  /** (OutputRef) -> RunOutput[] afterwards; removes the entry and a regular file under the project's outputs folder. Scope configure. */
+  outputsDelete: 'outputs:delete',
+  /** main -> renderer push carrying OutputsChangedEvent. */
+  outputsChanged: 'outputs:changed'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  outputs: {
+    list(projectId: string): Promise<RunOutput[]>
+    preview(input: OutputPreviewInput): Promise<OutputPreview>
+    /** '' when opened, else a plain sentence. */
+    open(ref: OutputRef): Promise<string>
+    /** '' when shown, else a plain sentence. */
+    reveal(ref: OutputRef): Promise<string>
+    saveAs(ref: OutputRef): Promise<OutputSaveAsResult>
+    /** Removes the index entry; the file stays. Resolves to the list afterwards. */
+    forget(ref: OutputRef): Promise<RunOutput[]>
+    /** Removes the entry and its file (only a regular file under `<project>/outputs/`). The renderer confirms first. */
+    delete(ref: OutputRef): Promise<RunOutput[]>
+  }
+  onOutputsChanged(cb: (event: OutputsChangedEvent) => void): () => void
 }
