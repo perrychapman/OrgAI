@@ -101,11 +101,10 @@ export function groupAppSettingChanges(changes: readonly AppSettingChange[]): Ap
   return [...groups.values()]
 }
 
-/** "Change 2 app settings: Theme, Canvas backdrop" (the folded card's line). */
-export function appSettingsSummary(changes: readonly AppSettingChange[], list: (items: readonly string[]) => string): string | undefined {
+/** "2 app settings · App settings" (the folded card's line: count and target; the title carries the list, the table the detail). */
+export function appSettingsSummary(changes: readonly AppSettingChange[]): string | undefined {
   if (changes.length === 0) return undefined
-  const noun = changes.length === 1 ? 'app setting' : 'app settings'
-  return `Change ${changes.length} ${noun}: ${list(changes.map((c) => c.label))}`
+  return `${changes.length} ${changes.length === 1 ? 'app setting' : 'app settings'} · App settings`
 }
 
 export interface ProjectSettingRow {
@@ -132,7 +131,7 @@ export function projectSettingRows(payload: SettingsProposalPayload, kind: Proje
   // main sends client only for engagements). Review M2: nothing the user approves may be hidden.
   if (payload.client !== undefined) add('client', 'Client or case', project?.client?.trim() ? showHidden(oneLine(project.client, 120)) : 'Not set', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared')
   if (payload.permissionMode) add('permissionMode', 'Permission mode', project && permissionModeWord(project.permissionMode), permissionModeWord(payload.permissionMode))
-  if (payload.maxBudgetUsd !== undefined) add('maxBudgetUsd', 'Spend cap per run', project && (project.maxBudgetUsd === undefined ? 'No cap' : dollars(project.maxBudgetUsd)), payload.maxBudgetUsd === null ? 'No cap' : dollars(payload.maxBudgetUsd))
+  if (payload.maxBudgetUsd !== undefined) add('maxBudgetUsd', 'Estimated-cost cap per run', project && (project.maxBudgetUsd === undefined ? 'No cap' : dollars(project.maxBudgetUsd)), payload.maxBudgetUsd === null ? 'No cap' : dollars(payload.maxBudgetUsd))
   if (payload.maxSubagentDepth !== undefined) add('maxSubagentDepth', 'Max subagent depth', project && (project.maxSubagentDepth === undefined ? 'Automatic' : String(project.maxSubagentDepth)), String(payload.maxSubagentDepth))
   if (payload.maxConcurrentSubagents !== undefined) {
     add('maxConcurrentSubagents', 'Max concurrent subagents', project && (project.maxConcurrentSubagents === undefined ? 'Automatic' : String(project.maxConcurrentSubagents)), String(payload.maxConcurrentSubagents))
@@ -144,9 +143,9 @@ export function projectSettingRows(payload: SettingsProposalPayload, kind: Proje
   return rows
 }
 
-/** "Change 3 settings: Spend cap per run, ..." for a target project settings proposal (brief counts as one). */
-export function projectSettingsSummary(rows: readonly ProjectSettingRow[], hasBrief: boolean, list: (items: readonly string[]) => string): string | undefined {
-  const names = [...rows.map((r) => r.label), ...(hasBrief ? ['Project brief'] : [])]
-  if (names.length === 0) return undefined
-  return `Change ${names.length} ${names.length === 1 ? 'setting' : 'settings'}: ${list(names)}`
+/** "1 setting · Notes API" for a target project settings proposal (brief counts as one). */
+export function projectSettingsSummary(rows: readonly ProjectSettingRow[], hasBrief: boolean, projectName: string): string | undefined {
+  const n = rows.length + (hasBrief ? 1 : 0)
+  if (n === 0) return undefined
+  return `${n} ${n === 1 ? 'setting' : 'settings'} · ${showHidden(oneLine(projectName, 60)) || 'a project'}`
 }

@@ -1718,3 +1718,4 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
 ## Architecture and conventions
 
 Read `.orgai/ARCHITECTURE.md` before changing code. It records the agreed stack, module layout, conventions and commands for this project. Keep it current when they change.
+- Self-help re-walk fix-up (renderer): the navigation banner adds "A change is waiting for you in the chat." and "Back to chat to decide" while the asking run has a card open, Tab from the landed heading enters the banner, Esc dismisses, section destinations focus the section heading; fold summaries read "1 app setting · App settings" / "1 setting · <project>"; `list_projects` folds to "Listed your OrgAI projects". Unit-tested; e2e/self-help.mjs checks the banner text, Tab and Esc.

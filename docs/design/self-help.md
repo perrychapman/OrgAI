@@ -89,3 +89,10 @@ Open: the `[mock:self-config]` / `[mock:self-config-project]` card path is writt
 in the build; the cards and transcript rows not looked at by eye; screen reader output; macOS. Not followed from the
 pre-walk: Approve is not made inert for more than 3 rows (rec 4, the team-files "read to the end" rule): the tables are
 short and the fold summary names the fields; the per-field reasons (rec 4) are one rationale (the contract has one).
+
+## Implementation notes: re-walk fix-up (ux-review-self-help.md)
+
+- M1: while the asking run has an open proposal the banner adds "A change is waiting for you in the chat." (`app-navigate-waiting`) and Back reads "Back to chat to decide" (primary); the plain sentence and label otherwise. Not announced separately (the banner is a region, not a live region).
+- M3: the banner stays above the heading in the DOM (it is shared by three views), so Tab from the heading the navigation landed on moves into the banner's first button (`navBannerAnchor`); Esc inside it dismisses. Focus on a section destination lands on the section's own heading (Appearance), not the pane title.
+- M2: the folded summary is count + target ("1 app setting · App settings", "1 setting · Notes API"); the table keeps the detail. M5: the cap row reads "Estimated-cost cap per run" (local string until `PROJECT_SETTING_FIELD_LABELS` is in the base). M4: `list_projects` folds to "Listed your OrgAI projects" with the result under Show output. L3: third chip is "How do I make new projects ask before anything risky?".
+- Skipped: Decline note initial focus (`ProposalCard.tsx`, not in this brief); opening Advanced on arrival after Approve.

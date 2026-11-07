@@ -112,7 +112,7 @@ export const CHAT_EXAMPLES_HINT = 'Ask how OrgAI works, where a setting is, or a
 export const CHAT_EXAMPLES: readonly { id: string; text: string }[] = [
   { id: 'theme', text: 'Where do I change the theme?' },
   { id: 'plan-guard', text: 'What does the plan guard do?' },
-  { id: 'permission-mode', text: 'Make new projects ask for everything risky' }
+  { id: 'permission-mode', text: 'How do I make new projects ask before anything risky?' }
 ]
 
 /** Button label of the ended-run replacement: "New chat" for Chat, else "New session". */
