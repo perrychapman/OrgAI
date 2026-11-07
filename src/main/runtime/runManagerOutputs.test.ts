@@ -242,6 +242,30 @@ describe('RuntimeContext.outputs: calls', () => {
     await m.stopAll()
   })
 
+  it('parallel calls cannot exceed OUTPUTS_RUN_MAX, and a failed call frees its slot', async () => {
+    const outputs = fakeService()
+    const inner = outputs.produce
+    outputs.produce = vi.fn(async (...a: Parameters<typeof inner>) => {
+      await new Promise((r) => setTimeout(r, 5))
+      if (a[1].title === 'bad') throw new Error('refused')
+      return inner(...a)
+    })
+    const { m, ctxs } = rig({ outputs })
+    await m.start({ project: makeProject({ id: 'p1', path: folder('par') }), prompt: 'go' })
+    const o = ctxs[0].outputs!
+    const results = await Promise.allSettled(Array.from({ length: OUTPUTS_RUN_MAX + 15 }, (_v, i) => o.produce({ kind: 'text', title: `t${i}`, content: 'x' }, {})))
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(OUTPUTS_RUN_MAX)
+    expect(outputs.calls).toHaveLength(OUTPUTS_RUN_MAX)
+    await m.stopAll()
+    const rig2 = rig({ outputs })
+    await rig2.m.start({ project: makeProject({ id: 'p2', path: folder('fail') }), prompt: 'go' })
+    const o2 = rig2.ctxs[0].outputs!
+    for (let i = 0; i < 5; i++) await expect(o2.produce({ kind: 'text', title: 'bad', content: 'x' }, {})).rejects.toThrow('refused')
+    const ok = await Promise.allSettled(Array.from({ length: OUTPUTS_RUN_MAX }, (_v, i) => o2.produce({ kind: 'text', title: `g${i}`, content: 'x' }, {})))
+    expect(ok.every((r) => r.status === 'fulfilled')).toBe(true)
+    await rig2.m.stopAll()
+  })
+
   it(`refuses past OUTPUTS_RUN_MAX (${OUTPUTS_RUN_MAX}) per run, warns once, and counts per run`, async () => {
     const outputs = fakeService()
     const { m, ctxs } = rig({ outputs })

@@ -4,7 +4,7 @@ import type { OutputKind, OutputPreview, OutputProduceInput, OutputRegisterInput
 import { OUTPUT_DESCRIPTION_MAX_CHARS, OUTPUT_KINDS, OUTPUT_TITLE_MAX_CHARS, outputKindForPath } from '@shared/types'
 import { hiddenCharProblem } from '../capabilities/sanitize'
 import type { OutputScope, OutputSource, OutputWriteResult, OutputsServiceApi } from './api'
-import { checkDeletablePath, checkRegisteredPath, relPathFor, resolveProducedTarget, writeProduced } from './paths'
+import { NOT_OPENABLE_MESSAGE, checkDeletablePath, checkRegisteredPath, isOpenablePath, relPathFor, resolveProducedTarget, writeProduced } from './paths'
 import { previewFile } from './preview'
 import { createOutputStore } from './store'
 import { renderProduced } from './writers'
@@ -80,6 +80,12 @@ export function createOutputsService(dataDir: string): OutputsServiceApi {
     return checkRegisteredPath(e.path, scope, dataDir).path
   }
 
+  function openablePath(scope: OutputScope, outputId: string): string {
+    const p = checkedPath(scope, outputId)
+    if (!isOpenablePath(p)) throw new Error(NOT_OPENABLE_MESSAGE)
+    return p
+  }
+
   return {
     async produce(scope: OutputScope, input: OutputProduceInput, source: OutputSource): Promise<OutputWriteResult> {
       checkScope(scope)
@@ -143,12 +149,16 @@ export function createOutputsService(dataDir: string): OutputsServiceApi {
       if (!input || typeof input !== 'object') throw new Error('The output request is not valid.')
       const title = cleanTitle(input.title)
       const description = cleanDescription(input.description)
-      const checked = checkRegisteredPath(input.path, scope, dataDir)
-      const kind: OutputKind = input.kind ?? outputKindForPath(checked.path)
+      const checked = checkRegisteredPath(input.path, scope, dataDir, { strictNames: true })
+      const inferred = outputKindForPath(checked.path)
+      const kind: OutputKind = input.kind ?? inferred
       if (!OUTPUT_KINDS.includes(kind)) throw new Error('That kind of output is not known.')
+      // The agent does not pick the kind: the real file's extension does (a .bat is never a "docx").
+      if (kind !== inferred) throw new Error(`That file's extension makes it ${inferred === 'other' ? 'an unrecognised file' : `a ${inferred} output`}, not ${kind}; leave the kind out or use ${inferred}.`)
       const now = Date.now()
       const existing = store.byPath(scope.projectId, checked.path)
       if (existing) {
+        if (existing.runId !== source.runId) throw new Error('That file is already listed as an output of another run.')
         const patch: Partial<RunOutput> = { title, kind, bytes: checked.bytes, updatedAt: now, relPath: checked.relPath }
         if (description !== undefined) patch.description = description
         const updated = store.update(scope.projectId, existing.id, patch)
@@ -189,6 +199,8 @@ export function createOutputsService(dataDir: string): OutputsServiceApi {
     },
 
     checkedPath,
+
+    openablePath,
 
     forget(projectId: string, outputId: string): RunOutput[] {
       if (typeof outputId !== 'string' || !store.remove(projectId, outputId)) throw new Error(NOT_LISTED)

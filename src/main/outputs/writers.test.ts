@@ -36,6 +36,41 @@ describe('mermaid', () => {
   })
 })
 
+describe('svg namespaces, loading attributes and CSS', () => {
+  const NS = 'xmlns="http://www.w3.org/2000/svg"'
+  it.each([
+    ['html element via prefix', `<svg ${NS} xmlns:h="http://www.w3.org/1999/xhtml"><h:div/></svg>`],
+    ['prefix bound elsewhere', `<svg ${NS} xmlns:s="http://evil/"><s:rect/></svg>`],
+    ['unbound prefix', `<svg ${NS}><x:rect/></svg>`],
+    ['default namespace rebound', `<svg ${NS}><g xmlns="http://www.w3.org/1999/xhtml"><rect/></g></svg>`],
+    ['default namespace emptied', `<svg ${NS}><g xmlns=""><rect/></g></svg>`],
+    ['root default namespace not svg', '<svg xmlns="http://www.w3.org/1999/xhtml"/>'],
+    ['unknown element', `<svg ${NS}><blink/></svg>`],
+    ['html in svg', `<svg ${NS}><div/></svg>`],
+    ['src', `<svg ${NS}><image src="x.png"/></svg>`],
+    ['srcset', `<svg ${NS}><g srcset="a 1x"/></svg>`],
+    ['action', `<svg ${NS}><g action="x"/></svg>`],
+    ['formaction', `<svg ${NS}><g formaction="x"/></svg>`],
+    ['data', `<svg ${NS}><g data="x"/></svg>`],
+    ['poster', `<svg ${NS}><g poster="x"/></svg>`],
+    ['background', `<svg ${NS}><g background="x"/></svg>`],
+    ['prefixed src', `<svg ${NS} xmlns:q="http://q/"><g q:src="x"/></svg>`],
+    ['image-set attr', `<svg ${NS}><rect style="fill:image-set(url(#a) 1x)"/></svg>`],
+    ['image-set style', `<svg ${NS}><style>a{background:IMAGE-SET("x" 1x)}</style></svg>`],
+    ['@import style', `<svg ${NS}><style>@import "x.css";</style></svg>`],
+    ['@import attr', `<svg ${NS}><rect style="@import 'x'"/></svg>`]
+  ])('refuses %s', (_n, svg) => {
+    expect(svgProblem(svg)).toBeTruthy()
+  })
+  it('still accepts data-* attributes, prefixed SVG elements, nested scope and filters', () => {
+    expect(svgProblem(`<svg ${NS}><g data-x="1"><filter id="f"><feGaussianBlur stdDeviation="2"/></filter></g></svg>`)).toBeNull()
+    expect(svgProblem('<s:svg xmlns:s="http://www.w3.org/2000/svg"><s:g><s:rect/></s:g></s:svg>')).toBeNull()
+    expect(svgProblem(`<svg ${NS}><g xmlns:s="http://www.w3.org/2000/svg"><s:rect/></g></svg>`)).toBeNull()
+    // a prefix bound inside one element is not in scope for its sibling
+    expect(svgProblem(`<svg ${NS}><g xmlns:s="http://www.w3.org/2000/svg"/><s:rect/></svg>`)).toBeTruthy()
+  })
+})
+
 describe('svg', () => {
   it('accepts a plain svg with fragment references', () => {
     expect(svgProblem(GOOD_SVG)).toBeNull()

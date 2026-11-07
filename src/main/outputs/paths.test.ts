@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { checkDeletablePath, checkFileNameSegments, checkRegisteredPath, resolveProducedTarget, slugFromTitle, withKindExtension, writeProduced } from './paths'
+import { OPENABLE_EXTENSIONS, checkDeletablePath, checkFileNameSegments, checkRegisteredPath, isOpenablePath, resolveProducedTarget, slugFromTitle, withKindExtension, writeProduced } from './paths'
 import type { PathScope } from './paths'
 
 let root: string
@@ -183,6 +183,47 @@ describe('registered path', () => {
     writeFileSync(join(project, '.git', 'config'), 'x')
     expect(() => checkRegisteredPath('.git/config', scope(), data)).toThrow(/\.git/)
     if (process.platform === 'win32') expect(() => checkRegisteredPath('REF/r.md', scope({ referenceDirectories: [join(project, 'ref')] }), data)).toThrow(/reference/)
+  })
+})
+
+describe('open allowlist, reserved names, streams', () => {
+  it.each([['a.docx', true], ['a.DOCX', true], ['a.Md', true], ['a.mmd', true], ['a.lnk', false], ['a.bat', false], ['a.BaT', false], ['a.exe', false], ['report.docx.bat', false], ['a.docx.', false], ['a.docx ', false], ['noext', false], ['a.docm', false], ['a.svg', true]])('isOpenablePath(%j) = %s', (f, ok) => {
+    expect(isOpenablePath(f)).toBe(ok)
+  })
+  it('lists exactly the document, image and text types', () => {
+    expect([...OPENABLE_EXTENSIONS].sort()).toEqual(['csv', 'docx', 'gif', 'jpeg', 'jpg', 'json', 'markdown', 'md', 'mmd', 'pdf', 'png', 'svg', 'txt', 'webp', 'xlsx'])
+  })
+  it.each(['COM¹', 'com².txt', 'LPT³.md', 'CONIN$', 'conout$.txt', 'a/Com1.md', 'a/.GIT/b.md', 'a/.Git'])('refuses produced name %j', (name) => {
+    expect(() => checkFileNameSegments(name)).toThrow()
+  })
+  it('refuses an NTFS alternate data stream on win32', () => {
+    if (process.platform !== 'win32') return
+    writeFileSync(join(project, 'a.txt'), 'x')
+    expect(() => checkRegisteredPath('a.txt:x.exe', scope(), data)).toThrow(/alternate data stream/)
+    expect(() => checkRegisteredPath(join(project, 'a.txt:hidden'), scope(), data)).toThrow(/alternate data stream/)
+  })
+  it('checks containment before existence: same sentence for a missing and an existing outside file', () => {
+    writeFileSync(join(root, 'o.md'), 'x')
+    const msg = (p: string): string => { try { checkRegisteredPath(p, scope(), data); return '' } catch (e) { return (e as Error).message } }
+    expect(msg(join(root, 'o.md'))).toBe(msg(join(root, 'missing.md')))
+    expect(msg(join(root, 'o.md'))).toMatch(/outside/)
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(elsewhere)
+    link(elsewhere, join(project, 'jump'))
+    expect(msg('jump/nope.md')).toMatch(/outside/)
+  })
+  it('strictNames refuses dot segments; the default does not (so a stored dot-named output still opens)', () => {
+    mkdirSync(join(project, '.claude'))
+    writeFileSync(join(project, '.claude', 's.json'), 'x')
+    writeFileSync(join(project, '.env'), 'x')
+    expect(() => checkRegisteredPath('.claude/s.json', scope(), data, { strictNames: true })).toThrow(/starts with a dot/)
+    expect(() => checkRegisteredPath('.env', scope(), data, { strictNames: true })).toThrow(/starts with a dot/)
+    expect(checkRegisteredPath('.env', scope(), data).bytes).toBe(1)
+  })
+  it('refuses a .GIT folder in any case', () => {
+    mkdirSync(join(project, '.GIT'))
+    writeFileSync(join(project, '.GIT', 'config'), 'x')
+    expect(() => checkRegisteredPath('.GIT/config', scope(), data)).toThrow(/\.git/)
   })
 })
 

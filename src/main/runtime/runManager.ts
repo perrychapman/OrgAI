@@ -2559,10 +2559,19 @@ export class RunManager {
         }
         throw new Error(`The output limit for this run (${OUTPUTS_RUN_MAX}) is reached; nothing was saved.`)
       }
-      const known = this.knowledgeSource(a, caller, roles())
-      const scope = outputScopeOf(project(), this.options.dataDir)
-      const { output, created } = await call(scope, { runId: a.summary.id, agentId: known.agentId, ...(known.role ? { role: known.role } : {}) })
+      // Reserve the slot before the await so parallel calls cannot pass the check together; release it on failure.
+      let known: ReturnType<RunManager['knowledgeSource']>
+      let output: RunOutput
+      let created: boolean
       a.outputsMade++
+      try {
+        known = this.knowledgeSource(a, caller, roles())
+        const scope = outputScopeOf(project(), this.options.dataDir)
+        ;({ output, created } = await call(scope, { runId: a.summary.id, agentId: known.agentId, ...(known.role ? { role: known.role } : {}) }))
+      } catch (e) {
+        a.outputsMade--
+        throw e
+      }
       a.emit({ type: 'output.created', runId: a.summary.id, output })
       this.knowledgeRow(a, known.agentId, row(output))
       try {

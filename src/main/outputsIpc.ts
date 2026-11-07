@@ -14,6 +14,7 @@ import type { OutputSaveAsResult, Project } from '@shared/types'
 import { outputArgs } from './host/args'
 import { log } from './log'
 import type { OutputScope, OutputsServiceApi } from './outputs/api'
+import { NOT_OPENABLE_MESSAGE, isOpenablePath } from './outputs/paths'
 import { outputScopeOf } from './runtime/runManager'
 
 export interface OutputsIpcDeps {
@@ -43,7 +44,12 @@ function checked(deps: OutputsIpcDeps, raw: unknown): { path: string; scope: Out
 export function registerOutputsIpc(deps: OutputsIpcDeps): void {
   ipcMain.handle(OUTPUTS_IPC.outputsOpen, async (_e, raw: unknown): Promise<string> => {
     try {
-      return await shell.openPath(checked(deps, raw).path)
+      const c = checked(deps, raw)
+      // Open only launches document / image / text types (paths.ts OPENABLE_EXTENSIONS), judged on the real file; the
+      // service's own check and this one both run, the latter right before the OS call.
+      const path = deps.outputs?.openablePath ? deps.outputs.openablePath(c.scope, c.outputId) : c.path
+      if (!isOpenablePath(path)) throw new Error(NOT_OPENABLE_MESSAGE)
+      return await shell.openPath(path)
     } catch (e) {
       log.warn('outputs:open refused:', messageOf(e))
       return messageOf(e)
