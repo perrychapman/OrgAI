@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { ConnectionId } from '@shared/types'
 import { WEEK_MS } from '../../lib/dashboard'
 import {
+  branchesWaiting,
+  continueLabel,
+  newestSummary,
+  tileChips,
+  tileRunCaption,
+  worktreeTargets,
   connectionProblems,
   costInWindow,
   filterProjects,
@@ -135,5 +141,38 @@ describe('connectionProblems', () => {
   })
   it('is empty while the list is loading', () => {
     expect(connectionProblems(null, new Set<ConnectionId>(['anthropic']), [])).toEqual([])
+  })
+})
+
+describe('tile signals', () => {
+  it('counts branches with commits ahead or uncommitted files only', () => {
+    expect(branchesWaiting([{ commitsAhead: 0, uncommittedFiles: 0 }, { commitsAhead: 1, uncommittedFiles: 0 }, { commitsAhead: 0, uncommittedFiles: 2 }])).toBe(2)
+    expect(branchesWaiting(null)).toBe(0)
+  })
+  it('lists worktree targets: code projects only', () => {
+    expect(worktreeTargets([{ id: 'a', kind: 'code' }, { id: 'b', kind: 'engagement' }, { id: 'c' }])).toEqual(['a', 'c'])
+  })
+  it('renders only non-zero chips, branches for code projects only', () => {
+    expect(tileChips({ projectName: 'P', code: true, branches: 0, suggestions: 0, untrusted: false })).toEqual([])
+    const all = tileChips({ projectName: 'Billing API', code: true, branches: 3, suggestions: 1, untrusted: true })
+    expect(all.map((c) => c.kind)).toEqual(['branches', 'suggestions', 'folder-trust'])
+    expect(all[0]).toEqual({ kind: 'branches', text: '3 branches waiting', name: '3 branches waiting in Billing API' })
+    expect(all[1].text).toBe('1 team suggestion')
+    expect(all[2].text).toBe('Folder settings to review')
+    expect(tileChips({ projectName: 'E', code: false, branches: 4, suggestions: 0, untrusted: false })).toEqual([])
+    expect(tileChips({ projectName: 'P', code: true, branches: 1, suggestions: 0, untrusted: false })[0].text).toBe('1 branch waiting')
+  })
+  it('picks the newest run, the first copy winning a tie in id order', () => {
+    expect(newestSummary([])).toBeUndefined()
+    expect(newestSummary([{ id: 'a', startedAt: 1 }, { id: 'b', startedAt: 3 }, { id: 'c', startedAt: 2 }])?.id).toBe('b')
+  })
+  it('cuts the Continue label at 32 characters', () => {
+    expect(continueLabel('Short')).toBe('Continue Short')
+    expect(continueLabel('x'.repeat(40))).toBe(`Continue ${'x'.repeat(31)}…`)
+  })
+  it('words the newest run caption', () => {
+    expect(tileRunCaption({ live: true, statusWord: 'Idle', activity: 'Waiting for your reply', now: 0 })).toBe('Idle · Waiting for your reply')
+    expect(tileRunCaption({ live: true, statusWord: 'Running', now: 0 })).toBe('Running')
+    expect(tileRunCaption({ live: false, statusWord: 'Finished', endedAt: 1, now: 2 * 3_600_000 })).toMatch(/^Finished · /)
   })
 })

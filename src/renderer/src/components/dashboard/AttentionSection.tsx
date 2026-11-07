@@ -17,6 +17,8 @@ export interface AttentionSectionProps<T> {
   empty?: string
   /** A control for the header (e.g. Mark all seen). */
   action?: ReactNode
+  /** Test id of the Show more button (default `${testId}-more`). */
+  moreTestId?: string
 }
 
 /**
@@ -24,7 +26,7 @@ export interface AttentionSectionProps<T> {
  * "Show N more" / "Show fewer" ghost button, and the focus rule of spec 7: when the focused row disappears, focus
  * moves to the row now at its place, else to the section heading (tabIndex -1).
  */
-export function AttentionSection<T>({ testId, title, count, items, cap, itemKey, renderItem, empty, action }: AttentionSectionProps<T>): ReactElement | null {
+export function AttentionSection<T>({ testId, title, count, items, cap, itemKey, renderItem, empty, action, moreTestId }: AttentionSectionProps<T>): ReactElement | null {
   const headingId = useId()
   const [expanded, setExpanded] = useState(false)
   const listRef = useRef<HTMLUListElement>(null)
@@ -78,7 +80,7 @@ export function AttentionSection<T>({ testId, title, count, items, cap, itemKey,
         </ul>
       )}
       {hidden > 0 && (
-        <Button variant="ghost" size="sm" onClick={() => setExpanded((v) => !v)} testId={`${testId}-more`}>
+        <Button variant="ghost" size="sm" onClick={() => setExpanded((v) => !v)} testId={moreTestId ?? `${testId}-more`}>
           {expanded ? 'Show fewer' : `Show ${hidden} more`}
         </Button>
       )}

@@ -1,9 +1,17 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useState } from 'react'
 import type { Project, RunSummary } from '@shared/types'
-import { isRunLive, useAppStore, type RunState } from '../../store/useAppStore'
+import { isRunLive, pendingDecisionCount, useAppStore, type RunState } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { projectKindOf } from '@shared/defaults'
+import { nodeActivity } from '../../lib/agentActivity'
+import { hasFolderTrustField } from '../../lib/folderTrust'
+import { openProjectSettings } from '../../lib/openProjectSettings'
+import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
+import { canContinue } from '../../lib/runChains'
+import { openFolderTrustReview } from '../FolderTrustNotice'
+import { projectQueue } from './projectQueue'
+import { useProjectSignals, type ProjectSignal } from './useProjectSignals'
 import { buildAttentionCtx, deleteProjectBody, projectAttentionOrder, removeConfirmLabel } from '../../lib/dashboard'
 import { useForgetEngagement } from './useForgetEngagement'
 import { combinedDecisionCount, teamDecisionsFor } from '../../lib/needsYou'
@@ -12,29 +20,51 @@ import type { TeamAttentionItem } from '../../lib/teamFiles'
 import { projectStatus } from '../../lib/projectStatus'
 import { runName } from '../../lib/runLabels'
 import { isTeamSurfaceRun } from '../../lib/runSurface'
-import { statusOfRun } from '../../lib/runStatus'
+import { statusOfRun, statusText } from '../../lib/runStatus'
 import { Input } from '../ui/Input'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { ProjectTile, type TileModel } from './ProjectTile'
-import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, SEARCH_AFTER } from './dashboardProjects'
+import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, SEARCH_AFTER, tileChips, tileRunCaption, type TileChipKind } from './dashboardProjects'
 
 /** The tile model of one project from its live runs and saved history. */
-function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[]): TileModel {
+function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[], signal: ProjectSignal | undefined): TileModel {
   const live = runs.filter(isRunLive)
+  // Live copies first: a live run wins over its saved record.
   const summaries = mergeSummaries(
     runs.map((r) => r.summary),
     [history]
   )
-  const newest = [...summaries].sort((a, b) => b.startedAt - a.startedAt)[0]
-  const status = newest ? statusOfRun(runs.find((r) => r.summary.id === newest.id) ?? { summary: newest }, project, false) : undefined
+  const newest = newestSummary(summaries)
+  const newestRun = newest ? runs.find((r) => r.summary.id === newest.id) : undefined
+  const status = newest ? statusOfRun(newestRun ? { ...newestRun } : { summary: newest }, project, newestRun ? pendingDecisionCount(newestRun) > 0 : false) : undefined
   const decisions = combinedDecisionCount(runs, teamDecisionsFor(teamItems, project.id))
   const st = projectStatus({ open: live.length, decisions, newest: newest && status ? { startedAt: newest.startedAt, status } : undefined, now })
+  const root = newestRun ? Object.values(newestRun.agents).find((a) => a.parentId === null) : undefined
+  const isLive = !!newestRun && isRunLive(newestRun)
+  const continuable = newest && !isLive && canContinue(summaries, newest.id) ? { id: newest.id, name: runName(newest) } : null
   return {
     project,
     decisions,
     live: live.length,
+    working: runs.some((r) => r.summary.status === 'running' || r.summary.status === 'starting'),
     statusLine: st.subtitle || 'No runs yet',
-    newestRun: newest ? runName(newest) : null,
+    newest:
+      newest && status
+        ? {
+            id: newest.id,
+            name: runName(newest),
+            word: status.word,
+            caption: tileRunCaption({ live: isLive, statusWord: statusText(status), activity: root ? nodeActivity(root, { isRoot: true }) : undefined, endedAt: newest.endedAt ?? newest.startedAt, now })
+          }
+        : null,
+    continuable,
+    chips: tileChips({
+      projectName: project.name,
+      code: projectKindOf(project) === 'code',
+      branches: signal?.branches ?? 0,
+      suggestions: signal?.suggestions ?? 0,
+      untrusted: hasFolderTrustField(project) && project.folderConfigTrust?.state === 'untrusted'
+    }),
     weekCost: costInWindow(summaries, now).cost
   }
 }
@@ -43,6 +73,20 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
 function focusHeading(): void {
   requestAnimationFrame(() =>
     requestAnimationFrame(() => {
+      const h = document.querySelector<HTMLElement>('main .topbar h1')
+      if (!h) return
+      h.tabIndex = -1
+      h.focus({ preventScroll: true })
+    })
+  )
+}
+
+/** After a menu or chip opened another view: the topbar heading takes focus unless something real (a composer) already has it. */
+function focusHeadingIfIdle(): void {
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active && active !== document.body && !active.closest('[data-testid=dashboard]')) return
       const h = document.querySelector<HTMLElement>('main .topbar h1')
       if (!h) return
       h.tabIndex = -1
@@ -68,6 +112,10 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   const history = useAppStore((s) => s.historyByProject)
   const openProject = useAppStore((s) => s.openProject)
   const setView = useAppStore((s) => s.setView)
+  const selectProject = useAppStore((s) => s.selectProject)
+  const openDraft = useAppStore((s) => s.openDraft)
+  const focusComposer = useAppStore((s) => s.focusComposer)
+  const continueFromHistory = useAppStore((s) => s.continueFromHistory)
   const removeProject = useAppStore((s) => s.removeProject)
   const { confirm, dialog } = useConfirm()
   const { forget, dialog: forgetDialog } = useForgetEngagement()
@@ -85,6 +133,8 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   const ordered = useMemo(() => projectAttentionOrder(projects, buildAttentionCtx(Object.values(runs), history, teamItems)), [projects, runs, history, teamItems])
   const searching = projects.length > SEARCH_AFTER
   const shown = useMemo(() => (searching ? filterProjects(ordered, query) : ordered), [ordered, query, searching])
+  // Branch counts and team suggestions for the chips: after first paint, three calls at a time, once per session.
+  const signals = useProjectSignals(ordered)
   const models = useMemo(() => {
     const byProject = new Map<string, RunState[]>()
     for (const r of Object.values(runs)) {
@@ -93,13 +143,33 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       if (list) list.push(r)
       else byProject.set(r.summary.projectId, [r])
     }
-    return shown.map((p) => tileModel(p, byProject.get(p.id) ?? [], history[p.id] ?? [], now, teamItems))
-  }, [shown, runs, history, now, teamItems])
+    return shown.map((p) => tileModel(p, byProject.get(p.id) ?? [], history[p.id] ?? [], now, teamItems, signals[p.id]))
+  }, [shown, runs, history, now, teamItems, signals])
 
   const open = (id: string): void => {
     void openProject(id)
     setView('run')
     focusHeading()
+  }
+
+  const newRun = (id: string): void => {
+    selectProject(id)
+    openDraft()
+    focusComposer()
+    focusHeadingIfIdle()
+  }
+
+  const continueRun = (id: string, runId: string): void => {
+    void continueFromHistory(runId, id).then(focusHeadingIfIdle)
+  }
+
+  const chip = (id: string, kind: TileChipKind): void => {
+    if (kind === 'branches') openProjectSettings(id, PROJECT_SETTINGS_SECTIONS.maintenance)
+    else if (kind === 'suggestions') {
+      selectProject(id)
+      setView('team')
+      focusHeadingIfIdle()
+    } else openFolderTrustReview(id)
   }
 
   const remove = async (model: TileModel): Promise<void> => {
@@ -144,6 +214,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       }
       done = `Deleted ${project.name}.`
     }
+    projectQueue.forget(project.id)
     setDeleteError(null)
     onAnnounce(done)
     focusLater(
@@ -175,7 +246,16 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       ) : (
         <ul className="dash-projects-grid" aria-labelledby={headingId}>
           {models.map((m) => (
-            <ProjectTile key={m.project.id} model={m} onOpen={() => open(m.project.id)} onDelete={() => void remove(m)} onAnnounce={onAnnounce} />
+            <ProjectTile
+              key={m.project.id}
+              model={m}
+              onOpen={() => open(m.project.id)}
+              onDelete={() => void remove(m)}
+              onNewRun={() => newRun(m.project.id)}
+              onContinue={(runId) => continueRun(m.project.id, runId)}
+              onChip={(kind) => chip(m.project.id, kind)}
+              onAnnounce={onAnnounce}
+            />
           ))}
         </ul>
       )}

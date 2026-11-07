@@ -1,35 +1,25 @@
 import type { ReactElement } from 'react'
 import { useMemo } from 'react'
-import { CircleAlert, FileDiff, GitMerge, ListChecks, MessageCircleQuestion, Plug, ShieldQuestion, Users, type LucideIcon } from 'lucide-react'
 import { isVirtualProjectId, type Project, type RunSummary } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
-import { useAppStore, type RunState } from '../../store/useAppStore'
+import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { Cost } from '../ui/Cost'
-import { Icon } from '../ui/Icon'
 import { AttentionSection } from './AttentionSection'
 import type { DashCaps } from './dashCaps'
+import { NeedsRow, needsItemKey, useNewDecisionAnnouncer, type NeedsItem } from './NeedsInline'
 import { useAllSummaries, useNow, useWaitingRuns } from './useDashboardData'
 import { runCostInput } from '../../lib/cost'
-import { NEEDS_CAP, PAUSED_CAP, SINCE_LAST_SEEN_CAP, errorFirstLine, pausedRuns, sinceLastSeen } from '../../lib/dashboard'
+import { errorFirstLine, pausedRuns, sinceLastSeen } from '../../lib/dashboard'
 import { locationLabel } from '../../lib/assistants'
-import { waitingItems, type WaitingItem, type WaitingKind } from '../../lib/needsYou'
+import { waitingItems } from '../../lib/needsYou'
+import { hideUserEnded, pausedCaption } from '../../lib/needsInline'
 import { openTeamFilesDecision, useTeamAttentionItems } from '../../lib/menuActions'
 import { canContinue, relativeTime } from '../../lib/runChains'
 import { runName } from '../../lib/runLabels'
 import { statusOfRun, statusText } from '../../lib/runStatus'
 
 export { useLastSeen } from './useLastSeen'
-
-const KIND_ICON: Record<WaitingKind, LucideIcon> = {
-  permission: ShieldQuestion,
-  question: MessageCircleQuestion,
-  rules: ListChecks,
-  proposal: FileDiff,
-  merge: GitMerge,
-  install: Plug,
-  plan: CircleAlert
-}
 
 /** The status dot: colour always sits beside the status word. */
 function Dot({ tone, live }: { tone: string; live?: boolean }): ReactElement {
@@ -46,26 +36,13 @@ function useProjectLookup(): (id: string) => Project | undefined {
   }, [projects, virtual])
 }
 
-interface RunNeedsItem extends WaitingItem {
-  projectId: string
-  run: RunState
-}
-/** A team-files approval: no run behind it (lib/teamFiles.ts). */
-interface TeamNeedsItem {
-  kind: 'team'
-  key: string
-  runId?: undefined
-  projectId: string
-  label: string
-  projectName: string
-}
-type NeedsItem = RunNeedsItem | TeamNeedsItem
-
-function NeedsYouSection(): ReactElement {
+function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: string) => void }): ReactElement {
   const waiting = useWaitingRuns()
   const projects = useAppStore((s) => s.projects)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   const teamItems = useTeamAttentionItems()
+  // Every project's history is in: the first data load is over, and the baseline of seen decisions is taken then.
+  const ready = useAppStore((s) => s.projects.length > 0 && s.projects.every((p) => p.id in s.historyByProject))
   const items = useMemo<NeedsItem[]>(
     () => [
       ...waiting.flatMap((run) =>
@@ -75,36 +52,31 @@ function NeedsYouSection(): ReactElement {
     ],
     [waiting, projects, teamItems]
   )
+  const announced = useMemo(
+    () => items.map((it) => ({ key: needsItemKey(it), project: it.kind === 'team' ? it.projectName : locationLabel(it.projectId, projects), label: it.label })),
+    [items, projects]
+  )
+  useNewDecisionAnnouncer(announced, ready, onAnnounce)
   return (
     <AttentionSection
       testId="dash-needs-you"
+      moreTestId="dash-needs-more"
       title="Needs you"
       count={items.length}
       items={items}
-      cap={NEEDS_CAP}
-      itemKey={(it) => (it.kind === 'team' ? it.key : `${it.runId}/${it.key}`)}
+      cap={cap}
+      itemKey={needsItemKey}
       empty="Nothing needs you."
-      renderItem={(it) => {
-        const rowKey = it.kind === 'team' ? it.key : `${it.runId}/${it.key}`
-        return (
-          <li key={rowKey} className="dash-row dash-row-needs" data-testid="dash-needs-row" data-kind={it.kind} data-row-key={rowKey}>
-            <button
-              type="button"
-              className="dash-row-main"
-              data-row-main=""
-              onClick={() => (it.kind === 'team' ? openTeamFilesDecision(it.projectId) : void jumpToDecision(it.projectId, it.runId, it.kind === 'plan' ? undefined : it.key))}
-            >
-              <span className="dash-row-icon">
-                <Icon icon={it.kind === 'team' ? Users : KIND_ICON[it.kind]} />
-              </span>
-              <span className="dash-row-text">
-                <span className="dash-row-line">{it.label}</span>
-                <span className="dash-row-cap">{it.kind === 'team' ? `${it.projectName} · Team` : `${locationLabel(it.projectId, projects)} · ${runName(it.run.summary)}`}</span>
-              </span>
-            </button>
-          </li>
-        )
-      }}
+      renderItem={(it) => (
+        <NeedsRow
+          key={needsItemKey(it)}
+          item={it}
+          projectName={it.kind === 'team' ? it.projectName : locationLabel(it.projectId, projects)}
+          runName={it.kind === 'team' ? undefined : runName(it.run.summary)}
+          onAnnounce={onAnnounce}
+          onOpen={() => (it.kind === 'team' ? openTeamFilesDecision(it.projectId) : void jumpToDecision(it.projectId, it.runId, it.kind === 'plan' ? undefined : it.key))}
+        />
+      )}
     />
   )
 }
@@ -124,12 +96,14 @@ function settleFocus(): void {
 }
 
 function SinceSection({
+  cap,
   lastSeen,
   clearedAt,
   onMarkAllSeen,
   now,
   summaries
 }: {
+  cap: number
   lastSeen: number
   clearedAt: number
   onMarkAllSeen: () => void
@@ -140,13 +114,16 @@ function SinceSection({
   const projectOf = useProjectLookup()
   const focusRun = useAppStore((s) => s.focusRun)
   const continueFromHistory = useAppStore((s) => s.continueFromHistory)
-  const result = useMemo(() => sinceLastSeen(summaries, lastSeen, now, { cap: Number.MAX_SAFE_INTEGER, clearedAt }), [summaries, lastSeen, clearedAt, now])
+  // L5: a run the user ended in this window's lifetime is left out, they just did it.
+  const items = useMemo(
+    () => hideUserEnded(sinceLastSeen(summaries, lastSeen, now, { cap: Number.MAX_SAFE_INTEGER, clearedAt }).items, performance.timeOrigin),
+    [summaries, lastSeen, clearedAt, now]
+  )
   const openRow = (projectId: string, runId: string): void => {
     void focusRun(projectId, runId).then(settleFocus)
   }
-  const items = result.items
 
-  const markAllSeen = (): void => {
+  const clear = (): void => {
     // The section disappears: hand focus to the next section's heading (else the previous one) first.
     const section = document.querySelector('[data-testid=dash-since]')
     const next = (section?.nextElementSibling ?? section?.previousElementSibling)?.querySelector<HTMLElement>('[data-section-heading]')
@@ -157,14 +134,14 @@ function SinceSection({
   return (
     <AttentionSection
       testId="dash-since"
-      title="Since you were last here"
+      title="Recently ended"
       count={items.length}
       items={items}
-      cap={SINCE_LAST_SEEN_CAP}
+      cap={cap}
       itemKey={(it) => it.run.id}
       action={
-        <Button variant="ghost" size="sm" testId="dash-since-clear" onClick={markAllSeen}>
-          Mark all seen
+        <Button variant="ghost" size="sm" testId="dash-since-clear" ariaLabel="Clear recently ended runs" onClick={clear}>
+          Clear
         </Button>
       }
       renderItem={(it) => {
@@ -187,7 +164,7 @@ function SinceSection({
                   <span className="dash-clip">
                     {locationLabel(s.projectId, projects)} · {relativeTime(it.endedAt, now)}
                   </span>
-                  <Cost value={runCostInput(s)} hideEmpty className="dash-num" />
+                  <Cost value={runCostInput(s)} hideEmpty compact className="dash-num" />
                 </span>
                 {error && <span className="dash-row-cap dash-row-detail">{error}</span>}
                 {closedWaiting && <span className="dash-row-cap dash-row-detail">Was waiting on you when OrgAI closed.</span>}
@@ -207,14 +184,7 @@ function SinceSection({
   )
 }
 
-function pausedCaption(s: RunSummary): string {
-  if (s.autoResume && s.pausedUntil) {
-    return `resumes at ${new Date(s.pausedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-  }
-  return 'waits for you to continue'
-}
-
-function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement | null {
+function PausedSection({ cap, summaries }: { cap: number; summaries: RunSummary[] }): ReactElement | null {
   const projects = useAppStore((s) => s.projects)
   const projectOf = useProjectLookup()
   const focusRun = useAppStore((s) => s.focusRun)
@@ -226,7 +196,7 @@ function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement
       title="Paused"
       count={paused.length}
       items={paused}
-      cap={PAUSED_CAP}
+      cap={cap}
       itemKey={(s) => s.id}
       renderItem={(s) => (
         <li key={s.id} className="dash-row dash-row-paused" data-testid="dash-paused-row" data-row-key={s.id} data-has-action="true">
@@ -257,19 +227,19 @@ function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement
 }
 
 /** Needs you (docs/design/dashboard-2.md section 5), its own grid area. */
-export function NeedsYouRegion(_props: { caps: DashCaps; onAnnounce: (text: string) => void }): ReactElement {
-  return <NeedsYouSection />
+export function NeedsYouRegion({ caps, onAnnounce }: { caps: DashCaps; onAnnounce: (text: string) => void }): ReactElement {
+  return <NeedsYouSection cap={caps.needs} onAnnounce={onAnnounce} />
 }
 
 /** Paused (section 9.1), its own grid area; renders nothing without paused runs. */
-export function PausedRegion(_props: { caps: DashCaps }): ReactElement | null {
+export function PausedRegion({ caps }: { caps: DashCaps }): ReactElement | null {
   const summaries = useAllSummaries()
-  return <PausedSection summaries={summaries} />
+  return <PausedSection cap={caps.paused} summaries={summaries} />
 }
 
 /** Recently ended (section 9.2), its own grid area; renders nothing when empty. */
-export function EndedRegion({ lastSeen, clearedAt, onMarkAllSeen }: { caps: DashCaps; lastSeen: number; clearedAt: number; onMarkAllSeen: () => void }): ReactElement | null {
+export function EndedRegion({ caps, lastSeen, clearedAt, onMarkAllSeen }: { caps: DashCaps; lastSeen: number; clearedAt: number; onMarkAllSeen: () => void }): ReactElement | null {
   const now = useNow()
   const summaries = useAllSummaries()
-  return <SinceSection lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={onMarkAllSeen} now={now} summaries={summaries} />
+  return <SinceSection cap={caps.ended} lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={onMarkAllSeen} now={now} summaries={summaries} />
 }

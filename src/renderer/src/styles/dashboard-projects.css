@@ -1,4 +1,4 @@
-/* Dashboard: project tiles, fact cards, the New project dialog form and the first-launch choice.
+/* Dashboard: project tiles, the New project dialog form and the first-launch choice.
    Region placement (.dashboard, .dashboard-grid) lives in dashboard.css. Tokens only. */
 
 /* The notice after forgetting an engagement spans the grid above the hero. */
@@ -41,8 +41,13 @@
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: var(--space-4);
+}
+@container dash (min-width: 1280px) {
+  .dash-projects-grid {
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  }
 }
 
 /* ---------- Project tile ---------- */
@@ -118,18 +123,25 @@
   z-index: 1;
 }
 
+/* Dot and text on one grid row: a wrapped text sits beside the dot, never under it (walk-2 L2). */
 .project-tile-status {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
   margin: 0;
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
 }
+.project-tile-status > .badge {
+  grid-column: 2;
+  justify-self: start;
+}
 .project-tile-dot {
   flex: none;
+  margin-top: 6px;
   width: 8px;
   height: 8px;
   border-radius: var(--radius-full);
@@ -151,9 +163,7 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   box-shadow: none;
 }
 
-.project-tile-folder,
-.project-tile-client,
-.project-tile-run {
+.project-tile-client {
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -162,23 +172,89 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
 }
-.project-tile-folder {
-  font-family: var(--font-mono);
-}
+/* The newest run: its name, then its status and activity or end time. */
 .project-tile-run {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  margin-top: var(--space-1);
+}
+.project-tile-run-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-primary);
+}
+.project-tile-run-cap {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
   color: var(--text-secondary);
+}
+/* Chips sit above the stretched Open cover, like More. */
+.tile-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+.tile-chip {
+  all: unset;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  cursor: pointer;
+}
+.tile-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.tile-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .project-tile-foot {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: var(--space-2);
   margin: var(--space-1) 0 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+/* The folder name is a caption in the sans face; the full path is its title. */
+.project-tile-folder {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-tile-cost {
+  flex: none;
   font-family: var(--font-mono);
   font-size: var(--text-mono);
-  line-height: var(--text-mono-lh);
   color: var(--text-secondary);
 }
 .project-tile-cost-unit {
+  font-family: var(--font-sans, inherit);
+  font-size: var(--text-caption);
   color: var(--text-tertiary);
 }
 .project-tile-error {
@@ -221,123 +297,6 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   margin: var(--space-1) 0;
   border: 0;
   border-top: 1px solid var(--border-subtle);
-}
-
-/* ---------- Fact cards ---------- */
-
-.dash-facts {
-  container: dash-facts / inline-size;
-  min-width: 0;
-}
-.dash-facts-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
-}
-/* A card needs about 240 px for the "Connection settings" link and a usage bar: two across from 500 px, three from 780. */
-@container dash-facts (min-width: 500px) {
-  .dash-facts-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-@container dash-facts (min-width: 780px) {
-  .dash-facts-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-.dash-fact {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-3) var(--space-4);
-  background: var(--surface-1);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--elev-1);
-}
-.dash-fact h2 {
-  margin: 0;
-  font-size: var(--text-title-sm);
-  line-height: var(--text-title-sm-lh);
-  font-weight: var(--weight-semibold);
-}
-.dash-fact-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.dash-fact-note,
-.dash-fact-foot,
-.dash-fact-line {
-  margin: 0;
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
-}
-.dash-fact-foot {
-  color: var(--text-tertiary);
-}
-.dash-fact-link {
-  align-self: flex-start;
-  margin-top: auto;
-  max-width: 100%;
-  white-space: normal;
-  text-align: start;
-}
-
-.dash-usage-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-1);
-}
-.dash-usage-row .usage-mini {
-  flex: none;
-  max-width: none;
-  width: 100%;
-}
-.dash-usage-name {
-  font-size: var(--text-body);
-  color: var(--text-primary);
-}
-
-.dash-cost-figure {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--text-title-lg);
-  line-height: var(--text-title-lg-lh);
-  color: var(--text-primary);
-}
-.dash-cost-row {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
-}
-.dash-cost-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dash-conn-default {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin: 0;
-  font-size: var(--text-body);
-}
-.dash-conn-problem {
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--danger-text, var(--danger));
 }
 
 /* ---------- New project form inside the dialog or a page panel ---------- */
