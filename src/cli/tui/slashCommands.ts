@@ -54,16 +54,47 @@ function stoppable(s: TuiState): boolean {
 
 const canStart = (s: TuiState): boolean => !s.readOnlyReason && s.project !== undefined
 
-/** Keys (generated from KEYMAP, so the footer hints, `?` and this text cannot drift), then the commands. */
-export const HELP_TEXT = [...helpKeyLines(), '', 'Commands'].join('\n')
+const readOnlyText = (s: TuiState): string => `Read-only: ${cleanLine(s.readOnlyReason, 120)}`
 
-function helpText(): string {
-  const lines = SLASH_COMMANDS.map((c) => {
+function startReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  return s.project ? undefined : 'Open a project folder first.'
+}
+
+function interruptReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  const run = activeSummary(s)
+  if (!run) return 'No run is followed. Start or follow one first.'
+  return 'This run is not working right now.'
+}
+
+function stopReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  const run = activeSummary(s)
+  if (!run) return 'No run is followed. Start or follow one first.'
+  return 'This session already ended.'
+}
+
+const needsRunReason = (): string => 'Follow a run first (/runs, or start one with /new).'
+
+function retroReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  const run = activeSummary(s)
+  if (!run) return 'Follow an ended work run first (/runs).'
+  if (run.status !== 'finished' && run.status !== 'error') return 'The run has not ended yet. The retrospective reviews an ended run.'
+  return 'Only ended team runs of a project have a retrospective, not chats or assistant runs.'
+}
+
+function commandLines(): string[] {
+  return SLASH_COMMANDS.map((c) => {
     const head = `/${c.name}${c.args ? ` ${c.args}` : ''}`
     const alias = c.aliases?.length ? ` (also ${c.aliases.map((a) => `/${a}`).join(', ')})` : ''
     return `  ${head.padEnd(22)}${c.summary}${alias}`
   })
-  return `${HELP_TEXT}\n${lines.join('\n')}`
+}
+
+function helpText(): string {
+  return HELP_TEXT
 }
 
 /** The table /runs shows: R# tag, status word, title; newest last. */
@@ -116,6 +147,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     args: '[prompt]',
     summary: 'Start a new team run',
     available: canStart,
+    unavailableReason: startReason,
     run: (ctx, args) =>
       guarded(ctx, () => {
         const prompt = cleanText(args)
@@ -127,6 +159,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     args: '[prompt]',
     summary: 'Ask one assistant (no team)',
     available: canStart,
+    unavailableReason: startReason,
     run: (ctx, args) =>
       guarded(ctx, () => {
         const prompt = cleanText(args)
@@ -165,6 +198,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     aliases: ['int'],
     summary: 'Interrupt the running turn',
     available: interruptible,
+    unavailableReason: interruptReason,
     run: (ctx) => guarded(ctx, () => ctx.session.interrupt())
   },
   {
@@ -172,6 +206,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     aliases: ['end'],
     summary: 'End this session (the run stops)',
     available: stoppable,
+    unavailableReason: stopReason,
     run: (ctx) =>
       guarded(ctx, async () => {
         if (await ctx.confirm('End this session?')) await ctx.session.stop()
@@ -215,6 +250,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     args: '<name>',
     summary: "Open an agent's inspector (facts, now, worktree, its own transcript)",
     available: (s) => s.activeRunId !== undefined,
+    unavailableReason: needsRunReason,
     run: (ctx, args) =>
       guarded(ctx, () => {
         if (ctx.openAgent) ctx.openAgent(cleanLine(args, 140))
@@ -226,6 +262,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     aliases: ['cost'],
     summary: 'Tokens, time and cost by agent and by role (whole conversation)',
     available: (s) => s.activeRunId !== undefined,
+    unavailableReason: needsRunReason,
     run: (ctx) => guarded(ctx, () => ctx.openText('Usage', usageText(ctx.state())))
   },
   {
@@ -236,6 +273,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       const run = s.activeRunId ? s.runs[s.activeRunId] : undefined
       return !s.readOnlyReason && !!run && offersRetro(run.summary)
     },
+    unavailableReason: retroReason,
     run: (ctx) =>
       guarded(ctx, async () => {
         if (ctx.startRetro) await ctx.startRetro()
@@ -285,6 +323,9 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   }
 ]
 
+/** /help: the commands first (what most people look for), then the keys (generated from KEYMAP, so hints, `?` and this cannot drift). */
+export const HELP_TEXT = ['Commands (type / in the composer)', ...commandLines(), '', ...helpKeyLines()].join('\n')
+
 /** `/name args` -> { name (lowercase), args (trimmed) }; null when the line is not a slash command. */
 export function parseSlash(line: string): { name: string; args: string } | null {
   if (typeof line !== 'string') return null
@@ -305,10 +346,18 @@ export function matchSlash(query: string, s: TuiState): SlashCommand[] {
 
 /** matchSlash over any command list (the palette's `commands`). */
 export function matchCommands(commands: readonly SlashCommand[], query: string, s: TuiState): SlashCommand[] {
+  return rankCommands(commands, query, s, true)
+}
+
+/** With an empty query /help and /new lead (issue #30 L6); the rest stay alphabetical. */
+const LEADING = ['help', 'new']
+
+function rankCommands(commands: readonly SlashCommand[], query: string, s: TuiState, available: boolean): SlashCommand[] {
   const q = (query ?? '').trim().replace(/^\//, '').split(/\s+/)[0].toLowerCase()
   const ranked: { cmd: SlashCommand; rank: number }[] = []
   for (const cmd of commands) {
-    if (cmd.available && !cmd.available(s)) continue
+    const ok = !cmd.available || cmd.available(s)
+    if (ok !== available) continue
     const aliases = cmd.aliases ?? []
     let rank = -1
     if (cmd.name === q) rank = 0
@@ -317,7 +366,12 @@ export function matchCommands(commands: readonly SlashCommand[], query: string, 
     else if (aliases.some((a) => a.startsWith(q))) rank = 3
     if (rank >= 0) ranked.push({ cmd, rank })
   }
-  ranked.sort((a, b) => a.rank - b.rank || a.cmd.name.localeCompare(b.cmd.name))
+  const lead = (c: SlashCommand): number => {
+    if (q !== '') return 0
+    const at = LEADING.indexOf(c.name)
+    return at < 0 ? LEADING.length : at
+  }
+  ranked.sort((a, b) => a.rank - b.rank || lead(a.cmd) - lead(b.cmd) || a.cmd.name.localeCompare(b.cmd.name))
   return ranked.map((r) => r.cmd)
 }
 
@@ -325,4 +379,24 @@ export function matchCommands(commands: readonly SlashCommand[], query: string, 
 export function findSlash(name: string, s: TuiState): SlashCommand | undefined {
   const n = name.toLowerCase()
   return matchSlash(n, s).find((c) => c.name === n || (c.aliases ?? []).includes(n))
+}
+
+/**
+ * The best unavailable command a query names (exact name or alias, else the first prefix match) with the reason it
+ * cannot run now. Only meaningful when no available command matches (issue #29 M6).
+ */
+export function unavailableFor(commands: readonly SlashCommand[], query: string, s: TuiState): { cmd: SlashCommand; reason: string } | undefined {
+  const cmd = rankCommands(commands, query, s, false)[0]
+  if (!cmd) return undefined
+  return { cmd, reason: cleanLine(cmd.unavailableReason?.(s) ?? 'Not available right now.', 160) }
+}
+
+/** "/retro: <reason>" for a typed line that names an unavailable command (the findSlash path), else undefined. */
+export function unavailableMessage(name: string, s: TuiState, commands: readonly SlashCommand[] = SLASH_COMMANDS): string | undefined {
+  if (matchCommands(commands, name, s).some((c) => c.name === name.toLowerCase() || (c.aliases ?? []).includes(name.toLowerCase()))) return undefined
+  const hit = unavailableFor(commands, name, s)
+  if (!hit) return undefined
+  const n = name.toLowerCase()
+  if (hit.cmd.name !== n && !(hit.cmd.aliases ?? []).includes(n)) return undefined
+  return `/${hit.cmd.name}: ${hit.reason}`
 }

@@ -33,6 +33,15 @@ describe('runPickLines (L2)', () => {
   })
 })
 
+describe('runPickRows waiting ids (#29 M4)', () => {
+  it('a run with an open card says Needs you, the bar word; others keep their own', () => {
+    const runs = [summary('a', { status: 'idle', startedAt: 1 }), summary('b', { status: 'idle', startedAt: 2 })]
+    const rows = runPickRows(runs, undefined, new Set(['b']))
+    expect(rows.map((r) => r.status)).toEqual(['Idle', 'Needs you'])
+    expect(runPickRows(runs).map((r) => r.status)).toEqual(['Idle', 'Idle'])
+  })
+})
+
 describe('cleanLine (L3)', () => {
   it('never splits a surrogate pair when it cuts', () => {
     const out = cleanLine('🚀'.repeat(10), 5)

@@ -8,7 +8,7 @@ import { useState } from 'react'
 import type { ProjectPathCheck } from '../../shared/types'
 import { useFocusHandler, useTuiEnv } from './context'
 import { sanitizeTty } from './sanitizeTty'
-import { toneColor } from './theme'
+import { styleFor, type Seg } from './panes/lines'
 import type { AgentImportSource, InputEvent } from './types'
 
 export type OnboardingChoice =
@@ -18,6 +18,10 @@ export type OnboardingChoice =
   | { kind: 'import'; sources: AgentImportSource[] }
 
 export const QUICK_NOTE = 'No .orgai project files added; read-only unless you enable edits'
+/** What "Architect" means (issue #30 L8). */
+export const ARCHITECT_NOTE = 'The Architect is the built-in setup assistant: it interviews you and proposes a team. It uses tokens.'
+export const LEAVE_NOTE = 'Press a key to choose. Esc or q leaves without creating a project.'
+export const LEAVE_DUMB = 'Type a choice, then Enter. Esc or q leaves without creating a project.'
 
 /** The import line's count and the sources it imports (deduplicated, in scan order). */
 export function importSummary(check: ProjectPathCheck | undefined): { count: number; sources: AgentImportSource[]; labels: string[] } {
@@ -39,6 +43,7 @@ export function Onboarding(props: {
   const env = useTuiEnv()
   const [allowEdits, setAllowEdits] = useState(false)
   const [pending, setPending] = useState<Key | undefined>(undefined)
+  const [rejected, setRejected] = useState<string | undefined>(undefined)
   const imp = importSummary(props.check)
   const canImport = imp.sources.length > 0
 
@@ -66,54 +71,54 @@ export function Onboarding(props: {
       return true
     }
     if (ch === 'e') {
+      setRejected(undefined)
       setAllowEdits((v) => !v)
       return true
     }
     if (ch === '1' || ch === '2' || ch === '3' || (ch === 'i' && canImport)) {
+      setRejected(undefined)
       if (env.dumbTerminal) setPending(ch)
       else choose(ch)
       return true
     }
+    // A key that is not a choice: say which ones are (issue #30 L2).
+    setRejected(sanitizeTty(e.ch).slice(0, 8))
     return true
   })
 
-  const dim = toneColor('dim', env)
-  const accent = toneColor('accent', env)
   const mark = (k: Key): string => (pending === k ? '>' : ' ')
   const folder = sanitizeTty(props.folder)
+  const keys = `${canImport ? '1, 2, 3, i' : '1, 2 or 3'}, e (edits), Esc or q (leave)`
+  const line = (key: string, segs: Seg[]) => (
+    <Text key={key}>
+      {segs.map((s, i) => (
+        <Text key={i} {...styleFor(s, env)}>
+          {s.text}
+        </Text>
+      ))}
+    </Text>
+  )
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Text bold>This folder is not an OrgAI project yet.</Text>
-      <Text color={dim}>{folder}</Text>
-      <Text> </Text>
-      <Text>
-        {mark('1')}
-        <Text color={accent}>[1]</Text> Quick run in this folder
-      </Text>
-      <Text color={dim}>
-        {'      '}
-        {QUICK_NOTE}
-      </Text>
-      <Text color={dim}>
-        {'      '}[e] Edits: {allowEdits ? 'on (each edit still asks)' : 'off'}
-      </Text>
-      <Text>
-        {mark('2')}
-        <Text color={accent}>[2]</Text> Set up project with the Architect
-      </Text>
-      <Text>
-        {mark('3')}
-        <Text color={accent}>[3]</Text> Create project with default team
-      </Text>
-      {canImport ? (
-        <Text>
-          {mark('i')}
-          <Text color={accent}>[i]</Text> Import {imp.count} detected agent definition{imp.count === 1 ? '' : 's'}
-          {imp.labels.length ? ` (${imp.labels.join(', ')})` : ''}
-        </Text>
-      ) : null}
-      <Text> </Text>
-      <Text color={dim}>{env.dumbTerminal ? 'Type a choice, then Enter. Esc or q cancels.' : 'Press a key to choose. Esc or q cancels.'}</Text>
+      {line('t', [{ text: 'This folder is not an OrgAI project yet.', bold: true }])}
+      {line('f', [{ text: folder, tone: 'dim' }])}
+      {line('b0', [{ text: ' ' }])}
+      {line('1', [{ text: mark('1') }, { text: '[1]', tone: 'accent' }, { text: ' Quick run in this folder' }])}
+      {line('1n', [{ text: `      ${QUICK_NOTE}`, tone: 'dim' }])}
+      {line('1e', [{ text: `      [e] Edits: ${allowEdits ? 'on (each edit still asks)' : 'off'}`, tone: 'dim' }])}
+      {line('2', [{ text: mark('2') }, { text: '[2]', tone: 'accent' }, { text: ' Set up project with the Architect' }])}
+      {line('2n', [{ text: `      ${ARCHITECT_NOTE}`, tone: 'dim' }])}
+      {line('3', [{ text: mark('3') }, { text: '[3]', tone: 'accent' }, { text: ' Create project with default team' }])}
+      {canImport
+        ? line('i', [
+            { text: mark('i') },
+            { text: '[i]', tone: 'accent' },
+            { text: ` Import ${imp.count} detected agent definition${imp.count === 1 ? '' : 's'}${imp.labels.length ? ` (${imp.labels.join(', ')})` : ''}` }
+          ])
+        : null}
+      {line('b1', [{ text: ' ' }])}
+      {line('h', [{ text: env.dumbTerminal ? LEAVE_DUMB : LEAVE_NOTE, tone: 'dim' }])}
+      {rejected !== undefined ? line('r', [{ text: `"${rejected}" is not a choice. Keys: ${keys}.`, tone: 'warn' }]) : null}
     </Box>
   )
 }

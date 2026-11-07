@@ -5,7 +5,8 @@
  */
 import type { RunSummary } from '../../shared/types'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
-import { statusWordOfSummary } from '../render'
+import { statusText } from '../../shared/view/runStatus'
+import { statusViewOf, statusWordOfSummary } from '../render'
 import { offersRetro } from './selectors'
 import { cleanLine } from './slashCommands'
 import { textWidth, truncateEnd } from './panes/text'
@@ -21,7 +22,7 @@ export interface RunPickRow {
 }
 
 /** `waiting`: ids of runs with an open decision card (their row says Needs you; issue #29 M4). */
-export function runPickRows(runs: readonly RunSummary[], projectId?: string, _waiting?: ReadonlySet<string>): RunPickRow[] {
+export function runPickRows(runs: readonly RunSummary[], projectId?: string, waiting?: ReadonlySet<string>): RunPickRow[] {
   const own = projectId ? runs.filter((r) => r.projectId === projectId) : [...runs]
   const idx = runIndexMap(own)
   return [...own]
@@ -29,7 +30,8 @@ export function runPickRows(runs: readonly RunSummary[], projectId?: string, _wa
     .map((r) => ({
       id: r.id,
       tag: runTag(idx.get(r.id)),
-      status: cleanLine(statusWordOfSummary(r), 40),
+      // The same path the status bar takes (statusViewOf with the waiting flag), so the two never disagree.
+      status: cleanLine(waiting?.has(r.id) ? statusText(statusViewOf({ summary: r }, true)) : statusWordOfSummary(r), 40),
       title: cleanLine(runName(r), 80),
       summary: r,
       retro: offersRetro(r)

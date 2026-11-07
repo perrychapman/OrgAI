@@ -4,11 +4,12 @@
  * arguments, Esc (or Ctrl+C) closes. Input arrives through the InputBus ('palette'), never Ink's useInput.
  */
 import { Box, Text } from 'ink'
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useFocusHandler, useTuiEnv } from './context'
-import { cleanLine, matchCommands, parseSlash } from './slashCommands'
+import { cleanLine, matchCommands, parseSlash, unavailableFor } from './slashCommands'
 import { sanitizeTty } from './sanitizeTty'
-import { asciiOnly, toneColor } from './theme'
+import { cutSegs, styleFor, type Seg } from './panes/lines'
+import { asciiOnly } from './theme'
 import type { InputEvent, SlashCommand, SlashPaletteProps, TuiState } from './types'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
@@ -110,42 +111,55 @@ export function SlashPalette(props: SlashPaletteProps) {
   )
 
   const matches = useMemo(() => matchCommands(props.commands, st.query, props.state), [props.commands, props.state, st.query])
+  const unavailable = useMemo(
+    () => (matches.length === 0 ? unavailableFor(props.commands, st.query, props.state) : undefined),
+    [matches.length, props.commands, props.state, st.query]
+  )
+  const width = Math.max(0, Math.floor(props.width))
   const listRows = Math.max(1, props.height - 1)
+  // When more commands match than rows, the last row says how many are not shown.
+  const overflow = matches.length > listRows
+  const cap = overflow ? Math.max(1, listRows - 1) : listRows
   const sel = Math.min(st.selected, Math.max(0, matches.length - 1))
-  const first = Math.max(0, Math.min(sel - listRows + 1, matches.length - listRows))
-  const shown = matches.slice(first, first + listRows)
-  const accent = toneColor('accent', env)
-  const dim = toneColor('dim', env)
+  const first = Math.max(0, Math.min(sel - cap + 1, matches.length - cap))
+  const shown = matches.slice(first, first + cap)
   const marker = ascii ? '>' : '›'
+  const row = (key: string, segs: Seg[]) => (
+    <Text key={key} wrap="truncate-end">
+      {cutSegs(segs, width, env, true).map((s, i) => (
+        <Text key={i} {...styleFor(s, env)}>
+          {s.text}
+        </Text>
+      ))}
+    </Text>
+  )
+
+  // The cursor: an inverse cell with colour, an underscore without (no SGR attribute is ever set with colour off).
+  const cursor: Seg[] = props.focused ? (env.color ? [{ text: ' ', inverse: true }] : [{ text: '_' }]) : []
+  const rows: ReactNode[] = [row('query', [{ text: st.query, tone: 'accent' }, ...cursor])]
+  if (matches.length === 0) {
+    rows.push(
+      unavailable
+        ? row('unavailable', [{ text: `/${cleanLine(unavailable.cmd.name, 32)}: ${unavailable.reason}`, tone: 'warn' }])
+        : row('none', [{ text: 'No matching command. Esc closes.', dim: true }])
+    )
+  } else {
+    shown.forEach((cmd, i) => {
+      const isSel = first + i === sel
+      const head = `/${cleanLine(cmd.name, 32)}${cmd.args ? ` ${cleanLine(cmd.args, 40)}` : ''}`
+      rows.push(
+        row(cmd.name, [
+          { text: `${isSel ? marker : ' '} ${head.padEnd(20)} `, inverse: isSel },
+          { text: cleanLine(cmd.summary, 120), dim: !isSel, inverse: isSel }
+        ])
+      )
+    })
+    if (overflow) rows.push(row('more', [{ text: `${matches.length - shown.length} more · type to filter`.replace('·', ascii ? '-' : '·'), dim: true }]))
+  }
 
   return (
-    <Box flexDirection="column" width={props.width}>
-      <Box>
-        <Text color={accent} wrap="truncate-end">
-          {st.query}
-        </Text>
-        {props.focused ? <Text inverse> </Text> : null}
-      </Box>
-      {matches.length === 0 ? (
-        <Text dimColor color={dim}>
-          No matching command. Esc closes.
-        </Text>
-      ) : (
-        shown.map((cmd, i) => {
-          const isSel = first + i === sel
-          const head = `/${cleanLine(cmd.name, 32)}${cmd.args ? ` ${cleanLine(cmd.args, 40)}` : ''}`
-          return (
-            <Box key={cmd.name}>
-              <Text inverse={isSel} wrap="truncate-end">
-                {`${isSel ? marker : ' '} ${head.padEnd(20)} `}
-              </Text>
-              <Text dimColor color={dim} wrap="truncate-end">
-                {cleanLine(cmd.summary, 120)}
-              </Text>
-            </Box>
-          )
-        })
-      )}
+    <Box flexDirection="column" width={width}>
+      {rows}
     </Box>
   )
 }
