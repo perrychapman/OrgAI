@@ -18,6 +18,10 @@ describe('proposalNextFor', () => {
   it('has no link for other kinds', () => {
     expect(proposalNextFor({ id: 'p', kind: 'settings', title: 't', payload: {} } as unknown as Proposal, 'a')).toBeNull()
   })
+  it('has no link for app settings or a target project settings proposal', () => {
+    expect(proposalNextFor({ id: 'p', kind: 'appSettings', title: 't', payload: { changes: [], rationale: '' } } as unknown as Proposal, 'quick')).toBeNull()
+    expect(proposalNextFor({ id: 'p', kind: 'settings', title: 't', target: { projectId: 'a', projectName: 'A' }, payload: {} } as unknown as Proposal, 'quick')).toBeNull()
+  })
   it('treats an empty skills proposal as project scope and carries the project id', () => {
     expect(proposalNextFor(skills([]), 'p1')).toEqual({ kind: 'skillsProject', projectId: 'p1' })
   })

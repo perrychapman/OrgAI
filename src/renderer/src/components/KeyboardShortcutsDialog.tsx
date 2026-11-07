@@ -1,6 +1,6 @@
 import { Fragment, type ReactElement } from 'react'
 import '../styles/menu.css'
-import { SHORTCUTS, isMacPlatform, keyLabel, type ShortcutDef } from '../lib/menuActions'
+import { SHORTCUTS, askOrgAI, isMacPlatform, keyLabel, type ShortcutDef } from '../lib/menuActions'
 import { Button } from './ui/Button'
 import { Dialog } from './ui/Dialog'
 
@@ -17,9 +17,17 @@ export default function KeyboardShortcutsDialog({ open, onClose }: { open: boole
       size="md"
       testId="keyboard-shortcuts-dialog"
       footer={
-        <Button autoFocusDialog onClick={onClose}>
-          Close
-        </Button>
+        <>
+          <span className="shortcuts-ask">
+            <span className="muted">Not sure where something is?</span>{' '}
+            <Button size="sm" variant="ghost" testId="shortcuts-ask-orgai" onClick={() => void askOrgAI()}>
+              Ask OrgAI
+            </Button>
+          </span>
+          <Button autoFocusDialog onClick={onClose}>
+            Close
+          </Button>
+        </>
       }
     >
       <div className="shortcuts">

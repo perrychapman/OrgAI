@@ -179,3 +179,32 @@
   align-self: flex-start;
   font-size: var(--text-caption);
 }
+
+/* Chat start page: a hint and example questions that fill the instruction field (docs/design/self-help.md). */
+.chat-examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h) var(--space-2);
+}
+.chat-examples-hint {
+  margin: 0;
+  font-size: var(--text-small);
+}
+.chat-examples-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-example {
+  cursor: pointer;
+  min-height: 24px;
+  padding: var(--space-1) var(--space-2);
+}
+.chat-example:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}

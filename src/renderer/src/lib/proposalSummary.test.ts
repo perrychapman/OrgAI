@@ -50,6 +50,28 @@ describe('proposalFoldSummary', () => {
   })
 })
 
+describe('self-help proposals', () => {
+  const change = (field: string, label: string) => ({ field, label, from: 'a', to: 'b' })
+  it('names the count and fields of an app settings proposal', () => {
+    const one = { ...base, kind: 'appSettings', payload: { changes: [change('appearance.theme', 'Theme')], rationale: '' } } as Proposal
+    expect(proposalFoldSummary(one, ctx)).toBe('Change 1 app setting: Theme')
+    const many = {
+      ...base,
+      kind: 'appSettings',
+      payload: { changes: [change('appearance.theme', 'Theme'), change('appearance.canvas.pattern', 'Canvas backdrop'), change('notifications', 'Notifications'), change('communityPrices', 'Community model prices'), change('defaultKeepRuns', 'Runs kept')], rationale: '' }
+    } as Proposal
+    expect(proposalFoldSummary(many, ctx)).toBe('Change 5 app settings: Theme, Canvas backdrop, Notifications and 2 more')
+  })
+  it('names the fields of a target settings proposal', () => {
+    const p = { ...base, kind: 'settings', target: { projectId: 'p', projectName: 'Notes' }, payload: { rationale: '', maxBudgetUsd: 5, permissionMode: 'default', brief: 'x' } } as Proposal
+    expect(proposalFoldSummary(p, ctx)).toBe('Change 3 settings: Permission mode, Spend cap per run, Project brief')
+  })
+  it('keeps the title for a setup settings proposal', () => {
+    const p = { ...base, kind: 'settings', payload: { rationale: '', maxBudgetUsd: 5 } } as Proposal
+    expect(proposalFoldSummary(p, ctx)).toBe('A title')
+  })
+})
+
 describe('proposer', () => {
   it('names the proposer by run kind', () => {
     expect(proposerName({ kind: 'setup' })).toBe('The Architect')

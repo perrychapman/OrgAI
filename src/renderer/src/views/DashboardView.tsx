@@ -17,6 +17,7 @@ import { useDashCaps } from '../components/dashboard/dashCaps'
 import { useLiveRuns } from '../components/dashboard/useDashboardData'
 import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
+import AppNavigateBanner from '../components/AppNavigateBanner'
 
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
 let consumedNewProjectRequest = 0
@@ -75,6 +76,7 @@ export default function DashboardView(): ReactElement {
           </>
         )}
       </div>
+      <AppNavigateBanner />
       <div className="dashboard" data-testid="dashboard">
         <div className="dashboard-grid">
           {forgetNotice && (
