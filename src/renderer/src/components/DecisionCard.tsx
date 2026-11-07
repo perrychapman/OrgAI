@@ -156,7 +156,8 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
   const hasBody = (children !== undefined && children !== null) || !!helper
   const hasDetails = inline ? !!helper : hasBody
   const bodyRef = useRef<HTMLDivElement>(null)
-  const bodyScrolls = useOverflows(bodyRef, hasBody)
+  // Only a proposal's body is a long list with stretches that hold no control; other kinds keep their Tab order.
+  const bodyScrolls = useOverflows(bodyRef, hasBody && kind === 'proposal')
   useEffect(() => {
     if (decisionFocus.suppress) {
       decisionFocus.suppress = false

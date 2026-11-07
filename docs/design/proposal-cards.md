@@ -219,7 +219,7 @@ sat in the middle of the list.
   not affected (its body keeps `overflow: auto`); checked with a 29-change proposal in every Live state (compact folded and
   expanded, roomy stacked, docked beside the stage, conversation layout, every disclosure open).
 - Fix: the proposal body rule carries `overflow: auto` beside its cap (and so does the compact expanded rule), so a proposal
-  body is always the one scroller with the footer after it, wherever the card is mounted. While the body overflows,
+  body is always the one scroller with the footer after it, wherever the card is mounted. While a proposal body overflows,
   `DecisionCard` gives it one Tab stop (`tabindex=0`, `role=group`, "<Kind> details, scrollable", `data-scrolls`) with a
   2 px inset `:focus-visible` ring, so the keyboard can scroll a list that has no controls of its own.
 - Checked by `e2e/proposals.mjs` scenario 4 (29 changes, a work run in the Live tray and an Architect session in the Team
