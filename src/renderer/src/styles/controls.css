@@ -11,13 +11,14 @@
   color: var(--text-primary);
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--dur-fast), border-color var(--dur-fast), transform var(--dur-fast);
+  transition: background var(--dur-instant), border-color var(--dur-instant), transform var(--dur-fast) var(--ease-out);
 }
 .btn:hover {
   background: var(--surface-3);
 }
-.btn:active {
-  transform: translateY(1px);
+.btn:active:not(:disabled):not([aria-disabled='true']) {
+  transform: scale(0.98);
+  transition-duration: var(--dur-instant);
 }
 .btn.primary {
   background: var(--accent);

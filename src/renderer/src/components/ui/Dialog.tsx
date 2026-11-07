@@ -1,12 +1,14 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useRef } from 'react'
+import { exitProps, useExitPresence } from '../../lib/useExitPresence'
 import { X } from 'lucide-react'
 import { IconButton } from './IconButton'
 import { Button } from './Button'
 
 /**
  * Modal dialog on the native <dialog> element: focus trap, Esc and inert background come from the platform.
- * Children mount only while open. A control with data-autofocus (Button autoFocusDialog) takes initial focus.
+ * Children mount only while open, plus one exit duration while it closes (the last content stays rendered and inert so
+ * the CSS exit in ui.css plays on real content). A control with data-autofocus (Button autoFocusDialog) takes initial focus.
  */
 export function Dialog({
   open,
@@ -29,6 +31,11 @@ export function Dialog({
 }): ReactElement {
   const ref = useRef<HTMLDialogElement>(null)
   const titleId = useId()
+  const exit = useExitPresence(open)
+  // What the panel showed last while open, so the exit fades real content even when the caller already cleared its state.
+  const last = useRef({ title, description, children, footer })
+  if (open) last.current = { title, description, children, footer }
+  const shown = open ? { title, description, children, footer } : last.current
   useEffect(() => {
     const el = ref.current
     if (!el || !open) return undefined
@@ -57,17 +64,17 @@ export function Dialog({
         if (e.target === ref.current) onClose()
       }}
     >
-      {open && (
-        <div className="dialog-panel">
+      {exit.mounted && (
+        <div className="dialog-panel" {...exitProps(exit.state)}>
           <div className="dialog-head">
             <div>
-              <h2 id={titleId}>{title}</h2>
-              {description && <p>{description}</p>}
+              <h2 id={titleId}>{shown.title}</h2>
+              {shown.description && <p>{shown.description}</p>}
             </div>
             <IconButton icon={X} label="Close dialog" size="sm" onClick={onClose} />
           </div>
-          <div className="dialog-body">{children}</div>
-          {footer && <div className="dialog-foot">{footer}</div>}
+          <div className="dialog-body">{shown.children}</div>
+          {shown.footer && <div className="dialog-foot">{shown.footer}</div>}
         </div>
       )}
     </dialog>
