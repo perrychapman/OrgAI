@@ -983,3 +983,69 @@ These change the sections above; where they differ, this section wins.
   1600x1000. The earlier 98 px reading was the placeholder. The e2e keeps its 88 px ceiling.
 - 10.1: the tile cost hides a reported $0 and spells an unknown cost "Cost unknown". The tile's Open button is pinned
   to the title width, so a long name ellipsises before More instead of running under it.
+
+### 21.1 Fix-up after the third walk (2026-11-07, `ux-review-dashboard-3.md` M1-M6 and the identity items)
+
+Merged to dev at e9c6fc54 (three UI Engineers: layout, Needs you, tiles), then finished by the UI Lead. Where this
+differs from the sections above, it wins.
+
+- Identity. Instruments are boxed: Needs you rows (the only amber surface on the page), Right now and Last 14 days.
+  Lists are unboxed: To set up, Paused and Recently ended run edge to edge with one hairline between rows (`.dash-rows`
+  gap 0), while Needs you keeps its separate rows 8 px apart (`--space-2`). A tile has no tint and no amber background
+  in any state, `[data-state=decisions]` included; only its "1 decision" words and the caption lead take
+  `--warning-text`. The Needs you row rules live in `styles/dashboard-needs.css`, imported after `dashboard.css` in
+  `global.css`, so they win by file order.
+- Quiet states (M4). A region with nothing to say is not drawn. With no decision, Needs you stays mounted but `hidden`
+  with no "Nothing needs you." line (the status sentence says it) and `.dash-work` gets `data-needs-empty`; with no open
+  run the band area is hidden and `.dash-work` gets `data-now-empty`. Layouts from 880 px:
+  - band live, no decision: the band leads on the left (7fr), the strip and the lists stack on the right (5fr);
+  - decisions, band empty: Needs you left, the strip at its tall size right, the lists full width under both;
+  - both quiet: the tall strip across the page, then the lists in a wrapping row (flex, 320 px basis). The UI Lead
+    changed this from an auto-fit grid: with one list the grid kept empty tracks under the spanning strip and the list
+    sat in a third of the width with a blank beside it.
+- Band height budget (M4). `dashCaps.ts` `useBandBudget` measures the other column (every visible area but the band) in
+  a ResizeObserver and sets `bandBudget(other)` = other + 180 px, at least 440 px; it never reads the band, so it cannot
+  feed back. `fitBandModel` (`lib/dashboardBand.ts`, pure, estimated heights) lowers the agent-row cap down to 2, then the
+  run cap down to 3, until the band fits; "Show N more" keeps the rest one click away. The value is on
+  `dash-now[data-budget]`.
+- Strip (M6, L1, L2). The tall strip is 190 px. Under 700 px of scroll region (`useShortRegion`, 1024x640 leaves 584) a
+  compact strip shown beside decisions draws dense (`dash-strip[data-dense]`: track 26, height 50), so with up to three
+  decisions its bars and the band's first run header stay above the fold.
+- Status (M1). Working counts have one source; a run waiting on you is never counted as working.
+- One decision, two places (M5). The band and the tile never print the root's raw activity: the tile caption is
+  "Needs you · <decision line>" (`decisionLine`, the Needs you label), else "Running · <plan step>" or the status word;
+  an ended tile's status line is "Last run <time> ago" with no outcome, and its caption is the outcome alone (L3).
+- Tile (identity, L5). A team row `tile-team` (`data-count` = roles; decorative, `aria-hidden`) draws the root and up to
+  seven roles breadth first in their colours, `tile-team-more` "+N" past eight; the Open button's name adds "team of N:
+  A, B, C and M more". More is the li's last child (placed top right by CSS), so Tab goes Open, chips, More.
+- Inline Allow (M2, L4). Shell commands are split on `&&`, `||` and `;` outside quotes; every step shows whole on its own
+  line with its operator in front ("cd x" / "&& npm test"), at most 200 characters, 2 non-empty lines and 4 steps, and the
+  buttons' names carry the whole command (a line break read as " ; "). Each refusal caption says the true reason: hidden
+  characters, unclear line breaks (a lone CR, LS, PS), extra spaces (2+ spaces or a tab), unclear quoting (a backslash or
+  backtick before a quote, typographic quotes, `$(`, backticks, a quote left open), long command, N lines, N steps. A
+  file path with a line break is not offered inline. The last four rules came from the final Reviewer pass (M1, M2, L3);
+  `ALLOW_ONCE` and `DENY` are frozen (L6). Single `&` and `|` are not step separators (Reviewer L1, open): `a | b` shows
+  as one step, whole.
+- Focus after Clear (M3) moves to the next section's heading, never body. The Paused caption may use two lines (L7).
+
+Measured on the mock (UI Lead, after the fix-up; `.dashboard` region height 584 px at 1024x640, 944 at 1600x1000; tops
+are viewport y, the topbar ends at 56):
+
+| State | Size | Strip | Band | `data-budget` | Projects top |
+| --- | --- | --- | --- | --- | --- |
+| (a) 1 decision, live deep tree | 1024x640 | compact 159, dense | 356 | 483 | 496 |
+| (a) | 1600x1000 | compact 183 | 356 | 507 | 508 |
+| (b) 3 decisions, 1 idle run | 1024x640 | compact 159, dense | 444 | 684 | 644 (strip bars above the fold) |
+| (b) | 1600x1000 | compact 183 | 526 | 708 | 680 |
+| (c) relaunched, 4 cut runs | both | tall 190 | hidden | stale, unused | 673 / 685 |
+| (d) all quiet (after Clear) | both | tall 190 | hidden | stale, unused | 330 / 342 |
+
+Needs you rows are 8 px apart in (b) at both sizes; no state overflows horizontally; the tile team row fits a 280 px tile
+(scrollWidth equals clientWidth). The layout engineer's own table was in its hand-back, not committed; this replaces it.
+
+Seen by eye (UI Lead, 1024x640 and 1600x1000, dark and light, mock): states (a)-(d); the tile hover in light (surface-2
+with the strong border, no amber); the team row; the Paused caption clamp (computed `line-clamp: 2` with the
+dashboard-needs.css rule; no paused row could be held on screen, the mock's rate-limit pause lasts 1.5 s); reduced motion
+(no animation left on marks, dots, tiles or strip days). Fixed by eye: the both-quiet layout above. Left as is: the band
+lists waiting runs newest first while Needs you lists them oldest first; mock run names read "Deep tree mockdeep-tree"
+(the mock title from the prompt); `data-budget` keeps its last value while the band is hidden.

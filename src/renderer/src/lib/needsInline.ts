@@ -12,8 +12,8 @@ import { parentPath, type PermissionLocationKind } from './permissionCopy'
 /** The card's deny text (PermissionCard sends the same). */
 export const DENY_MESSAGE = 'The user declined this action. Find another way or ask.'
 
-export const ALLOW_ONCE: PermissionDecision = { behavior: 'allow', scope: 'once' }
-export const DENY: PermissionDecision = { behavior: 'deny', message: DENY_MESSAGE }
+export const ALLOW_ONCE: Readonly<PermissionDecision> = Object.freeze({ behavior: 'allow', scope: 'once' })
+export const DENY: Readonly<PermissionDecision> = Object.freeze({ behavior: 'deny', message: DENY_MESSAGE })
 
 export const INLINE_COMMAND_MAX_CHARS = 200
 export const INLINE_COMMAND_MAX_LINES = 2
@@ -69,6 +69,30 @@ const INLINE_OTHER_FIELD: Readonly<Record<string, string>> = { WebFetch: 'url', 
 
 /** Runs of spaces or a tab can push a command's tail out of view; such a command is reviewed in the card (review M3). */
 const PADDED = / {2,}|\t/
+
+/**
+ * Breaks the step split does not read as lines (review M1): a lone CR (PowerShell reads it as a new line), NEL, LS and
+ * PS. Such a command is reviewed in the card.
+ */
+const UNCLEAR_BREAK = /\r(?!\n)|[\x85\u{2028}\u{2029}]/u
+
+/**
+ * Quoting the step split cannot follow, so the shown steps could differ from what the shell runs (review M2): a
+ * backslash or backtick escape before a quote, typographic quotes (PowerShell ends strings at them), command
+ * substitution `$(` and backticks.
+ */
+const UNCLEAR_QUOTING = /[\\`]["']|[\u{2018}-\u{201F}]|\$\(|`/u
+
+/** True when a line ends with a quote still open. */
+function openQuote(line: string): boolean {
+  let quote: string | null = null
+  for (const ch of line) {
+    if (quote) {
+      if (ch === quote) quote = null
+    } else if (ch === '"' || ch === "'") quote = ch
+  }
+  return quote !== null
+}
 
 /** The field an inline "other" tool shows whole, or undefined when the tool is not offered inline. */
 export function otherFieldOf(request: InlineRequest): string | undefined {
@@ -148,7 +172,9 @@ export function commandLines(command: string): string[] {
  */
 function commandRefusal(command: string): string | null {
   if (hasHidden(command)) return 'Hidden characters: open it to review'
+  if (UNCLEAR_BREAK.test(command)) return 'Line breaks are unclear: open it to review'
   if (PADDED.test(command)) return 'Extra spaces could hide part of it: open it to review'
+  if (UNCLEAR_QUOTING.test(command) || command.split('\n').some(openQuote)) return 'Quoting is unclear: open it to review'
   if (command.length > INLINE_COMMAND_MAX_CHARS) return `Long command (${command.length} characters): open it to review`
   const lines = commandSteps(command)
   if (lines.length > INLINE_COMMAND_MAX_LINES) return `${lines.length} lines: open it to review`
@@ -183,7 +209,7 @@ export function inlineAllowable(request: InlineRequest, location?: PermissionLoc
     const path = filePathOf(request)
     // Main refuses edits in a reference folder before any allow path, so only reads get a button there.
     const where = !!location && INLINE_FILE_LOCATIONS.has(location) && (location !== 'reference' || READ.has(request.toolName))
-    return !!path && !hasHidden(path) && path.length <= INLINE_SUMMARY_MAX_CHARS && where
+    return !!path && !hasHidden(path) && !/[\r\n\x85\u{2028}\u{2029}]/u.test(path) && path.length <= INLINE_SUMMARY_MAX_CHARS && where
   }
   const value = otherFieldOf(request)
   return !!value && value.length <= INLINE_SUMMARY_MAX_CHARS && !hasHidden(value) && !/[\r\n]/.test(value)
