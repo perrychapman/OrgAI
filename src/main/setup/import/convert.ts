@@ -9,7 +9,7 @@ import type {
   Project,
   Role
 } from '@shared/types'
-import { AGENT_IMPORT_ELEVATED_TOOLS, AGENT_IMPORT_MAX_CHOICES, AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
+import { AGENT_IMPORT_ELEVATED_TOOLS, AGENT_IMPORT_MAX_CHOICES, AGENT_IMPORT_SOURCE_LABELS, isBuiltinConnectionId } from '@shared/types'
 import { mapChosenModel, mapImportedModel, type MappedModel, type ModelContext } from './model'
 import { importKey } from './scan'
 import { DEFAULT_IMPORT_TOOLS, mapTools } from './tools'
@@ -337,12 +337,12 @@ function finish(input: ConvertInput, roles: Role[], drafts: Draft[], replacedRol
   for (const d of unknown) warnings.push(`${d.role.name}: model "${(d.agent.model ?? '').slice(0, 80)}" is not recognised; it uses the everyday tier (${d.role.model}).`)
   const instructionFiles = input.instructionFiles ?? []
   if (instructionFiles.length) warnings.push(`Instruction files are not turned into roles: ${instructionFiles.join(', ')}. The Architect reads them during setup.`)
-  if (input.model.connection === 'litellm' && drafts.some((d) => d.action !== 'skip')) {
+  if (!isBuiltinConnectionId(input.model.connection) && drafts.some((d) => d.action !== 'skip')) {
     const choice = adapterForProject({ provider: input.provider, roles }, input.model.catalog)
-    // On LiteLLM reports may use another family (mixedFamilyRefusal); only a root without a model blocks a run.
+    // On a proxy reports may use another family (mixedFamilyRefusal); only a root without a model blocks a run.
     if (mixedFamilyRefusal(choice) === 'no-root-family') {
       const names = choice.mismatched.map((id) => byId.get(id)?.name ?? id).join(', ')
-      warnings.push(`On LiteLLM the orchestrator's model picks the runtime, and it has none; ${names} use another model family. Give the orchestrator a model before running.`)
+      warnings.push(`On ${input.model.connectionName ?? 'this proxy'} the orchestrator's model picks the runtime, and it has none; ${names} use another model family. Give the orchestrator a model before running.`)
     }
   }
   const items: AgentImportItem[] = drafts.map((d) => {

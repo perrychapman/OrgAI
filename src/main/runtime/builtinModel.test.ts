@@ -56,8 +56,10 @@ describe('resolveBuiltinModel', () => {
     expect(r.model).toBe('us.anthropic.claude-opus-5-5')
     expect(r.tier).toBe('deep')
     expect(r.warning).toBe(
-      'App setting "MCP assistant model" is us.openai.gpt-5-mini, which this run cannot use on the LiteLLM connection (Claude adapter); using the deep tier (us.anthropic.claude-opus-5-5).'
+      'App setting "MCP assistant model" is us.openai.gpt-5-mini, which this run cannot use on the proxy connection (Claude adapter); using the deep tier (us.anthropic.claude-opus-5-5).'
     )
+    // The proxy's own name, when RunManager passes it.
+    expect(resolveBuiltinModel('us.openai.gpt-5-mini', 'MCP assistant model', { ...liteClaude, connection: 'proxy-aaaa1111', connectionName: 'Team gateway' }).warning).toMatch(/on the Team gateway connection/)
     // An alias whose tier maps to the other family also falls back.
     expect(resolveBuiltinModel('sonnet', 'Setup model', liteClaude).warning).toMatch(/using the deep tier/)
   })
