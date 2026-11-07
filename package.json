@@ -5,6 +5,7 @@
   "description": "A provider-agnostic harness that runs a project's org chart of AI agents and visualizes the work live.",
   "license": "MIT",
   "author": "Cybrid Software LLC",
+  "homepage": "https://cybridsoftware.com",
   "main": "./out/main/index.js",
   "bin": {
     "orgai": "./out/cli/orgai.mjs"

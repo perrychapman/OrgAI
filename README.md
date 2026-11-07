@@ -6,6 +6,8 @@
 
 **Run a project's org chart of AI agents and watch the work happen.**
 
+Made by [Cybrid Software LLC](https://cybridsoftware.com).
+
 [![Latest release](https://img.shields.io/github/v/release/perrychapman/OrgAI?label=release)](https://github.com/perrychapman/OrgAI/releases/latest)
 [![CI](https://github.com/perrychapman/OrgAI/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/perrychapman/OrgAI/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -154,4 +156,5 @@ OrgAI is built with an Electron main process, a React 19 renderer and TypeScript
 
 ## License
 
-OrgAI is released under the MIT License. See [LICENSE](LICENSE).
+OrgAI is made by [Cybrid Software LLC](https://cybridsoftware.com) and released under the MIT License. See
+[LICENSE](LICENSE).

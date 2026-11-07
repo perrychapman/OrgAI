@@ -1,5 +1,6 @@
 appId: com.orgai.app
 productName: OrgAI
+copyright: "Copyright © 2026 Cybrid Software LLC"
 directories:
   output: release/
   buildResources: build
