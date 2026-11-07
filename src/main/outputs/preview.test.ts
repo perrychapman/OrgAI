@@ -1,13 +1,15 @@
 import ExcelJS from 'exceljs'
 import JSZip from 'jszip'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { OUTPUT_PREVIEW_COLUMNS_MAX, OUTPUT_PREVIEW_IMAGE_MAX_BYTES, OUTPUT_PREVIEW_ROWS_MAX, OUTPUT_PREVIEW_SHEETS_MAX, OUTPUT_PREVIEW_TEXT_MAX_BYTES } from '@shared/types'
 import { markdownToDocx } from './markdownDoc'
-import { previewFile } from './preview'
+import { DOCX_PREVIEW_MAX_XML_BYTES, previewDocx, previewFile, streamSafeOrder } from './preview'
 import { renderProduced } from './writers'
+import { zipEntryNames, zipEntrySize, zipVerifyEntries } from './zipGuard'
 
 let dir: string
 beforeEach(() => {
@@ -134,6 +136,46 @@ describe('xlsx', () => {
     if (r.kind !== 'sheets') throw new Error(`expected sheets: ${JSON.stringify(r)}`)
     expect(r.sheets[0].rows[0][0]).toEqual({ v: '=1+1' })
   })
+  it('falls back to a full load when the stream cannot read the zip order', async () => {
+    const buf = await book((wb) => {
+      const ws = wb.addWorksheet('Data')
+      ws.addRow(['n', 'text'])
+      ws.addRow([42, 'forced fallback'])
+      wb.addWorksheet('Two').addRow(['second'])
+    })
+    const src = await JSZip.loadAsync(buf)
+    const names = Object.keys(src.files).filter((n) => !src.files[n].dir)
+    const reorder = async (first: string[], last: string[]): Promise<Buffer> => {
+      const mid = names.filter((n) => !first.includes(n) && !last.includes(n))
+      const out = new JSZip()
+      for (const n of [...first, ...mid, ...last]) out.file(n, await src.files[n].async('nodebuffer'))
+      return deflated(out)
+    }
+    const check = async (name: string, data: Buffer): Promise<void> => {
+      const r = await previewFile(f(name, data), 'xlsx')
+      if (r.kind !== 'sheets') throw new Error(`expected sheets: ${JSON.stringify(r)}`)
+      expect(r.sheets.map((s) => s.name)).toEqual(['Data', 'Two'])
+      expect(r.sheets[0].rows[1].map((c) => c.v)).toEqual([42, 'forced fallback'])
+      expect(r.sheets[1].rows[0][0].v).toBe('second')
+    }
+    // workbook.xml and the shared strings after the sheets: exceljs' stream answers wrongly here (measured: one sheet named
+    // Data, string cells empty), so the preview must take the full load
+    const unsafe = await reorder([], ['xl/_rels/workbook.xml.rels', 'xl/workbook.xml', 'xl/sharedStrings.xml'])
+    expect(streamSafeOrder(zipEntryNames(unsafe))).toBe(false)
+    const streamedOnly = new ExcelJS.stream.xlsx.WorkbookReader(Readable.from([unsafe]), { sharedStrings: 'cache', hyperlinks: 'cache', styles: 'cache', worksheets: 'emit', entries: 'emit' })
+    const seen: unknown[] = []
+    try {
+      for await (const sheet of streamedOnly) for await (const row of sheet) seen.push(row.values)
+    } catch {
+      seen.push('threw')
+    }
+    expect(JSON.stringify(seen)).not.toContain('forced fallback') // the stream alone cannot give the right content
+    await check('unsafe.xlsx', unsafe)
+    // the order the stream needs, with the rels before workbook.xml (the reported exceljs trigger)
+    const safe = await reorder(['[Content_Types].xml', 'xl/_rels/workbook.xml.rels', 'xl/workbook.xml', 'xl/sharedStrings.xml'], [])
+    expect(streamSafeOrder(zipEntryNames(safe))).toBe(true)
+    await check('safe.xlsx', safe)
+  })
   it('corrupt and bomb files answer none', async () => {
     expect((await previewFile(f('bad.xlsx', Buffer.from('not a zip at all, definitely')), 'xlsx')).kind).toBe('none')
     const z = new JSZip()
@@ -145,6 +187,91 @@ describe('xlsx', () => {
     const r = await previewFile(f('bomb.xlsx', Buffer.from(await bomb.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }))), 'xlsx')
     expect(r.kind).toBe('none')
     if (r.kind === 'none') expect(r.reason).toMatch(/ratio/)
+  })
+})
+
+/** A copy of a zip whose directory (and, unless `centralOnly`, local header) claims `claim` bytes for entry `name`. */
+function lieAboutSize(zip: Buffer, name: string, claim: number, centralOnly = false): Buffer {
+  const out = Buffer.from(zip)
+  const eocd = out.length - 22 // JSZip writes no archive comment
+  let p = out.readUInt32LE(eocd + 16)
+  const n = out.readUInt16LE(eocd + 10)
+  for (let i = 0; i < n; i++) {
+    const nameLen = out.readUInt16LE(p + 28)
+    const extraLen = out.readUInt16LE(p + 30)
+    const commentLen = out.readUInt16LE(p + 32)
+    if (out.toString('utf8', p + 46, p + 46 + nameLen) === name) {
+      out.writeUInt32LE(claim, p + 24)
+      if (!centralOnly) out.writeUInt32LE(claim, out.readUInt32LE(p + 42) + 22)
+      return out
+    }
+    p += 46 + nameLen + extraLen + commentLen
+  }
+  throw new Error(`no entry ${name}`)
+}
+
+const deflated = async (z: JSZip): Promise<Buffer> => Buffer.from(await z.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }))
+
+describe('declared sizes that lie', () => {
+  const big = (): Buffer => Buffer.alloc(20 * 1024 * 1024)
+  it('a docx whose entry claims 1 KB but inflates to 20 MB answers none quickly', async () => {
+    const z = await JSZip.loadAsync(await markdownToDocx('hello', 'T'))
+    z.file('word/media/big.bin', big(), { compression: 'DEFLATE', compressionOptions: { level: 9 } })
+    const honest = await deflated(z)
+    for (const centralOnly of [false, true]) {
+      const t0 = Date.now()
+      const r = await previewFile(f(`lie-${centralOnly}.docx`, lieAboutSize(honest, 'word/media/big.bin', 1000, centralOnly)), 'docx')
+      expect(r.kind).toBe('none')
+      if (r.kind === 'none') expect(r.reason).toMatch(/does not match its directory/)
+      expect(Date.now() - t0).toBeLessThan(4000)
+    }
+  })
+  it('an xlsx whose entry claims 1 KB but inflates to 20 MB answers none quickly', async () => {
+    const wb = new ExcelJS.Workbook()
+    wb.addWorksheet('A').addRow(['x'])
+    const z = await JSZip.loadAsync(Buffer.from(await wb.xlsx.writeBuffer()))
+    z.file('xl/media/big.bin', big(), { compression: 'DEFLATE', compressionOptions: { level: 9 } })
+    const honest = await deflated(z)
+    for (const centralOnly of [false, true]) {
+      const t0 = Date.now()
+      const r = await previewFile(f(`lie-${centralOnly}.xlsx`, lieAboutSize(honest, 'xl/media/big.bin', 1000, centralOnly)), 'xlsx')
+      expect(r.kind).toBe('none')
+      if (r.kind === 'none') expect(r.reason).toMatch(/does not match its directory/)
+      expect(Date.now() - t0).toBeLessThan(4000)
+    }
+  })
+  it('an honest package passes and an unsupported compression method is refused', async () => {
+    const buf = await markdownToDocx('hello', 'T')
+    expect(zipVerifyEntries(buf)).toBeNull()
+    const z = new JSZip()
+    z.file('a.txt', 'hello', { compression: 'STORE' })
+    const stored = await deflated(z)
+    expect(zipVerifyEntries(stored)).toBeNull()
+    const bad = Buffer.from(stored)
+    bad.writeUInt16LE(12, bad.readUInt32LE(bad.length - 22 + 16) + 10) // central method 12 (bzip2)
+    expect(zipVerifyEntries(bad)).not.toBeNull()
+  })
+})
+
+describe('docx size cut-off', () => {
+  it('previews at the threshold and answers none just over it', async () => {
+    const md = Array.from({ length: 200 }, (_, i) => `Paragraph ${i} with some words.`).join('\n\n')
+    const p = f('cut.docx', await markdownToDocx(md, 'T'))
+    const xml = zipEntrySize(readFileSync(p), 'word/document.xml')
+    if (xml === null) throw new Error('no document.xml')
+    expect(xml).toBeGreaterThan(1000)
+    expect((await previewDocx(p, xml)).kind).toBe('document')
+    const over = await previewDocx(p, xml - 1)
+    expect(over).toEqual({ kind: 'none', reason: 'This document is too large to preview here. Open it instead.' })
+    expect((await previewFile(p, 'docx')).kind).toBe('document')
+    expect(DOCX_PREVIEW_MAX_XML_BYTES).toBeGreaterThan(xml)
+  })
+  it('a package with no document.xml keeps the old behaviour (mammoth reports)', async () => {
+    const z = new JSZip()
+    z.file('hello.txt', 'x')
+    const r = await previewDocx(f('nodoc.docx', await deflated(z)), 1)
+    expect(r.kind).toBe('none')
+    if (r.kind === 'none') expect(r.reason).not.toMatch(/too large/)
   })
 })
 

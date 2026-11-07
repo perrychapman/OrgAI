@@ -1,6 +1,6 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
-import { ZIP_MAX_ENTRIES, zipProblem } from './zipGuard'
+import { ZIP_MAX_ENTRIES, zipEntrySize, zipProblem } from './zipGuard'
 
 interface Entry {
   name: string
@@ -35,6 +35,25 @@ function forged(entries: Entry[], opts: { comment?: Buffer; zip64Locator?: boole
   comment.copy(eocd, 22)
   return Buffer.concat([cd, locator, eocd])
 }
+
+describe('zipEntrySize', () => {
+  it('reads the uncompressed size of a named entry from a real zip', async () => {
+    const z = new JSZip()
+    z.file('a.txt', 'hello')
+    z.file('word/document.xml', 'x'.repeat(5000))
+    const buf = Buffer.from(await z.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }))
+    expect(zipEntrySize(buf, 'word/document.xml')).toBe(5000)
+    expect(zipEntrySize(buf, 'a.txt')).toBe(5)
+  })
+  it('is null for a missing entry (exact match only), a refused package and a non-zip', () => {
+    const f = forged([{ name: 'word/document.xml', csize: 10, usize: 99 }])
+    expect(zipEntrySize(f, 'word/document.xml')).toBe(99)
+    expect(zipEntrySize(f, 'word/Document.xml')).toBeNull()
+    expect(zipEntrySize(f, 'document.xml')).toBeNull()
+    expect(zipEntrySize(forged([{ name: 'word/document.xml', csize: 1, usize: 5 * 1024 * 1024 }]), 'word/document.xml')).toBeNull()
+    expect(zipEntrySize(Buffer.from('nope'), 'a')).toBeNull()
+  })
+})
 
 describe('zipProblem', () => {
   it('accepts a real small zip', async () => {
