@@ -43,8 +43,8 @@ jobs:
       GIT_COMMITTER_NAME: OrgAI CI
       GIT_COMMITTER_EMAIL: ci@orgai.local
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -69,7 +69,7 @@ jobs:
           ORGAI_WINDOW_LARGER_THAN_SCREEN: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: Upload e2e screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-shots-${{ runner.os }}
           path: e2e/shots/**
@@ -88,8 +88,8 @@ jobs:
       # Unsigned: never look for a signing identity on the runner.
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -132,8 +132,8 @@ jobs:
       GIT_COMMITTER_NAME: OrgAI CI
       GIT_COMMITTER_EMAIL: ci@orgai.local
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
