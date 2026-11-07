@@ -47,6 +47,7 @@ import type {
   Project,
   ProviderAuth,
   ProviderConnection,
+  ProviderId,
   ProviderModel,
   RemapModelsInput,
   RemapModelsOutput,
@@ -1111,6 +1112,18 @@ export class ConnectionService {
       tierModels: { ...(this.record(id)?.tierModels ?? {}) },
       models: this.catalogFor(id).map((m) => m.id)
     }
+  }
+
+  /**
+   * Multi-provider org charts: the RunConnection of a bridged role's child session (AdapterChoice.bridged entry), with
+   * the same secret rules as runConnection. The project's own auth (an API-key env var) applies only when the target
+   * is the project's connection; otherwise the connection's own record decides (the anthropic login or its key var).
+   * Throws a readable error naming the connection when it cannot be used (no key, no base URL, gone).
+   */
+  runConnectionFor(project: Project, target: { connection: ConnectionId; adapter: ProviderId }): RunConnection {
+    const own = projectConnection(project) === target.connection
+    const choice: AdapterChoice = { adapter: target.adapter, connection: target.connection, mismatched: [] }
+    return this.runConnection(own ? project : undefined, choice)
   }
 
   private buildRunConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
