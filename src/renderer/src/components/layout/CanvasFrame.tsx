@@ -49,9 +49,11 @@ const JOIN_MAX_CHARS = 600
 /** The line to say: `text` alone, or appended to a previous line younger than JOIN_WINDOW_MS. Pure. */
 export function joinAnnouncement(prev: { text: string; at: number } | null, text: string, now: number): string {
   if (!prev || !prev.text || now - prev.at >= JOIN_WINDOW_MS) return text
-  if (prev.text === text || prev.text.endsWith(` ${text}`)) return prev.text
+  const before = prev.text.trimEnd()
+  if (before === text || before.endsWith(` ${text}`)) return before
   // A full stop between lines that end without one, so a screen reader does not run two sentences together.
-  const joined = `${prev.text}${/[.!?:]$/.test(prev.text.trimEnd()) ? '' : '.'} ${text}`
+  // Not after a stop, an ellipsis or a closing quote or bracket, which already end the line.
+  const joined = `${before}${/[.!?:;…)\]}"'”’»]$/.test(before) ? '' : '.'} ${text.trimStart()}`
   return joined.length > JOIN_MAX_CHARS ? text : joined
 }
 

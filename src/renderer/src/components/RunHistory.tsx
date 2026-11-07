@@ -207,10 +207,12 @@ function HistoryChain({
   const outputCount = useAppStore((s) => (first.kind === 'work' && !first.quick ? outputsOfRuns(s.outputsByProject[first.projectId], members.map((m) => m.id)).length : 0))
   const openOutputs = (): void => {
     // Open the conversation (the Live view), then its Outputs side tab with the list showing.
-    void onOpen(newest.id).then(() => {
-      useAppStore.getState().openRunOutput(newest.id, null)
-      revealOutputsTab()
-    })
+    void onOpen(newest.id)
+      .then(() => {
+        useAppStore.getState().openRunOutput(newest.id, null)
+        revealOutputsTab()
+      })
+      .catch(() => undefined)
   }
   return (
     <>
@@ -240,7 +242,7 @@ function HistoryChain({
               </Badge>
             )}
             {outputCount > 0 && (
-              <Button size="sm" variant="ghost" icon={Files} className="history-outputs" testId="history-outputs" title="Open this conversation on its Outputs tab" onClick={openOutputs}>
+              <Button size="sm" variant="ghost" icon={Files} className="history-outputs" testId="history-outputs" ariaLabel={`Open ${outputCount} ${outputCount === 1 ? 'output' : 'outputs'} of ${tag}`} title="Open this conversation on its Outputs tab" onClick={openOutputs}>
                 {outputsCountLabel(outputCount)}
               </Button>
             )}

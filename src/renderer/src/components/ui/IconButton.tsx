@@ -8,6 +8,7 @@ export function IconButton({
   label,
   onClick,
   disabled,
+  inert,
   size = 'md',
   expanded,
   controls,
@@ -19,6 +20,8 @@ export function IconButton({
   label: string
   onClick?: (e: MouseEvent<HTMLButtonElement>) => void
   disabled?: boolean
+  /** Stays focusable (aria-disabled) and swallows clicks, for a button that reaches its limit while focused. */
+  inert?: boolean
   size?: 'sm' | 'md'
   /** Sets aria-expanded for disclosure toggles. */
   expanded?: boolean
@@ -37,7 +40,8 @@ export function IconButton({
       aria-expanded={expanded}
       aria-controls={controls}
       disabled={disabled}
-      onClick={onClick}
+      aria-disabled={inert ? 'true' : undefined}
+      onClick={inert ? (e) => e.preventDefault() : onClick}
       data-testid={testId}
     >
       <Icon icon={icon} size="sm" />

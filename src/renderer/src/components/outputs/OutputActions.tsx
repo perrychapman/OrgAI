@@ -5,7 +5,7 @@ import type { RunOutput } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { canDeleteOutput, canOpenOutput } from '../../lib/outputs'
 import { cleanIpcError } from '../../lib/ipcError'
-import { HIDDEN_OR_CONTROL_RUN } from '../../lib/hiddenChars'
+import { HIDDEN_OR_CONTROL_RUN, showHidden } from '../../lib/hiddenChars'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import { useConfirm } from '../ui/ConfirmDialog'
@@ -122,7 +122,7 @@ export default function OutputActions({
                 // The index entry is gone for good: the contract has no way to bring it back (docs/design/outputs.md section 12).
                 const ok = await confirm({
                   title: `Remove ${title} from the list?`,
-                  body: `The file stays at ${output.relPath}. It leaves OrgAI's list and cannot be added back from here.`,
+                  body: `The file stays at ${showHidden(output.relPath)}. It leaves OrgAI's list and cannot be added back from here.`,
                   confirmLabel: 'Remove',
                   confirmTestId: 'output-forget-confirm'
                 })
@@ -139,7 +139,7 @@ export default function OutputActions({
                   void run(async () => {
                     const ok = await confirm({
                       title: `Delete ${title}?`,
-                      body: `This deletes ${output.relPath} from the project folder. It cannot be undone.`,
+                      body: `This deletes ${showHidden(output.relPath)} from the project folder. It cannot be undone.`,
                       confirmLabel: 'Delete file',
                       danger: true,
                       confirmTestId: 'output-delete-confirm'
