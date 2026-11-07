@@ -37,6 +37,7 @@ export const ATLAS_SURFACE_IDS = [
   'project-history',
   'project-history-runs',
   'project-history-trends',
+  'project-outputs',
   'project-knowledge',
   'project-knowledge-list',
   'project-knowledge-graph',
@@ -90,6 +91,7 @@ export const ATLAS_SURFACE_IDS = [
   'run-side-panel',
   'run-transcript',
   'run-usage',
+  'run-outputs',
   'run-knowledge',
   'run-decision-tray',
   'run-composer',
@@ -456,6 +458,16 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     summary: 'Cost, tokens and run counts over time, by role, model and kind of run, with a CSV export.',
     reach: [{ via: 'button', label: 'Trends', on: 'project-history' }],
     testIds: ['usage-trends']
+  },
+  {
+    id: 'project-outputs',
+    label: 'Outputs',
+    path: [PROJ, 'Outputs'],
+    kind: 'tab',
+    scope: 'project',
+    summary: 'Documents, spreadsheets, diagrams and files the agents produced, shown here as a list with a preview. Open, save or remove one from its actions.',
+    reach: [{ via: 'tab', label: 'Outputs' }],
+    testIds: ['tab-outputs', 'outputs-search', 'outputs-list', 'output-row']
   },
   {
     id: 'project-knowledge',
@@ -1075,6 +1087,16 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     summary: 'Cost, tokens, time and skills loaded for the run, by model and role.',
     reach: [{ via: 'button', label: 'Usage', on: 'run-side-panel' }],
     testIds: ['side-tab-usage', 'usage-skills']
+  },
+  {
+    id: 'run-outputs',
+    label: 'Outputs',
+    path: [PROJ, 'Live', 'Side panel', 'Outputs'],
+    kind: 'tab',
+    scope: 'run',
+    summary: 'The documents, spreadsheets, diagrams and files this run produced, with an in-window preview.',
+    reach: [{ via: 'button', label: 'Outputs', on: 'run-side-panel' }],
+    testIds: ['side-tab-outputs', 'run-output-row', 'run-meta-outputs']
   },
   {
     id: 'run-knowledge',
