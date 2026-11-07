@@ -86,15 +86,15 @@ type Pill = { tone: string; label: string; title?: string; figure?: string }
  * (today's spend when the proxy reports periods, else the budget text; `spendRowLabel`), the whole sentence as the
  * tooltip (`spendSentence`). The dot tone is the budget level only; a period figure never colours it.
  */
-function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | undefined, usage: UsageStatus | undefined): Pill {
-  const name = CONNECTION_LABEL[id]
+function connectionPill(id: ConnectionId, status: ConnectionStatus | undefined, usage: UsageStatus | undefined, proxyName?: string): Pill {
+  const name = proxyName ?? CONNECTION_LABEL[id] ?? id
   const detail = status?.detail
   if (status?.state === 'error') return { tone: 'danger', label: `${name} · error`, title: detail }
   if (status?.state === 'connecting') return { tone: 'warn', label: `${name} · connecting…`, title: detail }
   if (!status || status.state === 'disconnected') return { tone: 'warn', label: `${name} · not connected`, title: detail }
-  if (id === 'litellm') {
+  if (id !== 'openai') {
     const spend = usage?.spend
-    if (!spend) return { tone: 'warn', label: 'LiteLLM · spend unavailable', title: detail }
+    if (!spend) return { tone: 'warn', label: `${name} · spend unavailable`, title: detail }
     const level = spendLevel(spend)
     return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend), title: spendSentence(spend), figure: spendRowFigure(spend) }
   }
@@ -131,10 +131,11 @@ export default function Sidebar({
   }, [loadDefaultConnection])
   const openProjectRecord = projects.find((p) => p.id === selectedId)
   const current: ConnectionId = currentConnection(openProjectRecord && view !== 'projects' && view !== 'appSettings' ? projectConnection(openProjectRecord) : null, defaultConnection)
-  const litellmOn = connections?.find((c) => c.connection.id === 'litellm')?.connection.enabled ?? false
-  const currentUsage = current === 'litellm' && !litellmOn ? undefined : usageByConnection[current]
+  const currentRecord = connections?.find((c) => c.connection.id === current)?.connection
+  const proxyOn = current !== 'anthropic' && current !== 'openai' ? (currentRecord?.enabled ?? false) : true
+  const currentUsage = !proxyOn ? undefined : usageByConnection[current]
   const currentStatus = connections?.find((c) => c.connection.id === current)?.status
-  const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage)
+  const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage, currentRecord && 'name' in currentRecord ? currentRecord.name : undefined)
   const appVersion = useAppStore((s) => s.appInfo?.version)
   const devBuild = isDevBuild(appVersion)
   const devLabel = devBuild && appVersion ? devBuildLabel(appVersion) : ''

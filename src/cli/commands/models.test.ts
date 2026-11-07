@@ -34,7 +34,9 @@ async function run(f: ReturnType<typeof fakeContext>, args: string[]): Promise<n
 const model = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => ({ id, label: id, connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin', ...extra })
 const conns = (): ConnectionInfo[] => {
   const c = defaultConnections()
-  return (['anthropic', 'openai', 'litellm'] as const).map((id) => ({ connection: { ...c[id], ...(id === 'anthropic' ? { tierModels: { deep: 'opus-x', everyday: 'sonnet-x' } } : {}) } as ProviderConnection, status: { state: 'connected' }, modelCount: 1, isDefault: id === 'anthropic' }))
+  const lite = { id: 'litellm', name: 'LiteLLM', kind: 'litellm', enabled: false, anthropicBaseUrl: '', hasApiKey: false, tierModels: {}, autoTiers: [] }
+  const records: Record<string, unknown> = { anthropic: c.anthropic, openai: c.openai, litellm: lite }
+  return (['anthropic', 'openai', 'litellm'] as const).map((id) => ({ connection: { ...(records[id] as object), ...(id === 'anthropic' ? { tierModels: { deep: 'opus-x', everyday: 'sonnet-x' } } : {}) } as ProviderConnection, status: { state: 'connected' }, modelCount: 1, isDefault: id === 'anthropic' }))
 }
 
 describe('price formatting', () => {

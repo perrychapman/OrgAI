@@ -110,6 +110,7 @@ describe('encodeRequest / decodeRequest', () => {
     const cases: [string, unknown[]][] = [
       ['connections:setDefault', [null]],
       ['connections:setSecret', [{ id: 'litellm', apiKey: null }]],
+      ['connections:removeProxy', ['proxy-0a1b2c3d']],
       ['connectors:setToken', [{ connectorId: 'github', token: null }]],
       ['mcp:setSecret', [{ projectId: 'p', serverId: 's', kind: 'env', name: 'K', value: null }]],
       ['mcpLibrary:setSecret', [{ libraryId: 'l', kind: 'header', name: 'H', value: null }]]

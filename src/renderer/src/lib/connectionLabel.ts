@@ -1,5 +1,11 @@
+import { isProxyConnection } from '@shared/types'
 import type { ConnectionId, ConnectionInfo } from '@shared/types'
 import { CONNECTION_NAME } from './settingsCopy'
+
+/** Name of a connection record: a proxy's own name, else the fixed name. */
+function recordName(c: ConnectionInfo['connection']): string {
+  return isProxyConnection(c) ? c.name : (CONNECTION_NAME[c.id] ?? c.id)
+}
 
 /**
  * The auth method in plain words (config-review spec 4.1), shared by project General and the New project form:
@@ -7,14 +13,14 @@ import { CONNECTION_NAME } from './settingsCopy'
  */
 export function authMethodLabel(info: Pick<ConnectionInfo, 'connection'>): string {
   const c = info.connection
-  if (c.id === 'litellm') return 'proxy key'
+  if (isProxyConnection(c)) return 'proxy key'
   if (c.id === 'openai') return c.auth.kind === 'apiKey' ? 'API key' : 'ChatGPT sign-in'
   return c.auth.kind === 'apiKey' ? 'API key' : 'Claude Code login'
 }
 
 /** "Anthropic (Claude Code login)". */
 export function connectionWithAuth(info: Pick<ConnectionInfo, 'connection'>): string {
-  return `${CONNECTION_NAME[info.connection.id]} (${authMethodLabel(info)})`
+  return `${recordName(info.connection)} (${authMethodLabel(info)})`
 }
 
 /** The effective default connection's entry (connections:list `isDefault`); null when the list is not loaded. */
@@ -24,7 +30,7 @@ export function defaultConnectionInfo(connections: readonly ConnectionInfo[] | n
 
 /** Display name of a connection id. */
 export function connectionName(id: ConnectionId): string {
-  return CONNECTION_NAME[id]
+  return CONNECTION_NAME[id] ?? id
 }
 
 /**
@@ -38,8 +44,8 @@ export function defaultMode(cardId: ConnectionId, chosen: boolean | null, stored
 
 /** Announcement after a default change; the automatic one names the connection now in use (UI review L14). */
 export function defaultChangeAnnouncement(next: ConnectionId | null, effective: ConnectionId | null): string {
-  if (next) return `${CONNECTION_NAME[next]} is now the default for new projects and assistants`
+  if (next) return `${connectionName(next)} is now the default for new projects and assistants`
   return effective
-    ? `The default connection is automatic again: ${CONNECTION_NAME[effective]} for new projects and assistants`
+    ? `The default connection is automatic again: ${connectionName(effective)} for new projects and assistants`
     : 'The default connection is automatic again'
 }

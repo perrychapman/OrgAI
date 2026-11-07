@@ -1,7 +1,8 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, ChevronDown, ChevronRight, Copy, ExternalLink, Network, RefreshCw, Sparkles } from 'lucide-react'
-import type { ConnectionId, ConnectionInfo, ConnectionLoginStart, OpenAIConnection, AnthropicConnection, LiteLLMConnection, ProviderConnection } from '@shared/types'
+import { isProxyConnection } from '@shared/types'
+import type { ConnectionId, ConnectionInfo, ConnectionLoginStart, OpenAIConnection, AnthropicConnection, ProxyConnection as LiteLLMConnection, ProviderConnection } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { BrandMark } from '../brand/BrandMark'
 import { brandMark } from '../brand/brandMarks'
@@ -25,13 +26,13 @@ import TierEditor from './TierEditor'
 import { useConnectionsAnnounce } from './announce'
 import { defaultChangeAnnouncement, defaultMode } from '../../lib/connectionLabel'
 
-const META: Record<ConnectionId, { name: string; icon: typeof Bot; hint: string }> = {
+const META: Record<string, { name: string; icon: typeof Bot; hint: string }> = {
   anthropic: { name: 'Anthropic', icon: Sparkles, hint: 'Sign in with Claude Code to use Claude models.' },
   openai: { name: 'OpenAI', icon: Bot, hint: 'Sign in with ChatGPT to use OpenAI models.' },
   litellm: { name: 'LiteLLM proxy', icon: Network, hint: 'Enter the proxy URL and key, then test the connection.' }
 }
 
-const DISCONNECTED: Record<ConnectionId, string> = {
+const DISCONNECTED: Record<string, string> = {
   anthropic: 'Signed out of OrgAI. Your Claude Code login on this machine is unchanged.',
   openai: 'Signed out. Connect again to use OpenAI models.',
   litellm: 'Disconnected. The stored API key was removed; the proxy URL is kept.'
@@ -44,7 +45,9 @@ const errText = (e: unknown): string => (e instanceof Error ? e.message.replace(
 
 export default function ConnectionCard({ info }: { info: ConnectionInfo }): ReactElement {
   const id = info.connection.id
-  const meta = META[id]
+  // Minimal proxy support (the UI Lead redesigns this): every proxy renders as the LiteLLM card, named by its record.
+  const isLite = isProxyConnection(info.connection)
+  const meta = isLite ? { ...META.litellm, name: (info.connection as LiteLLMConnection).name } : META[id]
   const setInfo = useAppStore((s) => s.setConnectionInfo)
   const loadModels = useAppStore((s) => s.loadModels)
   const models = useAppStore((s) => s.models[id])
@@ -167,28 +170,28 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
     try {
       if (id === 'anthropic') setInfo(await window.orgai.connections.update({ ...(info.connection as AnthropicConnection), enabled: false }))
       else setInfo(await window.orgai.connections.logout(id))
-      setNotice(DISCONNECTED[id])
+      setNotice(DISCONNECTED[isLite ? 'litellm' : id])
     } catch (e) {
       setError(errText(e))
     }
   }
 
-  const spend = useAppStore((s) => (id === 'litellm' && info.connection.enabled ? s.usageByConnection.litellm?.spend : undefined))
+  const spend = useAppStore((s) => (isLite && info.connection.enabled ? s.usageByConnection[id]?.spend : undefined))
   const spendLine = spend ? `Key spend ${spendText(spend)}${spend.resetsAt && spend.resetsAt > Date.now() ? ` · resets in ${formatUntil(spend.resetsAt)}` : ''}` : ''
   const detail = useMemo(() => {
     if (state === 'connected') {
       // One-line summary: auth kind, model count, freshness.
       const conn = info.connection as AnthropicConnection | OpenAIConnection | LiteLLMConnection
-      const auth = id === 'litellm' ? 'Proxy key' : (conn as AnthropicConnection).auth.kind === 'apiKey' ? 'API key' : id === 'anthropic' ? 'Claude Code login' : 'ChatGPT sign-in'
+      const auth = isLite ? 'Proxy key' : (conn as AnthropicConnection).auth.kind === 'apiKey' ? 'API key' : id === 'anthropic' ? 'Claude Code login' : 'ChatGPT sign-in'
       const when = relativeTime(info.status.checkedAt)
       return [info.status.account, auth, models ? `${models.length} models` : '', spendLine, when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
     }
-    if (state === 'connecting') return info.status.detail ?? (id === 'litellm' ? 'Testing the proxy' : 'Waiting for the browser sign-in')
+    if (state === 'connecting') return info.status.detail ?? (isLite ? 'Testing the proxy' : 'Waiting for the browser sign-in')
     if (state === 'error') return info.status.detail ?? 'Something went wrong.'
     const usesKey = (info.connection as AnthropicConnection | OpenAIConnection).auth?.kind === 'apiKey'
     if (usesKey && info.status.detail) return `Not connected: ${info.status.detail}`
     return info.status.detail ?? meta.hint
-  }, [state, info.status, info.connection, id, meta.hint, models, spendLine])
+  }, [state, info.status, info.connection, id, isLite, meta.hint, models, spendLine])
 
   return (
     <section ref={card} className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>
@@ -296,7 +299,7 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           <div className="card-sec">
             {id === 'anthropic' && <AnthropicAuth conn={info.connection as AnthropicConnection} connected={connected} busy={busy === 'connect'} onSave={save} onSaveProbe={saveAndProbe} onConnect={connect} onDisconnect={disconnect} />}
             {id === 'openai' && <OpenAIAuth conn={info.connection as OpenAIConnection} state={state} connected={connected} busy={busy === 'connect'} onSave={save} onSaveProbe={saveAndProbe} onConnect={connect} onDisconnect={disconnect} />}
-            {id === 'litellm' && (
+            {isLite && (
               <LiteLLMAuth
                 conn={info.connection as LiteLLMConnection}
                 connected={connected}
@@ -337,8 +340,8 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           setConfirmRemove(false)
           void (async () => {
             try {
-              await window.orgai.connections.logout('litellm')
-              setInfo(await window.orgai.connections.update({ ...(info.connection as LiteLLMConnection), baseUrl: '', enabled: false }))
+              await window.orgai.connections.logout(id)
+              setInfo(await window.orgai.connections.update({ ...(info.connection as LiteLLMConnection), anthropicBaseUrl: '', enabled: false }))
             } catch (e) {
               setError(errText(e))
             }
@@ -622,10 +625,10 @@ function LiteLLMAuth({
   onRemove: () => void
 }): ReactElement {
   const setInfo = useAppStore((s) => s.setConnectionInfo)
-  const [url, setUrl] = useState(conn.baseUrl)
+  const [url, setUrl] = useState(conn.anthropicBaseUrl)
   const [touched, setTouched] = useState(false)
   const valid = /^https?:\/\/\S+$/i.test(url.trim())
-  const changed = url.trim() !== conn.baseUrl
+  const changed = url.trim() !== conn.anthropicBaseUrl
   return (
     <div className="conn-auth">
       <div className="conn-fields">
@@ -648,19 +651,19 @@ function LiteLLMAuth({
           <SecretField
             name="LITELLM_API_KEY"
             state={conn.hasApiKey ? 'set' : 'notSet'}
-            onSave={async (v) => setInfo(await window.orgai.connections.setSecret({ id: 'litellm', apiKey: v }))}
-            onClear={async () => setInfo(await window.orgai.connections.setSecret({ id: 'litellm', apiKey: null }))}
+            onSave={async (v) => setInfo(await window.orgai.connections.setSecret({ id: conn.id, apiKey: v }))}
+            onClear={async () => setInfo(await window.orgai.connections.setSecret({ id: conn.id, apiKey: null }))}
           />
         </div>
       </div>
       <More>The key is stored encrypted on this machine. It is never written to your project or shown again. Disconnecting deletes the stored key and keeps the proxy URL.</More>
       {connected && changed && <p className="muted">Changed. Test and connect to apply.</p>}
       <div className="conn-actions">
-        <Button variant="primary" loading={busy} disabled={!valid} onClick={() => void onConnect({ ...conn, baseUrl: url.trim() })}>
+        <Button variant="primary" loading={busy} disabled={!valid} onClick={() => void onConnect({ ...conn, anthropicBaseUrl: url.trim() })}>
           Test and connect
         </Button>
         {connected && <Button onClick={() => void onDisconnect()}>Disconnect and remove key</Button>}
-        {(conn.baseUrl || conn.hasApiKey) && (
+        {(conn.anthropicBaseUrl || conn.hasApiKey) && (
           <Button variant="ghost" onClick={onRemove}>
             Remove connection
           </Button>

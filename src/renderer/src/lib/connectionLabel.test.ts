@@ -10,7 +10,7 @@ describe('authMethodLabel', () => {
     expect(authMethodLabel(info({ id: 'anthropic', enabled: true, tierModels: {}, auth: { kind: 'apiKey', envVar: 'K' } }))).toBe('API key')
     expect(authMethodLabel(info({ id: 'openai', enabled: true, tierModels: {}, auth: { kind: 'chatgpt' } }))).toBe('ChatGPT sign-in')
     expect(authMethodLabel(info({ id: 'openai', enabled: true, tierModels: {}, auth: { kind: 'apiKey', envVar: 'K' } }))).toBe('API key')
-    expect(authMethodLabel(info({ id: 'litellm', enabled: true, tierModels: {}, baseUrl: 'http://x', hasApiKey: true }))).toBe('proxy key')
+    expect(authMethodLabel(info({ id: 'litellm', enabled: true, tierModels: {}, name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: 'http://x', hasApiKey: true, autoTiers: [] } as never))).toBe('proxy key')
   })
   it('joins name and method', () => {
     expect(connectionWithAuth(info({ id: 'anthropic', enabled: true, tierModels: {}, auth: { kind: 'subscription' } }))).toBe('Anthropic (Claude Code login)')

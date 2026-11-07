@@ -58,21 +58,21 @@ function failure(fn: () => unknown): HostRpcFailure {
 const existing = [...new Set([...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC)])]
 
 describe('HOST_CHANNEL_REGISTRY coverage (Wave 1 gate)', () => {
-  it('has an entry for each of the 177 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
-    expect(existing).toHaveLength(177)
+  it('has an entry for each of the 179 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
+    expect(existing).toHaveLength(179)
     expect(Object.values(HOST_IPC)).toHaveLength(6)
     expect(Object.values(HOST_METHODS)).toHaveLength(5)
     for (const c of existing) expect(channelEntry(c), c).toBeDefined()
     for (const c of Object.values(HOST_IPC)) expect(channelEntry(c), c).toBeDefined()
     for (const c of Object.values(HOST_METHODS)) expect(channelEntry(c), c).toBeDefined()
     const expected = [...allChannels(), ...Object.values(HOST_METHODS)].sort()
-    expect(new Set(allChannels()).size).toBe(183)
+    expect(new Set(allChannels()).size).toBe(185)
     expect(Object.keys(HOST_CHANNEL_REGISTRY).sort()).toEqual(expected)
   })
 
-  it('splits the existing channels into 165 requests and 12 pushes (8 socket_subscribable, 4 desktop_only)', () => {
+  it('splits the existing channels into 167 requests and 12 pushes (8 socket_subscribable, 4 desktop_only)', () => {
     const entries = existing.map((c) => HOST_CHANNEL_REGISTRY[c])
-    expect(entries.filter((e) => e.direction === 'request')).toHaveLength(165)
+    expect(entries.filter((e) => e.direction === 'request')).toHaveLength(167)
     const push = entries.filter((e): e is PushChannelEntry => e.direction === 'push')
     expect(push).toHaveLength(12)
     expect(push.filter((e) => e.delivery === 'socket_subscribable')).toHaveLength(8)
