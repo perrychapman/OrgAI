@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync, unlinkSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type {
   OutputCompareInput,
   OutputDeletePreview,
@@ -450,7 +450,10 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
         const e = store.byPath(scope.projectId, abs)
         if (e) return e
         const r = realOf(abs)
-        return r ? store.byPath(scope.projectId, r) : undefined
+        if (r) return store.byPath(scope.projectId, r)
+        // The file is gone: resolve its nearest existing folder so a lexical spelling (8.3 name, /var) still finds the stored real path.
+        const dir = realOf(dirname(abs))
+        return dir ? store.byPath(scope.projectId, join(dir, basename(abs))) : undefined
       }
       const target = resolveProducedTarget({ scope, dataDir, kind: input.kind, title, fileName: input.fileName, known: (abs) => !!byAnyPath(abs), separate })
       const existing = separate || target.renamed ? undefined : byAnyPath(target.file)

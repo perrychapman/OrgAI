@@ -1,7 +1,7 @@
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { OutputPreview } from '@shared/types'
 import { OUTPUT_VERSIONS_MAX } from '@shared/types'
 import type { OutputsServiceApi, OutputScope } from './api'
@@ -97,6 +97,17 @@ describe('produce', () => {
     expect(b).toMatchObject({ created: false, versioned: true })
     expect(b.output.id).toBe(a.output.id)
     expect(readFileSync(a.output.path, 'utf8')).toBe('back')
+  })
+  it('finds a vanished indexed file when the project path is spelled through a link (real vs lexical path)', async () => {
+    const linked = join(tmpdir(), `orgai-outlink-${Date.now()}`)
+    symlinkSync(root, linked, process.platform === 'win32' ? 'junction' : 'dir')
+    onTestFinished(() => rmSync(linked, { recursive: true, force: true }))
+    const linkScope = { ...scope, projectPath: join(linked, 'proj') }
+    const a = await svc.produce(linkScope, md('Doc', { fileName: 'd.md' }), src)
+    unlinkSync(a.output.path)
+    const b = await svc.produce(linkScope, md('Doc', { fileName: 'd.md', content: 'back' }), src)
+    expect(b).toMatchObject({ created: false, versioned: true })
+    expect(b.output.id).toBe(a.output.id)
   })
   it('a produce over an uncaptured outside edit captures it as an external version first', async () => {
     const a = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
