@@ -221,7 +221,9 @@ describe('plan tools', () => {
       'propose_skills',
       'request_permission_rules',
       'list_runs',
-      'message_run'
+      'message_run',
+      'produce_output',
+      'register_output'
     ])
     expect(names.filter((n) => !isBlockingHarnessTool(n))).toEqual([
       'set_plan',
@@ -234,7 +236,9 @@ describe('plan tools', () => {
       'list_skill_library',
       'read_library_skill',
       'list_runs',
-      'message_run'
+      'message_run',
+      'produce_output',
+      'register_output'
     ])
     expect(setupTools(fakeCtx()).map((t) => t.name)).not.toContain('set_plan')
   })

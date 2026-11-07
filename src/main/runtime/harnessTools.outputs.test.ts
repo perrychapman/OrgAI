@@ -50,7 +50,7 @@ describe('produce_output', () => {
     const tool = byName(harnessToolsFor(ctxWith({ produce, register: vi.fn() })), OUTPUT_TOOLS.produce)
     const workbook = { sheets: [{ name: 'S', columns: [{ header: 'A', width: 10 }], rows: [['x', 1, true, null]], numberFormat: ['0%', null] }] }
     const text = await tool.call({ kind: 'xlsx', title: 'T', workbook })
-    expect(produce.mock.calls[0][0]).toEqual({ kind: 'xlsx', title: 'T', content: workbook })
+    expect((produce.mock.calls as unknown as [OutputProduceInput][])[0][0]).toEqual({ kind: 'xlsx', title: 'T', content: workbook })
     expect(text).toContain('Produced xlsx "Q3 report" at outputs/a.xlsx (12 bytes)')
   })
 
