@@ -4,6 +4,7 @@ import { Button } from './ui/Button'
 import { RemapNotice } from './ui/RemapNotice'
 import { Banner } from './ui/Banner'
 import type { ProjectChanges } from '../lib/remap'
+import { connectionLabel } from '../lib/connectionLabel'
 
 /**
  * Preview before a connection switch or tier mapping change (spec 2.2). Rows are an estimate from the
@@ -33,6 +34,7 @@ export default function RemapPreviewDialog({
   onConfirm: () => void
 }): ReactElement {
   const withChanges = projects.filter((p) => p.changes.length > 0)
+  const kept = projects.flatMap((p) => (p.kept ?? []).map((k) => ({ ...k, projectId: p.projectId })))
   return (
     <Dialog
       open={open}
@@ -68,6 +70,19 @@ export default function RemapPreviewDialog({
         </>
       ) : (
         <p>No role changes models.</p>
+      )}
+      {kept.length > 0 && (
+        <div data-testid="remap-kept">
+          <p>Not changed (own connection):</p>
+          <ul className="remap-roles flush">
+            {kept.map((k) => (
+              <li key={`${k.projectId}-${k.roleId}`} data-testid="remap-kept-role">
+                <span className="remap-role">{k.roleName}</span>
+                <span className="muted">stays on {connectionLabel(k.connection)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {extra}
       <p className="muted">This preview is computed from your current settings. The result is shown after applying, with Undo.</p>

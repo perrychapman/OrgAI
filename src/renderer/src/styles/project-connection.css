@@ -96,3 +96,10 @@
   padding-left: 0;
   color: var(--text-secondary);
 }
+
+/* A role on its own connection, in the Role models list. */
+.pconn-role-own {
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-weight: 600;
+}
