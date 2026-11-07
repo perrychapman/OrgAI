@@ -94,6 +94,34 @@ export function useDecisionAnswer(): { busy: boolean; error: string | null; subm
   return { busy, error, submit, reset }
 }
 
+/** True when `el` is a displayed box whose content is taller than it (a 1 px tolerance for rounding). Pure over the element. */
+export function overflowsVertically(el: Pick<HTMLElement, 'scrollHeight' | 'clientHeight'> | null): boolean {
+  return !!el && el.clientHeight > 0 && el.scrollHeight > el.clientHeight + 1
+}
+
+/**
+ * Whether the element's content overflows it, kept current as the box or its children resize (a disclosure opening, the
+ * frame shrinking, a mode adding a field). Re-subscribes each render so new children are observed too.
+ */
+function useOverflows(ref: { current: HTMLElement | null }, active: boolean): boolean {
+  const [over, setOver] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!active || !el) {
+      setOver(false)
+      return undefined
+    }
+    const read = (): void => setOver(overflowsVertically(el))
+    read()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    for (const child of Array.from(el.children)) ro.observe(child)
+    return () => ro.disconnect()
+  })
+  return over
+}
+
 /** Set by the tray stepper just before it swaps cards: the next card mount keeps focus where it is. */
 export const decisionFocus = { suppress: false }
 
@@ -127,6 +155,8 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
   })
   const hasBody = (children !== undefined && children !== null) || !!helper
   const hasDetails = inline ? !!helper : hasBody
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyScrolls = useOverflows(bodyRef, hasBody)
   useEffect(() => {
     if (decisionFocus.suppress) {
       decisionFocus.suppress = false
@@ -193,7 +223,16 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
         )}
       </header>
       {hasBody && (
-        <div className="decision-body" id={bodyId}>
+        <div
+          ref={bodyRef}
+          className="decision-body"
+          id={bodyId}
+          // While its content overflows the body is a scroll region: one Tab stop so the keyboard can scroll it.
+          tabIndex={bodyScrolls ? 0 : undefined}
+          role={bodyScrolls ? 'group' : undefined}
+          aria-label={bodyScrolls ? `${k.label} details, scrollable` : undefined}
+          data-scrolls={bodyScrolls ? 'true' : undefined}
+        >
           {children}
           {helper && <div className="decision-helper">{helper}</div>}
         </div>
