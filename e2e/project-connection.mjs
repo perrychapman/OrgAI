@@ -71,7 +71,12 @@ try {
   await select.focus()
   const before = await select.inputValue()
   await page.keyboard.press('ArrowDown')
-  const after = await select.inputValue()
+  let after = await select.inputValue()
+  if (after === before) {
+    // The value was already the last option (without a Claude login the default is the last proxy): go up instead.
+    await page.keyboard.press('ArrowUp')
+    after = await select.inputValue()
+  }
   check(before !== after || optionTexts.length < 2, 'ArrowDown changes the Connection Select value', `${before} -> ${after}`)
   await select.selectOption(proxyId)
   check(/tier models/.test((await form.locator('[data-testid=new-project-connection-hint]').textContent()) ?? ''), 'a proxy pick shows the tier-mapping note')
