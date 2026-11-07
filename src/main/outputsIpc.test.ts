@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,7 +15,18 @@ vi.mock('electron', () => ({
 }))
 vi.mock('./log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
 
-const { registerOutputsIpc } = await import('./outputsIpc')
+const { registerOutputsIpc: registerRaw } = await import('./outputsIpc')
+const { DESKTOP_CHANNEL_MUTATES } = await import('./ipc')
+const readOnlyCalls: string[] = []
+const registerOutputsIpc = (d: Omit<Parameters<typeof registerRaw>[0], 'handleReadOnly'>): void =>
+  registerRaw({
+    ...d,
+    handleReadOnly: (c, fn) => {
+      readOnlyCalls.push(c)
+      if (DESKTOP_CHANNEL_MUTATES[c] !== false) throw new Error(`${c} is not a read-only desktop-only channel`)
+      handlers.set(c, fn as never)
+    }
+  })
 const { OUTPUTS_IPC } = await import('@shared/types')
 const { project: makeProject } = await import('./runtime/testHelpers')
 type OutputsServiceApi = import('./outputs/api').OutputsServiceApi
@@ -51,6 +62,28 @@ describe('outputs desktop-only channels', () => {
   it('registers open, reveal and saveAs', () => {
     register()
     expect([...handlers.keys()].sort()).toEqual([OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs])
+  })
+
+  it('registers the three channels through the read-only path, classified non-mutating', () => {
+    readOnlyCalls.length = 0
+    register()
+    expect([...readOnlyCalls].sort()).toEqual([OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs].sort())
+    for (const c of readOnlyCalls) expect(DESKTOP_CHANNEL_MUTATES[c], c).toBe(false)
+  })
+
+  it('saveAs leaves exactly the destination on success and no partial file when the copy fails', async () => {
+    const out = join(dir, 'out')
+    mkdirSync(out)
+    register()
+    dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: join(out, 'copy.docx') })
+    await call(OUTPUTS_IPC.outputsSaveAs)
+    expect(readdirSync(out)).toEqual(['copy.docx'])
+    register({ checkedPath: vi.fn(() => join(dir, 'missing.docx')) })
+    const out2 = join(dir, 'out2')
+    mkdirSync(out2)
+    dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: join(out2, 'x.docx') })
+    await expect(call(OUTPUTS_IPC.outputsSaveAs)).rejects.toThrow()
+    expect(readdirSync(out2)).toEqual([])
   })
 
   it('open passes the checked path to shell.openPath and returns its answer', async () => {
