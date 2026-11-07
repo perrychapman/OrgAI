@@ -13,12 +13,12 @@ import { roleChipLabel } from '../lib/roleModels'
 import { elevatedTools, toolsAriaLabel } from '../lib/roleCapabilities'
 import { capabilityLabel, capabilityParts, type CapabilityCounts } from '../lib/teamView'
 
-export type RoleFlowNode = Node<{ role: Role; reportCount: number; capabilities: CapabilityCounts }, 'role'>
+export type RoleFlowNode = Node<{ role: Role; reportCount: number; capabilities: CapabilityCounts; arrived?: boolean }, 'role'>
 
 const CAP_ICONS = { tools: Wrench, connections: Plug, skills: BookOpen } as const
 
 function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactElement {
-  const { role, reportCount, capabilities } = data
+  const { role, reportCount, capabilities, arrived } = data
   const parts = capabilityParts(capabilities)
   const elevated = elevatedTools(role.tools, TOOL_CATALOG)
   const { layout, nodeStyle } = useCanvasOptions()
@@ -52,7 +52,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
     : undefined
   return (
     <div
-      className={`role-node ${selected ? 'selected' : ''} ${isRoot ? 'is-root' : ''}`}
+      className={`role-node ${selected ? 'selected' : ''} ${isRoot ? 'is-root' : ''} ${arrived ? 'motion-pop' : ''}`}
       data-style={nodeStyle}
       data-label={station ? geo.label : undefined}
       style={{ ['--role' as string]: role.color, ...(station ? { width: geo.width, height: geo.height } : {}) }}

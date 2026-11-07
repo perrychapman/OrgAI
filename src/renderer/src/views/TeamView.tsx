@@ -38,7 +38,8 @@ import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
-import { EDGE_TYPE, HEX_GAP, HEX_TILE, edgeStroke, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, beginCanvasGlide, edgeStroke, fitMs, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
 
 /** Role node box per node style for layout and fit (section 4): cards 220 wide, name tags 160 x 40. */
@@ -92,6 +93,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     if (!el || typeof ResizeObserver === 'undefined') return undefined
     let t: ReturnType<typeof setTimeout> | undefined
     let first = true
+    let pending = false
     const ro = new ResizeObserver(() => {
       if (first) {
         first = false
@@ -99,13 +101,25 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       }
       clearTimeout(t)
       t = setTimeout(() => {
+        // The sidebar or side panel is gliding: one refit when it settles, never per frame.
+        if (isLayoutMoving()) {
+          pending = true
+          return
+        }
         const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
         void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
       }, 100)
     })
+    const unsettled = onLayoutSettled(() => {
+      if (!pending) return
+      pending = false
+      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+    })
     ro.observe(el)
     return () => {
       clearTimeout(t)
+      unsettled()
       ro.disconnect()
     }
   }, [])
@@ -126,6 +140,15 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       clearTimeout(t)
       t = setTimeout(() => {
         last = stage.clientHeight
+        if (isLayoutMoving()) {
+          // The tray is gliding: wait for it to settle, then fit once.
+          const off = onLayoutSettled(() => {
+            off()
+            const r = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+            void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: r ? 0 : 150 })
+          })
+          return
+        }
         const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
         void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
       }, 150)
@@ -313,6 +336,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     return () => window.cancelAnimationFrame(id)
   }, [focusTick, selectedRole])
 
+  // New roles pop in once (motion.md 3.12); the roles present when the editor opens never do.
+  const roleIds = useMemo(() => project.roles.map((r) => r.id), [project.roles])
+  const arrival = useNodeArrival(roleIds, project.id)
   const nodes: RoleFlowNode[] = useMemo(
     () =>
       project.roles.map((role) => {
@@ -327,10 +353,10 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           initialHeight: roleSize.height,
           ...(nodeDims.dims[role.id] ? { measured: nodeDims.dims[role.id] } : {}),
           ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. ${capabilityLabel(capabilities)}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.`,
-          data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length, capabilities }
+          data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length, capabilities, ...(arrival.isNew(role.id) ? { arrived: true } : {}) }
         }
       }),
-    [project, selectedRoleId, roleSize, nodeDims.dims]
+    [project, selectedRoleId, roleSize, nodeDims.dims, arrival.arrivedKey]
   )
 
   const edges: Edge[] = useMemo(
@@ -543,10 +569,12 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: roleSize.width, height: roleSize.height })),
       { nodesep: 60, ranksep: 110, ringStep: ringStepFor(options.nodeStyle), ...(options.nodeStyle === 'hex' ? { honeycomb: { width: HEX_TILE.width, height: HEX_TILE.height, gap: HEX_GAP } } : {}) }
     )
+    // The nodes glide to their new places (up to 60 of them), then one fit.
+    const glide = beginCanvasGlide(frameRef.current, project.roles.length)
     updateRoles(project.id, (roles) => roles.map((r) => ({ ...r, position: pos[r.id] ?? r.position })))
     window.setTimeout(() => {
-      void flowRef.current?.fitView({ padding: radial ? 0.12 : 0.3, maxZoom: 1, duration: reducedMotion ? 0 : 300 })
-    }, 80)
+      void flowRef.current?.fitView({ padding: radial ? 0.12 : 0.3, maxZoom: 1, duration: fitMs(reducedMotion) })
+    }, glide > 0 ? glide + 10 : 80)
   }
 
   return (
