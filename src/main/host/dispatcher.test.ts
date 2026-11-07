@@ -51,7 +51,8 @@ const DESKTOP_ONLY = [
   'teamFiles:commit',
   'outputs:open',
   'outputs:reveal',
-  'outputs:saveAs'
+  'outputs:saveAs',
+  'outputs:saveImage'
 ]
 
 const DESKTOP = { surface: 'desktop' as const, senderId: 1 }

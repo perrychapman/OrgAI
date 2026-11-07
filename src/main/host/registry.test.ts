@@ -36,11 +36,11 @@ import {
  * Wave 7 secrets:* channels (cli-standalone.md 5.6: status 'read', init / reset / undelete 'configure').
  */
 const SPEC_TABLE = {
-  read: `host.status, host.subscribe, app:info, app:logPath, settings:get, auth:status, projects:list, projects:get, projects:checkPath, projects:previewRemap, projects:scanAgents, projects:previewImport, projects:removePreview, projects:engagementDocument, projects:listNotes, projects:getNote, runs:list, runs:get, runs:listLive, runs:pendingCards, runs:usageStats, runs:usageCsv, runs:subscribe, runs:findDecision, permissions:list, permissions:ignored, connections:list, models:list, models:prices, mcp:list, mcp:registrySearch, mcpLibrary:list, connectors:list, connectorPresets:list, skills:list, skills:read, skills:previewImport, skills:lastEvaluation, skillLibrary:list, skillLibrary:read, capabilities:lastReview, maintenance:listWorktrees, maintenance:diff, templates:list, knowledge:get, knowledge:inferredLinks, kit:previewBundle, projects:folderConfig, teamFiles:listAttention, secrets:status, app:reference, outputs:list, outputs:preview`,
-  operate: `runs:start, runs:startQuick, runs:continue, runs:send, runs:interrupt, runs:stop, runs:resumeNow, runs:cancelAutoResume, setup:start, setup:retro, mcp:startAssist, skills:startAssist, usage:refresh, connections:test, models:refresh, mcp:test, mcpLibrary:test, capabilities:discover, capabilities:recommend, capabilities:cancel, capabilities:review, skills:evaluate, draft:orgChart, window:openRun`,
+  read: `host.status, host.subscribe, app:info, app:logPath, settings:get, auth:status, projects:list, projects:get, projects:checkPath, projects:previewRemap, projects:scanAgents, projects:previewImport, projects:removePreview, projects:engagementDocument, projects:listNotes, projects:getNote, runs:list, runs:get, runs:listLive, runs:pendingCards, runs:usageStats, runs:usageCsv, runs:subscribe, runs:findDecision, permissions:list, permissions:ignored, connections:list, models:list, models:prices, mcp:list, mcp:registrySearch, mcpLibrary:list, connectors:list, connectorPresets:list, skills:list, skills:read, skills:previewImport, skills:lastEvaluation, skillLibrary:list, skillLibrary:read, capabilities:lastReview, maintenance:listWorktrees, maintenance:diff, templates:list, knowledge:get, knowledge:inferredLinks, kit:previewBundle, projects:folderConfig, teamFiles:listAttention, secrets:status, app:reference, outputs:list, outputs:preview, outputs:deletePreview, outputs:versions, outputs:readSource, outputs:thumb, outputs:compare, outputs:notes, outputs:revisions, outputs:reviseOptions`,
+  operate: `runs:start, runs:startQuick, runs:continue, runs:send, runs:interrupt, runs:stop, runs:resumeNow, runs:cancelAutoResume, setup:start, setup:retro, mcp:startAssist, skills:startAssist, usage:refresh, connections:test, models:refresh, mcp:test, mcpLibrary:test, capabilities:discover, capabilities:recommend, capabilities:cancel, capabilities:review, skills:evaluate, draft:orgChart, window:openRun, outputs:noteAdd, outputs:noteUpdate, outputs:noteRemove, outputs:revise, outputs:watch, outputs:unwatch`,
   decide: `runs:decide, permissions:decideRequest, setup:decide, setup:answer, merges:decide, mcp:answerInstall`,
-  configure: `host.stop, settings:set, projects:create, projects:save, projects:remove, projects:remapModels, projects:applyImport, projects:exportOrg, projects:updateEngagementDocument, projects:saveNote, projects:removeNote, runs:promoteQuick, permissions:add, permissions:remove, connections:connect, connections:update, connections:setSecret, connections:createProxy, connections:removeProxy, connections:login, connections:cancelLogin, connections:logout, connections:setDefault, mcp:upsert, mcp:remove, mcp:setSecret, mcp:linkLibrary, mcp:promote, mcp:authorize, mcp:cancelAuthorize, mcp:revokeAuth, mcp:copyFromLibrary, mcp:setProjectOverrides, mcpLibrary:upsert, mcpLibrary:remove, mcpLibrary:setSecret, connectors:add, connectors:setToken, connectorPresets:upsert, connectorPresets:remove, plugins:upsert, plugins:remove, skills:create, skills:update, skills:remove, skills:linkLibrary, skills:promote, skills:applyImport, skills:undoImport, skills:applySuggestion, skillLibrary:create, skillLibrary:addFromBundle, skillLibrary:update, skillLibrary:remove, capabilities:apply, capabilities:undo, capabilities:dismiss, capabilities:restore, maintenance:integrateWorktree, maintenance:discardWorktree, maintenance:uninstallRepo, templates:saveFromProject, templates:remove, templates:apply, knowledge:saveNode, knowledge:removeNode, knowledge:saveEdge, knowledge:removeEdge, knowledge:clear, knowledge:dismissLink, kit:exportBundle, kit:applyBundle, teamFiles:status, secrets:init, secrets:reset, secrets:undelete, secrets:confirmDelete, outputs:forget, outputs:delete`,
-  desktop_only: `projects:pickDirectory, skillLibrary:addFromFolder, kit:pickExportPath, kit:pickImportPath, kit:export, kit:previewImport, kit:applyImport, menu:setState, app:openPath, app:openLogs, app:setNotifications, app:cliShimStatus, app:installCliShim, app:uninstallCliShim, projects:parseRepoSource, projects:repoTools, projects:cloneRepo, projects:cancelClone, projects:setFolderConfigTrust, teamFiles:approve, teamFiles:reject, teamFiles:undo, teamFiles:enable, teamFiles:commit, outputs:open, outputs:reveal, outputs:saveAs`,
+  configure: `host.stop, settings:set, projects:create, projects:save, projects:remove, projects:remapModels, projects:applyImport, projects:exportOrg, projects:updateEngagementDocument, projects:saveNote, projects:removeNote, runs:promoteQuick, permissions:add, permissions:remove, connections:connect, connections:update, connections:setSecret, connections:createProxy, connections:removeProxy, connections:login, connections:cancelLogin, connections:logout, connections:setDefault, mcp:upsert, mcp:remove, mcp:setSecret, mcp:linkLibrary, mcp:promote, mcp:authorize, mcp:cancelAuthorize, mcp:revokeAuth, mcp:copyFromLibrary, mcp:setProjectOverrides, mcpLibrary:upsert, mcpLibrary:remove, mcpLibrary:setSecret, connectors:add, connectors:setToken, connectorPresets:upsert, connectorPresets:remove, plugins:upsert, plugins:remove, skills:create, skills:update, skills:remove, skills:linkLibrary, skills:promote, skills:applyImport, skills:undoImport, skills:applySuggestion, skillLibrary:create, skillLibrary:addFromBundle, skillLibrary:update, skillLibrary:remove, capabilities:apply, capabilities:undo, capabilities:dismiss, capabilities:restore, maintenance:integrateWorktree, maintenance:discardWorktree, maintenance:uninstallRepo, templates:saveFromProject, templates:remove, templates:apply, knowledge:saveNode, knowledge:removeNode, knowledge:saveEdge, knowledge:removeEdge, knowledge:clear, knowledge:dismissLink, kit:exportBundle, kit:applyBundle, teamFiles:status, secrets:init, secrets:reset, secrets:undelete, secrets:confirmDelete, outputs:forget, outputs:delete, outputs:saveEdit, outputs:restore, outputs:update`,
+  desktop_only: `projects:pickDirectory, skillLibrary:addFromFolder, kit:pickExportPath, kit:pickImportPath, kit:export, kit:previewImport, kit:applyImport, menu:setState, app:openPath, app:openLogs, app:setNotifications, app:cliShimStatus, app:installCliShim, app:uninstallCliShim, projects:parseRepoSource, projects:repoTools, projects:cloneRepo, projects:cancelClone, projects:setFolderConfigTrust, teamFiles:approve, teamFiles:reject, teamFiles:undo, teamFiles:enable, teamFiles:commit, outputs:open, outputs:reveal, outputs:saveAs, outputs:saveImage`,
   socket_subscribable: `runs:event, settings:changed, connections:event, mcpLibrary:changed, skillLibrary:changed, capabilities:progress, capabilities:reviewUpdated, projects:engagementChanged, outputs:changed`,
   push_desktop_only: `app:focusRun, menu:action, projects:cloneProgress, teamFiles:changed, app:navigate`
 } as const
@@ -63,8 +63,8 @@ function failure(fn: () => unknown): HostRpcFailure {
 const existing = [...new Set([...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC)])]
 
 describe('HOST_CHANNEL_REGISTRY coverage (Wave 1 gate)', () => {
-  it('has an entry for each of the 189 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
-    expect(existing).toHaveLength(189)
+  it('has an entry for each of the 207 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
+    expect(existing).toHaveLength(207)
     expect(Object.values(HOST_IPC)).toHaveLength(6)
     expect(Object.values(SECRETS_IPC)).toHaveLength(5)
     expect(Object.values(HOST_METHODS)).toHaveLength(5)
@@ -73,13 +73,13 @@ describe('HOST_CHANNEL_REGISTRY coverage (Wave 1 gate)', () => {
     for (const c of Object.values(SECRETS_IPC)) expect(channelEntry(c), c).toBeDefined()
     for (const c of Object.values(HOST_METHODS)) expect(channelEntry(c), c).toBeDefined()
     const expected = [...allChannels(), ...Object.values(HOST_METHODS)].sort()
-    expect(new Set(allChannels()).size).toBe(200)
+    expect(new Set(allChannels()).size).toBe(218)
     expect(Object.keys(HOST_CHANNEL_REGISTRY).sort()).toEqual(expected)
   })
 
-  it('splits the existing channels into 175 requests and 14 pushes (9 socket_subscribable, 5 desktop_only)', () => {
+  it('splits the existing channels into 193 requests and 14 pushes (9 socket_subscribable, 5 desktop_only)', () => {
     const entries = existing.map((c) => HOST_CHANNEL_REGISTRY[c])
-    expect(entries.filter((e) => e.direction === 'request')).toHaveLength(175)
+    expect(entries.filter((e) => e.direction === 'request')).toHaveLength(193)
     const push = entries.filter((e): e is PushChannelEntry => e.direction === 'push')
     expect(push).toHaveLength(14)
     expect(push.filter((e) => e.delivery === 'socket_subscribable')).toHaveLength(9)
@@ -148,7 +148,7 @@ describe('scope classification (cli-spec 3.3(3) table)', () => {
     expect(scopeOf('projects:cloneRepo')).toBe('desktop_only')
   })
 
-  it('exactly the 27 desktop_only request channels', () => {
+  it('exactly the 28 desktop_only request channels', () => {
     expect(desktopOnlyChannels().sort()).toEqual(
       [
         'projects:pickDirectory',
@@ -177,7 +177,8 @@ describe('scope classification (cli-spec 3.3(3) table)', () => {
         'teamFiles:commit',
         'outputs:open',
         'outputs:reveal',
-        'outputs:saveAs'
+        'outputs:saveAs',
+        'outputs:saveImage'
       ].sort()
     )
   })
@@ -251,7 +252,7 @@ describe('entry flags', () => {
 
   it('socketInvokableChannels leaves out desktop_only and transport channels', () => {
     const invokable = socketInvokableChannels()
-    expect(invokable).toHaveLength(requestEntries().length - 27 - 2)
+    expect(invokable).toHaveLength(requestEntries().length - 28 - 2)
     expect(invokable).toContain('runs:start')
     expect(invokable).toContain('host.status')
     expect(invokable).toContain('window:openRun')
