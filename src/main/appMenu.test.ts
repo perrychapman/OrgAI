@@ -32,6 +32,7 @@ import {
   menuActionSender,
   menuActionTarget,
   menuItemEnabled,
+  navigateSender,
   openHelpUrl,
   setMenuState
 } from './appMenu'
@@ -102,7 +103,7 @@ describe.each(['darwin', 'win32', 'linux'])('buildMenuTemplate on %s', (platform
       'Interrupt turn', 'End session', '-', 'Save chat as project', 'Org retrospective'
     ])
     expect(labels(menu(template, 'Help'))).toEqual([
-      'Documentation', 'Report an issue', 'Keyboard shortcuts', '-', 'Open logs folder', 'Open data folder', '-', 'About OrgAI'
+      'Documentation', 'Report an issue', 'Keyboard shortcuts', 'Ask OrgAI about itself…', '-', 'Open logs folder', 'Open data folder', '-', 'About OrgAI'
     ])
     if (mac) {
       expect(labels(menu(template, 'OrgAI'))).toEqual([
@@ -226,7 +227,7 @@ describe('menuItemEnabled', () => {
   it('follows the rule table', () => {
     const always = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant',
       'open-app-settings', 'open-connections', 'open-connectors', 'open-skill-library', 'open-about',
-      'toggle-sidebar', 'keyboard-shortcuts']
+      'toggle-sidebar', 'keyboard-shortcuts', 'ask-about-orgai']
     expect(enabledFor(EMPTY_MENU_STATE)).toEqual([...always].sort())
     expect(enabledFor(only('hasProject'))).toEqual(
       [...always, 'show-live', 'show-history', 'show-team', 'show-project-settings', 'new-run'].sort()
@@ -270,7 +271,7 @@ describe('menuActionTarget', () => {
   it('classifies every action', () => {
     const main = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant', 'open-app-settings',
       'open-connections', 'open-connectors', 'open-skill-library', 'open-about', 'show-live', 'show-history', 'show-team',
-      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts', 'show-needs-you']
+      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts', 'show-needs-you', 'ask-about-orgai']
     const focused = ['new-run', 'close-tab', 'interrupt-run', 'end-session', 'go-to-decision',
       'org-retrospective', 'save-chat-as-project', 'open-run-window', 'toggle-conversation', 'toggle-hide-finished',
       'canvas-fit', 'canvas-zoom-in', 'canvas-zoom-out']
@@ -405,6 +406,62 @@ describe('menuActionSender', () => {
     expect(() => menuActionSender(() => null, () => [])('show-live')).not.toThrow()
     menuActionSender(() => live, () => [[live, undefined]])('bogus' as MenuAction)
     expect(live.webContents.send).not.toHaveBeenCalled()
+  })
+})
+
+describe('Help > Ask OrgAI about itself', () => {
+  it('is a renderer item whose id is its action, on every platform, routed to main', () => {
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      const { template, send } = build(platform)
+      const help = template.find((m) => m.label === 'Help')!.submenu as Item[]
+      const entry = help.find((i) => i.id === 'ask-about-orgai')!
+      expect(entry.label).toBe('Ask OrgAI about itself…')
+      ;(entry.click as () => void)()
+      expect(send).toHaveBeenCalledWith('ask-about-orgai')
+    }
+    expect(menuActionTarget('ask-about-orgai')).toBe('main')
+  })
+})
+
+describe('navigateSender', () => {
+  let nextId = 900
+  const win = (withId = false) => ({
+    ...(withId ? { id: nextId++ } : {}),
+    isDestroyed: () => false,
+    isMinimized: vi.fn(() => true),
+    restore: vi.fn(),
+    focus: vi.fn(),
+    once: vi.fn(),
+    webContents: { isDestroyed: () => false, send: vi.fn() }
+  })
+  const EVENT = { surfaceId: 'dashboard' as const, runId: 'r1', agentLabel: 'Assistant' }
+
+  it('sends app:navigate to the unscoped main window, restored and focused, never a run window', () => {
+    const main = win()
+    const runWin = win()
+    const ok = navigateSender(() => runWin, () => [[runWin, { projectId: 'p', runId: 'r' }], [main, undefined]])({ ...EVENT, extra: 1 } as never)
+    expect(ok).toBe(true)
+    expect(main.restore).toHaveBeenCalled()
+    expect(main.focus).toHaveBeenCalled()
+    expect(main.webContents.send).toHaveBeenCalledWith(IPC.appNavigate, EVENT)
+    expect(runWin.webContents.send).not.toHaveBeenCalled()
+  })
+  it('creates the main window when closed and queues until its renderer reports ready', () => {
+    const created = win(true)
+    const go = navigateSender(() => null, () => [], () => created)
+    expect(go(EVENT)).toBe(true)
+    expect(created.webContents.send).not.toHaveBeenCalled()
+    setMenuState(created as never, EMPTY_MENU_STATE)
+    expect(created.webContents.send).toHaveBeenCalledWith(IPC.appNavigate, EVENT)
+  })
+  it('refuses an invalid event and answers false with no window to make', () => {
+    const main = win()
+    const go = navigateSender(() => null, () => [[main, undefined]])
+    expect(go({ ...EVENT, surfaceId: 'nope' } as never)).toBe(false)
+    expect(go({ ...EVENT, agentLabel: 'x'.repeat(81) })).toBe(false)
+    expect(go({ ...EVENT, runId: 3 } as never)).toBe(false)
+    expect(main.webContents.send).not.toHaveBeenCalled()
+    expect(navigateSender(() => null, () => [])(EVENT)).toBe(false)
   })
 })
 

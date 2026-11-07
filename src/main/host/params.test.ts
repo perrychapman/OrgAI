@@ -102,6 +102,7 @@ const PAYLOADS: Record<string, unknown[]> = {
   'projects:cancelClone': ['req_1'],
   'app:logPath': [],
   'app:info': [],
+  'app:reference': [{ action: 'search', query: 'theme', budget: 1200 }],
   // permissions
   'permissions:list': ['p_abc123'],
   'permissions:remove': [{ projectId: 'p_abc123', rule: 'Bash(npm test:*)' }],

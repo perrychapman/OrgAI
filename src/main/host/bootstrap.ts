@@ -50,7 +50,10 @@ import { SecretStore, type SecretCipher, type SecretStoreOptions } from '../stor
 import { SettingsStore } from '../store/settings'
 import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
-import { harnessProjectFor, withEffectiveDefault } from './args'
+import { createAppReference, type ShortcutRow } from '../reference/appReference'
+import { withAppSettingChanges } from '../../shared/appSettingsProposal'
+import type { AppSettingsProposalPayload, CliShimStatus } from '../../shared/types'
+import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
 import { HostEventBus } from './events'
 import type { HostOwnership } from './ownership'
@@ -105,6 +108,10 @@ export interface BootOrgAIHostOptions {
   secrets?: SecretStoreOptions
   openExternal(url: string): Promise<void> | void
   desktop?: DesktopHooks
+  /** Shortcut rows for the reference corpus (the shell maps shared/view SHORTCUTS to this; main never imports renderer code). */
+  referenceShortcuts?: readonly ShortcutRow[]
+  /** The command line shim state for the reference status snapshot (desktop shell only). */
+  cliShimStatus?: () => CliShimStatus | Promise<CliShimStatus>
   /** ORGAI_MOCK === '1': registers the scripted mock adapter and keeps discovery off the real home. */
   mock: boolean
   platform?: NodeJS.Platform
@@ -141,6 +148,16 @@ export interface OrgAIHost {
 export interface HostTerminalAccess {
   enabled: boolean
   level: TerminalAccessLevel
+}
+
+/**
+ * An approved appSettings proposal, applied exactly like settings:set (dispatcher): the changes merge onto the stored
+ * settings, settingsSetArgs keeps every main-owned field, SettingsStore.set normalizes and notifies its listeners
+ * (theme, settings:changed). Throws a readable sentence on a refused value; nothing is saved then. Exported for tests.
+ */
+export function applyAppSettingsPayload(settings: Pick<SettingsStore, 'get' | 'set'>, payload: AppSettingsProposalPayload): void {
+  const stored = settings.get()
+  settings.set(settingsSetArgs(withAppSettingChanges(stored, payload.changes), stored))
 }
 
 export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
@@ -336,8 +353,32 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     }, LITELLM_SPEND_DELAY_MS)
   }
   let activityRef: HostActivityTracker | undefined
+  // Self-knowledge: OrgAI answers about itself (reference service, built lazily on first query) and can configure itself.
+  const reference = createAppReference({
+    shortcuts: opts.referenceShortcuts,
+    status: {
+      appVersion: env.appVersion,
+      platform,
+      dataDir,
+      mock: mockAdapter,
+      settings: () => settings.get(),
+      connections: () => connections.list(),
+      projectCount: () => projects.list().length,
+      mcpLibraryCount: () => mcp.libraryEntries().length,
+      skillLibraryCount: () => skills.libraryList().length,
+      ...(opts.cliShimStatus ? { cliShim: opts.cliShimStatus } : {})
+    }
+  })
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    selfKnowledge: {
+      reference: (q, o) => reference.query(q, o),
+      navigate: (e) => opts.desktop?.navigate?.(e) ?? false,
+      settings: () => settings.get(),
+      // As settings:set (dispatcher): merge onto the stored settings through settingsSetArgs; SettingsStore.set
+      // normalizes and notifies its listeners (theme, settings:changed with the effective default).
+      applyAppSettings: (payload) => applyAppSettingsPayload(settings, payload)
+    },
     teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir),
@@ -561,6 +602,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     events,
     activity,
     usage: { refresh: () => monitor.refresh() },
+    reference,
     env: {
       app: { getVersion: () => env.appVersion, getPath: () => env.userDataDir, isPackaged: env.isPackaged },
       platform,
