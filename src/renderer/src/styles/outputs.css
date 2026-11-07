@@ -224,3 +224,69 @@
 .output-write-row[data-state='refused'] .entry-plain {
   color: var(--warning-text);
 }
+
+/* ---------- Detail head, extension badge, hint, Larger view (docs/design/outputs.md section 12) ---------- */
+.output-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.output-detail-head .output-detail-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.output-detail-head .icon-btn {
+  flex: none;
+}
+.output-detail-heading .badge,
+.run-output-head .badge,
+.outputs-row-head .badge {
+  flex: none;
+}
+.output-detail-hint {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.run-output-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.run-output-head .run-output-title {
+  min-width: 0;
+}
+
+/* The Larger view dialog takes nearly the whole window; the preview fills it. */
+.dialog.size-lg:has(.output-dialog-body) {
+  max-width: none;
+  width: calc(100vw - var(--space-8));
+  height: calc(100vh - var(--space-8));
+}
+.dialog.size-lg:has(.output-dialog-body) .dialog-panel {
+  flex: 1 1 auto;
+}
+.dialog.size-lg:has(.output-dialog-body) .dialog-body {
+  flex: 1 1 auto;
+}
+.output-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.output-dialog-body .outputs-notice:empty {
+  display: none;
+}
+
+/* History: the quiet "N outputs" chip. */
+.history-outputs {
+  flex: none;
+  color: var(--text-secondary);
+}

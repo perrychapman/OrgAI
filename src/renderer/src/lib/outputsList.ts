@@ -2,7 +2,7 @@
 import type { OutputKind, RunOutput } from '@shared/types'
 import { runTag } from '@shared/view/runLabels'
 import { formatDate } from './dates'
-import { OUTPUT_KIND_PLURAL, outputsCountLabel } from './outputs'
+import { kindChipLabel, outputSearchTerms, outputsCountLabel } from './outputs'
 import { typeAheadMatch } from './knowledgeList'
 
 /** The filter state of one view instance. `runId` '' means every run; no kinds means every kind. */
@@ -27,10 +27,10 @@ export function isOutputsFilterActive(f: OutputsFilter): boolean {
 }
 
 /** Case-insensitive search over title, file name, relative path and role. An empty query matches everything. */
-export function matchesQuery(o: Pick<RunOutput, 'title' | 'fileName' | 'relPath' | 'role'>, query: string): boolean {
+export function matchesQuery(o: Pick<RunOutput, 'title' | 'fileName' | 'relPath' | 'role' | 'kind'>, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
-  return [o.title, o.fileName, o.relPath, o.role ?? ''].some((s) => s.toLowerCase().includes(q))
+  return outputSearchTerms(o).some((s) => s.toLowerCase().includes(q))
 }
 
 /** Outputs matching the search and the run, whatever the kinds (what the kind chips count). */
@@ -59,7 +59,7 @@ export function kindCounts(list: readonly RunOutput[], f: OutputsFilter): KindCo
   for (const o of list) if (!counts.has(o.kind)) counts.set(o.kind, 0)
   for (const o of outputsBeforeKinds(list, f)) counts.set(o.kind, (counts.get(o.kind) ?? 0) + 1)
   return [...counts.entries()]
-    .map(([kind, count]) => ({ kind, label: OUTPUT_KIND_PLURAL[kind] ?? 'Other files', count }))
+    .map(([kind, count]) => ({ kind, label: kindChipLabel(kind), count }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
 }
 

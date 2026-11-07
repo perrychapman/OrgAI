@@ -9,6 +9,7 @@ import { showHidden } from '../../lib/hiddenChars'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import OutputKindIcon from './OutputKindIcon'
+import ExtBadge from './ExtBadge'
 
 export interface OutputsListHandle {
   /** Focus the row (growing the shown page when it is past it); falls back to the current row. */
@@ -191,6 +192,7 @@ function OutputRow({ output, runLabel, selected, domId, onOpen }: { output: RunO
           <span className="outputs-row-title" data-testid="output-row-title" title={output.title}>
             {showHidden(output.title)}
           </span>
+          <ExtBadge fileName={output.fileName} />
           {output.missing && <Badge tone="attention">Missing</Badge>}
         </span>
         <span className="outputs-row-meta" title={meta}>

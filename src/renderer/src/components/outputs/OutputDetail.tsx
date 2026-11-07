@@ -1,7 +1,8 @@
 // The shown output (docs/design/outputs.md section 4): heading, meta, provenance with the run link, description,
 // toolbar (Open, More actions) and the preview. Shared by the run side tab and the project tab.
 import type { ReactElement } from 'react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Maximize2 } from 'lucide-react'
 import type { RunOutput } from '@shared/types'
 import { useAppStore, useRunIndexes } from '../../store/useAppStore'
 import { canOpenOutput, outputMetaLine, provenanceLine } from '../../lib/outputs'
@@ -11,6 +12,9 @@ import { HIDDEN_SHOWN_TITLE } from '../../lib/teamFound'
 import { runTag } from '../../lib/runLabels'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
+import { Dialog } from '../ui/Dialog'
+import { IconButton } from '../ui/IconButton'
+import ExtBadge from './ExtBadge'
 import { ClampText } from '../proposals/ClampText'
 import OutputActions from './OutputActions'
 import OutputPreview from './OutputPreview'
@@ -24,6 +28,23 @@ export interface OutputDetailProps {
   onNotice?: (text: string) => void
   /** Focus the heading on mount (the default). */
   autoFocus?: boolean
+  /** The run side tab's panel is narrower than the wide split: say once per session how to get more room. */
+  narrowHint?: boolean
+}
+
+/** localStorage flag: the narrow-panel hint was shown this session. */
+export const WIDE_HINT_KEY = 'orgai.outputsWideHint'
+export const WIDE_HINT_TEXT = 'Drag the panel edge or use Larger view'
+
+/** True the first time only (the flag is saved when the hint is first shown, so it never nags). */
+export function takeWideHint(): boolean {
+  try {
+    if (localStorage.getItem(WIDE_HINT_KEY)) return false
+    localStorage.setItem(WIDE_HINT_KEY, '1')
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** After a run link opened the run (the surface may unmount): land focus on the composer, else the selected run tab, else the topbar h1. */
@@ -50,8 +71,11 @@ export function settleRunFocus(): void {
   )
 }
 
-export default function OutputDetail({ output, onRemoved, onNotice, autoFocus }: OutputDetailProps): ReactElement {
+export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, narrowHint }: OutputDetailProps): ReactElement {
   const heading = useRef<HTMLHeadingElement>(null)
+  const [larger, setLarger] = useState(false)
+  const [dialogNotice, setDialogNotice] = useState('')
+  const [hint] = useState(() => narrowHint === true && takeWideHint())
   const index = useRunIndexes().get(output.runId)
   useEffect(() => {
     if (autoFocus !== false) heading.current?.focus({ preventScroll: true })
@@ -80,14 +104,23 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus }:
   }
   return (
     <section className="output-detail" data-testid="output-detail" data-id={output.id} data-kind={output.kind} aria-labelledby="output-detail-heading">
-      <h3 id="output-detail-heading" ref={heading} data-testid="output-detail-heading" tabIndex={-1} className="output-detail-heading">
-        {showHidden(output.title)}
-        {hasHidden(output.title) && (
-          <Badge tone="attention" title={HIDDEN_SHOWN_TITLE}>
-            Hidden characters shown
-          </Badge>
-        )}
-      </h3>
+      <div className="output-detail-head">
+        <h3 id="output-detail-heading" ref={heading} data-testid="output-detail-heading" tabIndex={-1} className="output-detail-heading">
+          {showHidden(output.title)}
+          {hasHidden(output.title) && (
+            <Badge tone="attention" title={HIDDEN_SHOWN_TITLE}>
+              Hidden characters shown
+            </Badge>
+          )}
+          <ExtBadge fileName={output.fileName} />
+        </h3>
+        {!missing && <IconButton icon={Maximize2} size="sm" label="Larger view" testId="output-detail-expand" onClick={() => setLarger(true)} />}
+      </div>
+      {hint && (
+        <p className="output-detail-hint" data-testid="output-wide-hint">
+          {WIDE_HINT_TEXT}
+        </p>
+      )}
       <p className="output-detail-meta" data-testid="output-detail-meta">
         {outputMetaLine(output)}
       </p>
@@ -119,6 +152,34 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus }:
         <OutputActions output={output} onRemoved={onRemoved} onNotice={onNotice} />
       </div>
       {!missing && <OutputPreview output={output} labelledBy="output-detail-heading" />}
+      {larger && (
+        <Dialog open onClose={() => setLarger(false)} title={showHidden(output.title)} size="lg" testId="output-dialog">
+          <div className="output-dialog-body">
+            <p className="output-detail-meta" data-testid="output-dialog-meta">
+              {outputMetaLine(output)}
+            </p>
+            <div className="output-detail-toolbar" role="group" aria-label="Output actions">
+              {canOpenOutput(output) && (
+                <Button variant="secondary" size="sm" testId="output-dialog-open" title="Opens in the app your computer uses for this kind of file" onClick={() => void open()}>
+                  Open
+                </Button>
+              )}
+              <OutputActions
+                output={output}
+                onNotice={(text) => setDialogNotice(text)}
+                onRemoved={(id) => {
+                  setLarger(false)
+                  onRemoved?.(id)
+                }}
+              />
+            </div>
+            <p className="outputs-notice" role="status" data-testid="output-dialog-notice">
+              {dialogNotice}
+            </p>
+            <OutputPreview output={output} />
+          </div>
+        </Dialog>
+      )}
     </section>
   )
 }

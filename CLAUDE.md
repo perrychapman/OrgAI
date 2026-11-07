@@ -1315,6 +1315,23 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   1600x1000, both themes). Unverified: native Open / Show in folder / Save as, Copy SVG's clipboard, real Word / Excel
   files, screen readers, macOS, Linux. Open: no View > Outputs menu item, no Dashboard line, rows past 300 not driven,
   no UX walk of the built feature.
+  - Post-walk fixes M1-M5 (`ux-review-outputs.md`): `output-detail-expand` "Larger view" (Maximize2) in the detail head opens
+    `output-dialog` (a `Dialog`, near full window, same `OutputPreview` and actions, `output-dialog-meta`,
+    `output-dialog-open`, `output-dialog-notice`; Esc and Close return focus to the button). Diagram and SVG previews
+    zoom: `output-mermaid-zoom[data-value=fit|<scale>]` (both kinds) with `output-zoom-out`, `-fit`, `-actual`, `-in`,
+    `output-zoom-readout` (a status), keys `+` `-` `0` (0 = 100%) while the drawing region has focus, 25% to 400%, Fit
+    never above 200% (`lib/outputZoom.ts`; the size is set in px with `!important` inside the shadow root because
+    Mermaid writes an inline max-width; `components/outputs/ZoomControl.tsx`, `SvgPreview.tsx`). In the run side tab under
+    480 px the first detail says `output-wide-hint` "Drag the panel edge or use Larger view" once ever
+    (localStorage `orgai.outputsWideHint`). Remove from list asks first (`output-forget-confirm`, "The file stays at
+    <relPath>. It leaves OrgAI's list and cannot be added back from here."); there is no undo and none is possible
+    without a contract change (OPEN: a restore channel). The announcement counts the chain's outputs when it is
+    spoken (`unannouncedTitles`) and `joinAnnouncement` puts a full stop between joined lines. One vocabulary:
+    `lib/outputs.ts` `kindLabel` (Word document, Excel workbook, Diagram, Markdown, Text, CSV, JSON, SVG, Image, PDF,
+    File) in rows ("Produced Word document Project plan", `producedSentence`), meta, detail and chips (`kindChipLabel`:
+    Word, Excel, full label as title); `output-ext` badge (".docx") beside titles; search also matches the kind name,
+    "word", "excel" and the extension. History rows show `history-outputs` "N outputs", which opens the run on its
+    Outputs tab. Driven by `e2e/outputs.mjs`; not seen: a real SVG output, the hint in a run window.
 - e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `outputs.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and

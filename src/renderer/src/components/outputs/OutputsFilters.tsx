@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Search } from 'lucide-react'
 import type { OutputKind } from '@shared/types'
+import { kindLabel } from '../../lib/outputs'
 import type { KindCount, OutputsFilter } from '../../lib/outputsList'
 import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
@@ -65,7 +66,7 @@ export function OutputsFilters({
           id={`${uid}-search`}
           type="search"
           value={text}
-          placeholder="Title, file or role"
+          placeholder="Title, file, kind or role"
           autoComplete="off"
           spellCheck={false}
           data-testid="outputs-search"
@@ -86,7 +87,7 @@ export function OutputsFilters({
             All kinds
           </button>
           {kinds.map((k) => (
-            <button key={k.kind} type="button" className="outputs-chip" data-testid="outputs-kind" data-kind={k.kind} aria-pressed={filter.kinds.includes(k.kind)} onClick={() => toggleKind(k.kind)}>
+            <button key={k.kind} type="button" className="outputs-chip" data-testid="outputs-kind" data-kind={k.kind} aria-pressed={filter.kinds.includes(k.kind)} title={kindLabel(k.kind)} onClick={() => toggleKind(k.kind)}>
               <OutputKindIcon kind={k.kind} size="xs" />
               {k.label}
               <span className="outputs-chip-n"> {k.count}</span>

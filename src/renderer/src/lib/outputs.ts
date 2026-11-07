@@ -2,38 +2,61 @@
 import type { OutputKind, OutputPreview, RunOutput } from '@shared/types'
 import { formatDate } from './dates'
 
-/** Visible name of each kind (plain words; docs/design/outputs.md "Words"). */
+/** The one visible name of each kind, on every surface (docs/design/outputs.md "Words"). */
 export const OUTPUT_KIND_LABEL: Readonly<Record<OutputKind, string>> = {
-  docx: 'Document',
-  xlsx: 'Spreadsheet',
+  docx: 'Word document',
+  xlsx: 'Excel workbook',
   mermaid: 'Diagram',
   markdown: 'Markdown',
   text: 'Text',
-  csv: 'CSV table',
+  csv: 'CSV',
   json: 'JSON',
-  svg: 'SVG image',
+  svg: 'SVG',
   image: 'Image',
   pdf: 'PDF',
   other: 'File'
 }
 
-/** Plural chip labels for the kind filter. */
-export const OUTPUT_KIND_PLURAL: Readonly<Record<OutputKind, string>> = {
-  docx: 'Documents',
-  xlsx: 'Spreadsheets',
-  mermaid: 'Diagrams',
-  markdown: 'Markdown',
-  text: 'Text',
-  csv: 'CSV tables',
-  json: 'JSON',
-  svg: 'SVG images',
-  image: 'Images',
-  pdf: 'PDFs',
-  other: 'Other files'
+/** The kind chips may shorten the two Office names; the full label is their title. */
+const KIND_CHIP_LABEL: Partial<Record<OutputKind, string>> = { docx: 'Word', xlsx: 'Excel' }
+
+/** Extra words the search matches per kind (the app's name for it, what a user would type). */
+const KIND_SEARCH_WORDS: Partial<Record<OutputKind, readonly string[]>> = {
+  docx: ['word', 'document'],
+  xlsx: ['excel', 'spreadsheet', 'workbook'],
+  mermaid: ['diagram', 'chart'],
+  image: ['picture', 'photo']
 }
 
-export function outputKindLabel(kind: OutputKind): string {
+export function kindLabel(kind: OutputKind): string {
   return OUTPUT_KIND_LABEL[kind] ?? 'File'
+}
+/** Kept for older callers. */
+export const outputKindLabel = kindLabel
+
+/** The kind filter chip's text ("Word", "Excel", else the full label). */
+export function kindChipLabel(kind: OutputKind): string {
+  return KIND_CHIP_LABEL[kind] ?? kindLabel(kind)
+}
+
+/** The file's extension without the dot, lower case; '' when there is none or it is not a plain short one. */
+export function fileExtension(fileName: string): string {
+  const name = fileName.split(/[\\/]/).pop() ?? ''
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return ''
+  const ext = name.slice(dot + 1).toLowerCase()
+  return /^[a-z0-9]{1,8}$/.test(ext) ? ext : ''
+}
+
+/** Text of the small extension badge: ".docx" ('' for no extension). */
+export function extBadgeText(fileName: string): string {
+  const ext = fileExtension(fileName)
+  return ext ? `.${ext}` : ''
+}
+
+/** The words the project tab's search looks in: title, file, path, role, the kind's name, its extension and aliases. */
+export function outputSearchTerms(o: Pick<RunOutput, 'title' | 'fileName' | 'relPath' | 'role' | 'kind'>): string[] {
+  return [o.title, o.fileName, o.relPath, o.role ?? '', kindLabel(o.kind), fileExtension(o.fileName), ...(KIND_SEARCH_WORDS[o.kind] ?? [])]
 }
 
 /** Kinds outputs:open refuses ('other' and svg: an SVG would open in a browser that runs its scripts). */
@@ -59,9 +82,9 @@ export function formatBytes(n: number): string {
   return `${mb < 10 ? Math.round(mb * 10) / 10 : Math.round(mb)} MB`
 }
 
-/** "Document · 38 KB · outputs/Project plan.docx". */
+/** "Word document · 38 KB · outputs/Project plan.docx". */
 export function outputMetaLine(o: Pick<RunOutput, 'kind' | 'bytes' | 'relPath'>): string {
-  return [outputKindLabel(o.kind), formatBytes(o.bytes), o.relPath].filter(Boolean).join(' · ')
+  return [kindLabel(o.kind), formatBytes(o.bytes), o.relPath].filter(Boolean).join(' · ')
 }
 
 /** "Analyst · R1 · 7 Nov 2026" (role missing = "An agent"; run tag missing = left out). */

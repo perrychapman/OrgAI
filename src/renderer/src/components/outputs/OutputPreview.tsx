@@ -2,13 +2,13 @@ import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { OutputPreview as OutputPreviewData, RunOutput } from '@shared/types'
 import { previewCacheFor, previewKey } from '../../lib/outputs'
-import { svgDataUrl } from '../../lib/outputPreview'
 import { Button } from '../ui/Button'
 import { PreviewStatusContext } from './previewStatus'
 import DocumentView from './DocumentView'
 import SheetView from './SheetView'
 import TextPreview from './TextPreview'
 import ImagePreview from './ImagePreview'
+import SvgPreview from './SvgPreview'
 import '../../styles/outputs-preview.css'
 
 export interface OutputPreviewProps {
@@ -116,11 +116,8 @@ export default function OutputPreview({ output }: OutputPreviewProps): ReactElem
       break
     case 'svg':
       // An <img> with a data URL runs no script and loads nothing; never inlined.
-      body = (
-        <div className="output-image-fit">
-          <img className="output-image" data-testid="output-svg-img" src={svgDataUrl(p.text)} alt={output.title} />
-        </div>
-      )
+      body = <SvgPreview text={p.text} title={output.title} />
+
       break
     case 'image':
       body = <ImagePreview dataUrl={p.dataUrl} title={output.title} />

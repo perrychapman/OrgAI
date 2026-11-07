@@ -239,6 +239,24 @@ transcript Show landing on the item, the project tab (five rows under Today, kin
 run filter, count line, type-ahead, one Tab stop, Enter to the heading, Esc back to the row, Clear the filters,
 Remove from list), the actions popover for produced and registered files, and no page scroll.
 
+Post-walk fixes (`ux-review-outputs.md` M1-M5):
+- M1 usable previews: `output-detail-expand` "Larger view" opens `output-dialog`, a near-window `Dialog` with the same
+  preview and actions (focus returns to the button on Esc or Close). Diagrams and SVG drawings get a zoom bar
+  (`output-mermaid-zoom[data-value]`, Fit / 100% / zoom in and out, keys `+` `-` `0`, 25% to 400%, Fit capped at 200%
+  and rounded down so it never scrolls); the drawing is sized in px (a transform would not give the scroll region its
+  extent) and `!important` beats Mermaid's inline max-width. The side panel's default width is unchanged; under 480 px
+  the first detail says once (localStorage `orgai.outputsWideHint`) "Drag the panel edge or use Larger view".
+- M2: Remove from list confirms (`output-forget-confirm`) and says the file stays. OPEN: undo needs a contract change
+  (an `outputs:restore` or a tombstone that `forget` keeps); until then the entry cannot be brought back from the app.
+- M3: the announcement counts the chain's outputs when it is spoken, after the throttle; `joinAnnouncement` (frame
+  announcer) puts a full stop between lines said together.
+- M4: one table, `kindLabel`; chips say Word / Excel with the full label as title; `output-ext` badge; search matches
+  the kind name, "word", "excel" and the extension; transcript rows read "Produced Word document Project plan".
+- M5: `history-outputs` chip on History rows opens the run's Outputs tab.
+Checked by unit tests (`outputs`, `outputsList`, `outputsRun`, `outputZoom`, `joinAnnouncement`, `SvgPreview`) and
+`e2e/outputs.mjs` (both sizes and themes; the Larger view's size and zoom, the hint, the confirm, the chip). Not seen:
+a real SVG output, the hint inside a run window.
+
 Unverified: native Open / Show in folder / Save as, Copy SVG's clipboard result, real Word / Excel files (only files
 main produced), screen reader output, forced colours, macOS and Linux, rows past 300 (`outputs-more`), the 5 s
 announcement throttles. Open: no View > Outputs menu item and no Dashboard line (section 11), no UX walk of the
