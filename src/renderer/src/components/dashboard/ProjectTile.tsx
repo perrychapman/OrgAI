@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactElement } from 'react'
+import type { CSSProperties, KeyboardEvent, ReactElement } from 'react'
 import { useState } from 'react'
 import { ArrowRight, FolderOpen, GitBranch, MoreHorizontal, Play, RotateCcw, ShieldAlert, Sparkles, Trash2, type LucideIcon } from 'lucide-react'
 import type { Project } from '@shared/types'
@@ -13,7 +13,7 @@ import { Badge } from '../ui/Badge'
 import { Cost } from '../ui/Cost'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
-import { continueLabel, type TileChip, type TileChipKind } from './dashboardProjects'
+import { continueLabel, openLabel, statusParts, type TileCaption, type TileChip, type TileChipKind, type TileTeam } from './dashboardProjects'
 
 /** The newest run of a project, as the tile shows it. */
 export interface TileRun {
@@ -21,8 +21,8 @@ export interface TileRun {
   name: string
   /** The status word (Running, Idle, Finished ...), for `data-status`. */
   word: StatusWord
-  /** "Idle · Waiting for your reply" or "Finished · 2 h ago". */
-  caption: string
+  /** "Needs you · Allow: Run npm test", "Running · <plan step>" or the outcome of an ended run. */
+  caption: TileCaption
 }
 
 /** What one tile shows. Built by ProjectsGrid from the store; the tile itself reads nothing. */
@@ -34,8 +34,10 @@ export interface TileModel {
   live: number
   /** A run is working now (not merely open): the tile gets its working edge. */
   working: boolean
-  /** projectStatus subtitle, or "No runs yet". */
+  /** `tileStatusLine`: the decisions and runs, "Last run 9 d ago", or "No runs yet". */
   statusLine: string
+  /** The org chart as the team row draws it. */
+  team: TileTeam
   /** The newest run, or null without runs. */
   newest: TileRun | null
   /** The chain's newest member when it can be continued. */
@@ -80,7 +82,8 @@ export function ProjectTile({
   onChip: (kind: TileChipKind) => void
   onAnnounce?: (text: string) => void
 }): ReactElement {
-  const { project, decisions, working, statusLine, newest, continuable, chips, weekCost } = model
+  const { project, decisions, working, statusLine, team, newest, continuable, chips, weekCost } = model
+  const parts = statusParts(statusLine, decisions)
   const [error, setError] = useState<string | null>(null)
   const folder = folderName(project.path)
   const client = projectKindOf(project) === 'engagement' ? clientOf(project) : ''
@@ -119,14 +122,75 @@ export function ProjectTile({
             type="button"
             className="project-tile-main"
             data-testid="project-tile-main"
-            aria-label={`Open ${project.name}, ${statusLine}${newest ? `, ${newest.name}` : ''}${pending ? ', setup pending' : ''}`}
+            aria-label={openLabel({ name: project.name, statusLine, team, newestName: newest?.name, setupPending: pending })}
             title={project.path}
             onClick={onOpen}
           >
             <span className="project-tile-name">{project.name}</span>
           </button>
         </h3>
-        <div className="project-tile-more">
+      </div>
+      {team.marks.length > 0 && (
+        <div className="tile-team" data-testid="tile-team" aria-hidden="true" data-count={team.total}>
+          <span className="tile-team-marks" data-line={team.marks.length > 1 ? '' : undefined} style={{ '--tile-team-line': team.marks[0].color } as CSSProperties}>
+            {team.marks.map((m, i) => (
+              <span key={m.id} className={i === 0 ? 'tile-team-root' : 'tile-team-mark'} style={{ '--role': m.color } as CSSProperties} />
+            ))}
+          </span>
+          {team.more > 0 && (
+            <span className="tile-team-more" data-testid="tile-team-more">
+              +{team.more}
+            </span>
+          )}
+        </div>
+      )}
+      <p className="project-tile-status">
+        <span className={`project-tile-dot ${state}`} aria-hidden="true" />
+        <span className="project-tile-status-text">
+          {parts.decision ? <span className="project-tile-decisions">{parts.decision}</span> : null}
+          {parts.rest}
+        </span>
+        {pending && <Badge tone="warning">Setup pending</Badge>}
+      </p>
+      {newest && (
+        <div className="project-tile-run" data-testid="tile-run" data-status={newest.word}>
+          <span className="project-tile-run-name" title={newest.name}>
+            {newest.name}
+          </span>
+          <span className="project-tile-run-cap">
+            {newest.caption.lead ? <span className="project-tile-run-lead">{newest.caption.lead}</span> : null}
+            {newest.caption.lead ? ' · ' : ''}
+            {newest.caption.text}
+          </span>
+        </div>
+      )}
+      {chips.length > 0 && (
+        <div className="tile-chips" data-testid="tile-chips">
+          {chips.map((c) => (
+            <button key={c.kind} type="button" className="tile-chip" data-testid="tile-chip" data-kind={c.kind} aria-label={c.name} onClick={() => onChip(c.kind)}>
+              <Icon icon={CHIP_ICON[c.kind]} size="sm" />
+              {c.text}
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="project-tile-foot">
+        <span className="project-tile-folder" data-testid="tile-folder" title={project.path}>
+          {folder}
+        </span>
+        {costShown && (
+          <span className="project-tile-cost" data-testid="tile-cost">
+            <Cost value={weekCost} compact labelled /> <span className="project-tile-cost-unit">last 7 days</span>
+          </span>
+        )}
+      </p>
+      {error && (
+        <p className="project-tile-error" data-testid="project-tile-error">
+          {error}
+        </p>
+      )}
+      {/* Last in the DOM so the tab order is Open, chips, More; placed top right by the CSS. */}
+      <div className="project-tile-more">
           <Popover
             trigger={<Icon icon={MoreHorizontal} size="sm" />}
             triggerClassName="icon-btn size-sm"
@@ -210,46 +274,7 @@ export function ProjectTile({
               </div>
             )}
           </Popover>
-        </div>
       </div>
-      <p className="project-tile-status">
-        <span className={`project-tile-dot ${state}`} aria-hidden="true" />
-        <span className="project-tile-status-text">{statusLine}</span>
-        {pending && <Badge tone="warning">Setup pending</Badge>}
-      </p>
-      {newest && (
-        <div className="project-tile-run" data-testid="tile-run" data-status={newest.word}>
-          <span className="project-tile-run-name" title={newest.name}>
-            {newest.name}
-          </span>
-          <span className="project-tile-run-cap">{newest.caption}</span>
-        </div>
-      )}
-      {chips.length > 0 && (
-        <div className="tile-chips" data-testid="tile-chips">
-          {chips.map((c) => (
-            <button key={c.kind} type="button" className="tile-chip" data-testid="tile-chip" data-kind={c.kind} aria-label={c.name} onClick={() => onChip(c.kind)}>
-              <Icon icon={CHIP_ICON[c.kind]} size="sm" />
-              {c.text}
-            </button>
-          ))}
-        </div>
-      )}
-      <p className="project-tile-foot">
-        <span className="project-tile-folder" data-testid="tile-folder" title={project.path}>
-          {folder}
-        </span>
-        {costShown && (
-          <span className="project-tile-cost" data-testid="tile-cost">
-            <Cost value={weekCost} compact labelled /> <span className="project-tile-cost-unit">last 7 days</span>
-          </span>
-        )}
-      </p>
-      {error && (
-        <p className="project-tile-error" data-testid="project-tile-error">
-          {error}
-        </p>
-      )}
     </li>
   )
 }
