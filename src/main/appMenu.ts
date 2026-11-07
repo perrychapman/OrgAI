@@ -357,7 +357,8 @@ const MENU_ACTION_TARGETS: Record<MenuAction, 'main' | 'focused'> = {
   'toggle-hide-finished': 'focused',
   'canvas-fit': 'focused',
   'canvas-zoom-in': 'focused',
-  'canvas-zoom-out': 'focused'
+  'canvas-zoom-out': 'focused',
+  'ask-about-orgai': 'main'
 }
 
 export function menuActionTarget(action: MenuAction): 'main' | 'focused' {

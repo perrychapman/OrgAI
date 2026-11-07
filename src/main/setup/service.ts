@@ -307,6 +307,9 @@ export class SetupService {
       case 'skills':
         if (!this.hooks.skills) throw new Error('The skill library is not available.')
         return this.hooks.skills.applyProposal(project.id, proposal.payload, opts.projectOnly ? { projectOnly: true } : {}) ?? project
+      case 'appSettings':
+        // App-wide settings are not a project's: RunManager applies them through RunManagerOptions.selfKnowledge.
+        throw new Error('App settings proposals do not change a project.')
     }
   }
 

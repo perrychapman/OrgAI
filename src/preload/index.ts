@@ -24,6 +24,8 @@ import type {
 } from '../shared/types'
 import { IPC, isMenuAction } from '../shared/types'
 import { KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../shared/types'
+import { SELF_KNOWLEDGE_IPC, type AppNavigateEvent, type AppReferenceQuery } from '../shared/types'
+import { isAtlasSurfaceId } from '../shared/view/atlas'
 
 const api: OrgAIApi = {
   projects: {
@@ -221,7 +223,8 @@ const api: OrgAIApi = {
     info: () => ipcRenderer.invoke(IPC.appInfo),
     cliShimStatus: () => ipcRenderer.invoke(IPC.appCliShimStatus),
     installCliShim: () => ipcRenderer.invoke(IPC.appInstallCliShim),
-    uninstallCliShim: () => ipcRenderer.invoke(IPC.appUninstallCliShim)
+    uninstallCliShim: () => ipcRenderer.invoke(IPC.appUninstallCliShim),
+    reference: (query: AppReferenceQuery) => ipcRenderer.invoke(SELF_KNOWLEDGE_IPC.appReference, query)
   },
   onFocusRun: (cb) => {
     const listener = (_e: IpcRendererEvent, target: FocusRunTarget): void => cb(target)
@@ -336,6 +339,17 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, status: TeamFilesStatus): void => cb(status)
     ipcRenderer.on(TEAM_FILES_IPC.teamFilesChanged, listener)
     return () => ipcRenderer.removeListener(TEAM_FILES_IPC.teamFilesChanged, listener)
+  },
+  onAppNavigate: (cb) => {
+    // Main validated the event; the renderer still gets only a known surface id and plain strings.
+    const listener = (_e: IpcRendererEvent, event: AppNavigateEvent): void => {
+      if (!event || typeof event !== 'object' || !isAtlasSurfaceId(event.surfaceId)) return
+      if (typeof event.runId !== 'string' || typeof event.agentLabel !== 'string') return
+      if (event.projectId !== undefined && typeof event.projectId !== 'string') return
+      cb({ surfaceId: event.surfaceId, runId: event.runId, agentLabel: event.agentLabel, ...(event.projectId !== undefined ? { projectId: event.projectId } : {}) })
+    }
+    ipcRenderer.on(SELF_KNOWLEDGE_IPC.appNavigate, listener)
+    return () => ipcRenderer.removeListener(SELF_KNOWLEDGE_IPC.appNavigate, listener)
   }
 }
 

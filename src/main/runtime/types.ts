@@ -52,6 +52,29 @@ import type {
   UsageStatus,
   UserQuestion
 } from '@shared/types'
+import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId } from '@shared/types'
+
+/**
+ * RunManagerOptions.selfKnowledge (types.ts "Self-knowledge and self-configuration"), wired in host/bootstrap.ts.
+ * Missing = no app_reference answers, no open_in_app and no appSettings apply.
+ */
+export interface SelfKnowledgeHooks {
+  /** The reference service (src/main/reference/appReference.ts). `status: false` makes a status query answer "not available". */
+  reference(query: AppReferenceQuery, opts: { status: boolean }): Promise<AppReferenceResult>
+  /**
+   * Deliver an AppNavigateEvent to the desktop main window (index.ts DesktopHooks). false when no desktop window can
+   * show it (a headless or in-process host): the tool then says so.
+   */
+  navigate(event: AppNavigateEvent): boolean
+  /** The stored app settings. */
+  settings(): AppSettings
+  /**
+   * Apply an approved appSettings proposal through the settings:set path (args.ts settingsSetArgs semantics,
+   * SettingsStore normalization, which also applies the theme and broadcasts settings:changed). Throws a readable
+   * sentence on refusal; nothing is saved then.
+   */
+  applyAppSettings(payload: AppSettingsProposalPayload): void
+}
 
 /** Harness id of the root orchestrator's AgentInstance, shared by every adapter. */
 export const ROOT_AGENT_ID = 'root'
@@ -533,6 +556,26 @@ export interface RuntimeContext {
    * project, never secrets. RunManager provides it only for quick runs. Missing = the tool says it is unavailable.
    */
   listProjects?(): ProjectPeek[]
+  /**
+   * app_reference (every run kind; types.ts "Self-knowledge and self-configuration"): RunManager binds
+   * RunManagerOptions.selfKnowledge.reference with `status` allowed only on quick (Chat), 'mcp-assist' and
+   * 'skill-assist' runs; elsewhere a status query answers that status is not available in this run. Missing = the
+   * tool says the reference is unavailable.
+   */
+  appReference?(query: AppReferenceQuery): Promise<AppReferenceResult>
+  /**
+   * open_in_app (quick, setup, 'mcp-assist' and 'skill-assist' runs only; never work or single runs). RunManager
+   * checks the surface id (isAtlasSurfaceId), the project (a stored, non-virtual project; required for project and
+   * engagement surfaces, an engagement for engagement surfaces, dropped for app and assistant surfaces), the per-run
+   * limits (OPEN_IN_APP_PER_RUN_MAX, OPEN_IN_APP_MIN_INTERVAL_MS), then sends AppNavigateEvent through
+   * RunManagerOptions.selfKnowledge.navigate and writes one harness transcript row "Opened <path> for you" on the
+   * calling agent. Missing = the tool says it cannot open the app from this run.
+   */
+  navigate?(target: { surfaceId: AtlasSurfaceId; projectId?: string }, caller: { agentId?: string }): AppNavigateOutcome
+  /** Quick runs only: the stored app settings (secret-free), for an appSettings proposal's `from` values. */
+  appSettings?(): AppSettings
+  /** Quick runs only: a stored, non-virtual project by id (propose_project_settings target). undefined otherwise. */
+  storedProject?(projectId: string): Project | undefined
   /**
    * Skill assistant runs ('skill-assist'): the skill library and, in a project session, the project's skills with
    * the role ids that load them (SkillInfo.grantedTo; resolve to slugs through ctx.project.roles). `project` is empty

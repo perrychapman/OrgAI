@@ -79,6 +79,7 @@ import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/set
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
+import type { SelfKnowledgeHooks } from './types'
 import { datum } from './harnessTools'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
@@ -697,6 +698,8 @@ export interface RunManagerOptions {
    * for RuntimeContext.orgTemplate on setup runs. null for an unknown id. Missing = templates unavailable.
    */
   orgTemplate?: (templateId: string, project: Project) => { name: string; roles: Role[] } | null
+  /** Self-knowledge and self-configuration (app_reference, open_in_app, appSettings apply). See SelfKnowledgeHooks. */
+  selfKnowledge?: SelfKnowledgeHooks
 }
 
 /** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
