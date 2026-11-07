@@ -357,6 +357,16 @@ describe('mock adapter auth failure', () => {
   it('makes complete() throw the readable message', async () => {
     await expect(new MockAdapter().complete({ system: 's', prompt: '[mock:auth-fail]', kind: 'title', connection })).rejects.toThrow(message)
   })
+  it('names a proxy connection in the run error and in complete()', async () => {
+    const proxy = { connection: 'proxy-0a1b2c3d', adapter: 'claude' as const, env: {}, name: 'Team gateway' } as never
+    const named = authFailureMessage('proxy-0a1b2c3d' as never, 'Team gateway')
+    expect(named).toMatch(/Team gateway/)
+    const ctx = fakeCtx({ prompt: 'hello [mock:auth-fail]', connection: proxy })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await session.finished
+    expect(ctx.events.find((e) => e.type === 'run.status' && e.status === 'error')).toMatchObject({ error: named })
+    await expect(new MockAdapter().complete({ system: 's', prompt: '[mock:auth-fail]', kind: 'title', connection: proxy })).rejects.toThrow(named)
+  })
 })
 
 describe('mock adapter usage reporting', () => {

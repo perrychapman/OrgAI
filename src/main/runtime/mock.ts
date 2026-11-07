@@ -1127,7 +1127,7 @@ export class MockSession implements RuntimeSession {
 
   /** Like the Claude path on an auth failure: one harness row, the root in error, the run ends 'error'. */
   private failAuth(): void {
-    const message = authFailureMessage(this.ctx.connection?.connection)
+    const message = authFailureMessage(this.ctx.connection?.connection, this.ctx.connection?.name)
     this.transcript(ROOT_AGENT_ID, { kind: 'system', text: message, detail: 'Invalid API key · Please run /login' }, { source: 'harness' })
     this.log('error', 'Authentication failed: Invalid API key · Please run /login')
     this.setState(ROOT_AGENT_ID, 'error', 'Connection refused')
@@ -1855,7 +1855,7 @@ export class MockAdapter implements RuntimeAdapter {
   /** A fixed org chart draft, in the JSON shape the drafter expects. */
   async complete(input: CompletionInput): Promise<string> {
     if (input.signal?.aborted) throw new Error('Completion cancelled')
-    if (input.prompt.includes(AUTH_FAIL_TOKEN)) throw new Error(authFailureMessage(input.connection?.connection))
+    if (input.prompt.includes(AUTH_FAIL_TOKEN)) throw new Error(authFailureMessage(input.connection?.connection, input.connection?.name))
     if (input.kind === 'title') {
       if (input.prompt.includes('[mock:title-fail]')) throw new Error('Mock title failure')
       if (input.prompt.includes('[mock:title-slow]')) await abortableDelay(50, input.signal)
