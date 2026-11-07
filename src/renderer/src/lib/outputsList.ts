@@ -2,8 +2,11 @@
 import type { OutputKind, RunOutput } from '@shared/types'
 import { runTag } from '@shared/view/runLabels'
 import { formatDate } from './dates'
-import { kindChipLabel, outputSearchTerms, outputsCountLabel } from './outputs'
+import { formatBytes, kindChipLabel as baseChipLabel, kindLabel, outputSearchTerms, outputsCountLabel } from './outputs'
 import { typeAheadMatch } from './knowledgeList'
+
+/** Kind chip text: "Deck" for pptx, else the shared short label. */
+export const kindChipLabel = (kind: OutputKind): string => (kind === 'pptx' ? 'Deck' : baseChipLabel(kind))
 
 /** The filter state of one view instance. `runId` '' means every run; no kinds means every kind. */
 export interface OutputsFilter {
@@ -96,16 +99,121 @@ export function dayLabel(t: number, now: number): string {
   return formatDate(t)
 }
 
-/** Consecutive rows of the same local day under one heading; the order of `list` is kept. */
+/** When the current version was made (a new version keeps `createdAt` and sets `updatedAt`). */
+export const outputTime = (o: Pick<RunOutput, 'createdAt' | 'updatedAt'>): number => o.updatedAt ?? o.createdAt
+
+/** Consecutive rows of the same local day (of the current version) under one heading; the order of `list` is kept. */
 export function dayGroups(list: readonly RunOutput[], now: number): DayGroup[] {
   const out: DayGroup[] = []
   for (const o of list) {
-    const key = dayKey(o.createdAt)
+    const t = outputTime(o)
+    const key = dayKey(t)
     const last = out[out.length - 1]
     if (last && last.key === key) last.items.push(o)
-    else out.push({ key, label: dayLabel(o.createdAt, now), items: [o] })
+    else out.push({ key, label: dayLabel(t, now), items: [o] })
   }
   return out
+}
+
+/** "Excel workbook · v2 · 3 versions · 24 KB" (the version parts only once there is history). */
+export function rowMetaLine(o: Pick<RunOutput, 'kind' | 'bytes' | 'version' | 'versionCount'>): string {
+  const v = o.version ?? 1
+  const n = o.versionCount ?? 1
+  return [kindLabel(o.kind), v > 1 || n > 1 ? `v${v}` : '', n > 1 ? `${n} versions` : '', formatBytes(o.bytes)].filter(Boolean).join(' · ')
+}
+
+/** "v2 · Excel" for a card ("Excel" alone for a first version). */
+export function cardMetaLine(o: Pick<RunOutput, 'kind' | 'version' | 'versionCount'>): string {
+  const v = o.version ?? 1
+  return [v > 1 || (o.versionCount ?? 1) > 1 ? `v${v}` : '', kindChipLabel(o.kind)].filter(Boolean).join(' · ')
+}
+
+/** "Analyst · R2 · 7 Nov 2026", "You · edited", "You · restored", "Changed outside OrgAI": the current version's maker. */
+export function currentProvenance(o: Pick<RunOutput, 'role' | 'createdAt' | 'updatedAt' | 'runId' | 'current'>, tagFor: (runId: string) => string | undefined): string {
+  const c = o.current
+  const when = formatDate(c?.at ?? outputTime(o))
+  if (c?.source === 'edit') return `You · edited · ${when}`
+  if (c?.source === 'restore') return `You · restored · ${when}`
+  if (c?.source === 'external') return `Changed outside OrgAI · ${when}`
+  const role = c?.role?.trim() || o.role?.trim() || 'An agent'
+  return [role, tagFor(c?.runId ?? o.runId), when].filter(Boolean).join(' · ')
+}
+
+/** "2 open notes". */
+export function openNotesLabel(n: number): string {
+  return n === 1 ? '1 open note' : `${n} open notes`
+}
+
+/** The "New" badge: a version the user has not seen in this window. */
+export function isNewVersion(o: Pick<RunOutput, 'id' | 'version'>, seen: Readonly<Record<string, number>>): boolean {
+  const s = seen[o.id]
+  return s !== undefined && (o.version ?? 1) > s
+}
+
+export interface UpdatedVersion {
+  id: string
+  title: string
+  version: number
+}
+
+/** Outputs that were in `prev` and now have a higher version (a live update; never a new output). */
+export function updatedVersions(prev: readonly Pick<RunOutput, 'id' | 'title' | 'version'>[], next: readonly Pick<RunOutput, 'id' | 'title' | 'version'>[]): UpdatedVersion[] {
+  const had = new Map(prev.map((o) => [o.id, o.version ?? 1]))
+  const out: UpdatedVersion[] = []
+  for (const o of next) {
+    const was = had.get(o.id)
+    const now = o.version ?? 1
+    if (was !== undefined && now > was) out.push({ id: o.id, title: o.title, version: now })
+  }
+  return out
+}
+
+/** "Updated Project plan to version 3" / "Updated 3 outputs". */
+export function updatedText(items: readonly UpdatedVersion[]): string {
+  if (items.length === 0) return ''
+  if (items.length === 1) return `Updated ${items[0].title} to version ${items[0].version}`
+  return `Updated ${outputsCountLabel(items.length)}`
+}
+
+/** "Deleted 3 outputs." / "Deleted Project plan." */
+export function deletedText(n: number, firstTitle?: string): string {
+  return n === 1 && firstTitle ? `Deleted ${firstTitle}.` : `Deleted ${outputsCountLabel(n)}.`
+}
+
+/** "3 selected". */
+export function selectedText(n: number): string {
+  return `${n} selected`
+}
+
+/** Grid columns from the measured tops of the cards: how many share the first row's top. */
+export function gridColumns(tops: readonly number[]): number {
+  if (tops.length === 0) return 1
+  let n = 0
+  for (const t of tops) {
+    if (Math.abs(t - tops[0]) > 2) break
+    n++
+  }
+  return Math.max(1, n)
+}
+
+/** The index a grid key lands on (Left / Right by one, Up / Down by `cols`), clamped; same index when it cannot move. */
+export function gridTarget(key: string, from: number, count: number, cols: number): number {
+  if (count === 0) return -1
+  let to = from
+  if (key === 'ArrowRight') to = from + 1
+  else if (key === 'ArrowLeft') to = from - 1
+  else if (key === 'ArrowDown') to = from + cols
+  else if (key === 'ArrowUp') to = from - cols
+  else if (key === 'Home') to = 0
+  else if (key === 'End') to = count - 1
+  if (to < 0 || to >= count) return from
+  return to
+}
+
+export type OutputsViewMode = 'list' | 'grid'
+export const outputsViewKey = (projectId: string): string => `orgai.outputsView.${projectId}`
+export function readViewMode(raw: string | null): OutputsViewMode {
+  return raw === 'grid' ? 'grid' : 'list'
 }
 
 /** "5 of 12 outputs" while a filter hides some, else "12 outputs". */
@@ -158,3 +266,6 @@ export function newOutputIds(prev: readonly Pick<RunOutput, 'id'>[], next: reado
   const had = new Set(prev.map((o) => o.id))
   return next.filter((o) => !had.has(o.id)).map((o) => o.id)
 }
+
+/** Kinds whose run side tab row shows a 40 x 30 thumbnail instead of the kind icon (docs/design/outputs-2.md section 4). */
+export const RUN_ROW_THUMB_KINDS: ReadonlySet<OutputKind> = new Set<OutputKind>(['pptx', 'image', 'svg', 'mermaid'])

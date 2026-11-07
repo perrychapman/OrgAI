@@ -2,14 +2,17 @@ import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Project, RunOutput } from '@shared/types'
 import { runName } from '@shared/view/runLabels'
-import type { OutputsFilter } from '../lib/outputsList'
-import { EMPTY_OUTPUTS_FILTER, OUTPUTS_COUNT_ANNOUNCE_MS, OUTPUTS_PRODUCED_ANNOUNCE_MS, countLine, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, newOutputIds, producedText, resolveOutputFocus, runOptions } from '../lib/outputsList'
+import type { OutputsFilter, OutputsViewMode, UpdatedVersion } from '../lib/outputsList'
+import { EMPTY_OUTPUTS_FILTER, OUTPUTS_COUNT_ANNOUNCE_MS, OUTPUTS_PRODUCED_ANNOUNCE_MS, countLine, deletedText, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, newOutputIds, outputsViewKey, producedText, readViewMode, resolveOutputFocus, runOptions, selectedText, updatedText, updatedVersions } from '../lib/outputsList'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { SidePanel } from '../components/layout/SidePanel'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { useDeleteOutputs } from '../components/outputs/DeleteOutputs'
 import OutputDetail from '../components/outputs/OutputDetail'
 import { OutputsFilters } from '../components/outputs/OutputsFilters'
+import { OutputsGrid } from '../components/outputs/OutputsGrid'
 import { OutputsList, type OutputsListHandle } from '../components/outputs/OutputsList'
 import { OutputStepper, stepKeyHandler } from '../components/outputs/OutputStepper'
 import '../styles/outputs-view.css'
@@ -18,6 +21,10 @@ const HEADING_ID = 'output-detail-heading'
 const EMPTY: readonly RunOutput[] = []
 const NOTICE_MS = 8000
 const NOW_TICK_MS = 60_000
+const VIEW_OPTIONS: { value: OutputsViewMode; label: string }[] = [
+  { value: 'list', label: 'List' },
+  { value: 'grid', label: 'Grid' }
+]
 
 /** Focus whatever `find` returns once the DOM has settled (two frames: React commit, then layout). */
 function focusLater(find: () => HTMLElement | null | undefined): void {
@@ -37,6 +44,8 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
   const projectId = project.id
   const list = useAppStore((s) => s.outputsByProject[projectId])
   const loadOutputs = useAppStore((s) => s.loadOutputs)
+  const setOutputs = useAppStore((s) => s.setOutputs)
+  const seen = useAppStore((s) => s.outputSeenVersion)
   const outputsFocus = useAppStore((s) => s.outputsFocus)
   const clearOutputsFocus = useAppStore((s) => s.clearOutputsFocus)
   const indexes = useRunIndexes()
@@ -90,6 +99,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
   // New outputs: counted and spoken at most once per OUTPUTS_PRODUCED_ANNOUNCE_MS.
   const prevAll = useRef<readonly RunOutput[] | null>(null)
   const pendingNew = useRef(0)
+  const pendingUpdated = useRef(new Map<string, UpdatedVersion>())
   const lastSpoken = useRef(0)
   const spokenTimer = useRef<number | undefined>(undefined)
   useEffect(() => {
@@ -98,14 +108,19 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     prevAll.current = all
     if (!prev) return
     const fresh = newOutputIds(prev, all).length
-    if (fresh === 0) return
+    // A new version of a listed output never moves its row; it is only spoken ("Updated Project plan to version 3").
+    for (const u of updatedVersions(prev, all)) pendingUpdated.current.set(u.id, u)
+    if (fresh === 0 && pendingUpdated.current.size === 0) return
     pendingNew.current += fresh
     const flush = (): void => {
       const n = pendingNew.current
+      const updated = [...pendingUpdated.current.values()]
       pendingNew.current = 0
+      pendingUpdated.current.clear()
       spokenTimer.current = undefined
       lastSpoken.current = Date.now()
-      if (n > 0) announce(producedText(n))
+      const text = [n > 0 ? producedText(n) : '', updatedText(updated)].filter(Boolean).join('. ')
+      if (text) announce(text)
     }
     if (spokenTimer.current !== undefined) return
     const wait = lastSpoken.current + OUTPUTS_PRODUCED_ANNOUNCE_MS - Date.now()
@@ -153,6 +168,82 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     [focusHeading, selectItem]
   )
 
+  // ---- list or grid (kept per project) ----
+  const [view, setView] = useState<OutputsViewMode>(() => {
+    try {
+      return readViewMode(localStorage.getItem(outputsViewKey(projectId)))
+    } catch {
+      return 'list'
+    }
+  })
+  const changeView = useCallback(
+    (next: OutputsViewMode): void => {
+      setView(next)
+      try {
+        localStorage.setItem(outputsViewKey(projectId), next)
+      } catch {
+        /* storage unavailable: the choice lasts for this window */
+      }
+    },
+    [projectId]
+  )
+
+  // ---- select mode and bulk delete (docs/design/outputs-2.md 12.4) ----
+  const { deleteOutputs, dialog: deleteDialog } = useDeleteOutputs()
+  const [selectMode, setSelectMode] = useState(false)
+  const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set())
+  const [busy, setBusy] = useState(false)
+  const selectToggle = useRef<HTMLButtonElement>(null)
+  // Only what is still in the list counts as selected (a filter or a delete elsewhere can remove checked ids).
+  const checkedRows = useMemo(() => all.filter((o) => checked.has(o.id)), [all, checked])
+  const toggleChecked = useCallback((id: string): void => {
+    setChecked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+  const leaveSelect = useCallback((focus: boolean): void => {
+    setSelectMode(false)
+    setChecked(new Set())
+    if (focus) requestAnimationFrame(() => selectToggle.current?.focus())
+  }, [])
+  const onMainKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Escape' || !selectMode || e.defaultPrevented) return
+    if ((e.target as HTMLElement).closest('[popover], dialog, [role=dialog]')) return
+    e.preventDefault()
+    leaveSelect(true)
+  }
+  const bulkDelete = async (): Promise<void> => {
+    if (checkedRows.length === 0 || busy) return
+    setBusy(true)
+    try {
+      const outcome = await deleteOutputs(checkedRows)
+      if (!outcome) return
+      if (outcome.list) setOutputs(projectId, outcome.list)
+      else void loadOutputs(projectId)
+      const gone = new Set(outcome.deleted)
+      const lines = [outcome.deleted.length > 0 ? deletedText(outcome.deleted.length, outcome.deleted.length === 1 ? checkedRows.find((o) => o.id === outcome.deleted[0])?.title : undefined) : '', ...outcome.problems].filter(Boolean)
+      announce(lines.join(' '))
+      setNotice('')
+      if (outcome.problems.length === 0) {
+        setSelectMode(false)
+        setChecked(new Set())
+      } else {
+        setChecked((prev) => new Set([...prev].filter((id) => !gone.has(id))))
+      }
+      // Focus: the next row that stays, else the list, else the search box (the empty state has nothing focusable).
+      const left = new Set((outcome.list ?? all).map((o) => o.id))
+      const at = rows.findIndex((o) => gone.has(o.id))
+      const stays = (o: RunOutput): boolean => !gone.has(o.id) && left.has(o.id)
+      const next = rows.slice(at < 0 ? 0 : at).find(stays) ?? [...rows].reverse().find(stays)
+      if (next) focusRow(next.id)
+      else focusLater(() => document.querySelector<HTMLElement>('[data-testid=outputs-search]'))
+    } finally {
+      setBusy(false)
+    }
+  }
   // The shown item left the index (Remove from list, Delete file, or a change elsewhere): the next row takes the
   // selection, else the previous one; focus moves only when it was inside this view's list or pane (it just unmounted).
   const prevRows = useRef<RunOutput[]>(rows)
@@ -215,10 +306,20 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
 
   const empty = loaded && all.length === 0
   const noMatch = loaded && all.length > 0 && rows.length === 0
+  const listProps = { rows, selectedId, seen, selectMode, checked, onToggle: toggleChecked, onSelect: selectItem, onOpen: openItem }
   return (
     <div className="outputs" data-testid="outputs-view" data-project={projectId}>
       <OutputsFilters filter={filter} kinds={kinds} runs={runs} countText={countText} onChange={changeFilter} />
-      <div className="outputs-main" data-testid="outputs-main">
+      <div className="outputs-main" data-testid="outputs-main" data-view={view} onKeyDown={onMainKeyDown}>
+        <div className="outputs-toolbar" data-testid="outputs-toolbar">
+          <h2 className="outputs-toolbar-title">Outputs</h2>
+          <span data-testid="outputs-view-switch">
+            <SegmentedControl<OutputsViewMode> label="View" value={view} options={VIEW_OPTIONS} onChange={changeView} />
+          </span>
+          <button type="button" ref={selectToggle} className="outputs-chip" data-testid="outputs-select-toggle" aria-pressed={selectMode} disabled={!loaded || all.length === 0} onClick={() => (selectMode ? leaveSelect(true) : setSelectMode(true))}>
+            Select
+          </button>
+        </div>
         {!loaded ? (
           <p className="panel-note outputs-loading">Looking…</p>
         ) : empty ? (
@@ -236,8 +337,26 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
               ) : undefined
             }
           />
+        ) : view === 'grid' ? (
+          <OutputsGrid ref={listRef} {...listProps} />
         ) : (
-          <OutputsList ref={listRef} rows={rows} indexes={indexes} now={now} selectedId={selectedId} onSelect={selectItem} onOpen={openItem} />
+          <OutputsList ref={listRef} {...listProps} indexes={indexes} now={now} />
+        )}
+        {selectMode && (
+          <div className="outputs-bulk-bar" data-testid="outputs-bulk-bar">
+            <span className="outputs-bulk-count" role="status" data-testid="outputs-bulk-count">
+              {selectedText(checkedRows.length)}
+            </span>
+            <Button size="sm" testId="outputs-select-all" onClick={() => setChecked(new Set(rows.map((o) => o.id)))} disabled={rows.length === 0 || checkedRows.length === rows.length}>
+              Select all shown
+            </Button>
+            <Button size="sm" variant="danger" testId="outputs-bulk-delete" disabled={checkedRows.length === 0 || busy} onClick={() => void bulkDelete()}>
+              Delete
+            </Button>
+            <Button size="sm" testId="outputs-select-cancel" onClick={() => leaveSelect(true)}>
+              Cancel
+            </Button>
+          </div>
         )}
       </div>
       <SidePanel label="output preview" persistKey="outputs" autoCollapseBelow={1100} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">
@@ -267,6 +386,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
       <p className="sr-only" role="status" data-testid="outputs-status">
         {status}
       </p>
+      {deleteDialog}
     </div>
   )
 }
