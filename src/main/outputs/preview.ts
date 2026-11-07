@@ -1,7 +1,9 @@
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import ExcelJS from 'exceljs'
-import JSZip from 'jszip'
 import mammoth from 'mammoth'
+// The .js extensions matter: mammoth has no "exports" map, so Node's ESM resolver (the externalized main bundle) needs them.
+import { _findPartPaths } from 'mammoth/lib/docx/docx-reader.js'
+import { openArrayBuffer } from 'mammoth/lib/zipfile.js'
 import type { OutputKind, OutputPreview, SheetCell, SheetPreview } from '@shared/types'
 import {
   OUTPUT_PREVIEW_COLUMNS_MAX,
@@ -14,7 +16,7 @@ import {
 } from '@shared/types'
 import { htmlToBlocks } from './htmlBlocks'
 import { svgProblem } from './writers'
-import { zipEntrySize, zipInfo, zipMaxSize, zipProblem, zipSumSizes, zipVerifyEntries } from './zipGuard'
+import { zipInfo, zipMaxSize, zipProblem, zipSumSizes, zipVerifyEntries } from './zipGuard'
 
 /**
  * previewFile(path, kind): the inline preview of one output file. Never throws; any problem is { kind: 'none', reason }.
@@ -221,72 +223,42 @@ export const PREVIEW_MAX_ENTRY_BYTES = 16 * 1024 * 1024
 /** Images the docx preview converts at most; later references get no image (and no read). */
 export const DOCX_PREVIEW_IMAGES_MAX = 200
 
-const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|emf|wmf)$/i
-
-/** A true image part: under `folder` (lower case, trailing slash) with an image extension. Everything else counts as XML. */
+/**
+ * A true media part: `folder` (case-sensitive, trailing slash) plus ONE segment of the shape exceljs's own media handler
+ * accepts (xlsx.js: /xl\/media\/([a-zA-Z0-9]+[.][a-zA-Z0-9]{3,4})$/). Anything else under a media folder (a nested name such
+ * as `xl/media/xl/worksheets/sheet1.xml.png`, which exceljs parses as a worksheet) or in another case counts as XML.
+ */
 export function isImagePart(name: string, folder: string): boolean {
-  return name.toLowerCase().startsWith(folder) && IMAGE_EXT.test(name)
+  const n = name.startsWith('/') ? name.slice(1) : name
+  if (!n.startsWith(folder)) return false
+  return /^[a-zA-Z0-9]+\.[a-zA-Z0-9]{3,4}$/.test(n.slice(folder.length))
 }
 
-const REL_NS_DOC = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
-const RELS_MAX_BYTES = 64 * 1024
+// mammoth's own part lookup is private API (pinned: package.json has mammoth 1.13.0 exactly, and previewBounds.test.ts asserts
+// _findPartPaths exists and answers these keys, so an upgrade fails loudly). It is the one place that knows which parts mammoth reads.
+const PART_KEYS = ['mainDocument', 'comments', 'endnotes', 'footnotes', 'numbering', 'styles'] as const
+const NOT_WORD = 'its parts are not laid out like a Word document'
 
-/** The package-relative name a relationship target means (mammoth: strip a leading "/", else join with the base). null = leaves the package. */
-function resolveTarget(base: string, target: string): string | null {
-  const parts: string[] = []
-  const raw = target.startsWith('/') ? target.replace(/^\/+/, '') : `${base}/${target}`
-  for (const seg of raw.split('/')) {
-    if (seg === '' || seg === '.') continue
-    if (seg === '..') {
-      if (!parts.length) return null
-      parts.pop()
-    } else parts.push(seg)
-  }
-  return parts.join('/')
+function relsOf(part: string): string {
+  const i = part.lastIndexOf('/')
+  return i < 0 ? `_rels/${part}.rels` : `${part.slice(0, i)}/_rels/${part.slice(i + 1)}.rels`
 }
 
-function relationshipsOf(xml: string): { type: string; target: string; external: boolean }[] {
-  const out: { type: string; target: string; external: boolean }[] = []
-  for (const m of xml.matchAll(/<(?:\w+:)?Relationship\b([^>]*)>/g)) {
-    const attr = (n: string): string | undefined => new RegExp(`\\b${n}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(m[1])?.slice(1).find((x) => x !== undefined)
-    out.push({ type: attr('Type') ?? '', target: attr('Target') ?? '', external: /^external$/i.test(attr('TargetMode') ?? '') })
+/** The parts mammoth will read (its own lookup), their rels, the package rels, content types and style map; or a refusal. */
+async function docxParts(buf: Buffer): Promise<{ names: Set<string> } | { problem: string }> {
+  const paths = await _findPartPaths(await openArrayBuffer(buf))
+  const names = new Set<string>(['_rels/.rels', '[Content_Types].xml', 'mammoth/style-map'])
+  for (const k of PART_KEYS) {
+    const raw = paths[k]
+    if (typeof raw !== 'string') continue
+    const part = raw.startsWith('/') ? raw.slice(1) : raw
+    if (!part || part.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) return { problem: NOT_WORD }
+    // an image part (any case, any depth under a media folder) is never a text part
+    if (isImagePart(part, 'word/media/') || /(^|\/)media\/[^/]*\.(png|jpe?g|gif|webp|bmp|tiff?|emf|wmf)$/i.test(part)) return { problem: NOT_WORD }
+    names.add(part)
+    names.add(relsOf(part))
   }
-  return out
-}
-
-async function readSmallPart(buf: Buffer, name: string): Promise<string | null | 'big'> {
-  const size = zipEntrySize(buf, name)
-  if (size === null) return null
-  if (size > RELS_MAX_BYTES) return 'big'
-  const z = await JSZip.loadAsync(buf)
-  return (await z.file(name)?.async('string')) ?? null
-}
-
-/** Why mammoth would read a part outside the layout OrgAI bounds, or null. mammoth takes related parts from relationship targets of any name. */
-async function docxLayoutProblem(buf: Buffer): Promise<string | null> {
-  const bad = 'its parts are not laid out like a Word document'
-  const pkg = await readSmallPart(buf, '_rels/.rels')
-  if (pkg === 'big') return bad
-  if (pkg !== null) {
-    for (const r of relationshipsOf(pkg)) {
-      if (r.type === `${REL_NS_DOC}officeDocument` && resolveTarget('', r.target) !== 'word/document.xml') return bad
-    }
-  }
-  const rels = await readSmallPart(buf, 'word/_rels/document.xml.rels')
-  if (rels === 'big') return bad
-  if (rels !== null) {
-    for (const r of relationshipsOf(rels)) {
-      if (r.external || !r.type.startsWith(REL_NS_DOC)) continue
-      const kind = r.type.slice(REL_NS_DOC.length)
-      const at = resolveTarget('word', r.target)
-      if (['comments', 'endnotes', 'footnotes', 'numbering', 'styles'].includes(kind)) {
-        if (at === null || !at.startsWith('word/') || at.toLowerCase().startsWith('word/media/')) return bad
-      } else if (kind === 'image') {
-        if (at === null || !isImagePart(at, 'word/media/')) return bad
-      }
-    }
-  }
-  return null
+  return { names }
 }
 
 /** previewDocx with the document.xml threshold as a parameter (exported for tests and measurement). */
@@ -295,32 +267,39 @@ export async function previewDocx(path: string, maxXmlBytes: number = DOCX_PREVI
   if (buf.length > DOC_MAX_BYTES) return none('This document is larger than 20 MB, so OrgAI does not preview it; open it instead.')
   const zp = zipProblem(buf)
   if (zp) return none(`OrgAI did not preview this document: ${zp}`)
-  // mammoth reads related parts from relationship targets of ANY name (and the style map has none), so cap every entry that
-  // is not a true image part together, and no single entry may be larger than one bounded read.
-  const xmlSize = zipSumSizes(buf, (n) => !isImagePart(n, 'word/media/'))
-  if (xmlSize !== null && xmlSize > maxXmlBytes + DOCX_XML_ALLOWANCE) return none(DOCX_TOO_LARGE)
+  // No single entry may be larger than one bounded read (mammoth can read any entry a relationship names).
   const biggest = zipMaxSize(buf, () => true)
   if (biggest !== null && biggest > PREVIEW_MAX_ENTRY_BYTES) return none(DOCX_TOO_LARGE)
+  const cap = maxXmlBytes + DOCX_XML_ALLOWANCE
+  // What mammoth's part lookup itself reads before we can ask it: every rels part, the content types and the style map.
+  const lookup = zipSumSizes(buf, (n) => n.endsWith('.rels') || n === '[Content_Types].xml' || n === 'mammoth/style-map')
+  if (lookup !== null && lookup > cap) return none(DOCX_TOO_LARGE)
   const zv = zipVerifyEntries(buf)
   if (zv) return none(`OrgAI did not preview this document: ${zv}`)
   try {
-    const lp = await docxLayoutProblem(buf)
-    if (lp) return none(`OrgAI did not preview this document: ${lp}.`)
-    // Image reads are budgeted: mammoth's default converter re-reads and re-encodes the image for EVERY reference, so a few
-    // thousand references to one image would exhaust memory. An image read is charged the largest image part's declared size.
-    const maxImage = zipMaxSize(buf, (n) => isImagePart(n, 'word/media/')) ?? 0
+    const parts = await docxParts(buf)
+    if ('problem' in parts) return none(`OrgAI did not preview this document: ${parts.problem}.`)
+    // Only the parts mammoth reads count toward the cap (its own list, plus their rels, package rels, content types and the
+    // style map, which mammoth always reads); every other entry (embeddings, fonts, other media) stays under the per-entry cap.
+    const xmlSize = zipSumSizes(buf, (n) => parts.names.has(n.startsWith('/') ? n.slice(1) : n))
+    if (xmlSize !== null && xmlSize > cap) return none(DOCX_TOO_LARGE)
+    // Image reads are budgeted by the bytes actually read: mammoth never checks an image relationship's type, so a blip may
+    // point at ANY entry, and re-reads and re-encodes it for EVERY reference. Deferred conversions run one at a time, so the
+    // overshoot is at most one part, which is at most PREVIEW_MAX_ENTRY_BYTES.
     const imageReads = { count: 0, bytes: 0 }
     const noImage = {} as { src: string } // an <img> with no src: htmlBlocks drops it
     const convertImage = mammoth.images.imgElement(async (image) => {
       if (imageReads.count >= DOCX_PREVIEW_IMAGES_MAX) return noImage
-      if (maxImage > OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES) return noImage
-      if (imageReads.bytes + maxImage > OUTPUT_PREVIEW_DOC_IMAGES_TOTAL_BYTES) return noImage
+      if (imageReads.bytes >= OUTPUT_PREVIEW_DOC_IMAGES_TOTAL_BYTES) return noImage
       imageReads.count++
-      imageReads.bytes += maxImage
       const data = await image.read('base64')
+      const read = Math.ceil((data.length * 3) / 4)
+      imageReads.bytes += read
+      if (read > OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES) return noImage
       return { src: `data:${image.contentType};base64,${data}` }
     })
-    // externalFileAccess: false always: a linked external file must never be read (CVE-2025-11849).
+    // externalFileAccess: false always: a linked external file must never be read (CVE-2025-11849). includeEmbeddedStyleMap:
+    // false means the embedded style map is ignored, not unread (mammoth always reads mammoth/style-map; it is in the sum).
     const r = await mammoth.convertToHtml({ buffer: buf }, { externalFileAccess: false, includeEmbeddedStyleMap: false, convertImage } as Parameters<typeof mammoth.convertToHtml>[1])
     const { blocks, truncated } = htmlToBlocks(r.value)
     if (!blocks.length) return none('This document has no text to show.')

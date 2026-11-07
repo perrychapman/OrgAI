@@ -232,11 +232,12 @@ describe('docx size cut-off', () => {
   it('previews at the threshold and answers none just over it', async () => {
     const md = Array.from({ length: 200 }, (_, i) => `Paragraph ${i} with some words.`).join('\n\n')
     const p = f('cut.docx', await markdownToDocx(md, 'T'))
-    const sum = zipSumSizes(readFileSync(p), (n) => /\.(xml|rels)$/i.test(n) && !n.startsWith('word/media/'))
+    const read = new Set(['word/document.xml', 'word/_rels/document.xml.rels', 'word/styles.xml', 'word/numbering.xml', 'word/footnotes.xml', 'word/endnotes.xml', 'word/comments.xml', 'word/_rels/footnotes.xml.rels', 'word/_rels/endnotes.xml.rels', 'word/_rels/styles.xml.rels', 'word/_rels/numbering.xml.rels', 'word/_rels/comments.xml.rels', '_rels/.rels', '[Content_Types].xml'])
+    const sum = zipSumSizes(readFileSync(p), (n) => read.has(n))
     if (sum === null) throw new Error('no xml parts')
     const xml = sum - DOCX_XML_ALLOWANCE // threshold at which the cap equals the summed parts
     expect(sum).toBeGreaterThan(1000)
-    expect((await previewDocx(p, xml)).kind).toBe('document')
+    expect(await previewDocx(p, xml)).toMatchObject({ kind: 'document' })
     const over = await previewDocx(p, xml - 1)
     expect(over).toEqual({ kind: 'none', reason: 'This document is too large to preview here. Open it instead.' })
     expect((await previewFile(p, 'docx')).kind).toBe('document')
