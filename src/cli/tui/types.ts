@@ -101,7 +101,7 @@ export type BufferMode = 'fullscreen' | 'inline'
 export type LayoutMode = 'split' | 'stacked'
 export type PaneId = 'tree' | 'transcript' | 'plan' | 'worktrees'
 export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector'
-export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running'
+export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running' | 'identity' | 'message' | 'code' | 'muted'
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'gone'
 
 export interface TuiEnv {

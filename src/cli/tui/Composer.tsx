@@ -33,7 +33,7 @@ import {
 } from './input/textBuffer'
 import { textWidth, truncateEnd } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
-import { asciiOnly, composerSurface } from './theme'
+import { asciiOnly, composerSurface, toneColor } from './theme'
 import type { ComposerMode, ComposerProps, InputEvent } from './types'
 
 /** At most this many text rows are visible; the view scrolls to keep the cursor's row shown. */
@@ -212,11 +212,12 @@ export function Composer(props: ComposerViewProps) {
   if (width === 0 || layoutHeight === 0) return <Box width={0} height={layoutHeight === 0 ? 0 : undefined} />
 
   const surfaceText = surface.color ? { color: surface.color } : {}
-  const promptStyle = { ...surfaceText, ...(env.color ? { bold: true } : {}) }
+  const hintStyle = styleFor({ tone: 'muted' }, env)
+  const promptStyle = styleFor({ tone: props.focused && props.mode !== 'readOnly' ? 'accent' : 'muted', bold: true }, env)
   const rowView = (row: (typeof rows)[number] | undefined, absoluteRow: number): ReactNode => {
     const lead = absoluteRow === 0 ? `${glyph} `.slice(0, promptW) : spaces(promptW)
     const at = props.focused ? row?.cursorAt : undefined
-    const prompt = <Text {...promptStyle} dimColor={env.color && (!props.focused || props.mode === 'readOnly')}>{lead}</Text>
+    const prompt = <Text {...promptStyle}>{lead}</Text>
     if (!row) {
       const hint = truncateEnd(placeholder, Math.max(0, textW), ascii ? '...' : '…')
       return (
@@ -225,7 +226,7 @@ export function Composer(props: ComposerViewProps) {
           {absoluteRow === 0 && props.focused ? (
             markCursor ? <Text {...surfaceText}>{CURSOR_GLYPH}</Text> : <Text {...surfaceText} backgroundColor={surface.backgroundColor} inverse={env.color}> </Text>
           ) : null}
-          {absoluteRow === 0 ? <Text {...surfaceText} dimColor={env.color} wrap="truncate-end">{hint}</Text> : null}
+          {absoluteRow === 0 ? <Text {...hintStyle} wrap="truncate-end">{hint}</Text> : null}
         </Box>
       )
     }
@@ -284,7 +285,7 @@ export function Composer(props: ComposerViewProps) {
       </Box>
       {footerGap ? <Box height={footerGap} flexShrink={0} /> : null}
       <Box width={width} height={1} paddingX={inset} flexShrink={0} overflow="hidden">
-        <Text dimColor={env.color} wrap="truncate-end">{truncateEnd(footer, contentWidth, ascii ? '...' : '…')}</Text>
+        <Text color={toneColor('muted', env)} wrap="truncate-end">{truncateEnd(footer, contentWidth, ascii ? '...' : '…')}</Text>
       </Box>
     </Box>
   )

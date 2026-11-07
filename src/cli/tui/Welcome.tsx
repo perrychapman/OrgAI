@@ -20,7 +20,7 @@ function line(key: string, segs: Seg[], width: number, env: ReturnType<typeof us
 function commandSegments(command: string, description: string): Seg[] {
   return [
     { text: command, tone: 'accent', bold: true },
-    { text: `  ${description}`, dim: true }
+    { text: `  ${description}`, tone: 'muted' }
   ]
 }
 
@@ -52,7 +52,7 @@ function welcomeLines(args: {
   const { width, height, folder, project, compact, env } = args
   const context: PaneLine[] = [
     line('project', [{ text: project, bold: true }], width, env),
-    line('folder', [{ text: folder, dim: true }], width, env)
+    line('folder', [{ text: folder, tone: 'muted' }], width, env)
   ]
   const compactRows = [
     line('tagline', [{ text: 'Big ideas. A team to build them.', bold: true }], width, env),
@@ -65,7 +65,7 @@ function welcomeLines(args: {
     ...compactRows.slice(0, 3),
     line('space-before-guidance', [], width, env),
     line('guidance', [{ text: 'Describe what you want to build, fix, or explore.' }], width, env),
-    line('team', [{ text: 'Follow your team here as the work unfolds.', dim: true }], width, env),
+    line('team', [{ text: 'Follow your team here as the work unfolds.', tone: 'muted' }], width, env),
     line('space-before-commands', [], width, env),
     ...commandRows(width, env, width >= 62)
   ]
@@ -87,7 +87,7 @@ export function Welcome(props: { width: number; height?: number; folder: string;
 
   return (
     <Box width={width} height={height} paddingLeft={gutter} flexDirection="column" overflow="hidden">
-      <Brand width={contentWidth} version={`v${CLI_VERSION}`} prominent={headerHeight > 1} />
+      <Brand width={contentWidth} version={`v${CLI_VERSION}`} prominent={headerHeight > 1} animated={props.animated !== false} />
       <PaneLines width={contentWidth} height={Math.max(0, height - headerHeight)} env={env} lines={lines} />
     </Box>
   )

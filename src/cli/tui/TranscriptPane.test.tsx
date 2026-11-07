@@ -44,7 +44,7 @@ describe('TranscriptPane (full-screen)', () => {
     expect(formatted.map(l => l.text).join('\n')).toContain('const ok = true')
     expect(formatted.map(l => l.text).join('\n')).not.toContain('```')
     expect(formatted.some(l => l.segs?.some(s => s.bold))).toBe(true)
-    expect(formatted.some(l => l.segs?.some(s => s.text === 'auth.ts' && s.tone === 'accent'))).toBe(true)
+    expect(formatted.some(l => l.segs?.some(s => s.text === 'auth.ts' && s.tone === 'code'))).toBe(true)
     for (const l of formatted) expect(textWidth(l.text)).toBeLessThanOrEqual(80)
   })
 
@@ -93,6 +93,25 @@ describe('TranscriptPane (full-screen)', () => {
     t.unmount()
   })
 
+  it('keeps semantic tones scoped to labels, tools, results and prompt markers', () => {
+    const user = rowLines(r('user', { kind: 'user', agentLabel: undefined, text: 'plain prompt' }), 80, env())[0]!.segs!
+    expect(user.find((segment) => segment.text.includes('›'))?.tone).toBe('accent')
+    expect(user.find((segment) => segment.text === 'plain prompt')?.tone).toBeUndefined()
+
+    const assistant = rowLines(r('assistant', { text: 'plain prose' }), 80, env())[0]!.segs!
+    expect(assistant.find((segment) => segment.text === 'orchestrator: ')?.tone).toBe('identity')
+    expect(assistant.find((segment) => segment.text === 'orchestrator: ')?.bold).toBe(true)
+    expect(assistant.find((segment) => segment.text === 'plain prose')?.tone).toBeUndefined()
+
+    const tool = rowLines(r('tool', { kind: 'tool', text: 'Read src/app.ts' }), 80, env())[0]!.segs!
+    expect(tool.find((segment) => segment.text === 'Read src/app.ts')?.tone).toBe('code')
+    expect(tool.find((segment) => segment.text === 'orchestrator: ')?.tone).toBe('identity')
+
+    const result = rowLines(r('result', { kind: 'result', text: 'output line' }), 80, env())[0]!.segs!
+    expect(result.find((segment) => segment.text === 'output line')?.tone).toBe('muted')
+    expect(result.find((segment) => segment.text === 'output line')?.dim).not.toBe(true)
+  })
+
   it('wraps long and multi-line rows to the width, wide characters as two columns', () => {
     const rows = [r('a', { text: 'first line\nsecond line that is quite a bit longer than the pane' }), r('w', { text: '漢字'.repeat(20) })]
     const t = mount({ rows, width: 24, height: 20 })
@@ -111,6 +130,17 @@ describe('TranscriptPane (full-screen)', () => {
     expect(out[1]).toBe('• orchestrator: text of a')
     expect(out[2]).toBe('• dev-1: streaming…')
     t.unmount()
+  })
+
+  it('keeps semantic label styling on colored streaming partials', async () => {
+    await withInkColor(() => {
+      const t = mount({ partials: [{ key: 'partial', runId: 'r1', agentId: 'dev', agentLabel: 'dev-1', text: 'streaming body' }] }, env())
+      const frame = t.lastFrame() ?? ''
+      expect(frame).toMatch(ESC_RE)
+      expect(frame).toMatch(/\x1b\[1m(?:\x1b\[[0-9;]+m)*dev-1:/)
+      expect(frame).toMatch(/dev-1: (?:\x1b\[[0-9;]+m)+streaming body/)
+      t.unmount()
+    })
   })
 
   it('stays pinned to the bottom, and holds its place with a "new rows below" line after scrolling up', () => {

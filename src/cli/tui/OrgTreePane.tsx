@@ -120,14 +120,13 @@ export function rowLine(item: Item, selected: boolean, focused: boolean, width: 
     label = room >= 4 ? clipMiddle(label0, room, g.ellipsis) : label0
   }
 
-  const invTone = highlight && !inv ? 'accent' : undefined
   const left: Seg[] = [{ text: lead, inverse: inv }]
   if (glyph) left.push({ text: glyph, tone, inverse: inv })
-  left.push({ text: label, bold: row.isRoot, tone: invTone, inverse: inv })
+  left.push({ text: label, bold: !group, tone: group ? undefined : 'identity', inverse: inv })
   if (useRole) left.push({ text: role, dim: !inv, inverse: inv })
   if (wordPrefix) left.push({ text: wordPrefix, inverse: inv })
-  if (word) left.push(shimmerSeg({ text: word, tone: thinking || highlight ? undefined : tone, inverse: inv }, thinking))
-  if (traffic) left.push({ text: traffic, tone: highlight && !inv ? 'accent' : tone, inverse: inv })
+  if (word) left.push(shimmerSeg({ text: word, tone: thinking ? undefined : tone, inverse: inv }, thinking))
+  if (traffic) left.push({ text: traffic, tone: highlight && !inv ? 'message' : tone, inverse: inv })
   for (const c of list) left.push({ text: ` ${c.text}`, tone: c.tone, inverse: inv })
   const right: Seg | undefined = cost ? { text: cost, dim: !inv, inverse: inv } : undefined
   return alignSegs(left, right, width, env, { inverse: inv })
@@ -175,8 +174,24 @@ function buildItems(rows: readonly OrgTreeRow[], env: TuiEnv): { items: Item[]; 
 function messagePreview(message: TeamMessageRow, env: TuiEnv, width: number): Seg[] {
   const target = message.toLabel || (message.toId ? 'Unknown recipient' : 'you')
   const text = message.text.replace(/\s+/g, ' ').trim()
-  const label = env.screenReader ? `message from ${message.fromLabel} to ${target}: ${text}` : `${glyphs(env).arrow} ${message.fromLabel} to ${target}: ${text}`
-  return cutSegs([{ text: label, dim: true }], width, env)
+  const segs: Seg[] = env.screenReader
+    ? [
+        { text: 'message from ', tone: 'message' },
+        { text: message.fromLabel, tone: 'identity', bold: true },
+        { text: ' to ', tone: 'message' },
+        { text: target, tone: 'identity', bold: true },
+        { text: ': ' },
+        { text, tone: 'muted' }
+      ]
+    : [
+        { text: `${glyphs(env).arrow} `, tone: 'message' },
+        { text: message.fromLabel, tone: 'identity', bold: true },
+        { text: ` ${glyphs(env).arrow} `, tone: 'message' },
+        { text: target, tone: 'identity', bold: true },
+        { text: ': ' },
+        { text, tone: 'muted' }
+      ]
+  return cutSegs(segs, width, env)
 }
 
 const isChar = (e: Parameters<Parameters<typeof useFocusHandler>[1]>[0], ch: string): boolean =>

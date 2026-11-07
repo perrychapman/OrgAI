@@ -31,7 +31,8 @@ a LiteLLM proxy. Projects, runs and settings are stored on your computer.
 After building, run `npm run cli -- tui` (or `orgai` when installed on your PATH). The terminal opens with a
 window-sized workspace with a compact header at the top left and a prompt at the bottom. Active runs show the conversation, agents, plan and worktrees, with
 live activity and elapsed time. Working agents have individual spinners, and a live activity line sits above
-the prompt. A soft shimmer marks thinking labels; the logo, menus and borderless input stay still. Type `/` for searchable commands; Tab moves between panes, Alt+D focuses
+the prompt. A soft shimmer marks thinking labels, and a brief purple sweep crosses the welcome logo between long quiet intervals.
+Menus and the borderless input stay still. Type `/` for searchable commands; Tab moves between panes, Alt+D focuses
 decisions, and Esc twice interrupts a working run from the composer. Enter sends; Alt+Enter adds a line.
 
 Folders that are not registered projects open setup choices in the same terminal flow, at the current window size. Use Up/Down and
@@ -45,6 +46,8 @@ folder check, project setup, or run is actually working.
 
 The input surface follows `COLORFGBG` when available, with a readable dark default.
 Set `ORGAI_THEME=light` or `ORGAI_THEME=dark` to choose its appearance explicitly.
+The [terminal style guide](docs/design/tui-style.md) follows the app's theme tokens: violet actions, blue work,
+distinct agent labels and message directions, and green/amber/red status text. The logo is white on dark and dark ink on light.
 
 Agent messages appear beside the team, with recent exchanges in the agent inspector (Enter on an agent).
 The transcript marks teammates joining and finishing, renders basic Markdown, and groups completed tool
@@ -54,7 +57,7 @@ terminal attaches; they are not a reconstructed message history.
 
 ![Dark terminal workspace with agent messages and inspector](docs/media/tui-team-dark.gif)
 
-*Headless capture of the TUI with a simulated task.*
+*Headless capture of the TUI with a simulated task. [Light version](docs/media/tui-team-light.gif).*
 
 | | |
 | --- | --- |

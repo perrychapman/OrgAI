@@ -209,7 +209,7 @@ describe('Composer', () => {
     await withInkColor(async () => {
       const t = setup({ width: 60, height: 5 }, { color: true, unicode: true, terminalTheme })
       const initial = t.r.lastFrame() ?? ''
-      expect(initial).toContain(terminalTheme === 'dark' ? '\x1b[40m' : '\x1b[47m')
+      expect(initial).toContain(terminalTheme === 'dark' ? '\x1b[40m' : '\x1b[107m')
       await t.send('Visible text')
       const typed = t.r.lastFrame() ?? ''
       expect(typed).toContain(terminalTheme === 'dark' ? '\x1b[97m' : '\x1b[30m')

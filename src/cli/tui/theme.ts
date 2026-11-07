@@ -16,28 +16,40 @@ export function terminalThemeFor(env: Record<string, string | undefined>): 'dark
   return 'dark'
 }
 
+/**
+ * Terminal equivalents of styles/tokens.css and docs/design/spec.md sections 4 and 9.
+ * Use text tokens, never the lower-contrast status fills. Identity is a quiet brand tint
+ * (35% accent-text / 65% primary), separate from every state hue; message uses edge-message.
+ */
+const TERMINAL_PALETTES = {
+  dark: {
+    primary: '#e8ebf3', secondary: '#a3adc2', surface: '#181c27', brandBase: '#ffffff',
+    accent: '#a592ff', running: '#4cb8ff', ok: '#34d399', warn: '#f5b73d', danger: '#ff7b7b',
+    identity: '#d1ccf7', message: '#5d8bd6', code: '#a3adc2'
+  },
+  light: {
+    primary: '#12151f', secondary: '#4a5368', surface: '#f4f5f9', brandBase: '#12151f',
+    accent: '#4f33d6', running: '#0a5fa2', ok: '#096a48', warn: '#7d4a00', danger: '#b3242f',
+    identity: '#27205f', message: '#2f67b4', code: '#4a5368'
+  }
+} as const
+
+export function terminalPalette(env: Pick<TuiEnv, 'terminalTheme'>) {
+  return TERMINAL_PALETTES[env.terminalTheme === 'light' ? 'light' : 'dark']
+}
+
 /** Pair fill and text so the prompt stays readable even without terminal theme metadata. */
 export function composerSurface(env: TuiEnv): { backgroundColor?: string; color?: string } {
   if (!env.color || env.screenReader || env.dumbTerminal) return {}
-  return env.terminalTheme === 'light'
-    ? { backgroundColor: '#f5f5f5', color: '#202124' }
-    : { backgroundColor: '#2d2e34', color: '#e4e7ef' }
-}
-
-const TONE_COLORS: Record<Tone, string | undefined> = {
-  ok: 'green',
-  // Middle tones retain contrast on both light Terminal.app profiles and dark terminals.
-  warn: '#a87422',
-  danger: 'red',
-  dim: undefined,
-  accent: '#287fc0',
-  running: '#287fc0'
+  const palette = terminalPalette(env)
+  return { backgroundColor: palette.surface, color: palette.primary }
 }
 
 /** The Ink colour for a tone, or undefined when colour is off, no tone is given or the tone has no foreground ('dim'). */
 export function toneColor(tone: Tone | undefined, env: TuiEnv): string | undefined {
-  if (!env.color || !tone) return undefined
-  return TONE_COLORS[tone]
+  if (!env.color || env.screenReader || env.dumbTerminal || !tone || tone === 'dim') return undefined
+  const palette = terminalPalette(env)
+  return tone === 'muted' ? palette.secondary : palette[tone]
 }
 
 export interface Glyphs {

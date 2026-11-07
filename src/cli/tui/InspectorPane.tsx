@@ -40,6 +40,29 @@ function peerNames(peers: readonly PeerCount[]): string {
   return names.join(', ')
 }
 
+function exchangeSegments(message: TeamMessageRow, env: TuiEnv, width: number): Seg[] {
+  const target = message.toLabel || (message.toId ? 'Unknown recipient' : 'you')
+  const preview = message.text.replace(/\s+/g, ' ').trim()
+  const segs: Seg[] = env.screenReader
+    ? [
+        { text: 'from ', tone: 'message' },
+        { text: message.fromLabel, tone: 'identity', bold: true },
+        { text: ' to ', tone: 'message' },
+        { text: target, tone: 'identity', bold: true },
+        { text: ': ' },
+        { text: preview, tone: 'muted' }
+      ]
+    : [
+        { text: `${glyphs(env).arrow} `, tone: 'message' },
+        { text: message.fromLabel, tone: 'identity', bold: true },
+        { text: ` ${glyphs(env).arrow} `, tone: 'message' },
+        { text: target, tone: 'identity', bold: true },
+        { text: ': ' },
+        { text: preview, tone: 'muted' }
+      ]
+  return cutSegs(segs, width, env)
+}
+
 /** The fact lines in priority order (the last ones are dropped first in a short pane). */
 export function inspectorFacts(v: InspectorView, env: TuiEnv, width?: number): string[][] {
   const g = glyphs(env)
@@ -84,7 +107,7 @@ export function InspectorPane(props: InspectorPaneProps) {
   const g = glyphs(env)
 
   const header: Seg[] = [
-    { text: v.label, bold: true },
+    { text: v.label, bold: true, tone: 'identity' },
     ...(v.role && v.role !== v.label ? [{ text: ` (${v.role})`, dim: true } as Seg] : []),
     { text: '  ' },
     ...(env.screenReader ? [] : [{ text: `${stateGlyph(v.state, env)} `, tone: stateTone(v.state) } as Seg]),
@@ -107,14 +130,9 @@ export function InspectorPane(props: InspectorPaneProps) {
     lines.push({ key: `fact${i}`, segs: alignSegs([{ text: left }], right ? { text: right, tone: 'accent' } : undefined, width, env) })
   })
   if (shownMessages.length > 0) {
-    lines.push({ key: 'exchange-rule', segs: cutSegs([{ text: ' recent exchanges ', dim: true }], width, env) })
+    lines.push({ key: 'exchange-rule', segs: cutSegs([{ text: ' recent exchanges ', tone: 'muted' }], width, env) })
     shownMessages.forEach((message, i) => {
-      const target = message.toLabel || (message.toId ? 'Unknown recipient' : 'you')
-      const preview = message.text.replace(/\s+/g, ' ').trim()
-      const text = env.screenReader
-        ? `from ${message.fromLabel} to ${target}: ${preview}`
-        : `${glyphs(env).arrow} ${message.fromLabel} to ${target}: ${preview}`
-      lines.push({ key: `exchange${i}`, segs: cutSegs([{ text, dim: true }], width, env) })
+      lines.push({ key: `exchange${i}`, segs: exchangeSegments(message, env, width) })
     })
   }
   const label = props.showThinking ? ' transcript (this agent) ' : ' transcript (this agent, thinking hidden: t) '

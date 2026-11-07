@@ -66,6 +66,16 @@ describe('Motion', () => {
     }
   })
 
+  it.each(['dark', 'light'] as const)('uses readable foregrounds instead of dimming %s thinking text', async (terminalTheme) => {
+    await withInkColor(() => {
+      const app = render(<Providers env={env({ terminalTheme })} bus={new InputBus()}><Shimmer text="Thinking" active={false} phase={4} /></Providers>)
+      const frame = app.lastFrame() ?? ''
+      expect(frame.replace(/\x1b\[[0-9;]*m/g, '')).toBe('Thinking')
+      expect(frame).not.toContain('\x1b[2m')
+      app.unmount()
+    })
+  })
+
   it('keeps a moving rule at its exact cell width and preserves the prompt label', () => {
     const frame = '┌─ Reply ' + '─'.repeat(70) + '┐'
     const app = render(<Providers env={env()} bus={new InputBus()}><MotionRule width={80} text={frame} active={false} phase={20} /></Providers>)

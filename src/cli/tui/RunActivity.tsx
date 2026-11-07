@@ -37,8 +37,8 @@ export function activityLabelSegments(rows: readonly OrgTreeRow[], status: RunSt
   const thinking = status === 'running' && lead?.state === 'thinking' && animated && motionEnabled(env)
   const separator = asciiOnly(env) ? ' | ' : ' · '
   return [
-    { text: parts.prefix, shimmer: thinking, bold: true },
-    ...(parts.details.length ? [{ text: `${separator}${parts.details.join(separator)}`, bold: true }] : [])
+    { text: parts.prefix, shimmer: thinking, bold: true, tone: 'running' },
+    ...(parts.details.length ? [{ text: `${separator}${parts.details.join(separator)}` }] : [])
   ]
 }
 
@@ -66,7 +66,7 @@ export function RunActivity(props: {
   const elapsed = props.startedAt === undefined ? '' : elapsedLabel(props.startedAt, props.endedAt ?? Date.now())
   const meta = [elapsed, working && props.canInterrupt ? 'Esc Esc interrupts' : ''].filter(Boolean).join(asciiOnly(env) ? ' | ' : ' · ')
   const segments = alignSegs([
-    { text: marker, tone: working ? 'accent' : 'ok', bold: true },
+    { text: marker, tone: working ? 'running' : 'ok', bold: true },
     ...labelSegments
   ], meta ? { text: meta, dim: true } : undefined, inner, env)
   return <Box width={width} height={1} paddingX={inset} overflow="hidden"><Text wrap="truncate-end">{segments.map((seg: Seg, i) => <Text key={i} {...styleFor(seg, env)}>{seg.shimmer ? <Shimmer text={seg.text} phase={tick} active={false} /> : seg.text}</Text>)}</Text></Box>

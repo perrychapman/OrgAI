@@ -41,11 +41,12 @@ export interface StyleProps {
 
 /** Ink Text props for a segment; nothing at all when colour is off. */
 export function styleFor(seg: Omit<Seg, 'text'>, env: TuiEnv): StyleProps {
-  if (!env.color) return {}
+  if (!env.color || env.screenReader || env.dumbTerminal) return {}
   const out: StyleProps = {}
   const color = toneColor(seg.tone === 'dim' ? undefined : seg.tone, env)
   if (color) out.color = color
-  if (seg.dim || seg.tone === 'dim') out.dimColor = true
+  // An explicit semantic foreground already carries its hierarchy; don't dim it a second time.
+  if (!color && (seg.dim || seg.tone === 'dim')) out.dimColor = true
   if (seg.bold) out.bold = true
   if (seg.inverse) out.inverse = true
   return out

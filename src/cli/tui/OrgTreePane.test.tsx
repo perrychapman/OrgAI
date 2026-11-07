@@ -340,7 +340,9 @@ describe('OrgTreePane', () => {
     const active = row('a', { depth: 0, state: 'thinking', stateWord: 'Thinking' })
     const item = { kind: 'row' as const, row: active, prefix: '' }
     const highlighted = rowLine(item, false, false, 60, env(), 0, true, true)
-    expect(highlighted.find((segment) => segment.text === 'a')?.tone).toBe('accent')
+    expect(highlighted.find((segment) => segment.text === 'a')?.tone).toBe('identity')
     expect(highlighted.find((segment) => segment.text?.includes('Thinking'))?.shimmer).toBe(true)
+    const traffic = rowLine({ ...item, row: { ...active, traffic: true } }, false, false, 60, env(), 0, true, true)
+    expect(traffic.find((segment) => segment.text === '~')?.tone).toBe('message')
   })
 })

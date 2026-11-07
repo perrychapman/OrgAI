@@ -1242,7 +1242,7 @@ export function App(props: AppProps) {
           />
         )
       case 'transcript':
-        if (welcoming) return <Welcome key="welcome" width={box.width} height={height} folder={state.folder} projectName={state.project?.name} />
+        if (welcoming) return <Welcome key="welcome" width={box.width} height={height} folder={state.folder} projectName={state.project?.name} animated={!terminal.suspended} />
         {
           const completed = activeStatus === 'finished' || activeStatus === 'error'
           const completionHeight = completed && height >= 10 ? 5 : 0

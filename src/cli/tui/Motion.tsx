@@ -2,7 +2,7 @@ import { Text } from 'ink'
 import { useTuiEnv } from './context'
 import { motionEnabled, useActivityTick } from './activity'
 import { sliceToWidth, textWidth } from './panes/text'
-import { glyphs, toneColor } from './theme'
+import { glyphs, terminalPalette, toneColor } from './theme'
 
 const SHIMMER_RAMP = ['#167eae', '#6d69b5', '#8b55ae', '#767676'] as const
 
@@ -27,7 +27,7 @@ export interface ShimmerProps {
   text: string
   active?: boolean
   phase?: number
-  /** Follow the terminal foreground, with a neutral shimmer instead of an accent color. */
+  /** Use the theme's readable neutral foregrounds instead of an accent color. */
   monochrome?: boolean
 }
 
@@ -36,13 +36,16 @@ export function Shimmer({ text, active = true, phase, monochrome = true }: Shimm
   const env = useTuiEnv()
   const tick = useActivityTick(active, env, { kind: 'decorative' })
   const resolvedPhase = motionEnabled(env) ? phase ?? tick : 0
-  if (!env.color || env.screenReader || env.dumbTerminal) return <Text>{text}</Text>
+  if (!motionEnabled(env)) return <Text>{text}</Text>
+  const palette = terminalPalette(env)
   const parts = graphemes(text)
   return (
     <Text>
       {parts.map((part, i) => {
         const shade = shimmerColor(i, resolvedPhase, parts.length)
-        return <Text key={`${i}:${part}`} color={monochrome ? undefined : shade} bold={shade !== SHIMMER_RAMP[3]} dimColor={monochrome && shade === SHIMMER_RAMP[3]}>
+        // Explicit foregrounds keep both ends of the neutral sweep readable in either theme.
+        const color = monochrome ? (shade === SHIMMER_RAMP[3] ? palette.secondary : palette.primary) : shade
+        return <Text key={`${i}:${part}`} color={color} bold={shade !== SHIMMER_RAMP[3]}>
           {part}
         </Text>
       })}

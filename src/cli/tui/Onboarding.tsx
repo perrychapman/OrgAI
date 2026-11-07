@@ -162,23 +162,23 @@ export function Onboarding(props: {
   const selectedChoice = choices.find((choice) => choice.key === activeSelected) ?? choices[0]!
   const noticeRows = accessNotice ? wrapText(`Before you begin: ${accessNotice}`, Math.max(1, inner)).map((text, i) => line(`notice-${i}`, text)) : []
   const leaveText = env.dumbTerminal ? LEAVE_DUMB : LEAVE_NOTE
-  const leaveRows = wrapText(leaveText, Math.max(1, inner)).map((text, i) => line(`leave-${i}`, text, { dim: true }))
+  const leaveRows = wrapText(leaveText, Math.max(1, inner)).map((text, i) => line(`leave-${i}`, text, { tone: 'muted' }))
   const rejectedRows = rejected === undefined ? [] : [line('rejected', `"${rejected}" is not a choice. Keys: ${canImport ? '1, 2, 3, i, ' : '1, 2 or 3, '}e (edits), Esc or q (leave).`, { tone: 'warn' })]
 
   const menu = (detailed: boolean): PaneLine[] => choices.flatMap((choice, i) => {
     const isSelected = choice.key === activeSelected
     return [
       line(`choice-${choice.key}`, `${focusPrefix(isSelected, env)}[${choice.key}] ${choice.title}`, { bold: isSelected }),
-      ...(detailed ? wrapText(choice.description, Math.max(1, inner)).map((text, j) => line(`description-${choice.key}-${j}`, text, { dim: true })) : []),
-      ...(choice.key === '1' ? [line('edits', `      ${edits}`, { dim: true })] : []),
+      ...(detailed ? wrapText(choice.description, Math.max(1, inner)).map((text, j) => line(`description-${choice.key}-${j}`, text, { tone: 'muted' })) : []),
+      ...(choice.key === '1' ? [line('edits', `      ${edits}`, { tone: 'muted' })] : []),
       ...(detailed && i < choices.length - 1 ? [line(`gap-${i}`, '')] : [])
     ]
   })
   const header = [
-    line('folder', `Folder: ${folderLabel(folder, Math.max(0, inner - 8), g.ellipsis)}`, { dim: true }),
+    line('folder', `Folder: ${folderLabel(folder, Math.max(0, inner - 8), g.ellipsis)}`, { tone: 'muted' }),
     line('gap-header', ''),
     line('tagline', 'Your team starts here.', { bold: true }),
-    line('instructions', 'Choose how to begin', { dim: true }),
+    line('instructions', 'Choose how to begin', { tone: 'muted' }),
     line('gap-menu', '')
   ]
   const footerRows = noticeRows.length + (noticeRows.length ? 1 : 0) + 3 + leaveRows.length + rejectedRows.length
@@ -212,14 +212,14 @@ export function Onboarding(props: {
     segs: [
       { text: env.screenReader ? '' : `${asciiOnly(env) ? '> ' : '› '}`, tone: 'accent', bold: true },
       { text: activity ?? selectedChoice.action, bold: true },
-      { text: activity ? '  Please wait' : '  Enter to continue', dim: true }
+      { text: activity ? '  Please wait' : '  Enter to continue', tone: 'muted' }
     ]
   }
   if (footer.length < footerCapacity) footer.push(action)
   if (!tiny && footer.length < footerCapacity) footer.push(line('action-bottom', g.h.repeat(inner), { dim: true }))
   if (rejectedRows.length && footer.length < footerCapacity) footer.push(...rejectedRows.slice(0, footerCapacity - footer.length))
   if (footer.length < footerCapacity) {
-    const trailing = activity ? [line('hints', 'Setup is in progress.', { dim: true })] : leaveRows
+    const trailing = activity ? [line('hints', 'Setup is in progress.', { tone: 'muted' })] : leaveRows
     footer.push(...trailing.slice(0, footerCapacity - footer.length))
   }
   const bodyHeight = top + headerHeight + activityRows + main.length + footer.length
@@ -230,7 +230,7 @@ export function Onboarding(props: {
   return (
     <Box width={width} height={renderHeight} flexDirection="column" paddingX={inset} paddingTop={top} overflow="hidden">
       <Box width={inner} height={headerHeight} flexShrink={0} overflow="hidden">
-        <Brand width={inner} version={tiny ? folderLabel(folder, Math.max(0, inner - 9), g.ellipsis) : `v${CLI_VERSION}`} prominent={headerHeight > 1} />
+        <Brand width={inner} version={tiny ? folderLabel(folder, Math.max(0, inner - 9), g.ellipsis) : `v${CLI_VERSION}`} prominent={headerHeight > 1} animated={props.animated !== false} />
       </Box>
       {activity ? <Box height={1} flexShrink={0}><Spinner label={activity} active={props.animated !== false} shimmer={false} /></Box> : null}
       <PaneLines width={inner} height={main.length} env={env} lines={main} />
