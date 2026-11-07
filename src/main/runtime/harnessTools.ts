@@ -2141,3 +2141,43 @@ export function harnessToolsFor(ctx: RuntimeContext, hooks: HarnessToolHooks = {
   // Engagement work runs: the context notes and the knowledge graph (every role); never single, quick or setup-like runs.
   return bind([...WORK_TOOL_DEFS, ...(engagement ? [engagementContextTool, knowledgeRecallTool, knowledgeTool] : []), ...(options.nativeSkills ? [] : skillToolDefs())], ctx, hooks)
 }
+
+// ---------- Self-knowledge: the harness tool catalog (types.ts "Self-knowledge and self-configuration") ----------
+
+/** The run kinds a harness tool is offered on, as the reference names them. 'engagement-work' = engagement work runs only. */
+export type HarnessToolRunKind = 'work' | 'engagement-work' | 'single' | 'quick' | 'setup' | 'mcp-assist' | 'skill-assist'
+
+export interface HarnessToolCatalogEntry {
+  name: string
+  description: string
+  audience: HarnessToolAudience
+  /** Every run kind that offers it, in HarnessToolRunKind order. */
+  runKinds: HarnessToolRunKind[]
+  blocking: boolean
+}
+
+/**
+ * Every harness tool with the run kinds that offer it, derived from the same def lists harnessToolsFor binds (never
+ * hand-listed), for the reference service (src/main/reference/appReference.ts). Native skill loading is ignored
+ * (list_skills / load_skill count as offered on work and single runs).
+ */
+export function harnessToolCatalog(): HarnessToolCatalogEntry[] {
+  const kinds: [HarnessToolRunKind, HarnessToolDef[]][] = [
+    ['work', [...WORK_TOOL_DEFS, ...skillToolDefs()]],
+    ['engagement-work', [engagementContextTool, knowledgeRecallTool, knowledgeTool]],
+    ['single', [...SINGLE_TOOL_DEFS, knowledgeRecallTool, ...skillToolDefs()]],
+    ['quick', QUICK_TOOL_DEFS],
+    ['setup', SETUP_TOOL_DEFS],
+    ['mcp-assist', MCP_ASSIST_TOOL_DEFS],
+    ['skill-assist', SKILL_ASSIST_TOOL_DEFS]
+  ]
+  const out = new Map<string, HarnessToolCatalogEntry>()
+  for (const [kind, defs] of kinds) {
+    for (const def of defs) {
+      const entry = out.get(def.name) ?? { name: def.name, description: def.description, audience: def.audience ?? 'root', runKinds: [], blocking: isBlockingHarnessTool(def.name) }
+      if (!entry.runKinds.includes(kind)) entry.runKinds.push(kind)
+      out.set(def.name, entry)
+    }
+  }
+  return [...out.values()]
+}
