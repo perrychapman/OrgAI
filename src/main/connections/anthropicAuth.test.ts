@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { anthropicStatus, claudeAuthStatus, privateAuthCwd, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { anthropicStatus, authChildrenInFlight, claudeAuthStatus, EXIT_PIPE_GRACE_MS, makeRunCli, privateAuthCwd, runAuthStatus, type AuthChild, type CliResult, type RunCli } from './anthropicAuth'
 import { claudeRuntimeMissingMessage, type ClaudeExecutableResolution } from '../runtime/claudeBinary'
 
 const found = (path = '/opt/orgai/claude'): (() => ClaudeExecutableResolution) => () => ({ ok: true, path, source: 'sdk' })
@@ -28,6 +29,38 @@ describe('privateAuthCwd (review 3)', () => {
       const again = await privateAuthCwd({ dataDir: data })
       expect(again).toBe(dir)
       expect(readdirSync(again)).toEqual([])
+    } finally {
+      rmSync(data, { recursive: true, force: true })
+    }
+  })
+  it('replaces a junction/symlink at auth-cwd by removing only the link: the target survives', async () => {
+    const data = mkdtempSync(join(tmpdir(), 'orgai-authcwd-'))
+    const target = mkdtempSync(join(tmpdir(), 'orgai-authtarget-'))
+    try {
+      writeFileSync(join(target, 'keep.txt'), 'precious')
+      try {
+        symlinkSync(target, join(data, 'auth-cwd'), process.platform === 'win32' ? 'junction' : 'dir')
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EPERM') return // SKIP: no link privilege on this machine
+        throw e
+      }
+      const dir = await privateAuthCwd({ dataDir: data })
+      expect(lstatSync(dir).isSymbolicLink()).toBe(false)
+      expect(readdirSync(dir)).toEqual([])
+      expect(readFileSync(join(target, 'keep.txt'), 'utf8')).toBe('precious')
+    } finally {
+      rmSync(data, { recursive: true, force: true })
+      rmSync(target, { recursive: true, force: true })
+    }
+  })
+  it.skipIf(process.platform === 'win32')('POSIX: an existing auth-cwd that others can enter is not reused', async () => {
+    const data = mkdtempSync(join(tmpdir(), 'orgai-authcwd-'))
+    try {
+      const dir = join(data, 'auth-cwd')
+      mkdirSync(dir, { mode: 0o755 })
+      chmodSync(dir, 0o755)
+      const got = await privateAuthCwd({ dataDir: data })
+      expect(lstatSync(got).mode & 0o077).toBe(0)
     } finally {
       rmSync(data, { recursive: true, force: true })
     }
@@ -238,5 +271,63 @@ describe('claudeAuthStatus', () => {
     const timedOut: RunCli = async () => ({ stdout: '', stderr: 'ETIMEDOUT', code: 1 })
     const st = await anthropicStatus({ kind: 'subscription' }, {}, { run: timedOut, candidates: async () => [{ bin: 'x' }], env: {} })
     expect(st.state).toBe('error')
+  })
+})
+
+describe('makeRunCli: no kill by a possibly reused pid', () => {
+  afterEach(() => vi.useRealTimers())
+  function setup(platform: NodeJS.Platform) {
+    const em = new EventEmitter()
+    const destroyed: string[] = []
+    const child = Object.assign(em, {
+      pid: 4242,
+      exitCode: null as number | null,
+      signalCode: null as string | null,
+      stdout: { destroy: () => destroyed.push('out') },
+      stderr: { destroy: () => destroyed.push('err') },
+      kill: vi.fn()
+    })
+    let cb!: (err: Error | null, o: string, e: string) => void
+    const killTree = vi.fn((_pid: number, done: () => void) => done())
+    const run = makeRunCli({ exec: (_b, _a, _o, c) => ((cb = c), child as unknown as AuthChild), killTree, platform })
+    return { child, killTree, run, finish: () => cb(null, '{}', ''), destroyed }
+  }
+  it('timer after the child exited: no taskkill, timer cleared, count held until the pipes close', async () => {
+    vi.useFakeTimers()
+    const s = setup('win32')
+    const before = authChildrenInFlight()
+    const p = s.run('claude', [], { env: {}, cwd: '.', timeout: 1000 })
+    expect(authChildrenInFlight()).toBe(before + 1)
+    s.child.exitCode = 0
+    s.child.emit('exit')
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(s.killTree).not.toHaveBeenCalled()
+    expect(s.child.kill).not.toHaveBeenCalled()
+    expect(authChildrenInFlight()).toBe(before + 1) // a pipe-holding grandchild may hold the cwd
+    await vi.advanceTimersByTimeAsync(EXIT_PIPE_GRACE_MS)
+    expect(s.destroyed).toEqual(['out', 'err'])
+    s.finish()
+    expect((await p).code).toBe(0)
+    expect(authChildrenInFlight()).toBe(before)
+  })
+  it('timer while the child is still running: taskkill /T on win32', async () => {
+    vi.useFakeTimers()
+    const s = setup('win32')
+    const p = s.run('claude', [], { env: {}, cwd: '.', timeout: 1000 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(s.killTree).toHaveBeenCalledWith(4242, expect.any(Function))
+    s.finish()
+    await p
+  })
+  it('abort after exit does not kill either', async () => {
+    const s = setup('win32')
+    const ac = new AbortController()
+    const p = s.run('claude', [], { env: {}, cwd: '.', timeout: 60000, signal: ac.signal })
+    s.child.signalCode = 'SIGTERM'
+    s.child.emit('exit')
+    ac.abort()
+    expect(s.killTree).not.toHaveBeenCalled()
+    s.finish()
+    await p
   })
 })

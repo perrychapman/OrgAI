@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmdirSync, rmSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ConnectionStatus, ProviderAuth } from '@shared/types'
@@ -62,30 +62,80 @@ export function authChildrenInFlight(): number {
   return inFlight
 }
 
-export const defaultRunCli: RunCli = (bin, args, opts) =>
-  new Promise((resolve) => {
-    // The CLI may start helper processes that inherit the cwd (on Windows a held cwd cannot be removed), so a timeout or
-    // an abort kills the whole tree (taskkill /T on win32), not just the direct child execFile would kill.
-    let timer: NodeJS.Timeout | undefined
-    const stop = (): void => {
-      const pid = child.pid
-      if (process.platform === 'win32' && pid) {
-        execFile(system32Path('taskkill.exe'), ['/pid', String(pid), '/T', '/F'], { windowsHide: true, cwd: tmpdir() }, () => child.kill())
-      } else child.kill()
-    }
-    // Never start a child once the host is stopping: nothing would be left to end it before the folder is removed.
-    if (opts.signal?.aborted) return resolve({ stdout: '', stderr: '', code: 1 })
-    inFlight++
-    const child = execFile(bin, args, { windowsHide: true, env: opts.env, cwd: opts.cwd }, (err, stdout, stderr) => {
-      inFlight--
-      if (timer) clearTimeout(timer)
-      opts.signal?.removeEventListener('abort', stop)
-      const e = err as (Error & { code?: number | string | null }) | null
-      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), code: e ? (typeof e.code === 'number' ? e.code : 1) : 0 })
+/** How long a pipe may stay open after the direct child exited before its streams are destroyed. */
+export const EXIT_PIPE_GRACE_MS = 2000
+
+/** The slice of a child process runCli uses (tests fake it). */
+export interface AuthChild {
+  pid?: number
+  exitCode: number | null
+  signalCode: NodeJS.Signals | string | null
+  stdout?: { destroy(): void } | null
+  stderr?: { destroy(): void } | null
+  kill(): unknown
+  once(event: 'exit', cb: () => void): unknown
+}
+export interface RunCliDeps {
+  exec: (bin: string, args: string[], o: { windowsHide: boolean; env: Record<string, string>; cwd: string }, cb: (err: Error | null, stdout: string, stderr: string) => void) => AuthChild
+  /** win32 tree kill by pid (taskkill /T /F); calls back when done. */
+  killTree: (pid: number, done: () => void) => void
+  platform: NodeJS.Platform
+}
+
+/**
+ * The in-flight count drops in execFile's callback (stdio closed), not at 'exit': a grandchild that keeps the pipe open
+ * after claude exited may also hold the cwd, so the host drain keeps waiting for it. To bound that wait, 'exit' clears
+ * the kill timer (the pid may be reused from then on, so nothing is killed by pid any more) and starts a short grace
+ * after which the pipes are destroyed, which ends the callback.
+ */
+export function makeRunCli(deps: RunCliDeps): RunCli {
+  return (bin, args, opts) =>
+    new Promise((resolve) => {
+      let timer: NodeJS.Timeout | undefined
+      let grace: NodeJS.Timeout | undefined
+      let done = false
+      const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
+      const stop = (): void => {
+        // Once claude exited its pid may belong to someone else: never taskkill /T it.
+        if (done || exited()) return
+        const pid = child.pid
+        if (deps.platform === 'win32' && pid) deps.killTree(pid, () => child.kill())
+        else child.kill()
+      }
+      // Never start a child once the host is stopping: nothing would be left to end it before the folder is removed.
+      if (opts.signal?.aborted) return resolve({ stdout: '', stderr: '', code: 1 })
+      inFlight++
+      const child = deps.exec(bin, args, { windowsHide: true, env: opts.env, cwd: opts.cwd }, (err, stdout, stderr) => {
+        done = true
+        inFlight--
+        if (timer) clearTimeout(timer)
+        if (grace) clearTimeout(grace)
+        opts.signal?.removeEventListener('abort', stop)
+        const e = err as (Error & { code?: number | string | null }) | null
+        resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), code: e ? (typeof e.code === 'number' ? e.code : 1) : 0 })
+      })
+      timer = setTimeout(stop, opts.timeout)
+      opts.signal?.addEventListener('abort', stop, { once: true })
+      child.once('exit', () => {
+        if (done) return
+        if (timer) clearTimeout(timer)
+        timer = undefined
+        opts.signal?.removeEventListener('abort', stop)
+        grace = setTimeout(() => {
+          child.stdout?.destroy()
+          child.stderr?.destroy()
+        }, EXIT_PIPE_GRACE_MS)
+      })
     })
-    timer = setTimeout(stop, opts.timeout)
-    opts.signal?.addEventListener('abort', stop, { once: true })
-  })
+}
+
+export const defaultRunCli: RunCli = makeRunCli({
+  exec: (bin, args, o, cb) => execFile(bin, args, o, (err, stdout, stderr) => cb(err, String(stdout ?? ''), String(stderr ?? ''))) as unknown as AuthChild,
+  killTree: (pid, done) => {
+    execFile(system32Path('taskkill.exe'), ['/pid', String(pid), '/T', '/F'], { windowsHide: true, cwd: tmpdir() }, () => done())
+  },
+  platform: process.platform
+})
 
 /** Runs a Windows system program by absolute path (execFile, no shell, cwd the temp dir) and returns stdout. */
 export type WinRun = (bin: string, args: string[]) => Promise<string>
@@ -115,10 +165,39 @@ function ownedByUs(st: { uid: number }, o: PrivateCwdOptions): boolean {
 function usableEmptyDir(dir: string, o: PrivateCwdOptions): boolean {
   try {
     const st = lstatSync(dir)
-    return st.isDirectory() && !st.isSymbolicLink() && ownedByUs(st, o) && readdirSync(dir).length === 0
+    if (!st.isDirectory() || st.isSymbolicLink() || !ownedByUs(st, o)) return false
+    // POSIX: a folder others can enter or write is not private.
+    if ((o.platform ?? process.platform) !== 'win32' && (st.mode & 0o077) !== 0) return false
+    return readdirSync(dir).length === 0
   } catch {
     return false
   }
+}
+
+/**
+ * Removes `dir` without ever following a link: a symlink or junction (lstat reports both as symbolic links on win32) is
+ * unlinked itself, a real directory is removed recursively only after lstat confirmed it is not a link.
+ */
+function removeWithoutFollowing(dir: string): void {
+  let st
+  try {
+    st = lstatSync(dir)
+  } catch {
+    return
+  }
+  if (st.isSymbolicLink()) {
+    try {
+      unlinkSync(dir)
+    } catch {
+      rmdirSync(dir) // a win32 directory link may need rmdir; neither call touches the target
+    }
+    return
+  }
+  if (st.isDirectory()) {
+    // Re-check right before the recursive remove: a link swapped in since is never recursed into.
+    if (lstatSync(dir).isSymbolicLink()) return removeWithoutFollowing(dir)
+    rmSync(dir, { recursive: true, force: true })
+  } else unlinkSync(dir)
 }
 
 /**
@@ -134,7 +213,7 @@ export async function privateAuthCwd(o: PrivateCwdOptions = {}): Promise<string>
     const dir = join(o.dataDir, 'auth-cwd')
     mkdirSync(o.dataDir, { recursive: true })
     if (!usableEmptyDir(dir, o)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeWithoutFollowing(dir)
       mkdirSync(dir, { mode: 0o700 })
     }
     return dir

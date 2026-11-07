@@ -147,7 +147,7 @@ export interface ControlProtectedExtras {
  * nearest existing ancestor plus the rest) spelling, deduped, in a stable order.
  */
 export function controlProtectedPaths(dataDir: string, runtimeSocketDir?: string, extras: ControlProtectedExtras = {}): string[] {
-  const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex'), join(dataDir, 'settings.json')]
+  const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex'), join(dataDir, 'settings.json'), join(dataDir, 'auth-cwd')]
   if (runtimeSocketDir) roots.push(runtimeSocketDir)
   for (const f of extras.vaultKeyFiles ?? []) if (typeof f === 'string' && f !== '') roots.push(f)
   const out: string[] = []

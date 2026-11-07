@@ -30,8 +30,13 @@ describe('controlProtectedPaths', () => {
     const data = join(base, 'data')
     mkdirSync(data)
     const paths = controlProtectedPaths(data)
-    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json')])
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), join(data, 'auth-cwd')])
     expect(paths).toContain(join(data, 'settings.json'))
+    expect(paths).toContain(join(data, 'auth-cwd'))
+    // agents cannot write into or replace the auth probe's folder
+    const ctx: SelfControlContext = { protectedPaths: paths, cwd: base } as SelfControlContext
+    expect(checkSelfControlDenial('Write', { file_path: join(data, 'auth-cwd', '.claude', 'settings.json'), content: '{}' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('Read', { file_path: join(data, 'auth-cwd') }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     const rt = join(base, 'rt')
     expect(controlProtectedPaths(data, rt)).toContain(rt)
   })
@@ -43,7 +48,7 @@ describe('controlProtectedPaths', () => {
     mkdirSync(data)
     const key = join(base, 'keys', 'orgai.key')
     const paths = controlProtectedPaths(data, undefined, { vaultKeyFiles: [key, ''] })
-    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), key])
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), join(data, 'auth-cwd'), key])
     expect(controlProtectedPaths(data, undefined, { vaultKeyFiles: [] })).toEqual(controlProtectedPaths(data))
   })
 
@@ -55,12 +60,12 @@ describe('controlProtectedPaths', () => {
     const link = join(base, 'link')
     symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
     const paths = controlProtectedPaths(link)
-    for (const p of ['run', 'secrets.json', 'codex', 'settings.json']) {
+    for (const p of ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd']) {
       expect(paths).toContain(join(link, p))
       expect(paths).toContain(join(real, p))
     }
     expect(new Set(paths).size).toBe(paths.length)
-    expect(paths).toHaveLength(8)
+    expect(paths).toHaveLength(10)
   })
 
   it('never includes the data dir itself, quick/, project-skills/ or skills/', () => {
