@@ -23,6 +23,8 @@ import type {
   ProxyConnection,
   ProviderModel,
   QuickRunTeam,
+  BridgedRoleChoice,
+  RoleConnectionProblem,
   Role,
   SetupKind,
   SkillEvaluationSettings,
@@ -406,31 +408,114 @@ export function projectConnection(project: Pick<Project, 'provider'>): Connectio
 }
 
 /**
- * Pick the adapter for a project's run. 'anthropic' runs on Claude, 'openai' on Codex. 'litellm' follows the
- * root role's model family (its catalog entry first, else modelFamily). Roles whose model would need the other
- * adapter are listed in `mismatched` ('inherit' roles always match): informational on LiteLLM, where reports may run
- * any model the proxy serves (mixedFamilyRefusal), a refusal on the single-family connections.
- * A 'mock' provider always runs on the mock adapter with nothing mismatched.
+ * Pick the adapter for a project's run. 'anthropic' runs on Claude, 'openai' on Codex. A proxy follows the
+ * root role's model family (its catalog entry first, else modelFamily). Roles on the root's connection whose model
+ * would need the other adapter are listed in `mismatched` ('inherit' roles always match): on a proxy they are also
+ * bridged (they run in a child session on the other adapter), on the single-family connections a refusal
+ * (mixedFamilyRefusal). Every non-root role on another connection (roleConnection) is bridged with the adapter its
+ * family needs there (each role's family is read from its own connection's catalog entries).
+ * A 'mock' provider always runs on the mock adapter with nothing mismatched; roles on another connection are bridged on 'mock'.
  */
 export function adapterForProject(project: Pick<Project, 'provider' | 'roles'>, catalog: readonly ProviderModel[]): AdapterChoice {
   const connection = projectConnection(project)
-  const familyOf = (model: ModelRef): ModelFamily =>
-    catalog.find((m) => m.id === model && m.connection === connection)?.family ?? modelFamily(model)
+  const familyOn = (model: ModelRef, on: ConnectionId): ModelFamily =>
+    catalog.find((m) => m.id === model && m.connection === on)?.family ?? modelFamily(model)
   const root = project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
-  const family = root && root.model !== 'inherit' ? familyOf(root.model) : undefined
-  if (project.provider.id === 'mock') return { adapter: 'mock', connection, family, mismatched: [] }
-  const adapter: ProviderId =
-    connection === 'anthropic' ? 'claude' : connection === 'openai' ? 'codex' : adapterForFamily(family ?? 'claude')
-  const mismatched = project.roles
-    .filter((r) => r.model !== 'inherit' && adapterForFamily(familyOf(r.model)) !== adapter)
-    .map((r) => r.id)
-  return { adapter, connection, family, mismatched }
+  const family = root && root.model !== 'inherit' ? familyOn(root.model, connection) : undefined
+  if (project.provider.id === 'mock') {
+    // Mock projects: a role naming another connection is bridged on the mock adapter (the [mock:bridged] marker).
+    const bridged = project.roles
+      .filter((r) => r !== root && roleConnection(r, project) !== connection)
+      .map((r) => ({ roleId: r.id, connection: roleConnection(r, project), adapter: 'mock' as ProviderId }))
+    return { adapter: 'mock', connection, family, mismatched: [], bridged }
+  }
+  const adapter = adapterOnConnection(connection, family)
+  const mismatched: string[] = []
+  const bridged: BridgedRoleChoice[] = []
+  for (const r of project.roles) {
+    if (r === root) continue
+    const on = roleConnection(r, project)
+    const own = r.model !== 'inherit' ? familyOn(r.model, on) : undefined
+    if (on === connection) {
+      if (own !== undefined && adapterForFamily(own) !== adapter) {
+        mismatched.push(r.id)
+        // Only a proxy can serve the other family; on a built-in connection it stays a mismatch (mixedFamilyRefusal).
+        if (!isBuiltinConnectionId(connection)) bridged.push({ roleId: r.id, connection, adapter: adapterForFamily(own) })
+      }
+      continue
+    }
+    // Another connection always needs its own child session (its own env and key), whatever the adapter.
+    bridged.push({ roleId: r.id, connection: on, adapter: adapterOnConnection(on, own) })
+  }
+  return { adapter, connection, family, mismatched, bridged }
+}
+
+/** The adapter that serves a model family on a connection: anthropic Claude, openai Codex, a proxy by family (Claude when unknown). */
+export function adapterOnConnection(connection: ConnectionId, family: ModelFamily | undefined): ProviderId {
+  return connection === 'anthropic' ? 'claude' : connection === 'openai' ? 'codex' : adapterForFamily(family ?? 'claude')
 }
 
 /**
- * Whether a work run with this adapter choice must be refused before it exists (owner decision 2026-11-03: one
- * connection per project; on a LiteLLM proxy the orchestrator's model picks the adapter and reports may run any model
- * the proxy serves). null = it may start (nothing mismatched, or a LiteLLM root with a known family);
+ * The connection a role's agents run on (the one reader of Role.connection): the role's own `connection` when set,
+ * else the project's (projectConnection). The root always runs on the project's connection (a `connection` on it is
+ * ignored). Pure.
+ */
+export function roleConnection(role: Pick<Role, 'connection' | 'reportsTo'>, project: Pick<Project, 'provider'>): ConnectionId {
+  if (role.reportsTo === null) return projectConnection(project)
+  return typeof role.connection === 'string' && isConnectionId(role.connection) ? role.connection : projectConnection(project)
+}
+
+/** The TierContext a role's model resolves against: its own connection's tier mapping and catalog. Pure. */
+export function roleTierContext(
+  role: Pick<Role, 'connection' | 'reportsTo'>,
+  project: Pick<Project, 'provider'>,
+  settings: ConnectionsView | undefined,
+  catalog?: readonly ProviderModel[]
+): TierContext {
+  const connection = roleConnection(role, project)
+  return { connection, tierModels: { ...(connectionRecord(settings, connection)?.tierModels ?? {}) }, ...(catalog ? { catalog } : {}) }
+}
+
+/**
+ * Non-root roles whose own connection cannot run them (see RoleConnectionProblem), in role order. Roles on the
+ * project's connection are never listed (the project's own connection problems surface elsewhere). `statuses` (live
+ * state per connection) adds 'disconnected'; without it only the stored records are judged. Mock projects: none. Pure.
+ */
+export function roleConnectionProblems(
+  project: Pick<Project, 'provider' | 'roles'>,
+  settings: ConnectionsView | undefined,
+  statuses?: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>>
+): RoleConnectionProblem[] {
+  if (project.provider.id === 'mock') return []
+  const own = projectConnection(project)
+  const out: RoleConnectionProblem[] = []
+  for (const r of project.roles) {
+    const on = roleConnection(r, project)
+    if (on === own) continue
+    const name = connectionName(on, settings)
+    const fix = "Connect it in App settings > Connections or change the role's connection."
+    let problem: RoleConnectionProblem['problem'] | undefined
+    let message = ''
+    if (!isKnownConnection(settings, on)) {
+      problem = 'unknown'
+      message = `Role ${r.name} runs on a connection that no longer exists. Change the role's connection.`
+    } else if (!connectionConfigured(on, settings)) {
+      problem = 'not-configured'
+      message = `Role ${r.name} runs on ${name}, which is not set up. ${fix}`
+    } else if (statuses?.[on] === 'disconnected') {
+      problem = 'disconnected'
+      message = `Role ${r.name} runs on ${name}, which is not connected. ${fix}`
+    }
+    if (problem) out.push({ roleId: r.id, roleName: r.name, connection: on, problem, message })
+  }
+  return out
+}
+
+/**
+ * Whether a work run with this adapter choice must be refused before it exists (multi-provider org charts: roles may
+ * span families and connections; a mismatched role on a proxy runs as a bridged report on the other adapter, and roles
+ * on other connections are never refused here, see roleConnectionProblems). null = it may start (nothing mismatched,
+ * or a proxy root with a known family);
  * 'no-root-family' = LiteLLM, roles on another family and the root has no model of its own ('inherit' or no roles),
  * so no adapter can be picked from it; 'single-family-connection' = Anthropic or OpenAI with a role of another family
  * (cannot come from their single-family catalogs; refused as before). Pure.

@@ -554,6 +554,83 @@ export interface RuntimeContext {
    * session's project (a linked skill reads its entry). null = unknown id. Never reads outside OrgAI's own copies.
    */
   readSkill?(ref: { libraryId?: string; skillId?: string }): SkillContent | null
+  /**
+   * Multi-provider org charts (bridged reports, runtime/bridge.ts): present on a work run of a stored project whose
+   * chart has bridged roles (AdapterChoice.bridged), never on setup-like, quick, single or trust-restricted runs and
+   * never inside a bridged child session (no nested bridging in phase 1). Read at call time.
+   * - `roles()`: the bridged roles (id, slug, name, connection and its display name, adapter). Adapters must not
+   *   offer these roles through their native spawn path (Claude: no AgentDefinition, PreToolUse denies Agent / Task
+   *   for their subagent_type; Codex: spawn_agent routes them to `spawn`).
+   * - `spawn(input)`: start the role in a child session on its own adapter and RunConnection and resolve with its
+   *   final text once its root's first turn ends (or the child fails / the run stops: `ok: false` with an error text).
+   *   RunManager enforces spawnable (the caller's role may spawn it; unknown caller = the root role), depth and
+   *   concurrency (effectiveSubagentLimits, counting native and bridged agents) and refuses with a thrown Error whose
+   *   message the caller returns to the model. The child's agents reach the run as ordinary agent.upsert events (root
+   *   remapped to a fresh id under `parentAgentId`, `connection` set), so adapters emit nothing for it themselves.
+   *   Never rejects for a child failure; rejects only for a refusal before the child exists.
+   */
+  bridge?: {
+    roles(): BridgedRole[]
+    spawn(input: BridgeSpawnInput): Promise<BridgeSpawnResult>
+  }
+  /** The connection a role's agents run on in this run (defaults.ts roleConnection), for adapters that label agents. Missing = the run's connection. */
+  agentConnection?(roleId: string): ConnectionId | undefined
+  /**
+   * Set only on the RuntimeContext of a bridged child session (runtime/bridge.ts). The child's root (`roles` holds the
+   * bridged role with reportsTo null plus the roles reachable through its spawnable chain) is NOT the run's root:
+   * harnessToolsFor gives it no 'root'-audience tools (no plan, proposal, org-change, messaging or ask_user tools),
+   * adapters pass PromptFlags.bridged so it gets a report's prompt, the ContinuationDriver never nudges it
+   * (autoContinue false), and its run.status / run.title / run.finalized / run.usage / run.cost / plan.updated events
+   * are dropped by the wrapper (it reads 'idle' and the end of the session as "the report is done").
+   */
+  bridgedChild?: {
+    /** The harness agent id the child's root appears under in the parent run. */
+    agentId: string
+    /** The parent agent that delegated (ROOT_AGENT_ID or a report's id). */
+    parentAgentId: string
+    roleId: string
+  }
+}
+
+/** RuntimeContext.bridge.roles() entry. */
+export interface BridgedRole {
+  roleId: string
+  slug: string
+  name: string
+  connection: ConnectionId
+  /** connectionName(connection, settings), e.g. "OpenAI" or a proxy's name. Not a secret. */
+  connectionName: string
+  adapter: ProviderId
+}
+
+/** RuntimeContext.bridge.spawn input. `brief` is the delegating agent's text, passed to the child as its first message. */
+export interface BridgeSpawnInput {
+  /** Role id or slug of a bridged role. */
+  role: string
+  brief: string
+  /** Requested handle (unique across the run; generated as <slug>-<n> when missing, network.ts spawnHandle). */
+  name?: string
+  /** One line shown as the agent's first activity. */
+  description?: string
+  /** The delegating agent (HarnessToolCaller.agentId); missing = the root. */
+  parentAgentId?: string
+  /** The delegating agent's role (HarnessToolCaller.roleId); missing = the root role. */
+  parentRoleId?: string
+  /** The delegating tool call's id when the adapter knows it (AgentInstance.spawnToolUseId). */
+  toolUseId?: string
+  /**
+   * Called synchronously once the child's agent exists (before its first turn), so an asynchronous caller (Codex
+   * spawn_agent) can answer its tool call with the handle at once.
+   */
+  onStarted?(info: { agentId: string; handle: string }): void
+}
+
+/** RuntimeContext.bridge.spawn result. `text` is the child's final text (at most BRIDGE_RESULT_MAX_CHARS) or the failure text. */
+export interface BridgeSpawnResult {
+  agentId: string
+  handle: string
+  text: string
+  ok: boolean
 }
 
 /** RuntimeContext.skillCatalog: what list_skill_library reports. */
