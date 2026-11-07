@@ -52,6 +52,10 @@ activity; Enter in the transcript expands or collapses those groups. A finished 
 outcome, elapsed time, file changes and check results. Message previews are bounded and begin when the
 terminal attaches; they are not a reconstructed message history.
 
+![Dark terminal workspace with agent messages and inspector](docs/media/tui-team-dark.gif)
+
+*Headless capture of the TUI with a simulated task.*
+
 | | |
 | --- | --- |
 | **Plan** | An Architect agent interviews you or reads your repository, then proposes the architecture, the org chart and the run settings as cards you approve. |
