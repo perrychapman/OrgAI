@@ -125,18 +125,8 @@
   border: 2px solid var(--state-working);
   opacity: 0;
   pointer-events: none;
-  animation: dash-breathe var(--dur-pulse) var(--ease-out) infinite;
-  animation-delay: calc(var(--i, 0) * -240ms);
-}
-@keyframes dash-breathe {
-  from {
-    transform: scale(1);
-    opacity: 0.55;
-  }
-  to {
-    transform: scale(1.9);
-    opacity: 0;
-  }
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
+  animation-delay: calc(var(--i, 0) * 150ms);
 }
 
 /* ---- Run header (6.3) ---- */
@@ -340,28 +330,7 @@
   color: var(--danger-text);
 }
 
-/* A new row fades and rises in; rows never animate out. */
-.dash-agents > li {
-  animation: dash-row-in var(--dur-base) var(--ease-out);
-}
-@keyframes dash-row-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes dash-row-fade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
+/* Arriving rows get .motion-enter from the component (useArrival); rows never animate out. */
 
 /* The role caption goes first when the band is narrow; it stays in the accessible name. */
 @container band (max-width: 559px) {
@@ -381,14 +350,8 @@
     animation: none;
     display: none;
   }
-  .dash-agents > li {
-    animation: dash-row-fade var(--dur-fast) linear;
-  }
 }
 :root[data-reduce-motion='on'] .dash-mark[data-state='working'][data-breathe]::after {
   animation: none;
   display: none;
-}
-:root[data-reduce-motion='on'] .dash-agents > li {
-  animation: dash-row-fade var(--dur-fast) linear;
 }

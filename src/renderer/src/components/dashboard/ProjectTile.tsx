@@ -67,6 +67,7 @@ function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
  */
 export function ProjectTile({
   model,
+  enter,
   onOpen,
   onDelete,
   onNewRun,
@@ -75,6 +76,8 @@ export function ProjectTile({
   onAnnounce
 }: {
   model: TileModel
+  /** The tile appeared after first paint (create, clone). */
+  enter?: boolean
   onOpen: () => void
   onDelete: () => void
   onNewRun: () => void
@@ -110,7 +113,7 @@ export function ProjectTile({
   }
 
   return (
-    <li className="project-tile" data-testid="project-tile" data-name={project.name} data-id={project.id} data-state={state}>
+    <li className={enter ? 'project-tile motion-enter' : 'project-tile'} data-testid="project-tile" data-name={project.name} data-id={project.id} data-state={state}>
       {client && (
         <p className="project-tile-client" data-testid="tile-client" title={client}>
           {client}

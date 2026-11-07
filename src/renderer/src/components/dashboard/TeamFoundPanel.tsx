@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useId } from 'react'
+import { useId, useState } from 'react'
 import type { TeamFilesFound } from '@shared/types'
 import { hasHidden, showHidden } from '../../lib/hiddenChars'
 import {
@@ -41,19 +41,23 @@ export function TeamFoundPanel({
   found,
   existingName,
   blocker,
-  otherToolAgents
+  otherToolAgents,
+  animate
 }: {
+  /** True when the form was already showing before this panel mounted: it rises in. Read once at mount. */
+  animate?: boolean
   found: TeamFilesFound
   existingName?: string
   blocker: string | null
   otherToolAgents: number
 }): ReactElement {
   const uid = useId()
+  const [enter] = useState(() => !!animate)
   const power = approvalChanges(found)
   const { shown: settings, unset: unsetSettings } = setSettings(found.settings ?? [])
   const repeated = repeatedReasons(power)
   return (
-    <section className="team-found" data-testid="team-found" aria-labelledby={`${uid}-h`}>
+    <section className={enter ? 'team-found motion-enter' : 'team-found'} data-testid="team-found" aria-labelledby={`${uid}-h`}>
       <h3 id={`${uid}-h`} className="team-found-title">
         {TEAM_FOUND_TITLE}
       </h3>
