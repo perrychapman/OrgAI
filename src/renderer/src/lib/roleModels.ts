@@ -1,7 +1,8 @@
 import type { Effort, ModelFamily, ModelRef, ModelTier, ProviderId, ProviderModel, Role } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { effortOptionsFor } from '@shared/defaults'
-import { groupByFamily, FAMILY_LABEL, roleTier } from './remap'
+import { groupByFamily, roleTier } from './remap'
+import { FAMILY_WORD } from './modelFamily'
 
 type TierModels = Partial<Record<ModelTier, ModelRef>>
 
@@ -82,13 +83,17 @@ export interface ExactGroup {
 }
 
 /**
- * Concrete ids for the Advanced "Exact model" select. A LiteLLM project lists the whole proxy catalog grouped by
- * family (other roles may run any model the proxy serves); other connections list their catalog in one group.
+ * Concrete ids for the "Exact model" select. A proxy project lists the whole catalog grouped by family (Claude, GPT,
+ * Other), each option naming its family (any role may run any model the proxy serves); other connections list their
+ * catalog in one group.
  */
-export function exactModelGroups(catalog: readonly ProviderModel[], litellm: boolean, current: ModelRef): ExactGroup[] {
-  const option = (m: ProviderModel): { value: string; label: string } => ({ value: m.id, label: m.recommended ? `${m.id} (recommended)` : m.id })
-  const groups: ExactGroup[] = litellm
-    ? groupByFamily(catalog).map((g) => ({ label: FAMILY_LABEL[g.family as ModelFamily], options: g.models.map(option) }))
+export function exactModelGroups(catalog: readonly ProviderModel[], proxy: boolean, current: ModelRef): ExactGroup[] {
+  const option = (m: ProviderModel): { value: string; label: string } => ({
+    value: m.id,
+    label: proxy ? `${m.id}${m.recommended ? ' (recommended)' : ''} · ${FAMILY_WORD[m.family]}` : m.recommended ? `${m.id} (recommended)` : m.id
+  })
+  const groups: ExactGroup[] = proxy
+    ? groupByFamily(catalog).map((g) => ({ label: FAMILY_WORD[g.family as ModelFamily], options: g.models.map(option) }))
     : catalog.length > 0
       ? [{ label: 'Models', options: catalog.map(option) }]
       : []
