@@ -388,7 +388,7 @@ describe('RuntimeContext.outputs: read, run end and revise helpers', () => {
     await m.stopAll()
   })
 
-  it('calls runEnded at the run outcome and pushes revision for the ids it returns', async () => {
+  it('calls runEnded at the run outcome and does not push revision itself (the service onChange does, L4)', async () => {
     const outputs = fakeService({ ended: ['out_0123456789abcdef'] })
     const outputsChanged = vi.fn()
     const { m, ctxs } = rig({ outputs, outputsChanged })
@@ -396,7 +396,7 @@ describe('RuntimeContext.outputs: read, run end and revise helpers', () => {
     expect(outputs.runEnded).not.toHaveBeenCalled()
     ctxs[0].emit({ type: 'run.status', runId: run.id, status: 'finished' })
     expect(outputs.runEnded).toHaveBeenCalledWith('p1', run.id)
-    expect(outputsChanged).toHaveBeenCalledWith({ projectId: 'p1', ids: ['out_0123456789abcdef'], what: 'revision' })
+    expect(outputsChanged).not.toHaveBeenCalledWith(expect.objectContaining({ what: 'revision' }))
     await m.stopAll()
   })
 

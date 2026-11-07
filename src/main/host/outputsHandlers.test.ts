@@ -369,9 +369,10 @@ describe('outputs handlers: watch', () => {
     expect(s.call(OUTPUTS_IPC.outputsWatch, { projectId: QUICK_PROJECT_ID, outputId: OID })).toEqual({ refused: 'Assistants have no outputs.' })
   })
 
-  it('owners: a window by web contents id, a socket client by pid, distinct per surface', () => {
+  it('owners: a window by web contents id, a socket client by its connection id (never the reported pid), distinct per surface', () => {
     expect(watchOwnerOf({ surface: 'desktop', senderId: 3 })).toBe('window:3')
-    expect(watchOwnerOf({ surface: 'socket', pid: 4242 })).toBe('socket:4242')
+    expect(watchOwnerOf({ surface: 'socket', connectionId: '7' })).toBe('socket:7')
+    expect(watchOwnerOf({ surface: 'socket', connectionId: '8', pid: 4242 } as never)).toBe('socket:8')
     expect(watchOwnerOf({ surface: 'inproc', clientKind: 'cli' })).toBe('inproc:cli')
   })
 })
