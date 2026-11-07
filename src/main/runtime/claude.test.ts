@@ -271,6 +271,28 @@ describe('buildEnv', () => {
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('tok')
     expect(usesProxy(ctx)).toBe(true)
   })
+
+  it('isolates two different proxy connections per run: each gets only its own base url and token', () => {
+    const leaky = { PATH: '/bin', ANTHROPIC_API_KEY: 'stray', CLAUDE_CODE_OAUTH_TOKEN: 'oauth', CLAUDE_CONFIG_DIR: '/home/me/.claude' }
+    const a = fakeCtx({ connection: { connection: 'litellm', adapter: 'claude', env: { ANTHROPIC_BASE_URL: 'https://proxy.example.com', ANTHROPIC_AUTH_TOKEN: 'fake-key-a' } } })
+    const b = fakeCtx({ connection: { connection: 'proxy-0a1b2c3d', adapter: 'claude', env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com', ANTHROPIC_AUTH_TOKEN: 'fake-key-b' } } })
+    for (const [ctx, url, tok] of [[a, 'https://proxy.example.com', 'fake-key-a'], [b, 'https://gateway.example.com', 'fake-key-b']] as const) {
+      expect(usesProxy(ctx)).toBe(true)
+      const env = buildEnv(ctx, leaky)
+      expect(env.ANTHROPIC_BASE_URL).toBe(url)
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe(tok)
+      expect('ANTHROPIC_API_KEY' in env).toBe(false)
+      expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false)
+      expect('CLAUDE_CONFIG_DIR' in env).toBe(false)
+    }
+    expect(usesProxy(fakeCtx({ connection: { connection: 'anthropic', adapter: 'claude', env: {} } }))).toBe(false)
+  })
+
+  it('completionEnv treats a dynamic proxy id like a proxy', () => {
+    const base = { ANTHROPIC_API_KEY: 'k', PATH: 'p', CLAUDE_CODE_OAUTH_TOKEN: 'oauth' }
+    const env = completionEnv({ connection: 'proxy-0a1b2c3d', adapter: 'claude', env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' } }, base)
+    expect(env).toEqual({ PATH: 'p', ANTHROPIC_BASE_URL: 'https://gateway.example.com' })
+  })
 })
 
 describe('OAuth bearer headers', () => {

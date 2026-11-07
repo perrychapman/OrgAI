@@ -1154,6 +1154,28 @@ describe('CodexAdapter session', () => {
     expect(ctx.events.filter((e) => e.type === 'run.cost')).toHaveLength(1)
   })
 
+  it('on a non-LiteLLM proxy with no pricing, no estimate and no run.cost (never an invented $0 total)', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ connection: { connection: 'proxy-0a1b2c3d', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'fake-key', openaiBaseUrl: 'https://gateway.example.com/v1', env: { CODEX_HOME: '/data/codex' } } })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 0 }, last: {}, modelContextWindow: null } })
+    expect(lastAgent(ctx, 'root')).toMatchObject({ inputTokens: 1200 })
+    expect(ctx.events.some((e) => e.type === 'run.cost')).toBe(false)
+  })
+
+  it('prices on any proxy id that carries RunConnection.pricing (keyed on pricing, not on litellm)', async () => {
+    const { adapter, servers } = setup()
+    const price = { inputPerToken: 1e-6, outputPerToken: 1e-5 }
+    const ctx = ctxFor({ connection: { connection: 'proxy-0a1b2c3d', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'fake-key', openaiBaseUrl: 'https://gateway.example.com/v1', env: { CODEX_HOME: '/data/codex' }, pricing: { 'gpt-test': price } } })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 100, cachedInputTokens: 0 }, last: {}, modelContextWindow: null } })
+    expect(lastAgent(ctx, 'root')?.costUsd).toBeCloseTo(1000 * 1e-6 + 100 * 1e-5, 12)
+  })
+
   it('on LiteLLM without a price for the model, cost stays 0', async () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor({ connection: { connection: 'litellm', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'k', env: { CODEX_HOME: '/data/codex' }, pricing: { 'gpt-test-mini': { inputPerToken: 1, outputPerToken: 1 } } } })
