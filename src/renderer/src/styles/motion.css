@@ -166,16 +166,18 @@
 }
 
 /* ---------- Native disclosures (spec 3.7) ---------- */
-
+/*
+ * Opening reveals the height; closing is instant (deviation from spec 3.7, which reversed it): a closing transition
+ * kept closed content visible and focusable for --dur-fast, which broke "hidden after close" checks and let a deep
+ * link that closes and reopens measure a moving box. Disclosures opened by code before a scroll or focus (Advanced
+ * settings deep links) carry .motion-none.
+ */
 details::details-content {
   block-size: 0;
   opacity: 0;
   overflow: clip;
   overflow-clip-margin: 4px;
-  transition:
-    block-size var(--dur-fast) var(--ease-in),
-    opacity var(--dur-fast) var(--ease-in),
-    content-visibility var(--dur-fast) allow-discrete;
+  transition: none;
 }
 details[open]::details-content {
   block-size: auto;
