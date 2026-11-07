@@ -957,6 +957,14 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   the two-step discard), `v` through the real pager, permission `s` and a confirmed `a` are unit-tested only
   (decisions.test.ts, DecisionTray.test.tsx, pager.test.ts). The pager signal handling is unit-tested with a fake
   process, not with a real `less` in a PTY.
+- **Usability fixes (2026-11-06, issues #25-#32, `docs/design/ux-review-tui.md` "Implementation notes").** Deviation
+  from 5.1: full-screen now starts at 70x24 (`FULLSCREEN_MIN_COLS` 70; stacked below `SPLIT_MIN_COLS` 110), so 80x24
+  shows the panes; inline stays for `--inline`, `--ax-screen-reader`, TERM=dumb, a non-TTY and smaller windows. Esc on
+  the composer interrupts only when pressed twice within `ESC_INTERRUPT_MS` 1.5 s. Permission cards hold y / s / a
+  until the card body's last line was shown or `v` (full view, new) was used. Status-line notices last
+  `TUI_NOTICE_TTL_MS` 5 s. Input that arrives while a focus change is pending is queued (at most 512 events) and
+  replayed once the new target is registered. Verified by unit and ink-testing-library tests only; the pty steps of
+  `e2e/cli-tui.mjs` were updated (an unfocused tray reads "Alt+D to answer") but not run (Windows SKIP).
 
 ### Wave 5 (landed on dev, 2026-11-05; contracts c2e7a1a, merges db3de45..dd33778, integration fix 565c479, review fix-up after it)
 
