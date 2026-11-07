@@ -10,8 +10,10 @@
  *
  * Completion: the child root's turn ended (run.status 'idle') and the session's settlement says rootIdle && quiescent
  * (a session without settlement() counts as settled). Never rejects for a child failure: `ok: false` with a text.
- * Nothing here logs or forwards a RunConnection; secret values of every RunConnection of the run are redacted from every
- * text the wrapper forwards.
+ * Nothing here logs or forwards a RunConnection; secret values of every RunConnection of the run are redacted from the
+ * events and display texts the wrapper forwards (transcript, partials, messages, logs, agents; card summary, question,
+ * option descriptions and reasons). Card fields decisions depend on (tool input, rules, option labels, MCP specs) are
+ * forwarded exactly.
  */
 import type { AgentInstance, BridgedRoleChoice, ConnectionId, ProviderId, Project, Role, RunEvent, RunSummary, TranscriptEntry } from '@shared/types'
 import { BRIDGE_RESULT_MAX_CHARS } from '@shared/types'
@@ -71,21 +73,72 @@ interface Child {
   poll?: ReturnType<typeof setTimeout>
   resolve: (r: BridgeSpawnResult) => void
   stopped?: Promise<void>
+  /** The adapter.start call while it is pending (never rejects). */
+  opening?: Promise<void>
 }
 
-/** Env names whose values are routing, not secrets. */
-const NON_SECRET_ENV = /^(CODEX_HOME|.*_BASE_URL|.*_URL|.*_HOST|.*_MODEL|.*_REGION|.*_ORG(ANIZATION)?(_ID)?)$/i
-const MIN_SECRET_CHARS = 6
+/** Env names whose values are always secrets, whatever characters they have. */
+const SECRET_ENV_NAME = /KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL/i
+const MIN_SECRET_CHARS = 8
 
-/** The secret values of RunConnections (apiKey, env values that are not obviously routing). Longest first. */
+/**
+ * The secret values of RunConnections. RunConnection.apiKey is always a secret, and so is every env value whose NAME looks
+ * like one (with or without / and \). Other env values count unless they parse as http(s) URLs; a URL's userinfo
+ * (user:pass) is a secret. Header-like values also add the part after "Bearer " and after "name:". Longest first.
+ */
 export function connectionSecrets(list: Iterable<RunConnection>): string[] {
   const out = new Set<string>()
+  const add = (s: string | undefined): void => {
+    if (typeof s === 'string' && s.length >= MIN_SECRET_CHARS) out.add(s)
+  }
+  const addValue = (v: string): void => {
+    add(v)
+    const bearer = /^\s*bearer\s+(.+)$/i.exec(v)
+    if (bearer) add(bearer[1]!.trim())
+    const named = /^\s*[A-Za-z][\w-]*\s*:\s*(.+)$/.exec(v)
+    if (named) {
+      add(named[1]!.trim())
+      const inner = /^bearer\s+(.+)$/i.exec(named[1]!.trim())
+      if (inner) add(inner[1]!.trim())
+    }
+  }
+  const addUserinfo = (v: string): boolean => {
+    let u: URL
+    try {
+      u = new URL(v)
+    } catch {
+      return false
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    if (u.username || u.password) {
+      let user = u.username
+      let pass = u.password
+      try {
+        user = decodeURIComponent(user)
+        pass = decodeURIComponent(pass)
+      } catch {
+        // keep the raw spelling
+      }
+      add(pass)
+      add(u.password)
+      add(user && pass ? `${user}:${pass}` : user)
+      add(u.username && u.password ? `${u.username}:${u.password}` : u.username)
+    }
+    return true
+  }
   for (const c of list) {
-    if (typeof c.apiKey === 'string' && c.apiKey.length >= MIN_SECRET_CHARS) out.add(c.apiKey)
+    add(c.apiKey)
     for (const [k, v] of Object.entries(c.env ?? {})) {
-      if (typeof v !== 'string' || v.length < MIN_SECRET_CHARS || NON_SECRET_ENV.test(k)) continue
-      if (/^https?:\/\//i.test(v) || /[\\/]/.test(v)) continue
-      out.add(v)
+      if (typeof v !== 'string') continue
+      if (SECRET_ENV_NAME.test(k)) {
+        addValue(v)
+        addUserinfo(v)
+        continue
+      }
+      if (addUserinfo(v)) continue
+      // Routing names (not secret-named) are not secrets; secret-named ones were handled above.
+      if (/^(CODEX_HOME|.*_MODEL|.*_REGION|.*_ORG(ANIZATION)?(_ID)?)$/i.test(k)) continue
+      addValue(v)
     }
   }
   return [...out].sort((a, b) => b.length - a.length)
@@ -93,6 +146,7 @@ export function connectionSecrets(list: Iterable<RunConnection>): string[] {
 
 /** Replace every secret in a string. */
 export function redactText(text: string, secrets: readonly string[]): string {
+  if (typeof text !== 'string') return text
   let out = text
   for (const s of secrets) if (s && out.includes(s)) out = out.split(s).join('[redacted]')
   return out
@@ -168,6 +222,15 @@ export class BridgedSessions {
     const agents = this.deps.agents()
     const rootRole = parent.roles.find((r) => r.reportsTo === null)
     const parentAgent = input.parentAgentId ? agents.find((a) => a.id === input.parentAgentId) : undefined
+    if (!input.parentAgentId && !input.parentRoleId) {
+      // Unknown caller: it counts as the root only while no non-root agent that may delegate is live.
+      const anyLiveSpawner = agents.some((a) => {
+        if (a.id === ROOT_AGENT_ID || !isLiveAgent(a)) return false
+        const r = a.roleId ? parent.roles.find((x) => x.id === a.roleId) : undefined
+        return !!r?.canSpawn
+      })
+      if (anyLiveSpawner) throw new Error('OrgAI could not tell which agent called delegate_agent; call it again when your reports are done.')
+    }
     const callerRole =
       (input.parentRoleId ? parent.roles.find((r) => r.id === input.parentRoleId) : undefined) ??
       (parentAgent?.roleId ? parent.roles.find((r) => r.id === parentAgent.roleId) : undefined) ??
@@ -199,7 +262,10 @@ export class BridgedSessions {
     const { handle } = spawnHandle(namer, role.slug, requested)
     const agentId = newId('ag')
 
-    const childRoles = this.childRoles(role, choice, parent.roles)
+    // The child's own adapter reads limits from its project and chart: hand it what is left of the run's budget.
+    const childDepthBudget = limits.depth - (depth + 1)
+    const childLimits = { depth: Math.max(1, childDepthBudget), concurrency: Math.max(1, limits.concurrency - live - 1) }
+    const childRoles = this.childRoles(role, choice, parent.roles, childDepthBudget <= 0)
     const child: Child = {
       agentId,
       handle,
@@ -217,7 +283,7 @@ export class BridgedSessions {
     })
     this.children.set(agentId, child)
 
-    const ctx = this.childContext(child, conn, childRoles, input)
+    const ctx = this.childContext(child, conn, childRoles, input, childLimits)
     // The agent exists on the canvas at once, before the child's first turn.
     const now = Date.now()
     const first: AgentInstance = {
@@ -250,7 +316,7 @@ export class BridgedSessions {
   }
 
   /** The child's roles: the bridged role (as root) plus roles reachable through its spawnable chain on the same (connection, adapter). */
-  private childRoles(role: Role, choice: BridgedRoleChoice, all: Role[]): Role[] {
+  private childRoles(role: Role, choice: BridgedRoleChoice, all: Role[], noSpawn = false): Role[] {
     const samePair = new Set(this.deps.bridged.filter((b) => b.connection === choice.connection && b.adapter === choice.adapter).map((b) => b.roleId))
     const reachable = new Map<string, Role>()
     const queue = [...role.spawnable]
@@ -262,9 +328,11 @@ export class BridgedSessions {
       reachable.set(id, r)
       queue.push(...r.spawnable)
     }
+    // No depth left: nobody in the child may delegate, so only the root role is kept.
+    if (noSpawn) reachable.clear()
     const ids = new Set([role.id, ...reachable.keys()])
     const copy = (r: Role, root: boolean): Role => {
-      const spawnable = r.spawnable.filter((id) => ids.has(id))
+      const spawnable = noSpawn ? [] : r.spawnable.filter((id) => ids.has(id))
       return { ...r, spawnable, canSpawn: r.canSpawn && spawnable.length > 0, reportsTo: root ? null : r.reportsTo && ids.has(r.reportsTo) ? r.reportsTo : role.id }
     }
     return [copy(role, true), ...[...reachable.values()].map((r) => copy(r, false))]
@@ -274,7 +342,7 @@ export class BridgedSessions {
     return childId === ROOT_AGENT_ID ? child.agentId : `${child.agentId}:${childId}`
   }
 
-  private childContext(child: Child, conn: RunConnection, roles: Role[], input: BridgeSpawnInput): RuntimeContext {
+  private childContext(child: Child, conn: RunConnection, roles: Role[], input: BridgeSpawnInput, limits: { depth: number; concurrency: number }): RuntimeContext {
     const parentNow = (): RuntimeContext => this.deps.parent()
     const p0 = parentNow()
     const agent = (id: string | undefined): string | undefined => (id === undefined ? undefined : this.mapId(child, id))
@@ -283,7 +351,14 @@ export class BridgedSessions {
     const refuse = (what: string): void => {
       this.deps.log?.warn(`Bridged report ${child.handle}: ${what} is not available to a bridged report.`)
     }
-    const project: Project = { ...p0.project, roles, isolateWriters: false, provider: { ...p0.project.provider, id: child.choice.adapter } }
+    const project: Project = {
+      ...p0.project,
+      roles,
+      isolateWriters: false,
+      maxSubagentDepth: limits.depth,
+      maxConcurrentSubagents: limits.concurrency,
+      provider: { ...p0.project.provider, id: child.choice.adapter }
+    }
     const run: RunSummary = { ...p0.run, connection: child.choice.connection }
     const ctx: RuntimeContext = {
       run,
@@ -295,8 +370,18 @@ export class BridgedSessions {
       autoContinue: false,
       maxAutoContinues: 0,
       bridgedChild: { agentId: child.agentId, parentAgentId: child.parentAgentId, roleId: child.role.id },
-      requestPermission: (req) => parentNow().requestPermission(withAgent(req)),
-      requestQuestion: (req) => parentNow().requestQuestion(withAgent(req)),
+      // Cards: only display text is redacted (summary, question, option descriptions, reasons). Tool input, rules, option
+      // labels and the MCP spec stay exact because decisions and rule matching depend on them.
+      requestPermission: (req) => {
+        const s = this.secrets()
+        return parentNow().requestPermission(withAgent({ ...req, summary: redactText(req.summary, s) }))
+      },
+      requestQuestion: (req) => {
+        const s = this.secrets()
+        return parentNow().requestQuestion(
+          withAgent({ ...req, question: redactText(req.question, s), options: (Array.isArray(req.options) ? req.options : []).map((o) => (o.description === undefined ? o : { ...o, description: redactText(o.description, s) })) })
+        )
+      },
       requestProposal: async () => {
         refuse('Proposals')
         return { behavior: 'decline', note: 'A bridged report cannot propose changes. Tell the agent that delegated to you what you need.' }
@@ -324,8 +409,8 @@ export class BridgedSessions {
     const pass = <K extends keyof RuntimeContext>(key: K): void => {
       if (typeof p0[key] === 'function') (ctx as unknown as Record<string, unknown>)[key] = (...a: unknown[]) => (parentNow()[key] as unknown as (...x: unknown[]) => unknown)?.(...a)
     }
-    if (p0.requestPermissionRules) ctx.requestPermissionRules = (req) => parentNow().requestPermissionRules!(withAgent(req))
-    if (p0.requestMcpInstall) ctx.requestMcpInstall = (req) => parentNow().requestMcpInstall!(withAgent(req))
+    if (p0.requestPermissionRules) ctx.requestPermissionRules = (req) => parentNow().requestPermissionRules!(withAgent({ ...req, reason: redactText(req.reason, this.secrets()) }))
+    if (p0.requestMcpInstall) ctx.requestMcpInstall = (req) => parentNow().requestMcpInstall!(withAgent({ ...req, reason: redactText(req.reason, this.secrets()) }))
     for (const k of [
       'searchMcpRegistry',
       'mcpServers',
@@ -447,10 +532,19 @@ export class BridgedSessions {
 
   private async run(child: Child, adapter: RuntimeAdapter, ctx: RuntimeContext): Promise<void> {
     try {
-      const session = await adapter.start(ctx)
+      const opening = adapter.start(ctx)
+      child.opening = opening.then(
+        () => {},
+        () => {}
+      )
+      const session = await opening
       child.session = session
       if (child.done) {
-        void session.stop().catch(() => {})
+        // Stopped (stopAll or a failure) while opening: end the session that just came up.
+        child.stopped = session.stop().then(
+          () => session.finished.catch(() => {}),
+          () => {}
+        )
         return
       }
       void session.finished.then(
@@ -517,9 +611,14 @@ export class BridgedSessions {
   /** Stop every child. Their spawns resolve `ok: false` "Stopped: <reason>". Waits for the sessions to end (bounded). */
   async stopAll(reason: string): Promise<void> {
     const list = [...this.children.values()]
-    // A child still opening is stopped as soon as it opens (run() sees `done`).
     for (const c of list) if (!c.done) this.finish(c, false, `Stopped: ${reason}`, 'stopped')
-    const waits = list.map((c) => c.stopped).filter((p): p is Promise<void> => !!p)
+    // A child still opening is stopped as soon as it opens (run() sees `done`); wait for that too, within the bound below.
+    const waits = list
+      .filter((c) => c.stopped || (c.opening && !c.session))
+      .map(async (c) => {
+        await c.opening
+        await c.stopped
+      })
     if (!waits.length) return
     let timer: ReturnType<typeof setTimeout> | undefined
     await Promise.race([
