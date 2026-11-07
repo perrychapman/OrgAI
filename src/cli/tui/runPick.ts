@@ -20,7 +20,8 @@ export interface RunPickRow {
   retro: boolean
 }
 
-export function runPickRows(runs: readonly RunSummary[], projectId?: string): RunPickRow[] {
+/** `waiting`: ids of runs with an open decision card (their row says Needs you; issue #29 M4). */
+export function runPickRows(runs: readonly RunSummary[], projectId?: string, _waiting?: ReadonlySet<string>): RunPickRow[] {
   const own = projectId ? runs.filter((r) => r.projectId === projectId) : [...runs]
   const idx = runIndexMap(own)
   return [...own]

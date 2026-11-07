@@ -36,6 +36,7 @@ import type { TuiTerminal } from './terminal'
 import { asciiOnly, glyphs, toneColor } from './theme'
 import { truncateEnd } from './panes/text'
 import { TranscriptPane } from './TranscriptPane'
+import { trayHeight } from './trayLayout'
 import type {
   ComposerMode,
   FocusTarget,
@@ -129,24 +130,8 @@ export function hintsFor(focus: FocusTarget, readOnly: boolean, stopOnQuit = fal
   return statusHint(focus, { readOnly, stopOnQuit, ...(row ? { row } : {}), ...(hintEnv ? { env: hintEnv } : {}) })
 }
 
-/**
- * Rows the Decision Tray gets: what the top card needs (header, detail lines, a status or mode line, the key hints, the
- * next cards), at least 5 and at most about a third of the window (12 at the most), so a short card leaves the tree room
- * (ux-review-tui-org.md F3). Inline mode keeps its one footer line (3 = the footer's three lines).
- */
-export function trayHeight(cards: readonly TrayCard[], cols: number, rows: number, inline: boolean): number {
-  if (cards.length === 0) return inline ? 0 : 1
-  if (inline) return 3
-  const cap = Math.max(5, Math.min(12, Math.floor(rows * 0.35)))
-  let detail = 3
-  try {
-    detail = cardDetailLines(cards[0], Math.max(18, cols - 4)).length
-  } catch {
-    detail = 3
-  }
-  const next = Math.min(3, cards.length - 1) + (cards.length - 1 > 3 ? 1 : 0)
-  return Math.min(cap, Math.max(5, 1 + detail + 1 + 2 + next))
-}
+/** The tray's row budget lives with the tray (trayLayout.ts); re-exported for older imports. */
+export { trayHeight }
 
 /** The run a ref names in this state: R<n> by runOrder, else an exact id or a unique prefix of 6+ characters. */
 export function runForRef(s: TuiState, ref: string): string | undefined {
