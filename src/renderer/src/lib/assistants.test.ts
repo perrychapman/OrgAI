@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { QuickRunInfo } from '@shared/types'
-import { ASSISTANT_ORDER, offersRetro, promoteNameError, canPromote, chatSummaryLine, displayProject, locationLabel, newSessionLabel, promoteName, quickAccessLabel, quickFolderLabel, runKindLabel } from './assistants'
+import { ASSISTANT_ORDER, offersRetro, promoteNameError, canPromote, chatSummaryLine, displayProject, locationLabel, newSessionLabel, promoteName, quickFolderLabel, runKindLabel } from './assistants'
 import { assistantModeLabel, composerPlaceholder, isSingleAgentRun, offersSaveAsProject, runLayoutFor, speaksAsAssistant } from './assistants'
 
 describe('run layout', () => {
@@ -59,8 +59,6 @@ describe('assistants', () => {
   it('labels folder and access', () => {
     expect(quickFolderLabel(quick())).toBe('notes-api')
     expect(quickFolderLabel(quick({ scratch: true }))).toBe('Scratch')
-    expect(quickAccessLabel(quick({ allowEdits: true }))).toBe('edits allowed')
-    expect(quickAccessLabel(quick())).toBe('read-only')
   })
   it('proposes a project name', () => {
     expect(promoteName({ quick: quick(), title: 'x' })).toBe('notes-api')
@@ -74,10 +72,10 @@ describe('assistants', () => {
   })
   it('summarises a chat', () => {
     expect(chatSummaryLine({ scratch: true, allowEdits: false, model: 'Everyday tier', connection: 'Anthropic' })).toBe(
-      'Works in a private scratch area. Reads files, asks before editing. Runs on Everyday tier via Anthropic. Counts toward your usage.'
+      'Works in a private scratch area. Asks before it changes a file or runs a command. Runs on Everyday tier via Anthropic. Counts toward your usage.'
     )
     const line = chatSummaryLine({ scratch: false, folderName: 'api', allowEdits: true, model: '', mock: true })
-    expect(line).toContain('Works in api. Reads and edits files')
+    expect(line).toContain('Works in api. Ready to make changes; asks before each edit and command.')
     expect(line).toContain('Mock run, no tokens.')
   })
   it('names the new-session button', () => {
@@ -136,9 +134,9 @@ describe('assistants edge cases', () => {
     expect(quickFolderLabel(undefined)).toBe('Scratch')
   })
   it('a scratch chat never claims edits, and a folder chat without a name falls back to scratch wording', () => {
-    expect(chatSummaryLine({ scratch: true, allowEdits: true, model: 'M' })).toContain('Reads files, asks before editing.')
+    expect(chatSummaryLine({ scratch: true, allowEdits: true, model: 'M' })).toContain('Works in a private scratch area. Ready to make changes; asks before each edit and command.')
     expect(chatSummaryLine({ scratch: false, allowEdits: false, model: 'M' })).toContain('Works in a private scratch area.')
-    expect(chatSummaryLine({ scratch: false, folderName: 'api', allowEdits: false, model: '' })).toContain('Runs on the configured model.')
+    expect(chatSummaryLine({ scratch: false, folderName: 'api', allowEdits: false, model: '' })).toContain('Works in api. Reads freely, asks before it changes a file or runs a command. Runs on the configured model.')
   })
   it('a quick run with a blank title proposes Chat, and no quick info cannot be promoted', () => {
     expect(promoteName({ quick: quick({ scratch: true }), title: '   ' })).toBe('Chat')

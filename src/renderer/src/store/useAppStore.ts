@@ -60,6 +60,7 @@ import { projectKindOf } from '@shared/defaults'
 import type { ProjectKind, QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
 import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTeam, TeamFilesStatus } from '@shared/types'
 import { displayProject, type RunLayout } from '../lib/assistants'
+import { countsAsSessionChange } from '../lib/chatPermissions'
 import { connectionLabel, setConnectionRegistry } from '../lib/connectionLabel'
 
 /** Project tabs: run (Live), history, knowledge (engagements only), team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
@@ -151,6 +152,8 @@ export interface RunState {
    * agents were settled). Only meaningful for a run cut by OrgAI closing.
    */
   cutWhile?: 'working' | 'waiting'
+  /** Chat runs: the user allowed a change or command for the session in this run (RunMeta's access chip). Live only. */
+  sessionChanges?: true
 }
 
 /** A model-change notice (Banner). Per project it keeps the pre-change copy so Undo can restore it. */
@@ -1891,9 +1894,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'permission.request':
           run.permissions = [...run.permissions, e.request]
           break
-        case 'permission.resolved':
+        case 'permission.resolved': {
+          const resolved = run.permissions.find((p) => p.id === e.requestId)
+          if (run.summary.quick && !e.cancelled && countsAsSessionChange(resolved?.toolName, e.scope)) run.sessionChanges = true
           run.permissions = run.permissions.filter((p) => p.id !== e.requestId)
           break
+        }
         case 'proposal.request':
           run.proposals = [...run.proposals, e.proposal]
           break

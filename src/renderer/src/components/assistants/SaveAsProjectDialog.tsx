@@ -6,6 +6,7 @@ import { Dialog } from '../ui/Dialog'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 import { cleanIpcError } from '../../lib/ipcError'
+import { SAVE_AS_PROJECT_PERMISSIONS_NOTE } from '../../lib/chatPermissions'
 import { PROMOTE_NAME_LIMIT, promoteName, promoteNameError } from '../../lib/assistants'
 
 /**
@@ -95,6 +96,9 @@ export default function SaveAsProjectDialog({ summary, onClose }: { summary: Run
             </div>
           )}
           <p className="muted">Creates a project with the default team and moves this chat and its earlier turns into it.</p>
+          <p className="muted" data-testid="save-as-project-permissions-note">
+            {SAVE_AS_PROJECT_PERMISSIONS_NOTE}
+          </p>
           {error && (
             <p id={errId} role="alert" className="field-error">
               {error}
