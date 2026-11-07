@@ -20,6 +20,7 @@ import Sidebar from './components/Sidebar'
 import RunHistory from './components/RunHistory'
 import { useRunTabShortcuts } from './components/RunTabs'
 import AppMenuLayer from './components/AppMenuLayer'
+import AppNavigateBanner from './components/AppNavigateBanner'
 import { Badge } from './components/ui/Badge'
 import { Icon } from './components/ui/Icon'
 import { Tabs, type TabItem } from './components/ui/Tabs'
@@ -206,6 +207,7 @@ export default function App(): ReactElement {
                 )}
                 <SaveIndicator />
               </div>
+              <AppNavigateBanner />
               {view === 'settings' ? (
                 <SettingsView project={project} />
               ) : view === 'knowledge' && hasKnowledge ? (

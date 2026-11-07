@@ -43,6 +43,8 @@ import { TERMINAL_ACCESS_TRUST } from '../lib/cliShim'
 import { TERMINAL_ACCESS_LEVEL_HINT, TERMINAL_ACCESS_LEVEL_OPTIONS, isTerminalAccessLevel, terminalAccessLevelOf, terminalAccessLevelPatch } from '../lib/terminalAccess'
 import { mergePendingSettings } from '../lib/settingsMerge'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
+import { askOrgAI } from '../lib/menuActions'
+import AppNavigateBanner from '../components/AppNavigateBanner'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -322,6 +324,7 @@ export default function AppSettingsView(): ReactElement {
         <div className="spacer" />
         <SaveIndicator />
       </div>
+      <AppNavigateBanner />
       <SettingsPage idBase="app-settings" label="App settings sections" panes={PANES} active={pane} onSelect={setPane}>
         {error && (
           <p className="field-error" role="alert">
@@ -646,6 +649,12 @@ export default function AppSettingsView(): ReactElement {
                   </Fragment>
                 ))}
               </dl>
+              <p className="about-ask">
+                <span className="muted">Not sure where something is?</span>{' '}
+                <Button size="sm" testId="ask-orgai-button" onClick={() => void askOrgAI()}>
+                  Ask OrgAI about itself
+                </Button>
+              </p>
             </SettingsCard>
           </SettingsSection>
         )}

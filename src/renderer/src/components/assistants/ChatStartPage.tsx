@@ -1,14 +1,15 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
-import type { Project, ProjectPathCheck, QuickRunTeam } from '@shared/types'
+import type { Project, ProjectPathCheck, QuickRunTeam, VirtualProjectId } from '@shared/types'
 import { QUICK_RUN_MAX_PROMPT_CHARS } from '@shared/types'
-import { chatSummaryLine, START_PAGE_COPY } from '../../lib/assistants'
+import { CHAT_EXAMPLES, CHAT_EXAMPLES_HINT, chatSummaryLine, START_PAGE_COPY } from '../../lib/assistants'
 import { useAssistantRunsOn } from '../../lib/assistantModels'
 import { folderName } from '../../lib/paths'
 import { pathStatus } from '../../lib/projectsForm'
 import { connectionLabel } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
+import { ASK_ORGAI_SEED } from '../../lib/menuActions'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
 import { Input } from '../ui/Input'
@@ -43,7 +44,35 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   const folderId = useId()
   const statusId = useId()
   const editsHint = useId()
+  const examplesHint = useId()
   const typed = text.trim()
+  const draftKey = newRunDraftKey(project.id)
+  const focusToken = useAppStore((s) => s.composerFocusToken)
+  const seed = useAppStore((s) => s.assistantSeed[project.id as VirtualProjectId])
+
+  /** Put `value` in the instruction field (the start page's composer) and focus it with the caret at the end. */
+  const fillInstruction = (value: string): void => {
+    const st = useAppStore.getState()
+    // A chip replaces only an empty field, the seed or another example; text the user typed is kept (review L4).
+    const now = (st.composerDrafts[draftKey]?.text ?? '').trim()
+    const replace = !now || now === ASK_ORGAI_SEED.trim() || CHAT_EXAMPLES.some((ex) => ex.text === now)
+    st.setComposerDraft(draftKey, { text: replace ? value : `${st.composerDrafts[draftKey]?.text.trimEnd()}\n${value}`, images: st.composerDrafts[draftKey]?.images ?? [] })
+    requestAnimationFrame(() => {
+      const field = document.querySelector<HTMLTextAreaElement>('[data-testid="assistant-start-quick"] .composer textarea')
+      if (!field) return
+      field.focus()
+      field.setSelectionRange(field.value.length, field.value.length)
+    })
+  }
+  // Help > Ask OrgAI about itself seeds "How do I " (UX rec 1): taken once; a draft the user already typed is kept.
+  useEffect(() => {
+    if (!seed) return
+    const st = useAppStore.getState()
+    st.clearAssistantSeed(project.id as VirtualProjectId)
+    if ((st.composerDrafts[draftKey]?.text ?? '').trim()) return
+    fillInstruction(seed)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed])
 
   useEffect(() => {
     if (!typed) return
@@ -99,6 +128,20 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
         <p className="muted chat-asks-line" data-testid="chat-asks-line">
           {CHAT_ASKS_LINE}
         </p>
+        <div className="chat-examples" data-testid="chat-examples">
+          <p className="muted chat-examples-hint" id={examplesHint}>
+            {CHAT_EXAMPLES_HINT}
+          </p>
+          <ul className="chat-examples-list" aria-describedby={examplesHint}>
+            {CHAT_EXAMPLES.map((ex) => (
+              <li key={ex.id}>
+                <button type="button" className="chip chat-example" data-testid="chat-example" data-example={ex.id} onClick={() => fillInstruction(ex.text)}>
+                  {ex.text}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
 
         <div className="chat-options">
           <div className="chat-folder" data-testid="chat-folder">
@@ -197,11 +240,12 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
         </div>
 
         <Composer
-          draftKey={newRunDraftKey(project.id)}
+          draftKey={draftKey}
           modeLabel="New chat"
           primaryLabel="Start"
-          placeholder="Describe the task"
+          placeholder="Ask about OrgAI or describe the task"
           autoFocus
+          focusToken={focusToken}
           onSubmit={async (prompt, images) => {
             if (prompt.length > QUICK_RUN_MAX_PROMPT_CHARS) {
               throw new Error(`That message is too long (the limit is ${QUICK_RUN_MAX_PROMPT_CHARS.toLocaleString()} characters). Shorten it and try again.`)

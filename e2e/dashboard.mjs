@@ -146,7 +146,10 @@ try {
   check(!/\d+ roles?\b/.test(tileText), 'the tile no longer counts roles', tileText)
   // 17.7 No false chips on mock projects with nothing pending; To set up and Limits stay away on the mock.
   check((await page.locator('[data-testid=tile-chip]').count()) === 0, 'no tile chip shows when nothing is pending')
-  check((await page.locator('[data-testid=dash-setup]').count()) === 0, 'To set up is absent when everything is connected')
+  // Runners without a Claude login legitimately list the disconnected connection, so assert on content: no row about a
+  // project's own servers, services or values (a connection row is machine-dependent and allowed).
+  const setupKinds = await page.locator('[data-testid=dash-setup] [data-testid=dash-setup-row]').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')))
+  check(setupKinds.every((k) => k === 'connection'), 'To set up holds no project, service or connector rows (only connection rows, which depend on the machine)', JSON.stringify(setupKinds))
   check((await page.locator('[data-testid=dash-limits]').count()) === 0, 'Limits are absent under the mock adapter')
   // Needs you rows: permission rows offer Allow once and Deny, never a wider scope; the page has no such words.
   const permRow = page.locator('[data-testid=dash-needs-row][data-kind=permission]').first()

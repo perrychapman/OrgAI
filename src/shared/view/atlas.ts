@@ -226,7 +226,9 @@ export const PROJECT_SETTINGS_SECTIONS = {
   /** General > Engagement plan (engagements only). */
   engagementPlan: 'settings-section-engagement-plan',
   /** General > Context notes (engagements only). */
-  contextNotes: 'settings-section-context-notes'
+  contextNotes: 'settings-section-context-notes',
+  /** Maintenance pane (the Dashboard tile's "N branches waiting" chip). */
+  maintenance: 'settings-section-maintenance'
 } as const
 export type ProjectSettingsSection = (typeof PROJECT_SETTINGS_SECTIONS)[keyof typeof PROJECT_SETTINGS_SECTIONS]
 
@@ -237,7 +239,8 @@ const PROJECT_SECTION_PANE: Record<ProjectSettingsSection, ProjectSettingsPane> 
   [PROJECT_SETTINGS_SECTIONS.connection]: 'general',
   [PROJECT_SETTINGS_SECTIONS.teamAssistant]: 'permissions',
   [PROJECT_SETTINGS_SECTIONS.engagementPlan]: 'general',
-  [PROJECT_SETTINGS_SECTIONS.contextNotes]: 'general'
+  [PROJECT_SETTINGS_SECTIONS.contextNotes]: 'general',
+  [PROJECT_SETTINGS_SECTIONS.maintenance]: 'maintenance'
 }
 
 /** Project targets inside a pane's Advanced disclosure (SettingsAdvanced pane key); deep links open it before landing. */
