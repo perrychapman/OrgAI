@@ -432,16 +432,18 @@ export function menuActionSender<W extends WindowLike>(
 }
 
 /**
- * DesktopHooks.navigate: an agent's open_in_app. Goes to the live unscoped main window like a 'main' menu action
- * (restored when minimized, focused; created through `createMain` when none is live). A window whose renderer has not
- * yet called menu.setState (its readiness signal; React has not mounted before then, so did-finish-load is too early)
- * queues the event (at most MENU_QUEUE_CAP, oldest dropped) and gets it on that first call. The event is re-validated
- * here (known surface id, string fields). Returns false only when the event is invalid or no window can be made.
+ * DesktopHooks.navigate: an agent's open_in_app. Goes to the live unscoped main window only; never creates one (an agent
+ * must not reopen a window the user closed: answers false). Focus moves only while OrgAI is already the foreground app
+ * (some OrgAI window is focused): then the main window is restored and focused. Otherwise it is never restored or
+ * focused, so keystrokes meant for another app never land in OrgAI; it gets `flashFrame(true)` (taskbar / dock
+ * attention) and the event is delivered in place (review M2). A window whose renderer has not yet called menu.setState
+ * (its readiness signal; React has not mounted before then, so did-finish-load is too early) queues the event (at most
+ * MENU_QUEUE_CAP, oldest dropped) and gets it on that first call. The event is re-validated here (known surface id,
+ * string fields). Returns false when the event is invalid or no main window is open.
  */
-export function navigateSender<W extends WindowLike>(
+export function navigateSender<W extends WindowLike & { flashFrame?(flag: boolean): void }>(
   getFocused: () => W | null,
-  getWindows: () => [W, unknown][],
-  createMain?: () => W
+  getWindows: () => [W, unknown][]
 ): (event: AppNavigateEvent) => boolean {
   const live = (w: WindowLike | null | undefined): w is W => !!w && !w.isDestroyed() && !w.webContents.isDestroyed()
   return (event) => {
@@ -456,15 +458,18 @@ export function navigateSender<W extends WindowLike>(
         agentLabel: event.agentLabel
       }
       const all = getWindows().filter(([w]) => live(w))
-      const focused = getFocused()
-      let main: W | undefined = all.find(([, scope]) => scope === undefined)?.[0]
-      if (main) {
+      const focusedRaw = getFocused()
+      const focused = live(focusedRaw) ? focusedRaw : null
+      const main: W | undefined = all.find(([, scope]) => scope === undefined)?.[0]
+      if (!live(main)) return false
+      if (focused) {
         if (main !== focused) {
           if (main.isMinimized?.()) main.restore?.()
           main.focus?.()
         }
-      } else if (createMain) main = createMain()
-      if (!live(main)) return false
+      } else {
+        main.flashFrame?.(true)
+      }
       if (main.id !== undefined && !readyWindows.has(main.id)) {
         trackWindow({ id: main.id, once: main.once?.bind(main) })
         const q = [...(navQueues.get(main.id) ?? []), clean]

@@ -17,6 +17,7 @@ import { PLAN_TOOLS, finishedCount, remainingSteps } from './continuation'
 import { PERMISSION_HARNESS_TOOLS, type PermissionRuleDecision } from '@shared/types'
 import { isValidRule } from './ruleMatch'
 import { hiddenCharProblem } from '../capabilities/sanitize'
+import { clampText } from '../capabilities/sanitize'
 import { APP_REFERENCE_ACTIONS, APP_REFERENCE_BUDGET_MAX, APP_REFERENCE_BUDGET_MIN, APP_REFERENCE_ID_MAX_CHARS, APP_REFERENCE_QUERY_MAX_CHARS, APP_REFERENCE_TOOL, APP_SETTINGS_PROPOSABLE_FIELDS, APP_SETTINGS_PROPOSAL_MAX_CHANGES, OPEN_IN_APP_TOOL, PROJECT_SETTINGS_PROPOSABLE_FIELDS, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, isVirtualProjectId, type AppSettingChange, type AppSettingValue, type SettingsProposalPayload } from '@shared/types'
 import { SAFE_ID } from '@shared/defaults'
 import { isAtlasSurfaceId } from '@shared/view/atlas'
@@ -233,8 +234,10 @@ const declined = new WeakMap<RuntimeContext, { keys: Set<string>; perKind: Map<s
 /** Fields a repeated proposal differs in without being a different change (fresh ids, times, layout, wording). */
 const VOLATILE_PROPOSAL_KEYS = new Set(['id', 'addedAt', 'rationale', 'position', 'color', 'serverId'])
 
-function proposalKey(req: { kind: string; payload: unknown }): string {
-  return `${req.kind}:${JSON.stringify(req.payload, (k, v) => (VOLATILE_PROPOSAL_KEYS.has(k) ? undefined : v))}`
+function proposalKey(req: { kind: string; payload: unknown; target?: { projectId: string } }): string {
+  // The target project is part of the change (a decline for project A never blocks the same change for project B).
+  const target = req.target ? `@${req.target.projectId}` : ''
+  return `${req.kind}${target}:${JSON.stringify(req.payload, (k, v) => (VOLATILE_PROPOSAL_KEYS.has(k) ? undefined : v))}`
 }
 
 /**
@@ -2285,10 +2288,28 @@ export const proposeAppSettings = defineTool({
       real.push({ field: c.field, from, to: c.value, label: APP_SETTING_FIELD_LABELS[c.field] })
     }
     if (!real.length) return 'Nothing to change: those settings already have these values.'
-    const d = await askProposal(ctx, { kind: 'appSettings', agentId: ROOT_AGENT_ID, title, payload: { changes: real, rationale } })
+    const d = await askProposal(ctx, { kind: 'appSettings', agentId: ROOT_AGENT_ID, title: appSettingsCardTitle(real), payload: { changes: real, rationale } })
     return decisionText(d, 'The app settings were changed.')
   }
 })
+
+/**
+ * Card titles for the Chat settings proposals, written by main from the validated changes and the stored project,
+ * never the agent's title (review H1): until the renderer draws the change rows and the target project, the title is
+ * what the card and its fold summary show, so it must name every change and the project.
+ */
+const cardValue = (v: unknown): string => (v === null ? 'none' : clampText(String(v), 60))
+
+export function appSettingsCardTitle(changes: readonly AppSettingChange[]): string {
+  return `Change app settings: ${changes.map((c) => `${c.label} ${cardValue(c.from)} → ${cardValue(c.to)}`).join('; ')}`
+}
+
+export function projectSettingsCardTitle(projectName: string, payload: SettingsProposalPayload): string {
+  const parts = PROJECT_SETTINGS_PROPOSABLE_FIELDS.filter((k) => payload[k] !== undefined).map((k) =>
+    k === 'brief' ? 'brief (new text)' : `${k} → ${cardValue(payload[k] ?? null)}`
+  )
+  return `Settings for project "${clampText(projectName, 80) || 'unnamed'}": ${parts.join('; ')}`
+}
 
 const proposeProjectSettingsShape = (() => {
   const s = proposeSettings.inputSchema.shape
@@ -2344,7 +2365,7 @@ export const proposeProjectSettings = defineTool({
       ;(payload as unknown as Record<string, unknown>)[key] = v
     }
     if (Object.keys(payload).every((k) => k === 'rationale')) return 'Nothing to change: no setting was given for that project.'
-    const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title, payload, target: { projectId: project.id, projectName: project.name } })
+    const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title: projectSettingsCardTitle(project.name, payload), payload, target: { projectId: project.id, projectName: project.name } })
     return decisionText(d, 'The project settings were applied; they take effect from its next run.')
   }
 })

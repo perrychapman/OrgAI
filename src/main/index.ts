@@ -404,13 +404,9 @@ app.whenReady().then(async () => {
     },
     desktop: {
       openRunWindow,
-      // open_in_app: the live main window (restored, focused; created when closed); queued until its renderer is ready.
-      // A headless host with no window open answers false (the tool says nothing could be shown) instead of opening one.
-      navigate: (event) => {
-        const hasMain = liveWindowScopes().some(([, scope]) => scope === undefined)
-        if (!hasMain && hostArgs.headless) return false
-        return navigateSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())(event)
-      },
+      // open_in_app: the live main window only, queued until its renderer is ready; focused only while OrgAI is the
+      // foreground app, else flashed (appMenu.ts navigateSender, review M2). No main window open: false, never a new one.
+      navigate: (event) => navigateSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes)(event),
       teamFilesChanged: (status) => {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)

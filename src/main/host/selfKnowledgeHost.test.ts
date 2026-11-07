@@ -35,6 +35,14 @@ describe('applyAppSettingsPayload (an approved appSettings card behaves like set
     // persisted
     expect(new SettingsStore(dir).get().appearance.theme).toBe('light')
   })
+  it('clears an optional field (null = no spend cap) like settings:set does (review M1)', () => {
+    const store = new SettingsStore(dir)
+    store.set({ ...store.get(), defaultMaxBudgetUsd: 5 })
+    expect(store.get().defaultMaxBudgetUsd).toBe(5)
+    applyAppSettingsPayload(store, { rationale: 'no cap', changes: [{ field: 'defaultMaxBudgetUsd', from: 5, to: null, label: 'cap' }] })
+    expect(store.get().defaultMaxBudgetUsd).toBeUndefined()
+    expect(new SettingsStore(dir).get().defaultMaxBudgetUsd).toBeUndefined()
+  })
   it('refuses a bad value with a readable error and saves nothing', () => {
     const store = new SettingsStore(dir)
     const before = store.get().appearance.theme
