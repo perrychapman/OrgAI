@@ -296,7 +296,7 @@ export const draftRoleSchema = z.object({
     .describe(
       "A tier: top, deep, everyday or fast (mapped to the project's connection), or inherit. An exact model id only when listed as available. Omit to keep an existing role's model (a role matched by slug or name keeps its model unless you name a different tier or listed id)."
     ),
-  connection: z.string().optional().describe("Optional: one of the listed connections; omit to use the project's"),
+  connection: z.string().optional().describe("Optional, only when the user wants this role on another provider: a connection id ('anthropic', 'openai' or a proxy id); an unknown one is answered with the valid ids and names. Omit to use the project's connection"),
   canSpawn: z.boolean(),
   spawnable: z.array(z.string()).describe('Names of roles this role may delegate to, normally its direct reports'),
   reportsTo: z.string().nullable().describe('Name of the manager role, or null for the single root orchestrator')
@@ -374,6 +374,9 @@ function rolesFromDrafts(
     const c = named(drafts[i])
     const curConnection = cur.reportsTo === null ? runConnection : cur.connection && Object.hasOwn(others, cur.connection) ? cur.connection : runConnection
     if (c !== undefined && c !== curConnection) continue
+    // mergeOrgChart takes the proposal's connection, so a matched role that stays put carries its stored one.
+    if (curConnection !== runConnection && cur.reportsTo !== null) converted[i].connection = curConnection as ConnectionId
+    else delete converted[i].connection
     const r = revisedRoleModel(drafts[i].model, cur, others[curConnection] ?? mctx)
     converted[i].model = r.model
     if (r.tier) converted[i].tier = r.tier

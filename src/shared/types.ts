@@ -2443,7 +2443,7 @@ export interface RunUsage {
    * count per connection, each agent priced with its own connection's pricing. costUsd null = unknown (never $0).
    * Missing = every agent ran on the run's connection.
    */
-  connections?: Record<ConnectionId, { costUsd: number | null; agents: number }>
+  connections?: Partial<Record<ConnectionId, { costUsd: number | null; agents: number }>>
   updatedAt: number
 }
 
