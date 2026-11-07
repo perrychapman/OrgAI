@@ -125,15 +125,17 @@ try {
         if (id === 'quick') {
           check((await page.locator('[data-testid=chat-folder-input]').getAttribute('placeholder').catch(() => '')) === 'No folder (a scratch area)', `chat-folder-input says "No folder (a scratch area)" ${tag}`)
           const st = await switchState('[data-testid=chat-allow-edits]')
-          check(!!st && st.disabled && !st.checked, `chat-allow-edits is a disabled, unchecked switch for scratch ${tag}`, JSON.stringify(st))
-          // L2: aria-disabled keeps it in the tab order, with the hint as a separate described-by element.
+          check(!!st && !st.disabled && !st.checked, `chat-allow-edits is an enabled, unchecked switch for scratch ${tag}`, JSON.stringify(st))
           const edits = await page.locator('[data-testid=chat-allow-edits]').evaluate((el) => ({
             native: el.disabled === true,
             tab: el.tabIndex,
             hint: document.getElementById(el.getAttribute('aria-describedby') ?? '')?.textContent?.trim() ?? '',
-            label: document.getElementById(el.getAttribute('aria-labelledby') ?? '')?.textContent?.trim() ?? ''
+            label: el.getAttribute('aria-label') ?? ''
           }))
-          check(!edits.native && edits.tab >= 0 && edits.hint === 'Choose a folder to allow edits.' && edits.label === 'Allow edits in this folder', `scratch edits switch stays focusable with its hint ${tag}`, JSON.stringify(edits))
+          check(!edits.native && edits.tab >= 0 && edits.hint === 'Changes happen in a private scratch folder. You approve each one.' && edits.label === 'Let it make changes', `scratch edits switch is focusable, named and described ${tag}`, JSON.stringify(edits))
+          check((await page.locator('[data-testid=chat-asks-line]').innerText().catch(() => '')).trim() === 'It asks before it changes anything.', `chat-asks-line reads "It asks before it changes anything." ${tag}`)
+          const scratchSummary = await page.locator('[data-testid=chat-summary]').innerText().catch(() => '')
+          check(scratchSummary.startsWith('Works in a private scratch area. Asks before it changes a file or runs a command.'), `chat-summary scratch + off copy ${tag}`, scratchSummary)
           // M6: composer, Start and the trust line are in view without scrolling the page.
           const fit = await page.evaluate(() => {
             const pane = document.querySelector('[data-testid=assistant-start-quick]')
@@ -324,6 +326,8 @@ try {
     await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
     check((await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').count()) > 0, 'Chat run reaches Idle with the follow-up label')
     await shot('chat-idle-1600x1000')
+    const idleChip = page.locator('[data-testid=run-meta-access]')
+    check((await idleChip.getAttribute('data-state').catch(() => null)) === 'asks' && ((await idleChip.innerText().catch(() => '')) || '').trim() === 'asks first', 'a scratch Chat started with edits off shows the "asks first" chip')
 
     // Conversation layout (H1): a one-assistant chat shows its transcript as the stage, the reply and the composer
     // fit at 1024x640 without page scroll, and the toolbar toggle swaps to the canvas and back.
@@ -400,7 +404,13 @@ try {
     await folderInput.fill(chatRepo)
     await sleep(900)
     check(!(await visible('[data-testid=chat-folder-error]')), 'a valid typed folder clears the error')
-    check((await switchState('[data-testid=chat-allow-edits]'))?.disabled === false, 'a folder enables the edits switch')
+    check((await switchState('[data-testid=chat-allow-edits]'))?.disabled === false, 'a folder keeps the edits switch enabled')
+    const folderSummary = await page.locator('[data-testid=chat-summary]').innerText().catch(() => '')
+    check(folderSummary.startsWith(`Works in ${chatProject}. Reads freely, asks before it changes a file or runs a command.`), 'chat-summary folder + off copy', folderSummary)
+    await page.locator('[data-testid=chat-allow-edits]').click()
+    const onSummary = await page.locator('[data-testid=chat-summary]').innerText().catch(() => '')
+    check(onSummary.startsWith(`Works in ${chatProject}. Ready to make changes; asks before each edit and command.`), 'chat-summary on copy', onSummary)
+    await page.locator('[data-testid=chat-allow-edits]').click()
     await setSize(1024, 640)
     const fitWithFolder = await page.evaluate(() => {
       const pane = document.querySelector('[data-testid=assistant-start-quick]')
@@ -417,6 +427,7 @@ try {
     const promote = page.locator('[data-testid=run-save-as-project]')
     check((await promote.count()) === 1 && !(await promote.isDisabled()), 'Save as project is enabled for a chat in a folder')
     await promote.click()
+    check((await page.locator('[data-testid=save-as-project-permissions-note]').innerText().catch(() => '')).trim() === 'Permissions you gave this chat do not carry over.', 'Save as project says permissions do not carry over')
     await page.locator('[data-testid=save-as-project-confirm]').click()
     await page.locator('[data-testid=save-as-project-dialog]').waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
     await sleep(800)
@@ -428,6 +439,126 @@ try {
     await deleteProject(page, chatProject).catch(() => {})
     removeFixture(chatRepo)
 
+    // ---- Chat permission asks (mock markers [mock:chat-edit] and [mock:chat-mcp]) ----
+    // Full card flows run once per pair: allow-for-session at 1024x640 dark, deny at 1600x1000 light, install at
+    // 1024x640 light. The card, no-page-scroll and visibility checks repeat at all four size/theme pairs while a card is open.
+    const startChat = async (prompt) => {
+      await openAssistant('quick')
+      const box = page.locator('[data-testid=assistant-start-quick] .composer textarea')
+      await box.fill(prompt)
+      await box.press('Enter')
+      await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 }).catch(() => {})
+    }
+    const pageScroll = () => page.evaluate(() => { const d = document.scrollingElement; return d ? d.scrollHeight - d.clientHeight : 0 })
+    const cardGeometry = async (selector, tag) => {
+      const g = await page.evaluate((sel) => {
+        const el = document.querySelector(sel)
+        const r = el?.getBoundingClientRect()
+        const d = document.scrollingElement
+        return { shown: !!r && r.width > 0 && r.height > 0, inView: !!r && r.top < innerHeight && r.bottom > 0, scroll: d ? d.scrollHeight - d.clientHeight : 0 }
+      }, selector)
+      check(g.shown && g.inView && g.scroll <= 1, `the open card is visible and the page does not scroll ${tag}`, JSON.stringify(g))
+    }
+    const tabTo = async (name) => {
+      for (let i = 0; i < 40; i++) {
+        const label = await page.evaluate(() => { const a = document.activeElement; return (a?.getAttribute('aria-label') || a?.textContent || '').trim() })
+        if (label === name) return true
+        await page.keyboard.press('Tab')
+      }
+      return false
+    }
+    // Any open decision card; the Chat-specific copy is checked separately (it needs the card branch).
+    const waitCard = () => page.locator('article.decision-card').first().waitFor({ timeout: 30_000 }).then(() => true, () => false)
+    const dismissLabel = (re) => page.getByRole('button', { name: re })
+
+    // A. Allow for session by keyboard, then the command card.
+    await setTheme('dark')
+    await setSize(1024, 640)
+    await startChat('[mock:chat-edit] create notes')
+    check(await waitCard(), 'a scratch Chat edit raises a permission card')
+    check((await page.locator('[data-testid=perm-location][data-kind=chat]').count()) === 1, 'the card carries perm-location[data-kind=chat] (needs the card branch)')
+    const loc = (await page.locator('[data-testid=perm-location][data-kind=chat]').first().innerText().catch(() => '')).trim()
+    check(/^Runs in this chat's scratch area/.test(loc), 'the Chat card says it runs in the scratch area', loc)
+    check((await page.locator('[data-testid=perm-quick-readonly]').count()) === 1, 'the card says the chat started read-only (perm-quick-readonly)')
+    check((await page.locator('[data-testid=perm-scope-project]').count()) === 0 && (await dismissLabel(/Always allow for project/).count()) === 0, 'a Chat card offers no project scope and no "Always allow for project"')
+    check((await page.locator('[data-testid=perm-scope-session]').count()) === 1, 'a Chat card explains Allow for session (perm-scope-session)')
+    check((await dismissLabel(/^Allow once$/).count()) === 1 && (await dismissLabel(/^Allow for session$/).count()) === 1 && (await dismissLabel(/^Deny$/).count()) === 1, 'the Chat card has Allow once, Allow for session and Deny')
+    const chip = page.locator('[data-testid=run-meta-access]')
+    check((await chip.getAttribute('data-state').catch(() => null)) === 'asks', 'the access chip reads asks while the card is open')
+    for (const [cw, ch] of [[1024, 640], [1600, 1000]]) {
+      for (const theme of ['dark', 'light']) {
+        await setTheme(theme)
+        await setSize(cw, ch)
+        await sleep(300)
+        await cardGeometry('article.decision-card', `at ${cw}x${ch} ${theme}`)
+        await shot(`chat-edit-card-${cw}x${ch}-${theme}`)
+      }
+    }
+    await setTheme('dark')
+    await setSize(1024, 640)
+    await sleep(300)
+    check(await tabTo('Allow for session'), 'Allow for session is reachable with Tab')
+    await page.keyboard.press('Enter')
+    await page.locator('[data-testid=run-meta-access][data-state=session]').waitFor({ timeout: 10_000 }).catch(() => {})
+    check((await chip.getAttribute('data-state').catch(() => null)) === 'session' && ((await chip.innerText().catch(() => '')) || '').trim() === 'changes allowed this session', 'the chip turns to "changes allowed this session"')
+    const said = await page.locator('[data-testid=tray-announce]').filter({ hasText: 'Changes allowed for the rest of this chat.' }).first().waitFor({ timeout: 3000 }).then(() => true, () => false)
+    check(said, 'the chip change is announced through tray-announce')
+    await page.getByText('I wrote notes.md.').first().waitFor({ timeout: 20_000 }).catch(() => {})
+    check((await page.getByText(/You allowed/).count()) > 0, 'a transcript row says "You allowed ..."')
+    check((await page.getByText('I wrote notes.md.').count()) > 0, 'after Allow the mock says "I wrote notes.md."')
+    check(await waitCard(), 'the npm test command card follows')
+    await dismissLabel(/^Allow once$/).first().click()
+    await page.getByText(/npm test passed\./).first().waitFor({ timeout: 20_000 }).catch(() => {})
+    check((await page.getByText(/npm test passed\./).count()) > 0, 'after Allow once the mock reports "npm test passed."')
+    await endSession(page)
+
+    // B. Deny the edit: no Bash card follows.
+    await setTheme('light')
+    await setSize(1600, 1000)
+    await startChat('[mock:chat-edit] create notes')
+    check(await waitCard(), 'a second Chat raises the edit card')
+    await dismissLabel(/^Deny$/).first().click()
+    await page.getByText('I did not change anything.').first().waitFor({ timeout: 20_000 }).catch(() => {})
+    check((await page.getByText('I did not change anything.').count()) > 0, 'after Deny the mock says "I did not change anything."')
+    await sleep(1500)
+    check((await page.locator('[data-testid=perm-location]').count()) === 0, 'no second card appears after Deny')
+    check((await page.locator('[data-testid=run-meta-access]').getAttribute('data-state').catch(() => null)) === 'asks', 'the chip stays "asks first" after Deny')
+    await endSession(page)
+
+    // C. MCP install card on a Chat.
+    await setTheme('light')
+    await setSize(1024, 640)
+    await startChat('[mock:chat-mcp] add a server')
+    await page.locator('[data-testid=mcp-install-card]').first().waitFor({ timeout: 30_000 }).catch(() => {})
+    check((await page.locator('[data-testid=mcp-install-card]').count()) === 1, 'a Chat install request raises mcp-install-card')
+    check(/^Add a server:/.test((await page.locator('[data-testid=mcp-install-card] h3, [data-testid=mcp-install-card] [data-testid=decision-title]').first().innerText().catch(() => '')).trim()) || (await page.locator('[data-testid=mcp-install-card]').first().innerText().catch(() => '')).includes('Add a server:'), 'the install card title starts "Add a server:"')
+    check((await page.locator('[data-testid=mcp-install-run-only]').innerText().catch(() => '')).trim() === 'For this chat only. It is not added to your library.', 'the install card says it is for this chat only')
+    check((await page.locator('[data-testid^=mcp-install-scope-]').count()) === 0, 'the install card has no scope radios')
+    check((await page.locator('[data-testid=mcp-install-approve]').innerText().catch(() => '')).trim() === 'Add for this chat' && (await page.locator('[data-testid=mcp-install-deny]').innerText().catch(() => '')).trim() === "Don't add", 'install buttons read "Add for this chat" and "Don\'t add"')
+    for (const [cw, ch] of [[1024, 640], [1600, 1000]]) {
+      for (const theme of ['dark', 'light']) {
+        await setTheme(theme)
+        await setSize(cw, ch)
+        await sleep(300)
+        await cardGeometry('article.decision-card', `(install) at ${cw}x${ch} ${theme}`)
+      }
+    }
+    await setTheme('light')
+    await setSize(1024, 640)
+    const secretInputs = page.locator('[data-testid=mcp-install-card] input[type=password], [data-testid=mcp-install-card] input[type=text]')
+    for (let i = 0; i < (await secretInputs.count()); i++) {
+      const input = secretInputs.nth(i)
+      if (!(await input.inputValue().catch(() => 'x'))) await input.fill('e2e-value').catch(() => {})
+    }
+    // Falls back to the current card's button until the card branch lands (its testid is checked above).
+    const approve = (await page.locator('[data-testid=mcp-install-approve]').count()) ? page.locator('[data-testid=mcp-install-approve]') : page.locator('article.decision-card').getByRole('button', { name: /^(Approve|Add)/ }).first()
+    await approve.click()
+    await page.getByText('The server was added for this chat.').first().waitFor({ timeout: 20_000 }).catch(() => {})
+    check((await page.getByText('The server was added for this chat.').count()) > 0, 'after "Add for this chat" the mock says "The server was added for this chat."')
+    await endSession(page)
+    await setTheme('dark')
+    await setSize(1600, 1000)
+
     // Default-team chat: more than one agent, so it opens on the canvas and the toolbar toggle shows the conversation.
     await openAssistant('quick')
     await page.locator('[data-testid=chat-team] summary').click()
@@ -438,7 +569,8 @@ try {
     await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 }).catch(() => {})
     await page.locator('.run-body').first().waitFor({ timeout: 10_000 }).catch(() => {})
     await sleep(800)
-    check((await page.locator('.run-body').first().getAttribute('data-layout').catch(() => null)) === 'canvas', 'a default-team chat opens in the canvas layout')
+    await shot('default-team-chat')
+    check((await page.locator('.run-body').first().getAttribute('data-layout').catch(() => null)) === 'canvas', 'a default-team chat opens in the canvas layout', await page.locator('.run-tab').allInnerTexts().then((t) => t.join(' | ')).catch(() => ''))
     check((await page.locator('.react-flow').count()) > 0 && !(await visible('[data-testid=run-conversation]')), 'a default-team chat shows the canvas, not the conversation')
     await page.locator('[data-testid=run-layout-toggle]').click()
     await sleep(500)

@@ -13,6 +13,7 @@ import { useAllSummaries, useLiveRuns, useNow, useWaitingRuns } from './useDashb
 import { runCostInput } from '../../lib/cost'
 import { NEEDS_CAP, PAUSED_CAP, RUNNING_CAP, SINCE_LAST_SEEN_CAP, elapsedLabel, errorFirstLine, pausedRuns, planStepLabel, sinceLastSeen } from '../../lib/dashboard'
 import { locationLabel, runKindLabel } from '../../lib/assistants'
+import { decisionLocationLabel } from '../../lib/chatPermissions'
 import { waitingItems, type WaitingItem, type WaitingKind } from '../../lib/needsYou'
 import { openTeamFilesDecision, useTeamAttentionItems } from '../../lib/menuActions'
 import { canContinue, relativeTime } from '../../lib/runChains'
@@ -99,7 +100,7 @@ function NeedsYouSection(): ReactElement {
               </span>
               <span className="dash-row-text">
                 <span className="dash-row-line">{it.label}</span>
-                <span className="dash-row-cap">{it.kind === 'team' ? `${it.projectName} · Team` : `${locationLabel(it.projectId, projects)} · ${runName(it.run.summary)}`}</span>
+                <span className="dash-row-cap">{it.kind === 'team' ? `${it.projectName} · Team` : `${decisionLocationLabel(it.run.summary, projects)} · ${runName(it.run.summary)}`}</span>
               </span>
             </button>
           </li>

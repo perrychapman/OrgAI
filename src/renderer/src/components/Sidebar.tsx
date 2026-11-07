@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
 import { BellRing, Briefcase, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
-import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
+import { ASSISTANT_ORDER, assistantLabel, displayProject } from '../lib/assistants'
+import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../lib/needsYou'
@@ -176,7 +177,7 @@ export default function Sidebar({
   const teamItems = useTeamAttentionItems()
   const items = waiting.flatMap((r) => waitingItems(r))
   const needsCount = items.length + teamItems.length
-  const projectName = (id: string): string => locationLabel(id, projects)
+
   const inProject = (v: string): boolean => v !== 'projects' && v !== 'appSettings'
   const names = projects.map((p) => p.name)
 
@@ -408,7 +409,7 @@ export default function Sidebar({
                         type="button"
                         className="needs-item"
                         data-kind={it.kind}
-                        title={`${it.label}\n${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}`}
+                        title={`${it.label}\n${decisionLocationLabel(r.summary, projects)} · ${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}`}
                         onClick={() => {
                           close()
                           void jumpToDecision(r.summary.projectId, r.summary.id, it.key)
@@ -416,7 +417,7 @@ export default function Sidebar({
                       >
                         <span className="needs-what">{it.label}</span>
                         <span className="needs-where">
-                          {projectName(r.summary.projectId)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {runName(r.summary)}
+                          {decisionLocationLabel(r.summary, projects)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {runName(r.summary)}
                         </span>
                       </button>
                     </li>

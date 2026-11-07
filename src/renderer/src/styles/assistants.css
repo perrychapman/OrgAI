@@ -109,6 +109,10 @@
   opacity: 0.5;
   cursor: default;
 }
+.chat-asks-line {
+  margin: 0;
+  text-align: center;
+}
 .chat-folder-actions {
   display: inline-flex;
   gap: var(--space-1h);
