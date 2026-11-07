@@ -14,9 +14,12 @@ export function KnowledgeRow({
   selected,
   showAgentBadge,
   domId,
+  arrive,
   onOpen,
   onMenu
 }: {
+  /** The row was appended while the user is looking (docs/design/motion.md 3.19). */
+  arrive?: boolean
   item: KnowledgeItem
   runs: RunFacts
   selected: boolean
@@ -41,7 +44,7 @@ export function KnowledgeRow({
     <li
       id={domId}
       role="option"
-      className="knowledge-row"
+      className={arrive ? 'knowledge-row motion-enter' : 'knowledge-row'}
       data-testid="knowledge-row"
       data-id={item.id}
       data-kind={kind}

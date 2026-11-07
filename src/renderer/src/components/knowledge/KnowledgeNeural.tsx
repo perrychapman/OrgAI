@@ -49,6 +49,8 @@ export interface KnowledgeNeuralHandle {
 
 /** The contract between KnowledgeView and the neural canvas (docs/design/knowledge-graph-2.md section 1). */
 export interface KnowledgeNeuralProps {
+  /** The graph was just switched to from the list: it enters with the view swap. */
+  enter?: boolean
   projectId: string
   graph: KnowledgeGraphData
   /** Null until the first answer, or when the read failed: sizes then come from live edges. */
@@ -681,7 +683,7 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
   }, [model, drawn])
 
   return (
-    <div ref={rootRef} className="knowledge-neural" data-testid="knowledge-neural">
+    <div ref={rootRef} className={props.enter ? 'knowledge-neural motion-view' : 'knowledge-neural'} data-testid="knowledge-neural">
       <div className="neural-skips">
         <button type="button" className="neural-skip" data-testid="knowledge-skip-list" onClick={onShowList}>
           Show as list
