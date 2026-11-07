@@ -92,9 +92,10 @@ describe.each(['darwin', 'win32', 'linux'])('buildMenuTemplate on %s', (platform
       'Connections', 'Connectors', 'Skill library',
       ...(mac ? [] : ['-', 'role:quit'])
     ])
-    expect(labels(menu(template, 'View')).slice(0, 7)).toEqual([
-      'Live', 'History', 'Team', 'Project settings', '-', 'Toggle sidebar', 'Canvas'
+    expect(labels(menu(template, 'View')).slice(0, 9)).toEqual([
+      'Live', 'History', 'Team', 'Project settings', '-', 'Usage', '-', 'Toggle sidebar', 'Canvas'
     ])
+    expect(menu(template, 'View').find((i) => i.id === 'show-usage')?.accelerator).toBeUndefined()
     const canvas = menu(menu(template, 'View'), 'Canvas')
     expect(labels(canvas)).toEqual(['Show conversation', 'Hide finished agents', '-', 'Zoom in', 'Zoom out', 'Fit canvas'])
     expect(canvas.every((i) => i.accelerator === undefined)).toBe(true)
@@ -227,7 +228,7 @@ describe('menuItemEnabled', () => {
   it('follows the rule table', () => {
     const always = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant',
       'open-app-settings', 'open-connections', 'open-connectors', 'open-skill-library', 'open-about',
-      'toggle-sidebar', 'keyboard-shortcuts', 'ask-about-orgai']
+      'toggle-sidebar', 'keyboard-shortcuts', 'ask-about-orgai', 'show-usage']
     expect(enabledFor(EMPTY_MENU_STATE)).toEqual([...always].sort())
     expect(enabledFor(only('hasProject'))).toEqual(
       [...always, 'show-live', 'show-history', 'show-team', 'show-project-settings', 'new-run'].sort()
@@ -271,7 +272,7 @@ describe('menuActionTarget', () => {
   it('classifies every action', () => {
     const main = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant', 'open-app-settings',
       'open-connections', 'open-connectors', 'open-skill-library', 'open-about', 'show-live', 'show-history', 'show-team',
-      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts', 'show-needs-you', 'ask-about-orgai']
+      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts', 'show-needs-you', 'ask-about-orgai', 'show-usage']
     const focused = ['new-run', 'close-tab', 'interrupt-run', 'end-session', 'go-to-decision',
       'org-retrospective', 'save-chat-as-project', 'open-run-window', 'toggle-conversation', 'toggle-hide-finished',
       'canvas-fit', 'canvas-zoom-in', 'canvas-zoom-out']

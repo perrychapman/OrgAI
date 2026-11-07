@@ -92,7 +92,7 @@ function anyDecision(runs: Record<string, RunState>, team: readonly TeamAttentio
 /** What the window shows, as the five booleans main needs to grey out menu items. */
 export function menuStateFor(s: MenuSource): MenuState {
   const pid = s.selectedProjectId
-  const hasProject = !!pid && s.view !== 'projects' && s.view !== 'appSettings' && (isVirtualProjectId(pid) || s.projects.some((p) => p.id === pid))
+  const hasProject = !!pid && s.view !== 'projects' && s.view !== 'appSettings' && s.view !== 'usage' && (isVirtualProjectId(pid) || s.projects.some((p) => p.id === pid))
   const run = hasProject ? viewedRunOf(s) : undefined
   return {
     hasProject,
@@ -284,6 +284,10 @@ function fallback(action: MenuAction): string | void {
       return NO_CANVAS
     case 'ask-about-orgai':
       return void askOrgAI()
+    case 'show-usage':
+      st.openUsage({})
+      announceMenu('Usage, all projects.')
+      return
   }
 }
 

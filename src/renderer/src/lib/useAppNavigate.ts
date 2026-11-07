@@ -80,7 +80,7 @@ const isHeading = (el: Element | null): boolean => !!el && (/^H[1-6]$/.test(el.t
 /** The destination's heading: the target section's title, else the settings pane title, else the view's h1. */
 function landOnHeading(t: NavTarget): void {
   const a = document.activeElement
-  const sectionId = t.kind === 'app' ? t.target : t.kind === 'project' ? t.section : undefined
+  const sectionId = t.kind === 'app' ? t.target : t.kind === 'project' || t.kind === 'usage' ? t.section : undefined
   const section = sectionId ? document.getElementById(sectionId) : null
   const title = section?.querySelector<HTMLElement>('.settings-section-title, .settings-group-title, h2, h3')
   // A section destination lands on the section's own heading, even when the pane's title already has focus (UX M3, L5).
@@ -117,6 +117,9 @@ async function perform(plan: Extract<NavigationPlan, { ok: true }>, event: AppNa
   const t = plan.target
   const pid = plan.projectId
   switch (t.kind) {
+    case 'usage':
+      st.openUsage(t.section ? { section: t.section } : {})
+      break
     case 'dashboard':
       st.setView('projects')
       if (t.newProject) openNewProject()
@@ -179,7 +182,7 @@ async function perform(plan: Extract<NavigationPlan, { ok: true }>, event: AppNa
     if (onControl() || document.activeElement?.classList.contains('settings-pane-title')) landOnHeading(t)
   }
   // A part of a page (a Team or History section, a run part): bring its first element into view inside its scroller.
-  if (t.kind === 'project' && t.view !== 'settings') {
+  if ((t.kind === 'project' && t.view !== 'settings') || (t.kind === 'usage' && t.section)) {
     for (const id of plan.testIds) {
       const el = document.querySelector(`[data-testid="${CSS.escape(id)}"]`)
       if (el) {
