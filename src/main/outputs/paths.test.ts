@@ -187,11 +187,11 @@ describe('registered path', () => {
 })
 
 describe('open allowlist, reserved names, streams', () => {
-  it.each([['a.docx', true], ['a.DOCX', true], ['a.Md', true], ['a.mmd', true], ['a.lnk', false], ['a.bat', false], ['a.BaT', false], ['a.exe', false], ['report.docx.bat', false], ['a.docx.', false], ['a.docx ', false], ['noext', false], ['a.docm', false], ['a.svg', true]])('isOpenablePath(%j) = %s', (f, ok) => {
+  it.each([['a.docx', true], ['a.DOCX', true], ['a.Md', true], ['a.mmd', true], ['a.lnk', false], ['a.bat', false], ['a.BaT', false], ['a.exe', false], ['report.docx.bat', false], ['a.docx.', false], ['a.docx ', false], ['noext', false], ['a.docm', false], ['a.svg', false], ['a.SVG', false], ['a.mermaid', true]])('isOpenablePath(%j) = %s', (f, ok) => {
     expect(isOpenablePath(f)).toBe(ok)
   })
   it('lists exactly the document, image and text types', () => {
-    expect([...OPENABLE_EXTENSIONS].sort()).toEqual(['csv', 'docx', 'gif', 'jpeg', 'jpg', 'json', 'markdown', 'md', 'mmd', 'pdf', 'png', 'svg', 'txt', 'webp', 'xlsx'])
+    expect([...OPENABLE_EXTENSIONS].sort()).toEqual(['csv', 'docx', 'gif', 'jpeg', 'jpg', 'json', 'markdown', 'md', 'mermaid', 'mmd', 'pdf', 'png', 'txt', 'webp', 'xlsx'])
   })
   it.each(['COM¹', 'com².txt', 'LPT³.md', 'CONIN$', 'conout$.txt', 'a/Com1.md', 'a/.GIT/b.md', 'a/.Git'])('refuses produced name %j', (name) => {
     expect(() => checkFileNameSegments(name)).toThrow()
