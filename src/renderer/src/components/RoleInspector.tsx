@@ -2,7 +2,7 @@ import type { KeyboardEvent, ReactElement } from 'react'
 import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
 import type { Project, Role } from '@shared/types'
-import { projectConnection } from '@shared/defaults'
+import { projectConnection, roleConnection } from '@shared/defaults'
 import RoleModelPicker from './RoleModelPicker'
 import RoleCapabilities from './team/RoleCapabilities'
 import type { CapabilityKind } from './team/CapabilityBlock'
@@ -33,7 +33,7 @@ interface Props {
 
 export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape, onAskAssistant }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
-  const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === projectConnection(project))?.connection.tierModels)
+  const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === roleConnection(role, project))?.connection.tierModels)
   const others = project.roles.filter((r) => r.id !== role.id)
   const isRoot = role.reportsTo === null
   const id = (name: string): string => `role-${name}`
@@ -154,7 +154,7 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
         <details className="role-fold stack-2" open={roomy} data-testid="role-model-fold">
           <summary className="side-section-title" id={id('model')}>
             Model
-            <span className="role-fold-summary muted">{roleModelSummary(role, tierModels ?? {})}</span>
+            <span className="role-fold-summary muted">{roleModelSummary(role, tierModels ?? {}, roleConnection(role, project), projectConnection(project))}</span>
           </summary>
           <RoleModelPicker project={project} role={role} />
         </details>

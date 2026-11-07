@@ -9,6 +9,7 @@ import { useAppStore } from '../store/useAppStore'
 import { formatTokens, sumCosts, unpricedModels, type CostInput } from '../lib/cost'
 import { requestModelPrice } from '../lib/settingsTarget'
 import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, skillLoadsFromTranscript, skillRows, timeRows, tokenRows, type AgentRow } from '../lib/usageView'
+import { connectionLabel } from '../lib/connectionLabel'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
 import { Button } from './ui/Button'
@@ -232,6 +233,35 @@ function RoleTable({ run, rows: agentRowsList }: { run: RunUsage; rows: AgentRow
   )
 }
 
+/** "By connection": shown only when agents ran on two or more connections. An unknown cost is never $0. */
+function ConnectionTable({ run }: { run: RunUsage }): ReactElement | null {
+  const rows = Object.entries(run.connections ?? {}).filter((e): e is [string, { costUsd: number | null; agents: number }] => !!e[1])
+  if (rows.length < 2) return null
+  return (
+    <table className="usage-table" data-testid="usage-connections">
+      <caption>By connection</caption>
+      <thead>
+        <tr>
+          <th scope="col">Connection</th>
+          <th scope="col" className="num">Agents</th>
+          <th scope="col" className="num">Cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(([id, v]) => (
+          <tr key={id} data-testid="usage-connection" data-connection={id}>
+            <th scope="row">{connectionLabel(id)}</th>
+            <td className="num">{v.agents}</td>
+            <td className="num">
+              <Cost value={{ costUsd: v.costUsd, costSource: v.costUsd === null ? 'unknown' : 'computed', sourceMixed: true }} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
 export default function UsagePanel({ runId, agent }: { runId: string; agent: AgentInstance | undefined }): ReactElement {
   const usage = useAppStore((s) => s.runs[runId]?.summary.usage)
   const agents = useAppStore((s) => s.runs[runId]?.agents)
@@ -300,6 +330,7 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
       <SkillsLoaded rows={skills} />
       {usage?.knowledge && !scoped && <KnowledgeServed usage={usage.knowledge} />}
       {usage && !scoped && <RoleTable run={usage} rows={rows} />}
+      {usage && !scoped && <ConnectionTable run={usage} />}
       {scoped && scopedRow ? <Totals row={scopedRow} part="more" /> : usage ? <Totals run={usage} part="more" /> : null}
     </div>
   )
