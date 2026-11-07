@@ -60,6 +60,7 @@ import { projectKindOf } from '@shared/defaults'
 import type { ProjectKind, QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
 import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTeam, TeamFilesStatus } from '@shared/types'
 import { displayProject, type RunLayout } from '../lib/assistants'
+import { connectionLabel, setConnectionRegistry } from '../lib/connectionLabel'
 
 /** Project tabs: run (Live), history, knowledge (engagements only), team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
@@ -1705,6 +1706,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       case 'connection.login':
         set({ login: e.login })
         return
+      case 'connections.changed':
+        // A proxy was created, removed or edited (here or in another window): re-read the list now.
+        void get().loadConnections()
+        return
       case 'models.updated':
         // `changed === false`: same model ids as before, so keep the existing list (no re-render); only the
         // refresh time moves. (Remap notices come from projects.remapped, which main sends only on a real change.)
@@ -1730,9 +1735,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           manual: 'after a manual update on'
         }
         const first = results[0]
-        const names: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
-        const proxyName = get().connections?.find((c) => c.connection.id === first.connection)?.connection
-        const name = names[first.connection] ?? (proxyName && 'name' in proxyName ? proxyName.name : undefined) ?? first.connection
+        const name = connectionLabel(first.connection)
         void get()
           .loadProjects()
           .then(() => get().pushRemapNotice(`${cause[first.reason] ?? 'after a change to'} ${name}`, results, before))
@@ -2138,4 +2141,9 @@ useAppStore.subscribe((s, prev) => {
     if (newest && newest.id !== viewed && newest.startedAt > s.runs[viewed].summary.startedAt) next = { ...(next ?? s.activeRunByProject), [projectId]: newest.id }
   }
   if (next) useAppStore.setState({ activeRunByProject: next })
+})
+
+// Keeps the pure label helpers (lib/connectionLabel.ts) in step with the loaded connection list.
+useAppStore.subscribe((s, prev) => {
+  if (s.connections !== prev.connections) setConnectionRegistry(s.connections)
 })
