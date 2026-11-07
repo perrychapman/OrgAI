@@ -191,7 +191,7 @@ export function handleMutating(activity: HostActivityTrackerApi, channel: string
 }
 
 /** A desktop-only channel that changes nothing: registered as is (refused by handleMutating's check the other way). */
-function handleReadOnly(channel: string, fn: IpcHandler): void {
+export function handleReadOnly(channel: string, fn: IpcHandler): void {
   if (DESKTOP_CHANNEL_MUTATES[channel] !== false) throw new Error(`${channel} is not a read-only desktop-only channel`)
   ipcMain.handle(channel, (e: IpcMainInvokeEvent, ...args: unknown[]) => fn(e, ...(args as never[])))
 }
@@ -300,7 +300,7 @@ export function registerIpc(services: IpcServices): void {
   registerCliShimIpc(activity, services.cliShim)
   if (kit) registerKitIpc(activity, kit)
   if (services.repoClone) registerRepoIpc(activity, services.repoClone)
-  registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir })
+  registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir, handleReadOnly })
 }
 
 // ---- Start a project from a repository (clone or fork); desktop only ----
