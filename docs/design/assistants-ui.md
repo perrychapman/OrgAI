@@ -209,6 +209,46 @@ New test ids: `run-conversation`, `conversation-transcript`, `conversation-jump`
 `chat-folder-input`, `chat-folder-error`, `run-meta-workspace`, `proposal-next-skills`, `proposal-next-connectors`,
 `proposal-next-project-skills`, `proposal-next-project-mcp`.
 
+## Implementation notes: Chat asks for permissions (2026-11-07, `ux-review-chat-permissions.md`)
+
+Chat (quick) runs keep their edit and command tools and every such call raises the normal permission card (runtime:
+CLAUDE.md "Chat asks"). The renderer follows the walk's "What the ask path should read" (H1, H2, M1, M3, M4).
+
+- Wording lives in `lib/chatPermissions.ts` (pure, unit-tested; the project wording stays in `lib/permissionCopy.ts`).
+- Permission card: `scopeLimit(request)` reads `maxScope`. 'session' (Chat, MCP build sessions) shows no "Always allow
+  for project" button, no `perm-scope-project` and no settings link; the effect line is `perm-scope-session`
+  (`sessionScopeCopy`: "Allow for session: stops asking for edits in this chat's folder until you end this chat." for
+  the quick session edit offer, "... stops asking for "npm test" commands until you end this chat." for a rule; a build
+  session says "until you end this session") with the rule chips. 'once' keeps the reference-folder card. A Chat card
+  has `perm-location[data-kind=chat]` "Runs in <folder name>" (full path in the title, hidden characters shown) or "Runs
+  in this chat's scratch area", and with `quickReadOnly` the line `perm-quick-readonly` "This chat started read-only.
+  Allowing lets it change <the scratch area | folder>." (commands: "... lets it run this command in ...").
+- Install card with `runOnly`: title "Add a server: <name>", `mcp-install-run-only` "For this chat only. It is not added
+  to your library.", no scope radios (always 'run'), buttons `mcp-install-approve` "Add for this chat" and
+  `mcp-install-deny` "Don't add" (both testids on every install card), resolved "Added for this chat" / "Not added".
+- Start page: the switch `chat-allow-edits` is the shared `ui/Switch` "Let it make changes", enabled for scratch too
+  (hint through aria-describedby: "Changes happen in a private scratch folder. You approve each one." / "Changes happen
+  in <folder>. You approve each one."); `chat-asks-line` "It asks before it changes anything." under the description;
+  `chat-summary` "Works in a private scratch area. Asks before it changes a file or runs a command." / "Works in <name>.
+  Reads freely, asks before it changes a file or runs a command." / with the switch on "... Ready to make changes; asks
+  before each edit and command.".
+- RunMeta chip `run-meta-access[data-state=asks|edits|session]`: "asks first", "edits allowed", "changes allowed this
+  session" (title explains). 'session' comes from store `RunState.sessionChanges`, set when `permission.resolved`
+  carries scope 'session' (or 'project') for a write or command tool (`QUICK_WRITE_TOOLS`) on a quick run; live only (a
+  continuation is a new session and starts again). The switch to 'session' is announced once through the frame's
+  `tray-announce` ("Changes allowed for the rest of this chat."), never on mount.
+- Needs-you captions (bell rows, Dashboard `dash-needs-row`): `decisionLocationLabel` reads "Chat, scratch" / "Chat,
+  <folder>" for a Chat decision. Save as project shows `save-as-project-permissions-note` "Permissions you gave this
+  chat do not carry over.".
+- e2e/assistants.mjs (mock, `[mock:chat-edit]` and `[mock:chat-mcp]`): the edit card's Chat location, read-only line,
+  session line and no project button; Allow for session reached by Tab and Enter, the chip turning to 'session' and the
+  announcement, the "You allowed" harness row, "I wrote notes.md.", the npm test card (Allow once) at 1024x640 dark; Deny
+  and "I did not change anything." with no second card at 1600x1000 light; the run-only install card and "The server
+  was added for this chat." at 1024x640 light; at all four size/theme pairs an open card is visible with no page scroll.
+- Not driven: the card at every size/theme pair (one full flow each), an MCP build session card (maxScope 'session'
+  without a working folder), a folder Chat card's location by e2e, the Needs-you Chat captions and the Save as project
+  note by eye, screen reader output, macOS and Linux. No UX re-walk yet.
+
 ## Open items
 
 - M5 (runtime): chats still get the plan nudge ("Continuing: asked the orchestrator to write a plan...", "Mock:
@@ -218,8 +258,6 @@ New test ids: `run-conversation`, `conversation-transcript`, `conversation-jump`
 - The MCP start page cannot name the build folder before the run starts (the data-folder wording is shown).
 - `proposalNextByRun` entries are cleared only by Dismiss; the pointer is untested at narrow toolbar widths, and the
   connectors and project links are not covered by e2e (the mock gives no MCP proposal on that path).
-- The scratch edits switch is a local `button[role=switch]` because `ui/Switch` takes no `aria-disabled`; fold that into
-  `Switch` later.
 - Not driven: the native folder picker, the Save as project 'existing' outcome, a default-team Chat in conversation
   mode, the project-scope `skill-ask-assistant` run.
 - Not addressed: L3 (Team disclosure wording), L4 ("Stopped" vs "Ended"), L6 (first-launch focus), L7 (brand lockup
