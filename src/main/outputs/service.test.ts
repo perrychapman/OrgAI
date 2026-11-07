@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { OutputPreview } from '@shared/types'
+import { OUTPUT_VERSIONS_MAX } from '@shared/types'
 import type { OutputsServiceApi, OutputScope } from './api'
 import { createOutputsService } from './service'
 
@@ -44,26 +45,67 @@ describe('produce', () => {
     expect(svc.get('p1', r.output.id)?.title).toBe('Q3 plan')
     expect(svc.get('p1', 'out_0000000000000000')).toBeUndefined()
   })
-  it('uses a name from the title and suffixes collisions', async () => {
+  it('uses a name from the title; the same name again is the same output, separate takes a suffix', async () => {
     const a = await svc.produce(scope, md('Same'), src)
     const b = await svc.produce(scope, md('Same'), src)
-    expect([a.output.fileName, b.output.fileName]).toEqual(['Same.md', 'Same (2).md'])
+    expect(b).toMatchObject({ created: false, versioned: false })
+    expect(b.output.id).toBe(a.output.id)
+    const c = await svc.produce(scope, md('Same', { separate: true }), src)
+    expect([a.output.fileName, c.output.fileName]).toEqual(['Same.md', 'Same (2).md'])
+    expect(c.created).toBe(true)
+    expect(svc.list('p1')).toHaveLength(2)
   })
-  it('overwrites only its own produced file when asked', async () => {
+  it('a second produce of the same file, from any run, is a new version (no suffix)', async () => {
     const a = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    expect(a.output).toMatchObject({ version: 1, versionCount: 1 })
     const b = await svc.produce(scope, md('Doc v2', { fileName: 'd.md', overwrite: true, content: 'new' }), src)
-    expect(b.created).toBe(false)
+    expect(b).toMatchObject({ created: false, versioned: true, previous: { n: 1, source: 'agent' } })
     expect(b.output.id).toBe(a.output.id)
     expect(b.output.createdAt).toBe(a.output.createdAt)
-    expect(b.output.updatedAt).toBeGreaterThanOrEqual(a.output.createdAt)
-    expect(b.output.title).toBe('Doc v2')
+    expect(b.output).toMatchObject({ title: 'Doc v2', version: 2, versionCount: 2, bytes: 3, current: { source: 'agent', runId: 'run_a' } })
     expect(readFileSync(join(project, 'outputs', 'd.md'), 'utf8')).toBe('new')
     expect(svc.list('p1')).toHaveLength(1)
-    // another run does not overwrite it, it gets a suffix
-    const c = await svc.produce(scope, md('Other', { fileName: 'd.md', overwrite: true }), { runId: 'run_b' })
-    expect(c.created).toBe(true)
-    expect(c.output.fileName).toBe('d (2).md')
-    expect(readFileSync(join(project, 'outputs', 'd.md'), 'utf8')).toBe('new')
+    const c = await svc.produce(scope, md('Other', { fileName: 'd.md' , content: 'third' }), { runId: 'run_b', role: 'Editor' })
+    expect(c).toMatchObject({ created: false, versioned: true })
+    expect(c.output).toMatchObject({ version: 3, runId: 'run_a', current: { runId: 'run_b', role: 'Editor' } })
+    const vs = svc.versions('p1', a.output.id)
+    expect(vs.map((v) => v.n)).toEqual([3, 2, 1])
+    expect(vs.map((v) => v.title)).toEqual(['Other', 'Doc v2', 'Doc'])
+    expect(vs.map((v) => v.source)).toEqual(['agent', 'agent', 'agent'])
+    expect(readFileSync(join(data, 'projects', 'p1', 'outputs', a.output.id, 'v1.md'), 'utf8')).toBe('# Doc')
+    expect(readFileSync(join(data, 'projects', 'p1', 'outputs', a.output.id, 'v2.md'), 'utf8')).toBe('new')
+  })
+  it('the same content again adds no version but may retitle', async () => {
+    const a = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    const b = await svc.produce(scope, md('Doc renamed', { fileName: 'd.md', content: '# Doc', description: 'now described' }), src)
+    expect(b).toMatchObject({ created: false, versioned: false })
+    expect(b.output).toMatchObject({ id: a.output.id, version: 1, versionCount: 1, title: 'Doc renamed', description: 'now described' })
+  })
+  it('two concurrent produces of one file make v2 and v3 in call order', async () => {
+    await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    const [x, y] = await Promise.all([svc.produce(scope, md('A', { fileName: 'd.md', content: 'first' }), src), svc.produce(scope, md('B', { fileName: 'd.md', content: 'second' }), src)])
+    expect(x.output.version).toBe(2)
+    expect(y.output.version).toBe(3)
+    const id = x.output.id
+    expect(readFileSync(join(data, 'projects', 'p1', 'outputs', id, 'v2.md'), 'utf8')).toBe('first')
+    expect(readFileSync(join(project, 'outputs', 'd.md'), 'utf8')).toBe('second')
+  })
+  it('a file that vanished but is still indexed gets its next version (no new output)', async () => {
+    const a = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    unlinkSync(a.output.path)
+    const b = await svc.produce(scope, md('Doc', { fileName: 'd.md', content: 'back' }), src)
+    expect(b).toMatchObject({ created: false, versioned: true })
+    expect(b.output.id).toBe(a.output.id)
+    expect(readFileSync(a.output.path, 'utf8')).toBe('back')
+  })
+  it('a produce over an uncaptured outside edit captures it as an external version first', async () => {
+    const a = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    writeFileSync(a.output.path, 'user typed this')
+    const b = await svc.produce(scope, md('Doc', { fileName: 'd.md', content: 'agent text' }), src)
+    expect(b.previous).toMatchObject({ n: 2, source: 'external' })
+    const vs = svc.versions('p1', a.output.id)
+    expect(vs.map((v) => v.source)).toEqual(['agent', 'external', 'agent'])
+    expect(readFileSync(join(data, 'projects', 'p1', 'outputs', a.output.id, 'v2.md'), 'utf8')).toBe('user typed this')
   })
   it('never overwrites a file with no index entry', async () => {
     mkdirSync(join(project, 'outputs'))
@@ -122,8 +164,34 @@ describe('register', () => {
     const again = await svc.register(scope, { path: join(project, 'report.csv'), title: 'Report v2', kind: 'csv', description: 'd' }, src)
     expect(again.created).toBe(false)
     expect(again.output).toMatchObject({ id: r.output.id, title: 'Report v2', kind: 'csv', runId: 'run_a', source: 'registered', createdAt: r.output.createdAt, description: 'd' })
-    expect(again.output.updatedAt).toBeTruthy()
+    expect(again).toMatchObject({ versioned: false })
+    expect(again.output).toMatchObject({ version: 1, versionCount: 1 })
     expect(svc.list('p1')).toHaveLength(1)
+  })
+  it('a registered file whose content changed adds a version; unchanged adds none', async () => {
+    writeFileSync(join(project, 'a.md'), 'one')
+    const r = await svc.register(scope, { path: 'a.md', title: 'A' }, src)
+    writeFileSync(join(project, 'a.md'), 'two!')
+    const r2 = await svc.register(scope, { path: 'a.md', title: 'A again' }, { runId: 'run_b', role: 'Writer' })
+    expect(r2).toMatchObject({ created: false, versioned: true, previous: { n: 1, source: 'agent' } })
+    expect(r2.output).toMatchObject({ id: r.output.id, version: 2, bytes: 4, title: 'A again', runId: 'run_a', current: { runId: 'run_b', role: 'Writer' } })
+    const r3 = await svc.register(scope, { path: 'a.md', title: 'A third' }, { runId: 'run_b' })
+    expect(r3).toMatchObject({ created: false, versioned: false })
+    expect(r3.output).toMatchObject({ version: 2, title: 'A third' })
+    expect(svc.versions('p1', r.output.id).map((v) => v.n)).toEqual([2, 1])
+  })
+  it('registering a path the produce tool wrote joins that output', async () => {
+    const p = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    writeFileSync(p.output.path, 'edited by agent b')
+    const r = await svc.register(scope, { path: join(project, 'outputs', 'd.md'), title: 'Doc' }, { runId: 'run_b' })
+    expect(r.output.id).toBe(p.output.id)
+    expect(r.versioned).toBe(true)
+    expect(r.output.source).toBe('produced')
+  })
+  it('refuses a .pptm with a plain sentence', async () => {
+    writeFileSync(join(project, 'deck.pptm'), 'x')
+    await expect(svc.register(scope, { path: 'deck.pptm', title: 'Deck' }, src)).rejects.toThrow(/\.pptm/)
+    expect(svc.list('p1')).toEqual([])
   })
   it('refuses an explicit kind that disagrees with the real extension (a .bat is never a docx)', async () => {
     writeFileSync(join(project, 'report.bat'), 'calc')
@@ -135,15 +203,13 @@ describe('register', () => {
     expect((await svc.register(scope, { path: 'report.bat', title: 'R', kind: 'other' }, src)).output.kind).toBe('other')
     expect(svc.list('p1')).toHaveLength(1)
   })
-  it('refuses a re-register across runs and allows a same-run update', async () => {
+  it('a register of a known path from another run no longer refuses (it joins the output)', async () => {
     writeFileSync(join(project, 'a.md'), 'x')
     const r = await svc.register(scope, { path: 'a.md', title: 'A' }, src)
-    await expect(svc.register(scope, { path: 'a.md', title: 'Hijack' }, { runId: 'run_b' })).rejects.toThrow('That file is already listed as an output of another run.')
-    expect(svc.get('p1', r.output.id)?.title).toBe('A')
-    const p = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
-    await expect(svc.register(scope, { path: join(project, 'outputs', 'd.md'), title: 'Mine now' }, { runId: 'run_b' })).rejects.toThrow(/another run/)
-    expect(svc.get('p1', p.output.id)?.title).toBe('Doc')
-    expect((await svc.register(scope, { path: 'a.md', title: 'A2' }, src)).created).toBe(false)
+    const again = await svc.register(scope, { path: 'a.md', title: 'Other run' }, { runId: 'run_b' })
+    expect(again.created).toBe(false)
+    expect(again.output.id).toBe(r.output.id)
+    expect(svc.list('p1')).toHaveLength(1)
   })
   it('refuses dot files, dot folders and .orgai/ (plain sentence)', async () => {
     mkdirSync(join(project, '.claude'))
@@ -262,36 +328,144 @@ describe('forget and delete', () => {
     expect(existsSync(a.output.path)).toBe(true)
     expect(() => svc.forget('p1', a.output.id)).toThrow(/not in this project/)
   })
-  it('delete removes a produced file and its entry; a missing file just drops the entry', async () => {
+  it('forget also removes the output data folder (snapshots, notes, revisions)', async () => {
+    const a = await svc.produce(scope, md('A'), src)
+    svc.noteAdd('p1', { outputId: a.output.id, version: 1, anchor: { type: 'whole' }, text: 'n' })
+    const dir = join(data, 'projects', 'p1', 'outputs', a.output.id)
+    expect(existsSync(join(dir, 'v1.md'))).toBe(true)
+    expect(existsSync(join(dir, 'notes.json'))).toBe(true)
+    svc.forget('p1', a.output.id)
+    expect(existsSync(dir)).toBe(false)
+  })
+  it('delete removes a one-version produced file without expectedVersionCount; a missing file just drops the entry', async () => {
     const a = await svc.produce(scope, md('A'), src)
     const b = await svc.produce(scope, md('B'), src)
-    expect(svc.delete(scope, a.output.id).map((o) => o.id)).toEqual([b.output.id])
+    const dir = join(data, 'projects', 'p1', 'outputs', a.output.id)
+    expect((await svc.delete(scope, { outputId: a.output.id })).map((o) => o.id)).toEqual([b.output.id])
     expect(existsSync(a.output.path)).toBe(false)
+    expect(existsSync(dir)).toBe(false)
     unlinkSync(b.output.path)
-    expect(svc.delete(scope, b.output.id)).toEqual([])
+    expect(await svc.delete(scope, { outputId: b.output.id })).toEqual([])
   })
-  it('delete refuses a registered file outside outputs/ and keeps both file and entry', async () => {
+  it('delete needs expectedVersionCount for a registered or multi-version output and refuses a mismatch', async () => {
     writeFileSync(join(project, 'mine.md'), 'x')
     const r = await svc.register(scope, { path: 'mine.md', title: 'Mine' }, src)
-    expect(() => svc.delete(scope, r.output.id)).toThrow(/outputs folder/)
+    await expect(svc.delete(scope, { outputId: r.output.id })).rejects.toThrow('This output changed. Check it and delete again.')
+    await expect(svc.delete(scope, { outputId: r.output.id, expectedVersionCount: 2 })).rejects.toThrow('This output changed. Check it and delete again.')
     expect(existsSync(join(project, 'mine.md'))).toBe(true)
+    const p = await svc.produce(scope, md('P', { fileName: 'p.md' }), src)
+    await svc.produce(scope, md('P', { fileName: 'p.md', content: 'v2' }), src)
+    await expect(svc.delete(scope, { outputId: p.output.id })).rejects.toThrow(/changed/)
+    expect(svc.deletePreview(scope, p.output.id)).toMatchObject({ versions: 2, outsideOutputsFolder: false, trash: false, missing: false, relPath: 'outputs/p.md' })
+    expect((await svc.delete(scope, { outputId: p.output.id, expectedVersionCount: 2 })).map((o) => o.id)).toEqual([r.output.id])
+  })
+  it('a registered file outside outputs/ goes through the injected trash, and its data folder is removed', async () => {
+    const trashed: string[] = []
+    const t = createOutputsService(data, { trash: async (p) => { trashed.push(p) } })
+    writeFileSync(join(project, 'mine.md'), 'x')
+    const r = await t.register(scope, { path: 'mine.md', title: 'Mine' }, src)
+    expect(t.deletePreview(scope, r.output.id)).toMatchObject({ outsideOutputsFolder: true, trash: true, versions: 1 })
+    await t.delete(scope, { outputId: r.output.id, expectedVersionCount: 1 })
+    expect(trashed).toEqual([r.output.path])
+    expect(t.list('p1')).toEqual([])
+    expect(existsSync(join(data, 'projects', 'p1', 'outputs', r.output.id))).toBe(false)
+  })
+  it('falls back to unlink when the trash throws, and without a trash', async () => {
+    const t = createOutputsService(data, { trash: async () => { throw new Error('no trash here') } })
+    writeFileSync(join(project, 'a.md'), 'x')
+    const r = await t.register(scope, { path: 'a.md', title: 'A' }, src)
+    await t.delete(scope, { outputId: r.output.id, expectedVersionCount: 1 })
+    expect(existsSync(join(project, 'a.md'))).toBe(false)
+    writeFileSync(join(project, 'b.md'), 'x')
+    const r2 = await svc.register(scope, { path: 'b.md', title: 'B' }, src)
+    await svc.delete(scope, { outputId: r2.output.id, expectedVersionCount: 1 })
+    expect(existsSync(join(project, 'b.md'))).toBe(false)
+  })
+  it('delete refuses a planted link at the path and keeps the target', async () => {
+    const a = await svc.produce(scope, md('A'), src)
+    const secret = join(root, 'secret.md')
+    writeFileSync(secret, 'precious')
+    unlinkSync(a.output.path)
+    try {
+      symlinkSync(secret, a.output.path, 'file')
+    } catch {
+      return
+    }
+    await expect(svc.delete(scope, { outputId: a.output.id })).rejects.toThrow(/link/)
+    expect(readFileSync(secret, 'utf8')).toBe('precious')
     expect(svc.list('p1')).toHaveLength(1)
   })
-  it('delete refuses when outputs/ became a link', async () => {
+  it('delete refuses when outputs/ became a link out of the project', async () => {
     const a = await svc.produce(scope, md('A'), src)
     const elsewhere = join(root, 'elsewhere')
     mkdirSync(elsewhere)
     writeFileSync(join(elsewhere, 'A.md'), 'precious')
     rmSync(join(project, 'outputs'), { recursive: true })
     symlinkSync(elsewhere, join(project, 'outputs'), process.platform === 'win32' ? 'junction' : 'dir')
-    expect(() => svc.delete(scope, a.output.id)).toThrow()
+    await expect(svc.delete(scope, { outputId: a.output.id })).rejects.toThrow()
     expect(readFileSync(join(elsewhere, 'A.md'), 'utf8')).toBe('precious')
   })
-  it('unknown ids and projects', () => {
-    expect(() => svc.delete(scope, 'out_0000000000000000')).toThrow(/not in this project/)
+  it('delete refuses a directory at the path', async () => {
+    const a = await svc.produce(scope, md('A'), src)
+    unlinkSync(a.output.path)
+    mkdirSync(a.output.path)
+    await expect(svc.delete(scope, { outputId: a.output.id })).rejects.toThrow(/regular file/)
+    expect(existsSync(a.output.path)).toBe(true)
+  })
+  it('unknown ids and projects', async () => {
+    await expect(svc.delete(scope, { outputId: 'out_0000000000000000' })).rejects.toThrow(/not in this project/)
     expect(svc.list('nope')).toEqual([])
     expect(svc.list('../x')).toEqual([])
   })
+})
+
+describe('index format 1 and lazy v1', () => {
+  it('loads a format 1 index as version 1 and snapshots v1 when the next version is written', async () => {
+    const a = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    // rewrite the index as format 1 and drop the snapshots
+    const file = join(data, 'projects', 'p1', 'outputs.json')
+    const j = JSON.parse(readFileSync(file, 'utf8'))
+    const o = j.outputs[0]
+    const old = { version: 1, outputs: [{ id: o.id, runId: o.runId, kind: o.kind, title: o.title, fileName: o.fileName, path: o.path, relPath: o.relPath, bytes: o.bytes, createdAt: o.createdAt, source: o.source }] }
+    writeFileSync(file, JSON.stringify(old))
+    rmSync(join(data, 'projects', 'p1', 'outputs', a.output.id), { recursive: true, force: true })
+    const fresh = createOutputsService(data)
+    expect(fresh.get('p1', a.output.id)).toMatchObject({ version: 1, versionCount: 1 })
+    expect(fresh.versions('p1', a.output.id)).toHaveLength(1)
+    const b = await fresh.produce(scope, md('Doc', { fileName: 'd.md', content: 'second' }), src)
+    expect(b.output).toMatchObject({ version: 2, versionCount: 2 })
+    expect(readFileSync(join(data, 'projects', 'p1', 'outputs', a.output.id, 'v1.md'), 'utf8')).toBe('# Doc')
+    expect(JSON.parse(readFileSync(file, 'utf8')).version).toBe(2)
+  })
+  it('a format 1 entry whose file changed size cannot recover v1: the next version is v2 alone', async () => {
+    const a = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    const file = join(data, 'projects', 'p1', 'outputs.json')
+    const o = JSON.parse(readFileSync(file, 'utf8')).outputs[0]
+    writeFileSync(file, JSON.stringify({ version: 1, outputs: [{ id: o.id, runId: o.runId, kind: o.kind, title: o.title, fileName: o.fileName, path: o.path, relPath: o.relPath, bytes: o.bytes, createdAt: o.createdAt, source: o.source }] }))
+    rmSync(join(data, 'projects', 'p1', 'outputs', a.output.id), { recursive: true, force: true })
+    writeFileSync(a.output.path, 'changed outside, longer')
+    writeFileSync(join(project, 'noise.md'), 'x')
+    const fresh = createOutputsService(data)
+    const r = await fresh.register(scope, { path: a.output.path, title: 'Doc' }, { runId: 'run_z' })
+    expect(r).toMatchObject({ created: false, versioned: true })
+    expect(r.output).toMatchObject({ version: 2, versionCount: 1 })
+  })
+})
+
+describe('version caps through the service', () => {
+  it('prunes the oldest droppable version past OUTPUT_VERSIONS_MAX and keeps v1, current and named ones', async () => {
+    const a = await svc.produce(scope, md('Doc', { fileName: 'd.md', content: 'c1' }), src)
+    svc.update('p1', { outputId: a.output.id, versionLabel: { n: 1, label: 'Original' } })
+    for (let i = 2; i <= OUTPUT_VERSIONS_MAX + 3; i++) await svc.produce(scope, md('Doc', { fileName: 'd.md', content: `c${i}` }), src)
+    const out = svc.get('p1', a.output.id)!
+    expect(out).toMatchObject({ version: OUTPUT_VERSIONS_MAX + 3, versionCount: OUTPUT_VERSIONS_MAX, versionsPruned: true })
+    const ns = svc.versions('p1', a.output.id).map((v) => v.n)
+    expect(ns).toContain(1)
+    expect(ns).toContain(OUTPUT_VERSIONS_MAX + 3)
+    expect(ns).not.toContain(2)
+    expect(existsSync(join(data, 'projects', 'p1', 'outputs', a.output.id, 'v2.md'))).toBe(false)
+    expect(existsSync(join(data, 'projects', 'p1', 'outputs', a.output.id, 'v1.md'))).toBe(true)
+  }, 60000)
 })
 
 describe('preview queue (L2)', () => {

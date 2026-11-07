@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { OPENABLE_EXTENSIONS, checkDeletablePath, checkFileNameSegments, checkRegisteredPath, isOpenablePath, resolveProducedTarget, slugFromTitle, withKindExtension, writeProduced } from './paths'
+import { OPENABLE_EXTENSIONS, checkDeletableFile, checkFileNameSegments, checkRegisteredPath, checkWritablePath, isOpenablePath, resolveProducedTarget, slugFromTitle, withKindExtension, writeFileAtomic, writeProduced } from './paths'
 import type { PathScope } from './paths'
 
 let root: string
@@ -20,7 +20,7 @@ afterEach(() => rmSync(root, { recursive: true, force: true }))
 
 const scope = (extra: Partial<PathScope> = {}): PathScope => ({ projectPath: project, allowedDirectories: [], referenceDirectories: [], ...extra })
 const resolveT = (fileName: string | undefined, over: Partial<Parameters<typeof resolveProducedTarget>[0]> = {}) =>
-  resolveProducedTarget({ scope: scope(), dataDir: data, kind: 'markdown', title: 'My Title', fileName, mayOverwrite: () => false, ...over })
+  resolveProducedTarget({ scope: scope(), dataDir: data, kind: 'markdown', title: 'My Title', fileName, known: () => false, ...over })
 const link = (target: string, at: string): void => symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir')
 
 describe('names', () => {
@@ -58,20 +58,21 @@ describe('produced target', () => {
   it('uses the title slug when no file name is given', () => {
     expect(resolveT(undefined).fileName).toBe('My-Title.md')
   })
-  it('suffixes an existing file and never overwrites without an entry', () => {
+  it('suffixes an existing file that is not indexed, and one that is when separate', () => {
     const a = resolveT('r.md')
     writeProduced(a, Buffer.from('1'))
-    const b = resolveT('r.md', { overwrite: true })
+    expect(resolveT('r.md', { known: () => true, separate: true }).fileName).toBe('r (2).md')
+    const b = resolveT('r.md')
     expect(b.fileName).toBe('r (2).md')
     expect(b.renamed).toBe(true)
     writeProduced(b, Buffer.from('2'))
     expect(readFileSync(a.file, 'utf8')).toBe('1')
     expect(resolveT('r.md').fileName).toBe('r (3).md')
   })
-  it('overwrites a file the caller owns, through temp + rename', () => {
+  it('replaces an indexed file (any run), through temp + rename', () => {
     const a = resolveT('r.md')
     writeProduced(a, Buffer.from('1'))
-    const b = resolveT('r.md', { overwrite: true, mayOverwrite: (p) => p === a.file })
+    const b = resolveT('r.md', { known: (p: string) => p === a.file })
     expect(b.overwrite).toBe(true)
     writeProduced(b, Buffer.from('22'))
     expect(readFileSync(a.file, 'utf8')).toBe('22')
@@ -109,7 +110,7 @@ describe('produced target', () => {
     } catch {
       return // no symlink privilege on this machine
     }
-    const t = resolveT('p.md', { overwrite: true, mayOverwrite: () => true })
+    const t = resolveT('p.md', { known: () => true })
     expect(t.fileName).toBe('p (2).md')
     writeProduced(t, Buffer.from('new'))
     expect(readFileSync(secret, 'utf8')).toBe('keep')
@@ -191,7 +192,7 @@ describe('open allowlist, reserved names, streams', () => {
     expect(isOpenablePath(f)).toBe(ok)
   })
   it('lists exactly the document, image and text types', () => {
-    expect([...OPENABLE_EXTENSIONS].sort()).toEqual(['csv', 'docx', 'gif', 'jpeg', 'jpg', 'json', 'markdown', 'md', 'mermaid', 'mmd', 'pdf', 'png', 'txt', 'webp', 'xlsx'])
+    expect([...OPENABLE_EXTENSIONS].sort()).toEqual(['csv', 'docx', 'gif', 'jpeg', 'jpg', 'json', 'markdown', 'md', 'mermaid', 'mmd', 'pdf', 'png', 'pptx', 'txt', 'webp', 'xlsx'])
   })
   it.each(['COM¹', 'com².txt', 'LPT³.md', 'CONIN$', 'conout$.txt', 'a/Com1.md', 'a/.GIT/b.md', 'a/.Git'])('refuses produced name %j', (name) => {
     expect(() => checkFileNameSegments(name)).toThrow()
@@ -228,19 +229,74 @@ describe('open allowlist, reserved names, streams', () => {
 })
 
 describe('deletable path', () => {
-  it('allows a file under outputs/, null when gone, refuses elsewhere', () => {
+  it('allows a regular file inside the project (any folder), null when gone', () => {
     const t = resolveT('a.md')
     writeProduced(t, Buffer.from('x'))
-    expect(checkDeletablePath(t.file, scope())).toBeTruthy()
-    expect(checkDeletablePath(join(project, 'outputs', 'gone.md'), scope())).toBeNull()
+    expect(checkDeletableFile(t.file, scope(), data)).toBeTruthy()
+    expect(checkDeletableFile(join(project, 'outputs', 'gone.md'), scope(), data)).toBeNull()
     writeFileSync(join(project, 'plain.md'), 'x')
-    expect(() => checkDeletablePath(join(project, 'plain.md'), scope())).toThrow(/outputs folder/)
+    expect(checkDeletableFile(join(project, 'plain.md'), scope(), data)).toBeTruthy()
   })
-  it('refuses when outputs/ is a link', () => {
+  it('refuses a directory, a file outside the scope, the data folder and .git', () => {
+    mkdirSync(join(project, 'dir'))
+    expect(() => checkDeletableFile(join(project, 'dir'), scope(), data)).toThrow(/regular file/)
+    writeFileSync(join(root, 'outside.md'), 'x')
+    expect(() => checkDeletableFile(join(root, 'outside.md'), scope(), data)).toThrow(/outside/)
+    writeFileSync(join(data, 's.json'), 'x')
+    expect(() => checkDeletableFile(join(data, 's.json'), scope(), data)).toThrow()
+    mkdirSync(join(project, '.git'))
+    writeFileSync(join(project, '.git', 'HEAD'), 'x')
+    expect(() => checkDeletableFile(join(project, '.git', 'HEAD'), scope(), data)).toThrow(/\.git/)
+  })
+  it('refuses when a folder on the way became a link out of the project', () => {
     const elsewhere = join(root, 'elsewhere')
     mkdirSync(elsewhere)
     writeFileSync(join(elsewhere, 'k.md'), 'x')
     link(elsewhere, join(project, 'outputs'))
-    expect(() => checkDeletablePath(join(project, 'outputs', 'k.md'), scope())).toThrow()
+    expect(() => checkDeletableFile(join(project, 'outputs', 'k.md'), scope(), data)).toThrow()
+  })
+  it('refuses a symlink file at the path', () => {
+    const secret = join(root, 'secret.md')
+    writeFileSync(secret, 'x')
+    try {
+      symlinkSync(secret, join(project, 'l.md'), 'file')
+    } catch {
+      return
+    }
+    expect(() => checkDeletableFile(join(project, 'l.md'), scope(), data)).toThrow(/link/)
+  })
+})
+
+describe('writable path and atomic write', () => {
+  it('accepts an existing file and a vanished file in a plain folder', () => {
+    writeFileSync(join(project, 'a.md'), 'x')
+    expect(checkWritablePath(join(project, 'a.md'), scope(), data)).toBeTruthy()
+    expect(checkWritablePath(join(project, 'gone.md'), scope(), data)).toMatch(/gone\.md$/)
+  })
+  it('refuses a vanished file whose folder is gone, a link, outside or under .git', () => {
+    expect(() => checkWritablePath(join(project, 'nodir', 'x.md'), scope(), data)).toThrow(/gone|link/)
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(elsewhere)
+    link(elsewhere, join(project, 'lnk'))
+    expect(() => checkWritablePath(join(project, 'lnk', 'x.md'), scope(), data)).toThrow()
+    expect(() => checkWritablePath(join(root, 'x.md'), scope(), data)).toThrow(/outside/)
+    mkdirSync(join(project, '.git'))
+    expect(() => checkWritablePath(join(project, '.git', 'x.md'), scope(), data)).toThrow(/\.git/)
+  })
+  it('writeFileAtomic replaces a file, creates one, leaves no temp and refuses a symlink', () => {
+    const f = join(project, 'w.md')
+    writeFileAtomic(f, Buffer.from('1'))
+    writeFileAtomic(f, Buffer.from('22'))
+    expect(readFileSync(f, 'utf8')).toBe('22')
+    expect(readdirSync(project).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    const secret = join(root, 'secret.md')
+    writeFileSync(secret, 'keep')
+    try {
+      symlinkSync(secret, join(project, 'l.md'), 'file')
+    } catch {
+      return
+    }
+    expect(() => writeFileAtomic(join(project, 'l.md'), Buffer.from('bad'))).toThrow(/regular file/)
+    expect(readFileSync(secret, 'utf8')).toBe('keep')
   })
 })
