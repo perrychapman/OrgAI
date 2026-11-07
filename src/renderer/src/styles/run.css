@@ -649,6 +649,17 @@
   min-width: 0;
 }
 /* Finished list (side panel): the agent a folded member ran under, when it is not a direct report. */
+/* Provider tag on a live agent that runs on another connection than its run (multi-provider). Quiet: a hairline chip. */
+.agent-node .agent-connection {
+  flex: none;
+  color: var(--canvas-node-text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
 .finished-under {
   font-size: var(--text-caption);
   color: var(--text-tertiary);

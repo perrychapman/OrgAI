@@ -35,6 +35,7 @@ import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
 import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
 import { Cost } from './ui/Cost'
 import { agentCostInput } from '../lib/cost'
+import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
 import UsagePanel from './UsagePanel'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
@@ -302,6 +303,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
   const plan = useAppStore((s) => s.runs[runId]?.plan)
   const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
+  const runConnection = useAppStore((s) => s.runs[runId]?.summary.connection)
   const index = useRunIndexes().get(tagRunId ?? runId)
   // Setup runs have no plan tab; fall back to the transcript there.
   const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
@@ -542,6 +544,11 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
       {agent && tab === 'transcript' && (
         <div className="agent-meta" aria-label="Agent details">
           <span>{agent.model ?? 'model unknown'}</span>
+          {connectionTag(agent.connection, runConnection) && (
+            <span data-testid="agent-connection" data-connection={agent.connection} title={connectionTagTitle(agent.connection!, runConnection!, 'run')}>
+              Runs on {connectionTag(agent.connection, runConnection)}
+            </span>
+          )}
           <span title="Input and output tokens">
             {formatTokens(agent.inputTokens)} in / {formatTokens(agent.outputTokens)} out
           </span>

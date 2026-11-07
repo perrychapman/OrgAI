@@ -6,6 +6,8 @@ import { formatElapsed, initials } from '../lib/layout'
 import { Cost } from './ui/Cost'
 import { agentCostInput } from '../lib/cost'
 import { agentLabel } from '../lib/agentTree'
+import { activeRun, useAppStore } from '../store/useAppStore'
+import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
 
 export interface FinishedGroup {
   /** The group's parent as the fold names it (`agentLabel`), or "an earlier session". */
@@ -33,6 +35,7 @@ const WT_LABEL: Record<string, string> = {
  */
 export default function FinishedList({ group }: { group: FinishedGroup }): ReactElement {
   const sorted = [...group.agents].sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+  const runConnection = useAppStore((s) => activeRun(s)?.summary.connection)
   const under = new Map(group.agents.map((a) => [a.id, group.underOf?.(a)]))
   return (
     <div className="finished-list">
@@ -58,6 +61,11 @@ export default function FinishedList({ group }: { group: FinishedGroup }): React
                 <Badge tone={a.state === 'error' ? 'danger' : 'neutral'}>{a.state === 'error' ? 'failed' : 'done'}</Badge>
                 {a.worktree && <Badge>{WT_LABEL[a.worktree.status] ?? a.worktree.status}</Badge>}
               </span>
+              {connectionTag(a.connection, runConnection) && (
+                <span className="finished-under" data-testid="agent-connection" data-connection={a.connection} title={connectionTagTitle(a.connection!, runConnection!, 'run')}>
+                  runs on {connectionTag(a.connection, runConnection)}
+                </span>
+              )}
               {under.get(a.id) && <span className="finished-under">under {under.get(a.id)}</span>}
               <span className="finished-sub">{(a.result ?? a.lastText ?? a.activity).replace(/\s+/g, ' ').slice(0, 140)}</span>
             </span>

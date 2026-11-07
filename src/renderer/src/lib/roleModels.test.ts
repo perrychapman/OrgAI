@@ -75,3 +75,20 @@ describe('effort view', () => {
     expect(v.note).toContain('xhigh')
   })
 })
+
+describe('multi-provider labels', () => {
+  it('adds the connection to the chip and summary only when pinned elsewhere', () => {
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' }, 'openai', 'anthropic')).toBe('Everyday · OpenAI')
+    expect(roleChipLabel({ model: 'gpt-6-sol' }, 'openai', 'anthropic')).toBe('gpt-6-sol · OpenAI')
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' }, 'anthropic', 'anthropic')).toBe('Everyday')
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' })).toBe('Everyday')
+    expect(roleModelSummary({ model: 'gpt-x' }, tiers, 'openai', 'anthropic')).toBe('Custom · OpenAI')
+    expect(roleModelSummary({ model: 'sonnet' }, tiers, 'openai', 'anthropic')).toBe('Everyday · OpenAI')
+    expect(roleModelSummary({ model: 'inherit' }, tiers, 'openai', 'anthropic')).toBe('Inherited')
+  })
+  it('names the connection when an effort is dropped', () => {
+    expect(effortView('max', 'codex', 'OpenAI').note).toBe('max is not used on OpenAI; Default applies.')
+    expect(effortView('max', 'codex', 'Gateway').options.at(-1)?.label).toBe('max (not used on Gateway)')
+    expect(effortView('max', 'claude').unsupported).toBeUndefined()
+  })
+})

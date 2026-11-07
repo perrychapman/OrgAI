@@ -12,6 +12,7 @@ import { agentCostInput, costView } from '../lib/cost'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
 import { activeRun, useAppStore } from '../store/useAppStore'
+import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
 
 export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean }, 'agent'>
 
@@ -60,6 +61,10 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
   // While the agent streams text, its first words stand in for the activity line.
   const partial = useAppStore((s) => activeRun(s)?.partial[agent.id])
   const streaming = partial !== undefined
+  // A provider tag only when this agent runs on another connection than its run (set by main on every agent).
+  const runConnection = useAppStore((s) => activeRun(s)?.summary.connection)
+  const onTag = connectionTag(agent.connection, runConnection)
+  const onTitle = onTag && agent.connection && runConnection ? connectionTagTitle(agent.connection, runConnection, 'run') : undefined
   const costInput = agentCostInput(agent)
   const hasCost = !costView(costInput).empty
   // Ended without result text: its tokens bought nothing. A quiet dim and a tooltip, no badge.
@@ -102,6 +107,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
     [agent.handle ? '' : agent.roleSlug, shortModel].filter(Boolean).join(' · '),
     activity,
     worktreeText,
+    onTitle ?? '',
     `${tokensText} · ${tail}`
   ]
     .filter(Boolean)
@@ -125,7 +131,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
           <div className="station-name">
             <ClippedLabel label={label} />
           </div>
-          <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>
+          <span className="sr-only">{[activity, worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>
         </>
       )}
       {hex && (
@@ -140,7 +146,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
               {badges}
             </div>
             <div className="hex-name">{label}</div>
-            <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>
+            <span className="sr-only">{[activity, worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>
           </div>
         </>
       )}
@@ -155,11 +161,16 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
             {compact ? <ClippedLabel label={label} /> : agent.name}
           </div>
           {/* The tooltip is not read by keyboard or screen-reader users: say what the card would show. */}
-          {compact && <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>}
+          {compact && <span className="sr-only">{[activity, worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>}
           {!compact && (
             <div className="sub">
               <span title={agent.handle ? `Handle ${agent.handle} (role ${agent.roleSlug})` : undefined}>{agent.handle ?? agent.roleSlug}</span>
               {shortModel && <span>· {shortModel}</span>}
+              {onTag && (
+                <span className="agent-connection" data-testid="agent-connection" data-connection={agent.connection} title={onTitle}>
+                  {onTag}
+                </span>
+              )}
             </div>
           )}
         </div>
