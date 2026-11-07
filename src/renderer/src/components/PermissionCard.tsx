@@ -9,6 +9,7 @@ import { Badge } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import { isHiddenCommand, permissionTitle, shellSegments } from '../lib/decisionTitle'
 import { noRuleLine, permissionLocation, permissionOffer, referenceEffect, referenceLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
+import { chatLocationLine, chatPlace, quickReadOnlyLine, scopeLimit, sessionScopeCopy, SESSION_CHIPS_LABEL } from '../lib/chatPermissions'
 import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
 import { openProjectSettings } from '../lib/openProjectSettings'
 import { useAppStore } from '../store/useAppStore'
@@ -132,7 +133,14 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
   const agentCwd = useAppStore((st) => st.runs[runId]?.agents[request.agentId]?.worktree?.path)
   // A command that touches a reference folder offers Allow once and Deny only; main sends no suggestions, and any that
   // arrive anyway are ignored so the card never synthesizes an Always allow.
-  const { referenceFolder, canScope, showSettingsLink } = permissionOffer(request)
+  const offer = permissionOffer(request)
+  const { referenceFolder } = offer
+  const limit = scopeLimit(request)
+  const canScope = offer.canScope && limit !== 'once'
+  const sessionOnly = canScope && limit === 'session'
+  const showSettingsLink = offer.showSettingsLink && limit === 'project'
+  const place = referenceFolder ? null : chatPlace(request)
+  const quickLine = place ? quickReadOnlyLine(request) : null
   const lines = previewLines(request.toolName, request.input)
   const command = bashCommand(request.toolName, request.input)
   const hidden = isHiddenCommand(request.toolName, request.input)
@@ -150,9 +158,13 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
           : null,
     [project, referenceFolder, request.toolName, request.input, agentCwd]
   )
-  const copy = useMemo(() => scopeCopy(canScope ? request.suggestions : undefined, project?.permissionMode), [canScope, request.suggestions, project?.permissionMode])
+  const copy = useMemo(() => {
+    if (sessionOnly) return sessionScopeCopy(request.suggestions, !!place)
+    return scopeCopy(canScope ? request.suggestions : undefined, project?.permissionMode)
+  }, [canScope, sessionOnly, place, request.suggestions, project?.permissionMode])
   const chips = canScope ? [...new Set(request.ruleLabels ?? [])].map(ruleChip).filter((c) => c.text) : []
-  const showEffect = canScope && !!copy.project
+  const effectText = sessionOnly ? copy.session : (copy as { project?: string }).project
+  const showEffect = canScope && !!effectText
   const noRule = referenceFolder ? null : noRuleLine(request.toolName, canScope)
   return (
     <DecisionCard
@@ -176,7 +188,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
           <ul className="decision-scopes" data-testid="perm-scopes">
             <li>{copy.once}</li>
             {canScope && copy.session && <li>{copy.session}</li>}
-            {canScope && copy.project && <li>{copy.project}</li>}
+            {canScope && !sessionOnly && (copy as { project?: string }).project && <li>{(copy as { project?: string }).project}</li>}
           </ul>
           {project && showSettingsLink && (
             <button type="button" className="link-btn perm-settings-link" data-testid="perm-settings-link" onClick={() => openPermissionSettings(project.id)}>
@@ -196,9 +208,11 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
             <Button size="sm" disabled={busy} onClick={() => send({ behavior: 'allow', scope: 'session' })}>
               Allow for session
             </Button>
-            <Button size="sm" disabled={busy} onClick={() => send({ behavior: 'allow', scope: 'project' })}>
-              Always allow for project
-            </Button>
+            {!sessionOnly && (
+              <Button size="sm" disabled={busy} onClick={() => send({ behavior: 'allow', scope: 'project' })}>
+                Always allow for project
+              </Button>
+            )}
           </>
         ) : undefined
       }
@@ -208,8 +222,19 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         </Button>
       }
     >
-      {(location || showEffect || noRule || referenceFolder) && (
+      {(location || place || showEffect || noRule || referenceFolder) && (
       <div className="perm-glance">
+        {place && !location && (
+          <p className="perm-location" data-testid="perm-location" data-kind="chat" title={place.full}>
+            <Icon icon={FolderOpen} size="xs" />
+            <span className="perm-location-label">{chatLocationLine(place)}</span>
+          </p>
+        )}
+        {quickLine && (
+          <p className="perm-no-rule" data-testid="perm-quick-readonly">
+            {quickLine}
+          </p>
+        )}
         {location && (
           <p className="perm-location" data-testid="perm-location" data-kind={location.kind} data-attention={location.attention ? 'true' : undefined} title={location.full}>
             <Icon icon={location.attention ? TriangleAlert : location.kind === 'reference' ? Lock : FolderOpen} size="xs" />
@@ -221,11 +246,11 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         {project && <FolderTrustCardLine project={project} />}
         {showEffect && (
           <div className="perm-effect">
-            <p className="perm-effect-text" data-testid="perm-scope-project" title={copy.project}>
-              {copy.project}
+            <p className="perm-effect-text" data-testid={sessionOnly ? 'perm-scope-session' : 'perm-scope-project'} title={effectText}>
+              {effectText}
             </p>
             {chips.length > 0 && (
-              <ul className="perm-rule-chips" aria-label="What Allow for session and Always allow approve">
+              <ul className="perm-rule-chips" aria-label={sessionOnly ? SESSION_CHIPS_LABEL : 'What Allow for session and Always allow approve'}>
                 {chips.map((c) => (
                   <li
                     key={c.text}
