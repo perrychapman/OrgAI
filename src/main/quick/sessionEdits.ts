@@ -68,10 +68,18 @@ export function editTargets(toolName: string, input: unknown): string[] | null {
       }
     }
     const paths = o.changes.map((c) => (c && typeof c === 'object' ? (c as { path?: unknown }).path : undefined))
-    return paths.every((p): p is string => typeof p === 'string' && p !== '') ? paths : null
+    return paths.every((p): p is string => typeof p === 'string' && p !== '' && !hasDotSegment(p)) ? paths : null
   }
   const p = typeof o.file_path === 'string' && o.file_path ? o.file_path : typeof o.notebook_path === 'string' && o.notebook_path ? o.notebook_path : undefined
-  return p ? [p] : null
+  return p && !hasDotSegment(p) ? [p] : null
+}
+
+/**
+ * NH1: true when the raw path text has a `.` or `..` segment (split on both separators, before any resolve). On POSIX a
+ * writer follows `link/../x` through the link first, which a lexical resolve hides, so such a path is never covered.
+ */
+export function hasDotSegment(raw: string): boolean {
+  return raw.split(/[\\/]/).some((s) => s === '.' || s === '..')
 }
 
 // eslint-disable-next-line no-control-regex
@@ -107,6 +115,7 @@ function segmentsOk(rel: string, platform: NodeJS.Platform): boolean {
 export function quickFolderEditCovered(folder: string, target: unknown, platform: NodeJS.Platform = process.platform): boolean {
   if (typeof folder !== 'string' || !folder || !isAbsolute(folder)) return false
   if (typeof target !== 'string' || !target || CONTROL.test(target) || hiddenCharIn(target) !== null) return false
+  if (hasDotSegment(target)) return false
   const abs = isAbsolute(target) ? target : join(folder, target)
   if (isNetworkPath(abs) || isNetworkPath(folder)) return false
   let realFolder: string

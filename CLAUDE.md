@@ -221,7 +221,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     (`quickSessionEditSuggestion` on covered edit cards, never sent to a provider; `isQuickSessionEditGrant` in
     decide(); `RuntimeContext.quickSessionEdits`; `quickEditPreApproved` in every adapter after its deny gates; only
     inside the folder by lexical and real path with no symlink or junction component below it (lstat, dangling links
-    included), never a Codex change with a move destination, never under .git/.claude/.codex/.agents/.orgai/.vscode/.idea/.github
+    included), never a Codex change with a move destination, never a raw path with a `.` or `..` segment (refused before any resolution, since a POSIX writer follows `link/..` through the link first; NH1), never under .git/.claude/.codex/.agents/.orgai/.vscode/.idea/.github
     or config files incl. agents.override.md). MCP: `McpInstallRequest.runOnly: true`, approvals narrowed to 'run' and
     never persisted on any `summary.quick` run, `spec.roles` = the caller's role, `[]` (nobody) for an unknown caller;
     per-role MCP grants are not enforced on Codex (open review M6). Rule labels in the "You allowed ..." row are stripped
