@@ -309,7 +309,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           tone="warning"
           actions={<Button size="sm" onClick={openConnections}>Open connections</Button>}
         >
-          {targetName} is not connected. Connect it to run this project.
+          {targetInfo ? `${targetName} is not connected. Connect it to run this project.` : "This project's connection was removed. Choose another one below."}
         </Banner>
       )}
 

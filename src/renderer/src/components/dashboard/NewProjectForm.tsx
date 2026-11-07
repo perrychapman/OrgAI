@@ -123,7 +123,7 @@ export function NewProjectForm({
   const [refInput, setRefInput] = useState('')
   const [refError, setRefError] = useState<string | null>(null)
   /** Set when the project was created but its client / reference folders did not save: the form waits for the user. */
-  const [pending, setPending] = useState<{ project: Project; message: string } | null>(null)
+  const [pending, setPending] = useState<{ project: Project; message: string; noSetup?: boolean } | null>(null)
   const engagement = projectKind === 'engagement'
   const session = useRepoSession()
   const cloning = session.status === 'running'
@@ -395,7 +395,9 @@ export function NewProjectForm({
     try {
       useAppStore.getState().selectProject(pending.project.id)
       useAppStore.getState().setView('team')
-      await finish(pending.project)
+      if (pending.noSetup) {
+        if (choice === 'import') useAppStore.getState().requestImport({ projectId: pending.project.id, fresh: true })
+      } else await finish(pending.project)
     } catch (err) {
       setError(cleanIpcError(err))
     } finally {
@@ -452,22 +454,27 @@ export function NewProjectForm({
       // The clone is a project now: nothing left to offer next time.
       if (cloned && github) forgetRepoClone()
       if (input.templateId) writeLastTemplateId(window.localStorage, input.templateId)
-      if (extras.failed) {
-        // The project exists; wait for the user rather than leaving the form with the problem unseen.
-        setPending({ project: created, message: extras.failed })
-        return
-      }
       // ProjectCreateInput has no connection field: main puts the project on the default connection, and a different
       // pick is applied with the same projects:remapModels switch Project settings uses, before setup starts.
+      let remapFailed: string | null = null
+      let target = created
       if (pickedConnection && pickedConnection !== projectConnection(created)) {
         try {
           const out = await window.orgai.projects.remapModels({ projectId: created.id, connection: pickedConnection })
           useAppStore.getState().replaceProject(out.project)
+          target = out.project
         } catch (err) {
-          useAppStore.getState().setSaveStatus({ state: 'error', at: Date.now(), message: `Could not start ${created.name} on ${connectionLabel(pickedConnection)}: ${cleanIpcError(err)} It is on the default connection; change it in Project settings.` })
+          remapFailed = `Could not put ${created.name} on ${connectionLabel(pickedConnection)}: ${cleanIpcError(err)} The project is on the default connection; change it in Project settings. The setup interview was not started.`
         }
       }
-      await finish(created)
+      const problem = [extras.failed, remapFailed].filter(Boolean).join(' ')
+      if (problem) {
+        // The project exists; wait for the user rather than leaving the form with the problem unseen. A failed
+        // connection switch never starts a run on a connection the user did not pick.
+        setPending({ project: target, message: problem, noSetup: remapFailed !== null })
+        return
+      }
+      await finish(target)
     } catch (err) {
       setError(cleanIpcError(err))
       // From GitHub has no folder field to land on; the message itself takes focus there.
