@@ -863,37 +863,57 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `data-broad`, a no-rule line, `perm-settings-link` (window event `orgai:project-settings-section`); a request with `referenceFolder` reads `perm-location[data-kind=reference]` "Touches a reference folder (read only): <folder>" plus `perm-reference-effect`, offers only Allow once and Deny and never synthesizes rules (`referenceLocation` / `REFERENCE_EFFECT` in `lib/permissionCopy.ts`; e2e/engagement.mjs drives it with `[mock:reference-shell]` and `[mock:reference-edit]`), and the reference folder hint (`REFERENCE_FOLDERS_HINT`) says OrgAI refuses edits and asks before any command naming the folder, with no "never" promise; Settings >
   Permissions Allowed folders `allowed-folder-*` (inside the `permissions-summary` disclosure) (quiet notice for folders main dropped on save); rules panel grammar
   check and kind chips. Helpers `lib/permissionCopy.ts` (`referenceEffect(toolName)`: command wording for Bash / PowerShell, "This call reads..." for Read / Glob / Grep; `permissionOffer` is the pure guard that hides scope buttons, chips and the settings link under a `referenceFolder`), `lib/decisionTitle.ts`; `Button` takes `inert` (aria-disabled, focusable, swallows clicks, styled in controls.css) and `ariaDescribedBy`; e2e `e2e/permissions.mjs` (e2e:free).
-- Dashboard (spec `docs/design/dashboard.md`, walk `docs/design/ux-review-dashboard.md`): `views/DashboardView.tsx` +
-  `components/dashboard/` replaced the Projects view (store View id stays 'projects'; sidebar item, rail name and topbar
-  h1 read "Dashboard"). Hero `dashboard-hero` / `dashboard-figure` (`lib/dashboard.ts` `heroFigure`), the page's one polite
-  region `dashboard-live`, `dashboard-app-facts`; attention column `dash-needs-you` (`dash-needs-row[data-kind]`, same
-  count as the bell), `dash-running`, `dash-since` (`dash-since-row`, `dash-since-continue`, `dash-since-clear`),
-  `dash-paused` (`dash-paused-resume`); grid `dash-projects` with `project-tile[data-name]` ordered by
-  `projectAttentionOrder`, `project-tile-more` (Open / Open folder `project-tile-open-folder` via
-  `window.orgai.app.openPath` / Delete `project-tile-delete` with `deleteProjectBody`); facts `dash-usage`, `dash-cost`
-  (last 7 days, `Cost`, unknown never $0), `dash-connections`. New project is `Dialog` `new-project-dialog`
-  (`NewProjectForm` lives in `components/dashboard`, `hasParkedDraft` reopens it); first launch `dash-start-choice`;
-  store `openNewProject()` / `newProjectRequest` (the app menu's 'new-project' action). Last seen: localStorage
-  `orgai.dashboardSeenAt`, set on first load, moved only on in-app navigation away (never quit or reload), cap 6. Pure
-  helpers: `lib/dashboard.ts`, `components/dashboard/dashboardProjects.ts` (unit-tested). e2e `e2e/dashboard.mjs` (e2e:free);
-  `e2e/lib.mjs` `gotoProjects` / `openProjectForm` / `createProject` / `deleteProject` use the Dashboard. Reviewer: no
-  Critical or High. Open: hero may announce once after history loads, delete confirm counts open runs from live runs only,
-  `weekCost` unused, no e2e for focus after a tile opens, no `nav-dashboard` testid. Not built (need new contracts):
-  cross-project usage stats, run outcome/changes, cut decisions after a relaunch, per-project team suggestion counts,
-  update check.
-  - Fix-up after the re-walk (3507ebe, `docs/design/ux-review-dashboard-2.md`): `continueFromHistory(runId, projectId?)`
-    selects the project through `focusRun` when needed, opens the chain's newest run and focuses the composer (never
-    starts a run); `dash-since-row` / Running / Paused rows open the run and land focus on a real element, else the topbar
-    h1; `removeProject` drops the project's `historyByProject`, `activeRunByProject`, `draftPage`, `runs` and
-    `dismissedRuns` entries and the summary hooks ignore runs of unknown projects; `useLastSeen` adds `clearedAt`
-    (localStorage `orgai.dashboardClearedAt`, moved only by Mark all seen) so closed-waiting rows survive trips away;
-    `heroSublineParts` adds "N were waiting on you when OrgAI closed" under "All quiet"; `HeroBand` joins a delete
-    message and a figure change within 1.5 s into one announcement. Verified by renderer unit tests and e2e/dashboard.mjs
-    relaunch checks (Continue opens the Live view, row click focus, deleted project gone from Since and Cost). Walk-2
-    status: H1, H2, M1, M2, M4 fixed; open: M3 (a paused run cut by a quit reads "Ended when OrgAI closed" with no limit
-    note or Continue; needs a main-side marker), M3-old focus partly, M4-old first-launch scroll at 1024x640, L1-L8 of
-    walk 2 (incl. hero cost vs Cost card unchecked, Usage dead space / Connections below the fold at 1424x855, wordmark
-    "( MOCK Dev" in light theme, mock named four times on first launch).
+- Dashboard (pass 2, GitHub #36; spec `docs/design/dashboard-2.md`, which supersedes `dashboard.md` 2-5 and 7-9;
+  pre-walk `ux-review-dashboard-3-pre.md`): `views/DashboardView.tsx` (store View id stays 'projects') is the page
+  scroll; `.dashboard-grid` is the `dash` container; the work area `.dash-work` is one track in DOM order (needs, now,
+  strip, setup, paused, ended) and from 880 px two tracks with the band spanning the right column; with no open run
+  (`data-now-empty`) the strip moves under the band at `data-size=tall`. Two-track rows carry no row gap (areas below the
+  first space themselves with a top margin), so an empty region leaves no hole. Caps narrow / wide (1280 px,
+  `dashCaps.ts` through a ResizeObserver): Needs 3/5, band runs 3/5, agent rows 6/12 (4/6 per run), To set up 3/5,
+  Paused / Recently ended 4/6, each with "Show N more". Regions: status bar `dashboard-hero` (`HeroBand.tsx`:
+  `dash-status-line[data-working|open|paused]` from `lib/dashboard.ts` `statusSentence`, `dash-limits` / `dash-limit`
+  hidden under the mock adapter and for API keys, `dashboard-app-facts`, the page's one polite region `dashboard-live`
+  with the 1.5 s join; 36 px at 1024x640, 40 px at 1600x1000, at most 72); Needs you `dash-needs-you` (count = the bell;
+  rows `dash-needs-row[data-kind][data-run][data-key][data-inline=allow|options|none]`, `NeedsInline.tsx`, pure
+  `lib/needsInline.ts`); Right now `dash-now[data-working|waiting|idle]` (`RightNowBand.tsx` / `BandRun.tsx`, pure
+  `lib/dashboardBand.ts` `bandModel`, snapshot recomputed at most every 250 ms in `useDashboardData.ts`
+  `useBandSnapshot`; `dash-now-counts`, `dash-now-project[data-project]`, run header `dash-running-row[data-status]
+  [data-needs]`, `dash-agent-row[data-state][data-agent][data-depth]`, `dash-agent-more`, `dash-agent-done[data-count]`,
+  `dash-now-more`, `dash-now-empty`; working marks `.dash-mark[data-breathe]` breathe, off under both reduced-motion
+  switches; Enter on an agent row opens Live with that node selected and focused, `lib/agentActivity.ts` shared with
+  AgentNode); Last 14 days `dash-strip[data-size]` (`ActivityStrip.tsx`, pure `lib/activityStrip.ts` `dayLedger`, local
+  days, 14 `dash-strip-day` buttons as one roving Tab stop, `dash-strip-readout`, totals `dash-strip-runs`, `dash-cost`
+  (compact, unknown never $0), `dash-strip-waiting` only from 1 s); To set up `dash-setup` (`SetupGaps.tsx`, pure
+  `lib/setupGaps.ts`; `dash-setup-row[data-kind]`, `dash-setup-action`; names and labels only, never a secret value;
+  `connectionsNeeded`: mock-provider projects use no connection and under the mock adapter the default connection does
+  not count, else a machine with no Claude login showed "Anthropic is not connected"); Paused `dash-paused` and
+  Recently ended `dash-since` (`AttentionColumn.tsx`; a run the user ended in this window is left out, `dash-since-clear`
+  "Clear"); Projects `dash-projects` with `project-tile[data-name][data-id][data-state]` (`ProjectTile.tsx`: `tile-client`,
+  `tile-run[data-status]`, `tile-chips` / `tile-chip[data-kind=branches|suggestions|folder-trust]`, `tile-folder`,
+  `tile-cost` only when something was spent, menu `project-tile-new-run` / `-continue` / `-open-folder` (`app.openPath`
+  on the project's own path only) / `-delete`). Inline answers: Allow once sends only `{ behavior: 'allow', scope: 'once' }`
+  and Deny only the card's deny message (`decideIn` / `answerQuestionIn` in the store take the run id), never session or
+  project scope, rules or the settings link, whatever `suggestions`, `maxScope` or `referenceFolder` say. Inline Allow is
+  offered only when what it approves is shown whole on the row and in the buttons' names: a shell command with no hidden
+  characters, one step per line, at most 2 lines and 200 chars and no runs of spaces or tabs (unclamped); a file tool
+  whose `permissionLocation` (the card's helper) is the project, a worktree, an allowed or a reference folder, with the
+  full path and the location line `dash-needs-where`; WebFetch / WebSearch with the URL or query (at most 200); never MCP,
+  Agent or unknown tools. A question gets one-click options only for single choice, 2-4 options of at most 40 chars
+  without descriptions. A sent answer locks the row (aria-disabled, focus kept) until its `*.resolved` event removes it;
+  failures show `dash-needs-error`. Per-project signals: `useProjectSignals.ts` over `projectQueue.ts` (listWorktrees,
+  seedTeamReview, `mcp.list`): at most 3 in flight, after first paint on mount only, never on a timer or run event, a
+  session cache (team reviews once, worktrees and `mcp.list` again after 10 min), failures cached as null, a project
+  deleted while queued is skipped. Checked by unit tests (needsInline, dashboardBand, activityStrip, setupGaps,
+  dashboard, agentActivity, projectQueue, useProjectSignals, cost), e2e `e2e/dashboard.mjs` (mock: inline Allow once,
+  no wider scope on the page, band rows and folding, data-needs, strip, no false chips, no To set up or Limits under the
+  mock, reduced motion, both sizes and themes, relaunch Recently ended) and by eye on mock data (1024x640 rail and
+  1600x1000, dark and light: deep-tree live, permission waiting, ended, paused, an engagement, empty band after a
+  relaunch). Reviewer: three Highs in the inline Allow path (clamped command, file without location, MCP args unseen)
+  fixed with M1-M3. Open: the spec's band order (working before waiting) can put the waiting run behind "Show 1 more
+  run" at 1024x640; with a tall band the left column can end 250 px above it at 1600x1000; the tile repeats "Ended when
+  OrgAI closed" in its status line and newest run; tall strip about 240 px (spec about 190); review L3 (focus when a
+  section's last row leaves), L7 (`decideIn` takes any decision); not driven: real plan windows, proxy spend, chips,
+  To set up rows, question options, a screen reader, macOS. Not built (need contracts): dashboard-2.md section 18.
 
 - Engagement kind (renderer, phase 1; `docs/design/engagement.md`, walk `docs/design/ux-review-engagement.md`): the New project form opens with the `project-kind` fieldset (`project-kind-option[data-kind=code|engagement]`, native radios, none chosen on first launch, last kind in localStorage `orgai.lastProjectKind`, initial focus on the checked radio) and swaps fields per kind (engagement: `new-project-client`, "Working folder", `new-project-ref-*`, `architect-setup` "Start with the setup interview (recommended)", "Create and start interview"). Settings: `project-kind-line`, `project-client-input`, `reference-folder-*` above `allowed-folder-*` (move with `reference-folder-allow-changes` / `allowed-folder-make-readonly`), `maintenance-engagement-line` (no "Remove OrgAI files"). Cards: `perm-location[data-kind=reference]`, "Approve engagement plan", Needs-you rows say "Engagement plan" (`proposalKindLabel`, `waitingItems(run, projectKind)`; the DecisionTray chip in LiveRunView still says "Architecture"). Grouping (`lib/clientGroups.ts`): sidebar `nav-client-group[data-client]` with two or more distinct clients or whenever engagements and code projects are both listed (no client names at all: the group is "Engagements"; engagement rows carry `data-kind=engagement`, a Briefcase `nav-kind-mark` in the list and "<name> · Engagement" in the rail tooltip and name) (collapse in `orgai.sidebarClientGroups`), `nav-client-code-label`, rail `hr.nav-client-divider`, `tile-client`, `project-client`. e2e/engagement.mjs (in e2e:free) drives the form, creation, settings, reference card, Maintenance, grouping, tile and topbar at both sizes and themes; the architecture card, reference `perm-location`, the extras-save failure and `NewRunPage` copy are unit-tested or unseen only.
 - Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.

@@ -1,9 +1,12 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, CircleAlert, FileDiff, GitMerge, ListChecks, Lock, MessageCircleQuestion, Plug, ShieldQuestion, Users, type LucideIcon } from 'lucide-react'
-import type { PermissionRequest, UserQuestion } from '@shared/types'
+import type { PermissionRequest, Project, UserQuestion } from '@shared/types'
 import { useAppStore, type RunState } from '../../store/useAppStore'
 import { agentLabel } from '../../lib/agentTree'
+import { oneLine } from '../../lib/decisionTitle'
+import { showHidden } from '../../lib/hiddenChars'
+import { permissionLocation, referenceLocation, type PermissionLocation } from '../../lib/permissionCopy'
 import { cleanIpcError } from '../../lib/ipcError'
 import type { WaitingItem, WaitingKind } from '../../lib/needsYou'
 import {
@@ -64,36 +67,60 @@ interface RowModel {
   /** The ask as text, for names and announcements. */
   askText: string
   reference?: string
+  /** The PermissionCard's location line ("In the project", "Outside the project: ..."). */
+  where?: string
+  whereAttention?: boolean
   note?: string
   /** The announcement label ("Allow: Run npm test"). */
   label: string
 }
 
-function permissionRow(item: RunNeedsItem, request: PermissionRequest): RowModel {
-  const agent = item.run.agents[request.agentId]
-  const ask = permissionAsk(request, agent ? agentLabel(agent) : 'An agent')
-  const mode = permissionInlineMode(request)
+/** Where the request works, as the PermissionCard says it (the card's own helper, same context). */
+function locationOf(request: PermissionRequest, run: RunState, project: Project | undefined): PermissionLocation | null {
   const reference = typeof request.referenceFolder === 'string' && request.referenceFolder.trim() ? request.referenceFolder : undefined
+  if (reference) return referenceLocation(reference)
+  if (!project) return null
+  const agentCwd = run.agents[request.agentId]?.worktree?.path
+  return permissionLocation(request.toolName, request.input, { projectPath: project.path, allowedDirectories: project.allowedDirectories, referenceDirectories: project.referenceDirectories, agentCwd })
+}
+
+function permissionRow(item: RunNeedsItem, request: PermissionRequest, project: Project | undefined): RowModel {
+  const agent = item.run.agents[request.agentId]
+  const location = locationOf(request, item.run, project)
+  const mode = permissionInlineMode(request, location?.kind ?? null)
+  const ask = permissionAsk(request, agent ? agentLabel(agent) : 'An agent', mode === 'allow')
+  const reference = typeof request.referenceFolder === 'string' && request.referenceFolder.trim() ? request.referenceFolder : undefined
+  // The reference line already names the folder; other locations get the card's one line.
+  const where = !reference && location ? location.label : undefined
   return {
     mode,
-    askText: ask.text,
+    askText: where ? `${ask.text}, ${where}` : ask.text,
     reference,
+    where,
+    whereAttention: !!location?.attention,
     note: ask.long ? LONG_COMMAND_NOTE : undefined,
     label: item.label,
     ask: (
       <>
         <span className="dash-needs-lead">{ask.lead}</span>
         {ask.kind === 'shell' ? (
-          <code className="dash-needs-code" data-clamp="2">
+          // Whole when it can be allowed here (short by construction); clamped only when the card is the way to answer.
+          <code className="dash-needs-code" data-clamp={mode === 'allow' ? undefined : '2'}>
             {ask.object}
           </code>
         ) : ask.kind === 'file' ? (
           <span className="dash-needs-file" title={ask.full}>
             <span className="dash-needs-filename">{ask.object}</span>
-            {ask.folder && <span className="dash-needs-folder"> {ask.folder}</span>}
+            {ask.folder && (
+              <bdi className="dash-needs-folder" dir="ltr">
+                {ask.folder}
+              </bdi>
+            )}
           </span>
         ) : (
-          <span className="dash-needs-object">{ask.object}</span>
+          <span className="dash-needs-object" data-whole={mode === 'allow' ? '' : undefined}>
+            {ask.object}
+          </span>
         )}
       </>
     )
@@ -116,10 +143,10 @@ function questionRow(item: RunNeedsItem, question: UserQuestion): RowModel {
   }
 }
 
-function rowModel(item: NeedsItem): RowModel {
+function rowModel(item: NeedsItem, project: Project | undefined): RowModel {
   if (item.kind === 'permission') {
     const request = item.run.permissions.find((p) => p.id === item.key)
-    if (request) return permissionRow(item, request)
+    if (request) return permissionRow(item, request, project)
   }
   if (item.kind === 'question') {
     const q = item.run.questions.find((x) => x.id === item.key)
@@ -148,37 +175,38 @@ export function NeedsRow({
 }): ReactElement {
   const decideIn = useAppStore((s) => s.decideIn)
   const answerQuestionIn = useAppStore((s) => s.answerQuestionIn)
-  const model = item.kind === 'team' ? ({ mode: 'none', ask: <span className="dash-needs-object">{item.label}</span>, askText: item.label, label: item.label } as RowModel) : rowModel(item)
+  const project = useAppStore((s) => (item.kind === 'team' ? undefined : (s.projects.find((p) => p.id === item.projectId) ?? (s.virtualProjects as Partial<Record<string, Project>>)[item.projectId])))
+  const model = item.kind === 'team' ? ({ mode: 'none', ask: <span className="dash-needs-object">{item.label}</span>, askText: item.label, label: item.label } as RowModel) : rowModel(item, project)
+  // `busy`: the pressed button while a send is in flight. `sent`: the answer reached main; the row waits for its
+  // `*.resolved` event and stays locked until then, so a second press never answers twice (review M1).
   const [busy, setBusy] = useState<string | null>(null)
+  const [sent, setSent] = useState(false)
+  const inFlight = useRef(false)
   const [error, setError] = useState<string | null>(null)
-  const buttons = useRef(new Map<string, HTMLButtonElement>())
   const key = needsItemKey(item)
   const runId = item.runId
+  const locked = !!busy || sent
 
-  const place = runName ? `${projectName}, ${runName}` : projectName
+  const place = runName ? `${projectName}, ${oneLine(showHidden(runName), 120)}` : projectName
   const mainName = openRowName(item.kind, place, model.askText)
 
   const send = async (id: string, act: () => Promise<void>, done: string): Promise<void> => {
-    if (busy) return
+    if (inFlight.current || sent) return
+    inFlight.current = true
     setBusy(id)
     setError(null)
     try {
       await act()
+      setSent(true)
       onAnnounce(done)
     } catch (err) {
       const text = sendFailure(cleanIpcError(err))
       setError(text)
       onAnnounce(text)
-      // The buttons come back; keep the keyboard where it was.
-      requestAnimationFrame(() => buttons.current.get(id)?.focus({ preventScroll: true }))
     } finally {
+      inFlight.current = false
       setBusy(null)
     }
-  }
-
-  const bind = (id: string) => (el: HTMLButtonElement | null) => {
-    if (el) buttons.current.set(id, el)
-    else buttons.current.delete(id)
   }
 
   const permissionId = item.kind === 'permission' ? item.key : null
@@ -202,8 +230,8 @@ export function NeedsRow({
         </span>
         <span className="dash-row-text">
           <span className="dash-needs-place">
-            <span className="dash-needs-project">{projectName}</span>
-            {runName && <span className="dash-needs-run"> · {runName}</span>}
+            <span className="dash-needs-project">{oneLine(showHidden(projectName), 120)}</span>
+            {runName && <span className="dash-needs-run"> · {oneLine(showHidden(runName), 120)}</span>}
             {item.kind === 'team' && <span className="dash-needs-run"> · Team files</span>}
           </span>
           <span className="dash-needs-ask">{model.ask}</span>
@@ -213,18 +241,23 @@ export function NeedsRow({
               {REFERENCE_LINE}
             </span>
           )}
+          {model.where && (
+            <span className="dash-row-cap dash-needs-where" data-testid="dash-needs-where" data-attention={model.whereAttention ? 'true' : undefined}>
+              {model.where}
+            </span>
+          )}
           {model.note && <span className="dash-row-cap">{model.note}</span>}
         </span>
         {model.mode === 'none' && <Icon icon={ChevronRight} size="sm" />}
       </button>
       {model.mode === 'allow' && permissionId && runId && (
         <div className="dash-needs-actions">
+          {/* aria-disabled, not disabled: a pressed button keeps focus while the answer is sent (review M2). */}
           <button
             type="button"
-            ref={bind('allow')}
             className="btn sm"
             data-testid="dash-needs-allow"
-            disabled={!!busy}
+            aria-disabled={locked || undefined}
             aria-label={`Allow once: ${model.askText}`}
             onClick={() => void send('allow', () => decideIn(runId, permissionId, ALLOW_ONCE), allowedAnnouncement(model.label))}
           >
@@ -232,10 +265,9 @@ export function NeedsRow({
           </button>
           <button
             type="button"
-            ref={bind('deny')}
             className="btn ghost sm dash-needs-deny"
             data-testid="dash-needs-deny"
-            disabled={!!busy}
+            aria-disabled={locked || undefined}
             aria-label={`Deny: ${model.askText}`}
             onClick={() => void send('deny', () => decideIn(runId, permissionId, DENY), deniedAnnouncement(model.label))}
           >
@@ -244,16 +276,15 @@ export function NeedsRow({
         </div>
       )}
       {model.mode === 'options' && questionId && runId && question && (
-        <div className="dash-needs-actions" role="group" aria-label="Answer">
+        <div className="dash-needs-actions" role="group" aria-label={`Answer: ${model.askText}`}>
           {question.options.map((o) => (
             <button
               key={o.label}
               type="button"
-              ref={bind(`option:${o.label}`)}
               className="btn sm"
               data-testid="dash-needs-option"
               data-option={o.label}
-              disabled={!!busy}
+              aria-disabled={locked || undefined}
               onClick={() => void send(`option:${o.label}`, () => answerQuestionIn(runId, questionId, optionAnswer(o.label)), answeredAnnouncement(o.label))}
             >
               {busy === `option:${o.label}` ? 'Sending…' : o.label}

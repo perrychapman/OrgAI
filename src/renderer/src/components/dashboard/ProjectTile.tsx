@@ -86,7 +86,9 @@ export function ProjectTile({
   const client = projectKindOf(project) === 'engagement' ? clientOf(project) : ''
   const pending = setupPending(project)
   const state = decisions > 0 ? 'decisions' : working ? 'live' : 'quiet'
-  const costShown = !costView(weekCost).empty
+  // Only when something was spent (spec 10.1): a reported $0 shows nothing; an unknown cost says so (review L4).
+  const weekView = costView(weekCost)
+  const costShown = !weekView.empty && !(weekView.kind === 'known' && weekCost.costUsd === 0)
 
   const openFolder = (): void => {
     setError(null)
@@ -239,7 +241,7 @@ export function ProjectTile({
         </span>
         {costShown && (
           <span className="project-tile-cost" data-testid="tile-cost">
-            <Cost value={weekCost} compact /> <span className="project-tile-cost-unit">last 7 days</span>
+            <Cost value={weekCost} compact labelled /> <span className="project-tile-cost-unit">last 7 days</span>
           </span>
         )}
       </p>

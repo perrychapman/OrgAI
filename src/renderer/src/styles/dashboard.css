@@ -295,7 +295,12 @@
   font-size: var(--text-caption);
   color: var(--text-secondary);
 }
-.dash-needs-code,
+/* Clamped only when the row cannot be allowed here: a command that can be allowed is shown whole (review H1). */
+.dash-needs-code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.dash-needs-code[data-clamp],
 .dash-needs-question {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -314,11 +319,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* What an inline Allow approves (a URL or query) is shown whole. */
+.dash-needs-object[data-whole] {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
 .dash-needs-file {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--space-1);
+  column-gap: var(--space-1);
   min-width: 0;
+}
+/* The file name and the location line wrap whole: they say what Allow once approves (re-check Lows). */
+.dash-needs-row .dash-needs-filename,
+.dash-needs-row .dash-needs-where {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+.dash-needs-where[data-attention] {
+  color: var(--warning-text);
 }
 .dash-needs-filename {
   flex: none;
@@ -328,15 +352,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The whole folder, left to right, wrapping (review H2: an rtl start-ellipsis cut the root and moved slashes). */
 .dash-needs-folder {
   min-width: 0;
   font-size: var(--text-caption);
   color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
 }
 .dash-needs-reference {
   display: flex;
