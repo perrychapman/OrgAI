@@ -178,6 +178,9 @@ export function Composer(props: ComposerProps) {
     propsRef.current.onRows?.(rowCount)
   })
 
+  // The slash palette has its own query line: the composer keeps its draft and its rows, but draws no second input line (R2-L7).
+  if (props.hidden) return <Box width={props.width} height={rowCount} />
+
   if (buffer.text === '') {
     const placeholder = sanitizeTty(props.placeholder ?? '').replace(/\n/g, ' ')
     return (

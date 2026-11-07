@@ -109,7 +109,10 @@ const CARD_KINDS = Object.keys(CARD_BUCKETS) as CardKind[]
 function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
   const out: TrayCard[] = []
   const projectKind = s.project && run.summary.projectId === s.project.id ? (s.project.kind === 'engagement' ? 'engagement' : 'code') : undefined
-  const tag = runTagOf(s, run.summary.id)
+  // A card of a run the user is not following names that run ("R3 Build the report"), so it is not mistaken for the followed one (R2-L2).
+  const foreign = !s.activeChain.includes(run.summary.id)
+  const name = foreign ? clipLine(safeLine(runName(run.summary)), 24) : ''
+  const tag = `${runTagOf(s, run.summary.id)}${name ? ` ${name}` : ''}`
   for (const kind of CARD_KINDS) {
     const list = run.cards[CARD_BUCKETS[kind]] as { id: string; revision?: number }[]
     for (const card of list ?? []) {
@@ -120,7 +123,9 @@ function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
         key: cardKey(ref),
         ref,
         runTag: tag,
-        ...(agentId ? { agentId, agentLabel: agentLabel(run.agents[agentId]) } : {}),
+        // An agent of another run is not loaded here, so it has no name to give: no label rather than "An agent" (the card's
+        // run is named instead). In the followed run an unknown agent keeps the generic label.
+        ...(agentId ? { agentId, ...(foreign && !run.agents[agentId] ? {} : { agentLabel: agentLabel(run.agents[agentId]) }) } : {}),
         runKind: run.summary.kind,
         ...(projectKind ? { projectKind } : {}),
         arrivedSeq: cardArrivalSeq(card) ?? 0,
@@ -367,7 +372,7 @@ function treeOf(
       role,
       state: a.state,
       stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
-      activity: clipLine(safeLine(a.activity), ACTIVITY_MAX),
+      activity: clipLine(failedTurnSentence(safeLine(a.activity)), ACTIVITY_MAX),
       costText: cost.empty ? '' : cost.text,
       isRoot: a.parentId === null,
       kind: 'agent',
@@ -578,7 +583,7 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
     ...(cost.empty ? {} : { cost: cost.text }),
     ...(u && u.turns > 0 ? { turns: u.turns } : {}),
     ...(u && u.toolCalls > 0 ? { toolCalls: u.toolCalls } : {}),
-    ...(a.activity ? { activity: clipLine(safeLine(a.activity), ACTIVITY_MAX) } : {}),
+    ...(a.activity ? { activity: clipLine(failedTurnSentence(safeLine(a.activity)), ACTIVITY_MAX) } : {}),
     ...(wt
       ? { worktree: { branch: safeLine(wt.branch), status: wt.status, files: Array.isArray(wt.changedFiles) ? wt.changedFiles.length : 0, mergeTarget: wt.mergeTarget === 'parent' ? ('parent' as const) : ('main' as const) } }
       : {}),

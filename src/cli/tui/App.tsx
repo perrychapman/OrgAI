@@ -13,7 +13,7 @@ import { isOpenStatus } from '../../shared/view/runChains'
 import { statusOfRun, statusText } from '../../shared/view/runStatus'
 import { Composer } from './Composer'
 import { InputBus, InputBusContext, TuiEnvContext } from './context'
-import { DecisionTray } from './DecisionTray'
+import { DecisionTray, GUARD_ARRIVED_NOTICE, GUARD_SWAPPED_NOTICE } from './DecisionTray'
 import { cardDetailLines } from './decisions'
 import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
@@ -54,7 +54,7 @@ import type {
   TuiSessionApi,
   TuiState
 } from './types'
-import { ESC_INTERRUPT_MS, TUI_TRAFFIC_MS } from './types'
+import { ESC_INTERRUPT_MS, TUI_TRAFFIC_MS, type TuiNotice } from './types'
 import { WorktreesPane } from './WorktreesPane'
 
 /** 128 + SIGINT: a stopOnQuit session that was quit (types.ts EXIT.sigint; not imported to keep this file pure TUI). */
@@ -68,7 +68,8 @@ export const COMPOSER_ROWS = 3
 export const PANE_ORDER: readonly PaneId[] = ['tree', 'transcript', 'plan', 'worktrees']
 
 export const NOTHING_NEEDS_YOU = 'Nothing needs you'
-export const PRESS_AGAIN = 'Press Ctrl+C again to quit'
+export const KEY_DROPPED_NOTICE = 'Press the key again.'
+export const PRESS_AGAIN ='Press Ctrl+C again to quit'
 /** The Ctrl+C notice of a stopOnQuit session (orgai init and the assistants). */
 export const PRESS_AGAIN_STOP = 'Press Ctrl+C again to stop the session and quit'
 /** stopOnQuit: how long quitting waits for the stopped run's status before it exits anyway. */
@@ -344,6 +345,16 @@ export function App(props: AppProps) {
   const label = launch.title ?? 'The run'
 
   const notify = useCallback((text: string, tone?: Parameters<TuiSessionApi['notify']>[1]) => session.notify(text, tone), [session])
+  // A notice that was about a state the user has left (another run followed, the prompt sent) stops showing at once
+  // (R2-L1, L8). Kept as the notice object, so a session switch that restarts notice ids cannot hide a new one.
+  const [dismissedNotice, setDismissedNotice] = useState<TuiNotice | undefined>(undefined)
+  const dismissNotices = useCallback(() => setDismissedNotice(session.getState().notices.at(-1)), [session])
+  const lastActiveRun = useRef(state.activeRunId)
+  useEffect(() => {
+    const was = lastActiveRun.current
+    lastActiveRun.current = state.activeRunId
+    if (was !== undefined && state.activeRunId !== was) dismissNotices()
+  }, [state.activeRunId, dismissNotices])
 
   const cards = trayCards(state)
   const top = topCard(state)
@@ -354,7 +365,7 @@ export function App(props: AppProps) {
   const mode: ComposerMode = readOnly ? 'readOnly' : quickEdits !== undefined && !state.project && !state.activeRunId ? 'quick' : composerMode(state)
 
   const focusedCard = trayFocusKey ? (cards.find((c) => c.key === trayFocusKey) ?? cards[0]) : cards[0]
-  const trayRows = trayHeight(focusedCard ? [focusedCard, ...cards.filter((c) => c !== focusedCard)] : cards, size.cols, size.rows, inline)
+  const trayRows = trayHeight(focusedCard ? [focusedCard, ...cards.filter((c) => c !== focusedCard)] : cards, size.cols, size.rows, inline, focus === 'tray')
 
   // Plan and Worktrees appear on their own only when something needs them.
   const planData = planView(state)
@@ -465,7 +476,7 @@ export function App(props: AppProps) {
       // the card, so they never act on it, and the card-swap guard has not seen them: drop the printable ones and keep
       // navigation and Esc. With no card left (it was answered meanwhile) nothing is replayed (never turned into text).
       const keep = cards.length === 0 ? [] : queued.filter((e) => !(e.type === 'key' && ((e.name === 'char' && !e.ctrl && !e.alt) || e.name === 'enter')))
-      if (keep.length < queued.length && cards.length > 0) notify('Press the key again.', 'dim')
+      if (keep.length < queued.length && cards.length > 0) notify(KEY_DROPPED_NOTICE, 'dim')
       queued = keep
     }
     for (const e of queued) dispatchRef.current(e)
@@ -605,7 +616,12 @@ export function App(props: AppProps) {
       } catch (e) {
         notify(`Could not open the pager: ${errText(e)}`, 'warn')
       }
-      if (shown === 'no-pager') setOverlay({ kind: 'text', title: sanitizeTty(title), lines: [...sanitizeTty(text).split('\n'), '', PAGER_HINT], offset: 0 })
+      if (shown === 'no-pager') {
+        // The overlay has its own title row: a text that opens with the same title and a blank line (a card's full view) does not repeat it (R2-L3).
+        const lead = `${title}\n\n`
+        const body = text.startsWith(lead) ? text.slice(lead.length) : text
+        setOverlay({ kind: 'text', title: sanitizeTty(title), lines: [...sanitizeTty(body).split('\n'), '', PAGER_HINT], offset: 0 })
+      }
     },
     [processEnv, terminal, notify]
   )
@@ -629,6 +645,8 @@ export function App(props: AppProps) {
 
   const submit = useCallback(
     (text: string) => {
+      // "Type the prompt for the new run." and the like are answered by sending.
+      dismissNotices()
       if (mode === 'quick' && quickEdits !== undefined) {
         session
           .startQuick({ prompt: text, allowEdits: quickEdits, ...(launch.team ? { team: launch.team } : {}) })
@@ -638,7 +656,7 @@ export function App(props: AppProps) {
       }
       session.submitPrompt(text).catch((e: unknown) => notify(errText(e), 'danger'))
     },
-    [mode, quickEdits, session, launch.team, notify]
+    [mode, quickEdits, session, launch.team, notify, dismissNotices]
   )
 
   const chooseOnboarding = useCallback(
@@ -1063,7 +1081,8 @@ export function App(props: AppProps) {
         return
       }
       lastCtrlC.current = t
-      notify(launch.stopOnQuit ? PRESS_AGAIN_STOP : PRESS_AGAIN)
+      // 'warn': a danger / warn notice keeps its place on a narrow bar (R2-M1).
+      notify(launch.stopOnQuit ? PRESS_AGAIN_STOP : PRESS_AGAIN, 'warn')
       return
     }
     if (ctrl(e, 'd')) {
@@ -1110,7 +1129,8 @@ export function App(props: AppProps) {
   const transcript = transcriptRows(state, zoomFilter)
   // The footer shows the focused card (the inspector's `d` and Enter on a waiting row move it), so that is the one printed.
   const { rows: scrollback, printed: printedCards } = useScrollback(inline, transcript.rows, focusedCard, size.cols)
-  const notice = state.notices.at(-1)
+  const latestNotice = state.notices.at(-1)
+  const notice = latestNotice === dismissedNotice ? undefined : latestNotice
   const hintRow: RowKind = focus === 'inspector' ? (inspectorView?.waiting ? 'waiting' : inspectorView?.worktree ? 'agent' : 'bare') : rowKind
   const hints = hintsFor(focus, readOnly, launch.stopOnQuit === true, hintRow, env)
   const dimStyle = styleFor({ tone: 'dim' }, env)
@@ -1219,7 +1239,13 @@ export function App(props: AppProps) {
         }}
         now={now}
         onHelp={() => openKeys('tray')}
-        onNotice={(text, tone) => notify(text, tone)}
+        onNotice={(text, tone) => {
+          // The drop notice ("Press the key again.") already told the user what happened to a key sent with Alt+D; the
+          // swap guard's sentence about the same moment must not replace it (R2-L6).
+          const last = session.getState().notices.at(-1)
+          if ((text === GUARD_ARRIVED_NOTICE || text === GUARD_SWAPPED_NOTICE) && last?.text === KEY_DROPPED_NOTICE && now() - last.at < 2000) return
+          notify(text, tone)
+        }}
         {...(trayFocusKey ? { focusKey: trayFocusKey } : {})}
         {...(inline ? { printed: printedCards } : {})}
       />
@@ -1229,6 +1255,7 @@ export function App(props: AppProps) {
     <Composer
       width={plan.composer.width || size.cols}
       focused={focus === 'composer'}
+      hidden={focus === 'palette'}
       mode={mode}
       placeholder={placeholderFor(mode, state, plan.composer.width || size.cols, env)}
       {...(state.readOnlyReason ? { disabledReason: state.readOnlyReason } : {})}

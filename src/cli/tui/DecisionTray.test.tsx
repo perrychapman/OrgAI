@@ -385,12 +385,24 @@ describe('DecisionTray: outcomes and variants', () => {
     h.unmount()
   })
 
-  it('footer variant is one line with the title and hints', async () => {
-    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer' })
+  it('footer variant with one row is one line with the title and hints', async () => {
+    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer', height: 1 })
     const lines = h.frame().split('\n')
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain('R1 Run npm test a')
     expect(lines[0]).toContain('y Allow once')
+    h.unmount()
+  })
+
+  it('R2-M2: footer variant with more rows keeps the title on one line and wraps the keys below it at separators', async () => {
+    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer', height: 4, width: 60 })
+    const lines = h.frame().split('\n')
+    expect(lines.length).toBeGreaterThanOrEqual(2)
+    expect(lines[0]).toContain('R1 Run npm test a')
+    expect(lines[0]).not.toContain('y Allow once')
+    const keys = lines.slice(1).join(' ')
+    for (const k of ['y Allow once', 'v Full view', 'Esc Back', '? Keys']) expect(keys).toContain(k)
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
     h.unmount()
   })
 

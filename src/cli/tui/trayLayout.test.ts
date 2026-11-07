@@ -10,10 +10,12 @@ function card(id: string, command: string): TrayCard {
 }
 
 describe('trayHeight', () => {
-  it('no cards: 1 row full, 0 inline; inline with cards is 3', () => {
+  it('no cards: 1 row full, 0 inline; inline with cards is the title line plus the wrapped key rows (1 when unfocused)', () => {
     expect(trayHeight([], 100, 40, false)).toBe(1)
     expect(trayHeight([], 100, 40, true)).toBe(0)
-    expect(trayHeight([card('a', 'ls')], 100, 40, true)).toBe(3)
+    expect(trayHeight([card('a', 'ls')], 30, 40, true)).toBe(4)
+    expect(trayHeight([card('a', 'ls')], 200, 40, true)).toBe(2)
+    expect(trayHeight([card('a', 'ls')], 100, 40, true, false)).toBe(1)
   })
 
   it('at least 5, even for a one-line card', () => {

@@ -12,7 +12,7 @@ import { App, overlayCue, placeholderFor, wrapOverlayLines } from './App'
 import { DEFAULT_TUI_ENV } from './context'
 import { KeyParser } from './input/keys'
 import { textWidth } from './panes/text'
-import { applyEvent, applyRecord, createInitialState, setActiveRun } from './state'
+import { addNotice, applyEvent, applyRecord, createInitialState, setActiveRun } from './state'
 import type { InputEvent, KeyEvent, TuiEnv, TuiLaunch, TuiState } from './types'
 
 const key = (ch: string, extra: Partial<KeyEvent> = {}): InputEvent => ({ type: 'key', name: 'char', ch, ctrl: false, alt: false, shift: false, raw: ch, ...extra })
@@ -40,11 +40,18 @@ afterEach(() => {
 })
 
 function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; state?: TuiState; launch?: TuiLaunch; now?: () => number }) {
-  const state = opts.state ?? stateWith()
+  let state = opts.state ?? stateWith()
   const listeners = new Set<(e: InputEvent) => void>()
+  // A live store: notify() adds a notice and tells subscribers, so notice lifetimes can be watched in frames.
+  const subs = new Set<() => void>()
+  const setState = (next: TuiState): void => {
+    state = next
+    for (const f of [...subs]) f()
+  }
   const session = {
     getState: () => state,
-    subscribe: () => () => undefined,
+    setState,
+    subscribe: (cb: () => void) => (subs.add(cb), () => void subs.delete(cb)),
     hostKind: 'daemon',
     hostInstanceId: 'h1',
     focusRun: vi.fn(async () => undefined),
@@ -59,7 +66,7 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
     startRetro: vi.fn(),
     openInDesktop: vi.fn(),
     resync: vi.fn(async () => undefined),
-    notify: vi.fn(),
+    notify: vi.fn((text: string, tone?: 'dim' | 'warn' | 'danger') => setState(addNotice(state, text, tone, (opts.now ?? (() => 1_000_000))()))),
     close: vi.fn(async () => undefined)
   }
   const terminal = {
@@ -190,6 +197,34 @@ describe('inline footer: the card body is printed before its keys unlock (review
     const m = mount({ cols: 100, rows: 30, inline: true, state: withCommand('npm test'), now: () => clock.t })
     await tick()
     expect(m.frame()).toContain('Command: npm test')
+    clock.t += 5000
+    await m.send(key('d', { alt: true }))
+    await m.send(key('y'))
+    expect(m.session.decide).toHaveBeenCalledTimes(1)
+  })
+
+  for (const [cols, rows] of [
+    [80, 24],
+    [120, 40]
+  ] as const) {
+    it(`R2-M2 ${cols}x${rows}: the focused footer shows every key (n, v, Esc, ?) on rows of their own`, async () => {
+      const clock = { t: 1_000_000 }
+      const m = mount({ cols, rows, inline: true, state: withCommand('npm test'), now: () => clock.t })
+      await tick()
+      clock.t += 5000
+      await m.send(key('d', { alt: true }))
+      const f = m.frame()
+      for (const k of ['y Allow once', 'n Deny (note)', 'v Full view', 'Esc Back', '? Keys']) expect(f).toContain(k)
+      expect(f).not.toContain('Alwa…')
+    })
+  }
+
+  it('R2-M2: a long (not cut) command is printed in full, and only then does y answer', async () => {
+    const clock = { t: 1_000_000 }
+    const cmd = 'echo ' + Array.from({ length: 40 }, (_, i) => `part${i}`).join(' ') + ' TAIL_MARK'
+    const m = mount({ cols: 70, rows: 24, inline: true, state: withCommand(cmd), now: () => clock.t })
+    await tick()
+    expect(m.frame()).toContain('TAIL_MARK')
     clock.t += 5000
     await m.send(key('d', { alt: true }))
     await m.send(key('y'))
@@ -339,5 +374,108 @@ describe('the shell at four sizes', () => {
     await m.send(key('?'))
     expect(m.frame()).toContain('Keys: Composer')
     expect(m.frame()).not.toMatch(/[┌┐└┘│─·]/)
+  })
+})
+
+describe('re-walk fixes (R2, issue #25 and #26 follow-ups)', () => {
+  const NOTICE_TEXT = 'Opened R1: it needs you. /new starts a new run.'
+
+  it('R2-M1: the first Ctrl+C shows its notice at 70x24 (and at 120x40)', async () => {
+    for (const [cols, rows] of [
+      [70, 24],
+      [120, 40]
+    ] as const) {
+      const m = mount({ cols, rows, state: stateWith({ waiting: true, second: true }) })
+      await tick()
+      await m.send(key('c', { ctrl: true }))
+      expect(m.frame(), `${cols}x${rows}`).toContain('Press Ctrl+C again to quit')
+    }
+  })
+
+  it('R2-L1: a notice about the run that was open stops showing when another run is followed', async () => {
+    const m = mount({ cols: 100, rows: 30, state: stateWith({ second: true }) })
+    await tick()
+    m.session.notify(NOTICE_TEXT)
+    await tick()
+    expect(m.frame()).toContain(NOTICE_TEXT)
+    m.session.setState(setActiveRun(m.session.getState(), 'run2'))
+    await tick()
+    await tick()
+    expect(m.frame()).not.toContain(NOTICE_TEXT)
+    // A notice that comes after the switch shows.
+    m.session.notify('Interrupting the run...', 'warn')
+    await tick()
+    expect(m.frame()).toContain('Interrupting the run...')
+  })
+
+  it('R2-L8: "Type the prompt for the new run." goes away once the prompt is sent', async () => {
+    const m = mount({ cols: 100, rows: 30 })
+    await tick()
+    m.session.notify('Type the prompt for the new run.')
+    await tick()
+    expect(m.frame()).toContain('Type the prompt for the new run.')
+    await m.send(key('h'), key('i'), named('enter'))
+    expect(m.session.submitPrompt).toHaveBeenCalledWith('hi')
+    expect(m.frame()).not.toContain('Type the prompt for the new run.')
+  })
+
+  it('R2-L7: with the palette open the composer draws no second input line', async () => {
+    const m = mount({ cols: 100, rows: 30 })
+    await tick()
+    expect(m.frame()).toContain('Message R1')
+    await m.send(key('/'))
+    const f = m.frame()
+    expect(f).toContain('/help')
+    expect(f).not.toContain('Message R1')
+    // Esc brings the composer back with its placeholder.
+    await m.send(named('escape'))
+    expect(m.frame()).toContain('Message R1')
+  })
+
+  it('R2-L6: a key that came with Alt+D is dropped with "Press the key again.", and the swap guard does not overwrite that', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 100, rows: 30, state: stateWith({ waiting: true }), now: () => clock.t })
+    await tick()
+    clock.t += 100
+    m.emit(key('d', { alt: true }), key('y'))
+    await tick()
+    await tick()
+    expect(m.frame()).toContain('Press the key again.')
+    expect(m.session.decide).not.toHaveBeenCalled()
+    // y again inside the guard window: still no decision, and the dropped-key notice keeps the line.
+    await m.send(key('y'))
+    expect(m.session.decide).not.toHaveBeenCalled()
+    expect(m.frame()).toContain('Press the key again.')
+    expect(m.frame()).not.toContain('card just changed')
+  })
+
+  it('R2-L6: outside that moment the guard names what happened (arrived, not "changed")', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 100, rows: 30, state: stateWith({ waiting: true }), now: () => clock.t })
+    await tick()
+    await m.send(key('d', { alt: true }))
+    clock.t += 100
+    await m.send(key('y'))
+    expect(m.frame()).toContain('This card only just arrived')
+    expect(m.session.decide).not.toHaveBeenCalled()
+  })
+
+  it('R2-L3: the full view opens with its own title once and a long first line is wrapped, not cut', async () => {
+    const summaryLine = 'Run: cd C:\\Users\\someone\\walk\\.claude\\worktrees\\agent-abcdef0123456789 && npm test -- --reporter=verbose --run'
+    const request = { id: 'p9', runId: 'run1', agentId: 'root', toolName: 'Bash', input: { command: 'npm test' }, summary: summaryLine } as PermissionRequest
+    const state = applyEvent(stateWith(), { seq: ++seq, event: { type: 'permission.request', runId: 'run1', request } as RunEvent })
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 70, rows: 24, state, now: () => clock.t })
+    await tick()
+    clock.t += 5000
+    await m.send(key('d', { alt: true }))
+    await m.send(key('v'))
+    await tick()
+    const f = m.frame()
+    // The tray's own head also names the card; the overlay's title row (a line holding only the title) must appear once.
+    expect(f.split('\n').filter((l) => /^[│ ]*Run npm test[│ ]*$/.test(l)).length).toBe(1)
+    const joined = f.replace(/[│\n ]+/g, '')
+    expect(joined).toContain(summaryLine.replace(/ /g, '').slice(0, 100))
+    expect(joined).toContain(summaryLine.replace(/ /g, '').slice(-24))
   })
 })

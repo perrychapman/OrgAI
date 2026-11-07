@@ -612,6 +612,8 @@ export interface ComposerProps {
   mode: ComposerMode
   placeholder: string
   disabledReason?: string
+  /** The slash palette is open and shows the one input line: keep the rows, draw nothing. */
+  hidden?: boolean
   onSubmit(text: string): void
   onOpenPalette(initial: string): void
   onLeave(): void
