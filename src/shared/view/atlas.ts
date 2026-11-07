@@ -1117,7 +1117,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   // ----- Application menu -----
   {
     id: 'menu-file',
-    label: 'File menu',
+    label: 'File',
     path: ['Menu', 'File'],
     kind: 'menu',
     scope: 'app',
@@ -1126,7 +1126,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'menu-view',
-    label: 'View menu',
+    label: 'View',
     path: ['Menu', 'View'],
     kind: 'menu',
     scope: 'app',
@@ -1135,7 +1135,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'menu-run',
-    label: 'Run menu',
+    label: 'Run',
     path: ['Menu', 'Run'],
     kind: 'menu',
     scope: 'app',
@@ -1144,7 +1144,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'menu-help',
-    label: 'Help menu',
+    label: 'Help',
     path: ['Menu', 'Help'],
     kind: 'menu',
     scope: 'app',
