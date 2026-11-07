@@ -82,6 +82,25 @@ unverified (list what no run confirmed).
   must match the Node engine and CI). Never auto-merge them.
 - `.github/CODEOWNERS` lists the paths that request owner review.
 
+## OrgAI's own team
+
+This repository carries the team that builds it, as files under `.orgai/` (`team.json`, `agents/`, `skills/`,
+`mcp.json`). To run it on another computer:
+
+1. Clone the repository, run `npm ci`, then build and start OrgAI (or use a packaged build).
+2. Choose New project and pick the cloned folder. The "This folder already has a team" panel appears; choose Create
+   project. OrgAI builds the project from the files with the digest the panel shows.
+3. Connect a provider in App settings > Connections.
+4. Sign in where a server needs it. The GitHub connector needs a sign-in. `context7`, `deepwiki`, `exa` and `shadcn` need
+   none. `playwright` is a local server launched with `npx`. A server with a missing secret does not start, and the run
+   warns about it.
+
+Changes you make in the app to roles, prompts, settings, skills and servers are written back to `.orgai/`; commit them.
+The Team tab has a Commit button that commits exactly the team paths and never pushes. Changes that arrive by `git pull`
+show as an approval card in the Team tab: ones that raise power wait for you, prompt edits apply at once. The files never
+carry secrets, ids, positions or absolute paths; sign-ins stay on each computer. Use on two real computers has not been
+verified yet; the feature is covered by tests with two clones of a bare repository.
+
 ## Releases
 
 1. Bump `version` in `package.json` on `dev` to the plain release version (for example `0.1.5`).
