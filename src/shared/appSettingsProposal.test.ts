@@ -1,7 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { APP_SETTINGS_PROPOSABLE_FIELDS } from './types'
+import { APP_SETTINGS_PROPOSABLE_FIELDS, PROJECT_SETTINGS_PROPOSABLE_FIELDS } from './types'
 import { DEFAULT_APP_SETTINGS } from './defaults'
-import { APP_SETTING_FIELD_LABELS, appSettingEnumValues, appSettingValue, appSettingValueProblem, withAppSettingChanges } from './appSettingsProposal'
+import { APP_SETTING_FIELD_LABELS, PROJECT_SETTING_FIELD_LABELS, projectSettingValueText,appSettingEnumValues, appSettingValue, appSettingValueProblem, withAppSettingChanges } from './appSettingsProposal'
+
+describe('project setting labels and values', () => {
+  it('labels every proposable field', () => {
+    for (const f of PROJECT_SETTINGS_PROPOSABLE_FIELDS) expect(PROJECT_SETTING_FIELD_LABELS[f]).toBeTruthy()
+    expect(PROJECT_SETTING_FIELD_LABELS.maxBudgetUsd).toBe('Estimated-cost cap per run')
+  })
+  it('formats values', () => {
+    expect(projectSettingValueText('maxBudgetUsd', 5)).toBe('$5')
+    expect(projectSettingValueText('maxBudgetUsd', 2.5)).toBe('$2.50')
+    expect(projectSettingValueText('maxBudgetUsd', null)).toBe('No cap')
+    expect(projectSettingValueText('autoContinue', true)).toBe('On')
+    expect(projectSettingValueText('reviewMerges', false)).toBe('Off')
+    expect(projectSettingValueText('client', undefined)).toBe('unset')
+    expect(projectSettingValueText('permissionMode', 'auto')).toBe('Unattended')
+    expect(projectSettingValueText('permissionMode', 'weird')).toBe('weird')
+    expect(projectSettingValueText('client', 'x'.repeat(100))).toHaveLength(60)
+  })
+})
 
 describe('appSettingValueProblem', () => {
   it('labels every proposable field', () => {
