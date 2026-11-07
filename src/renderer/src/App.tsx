@@ -31,13 +31,14 @@ import { runTag } from './lib/runLabels'
 import { displayRunName } from './lib/orgChange'
 import { folderName } from './lib/paths'
 import { assistantLabel } from './lib/assistants'
+import OutputsView from './views/OutputsView'
 import ProjectClient from './components/ProjectClient'
 import { FolderTrustPointer } from './components/FolderTrustNotice'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 
-type SectionView = 'run' | 'history' | 'knowledge' | 'team' | 'settings'
-const SECTION_VIEWS: readonly string[] = ['run', 'history', 'knowledge', 'team', 'settings']
+type SectionView = 'run' | 'history' | 'outputs' | 'knowledge' | 'team' | 'settings'
+const SECTION_VIEWS: readonly string[] = ['run', 'history', 'outputs', 'knowledge', 'team', 'settings']
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -130,6 +131,7 @@ export default function App(): ReactElement {
   const sections: TabItem[] = [
     { id: 'run', label: 'Live', testId: 'tab-live' },
     { id: 'history', label: 'History', testId: 'tab-history' },
+    ...(isVirtual ? [] : [{ id: 'outputs', label: 'Outputs', testId: 'tab-outputs' }]),
     ...(hasKnowledge ? [{ id: 'knowledge', label: 'Knowledge', testId: 'tab-knowledge' }] : []),
     ...(isVirtual
       ? []
@@ -184,7 +186,7 @@ export default function App(): ReactElement {
                 )}
                 <Tabs
                   tabs={sections}
-                  value={SECTION_VIEWS.includes(view) && (view !== 'knowledge' || hasKnowledge) ? view : 'run'}
+                  value={SECTION_VIEWS.includes(view) && (view !== 'knowledge' || hasKnowledge) && (view !== 'outputs' || !isVirtual) ? view : 'run'}
                   onChange={(id) => setView(id as SectionView)}
                   label="Project sections"
                   idPrefix="project"
@@ -211,6 +213,8 @@ export default function App(): ReactElement {
               <AppNavigateBanner />
               {view === 'settings' ? (
                 <SettingsView project={project} />
+              ) : view === 'outputs' && !isVirtual ? (
+                <OutputsView key={project.id} project={project} />
               ) : view === 'knowledge' && hasKnowledge ? (
                 <KnowledgeView key={project.id} project={project} />
               ) : view === 'team' ? (
