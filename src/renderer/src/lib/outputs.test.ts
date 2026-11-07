@@ -50,6 +50,7 @@ describe('outputs helpers', () => {
   it('opens every kind but other, deletes only produced files that exist', () => {
     expect(canOpenOutput({ kind: 'image' })).toBe(true)
     expect(canOpenOutput({ kind: 'other' })).toBe(false)
+    expect(canOpenOutput({ kind: 'svg' })).toBe(false)
     expect(canOpenOutput({ kind: 'docx', missing: true })).toBe(false)
     expect(canDeleteOutput({ source: 'produced' })).toBe(true)
     expect(canDeleteOutput({ source: 'registered' })).toBe(false)

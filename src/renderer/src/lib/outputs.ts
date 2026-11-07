@@ -36,9 +36,12 @@ export function outputKindLabel(kind: OutputKind): string {
   return OUTPUT_KIND_LABEL[kind] ?? 'File'
 }
 
-/** Main opens only allowlisted kinds; a registered 'other' file is only revealed or saved. */
+/** Kinds outputs:open refuses ('other' and svg: an SVG would open in a browser that runs its scripts). */
+export const OUTPUT_NOT_OPENABLE: readonly OutputKind[] = ['other', 'svg']
+
+/** Main opens only allowlisted kinds; 'other' and svg files are only shown in their folder or saved. */
 export function canOpenOutput(o: Pick<RunOutput, 'kind' | 'missing'>): boolean {
-  return o.kind !== 'other' && !o.missing
+  return !OUTPUT_NOT_OPENABLE.includes(o.kind) && !o.missing
 }
 
 /** outputs:delete removes only a produced file under the project's outputs folder. */
