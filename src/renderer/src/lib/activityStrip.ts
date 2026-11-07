@@ -191,6 +191,7 @@ export function dayAriaLabel(day: DayBucket): string {
     .map(([w, n]) => `${n} ${w}`)
     .join(', ')
   const cost = costPart(day.cost)
-  const tail = [cost ? `cost ${cost}` : '', waitedShown(day.waitingMs) ? `waited on you ${formatDuration(day.waitingMs)}` : ''].filter(Boolean)
+  // "cost unknown" already says it (walk-3 L1): never "cost cost unknown".
+  const tail = [cost ? (cost === 'cost unknown' ? cost : `cost ${cost}`) : '',waitedShown(day.waitingMs) ? `waited on you ${formatDuration(day.waitingMs)}` : ''].filter(Boolean)
   return `${when}: ${plural(day.runs, 'run', 'runs')} (${detail})${tail.length > 0 ? `, ${tail.join(', ')}` : ''}`
 }

@@ -151,6 +151,10 @@ try {
   const setupKinds = await page.locator('[data-testid=dash-setup] [data-testid=dash-setup-row]').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')))
   check(setupKinds.every((k) => k === 'connection'), 'To set up holds no project, service or connector rows (only connection rows, which depend on the machine)', JSON.stringify(setupKinds))
   check((await page.locator('[data-testid=dash-limits]').count()) === 0, 'Limits are absent under the mock adapter')
+  // Walk-3: the sentence says "Nothing needs you." only when the bell is 0, and Needs you / the band are drawn then.
+  const busyStatus = ((await page.locator('[data-testid=dash-status-line]').innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(!/Nothing needs you/.test(busyStatus), 'the status sentence does not say Nothing needs you while a decision waits', busyStatus)
+  check((await page.locator('.dash-work[data-needs-empty]').count()) === 0 && (await visible('[data-testid=dash-needs-you]')), 'Needs you is drawn while a decision waits')
   // Needs you rows: permission rows offer Allow once and Deny, never a wider scope; the page has no such words.
   const permRow = page.locator('[data-testid=dash-needs-row][data-kind=permission]').first()
   check((await permRow.getAttribute('data-inline')) === 'allow', 'a short permission row offers inline Allow', String(await permRow.getAttribute('data-inline')))
@@ -275,7 +279,18 @@ try {
           hero: hero ? Math.round(hero.height) : null,
           theme: document.documentElement.dataset.theme,
           stripTop: strip ? Math.round(strip.top) : null,
-          needsRows: document.querySelectorAll('[data-testid=dash-needs-row]').length
+          needsRows: document.querySelectorAll('[data-testid=dash-needs-row]').length,
+          regionBottom: Math.round(d.getBoundingClientRect().bottom),
+          barsBottom: Math.round(document.querySelector('[data-testid=dash-strip-day]')?.getBoundingClientRect().bottom ?? 0),
+          firstRunBottom: Math.round(document.querySelector('[data-testid=dash-running-row] .dash-run-head')?.getBoundingClientRect().bottom ?? 0),
+          // Walk-3 M4: how far the band runs below the end of the other column (Needs you, strip, lists).
+          hole: (() => {
+            const now = document.querySelector('[data-testid=dash-now]')
+            if (!now || now.offsetParent === null) return 0
+            let left = 0
+            for (const a of document.querySelectorAll('.dash-work > .dash-area:not(.dash-area-now)')) if (a.offsetParent !== null) left = Math.max(left, a.getBoundingClientRect().bottom)
+            return Math.round(now.getBoundingClientRect().bottom - left)
+          })()
         }
       })
       check(m.theme === theme, `theme is ${theme} ${tag}`)
@@ -285,7 +300,12 @@ try {
         if (m.hero != null) check(m.hero <= 88, `the hero is at most 88 px high ${tag}`, JSON.stringify(m))
         // 17.8 With at most 3 decisions the strip's top is on screen.
         if (m.needsRows <= 3) check(m.stripTop != null && m.stripTop < m.vh, `the strip's top is inside the viewport ${tag}`, JSON.stringify(m))
+        // Walk-3 M6: with up to 3 decisions the strip's bars and the band's first run header are above the fold.
+        if (m.needsRows <= 3) check(m.barsBottom > 0 && m.barsBottom <= m.regionBottom, `the strip's bars are above the fold ${tag}`, JSON.stringify(m))
+        check(m.firstRunBottom > 0 && m.firstRunBottom <= m.regionBottom, `the band's first run header is above the fold ${tag}`, JSON.stringify(m))
       }
+      // Walk-3 M4: no column ends more than 200 px above the band's end while the projects grid follows.
+      check(m.hole <= 200, `the band ends at most 200 px below the other column ${tag}`, JSON.stringify(m))
       check(m.needsRows <= (w >= 1600 ? 5 : 3), `Needs you shows at most its cap of rows ${tag}`, JSON.stringify(m))
       await screenshot(page, `dashboard-${w}x${h}-${theme}`)
     }
@@ -338,6 +358,27 @@ try {
   check((await page.locator('[data-testid=dash-since-clear]').getAttribute('aria-label')) === 'Clear recently ended runs', 'its Clear button is named "Clear recently ended runs"')
   check((await page.locator('[data-testid=dash-since-continue]').count()) >= 1, 'the run that was waiting has Continue')
   await shot('relaunch')
+  // Walk-3 M4 / quiet states: nothing runs and nothing needs you, so neither region is drawn and the strip is tall.
+  const quiet = await page.evaluate(() => {
+    const vis = (sel) => {
+      const el = document.querySelector(sel)
+      return !!el && el.offsetParent !== null
+    }
+    const work = document.querySelector('.dash-work')
+    const strip = document.querySelector('[data-testid=dash-strip]')
+    return {
+      needsEmpty: work?.hasAttribute('data-needs-empty') ?? false,
+      nowEmpty: work?.hasAttribute('data-now-empty') ?? false,
+      needsShown: vis('[data-testid=dash-needs-you]'),
+      nowShown: vis('[data-testid=dash-now]'),
+      size: strip?.getAttribute('data-size') ?? '',
+      stripH: Math.round(strip?.getBoundingClientRect().height ?? 0),
+      status: (document.querySelector('[data-testid=dash-status-line]')?.textContent ?? '').replace(/\s+/g, ' ')
+    }
+  })
+  check(quiet.needsEmpty && quiet.nowEmpty && !quiet.needsShown && !quiet.nowShown, 'with nothing running and no decision, Needs you and Right now are not drawn', JSON.stringify(quiet))
+  check(/ Nothing needs you\.$/.test(quiet.status), 'the status sentence ends with "Nothing needs you."', quiet.status)
+  check(quiet.size === 'tall' && quiet.stripH >= 170 && quiet.stripH <= 200, 'the quiet-day strip is tall and about 190 px high', JSON.stringify(quiet))
 
   // M2: "All quiet" names the runs cut while they waited.
   const hero = ((await page.locator('[data-testid=dashboard-hero]').innerText().catch(() => '')) || '').replace(/\s+/g, ' ')

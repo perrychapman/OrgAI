@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, Project, RunSummary } from '@shared/types'
 import {
+  BAND_BUDGET_FLOOR_PX,
   BAND_MAX_DEPTH,
+  BAND_MIN_AGENT_ROWS,
+  BAND_MIN_RUNS,
+  BAND_PX,
+  BAND_SLACK_PX,
+  bandBudget,
+  bandHeightEstimate,
+  fitBandModel,
   agentRowName,
   bandAgentState,
   bandAgents,
@@ -19,6 +27,7 @@ import {
   markLines,
   moreAgentsText,
   moreRunsLabel,
+  openedText,
   roleColorFor,
   treeOrder,
   type BandRow,
@@ -326,6 +335,54 @@ describe('bandModel', () => {
     const run = bandModel([input('a', list)], projects, {}, NOW, caps).projects[0].runs[0]
     expect(run.rows).toHaveLength(1)
     expect(run.rows[0]).toMatchObject({ kind: 'done', count: 2, failed: 1 })
+  })
+})
+
+describe('band height budget (walk-3 M4)', () => {
+  const projects = [project()]
+  const many = (n: number): AgentInstance[] => [root(), ...Array.from({ length: n }, (_, i) => ag(`x${i}`, { startedAt: i + 1 }))]
+  const runs = ['a', 'b', 'c'].map((id, i) => input(id, many(6), { summary: summary(id, { startedAt: 9 - i }) }))
+  const wide = { ...caps, bandRuns: 5, bandAgents: 12, bandAgentsPerRun: 6 }
+  const build = (c: typeof caps) => bandModel(runs, projects, {}, NOW, c)
+
+  it('estimates the height from projects, runs and rows', () => {
+    const m = build(wide)
+    const rows = m.projects.flatMap((p) => p.runs).reduce((n, r) => n + r.rows.length, 0)
+    expect(bandHeightEstimate(m)).toBe(BAND_PX.chrome + BAND_PX.project + 3 * BAND_PX.run + rows * BAND_PX.row)
+  })
+  it('turns the other column into a budget with a floor, and none without one', () => {
+    expect(bandBudget(0)).toBeUndefined()
+    expect(bandBudget(Number.NaN)).toBeUndefined()
+    expect(bandBudget(100)).toBe(BAND_BUDGET_FLOOR_PX)
+    expect(bandBudget(500)).toBe(500 + BAND_SLACK_PX)
+  })
+  it('lowers the agent cap until the band fits, never under the minimum rows', () => {
+    const free = fitBandModel(wide, undefined, build)
+    const fitted = fitBandModel(wide, 460, build)
+    expect(bandHeightEstimate(fitted)).toBeLessThanOrEqual(460)
+    expect(bandHeightEstimate(fitted)).toBeLessThan(bandHeightEstimate(free))
+    const agentRows = (m: ReturnType<typeof build>): number => m.projects.flatMap((p) => p.runs).reduce((n, r) => n + r.rows.filter((x) => x.kind === 'agent').length, 0)
+    expect(agentRows(fitBandModel(wide, 1, build))).toBeGreaterThanOrEqual(BAND_MIN_AGENT_ROWS)
+    expect(fitBandModel(wide, 1, build).shownRuns).toBe(3)
+  })
+  it('then lowers the run cap to the narrow cap, keeping the rest behind "Show more"', () => {
+    const five = ['a', 'b', 'c', 'd', 'e'].map((id, i) => input(id, many(2), { summary: summary(id, { startedAt: 9 - i }) }))
+    const buildFive = (c: typeof caps) => bandModel(five, projects, {}, NOW, c)
+    expect(fitBandModel(wide, undefined, buildFive).shownRuns).toBe(5)
+    const tight = fitBandModel(wide, 300, buildFive)
+    expect(tight.shownRuns).toBe(BAND_MIN_RUNS)
+    expect(tight.hiddenRuns).toBe(2)
+    expect(tight.total).toBe(5)
+  })
+})
+
+describe('openedText (walk-3 L6)', () => {
+  const NOW0 = 1_800_000_000_000
+  it('says started just now under a minute, else open for', () => {
+    expect(openedText(NOW0 - 20_000, NOW0)).toBe('started just now')
+    expect(openedText(NOW0, NOW0)).toBe('started just now')
+    expect(openedText(NOW0 - 4 * 60_000, NOW0)).toBe('open for 4 min')
+    expect(openedText(NOW0 - 2 * 3_600_000, NOW0)).toBe('open for 2 h')
   })
 })
 
