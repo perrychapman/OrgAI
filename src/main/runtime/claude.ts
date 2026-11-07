@@ -27,9 +27,9 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
-import { KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgedRole, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { quickEditCard, quickEditFree } from './quickEditCard'
 import { hiddenCharIn } from '../capabilities/sanitize'
@@ -554,6 +554,25 @@ export function authFailureFrom(msg: SDKMessage): string | null {
   return null
 }
 
+/** The run's bridged roles (RuntimeContext.bridge, read at call time); none inside a bridged child or when unreadable. */
+export function bridgedRolesOf(ctx: RuntimeContext): BridgedRole[] {
+  if (!ctx.bridge || ctx.bridgedChild) return []
+  try {
+    return ctx.bridge.roles()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The PreToolUse denial for a native Agent / Task spawn of a bridged role (its subagent_type is that role's slug), or
+ * undefined. Bridged roles have no AgentDefinition; delegate_agent is their only path.
+ */
+export function bridgedSpawnDenial(ctx: RuntimeContext, subagentType: string): string | undefined {
+  const hit = bridgedRolesOf(ctx).find((b) => b.slug === subagentType)
+  return hit ? `${hit.name} runs on ${hit.connectionName}: call ${BRIDGE_HARNESS_TOOLS.delegate} instead` : undefined
+}
+
 /**
  * The AgentDefinitions for a run. The root gets every harness tool, a canSpawn role the 'spawners' ones; each
  * role gets a server-level rule and an mcpServers entry for every MCP server granted to it.
@@ -570,10 +589,14 @@ export function buildAgents(
   const engagementDocument = ctx.engagementDocument?.()
   // Constant for the run (RunManager computes it once), so a restarted query's prompts stay cacheable.
   const knowledgeBrief = ctx.knowledgeBrief?.()
+  // Bridged reports run in their own child session (runtime/bridge.ts): no AgentDefinition, so the CLI cannot spawn them.
+  const bridgedRoles = bridgedRolesOf(ctx)
+  const bridgedIds = new Set(bridgedRoles.map((b) => b.roleId))
   const agents: Record<string, AgentDefinition> = {}
   for (const role of ctx.roles) {
-    const tools: string[] = [...role.tools]
     const isRoot = role.reportsTo === null
+    if (!isRoot && bridgedIds.has(role.id)) continue
+    const tools: string[] = [...role.tools]
     for (const t of harness) if (isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners')) tools.push(`${ORGAI_TOOL_PREFIX}${t.name}`)
     if (role.canSpawn) tools.push(SPAWN_TOOL)
     // A lead addresses its running reports by handle, so it always gets the messaging tools on work runs.
@@ -599,7 +622,10 @@ export function buildAgents(
         // Engagements: the approved engagement document, read now (a restart rebuilds agents and re-reads it).
         ...(engagementDocument ? { engagementDocument } : {}),
         ...(knowledgeBrief ? { knowledgeBrief } : {}),
-        ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
+        ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {}),
+        // Multi-provider org charts: bridged reports are marked "delegate with delegate_agent"; a bridged child's root is a report.
+        ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
+        ...(ctx.bridgedChild ? { bridged: true } : {})
       }),
       tools,
       model: role.model && validModelId(role.model) ? role.model : 'inherit'
@@ -960,7 +986,16 @@ function harnessServerOf(options: Options): McpSdkServerConfigWithInstance | und
 }
 
 /** The harness's tools as an in-process MCP server; the model sees them as mcp__orgai__<name>. */
-function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker, reportsLive: () => boolean, instructions?: string): McpSdkServerConfigWithInstance {
+export function buildHarnessServer(
+  tools: HarnessTool[],
+  callers: HarnessCallerTracker,
+  reportsLive: () => boolean,
+  instructions?: string,
+  /** The role id recorded for a report's agent id (delegate_agent passes it as parentRoleId so RunManager checks spawnable). */
+  roleOf?: (agentId: string) => string | undefined
+): McpSdkServerConfigWithInstance {
+  // In-process tool calls are "effectively unbounded by default" (0.3.312 sdk.d.ts createSdkMcpServer: options.timeout,
+  // else MCP_TOOL_TIMEOUT), so a long delegate_agent (a whole bridged report) is not cut; no timeout is set here.
   return createSdkMcpServer({
     name: ORGAI_MCP,
     version: '1.0.0',
@@ -970,7 +1005,10 @@ function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker,
         const meta = (extra as { _meta?: unknown } | undefined)?._meta
         // knowledge_recall dedupes per agent, so a guessed caller must read as unknown (no agentId), never as the root.
         const agentId = t.name === KNOWLEDGE_RECALL_TOOL ? callers.resolveKnown(ORGAI_TOOL_PREFIX + t.name, meta, reportsLive()) : callers.resolve(ORGAI_TOOL_PREFIX + t.name, meta)
-        return { content: [{ type: 'text' as const, text: await t.call(args, agentId ? { agentId } : undefined) }] }
+        // delegate_agent: the delegating report's role too (missing = the root role, which is right for the root).
+        const roleId = t.name === BRIDGE_HARNESS_TOOLS.delegate && agentId && agentId !== ROOT_ID ? roleOf?.(agentId) : undefined
+        const caller = agentId ? { agentId, ...(roleId ? { roleId } : {}) } : undefined
+        return { content: [{ type: 'text' as const, text: await t.call(args, caller) }] }
       })
     )
   })
@@ -1856,8 +1894,15 @@ export class ClaudeSession implements RuntimeSession {
         const parentSlug = input.agent_type ?? this.root.slug
         const parentRole = this.rolesBySlug.get(parentSlug)
         const requested = String(toolInput.subagent_type ?? '')
+        // A bridged role runs in its own child session on another connection: never a native spawn (delegate_agent only).
+        const bridgedDenial = bridgedSpawnDenial(this.ctx, requested)
+        if (bridgedDenial) {
+          this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (bridged role)`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: bridgedDenial } }
+        }
+        const bridgedSlugs = new Set(bridgedRolesOf(this.ctx).map((b) => b.slug))
         const allowedSlugs = parentRole
-          ? this.ctx.roles.filter((r) => parentRole.spawnable.includes(r.id)).map((r) => r.slug)
+          ? this.ctx.roles.filter((r) => parentRole.spawnable.includes(r.id) && !bridgedSlugs.has(r.slug)).map((r) => r.slug)
           : []
         const allowed = !!parentRole && parentRole.canSpawn && allowedSlugs.includes(requested)
         if (!allowed) {
@@ -2842,7 +2887,7 @@ export class ClaudeSession implements RuntimeSession {
     const skillNames = [...skillMap.keys()]
     const tools = this.harnessTools
     const reportsLive = (): boolean => [...this.agents.values()].some((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error')
-    const harnessServer = buildHarnessServer(tools, this.harnessCallers, reportsLive, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
+    const harnessServer = buildHarnessServer(tools, this.harnessCallers, reportsLive, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined, (id) => this.agents.get(id)?.roleId ?? undefined)
 
     // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
     // Servers a restarted query could not start with stay out of this session (recoverRestart).
