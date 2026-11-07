@@ -37,6 +37,8 @@ interface Props {
   summary?: string
   /** Extra content at the end of the meta line (a time, a branch name, an outcome badge). */
   headerExtra?: ReactNode
+  /** What the decision changes when that is not the run's own project (a Badge), before the run line. */
+  target?: ReactNode
   /** Body: detail, capped in height with its own scroll. */
   children?: ReactNode
   /** Helper text after the body detail, in the same scroll region (scope explanations, never a tooltip). */
@@ -108,7 +110,7 @@ function typingElsewhere(card: HTMLElement | null): boolean {
  * The one shape of every decision (spec 12.1): header (kind chip, who, what, run), a body that scrolls on its own, and
  * a footer that is always visible. On mount focus goes to the primary button (M15) unless the user is typing.
  */
-export default function DecisionCard({ kind, runId, who, agentId, title, summary, headerExtra, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, expandSignal, error, testId }: Props): ReactElement {
+export default function DecisionCard({ kind, runId, who, agentId, title, summary, headerExtra, target, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, expandSignal, error, testId }: Props): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   const [expanded, setExpanded] = useState(false)
@@ -170,6 +172,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
               <span className="decision-who-name">{who}</span>
             </span>
           )}
+          {target}
           <span className="decision-run">
             <RunLabel runId={runId} />
           </span>
