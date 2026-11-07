@@ -19,6 +19,8 @@ import { ENTRY as NOTES_ENTRY } from './entries/notes'
 import { ENTRY as USAGE_ENTRY } from './entries/usage'
 import { ENTRY as KIT_ENTRY } from './entries/kit'
 import { ENTRY as PROJECTS_ENTRY } from './entries/projects'
+import { ENTRY as SECRETS_ENTRY } from './entries/secrets'
+import { ENTRY as TERMINAL_ACCESS_ENTRY } from './entries/terminalAccess'
 
 export interface CommandFlag {
   /** Long name without the dashes. */
@@ -152,10 +154,18 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'daemon',
     summary: 'Inspect or control the background host',
-    usage: 'daemon status | start [--foreground] [--timeout <s>] | stop [--force] [--timeout <s>] | restart [--force] [--timeout <s>] | logs [-n <lines>] [-f]',
+    usage:
+      'daemon status | start [--runtime app|node] [--foreground] [--timeout <s>] | stop [--force] [--timeout <s>] | restart [--force] [--runtime app|node] [--timeout <s>] | logs [-n <lines>] [-f]',
+    // `daemon run-node` (the detached Node host itself) is hidden: not listed here, so neither help nor completions show it.
     subcommands: ['status', 'start', 'stop', 'restart', 'logs'],
     flags: [
       { name: 'force', takesValue: false, summary: 'Stop live runs instead of refusing' },
+      {
+        name: 'runtime',
+        takesValue: true,
+        values: ['app', 'node'],
+        summary: 'start / restart: the OrgAI app headless, or a Node background host (default: the app when one is found, else node)'
+      },
       { name: 'foreground', takesValue: false, summary: 'start: run the host in this terminal (inproc)' },
       { name: 'timeout', takesValue: true, summary: 'Seconds to wait' },
       { name: 'lines', short: 'n', takesValue: true, summary: 'logs: how many lines' },
@@ -251,7 +261,10 @@ export const COMMANDS: readonly CommandEntry[] = [
   NOTES_ENTRY,
   USAGE_ENTRY,
   KIT_ENTRY,
-  PROJECTS_ENTRY
+  PROJECTS_ENTRY,
+  // Wave 7 (standalone CLI): listed as "Coming later" until WP-H / WP-E build them.
+  SECRETS_ENTRY,
+  TERMINAL_ACCESS_ENTRY
 ]
 
 export function findCommand(name: string): CommandEntry | undefined {

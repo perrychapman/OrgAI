@@ -1,7 +1,7 @@
-import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import { randomBytes } from 'node:crypto'
+import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { validModelId } from '../connections/codexAccount'
 import {
   createSdkMcpServer,
@@ -39,6 +39,7 @@ import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRa
 import { costFromPrice, priceFor } from './pricing'
 import { projectBudgetUsd } from './runOverrides'
 import { countUsage, setModelTokens } from './runUsage'
+import { requireClaudeExecutable } from './claudeBinary'
 import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
@@ -147,24 +148,14 @@ export function mapSupportedModels(raw: unknown): AdapterModelInfo[] {
  */
 
 /**
- * Inside a packaged Electron app the SDK resolves its native CLI to a path inside app.asar, which
- * cannot be spawned. electron-builder unpacks that binary beside the archive (app.asar.unpacked),
- * so point the SDK there. Outside a package this returns undefined and the SDK's default is used.
+ * The Claude executable for this query (cli-standalone 6.1): claudeBinary.ts resolves it per call (ORGAI_CLAUDE_PATH,
+ * the packaged app's unpacked native package, the SDK's per-platform package) and it is always passed explicitly, so
+ * runs, probes and completions use the same binary as the connection probe. Throws the resolver's sentence when there
+ * is none (a run fails with it; probes answer null).
  */
-function packagedClaudeExecutable(): string | undefined {
-  try {
-    const req = createRequire(import.meta.url)
-    const pkgJson = req.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`)
-    if (!pkgJson.includes('app.asar')) return undefined
-    const dir = dirname(pkgJson).replace(/app\.asar(?!\.unpacked)/, 'app.asar.unpacked')
-    const bin = join(dir, process.platform === 'win32' ? 'claude.exe' : 'claude')
-    return existsSync(bin) ? bin : undefined
-  } catch {
-    return undefined
-  }
+function executableOption(): { pathToClaudeCodeExecutable: string } {
+  return { pathToClaudeCodeExecutable: requireClaudeExecutable(process.env) }
 }
-const CLAUDE_EXECUTABLE = packagedClaudeExecutable()
-const EXECUTABLE_OPTION = CLAUDE_EXECUTABLE ? { pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE } : {}
 
 const ROOT_ID = ROOT_AGENT_ID
 /** MCP server name for the harness's own tools; tool names surface as mcp__orgai__<name>. */
@@ -444,6 +435,49 @@ export function toClaudeMcpServers(resolved: ResolvedMcpServer[]): Record<string
     }
   }
   return out
+}
+
+/**
+ * toClaudeMcpServers for the query's start options (cli-standalone R3). SDK options.mcpServers travel in the claude
+ * child's argv (`--mcp-config {...}`), so a secret env value, a secret header and the OAuth bearer become
+ * `${ORGAI_MCP_<hex>_<n>_<k>}` placeholders (Claude Code expands `${VAR}` in env, args, url and headers from its own
+ * environment; read from docs, not checked live) and the real values go to `env`, which the caller merges into
+ * options.env. Plain values stay inline. `<hex>` is 16 random lowercase hex characters drawn once per call (one per
+ * query build), so an agent's Bash or another MCP server inheriting that environment cannot target a name it can
+ * predict; the self-control gate also refuses words that reference `ORGAI_MCP_`. This does not hide the values from
+ * a process that dumps its whole environment. `random` is injectable for tests and must return 8 bytes.
+ * Servers attached later through setMcpServers (a control message, not argv) use toClaudeMcpServers.
+ */
+export function toClaudeMcpServersForArgv(
+  resolved: ResolvedMcpServer[],
+  random: (size: number) => Uint8Array = randomBytes
+): { servers: Record<string, McpServerConfig>; env: Record<string, string> } {
+  const env: Record<string, string> = {}
+  const servers = toClaudeMcpServers(resolved)
+  const prefix = `ORGAI_MCP_${Buffer.from(random(8)).toString('hex')}`
+  let n = 0
+  for (const r of resolved) {
+    const cfg = servers[r.spec.name] as { env?: Record<string, string>; headers?: Record<string, string> } | undefined
+    if (!cfg) continue
+    n++
+    let k = 0
+    const place = (value: string): string => {
+      const name = `${prefix}_${n}_${k++}`
+      env[name] = value
+      return '${' + name + '}'
+    }
+    if (cfg.env) {
+      const secret = new Set(r.spec.secretEnv ?? [])
+      const declared = r.spec.env ?? {}
+      cfg.env = Object.fromEntries(Object.entries(cfg.env).map(([key, v]) => [key, secret.has(key) || declared[key] !== v ? place(v) : v]))
+    }
+    if (cfg.headers) {
+      const secret = new Set(r.spec.secretHeaders ?? [])
+      const declared = r.spec.headers ?? {}
+      cfg.headers = Object.fromEntries(Object.entries(cfg.headers).map(([key, v]) => [key, secret.has(key) || declared[key] !== v ? place(v) : v]))
+    }
+  }
+  return { servers, env }
 }
 
 /** Enabled project plugins as SDK plugin configs. Note: strictMcpConfig also stops plugin-declared MCP servers from loading. */
@@ -2162,8 +2196,13 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Every server of the session: the harness's own plus the resolved MCP servers. */
-  private mcpRecord(resolved: ResolvedMcpServer[], harnessServer = this.harnessServer): Record<string, McpServerConfig> {
-    const record: Record<string, McpServerConfig> = toClaudeMcpServers(resolved)
+  private mcpRecord(resolved: ResolvedMcpServer[], harnessServer = this.harnessServer, forArgv?: { env: Record<string, string> }): Record<string, McpServerConfig> {
+    let record: Record<string, McpServerConfig>
+    if (forArgv) {
+      const split = toClaudeMcpServersForArgv(resolved)
+      record = split.servers
+      Object.assign(forArgv.env, split.env)
+    } else record = toClaudeMcpServers(resolved)
     if (harnessServer) record[ORGAI_MCP] = harnessServer
     return record
   }
@@ -2928,6 +2967,8 @@ export class ClaudeSession implements RuntimeSession {
    */
   private async buildOptions(resume?: string, opts: { maxBudgetUsd?: number; plugin?: SkillPlugin | null } = {}): Promise<Options> {
     const { project } = this.ctx
+    // Resolved first and per build (cli-standalone 6.1): no runtime fails the run before anything else is set up.
+    const executable = requireClaudeExecutable(process.env)
     const env = buildEnv(this.ctx)
     const plugin = opts.plugin === undefined ? this.skillPlugin : (opts.plugin ?? undefined)
     const skillMap = this.skillNamesFor(plugin)
@@ -3033,8 +3074,10 @@ export class ClaudeSession implements RuntimeSession {
     // included). Reference folders are readable here and kept read-only by the PreToolUse reference gate.
     const dirs = claudeAdditionalDirectories(this.ctx)
     if (dirs.length) options.additionalDirectories = dirs
-    if (CLAUDE_EXECUTABLE) options.pathToClaudeCodeExecutable = CLAUDE_EXECUTABLE
-    options.mcpServers = this.mcpRecord(resolved, harnessServer)
+    options.pathToClaudeCodeExecutable = executable
+    const mcpSecretEnv: Record<string, string> = {}
+    options.mcpServers = this.mcpRecord(resolved, harnessServer, { env: mcpSecretEnv })
+    if (Object.keys(mcpSecretEnv).length) options.env = { ...env, ...mcpSecretEnv }
     options.strictMcpConfig = true
     const plugins = toClaudePlugins(this.ctx.plugins?.())
     if (plugin && skillNames.length) {
@@ -3669,7 +3712,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
 
 /** Options for the token-free discovery and usage probes. strictMcpConfig + empty mcpServers keep repo and user-scope MCP servers from starting. */
 export function probeQueryOptions(abort: AbortController, env: Record<string, string | undefined>): Options {
-  return { cwd: tmpdir(), settingSources: [], abortController: abort, tools: [], strictMcpConfig: true, mcpServers: {}, env, ...EXECUTABLE_OPTION }
+  return { cwd: tmpdir(), settingSources: [], abortController: abort, tools: [], strictMcpConfig: true, mcpServers: {}, env, ...executableOption() }
 }
 
 /** Query options for one-shot completions. strictMcpConfig + empty mcpServers keep a cloned repo's .mcp.json from loading. */
@@ -3683,7 +3726,7 @@ export function buildCompletionOptions(input: CompletionInput): Options {
     permissionMode: 'dontAsk',
     strictMcpConfig: true,
     mcpServers: {},
-    ...EXECUTABLE_OPTION
+    ...executableOption()
   }
   if (input.model && validModelId(input.model)) options.model = input.model
   options.env = completionEnv(input.connection)

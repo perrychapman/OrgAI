@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import type { ImageAttachment, PermissionMode } from '@shared/types'
 import type { HarnessTool } from './harnessTools'
@@ -475,19 +476,24 @@ export interface LaunchConfig {
  * tool_timeout_sec, required; semantics UNVERIFIED without a model turn):
  *   stdio  command + args + env (non-secret values); secret env names are forwarded with env_vars from the
  *          app-server's own environment (same name), so values are not in argv.
- *   http   url + http_headers (non-secret); each secret header becomes env_http_headers { Header = "ORGAI_MCP_<n>_H<k>" }.
+ *   http   url + http_headers (non-secret); each secret header becomes
+ *          env_http_headers { Header = "ORGAI_MCP_<hex>_<n>_H<k>" }, `<hex>` being 16 random lowercase hex characters
+ *          drawn once per call, so a command or stdio server inheriting the app-server's environment cannot target a
+ *          name it can predict (the self-control gate also refuses words referencing ORGAI_MCP_; neither hides the
+ *          values from a whole-environment dump). `opts.random` is injectable for tests and must return 8 bytes.
  *          An Authorization header of the form "Bearer x" is passed as bearer_token_env_var instead.
  * One app-server has one environment, so one secret env name can carry only one value per run. Two enabled stdio
  * servers that need the same secret name with the same value share it through env_vars. With different values the
  * later server is refused before launch (no config line at all, an entry in `skipped` naming the variable and the
  * server that forwarded it first); a secret value never goes into argv. The adapter logs each skipped entry as a run
- * warning. HTTP secret headers need no such check: their env names (ORGAI_MCP_<n>_H<k>) are unique per server.
+ * warning. HTTP secret headers need no such check: their env names (ORGAI_MCP_<hex>_<n>_H<k>) are unique per server.
  */
 export function buildLaunchConfig(
   connection: RunConnection | undefined,
   servers: ResolvedMcpServer[],
-  opts: { noProjectDocs?: boolean; writableRoots?: string[]; folderTrust?: FolderTrustConfig } = {}
+  opts: { noProjectDocs?: boolean; writableRoots?: string[]; folderTrust?: FolderTrustConfig; random?: (size: number) => Uint8Array } = {}
 ): LaunchConfig {
+  const mcpEnvPrefix = `ORGAI_MCP_${Buffer.from((opts.random ?? randomBytes)(8)).toString('hex')}`
   const config: string[] = [...NATIVE_SKILL_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
   const trust = folderTrustEntry(opts.folderTrust)
   if (trust) config.push(trust)
@@ -577,7 +583,7 @@ export function buildLaunchConfig(
           continue
         }
         const m = /^bearer\s+(.+)$/i.exec(v)
-        const envName = `ORGAI_MCP_${n}_H${k++}`
+        const envName = `${mcpEnvPrefix}_${n}_H${k++}`
         if (h.toLowerCase() === 'authorization' && m) {
           env[envName] = m[1]
           config.push(`${base}.bearer_token_env_var=${tomlString(envName)}`)

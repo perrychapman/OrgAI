@@ -89,7 +89,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   }
 })
 
-import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, cliProjectSettings, cliShellAskReason, CLI_SETTINGS_MAX_BYTES, CLI_SETTINGS_UNREADABLE_REASON, toSdkSessionUpdates, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, cliProjectSettings, cliShellAskReason, CLI_SETTINGS_MAX_BYTES, CLI_SETTINGS_UNREADABLE_REASON, toSdkSessionUpdates, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudeMcpServersForArgv, toClaudePlugins, usesProxy } from './claude'
 import { DEFAULT_MAX_CONCURRENT_SUBAGENTS } from '@shared/defaults'
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
 import { ROOT_AGENT_ID, type ResolvedMcpServer, type RuntimeContext } from './types'
@@ -172,6 +172,36 @@ describe('toClaudeMcpServers', () => {
       fs: { type: 'stdio', command: 'npx', args: ['-y', 'fs'], env: { TOKEN: 'sekrit-token' } },
       web: { type: 'http', url: 'https://x.test/mcp', headers: { Authorization: 'Bearer abc' } }
     })
+  })
+
+  it('keeps secret env and header values out of the argv config (placeholders, values in env)', () => {
+    const resolved: ResolvedMcpServer[] = [
+      { spec: { ...fs, secretEnv: ['TOKEN'] }, env: { TOKEN: 'sekrit-token' }, headers: {} },
+      { spec: web, env: {}, headers: { Authorization: 'Bearer abc' } }
+    ]
+    const { servers, env } = toClaudeMcpServersForArgv(resolved)
+    expect(JSON.stringify(servers)).not.toContain('sekrit-token')
+    expect(JSON.stringify(servers)).not.toContain('Bearer abc')
+    expect(Object.values(env).sort()).toEqual(['Bearer abc', 'sekrit-token'])
+    const name = Object.keys(env).find((k) => env[k] === 'sekrit-token')!
+    const header = Object.keys(env).find((k) => env[k] === 'Bearer abc')!
+    expect(name).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_1_0$/)
+    expect(header).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_2_0$/)
+    expect(name.slice(0, 26)).toBe(header.slice(0, 26)) // one random prefix per query build
+    expect((servers.fs as { env: Record<string, string> }).env.TOKEN).toBe('${' + name + '}')
+    expect((servers.web as { headers: Record<string, string> }).headers.Authorization).toBe('${' + header + '}')
+  })
+
+  it('draws an unguessable placeholder prefix per call', () => {
+    const resolved: ResolvedMcpServer[] = [{ spec: { ...fs, secretEnv: ['TOKEN'] }, env: { TOKEN: 'sekrit-token' }, headers: {} }]
+    const a = Object.keys(toClaudeMcpServersForArgv(resolved).env)
+    const b = Object.keys(toClaudeMcpServersForArgv(resolved).env)
+    expect(a[0]).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_/)
+    expect(b[0]).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_/)
+    expect(a[0]).not.toBe(b[0])
+    const fixed = toClaudeMcpServersForArgv(resolved, (n) => new Uint8Array(n).fill(0x0f))
+    expect(fixed.env).toEqual({ ORGAI_MCP_0f0f0f0f0f0f0f0f_1_0: 'sekrit-token' })
+    expect((fixed.servers.fs as { env: Record<string, string> }).env.TOKEN).toBe('${ORGAI_MCP_0f0f0f0f0f0f0f0f_1_0}')
   })
 
   it('skips entries without a command or url', () => {
@@ -666,6 +696,49 @@ describe('buildAgents with run-scoped installs', () => {
     expect(agents.lead.tools).not.toContain('mcp__pg')
     const all = buildAgents(ctx, [], false, { mcpServers: [mcpSpec({ name: 'pg', roles: undefined })] })
     for (const slug of ['lead', 'engineer', 'reviewer']) expect(all[slug].tools).toContain('mcp__pg')
+  })
+})
+
+describe('Claude runtime resolution in runs and probes (cli-standalone 6.1)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    sdk.queries.length = 0
+  })
+
+  it('every query passes the resolved executable explicitly', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-bin-'))
+    try {
+      const bin = join(dir, 'claude')
+      writeFileSync(bin, '')
+      vi.stubEnv('ORGAI_CLAUDE_PATH', bin)
+      expect(probeQueryOptions(new AbortController(), {}).pathToClaudeCodeExecutable).toBe(bin)
+      expect(buildCompletionOptions({ cwd: dir, system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0]).pathToClaudeCodeExecutable).toBe(bin)
+      const session = new ClaudeSession(fakeCtx({ project: project({ path: dir }), autoContinue: false }))
+      await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+      expect(sdk.queries[0]!.options.pathToClaudeCodeExecutable).toBe(bin)
+      await session.stop()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('no runtime: the run fails with the resolver sentence and no query starts; probes and completions throw it', async () => {
+    const missing = join(tmpdir(), 'orgai-definitely-not-claude')
+    vi.stubEnv('ORGAI_CLAUDE_PATH', missing)
+    const sentence = `ORGAI_CLAUDE_PATH names ${missing}, which does not exist.`
+    expect(() => probeQueryOptions(new AbortController(), {})).toThrow(sentence)
+    expect(() => buildCompletionOptions({ cwd: tmpdir(), system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0])).toThrow(sentence)
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-nobin-'))
+    try {
+      const ctx = fakeCtx({ project: project({ path: dir }), autoContinue: false })
+      const session = new ClaudeSession(ctx)
+      await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(true))
+      expect(ctx.events).toContainEqual(expect.objectContaining({ type: 'run.status', status: 'error', error: sentence }))
+      expect(sdk.queries).toHaveLength(0)
+      await session.stop()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

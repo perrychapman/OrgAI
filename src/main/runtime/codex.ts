@@ -252,6 +252,8 @@ class CodexSession implements RuntimeSession {
   readonly finished: Promise<void>
   private server!: CodexServerLike
   private unsubscribers: (() => void)[] = []
+  /** The Codex version warning (ORGAI_CODEX_PATH outside the tested range) was shown for this session. */
+  private versionWarned = false
   private agents = new Map<string, AgentInstance>()
   private threads = new Map<string, ThreadInfo>()
   private agentThread = new Map<string, string>()
@@ -715,6 +717,13 @@ class CodexSession implements RuntimeSession {
       onStderr: (line) => {
         // The CLI's tracing output is chatty; only surface real problems.
         if (/\b(error|fatal|panic)\b/i.test(line)) this.log('warn', `codex: ${line.slice(0, 300)}`)
+      },
+      // Codex chosen through ORGAI_CODEX_PATH outside the tested version (cli-standalone 6.2): one run warning, not one
+      // per app-server restart.
+      onWarning: (message) => {
+        if (this.versionWarned) return
+        this.versionWarned = true
+        this.log('warn', message)
       }
     }
     return this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
@@ -782,6 +791,8 @@ class CodexSession implements RuntimeSession {
       this.server = this.createServer(this.launch)
       this.wire(this.server)
       await this.server.start(this.options.clientVersion)
+      // End session during the start (the version check, the handshake): no thread, no prompt to the model.
+      if (this.ending) return
 
       const policy = this.policyFor(this.root)
       const params = this.threadParams(this.root, true, ctx.project.path)
@@ -1603,8 +1614,20 @@ class CodexSession implements RuntimeSession {
     this.restarting = true
     this.mcpRestartPending = false
     this.noteActivity('restart')
+    // End session can land during any await below. stop() / endRun() close whatever `this.server` is at that moment,
+    // so a server this restart created after that would never be closed: check `ending` before creating one, and close
+    // the one we made when the run ended while it started (review round 2).
+    let created: CodexServerLike | undefined
+    const abandon = (): void => {
+      this.restarting = false
+      if (created) {
+        this.unwire()
+        created.close()
+      }
+    }
     try {
       const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
+      if (this.ending) return abandon()
       const launch = buildLaunchConfig(this.ctx.connection, servers, {
         ...trustLaunchOpts(this.ctx),
         writableRoots: codexWritableRoots(this.ctx)
@@ -1613,10 +1636,13 @@ class CodexSession implements RuntimeSession {
       this.unwire()
       old.close()
       await Promise.race([old.exited, new Promise((r) => setTimeout(r, EXIT_WAIT_MS))])
+      if (this.ending) return abandon()
       this.launch = launch
-      this.server = this.createServer(launch)
-      this.wire(this.server)
-      await this.server.start(this.options.clientVersion)
+      created = this.createServer(launch)
+      this.server = created
+      this.wire(created)
+      await created.start(this.options.clientVersion)
+      if (this.ending) return abandon()
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)
@@ -1643,6 +1669,8 @@ class CodexSession implements RuntimeSession {
         'Using a new MCP server…'
       )
     } catch (e) {
+      // stop() closed the new server while it started: the run is ending, not failing.
+      if (this.ending) return abandon()
       this.restarting = false
       this.fail(`Could not restart Codex to attach the MCP server: ${(e as Error).message}`)
       return

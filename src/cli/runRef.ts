@@ -12,7 +12,7 @@
 import { VIRTUAL_PROJECT_IDS, type Project, type RunRecord, type RunSummary } from '../shared/types'
 import { runIndexMap } from '../shared/view/runLabels'
 import { note, warn } from './output'
-import { CliError, EXIT, type CliContext, type HostClient, type ProjectResolution, type ReadOnlySnapshot } from './types'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type HostClient, type ProjectResolution, type ReadOnlySnapshot } from './types'
 
 /** The host's id shape (src/main/host/params.ts PARAM_ID_PATTERN; copied so the CLI bundle stays small). */
 export const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
@@ -130,7 +130,7 @@ export function warnVersionSkew(ctx: CliContext, client: HostClient): void {
  * refused) are CliErrors. `quiet` skips the note (the command prints its own wording).
  */
 export async function openReadSource(ctx: CliContext, opts: { quiet?: boolean } = {}): Promise<ReadSource> {
-  const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 })
+  const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
   if (res.ok) {
     const client = res.client
     warnVersionSkew(ctx, client)

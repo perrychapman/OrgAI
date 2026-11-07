@@ -413,6 +413,20 @@ describe('settingsSetArgs terminalServerChosen (cli-spec 3.3)', () => {
     const chosen = { ...base, terminalServer: false, terminalServerChosen: true }
     expect(settingsSetArgs({ notifications: false, terminalServerChosen: false }, chosen).terminalServerChosen).toBe(true)
   })
+
+  it('terminalAccessLevelChosen is main-owned and set once a save names another level (Wave 7, round 6 item 11)', () => {
+    const base = { ...DEFAULT_APP_SETTINGS }
+    expect(settingsSetArgs({ terminalAccessLevelChosen: true, notifications: false }, base)).not.toHaveProperty('terminalAccessLevelChosen')
+    // An echo of the stored settings (no level) chooses nothing.
+    expect(settingsSetArgs({ ...base }, base)).not.toHaveProperty('terminalAccessLevelChosen')
+    expect(settingsSetArgs({ terminalAccessLevel: 'full' }, base).terminalAccessLevelChosen).toBe(true)
+    // Picking 'operate' explicitly over an unset level is a choice too.
+    expect(settingsSetArgs({ terminalAccessLevel: 'operate' }, base).terminalAccessLevelChosen).toBe(true)
+    expect(settingsSetArgs({ terminalAccessLevel: 'full' }, { ...base, terminalAccessLevel: 'full' })).not.toHaveProperty('terminalAccessLevelChosen')
+    expect(settingsSetArgs({ terminalAccessLevel: 'junk' } as never, base)).not.toHaveProperty('terminalAccessLevelChosen')
+    const chosen = { ...base, terminalAccessLevel: 'operate' as const, terminalAccessLevelChosen: true }
+    expect(settingsSetArgs({ notifications: false, terminalAccessLevelChosen: false }, chosen).terminalAccessLevelChosen).toBe(true)
+  })
 })
 
 describe('connection id guards (connections:test / logout, models:list / refresh)', () => {
@@ -558,5 +572,18 @@ describe('withEffectiveDefault (settings:get / set / changed)', () => {
     expect(s.defaultConnection).toBe('anthropic')
     // Echoing it back through settings:set never changes the stored value.
     expect(settingsSetArgs(out, s).defaultConnection).toBe('anthropic')
+  })
+})
+
+describe('appFacingError (what a window is told about secure storage)', () => {
+  it('puts the vault sentences in the app words and leaves every other error alone', async () => {
+    const { appFacingError } = await import('./ipc')
+    const { VAULT_MESSAGES } = await import('./store/vaultTypes')
+    const e = appFacingError(new Error(VAULT_MESSAGES.clearRefusedCorrupt)) as Error
+    expect(e.message).not.toMatch(/orgai|`/)
+    expect(e.message).toContain('Dashboard')
+    const plain = new Error('Something else')
+    expect(appFacingError(plain)).toBe(plain)
+    expect(appFacingError('text')).toBe('text')
   })
 })

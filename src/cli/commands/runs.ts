@@ -27,7 +27,7 @@ import {
   tailRows
 } from '../render'
 import { checkProjectResolution, openReadSource, resolveRunFromSource, searchableProjectIds, warnVersionSkew, type ReadSource } from '../runRef'
-import { CliError, EXIT, type CliContext, type CommandFn, type HostCallError } from '../types'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError } from '../types'
 
 const DEFAULT_LIMIT = 20
 const DEFAULT_TAIL = 20
@@ -253,7 +253,7 @@ async function readProcessStdin(max: number): Promise<string> {
 
 /** connect with ['read', 'operate']; never starts a host. */
 async function connectOperate(ctx: CliContext): Promise<ReadSource> {
-  const res = await ctx.connect(['read', 'operate'], { clientKind: 'cli', waitStartingMs: 2000 })
+  const res = await ctx.connect(['read', 'operate'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
   if (!res.ok) {
     if (res.reason === 'no_host') throw new CliError(NO_HOST_FOR_RUNS, EXIT.failure)
     if (res.reason === 'auth_failed') throw new CliError(safeLine(res.message) || 'The OrgAI host refused the handshake.', EXIT.auth)

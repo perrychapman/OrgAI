@@ -1,3 +1,4 @@
+import { UnreadableSecretsNote } from './UnreadableSecretsNote'
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, CopyPlus, Ellipsis, ExternalLink, Library, Minus, Pencil, Plug, Plus, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
@@ -640,6 +641,7 @@ function McpRow({
           <span>{perProjectMissingLine(perProject.missingCount, noun)}</span>
         </p>
       )}
+      <UnreadableSecretsNote slots={info.unreadableSecrets} />
       {linked && needsSecret && libraryScope && !info.libraryMissing && (
         <p className="mcp-row-note warn" role="status">
           <Icon icon={TriangleAlert} size="sm" />

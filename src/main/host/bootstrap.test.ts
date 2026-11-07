@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AppSettingsInfo, DaemonInfo, RunEvent } from '../../shared/types'
+import type { AppSettingsInfo, DaemonInfo, RunEvent, RunSummary } from '../../shared/types'
 import { ACTIVITY_LEASE_KINDS, IPC } from '../../shared/types'
 
 // bootOrgAIHost must boot in plain Node (cli-spec 3.1): any electron import fails the whole file.
@@ -90,6 +90,7 @@ afterEach(async () => {
   hosts = []
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -264,13 +265,52 @@ describe('bootOrgAIHost', () => {
     const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'decide', 'configure'] as const }
     await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     expect(own.markDraining).toHaveBeenCalledTimes(1)
+    // Wave 7 (4.3): the shutdown coordinator releases after the reply, then calls onDrained (the process may exit).
+    await h.shutdown.released()
     expect(own.release).toHaveBeenCalledTimes(1)
     expect(onDrained).toHaveBeenCalledTimes(1)
+    expect(onDrained).toHaveBeenCalledWith({ reason: 'host.stop', forced: false, hardLimit: false })
+    expect(h.shutdown.phase()).toBe('released')
     expect(h.activity.state()).toBe('draining')
     // A second stop joins the drain instead of being refused as a mutation.
     await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     await expect(h.dispatcher.invokeRpc(IPC.settingsSet, [{}], ctx)).rejects.toMatchObject({ code: 'host_draining' })
     expect(h.activity.snapshot().counts.inFlightRpcMutations).toBe(0)
+  })
+
+  it('host.status carries the handoff facts; a handoff stop is refused while a run is live in any form (4.4)', async () => {
+    const h = boot({ terminalSessions: () => 2 })
+    expect(h.hostControl.status().handoff).toEqual({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 })
+    const folder = join(root, 'repo-handoff')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Handoff', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
+    await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'keep me live' }], ctx)
+    const res = (await h.dispatcher.invokeRpc('host.stop', [{ handoff: true }], ctx)) as { stopping: boolean; handoffBlockers?: Record<string, number> }
+    expect(res.stopping).toBe(false)
+    expect(Object.values(res.handoffBlockers ?? {}).reduce((a, b) => a + b, 0)).toBeGreaterThan(0)
+    expect(h.activity.state()).toBe('ready')
+    await h.runs.stopAll({ reason: 'quit' })
+    // The ended work run armed a Team review (a backgroundTasks lease); without it and with nothing live, the handoff
+    // stop goes through.
+    h.services.capabilities.dispose()
+    await vi.waitFor(() => expect(h.activity.isIdle()).toBe(true))
+    expect(h.hostControl.status().handoff).toMatchObject({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0 })
+    await expect(h.dispatcher.invokeRpc('host.stop', [{ handoff: true }], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
+  })
+
+  it('the drain quiesces OAuth flows, skill evaluation, org chart drafts and the entry point\'s own work (round 6 item 9)', async () => {
+    const quiesce = vi.fn()
+    const h = boot({ quiesce })
+    const mcp = vi.spyOn(h.services.mcp, 'dispose')
+    const evaluation = vi.spyOn(h.services.skillEvaluation as unknown as { dispose(): void }, 'dispose')
+    const caps = vi.spyOn(h.services.capabilities, 'dispose')
+    // An org chart draft's model call is aborted too (review round 2): it has no timeout and would hold its lease.
+    const drafts = vi.spyOn(h.dispatcher, 'quiesce')
+    await h.shutdown.shutdown('desktop-quit', { force: true })
+    for (const f of [mcp, evaluation, caps, drafts, quiesce]) expect(f).toHaveBeenCalledTimes(1)
+    await expect(h.services.mcp.authorize({ libraryId: 'x' })).rejects.toThrow(/shutting down/)
   })
 
   it('host.stop without force over invokeRpc is refused while a run is live, naming liveRuns only', async () => {
@@ -286,6 +326,40 @@ describe('bootOrgAIHost', () => {
     expect(h.activity.state()).toBe('ready')
     await h.runs.stopAll({ reason: 'quit' })
   })
+
+  it('a non-forced stop (idle exit, `orgai daemon stop`) ends a run that only waits on the user, written as cut by the app before the release', async () => {
+    const own = fakeOwnership()
+    const h = boot({ ownership: own, hostKind: 'headless-host' })
+    const atRelease: (RunSummary | null)[] = []
+    let runId = ''
+    own.release.mockImplementation(() => {
+      atRelease.push(h.runs.summary(runId))
+    })
+    const folder = join(root, 'repo-idle')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Idle', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
+    // A one-step script: the single-agent run says one line and waits on the user (no plan nudges).
+    const script = join(root, 'idle-script.json')
+    writeFileSync(script, JSON.stringify({ delayMs: 0, work: [{ type: 'text', text: 'Ready when you are.' }] }))
+    vi.stubEnv('ORGAI_MOCK_SCRIPT', script)
+    const run = (await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'wait for me', team: 'single' }], ctx)) as RunSummary
+    runId = run.id
+    // The mock work run finishes its turn and waits on the user: live, but not busy, so the host counts as idle.
+    await vi.waitFor(() => expect(h.runs.summary(runId)?.status).toBe('idle'), { timeout: 10_000 })
+    expect(h.runs.liveRunCount()).toBe(1)
+    expect(h.runs.busyRunCount()).toBe(0)
+    // As the idle exit would see it: nothing busy (the run's title is done), the run still live.
+    await vi.waitFor(() => expect(h.activity.isIdle()).toBe(true), { timeout: 10_000 })
+    expect(h.runs.liveRunCount()).toBe(1)
+    await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
+    expect(own.release).toHaveBeenCalledTimes(1)
+    // Ended before the data folder was given up, as a quit ends it: by the app, while waiting, continuable.
+    expect(atRelease[0]).toMatchObject({ endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
+    expect(['finished', 'error']).toContain(atRelease[0]?.status)
+    expect(h.runs.liveRunCount()).toBe(0)
+  }, 30_000)
 
   it('a forced host.stop with a live work run schedules no Team review, waits on none and refuses model calls after', async () => {
     const releasedWith: number[] = []
@@ -303,6 +377,7 @@ describe('bootOrgAIHost', () => {
     expect(h.runs.liveRuns().length).toBe(1)
     const started = Date.now()
     await expect(h.dispatcher.invokeRpc('host.stop', [{ force: true }], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
     // The run's end reached the Team assistant after it was disposed: nothing armed, nothing waited on.
     expect(runEnded).toHaveBeenCalled()
     expect(releasedWith).toEqual([0])
@@ -329,6 +404,12 @@ describe('bootOrgAIHost', () => {
     const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
     boot({ hostKind: 'headless-host' })
     expect(armIdle).toHaveBeenCalledTimes(1)
+  })
+
+  it('never arms idle exit for an inproc host (it lives until Ctrl+C)', () => {
+    const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
+    boot({ hostKind: 'inproc' })
+    expect(armIdle).not.toHaveBeenCalled()
   })
 
   it('a headless boot opens Terminal access for its session only, never saving it (review H2)', () => {
@@ -367,6 +448,22 @@ describe('bootOrgAIHost', () => {
     headless.settings.set({ ...headless.settings.get(), terminalServer: true, terminalServerChosen: true })
     expect(headless.terminalAccess().enabled).toBe(true)
     headless.dispose()
+  })
+
+  it('a background host follows the stored Terminal access and level like the headless host, and arms idle exit (Wave 7, 4.2.1)', () => {
+    const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
+    const node = boot({ hostKind: 'node' })
+    expect(armIdle).toHaveBeenCalledTimes(1)
+    // No stored choice: on for this session, 'operate' (never 'full' as an in-process host would be).
+    expect(node.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
+    node.settings.set({ ...node.settings.get(), terminalAccessLevel: 'full', terminalAccessLevelChosen: true })
+    expect(node.terminalAccess()).toEqual({ enabled: true, level: 'full' })
+    node.settings.set({ ...node.settings.get(), terminalServer: false, terminalServerChosen: true })
+    expect(node.terminalAccess()).toEqual({ enabled: false, level: 'full' })
+    node.dispose()
+    const later = boot({ hostKind: 'node' })
+    expect(later.terminalAccess()).toEqual({ enabled: false, level: 'full' })
+    later.dispose()
   })
 
   it('dispose() is idempotent and leaves no timers behind', () => {

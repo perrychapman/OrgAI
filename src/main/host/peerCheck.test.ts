@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { createServer, type Socket } from 'node:net'
+import { connect, createServer, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ancestryOf, checkPeerAncestry, parsePsTable, socketFdOf, socketPeersOf } from './peerCheck'
@@ -21,9 +21,13 @@ describe('checkPeerAncestry', () => {
     expect(await checkPeerAncestry(200, { hostPid: 100, platform: 'linux', psTable })).toBe('descendant')
   })
 
-  it('an unrelated process is ok, and so is the host pid itself', async () => {
+  it('an unrelated process is ok; the host pid itself is ok off macOS only', async () => {
     expect(await checkPeerAncestry(500, { hostPid: 100, platform: 'darwin', psTable })).toBe('ok')
-    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'darwin', psTable })).toBe('ok')
+    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'linux', psTable })).toBe('ok')
+    // Linux keeps the shortcut even when ps would fail (no table read at all).
+    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'linux', psTable: () => Promise.reject(new Error('no ps')) })).toBe('ok')
+    // macOS (round 6 item 6): a bare claim of the host's pid proves nothing without a mapped peer.
+    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'darwin', psTable })).toBe('unavailable')
   })
 
   it('a missing pid, a ps failure, win32 and a timeout are unavailable', async () => {
@@ -83,6 +87,23 @@ describe('checkPeerAncestry', () => {
     expect(await checkPeerAncestry(500, { hostPid: 100, platform: 'linux', psTable, socketFd: 13, lsofText: async () => lsof })).toBe('ok')
   })
 
+  it('macOS: claiming the host pid passes only through a mapped peer equal to the host (round 6 item 6)', async () => {
+    // The agent's shell (300) holds the other end and claims the host's pid: the mapping wins, refused.
+    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'darwin', psTable, socketFd: 13, lsofText: async () => lsof })).toBe('descendant')
+    // An in-process client: the host itself holds the other end of fd 13.
+    const inproc = ['p100', 'f13', 'd0xaabb', 'n/tmp/s/t.sock', 'f14', 'd0xbb12', 'n->0xaabb'].join('\n')
+    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'darwin', psTable, socketFd: 13, lsofText: async () => inproc })).toBe('ok')
+    // Any claimed pid with the host as the mapped peer is ok too (the claim is ignored once the peer is known).
+    expect(await checkPeerAncestry(500, { hostPid: 100, platform: 'darwin', psTable, socketFd: 13, lsofText: async () => inproc })).toBe('ok')
+    // No mapped peer (lsof fails, times out or finds nothing; no socket fd): the bare claim is unavailable, never ok.
+    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'darwin', psTable, socketFd: 13, lsofText: () => Promise.reject(new Error('no lsof')) })).toBe('unavailable')
+    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'darwin', psTable, socketFd: 99, lsofText: async () => lsof })).toBe('unavailable')
+    const slowLsof = (): Promise<string> => new Promise((r) => setTimeout(() => r(lsof), 200))
+    expect(await checkPeerAncestry(100, { hostPid: 100, platform: 'darwin', psTable, socketFd: 13, lsofText: slowLsof, timeoutMs: 20 })).toBe('unavailable')
+    // Other claims behave as before when the mapping finds nothing.
+    expect(await checkPeerAncestry(300, { hostPid: 100, platform: 'darwin', psTable, socketFd: 99, lsofText: async () => lsof })).toBe('descendant')
+  })
+
   it.runIf(process.platform === 'darwin')('the real lsof maps an accepted socket to the child process that connected', async () => {
     // Token-free: a local unix socket, one child node process and one lsof.
     const dir = mkdtempSync('/tmp/orgai-peer-')
@@ -104,10 +125,33 @@ describe('checkPeerAncestry', () => {
       const asHost = await checkPeerAncestry(424242, { hostPid: process.pid, socketFd: fd!, timeoutMs: 3000 })
       // With this process as the host, the mapped peer (the child) is a descendant although the claimed pid is not.
       expect(asHost).toBe('descendant')
+      // The child claiming the host's own pid is refused too (round 6 item 6: the shortcut comes after the mapping).
+      expect(await checkPeerAncestry(process.pid, { hostPid: process.pid, socketFd: fd!, timeoutMs: 3000 })).toBe('descendant')
       sock.destroy()
     } finally {
       child.kill()
       for (const f of after) f()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform === 'darwin')('the real lsof: an in-process client (the host holds both ends) claiming the host pid is ok', async () => {
+    // Token-free: a local unix socket this process both serves and connects to, and one lsof.
+    const dir = mkdtempSync('/tmp/orgai-peer-')
+    const path = join(dir, 's.sock')
+    const server = createServer()
+    const accepted = new Promise<Socket>((resolve) => server.on('connection', resolve))
+    await new Promise<void>((resolve) => server.listen(path, resolve))
+    const client = connect(path)
+    try {
+      const sock = await accepted
+      const fd = socketFdOf(sock)
+      expect(typeof fd).toBe('number')
+      expect(await checkPeerAncestry(process.pid, { hostPid: process.pid, socketFd: fd!, timeoutMs: 3000 })).toBe('ok')
+      sock.destroy()
+    } finally {
+      client.destroy()
+      server.close()
       rmSync(dir, { recursive: true, force: true })
     }
   })

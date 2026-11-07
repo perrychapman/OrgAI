@@ -5,6 +5,7 @@
  * repository, whose progress and cancel-on-close use the IPC sender) and forwards the host's push bus to windows when it made the bus
  * itself. The pure argument builders live in host/args.ts and are re-exported here for the existing tests.
  */
+import { appSecretReason } from '@shared/view/secretNotices'
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { CliShimResult, CliShimStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
 import { registerOutputsIpc } from './outputsIpc'
@@ -23,8 +24,10 @@ import { hiddenCharProblem } from './capabilities/sanitize'
 import { cleanMenuState, setMenuState } from './appMenu'
 import { log, logPath, logsDir } from './log'
 import { folderConfigTrustArgs, obj, teamFilesArgs } from './host/args'
+import { noopActivity } from './host/activity'
 import { HostDispatcher } from './host/dispatcher'
-import type { HostDispatchEnv, HostServices } from './host/types'
+import { runLeased } from './host/mutationLease'
+import type { HostActivityTrackerApi, HostDispatchEnv, HostServices } from './host/types'
 import { CLI_SHIM_UNAVAILABLE, type CliShimService } from './host/shimInstaller'
 
 /**
@@ -121,13 +124,83 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   OUTPUTS_IPC.outputsSaveAs
 ]
 
+/**
+ * Whether each desktop-only channel changes state (Wave 7, cli-standalone.md 4.3): a mutating one is registered through
+ * `handleMutating` (refused with host_draining while the host drains, an inFlightRpcMutations lease until its result
+ * settles). Every DESKTOP_ONLY_CHANNELS entry must be listed here (ipcLeases.test.ts), so a later channel is classified
+ * when it is added. Opening a dialog, a folder or the logs, reading, and cancelling (projects:cancelClone) are not
+ * mutations; installing the orgai command shim writes outside the data folder but is leased anyway (it must not race
+ * a quit).
+ */
+export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
+  [IPC.projectsPickDir]: false,
+  [IPC.skillLibraryAddFromFolder]: true,
+  [KIT_IPC.kitPickExportPath]: false,
+  [KIT_IPC.kitPickImportPath]: false,
+  [KIT_IPC.kitExport]: false,
+  [KIT_IPC.kitPreviewImport]: false,
+  [KIT_IPC.kitApplyImport]: true,
+  [IPC.menuSetState]: false,
+  [IPC.appOpenPath]: false,
+  [IPC.appOpenLogs]: false,
+  [IPC.appSetNotifications]: true,
+  [IPC.appCliShimStatus]: false,
+  [IPC.appInstallCliShim]: true,
+  [IPC.appUninstallCliShim]: true,
+  [IPC.projectsParseRepoSource]: false,
+  [IPC.projectsRepoTools]: false,
+  [IPC.projectsCloneRepo]: true,
+  [IPC.projectsCancelClone]: false,
+  [IPC.projectsSetFolderConfigTrust]: true,
+  [TEAM_FILES_IPC.teamFilesApprove]: true,
+  [TEAM_FILES_IPC.teamFilesReject]: true,
+  [TEAM_FILES_IPC.teamFilesUndo]: true,
+  [TEAM_FILES_IPC.teamFilesCommit]: true,
+  [TEAM_FILES_IPC.teamFilesEnable]: true,
+  [OUTPUTS_IPC.outputsOpen]: false,
+  [OUTPUTS_IPC.outputsReveal]: false,
+  [OUTPUTS_IPC.outputsSaveAs]: false
+}
+
+/**
+ * A refusal on its way to a window: secure storage's sentences name the orgai command, which an app-only user may not
+ * have, so they are put in the app's words (src/shared/view/secretNotices.ts appSecretReason). Any other error is
+ * returned as it is.
+ */
+export function appFacingError(err: unknown): unknown {
+  if (!(err instanceof Error)) return err
+  const text = appSecretReason(err.message)
+  if (text === err.message.trim() || text === err.message) return err
+  const out = new Error(text)
+  out.name = err.name
+  return out
+}
+
 /** Served over the socket only: HOST_IPC channels and host.* methods never get an ipcMain handler. */
 const SOCKET_ONLY: ReadonlySet<string> = new Set<string>([...Object.values(HOST_IPC), ...Object.values(HOST_METHODS)])
+
+type IpcHandler = (e: IpcMainInvokeEvent, ...args: never[]) => unknown
+
+/**
+ * The one way a desktop-only mutating channel is registered: refused with host_draining while the host drains, and an
+ * inFlightRpcMutations lease held until the handler's result settles (mutationLease.ts runLeased). Exported for tests.
+ */
+export function handleMutating(activity: HostActivityTrackerApi, channel: string, fn: IpcHandler): void {
+  if (DESKTOP_CHANNEL_MUTATES[channel] !== true) throw new Error(`${channel} is not a mutating desktop-only channel`)
+  ipcMain.handle(channel, (e: IpcMainInvokeEvent, ...args: unknown[]) => runLeased(activity, channel, () => fn(e, ...(args as never[]))))
+}
+
+/** A desktop-only channel that changes nothing: registered as is (refused by handleMutating's check the other way). */
+function handleReadOnly(channel: string, fn: IpcHandler): void {
+  if (DESKTOP_CHANNEL_MUTATES[channel] !== false) throw new Error(`${channel} is not a read-only desktop-only channel`)
+  ipcMain.handle(channel, (e: IpcMainInvokeEvent, ...args: unknown[]) => fn(e, ...(args as never[])))
+}
 
 export function registerIpc(services: IpcServices): void {
   const { projects, settings, skills, kit } = services
   const env: HostDispatchEnv = services.env ?? { app, platform: process.platform, logsDir }
   const dispatcher = services.dispatcher ?? new HostDispatcher({ ...services, env, desktop: { openRunWindow: services.openRunWindow } })
+  const activity = services.activity ?? noopActivity()
 
   // Window forwarding: only for a bus registerIpc made itself. A caller that passes `events` forwards it (index.ts).
   if (!services.events && !services.dispatcher) {
@@ -142,12 +215,22 @@ export function registerIpc(services: IpcServices): void {
     if (SOCKET_ONLY.has(channel)) continue
     // Compatibility: usage:refresh only with a usage monitor (the dispatcher answers null without one).
     if (channel === IPC.usageRefresh && !services.usage && !services.dispatcher) continue
-    ipcMain.handle(channel, (e: IpcMainInvokeEvent, ...args: unknown[]) => dispatcher.invoke(channel, args, { surface: 'desktop', senderId: e?.sender?.id }))
+    ipcMain.handle(channel, (e: IpcMainInvokeEvent, ...args: unknown[]) => {
+      const reply = (): unknown => {
+        try {
+          const r = dispatcher.invoke(channel, args, { surface: 'desktop', senderId: e?.sender?.id }) as unknown
+          return r && typeof (r as Promise<unknown>).then === 'function' ? (r as Promise<unknown>).catch((err: unknown) => Promise.reject(appFacingError(err))) : r
+        } catch (err) {
+          throw appFacingError(err)
+        }
+      }
+      return reply()
+    })
   }
 
   // ---- Desktop-only channels ----
   // Folder config trust: only the user in a window can trust a folder's own agent config (no socket handler exists).
-  ipcMain.handle(IPC.projectsSetFolderConfigTrust, (_e, raw: unknown): FolderConfigTrustResult => {
+  handleMutating(activity, IPC.projectsSetFolderConfigTrust, (_e, raw: unknown): FolderConfigTrustResult => {
     const input = folderConfigTrustArgs(raw)
     if (!projects.get(input.projectId)) throw new Error('Project not found')
     // A gated project keeps its saved rules in the data folder (projectRulesFile), never in the folder being judged.
@@ -158,13 +241,13 @@ export function registerIpc(services: IpcServices): void {
   const teamFiles = services.teamFiles
   if (teamFiles) {
     const filled = async (r: TeamFilesActionResult): Promise<TeamFilesActionResult> => ({ project: r.project, status: await teamFiles.withGit(r.status) })
-    ipcMain.handle(TEAM_FILES_IPC.teamFilesApprove, async (_e, input: unknown) => filled(teamFiles.approve(teamFilesArgs(input, true))))
-    ipcMain.handle(TEAM_FILES_IPC.teamFilesReject, async (_e, input: unknown) => filled(teamFiles.reject(teamFilesArgs(input, true))))
-    ipcMain.handle(TEAM_FILES_IPC.teamFilesUndo, async (_e, input: unknown) => filled(teamFiles.undo(teamFilesArgs(input))))
-    ipcMain.handle(TEAM_FILES_IPC.teamFilesCommit, async (_e, input: unknown): Promise<TeamFilesCommitResult> => teamFiles.commit(teamFilesArgs(input)))
-    ipcMain.handle(TEAM_FILES_IPC.teamFilesEnable, async (_e, input: unknown) => filled(teamFiles.enable(teamFilesArgs(input))))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesApprove, async (_e, input: unknown) => filled(teamFiles.approve(teamFilesArgs(input, true))))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesReject, async (_e, input: unknown) => filled(teamFiles.reject(teamFilesArgs(input, true))))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesUndo, async (_e, input: unknown) => filled(teamFiles.undo(teamFilesArgs(input))))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesCommit, async (_e, input: unknown): Promise<TeamFilesCommitResult> => teamFiles.commit(teamFilesArgs(input)))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesEnable, async (_e, input: unknown) => filled(teamFiles.enable(teamFilesArgs(input))))
   }
-  ipcMain.handle(IPC.projectsPickDir, async (e) => {
+  handleReadOnly(IPC.projectsPickDir, async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const result = win
       ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
@@ -173,7 +256,7 @@ export function registerIpc(services: IpcServices): void {
     if (picked) rememberPickedFolder(e.sender, picked)
     return picked
   })
-  ipcMain.handle(IPC.skillLibraryAddFromFolder, (e, input: unknown): SkillLibraryInfo[] => {
+  handleMutating(activity, IPC.skillLibraryAddFromFolder, (e, input: unknown): SkillLibraryInfo[] => {
     const i = obj<SkillLibraryFolderInput>(input)
     if (typeof i.path !== 'string' || !i.path) throw new Error('Choose a skill folder.')
     if (!pickedFolders.take(e.sender.id, i.path)) throw new Error('Choose the skill folder with the folder picker first.')
@@ -181,11 +264,11 @@ export function registerIpc(services: IpcServices): void {
   })
   // Deprecated (phase 1 removes NotificationsToggle): a mirror of AppSettings.notifications, the only source the
   // notifier reads.
-  ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean): void => {
+  handleMutating(activity, IPC.appSetNotifications, (_e, enabled: boolean): void => {
     settings.set({ ...settings.get(), notifications: !!enabled })
   })
   // Returns shell.openPath's contract: an error message, or '' on success. Never throws to the renderer.
-  ipcMain.handle(IPC.appOpenPath, async (_e, path: unknown): Promise<string> => {
+  handleReadOnly(IPC.appOpenPath, async (_e, path: unknown): Promise<string> => {
     try {
       const list = projects.list()
       const refusal = openPathRefusal(path, {
@@ -204,19 +287,19 @@ export function registerIpc(services: IpcServices): void {
       return 'OrgAI could not open that folder.'
     }
   })
-  ipcMain.handle(IPC.appOpenLogs, async () => {
+  handleReadOnly(IPC.appOpenLogs, async () => {
     logPath() // creates the folder if nothing has been logged yet
     const error = await shell.openPath(logsDir())
     if (error) log.warn(`Could not open logs folder: ${error}`)
   })
   // What the renderer shows, for enabling application menu items. Booleans only; nothing is echoed back.
-  ipcMain.handle(IPC.menuSetState, (e, input: unknown): void => {
+  handleReadOnly(IPC.menuSetState, (e, input: unknown): void => {
     const win = BrowserWindow.fromWebContents(e.sender)
     if (win && !win.isDestroyed()) setMenuState(win, cleanMenuState(input))
   })
-  registerCliShimIpc(services.cliShim)
-  if (kit) registerKitIpc(kit)
-  if (services.repoClone) registerRepoIpc(services.repoClone)
+  registerCliShimIpc(activity, services.cliShim)
+  if (kit) registerKitIpc(activity, kit)
+  if (services.repoClone) registerRepoIpc(activity, services.repoClone)
   registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir })
 }
 
@@ -273,22 +356,22 @@ export function watchSenderGone(sender: GoneWatchable, onGone: () => void): () =
   }
 }
 
-function registerRepoIpc(repoClone: RepoCloneService): void {
-  ipcMain.handle(IPC.projectsParseRepoSource, (_e, text: unknown): RepoSourceParse => {
+function registerRepoIpc(activity: HostActivityTrackerApi, repoClone: RepoCloneService): void {
+  handleReadOnly(IPC.projectsParseRepoSource, (_e, text: unknown): RepoSourceParse => {
     try {
       return typeof text === 'string' ? repoClone.parse(text) : parseRepoSource(undefined)
     } catch {
       return parseRepoSource(undefined)
     }
   })
-  ipcMain.handle(IPC.projectsRepoTools, async (): Promise<RepoTools> => {
+  handleReadOnly(IPC.projectsRepoTools, async (): Promise<RepoTools> => {
     try {
       return await repoClone.tools()
     } catch {
       return { git: { available: false }, gh: { available: false, loggedIn: false, detail: 'OrgAI could not check your GitHub CLI sign-in.' } }
     }
   })
-  ipcMain.handle(IPC.projectsCloneRepo, async (e, raw: unknown): Promise<RepoCloneResult> => {
+  handleMutating(activity, IPC.projectsCloneRepo, async (e, raw: unknown): Promise<RepoCloneResult> => {
     const input = repoCloneArgs(raw)
     const sender = e.sender
     const onProgress = (event: RepoCloneProgress): void => {
@@ -306,7 +389,7 @@ function registerRepoIpc(repoClone: RepoCloneService): void {
       stopWatching()
     }
   })
-  ipcMain.handle(IPC.projectsCancelClone, (_e, id: unknown): void => {
+  handleReadOnly(IPC.projectsCancelClone, (_e, id: unknown): void => {
     try {
       repoClone.cancel(repoCancelArg(id))
     } catch {
@@ -326,7 +409,7 @@ function cliShimStatusOf(shim: CliShimService | undefined): CliShimStatus {
   }
 }
 
-function registerCliShimIpc(shim: CliShimService | undefined): void {
+function registerCliShimIpc(activity: HostActivityTrackerApi, shim: CliShimService | undefined): void {
   const unavailable = (): CliShimResult => ({ ok: false, message: CLI_SHIM_UNAVAILABLE.reason ?? '', status: CLI_SHIM_UNAVAILABLE })
   const change = (what: 'install' | 'uninstall') => async (): Promise<CliShimResult> => {
     if (!shim) return unavailable()
@@ -338,9 +421,9 @@ function registerCliShimIpc(shim: CliShimService | undefined): void {
       return { ok: false, message: `OrgAI could not change the orgai command: ${message}`, status: cliShimStatusOf(shim) }
     }
   }
-  ipcMain.handle(IPC.appCliShimStatus, (): CliShimStatus => cliShimStatusOf(shim))
-  ipcMain.handle(IPC.appInstallCliShim, change('install'))
-  ipcMain.handle(IPC.appUninstallCliShim, change('uninstall'))
+  handleReadOnly(IPC.appCliShimStatus, (): CliShimStatus => cliShimStatusOf(shim))
+  handleMutating(activity, IPC.appInstallCliShim, change('install'))
+  handleMutating(activity, IPC.appUninstallCliShim, change('uninstall'))
 }
 
 // ---- Practice kit ----
@@ -365,13 +448,13 @@ function rememberKitPath(picks: PickedPaths, sender: WebContents, path: string):
  * only a path the same renderer picked (an export path is consumed by a successful export). Inputs are rebuilt field by
  * field (`exportArgs`, `applyArgs`).
  */
-function registerKitIpc(kit: KitService): void {
+function registerKitIpc(activity: HostActivityTrackerApi, kit: KitService): void {
   const pickedPath = (input: unknown): string => {
     const p = input && typeof input === 'object' && !Array.isArray(input) ? (input as { path?: unknown }).path : undefined
     if (typeof p !== 'string' || !p || p.length > 4096) throw new Error('Choose a kit file.')
     return p
   }
-  ipcMain.handle(KIT_IPC.kitPickExportPath, async (e): Promise<string | null> => {
+  handleReadOnly(KIT_IPC.kitPickExportPath, async (e): Promise<string | null> => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const options = { title: 'Save a practice kit', defaultPath: 'practice.orgai-kit.json', filters: [{ name: 'OrgAI kit', extensions: ['json'] }] }
     const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
@@ -380,7 +463,7 @@ function registerKitIpc(kit: KitService): void {
     rememberKitPath(kitExportPicks, e.sender, path)
     return path
   })
-  ipcMain.handle(KIT_IPC.kitPickImportPath, async (e): Promise<string | null> => {
+  handleReadOnly(KIT_IPC.kitPickImportPath, async (e): Promise<string | null> => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const options = { title: 'Import a practice kit', properties: ['openFile' as const], filters: [{ name: 'OrgAI kit', extensions: ['json'] }] }
     const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
@@ -388,19 +471,19 @@ function registerKitIpc(kit: KitService): void {
     if (path) rememberKitPath(kitImportPicks, e.sender, path)
     return path
   })
-  ipcMain.handle(KIT_IPC.kitExport, (e, input: unknown): KitExportResult => {
+  handleReadOnly(KIT_IPC.kitExport, (e, input: unknown): KitExportResult => {
     const i = kitExportArgs(input)
     if (!kitExportPicks.has(e.sender.id, i.path)) throw new Error('Choose where to save the kit with the Save dialog first.')
     const out = kit.export(i)
     kitExportPicks.take(e.sender.id, i.path)
     return out
   })
-  ipcMain.handle(KIT_IPC.kitPreviewImport, (e, input: unknown): KitImportPreview => {
+  handleReadOnly(KIT_IPC.kitPreviewImport, (e, input: unknown): KitImportPreview => {
     const path = pickedPath(input)
     if (!kitImportPicks.has(e.sender.id, path)) throw new Error('Choose the kit file with the file dialog first.')
     return kit.previewImport({ path })
   })
-  ipcMain.handle(KIT_IPC.kitApplyImport, (e, input: unknown): KitApplyResult => {
+  handleMutating(activity, KIT_IPC.kitApplyImport, (e, input: unknown): KitApplyResult => {
     const i = kitApplyArgs(input)
     if (!kitImportPicks.has(e.sender.id, i.path)) throw new Error('Choose the kit file with the file dialog first.')
     return kit.applyImport(i)

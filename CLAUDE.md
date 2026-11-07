@@ -63,7 +63,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
   - Who ended it: `RunSummary.endedBy` is 'user' after End session (`RunManager.stop`, saved with the 'stopping'
     status so a quit or crash keeps it), 'app' when OrgAI quit (`stopAll({ reason: 'quit' })` through
-    `quitGate.ts`, at most 3 s, then the synchronous `markQuit()` writes what is left) or crashed (RunStore boot
+    the `ShutdownCoordinator` in `host/shutdown.ts`, at most 3 s, then the synchronous `markQuit()` writes what is left) or crashed (RunStore boot
     normalization, `endedBy ??= 'app'`), always next to `endedWithApp: true` (only then), and absent when the run
     ended on its own; junk values are dropped on read, a legacy lone `endedWithApp` gets 'app'. With 'app',
     `endedWhile` says what it was doing: 'waiting' (idle or a card open), 'working' (starting, running, stopping),
@@ -681,6 +681,184 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - CLI & host (docs/design/cli-spec.md; Waves 0-5 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
   self-control gate, the read-only `orgai` CLI, headless exec, the terminal UI and the management commands; see the
   spec's "Implementation status" for deviations and what is unverified):
+  - Wave 7 (standalone `orgai`; docs/design/cli-standalone.md, its section 13 Round 6 is binding; cli-spec.md "Implementation
+    status, Wave 7"; merged to dev via PR #24, 2026-11-07). Verified on macOS by unit tests, real
+    in-process / Node host integration tests and a few e2e scripts; nothing ran on Windows or Linux, against a real OS key
+    store, the real npm registry or a packaged build (see Unverified at the end of this bullet).
+  - Package and channel: npm package `orgai-cli` (bin `orgai`; owner decision D1 2026-11-06, npm refused `orgai`), built by
+    `scripts/build-npm-package.mjs` (`--dry-run`, `--shrinkwrap` (default: none); pure parts in `scripts/lib/npmPackage.mjs`) into
+    `release/npm/package` + `orgai-<v>.tgz` from `out/cli` plus `out/cli/install.json` (`{ channel: 'npm'|'app'|'archive',
+    version, commit }`, written and removed by `scripts/write-install-info.mjs`; `withInstallInfoCleanup` removes it after
+    electron-builder, also on SIGINT / SIGTERM / SIGHUP, not SIGKILL; absent = 'dev'; a file that is present but invalid
+    reads as 'dev' with `source: 'invalid'` and is never treated as a checkout; `src/cli/installInfo.ts`, `--version` and
+    doctor print it). Dependencies are pinned exactly; `engines.node` is `>=22.19.0 <23 || >=24.5.0` (from the typings and
+    memory of the Node changelog, UNVERIFIED); no lifecycle scripts in our package, and `scripts/npm-install-scripts-allowlist.json`
+    lists the install scripts verify-npm tolerates in the tree. Owner decision D10 (2026-11-06, to revisit):
+    `NPM_SHRINKWRAP=none` in release.yml and ci.yml (no `npm-shrinkwrap.json`); with npm 11.12.1 a honoured shrinkwrap
+    installed every platform's Claude runtime (about 2 GB, which makes verify-npm step 1 fail), `none` installs about 300 MB. `full` stays behind that one setting
+    and CI always dry-runs the full derivation. release.yml: `npm-package` -> `verify-npm` (macos-15, windows-latest,
+    ubuntu-latest x Node at the engines floor and 24; `scripts/verify-npm.mjs` implements spec 3.4 steps 1-7: step 1b
+    `--ignore-scripts` is skipped after a failed step 1; step 6 is the vault flow with a key file and a local fake LiteLLM
+    proxy, run on the built bundle by `cli/vaultCli.int.test.ts`) -> `publish-npm` (needs meta, build, npm-package and
+    verify-npm; environment `npm-publish`, OIDC with `--provenance`, `--tag next` for prereleases, sha256-compares the
+    verified tarball, refuses unless the environment variable `NPM_PUBLISH_ENABLED` is 'true'). Release checklist: in
+    Settings > Environments > npm-publish add required reviewers, limit deployment branches and tags to the tag pattern `v*` (publish runs on a tag ref; the meta job already checks the commit is on main), set
+    `NPM_PUBLISH_ENABLED=true` there (never at repository or organisation level); add the `NPM_TOKEN` secret for the first
+    publish (D2 fallback). release.yml has three desktop build jobs on two OSes (Windows x64, macOS arm64, macOS x64) and
+    no Linux leg: Linux is covered only by verify-npm. `pack:verify` checks (f) and (g) now also require `daemon status` to
+    report a running 'headless-host' and `daemon stop` to answer `stopped: true` ((g) is the only check that the npm CLI
+    drives the packaged app). The RunAsNode fuse is NOT changed (phase D not built); the app-bundled CLI is not retired.
+  - Host selection (`src/cli/client/ensureHost.ts`, `launcher.ts`, `sharedHost.ts`): `--host auto` falls back to an
+    in-process host (one stderr line) when `HostLauncher.resolve()` finds no app (`absent`); a found-but-missing binary is
+    `broken` and an error naming the path, as is a dev checkout (both markers) without `out/main/index.js` or its electron
+    binary. Installed-app discovery: `/Applications/OrgAI.app`, `~/Applications`, NSIS per-user / per-machine paths; Linux none. `--host daemon` never runs a
+    host in-process: with none live it starts the app, else a Node host (`BACKGROUND_HOST_KINDS` desktop, headless-host,
+    node). Step 0 (review): under auto and daemon an 'inproc' host that is neither the context's own nor shared is never
+    used: the command prints `OTHER_COMMAND_HOST_NOTE`, waits (`waitForGone`, `HOST_STARTING_WAIT_MS` 15 s total, at most 5
+    rounds) and then exits 6 (`OTHER_COMMAND_HOST_MESSAGE`) if it stays. A shared host is one started by `orgai daemon start
+    --host inproc` (also `--foreground`), told apart by the marker `<data>/run/inproc-shared-<hostInstanceId>` (0600, pid;
+    written after ownership, removed on cleanup, stale ones swept by a new shared host); tests and e2e that hand-start a
+    host for other contexts must pass `shared: true`. A host started by an older CLI has no marker and is waited out
+    (accepted). `ORGAI_SECRET_*` / `--secret-env` rules follow spec 4.1 (Round 6 item 8); `ORGAI_SECRET_*` names are refused as
+    `--from-env` / `--client-secret-from-env` / `decide --secret` sources (exit 2).
+  - Node host (`HostKind 'node'`, `src/cli/nodeHost.ts`, hidden `daemon run-node`): `orgai daemon start [--runtime app|node]`
+    spawns `process.execPath <orgai.mjs> daemon run-node` detached (stdio to `<userData>/logs/node-host.log`, rotated to
+    `node-host.old.log` above 5 MB only by a start that finds no live host; a running host's log is not capped, open
+    Low); refused on the app-bundled CLI (Electron execPath). `HostLauncher.checkBackground('node')` and the Terminal-access
+    level question run before anything is stored or stopped (`daemon restart` also does `nodeHostRefusal` and
+    `assertSettingsWritable` before the old host stops; the answer is stored after the stop, a failed write then warns and
+    starts with the stored level). `waitForReady` rejects with `HostTakenError` when the spawned host handed off to a ready
+    host of another kind (exit 0 without `--runtime`, 1 with an explicit other kind). Terminal access: `orgai terminal-access
+    [on|off] [--level full|operate]` runs in-process, only when no host owns the folder, writes `terminalServer`,
+    `terminalServerChosen`, `terminalAccessLevel` and `terminalAccessLevelChosen` under `<data>/run/startup.mkdir` after
+    re-checking `daemon.json`; a live process starting past the wait gives exit 6 with `hostStartingMessage`. `daemon start`
+    refuses a Node host when the stored choice is off. The level question ("... [full/operate] (Enter keeps <stored>)") is
+    asked once on a terminal; a stored 'full' without the marker counts as chosen. A Node host refuses a socket `settings:set`
+    with `terminalServer` false while it is stored on (`NODE_TERMINAL_ACCESS_OFF_REFUSED`, `turnsNodeTerminalAccessOff`). Default level
+    `operate` (D9). `registry.ts` uses `canOpenWindows` (false for inproc and node). Unit-tested; `nodeHost.int.test.ts` and
+    `daemonNodeHost.int.test.ts` spawn a real Node host on macOS (skip on Windows; the two bundle tests run again after the
+    build in ci.yml with `ORGAI_REQUIRE_NODE_HOST_INT=1`).
+  - Shutdown and handoff (`src/main/host/shutdown.ts` `ShutdownCoordinator`; `quitGate.ts` is deleted): every exit path
+    (host.stop, the app's handoff stop, desktop Quit through `desktopQuit.ts` `beforeQuitHandler` which holds before-quit,
+    the last window on Windows / Linux, headless and Node idle exit, signals via `installShutdownSignals`, inproc cleanup)
+    runs: drain (state 'draining', mutations refused `host_draining`, quiesce, `RunManager.stopAll({ reason: 'quit' })` for at
+    most 3 s then `markQuit`, when forced or any run is live), `settleWriters` (no deadline of its own), `onDrained` from
+    setImmediate (the host.stop reply is queued first), `HostSocketServer.closeGracefully` (`SOCKET_CLOSE_GRACE_MS` 2 s),
+    `ownership.release()`, exit; will-quit only closes the socket. At `SHUTDOWN_HARD_LIMIT_MS` (60 s) `killHostDescendants`
+    reads the process table (POSIX `ps`, Windows CIM `Win32_Process`), SIGTERM / `taskkill /PID`, `KILL_TERM_GRACE_MS` 5 s,
+    SIGKILL / `/F`, then 1 s steps up to `KILL_WAIT_MS` 60 s, then `exitAtHardLimit`; the desktop's own Electron helpers and
+    the coordinator's own helper processes (and anything under them; Windows rows older than their claimed parent) are never
+    targets. `HostDispatcher.invoke` leases every mutating channel and ipc.ts wraps every mutating desktop-only channel the
+    same way (`ipcLeases.test.ts`); `mcp:authorize` leases only its final commit (`COMMIT_LEASED_CHANNELS`); quiesce aborts OAuth
+    flows (`McpService.dispose`), repository clones, Team assistant / evaluation model calls and `draft:orgChart`
+    (`draftOrgChart` takes an AbortSignal). Handoff (`src/main/handoff.ts` `DesktopHandoff`, `index.ts` `waitingForHandoff`): an
+    interactive launch whose folder a Node host owns sends `host.stop({ force: false, handoff: true })` over a 'desktop'
+    connection (D8: `host.status` / `host.stop` only, whatever Terminal access is); the wait window shows after
+    `HANDOFF_WINDOW_DELAY_MS` (1 s), lists `handoffBlockers` / `refusedBecause` and offers "Open when they finish" (retry 5 s),
+    "Stop them and open" (forced; once sent, a timeout or closed connection counts as stopping) and Quit; empty blockers means the
+    host could not read its run state (fails closed). An inproc owner is never stopped ("Open when it ends" / Quit). The app takes
+    the folder only after the owner process exited (`ownerExitCheck`: signal probe per 250 ms poll, start time re-read every
+    `HANDOFF_START_TIME_RECHECK_MS` 30 s); no answer or an owner older than Wave 7 shows the busy-folder dialog with the
+    `orgai daemon stop --force` hint and exits 6; a headless launch never hands over. `orgai app` with a node / inproc owner
+    returns 0 with `HANDOFF_OPENED_MESSAGE`. Peer check (`peerCheck.ts`): the self-pid shortcut now follows the macOS OS mapping
+    (Round 6 item 6). Unit tests, real owner-process integration tests (`shutdown.int`, `handoff.int`, `inprocShutdown.int`) on macOS;
+    the desktop Quit through a real Electron before-quit and the window parts are not driven.
+  - Vault (`src/main/store/`: `secrets.ts` `SecretStore`, `vaultTypes.ts`, `vaultCrypto.ts`, `vaultFile.ts`, `vaultMetadata.ts`,
+    `reconcile.ts`, `durableFs.ts`, `unavailableCustodian.ts`, tests `vaultStore.fixture.ts`): `<data>/vault.json`
+    (`orgai.vault/1`, AES-256-GCM, one data key per folder, AAD binds format, vault id and key; `check` record; tombstones;
+    `legacy` baseline; `legacyRetired`) is written by every host kind; the app keeps `secrets.json` (safeStorage) in step during
+    the dual-write window and reconciles it by the spec 5.5 rules (an older app keeps working; disappearances are soft
+    deletes; retirement is NOT built, `legacyRetired` is only read). States absent / open / locked / missing-key / key-mismatch /
+    corrupt; an unreadable `vault.json` follows the corrupt rules but reports 'locked' with the I/O reason, an unreadable
+    `secrets.json` refuses value writes on every host. `openSecretStore` runs after `acquireHostOwnership` and before
+    `bootOrgAIHost` and uses the real custodians by default (`createCustodianFactory`); the desktop under `ORGAI_MOCK=1` passes
+    `unavailableCustodianFactory` so e2e never writes an OS key item, and the unit runner sets `ORGAI_VAULT_NO_OS_KEYSTORE=1`
+    (vitest.config.ts); tests must inject a fake custodian or a key file in a temp folder, never the OS schemes. Node and inproc
+    hosts create the vault lazily in `prepareWrite()` (single-flight); `HostDispatcher.invokeRpc` awaits it when the channel's
+    `storesSecret` predicate (`host/storesSecret.ts`) is true; `set()` with a value on an absent vault throws `VaultNotReady` (a
+    bug trap). `set(key, null|'')` and `clear(key)` are explicit clears and throw the store's sentence when refused (corrupt,
+    recovery pending, `secretClearFailedMessage`, `notDurable`); `delete()` / `deletePrefix()` are removals that never throw
+    and leave keys they cannot handle (counted orphaned); `connectors:setToken` null, `connections:logout('litellm')` and `revokeAuth` call `clear()`
+    (a failed save throws and the record is not changed, integration review). Approved MCP proposals use one slot rule (`mcp/proposalSecrets.ts`
+    `proposalTypedSlots`); secrets are stored before any record changes (`storeFirst`, `commitOAuth`) and rolled back with
+    `status()` priors (a key unreadable before keeps the new value, warning logged); `ProposalSecretsNotSaved` keeps the card open. Integration review fixes: on the Claude adapter secret MCP env values, secret headers and the OAuth bearer leave the `claude` child's argv
+    (placeholders in `--mcp-config`, real values in `options.env`; `setMcpServers` keeps real values as a control message); host git
+    no longer inherits `ORGAI_SECRET_*` / `ORGAI_VAULT_*`; the mock inproc host never uses an OS key store without a key file (e2e
+    `cliLib` names a throwaway one); an inproc host has no idle exit.
+    `secrets:reset` refuses while a predicate-prepared write, a sign-in or a refresh is in flight (`setResetBusyCheck`).
+    Failures repeat in the log at most once per `VAULT_REPEAT_LOG_MS` (24 h). `SecretsStatusResult.readError` carries the
+    I/O sentence. ConnectionService says "The LiteLLM API key cannot be read here: <reason>." for an unreadable key. Channels
+    `secrets:status` (read), `secrets:init`, `secrets:reset`, `secrets:undelete`, `secrets:confirmDelete` (configure); CLI
+    `orgai secrets status [--probe] | init [--key-file <path> [--import]] | reset --yes | undelete <key>` (no value ever
+    printed; no `confirm-delete` command, the app notice is not built so removed secrets are listed by doctor / status),
+    `connections set-secret`, `mcp set-secret` and `mcp authorize` work on Node and inproc hosts. Unit tests with fault
+    injection at every write boundary, `secretChannelsReal` (real store + key-file custodian), `vaultCli.int`, `doctorVault.int`.
+  - Custodians (`src/main/store/custodians/`, child processes only, absolute binaries, `shell: false`, tmpdir cwd, 10 s timeout,
+    per-scheme environment allowlist, values on stdin / stdout): keychain (`/usr/bin/security -i -q`, service "OrgAI
+    Vault"; exit codes are classified before wording, and with exit 0 only a `security: ` error line's message counts),
+    dpapi-user (PowerShell `ProtectedData`, entropy `orgai.vault/1:<vaultId>`, Constrained Language Mode = denied),
+    secret-service (`secret-tool`, needs a session bus), key-file (opt-in through `ORGAI_VAULT_KEY_FILE` or `secrets init
+    --key-file`; never inside the user-data folder; created `O_EXCL|O_NOFOLLOW` 0600; Windows protected DACL through `icacls`;
+    macOS `ls -le` ACL check refuses allow entries, gap: it reads the path, not the descriptor). Create reads the key back and
+    removes the item on a failed or different read-back. `CustodianFactoryOptions.currentCustody` is read per call;
+    `CustodianCreated.keyFile` is the canonical path. `childEnv.ts` scrubs `ORGAI_VAULT_*` from Claude, Codex and MCP children.
+    The gate also denies `/proc/<pid>/environ` words and `ps` environment flags (a script reading another process's environment still gets `ORGAI_SECRET_*`). Threat model: same-user processes (agents included) can reach the key on all platforms; on macOS this weakens safeStorage's
+    app-only item (D4 accepted). Fakes and fixtures only: `scripts/probe-custodian.mjs` (creates, reopens in a fresh process and
+    deletes one item under a throwaway id) exists and has NOT been run (needs the owner's consent).
+  - Self-control gate additions (`selfControlGate.ts`, `referenceDirectories.ts`): package runners naming `orgai-cli` / `orgai` /
+    `@orgai/cli` (with `--package=`, `-p`, `npm:`, `@version`, and globs keeping 3 of the letters of "orgaicli" in order); reads of
+    `<data>/vault.json*` / `secrets.json*`, the key file and any `ORGAI_VAULT_*` word; `security` read as getopt does
+    (`--`, `-pX`, `-p X`) and unwrapped through `launchctl asuser|bsexec` and `script`; `secret-tool`, D-Bus tools naming
+    `org.freedesktop.secrets`, PowerShell `ProtectedData` / `Unprotect`; the name "OrgAI Vault" only after `security`, `keyring`,
+    `kwallet-query`, `kwalletcli`, `kwallet5-query`, `kwallet6-query` (a plain `grep -rn 'OrgAI Vault' src` passes; code runners
+    still deny it anywhere, and `print('security')` is denied as a side effect); bracket globs that can match only one letter
+    count as that letter (`globKeptLetters`); `localDrivePathOf` maps `\\?\C:\`, `\\.\C:\`, `//?/C:/`, `\\localhost\c$` to the
+    drive path in definite (self-control) mode on win32 only (reference mode still treats every UNC word as touching). They are text
+    checks, a speed bump, not a boundary. The scan-cost test checks linearity (best of 3, 2n under 3x n plus 100 ms), not a wall clock.
+    Unit tests and pure-function probes only; never run in a real shell against the real tools or on Windows.
+  - Agent runtimes: `runtime/claudeBinary.ts` `claudeExecutable(env)` is the one resolver (claude.ts runs, probes, completions and
+    `anthropicAuth.ts`), evaluated per call: `ORGAI_CLAUDE_PATH` (absolute, existing regular file, not .cmd / .bat / .ps1 / .js /
+    .mjs / .cjs; when set it decides), the app.asar.unpacked native package, the SDK per-platform package via `createRequire` from
+    the bundle and then from the SDK's own folder, else `claudeRuntimeMissingMessage`. `claude auth status` runs `execFile` on
+    that binary only; a `claude` on PATH or in a well-known folder is only named in the error. An apiKey connection also reports
+    'error' when no runtime resolves. `runtime/codexBinary.ts` `lookupCodexBinary`: `ORGAI_CODEX_PATH` first (when set it decides; a
+    POSIX `#!` wrapper that maps to no package is used as is, a Windows .cmd / .ps1 is refused), then `@openai/codex-<platform>-<arch>`,
+    then a synchronous PATH walk (never the cwd). Hits are classified by content: native binaries used as is, npm shims mapped to the
+    vendor binary and never spawned. `checkCodexBinary` runs `--version` (cached by realpath + mtime + size) in
+    `CodexAppServer.start` and the OpenAI probe; outside 0.166.x it refuses ("Codex <v> is not supported; install
+    @openai/codex@0.166.0"), except `ORGAI_CODEX_PATH`, which gets one run warning (a test ties package.json's pin to
+    `CODEX_PINNED_VERSION`). Codex is not a dependency of the npm package. The Codex MCP restart creates no app-server after End
+    session; `codex --version` / app-server children untrack from `host/shutdown.ts` on 'error' and 'close' as well as 'exit'.
+    Unit-tested with fake file systems and fake servers only; no real claude or codex binary was resolved through these paths.
+  - Doctor (`src/cli/doctor/`): installChecks (channel, every `orgai` on PATH, shadowed newer one), runtimeChecks, secretsChecks (vault
+    state 'absent' is ok on Node and inproc hosts, a warning on the app where creation failed; reads `vault.json` metadata only
+    without a host and never decrypts). `shimInstaller` `otherCli` prefers an npm or archive `orgai` anywhere on PATH; the shim path
+    counts as this install's own only while an OrgAI shim sits there, so npm's link in `~/.local/bin` is named "The orgai command from
+    npm (<v>) is on your PATH at <path>. OrgAI leaves it alone." and Install is refused (`CliShimRow`, `lib/cliShim.ts`).
+  - PR #24 review fixes (2026-11-07, unit-tested only, nothing live): MCP secrets that leave argv (cli-standalone R3) go into the
+    agent CLI's environment under random per-query names `ORGAI_MCP_<16 hex>_<n>_<k>` (Codex: per launch, `..._H<k>`). The
+    self-control gate denies any word referencing ORGAI_MCP_ or ORGAI_VAULT_ (and shortened prefixes such as `ORGAI_` or `ORGAI*`)
+    and, best effort, bare whole-environment dumps (env / printenv with no name, bare set / export -p / declare -x, compgen -v,
+    gci env:, [Environment]::GetEnvironmentVariables). This is not a boundary: code runners, script files and stdio MCP servers can
+    still read the environment (open Lows: compgen -A variable, `${!O@}`, wrappers, Read of /proc/self/environ). `validateSpec`
+    refuses `${` in plain command, args, env values, URL, header values and per-project overrides; specs stored earlier are not
+    re-checked. `claude auth status` never runs in os.tmpdir(), where a planted `<tmp>/.claude/settings.json` was loaded as project
+    settings. Its probe children are tree-killed on timeout, abort and ConnectionService.dispose. `ps` / `lsof` / `secret-tool` come
+    from fixed absolute paths (`systemBinaries.ts` psExecutable / lsofExecutable). `SecretStore.purge` removes a rolled-back MCP
+    proposal secret without a tombstone. "Keep removed" on the Dashboard secret notice asks first (`secret-keep-removed-confirm`).
+    `orgai secrets reset` moves the old vault aside (`vault.json.reset-*`) and does not delete it: those copies stay in the data
+    folder, still encrypted with the old key, until removed by hand, and the gate keeps agents away from them. Tests and e2e that
+    create vault key files use `src/main/testSupport/privateTempDir.ts` / `e2e/privateDir.mjs`: on win32 a %TEMP% that grants other
+    accounts inheritable write makes keyFile.ts refuse the folder.
+  - Unverified (Wave 7): Windows and Linux entirely (Node host spawn / log rotation, named pipes, the `withStartupMutex` win32 tests
+    run only with an injected platform, DACL, DPAPI latency, taskkill / CIM paths); any real OS key store (keychain, DPAPI, Secret
+    Service: only fakes, a key file and the macOS `ls -le` against temp dirs); the real `security` stderr shape; the real npm
+    registry (publish, provenance, `NPM_PUBLISH_ENABLED` resolving from the environment, how npm treats a published shrinkwrap; the
+    workflow YAML has not run; ci.yml's `none` install and the always-full dry run have not run in CI); verify-npm on Windows and
+    Linux; packaged builds (pack:verify (f) / (g) with the new status / stop checks ran only against a fake runner); the Node
+    version floor; a real Electron quit and the handoff window by eye; a real Node host draining more than 5 s under a forced
+    handoff (if it hangs after a confirmed forced stop, only Quit is offered, no upper bound); `scripts/probe-custodian.mjs`. Hidden e2e
+    windows are the owner's local preference and are not in the branch.
   - Wave 5: `init`, `projects`, `org`, `team`, `worktrees`, `permissions`, `connections`, `models`, `usage`, `notes`,
     `mcp`, `skills`, `knowledge`, `kit` in `src/cli/commands/` over `src/cli/manage.ts` (`confirm` asks on /dev/tty
     whenever stdin is a terminal, else exit 2 without --yes). Contracts: `McpAuthorizeInput.openBrowser` /
@@ -1085,7 +1263,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     custom round trip (skipped when the mock catalog has no id outside the tiers). Unit tests: scrollWithin,
     settingsCopy, roleModels, assistantModels, settingsTarget, permissionCopy. Non-Anthropic connections are not
     driven. Open: N7, N9, N13 and the Lows in ARCHITECTURE.md Risks.
-- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
+- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
   `ImportNotice.source: 'template'`), New project "Start from a template" (`setup-choice-template`,
@@ -1359,13 +1537,13 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - `authMethod` values seen: `claude.ai` (a /login), `oauth_token` (`CLAUDE_CODE_OAUTH_TOKEN` or an
     `ANTHROPIC_AUTH_TOKEN` env, indistinguishable), `api_key` with `apiKeySource`, `none`. Verified.
   - The project settings source reads `<cwd>/.claude/settings.json`, so the status runs in `os.tmpdir()`, never the
-    home dir. The bundled CLI is tried first (execFile), then PATH candidates found by `execFile(<SystemRoot>\System32\where.exe,
-    ['$PATH:claude'])` (PATH only, never the cwd) / `execFile('which', ['-a', 'claude'])`, both in the temp dir with
-    no shell and absolute paths only, plus the well-known install
-    paths, with no bare `claude` fallback (nothing found reports "Claude Code CLI not found" with the places
-    looked). A shell is used only for Windows .cmd/.bat shims without metacharacters; a CLI that rejects the flag is retried without it and its detail says user
-    settings could not be excluded. The disconnected detail tells the user to run claude and /login, set an API
-    key, or choose another default connection. Wiring is unit-tested with an injected runner.
+    home dir. The binary is the one resolver `runtime/claudeBinary.ts` `claudeExecutable(env)` (see Wave 7, Agent runtimes),
+    run with `execFile` only, no shell, absolute path, no bare `claude` fallback; nothing resolved reports
+    `claudeRuntimeMissingMessage`, and a `claude` found on PATH or in a well-known folder (`claudeWellKnownPaths`) is only
+    named in the error (a .cmd / .ps1 one with "set ORGAI_CLAUDE_PATH to the claude executable it starts"). A CLI that rejects
+    the flag is retried without it and its detail says user settings could not be excluded. The disconnected detail tells the
+    user to run claude and /login, set an API key, or choose another default connection. Wiring is unit-tested with fake file
+    systems and an injected runner.
 - Auth failures in a run: `activity.ts` `isAuthFailure` and `authFailureMessage(connection)`. A failure is the SDK
   assistant `error: 'authentication_failed'`; the exact bare CLI reply "Invalid API key · Please run /login"
   (separator `·`, `-` or `.`, nothing else in the text), the only text match without an error flag; short text that
@@ -1674,8 +1852,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - `trustSystemCertificates(options?)` (`src/main/systemCerts.ts`, issue #16) runs after `applyShellPath()`, only once the single-instance lock is ours (a second launch that exits never starts the macOS reader), and `--host inproc` (`src/cli/inprocHost.ts`, option `systemCertificates`, default on unless `startBackground: false`) calls it right after taking `<data>/run/` ownership and stops the read when the host ends or the process exits (unit-tested with injected hooks; the real CLI path is unverified): `tls.setDefaultCACertificates` gets the defaults plus the OS store's certificates (deduplicated, fail-open) so main-process `fetch` trusts a corporate / inspecting root CA. Windows and Linux read the store synchronously. macOS never reads it on the main thread, except in launches with `--use-system-ca` where `getCACertificates('default')` reads the store (`getCACertificates('system')` can stall in the Security framework, nodejs/node#63313; public reports of 5 s to about 10 s, one of 107 s, anthropics/claude-code#76079): a child `process.execPath -e <script>` with `ELECTRON_RUN_AS_NODE=1` and a minimal env (`childEnvFor`: HOME, PATH, user and temp vars; no tokens, no NODE_OPTIONS) prints the system certificates as a JSON array of PEM strings, started with `cwd: os.tmpdir()`, killed at `SYSTEM_CERT_READ_TIMEOUT_MS` (120 s; the child costs main nothing while it waits), on a quit that goes ahead (`stopSystemCertRead` inside the one before-quit handler, after the terminal-clients prompt; the child is unref'd, so after a crashed main it can outlive it until its native call returns) or past 8 MB of output; index.ts exits at once when `ELECTRON_RUN_AS_NODE` is set in the main script (a RunAsNode fuse turned off would otherwise boot a full app in the child); non-zero exit, spawn error or malformed output fail open; main merges and sets. `systemCertTrust()` is 'pending' (darwin read running; fetches use defaults), 'applied' (store consulted, even when it adds nothing, logged at info) or 'unavailable' (reading failed, one warn). `probe.ts` `describeFetchFailure(e, host, trust)` words the certificate hint by that state ("If this network inspects HTTPS, its root certificate must be in your system's certificate store. Otherwise the server's own certificate chain may be incomplete or self-signed."; pending says try again in a moment; unavailable says OrgAI could not read the store); only chain codes get it (UNABLE_TO_GET_ISSUER_CERT_LOCALLY, UNABLE_TO_VERIFY_LEAF_SIGNATURE, SELF_SIGNED_CERT_IN_CHAIN, DEPTH_ZERO_SELF_SIGNED_CERT, CERT_UNTRUSTED), never expiry, altname or ERR_TLS_* codes. Verified by fake-spawner unit tests; on Windows with the repo's Electron 45.1.0 (Node 24.22.1) the real child script was run through the darwin path by injecting the platform: it returned 64 certificates in about 73 ms (that run, not an app boot), `setDefaultCACertificates` accepted them and the child exited 0; a hanging child was killed at an injected 1.5 s timeout. Earlier: the setter makes global `fetch` accept a local self-signed server (DEPTH_ZERO_SELF_SIGNED_CERT before, success after). The hint decides by the error code when there is one (the message regex only without a code). UNVERIFIED: the real macOS Keychain path, a packaged build, a certificate from an OS store reaching `fetch`, a real inspecting proxy, Linux, a real Electron quit. Child CLIs (Claude, Codex) are not covered by it.
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.
-  - `listClaudeBinaries` also tries `~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and
-    `/usr/local/bin/claude`.
+  - The well-known `claude` folders (`~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude`,
+    `/usr/local/bin/claude`; `claudeWellKnownPaths`) are only named in an error since Wave 7, never run.
   - The app menu is installed on darwin only. Closing the window keeps the app running, and `activate` re-creates
     the window.
   - These pieces are unit-tested where they are pure. Packaging (`dist:mac`, `dist:mac:unsigned`,

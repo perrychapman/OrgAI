@@ -75,7 +75,7 @@ export type WindowAllClosedAction = 'quit' | 'background' | 'stay' | 'ask'
  *   desktop one (review follow-up): macOS 'stay' (Dock icon visible), Windows / Linux 'ask'. The last window closing
  *   means one was shown, so no extra flag is needed.
  * - macOS keeps the app running (Dock behaviour): 'stay', whatever its runs do; the Dock icon stays visible.
- * - Windows and Linux quit (through quitGate, which stops the runs), as before the host work. Only while runs are
+ * - Windows and Linux quit (through the shutdown coordinator's forced drain, which stops the runs), as before the host work. Only while runs are
  *   working without the user (workingRuns: RunManager.workingRunCount, so idle runs, runs with an open card and paused
  *   runs waiting for an auto-resume do not count) the user is asked first ('ask'): keep working in the background or
  *   stop and quit. A desktop-launched host never goes to the background without that answer.

@@ -17,6 +17,7 @@ import { useDashCaps } from '../components/dashboard/dashCaps'
 import { useLiveRuns } from '../components/dashboard/useDashboardData'
 import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
+import { SecretNotices } from '../components/dashboard/SecretNotices'
 import AppNavigateBanner from '../components/AppNavigateBanner'
 
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
@@ -79,6 +80,7 @@ export default function DashboardView(): ReactElement {
       <AppNavigateBanner />
       <div className="dashboard" data-testid="dashboard">
         <div className="dashboard-grid">
+          <SecretNotices />
           {forgetNotice && (
             <div className="dash-forget-notice">
               <Banner tone="success" testId="forget-notice" onDismiss={() => setForgetNotice(null)}>

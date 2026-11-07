@@ -46,7 +46,8 @@ import { parseFlags, type FlagValues } from '../flags'
 import { manageDeps } from '../manage'
 import { emit, isJsonOutput, safeLine, type Json } from '../output'
 import { warnVersionSkew } from '../runRef'
-import { CliError, EXIT, type CliContext, type CommandFn, type ConnectResult, type HostCallError, type HostClient } from '../types'
+import { reservedSecretSourceProblem } from '../secretOverlay'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type ConnectResult, type HostCallError, type HostClient } from '../types'
 
 export const NO_HOST_FOR_DECIDE = 'No OrgAI host is running; pending decisions live only in a running host.'
 export const STALE_CARD = 'The card changed; run orgai inbox again'
@@ -114,7 +115,7 @@ type DecideFlags = FlagValues<typeof flagSpec>
 
 /** connect with ['read', 'decide']; never starts a host. */
 async function connectForDecide(ctx: CliContext): Promise<HostClient> {
-  const res: ConnectResult = await ctx.connect(['read', 'decide'], { clientKind: 'cli', waitStartingMs: 2000 })
+  const res: ConnectResult = await ctx.connect(['read', 'decide'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
   if (res.ok) {
     warnVersionSkew(ctx, res.client)
     // 'decide' needs Terminal access set to full in the OrgAI window (review H2); say so before reading any card.
@@ -170,6 +171,8 @@ function readSecrets(ctx: CliContext, specs: readonly string[] | undefined, know
         EXIT.usage
       )
     }
+    const reserved = reservedSecretSourceProblem(envVar, `--secret ${safeLine(name)}`)
+    if (reserved) throw new CliError(reserved, EXIT.usage)
     // Taken out of the environment once read (review M13).
     const value = consumeSecretEnv(ctx.env, envVar)
     if (value === undefined || value === '') throw new CliError(`The environment variable ${envVar} (for --secret ${safeLine(name)}) is not set or empty.`, EXIT.usage)

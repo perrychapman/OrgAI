@@ -34,6 +34,8 @@ function setup(over: Partial<ConnectionServiceDeps> = {}, dir?: string) {
     broadcast: (e) => events.push(e),
     openExternal: async () => {},
     anthropicProbe: async () => ({ state: 'connected', detail: 'Claude Code login' }),
+    // Never look for or run a real codex (cli-standalone 6.2 runtime check).
+    codexRuntime: async () => ({ ok: true, binary: { path: '/fake/codex' } }),
     now: () => 1000,
     ...over
   })

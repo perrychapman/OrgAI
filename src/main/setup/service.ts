@@ -109,7 +109,7 @@ export class SetupService {
        */
       mcp?: {
         libraryEntries(): McpLibraryEntry[]
-        applyProposal(projectId: string, payload: McpServersProposalPayload, opts?: { projectOnly?: boolean }): Project
+        applyProposal(projectId: string, payload: McpServersProposalPayload, opts?: { projectOnly?: boolean; secrets?: Record<string, string> }): Project
         applyLibraryProposal(payload: McpServersProposalPayload, opts?: LibraryProposalOptions): void
       }
       /**
@@ -257,7 +257,11 @@ export class SetupService {
 
   /** Apply an approved proposal. Returns the saved project. */
   /** opts.projectOnly (work runs): an MCP proposal never writes the MCP library (review M3) and a skills proposal never changes the skill library (review L3). */
-  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean; targeted?: true } = {}): Project {
+  /**
+   * opts.secrets (Wave 7, round 6 item 10): an MCP proposal's typed values, handed to the MCP hook, which stores them
+   * before it changes any record. Other kinds ignore it.
+   */
+  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean; secrets?: Record<string, string>; targeted?: true } = {}): Project {
     const project = this.projects.get(projectId)
     if (!project) throw new Error('Project not found')
     // A targeted proposal (Chat's propose_project_settings) changes a stored project from outside any setup session:

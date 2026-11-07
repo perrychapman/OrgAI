@@ -10,6 +10,7 @@ import { HandleNamer, mapSendMessage, messageTranscriptText, resolveRecipient, s
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL } from './prompts'
 import { ROOT_AGENT_ID } from './types'
 import { gitExecutable } from '../host/systemBinaries'
+import { trackChildProcess } from '../host/shutdown'
 
 /**
  * Harness-side subagents for providers without a native spawn: Codex has no Agent tool the harness can
@@ -365,9 +366,11 @@ function git(cwd: string, args: string[]): Promise<{ ok: boolean; out: string; e
   const bin = gitExecutable()
   if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   return new Promise((resolve) => {
-    execFile(bin, args, { cwd, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(bin, args, { cwd, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
+    // Ended with the host at the shutdown's hard limit (cli-standalone.md 4.3).
+    trackChildProcess(child, 'git')
   })
 }
 

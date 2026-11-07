@@ -16,6 +16,7 @@ import {
   cliShimNotice,
   cliShimView,
   displayPath,
+  otherCliLine,
   hasCliShimApi,
   singleFlight
 } from './cliShim'
@@ -71,6 +72,41 @@ function expectedHint(p: Platform): string {
     : `${shownBin} is not on your PATH. Add this line to your shell profile: export PATH="${shownBin}:$PATH"`
 }
 
+describe('another orgai on PATH (cli-standalone.md 8.2)', () => {
+  const base = { path: '/Users/a/.local/bin/orgai', binDir: '/Users/a/.local/bin' }
+  it('not installed: names the npm command and offers no Install', () => {
+    const v = cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/opt/homebrew/bin/orgai', channel: 'npm', version: '0.2.0' } }, 'darwin')
+    expect(v).toEqual({ line: 'The orgai command from npm (0.2.0) is on your PATH.', remove: false })
+  })
+  it('outdated: no Update, Remove stays; installed: Remove stays', () => {
+    const other = { path: '/opt/homebrew/bin/orgai', channel: 'npm' as const }
+    const o = cliShimView({ state: 'outdated', ...base, onPath: true, otherCli: other }, 'darwin')
+    expect(o.primary).toBeUndefined()
+    expect(o.remove).toBe(true)
+    expect(o.line).toBe('Installed at ~/.local/bin/orgai, but it runs another copy of OrgAI. The orgai command from npm is also on your PATH.')
+    const i = cliShimView({ state: 'installed', ...base, onPath: true, otherCli: other }, 'darwin')
+    expect(i).toEqual({ line: 'Installed at ~/.local/bin/orgai. The orgai command from npm is also on your PATH.', remove: true })
+  })
+  it('an unknown file, a dev checkout or another app keeps Install and Update; the archive blocks like npm', () => {
+    const unknown = cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/Users/a/bin/orgai' } }, 'darwin', '/Users/a')
+    expect(unknown).toEqual({
+      line: 'Not installed. Adds a small orgai command in ~/.local/bin. Another orgai command is also on your PATH: ~/bin/orgai.',
+      primary: { action: 'install', label: CLI_SHIM_INSTALL_LABEL },
+      remove: false
+    })
+    expect(cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/r/out/cli/orgai', channel: 'dev' } }, 'darwin').primary?.action).toBe('install')
+    expect(cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/o/orgai', channel: 'app' } }, 'darwin').primary?.action).toBe('install')
+    expect(cliShimView({ state: 'outdated', ...base, otherCli: { path: '/x/orgai' } }, 'darwin').primary?.action).toBe('update')
+    expect(cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/x/orgai', channel: 'archive' } }, 'darwin').primary).toBeUndefined()
+  })
+  it('words every channel; an unknown one names its path; a junk version is left out', () => {
+    expect(otherCliLine({ path: '/x', channel: 'archive', version: '1.0.0' }, 'linux')).toBe('The orgai command from the portable archive (1.0.0) is on your PATH.')
+    expect(otherCliLine({ path: '/x', channel: 'app' }, 'linux')).toBe('The orgai command of another OrgAI app is on your PATH.')
+    expect(otherCliLine({ path: '/home/u/bin/orgai', version: 'bad version\u202e' }, 'linux')).toBe('Another orgai command is on your PATH: ~/bin/orgai.')
+    expect(otherCliLine({ path: 'C:\\npm\\orgai.cmd', channel: 'dev' }, 'win32')).toBe('Another orgai command is on your PATH: C:\\npm\\orgai.cmd.')
+  })
+})
+
 describe('cliShimView', () => {
   for (const p of PLATFORMS) {
     describe(p, () => {
@@ -112,6 +148,18 @@ describe('cliShimView', () => {
       })
     })
   }
+
+  it('foreign names an npm or archive orgai as 8.2 says, and adds another other orgai after the reason', () => {
+    const at = '/Users/a/.local/bin/orgai'
+    const base = { path: at, binDir: '/Users/a/.local/bin', reason: `${at} already exists and was not written by OrgAI. Remove or rename it to install the orgai command.` }
+    const npm = cliShimView({ state: 'foreign', ...base, otherCli: { path: at, channel: 'npm', version: '0.2.0' } }, 'darwin', '/Users/a')
+    expect(npm).toEqual({ line: 'The orgai command from npm (0.2.0) is on your PATH.', remove: false })
+    const later = cliShimView({ state: 'foreign', ...base, otherCli: { path: '/Users/a/bin/orgai' } }, 'darwin', '/Users/a')
+    expect(later.line).toBe(`${base.reason} Another orgai command is also on your PATH: ~/bin/orgai.`)
+    expect(later.primary).toBeUndefined()
+    const same = cliShimView({ state: 'foreign', ...base, otherCli: { path: at } }, 'darwin', '/Users/a')
+    expect(same.line).toBe(base.reason)
+  })
 
   it('foreign without a reason still says something', () => {
     expect(cliShimView(st('darwin', 'foreign'), 'darwin').line).toMatch(/orgai/)

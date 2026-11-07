@@ -6,6 +6,7 @@
  */
 import { connect as netConnect, type Socket } from 'node:net'
 import {
+  HOST_KINDS,
   HOST_PROTOCOL_VERSION,
   RPC_BULK_FRAME_MAX_BYTES,
   RPC_MAX_INFLIGHT_PER_SOCKET,
@@ -336,7 +337,8 @@ async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive:
     appVersion: hello.appVersion,
     dataDir: hello.dataDir,
     mock: hello.mock,
-    grantedScopes: hello.grantedScopes
+    grantedScopes: hello.grantedScopes,
+    ...(hello.handoff === true ? { handoff: true } : {})
   })
   if (!proofMatches(expected, hello.hostProof)) {
     return abort(fail('auth_failed', 'The OrgAI host could not prove it holds this data folder’s secret. Connection closed.', daemon))
@@ -350,12 +352,12 @@ async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive:
   return done({ ok: true, client })
 }
 
-const KINDS = new Set(['desktop', 'headless-host', 'inproc'])
+const KINDS: ReadonlySet<string> = new Set<string>(HOST_KINDS)
 const SCOPES = new Set(['read', 'operate', 'decide', 'configure'])
 
 function parseHelloResult(v: unknown): RpcHelloResult | null {
   if (!isObj(v)) return null
-  const { protocolVersion, hostInstanceId, hostKind, appVersion, dataDir, mock, grantedScopes, hostProof: proof, versionSkewWarning } = v
+  const { protocolVersion, hostInstanceId, hostKind, appVersion, dataDir, mock, grantedScopes, hostProof: proof, versionSkewWarning, handoff } = v
   if (protocolVersion !== HOST_PROTOCOL_VERSION) return null
   if (typeof hostInstanceId !== 'string' || typeof hostKind !== 'string' || !KINDS.has(hostKind)) return null
   if (typeof appVersion !== 'string' || typeof dataDir !== 'string' || typeof mock !== 'boolean' || typeof proof !== 'string') return null
@@ -369,6 +371,8 @@ function parseHelloResult(v: unknown): RpcHelloResult | null {
     mock,
     grantedScopes: grantedScopes as HostScope[],
     ...(typeof versionSkewWarning === 'string' ? { versionSkewWarning } : {}),
+    // Wave 7: kept only as `true` (and then bound into the proof check above); any other value is dropped.
+    ...(handoff === true ? { handoff: true as const } : {}),
     hostProof: proof
   }
 }

@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os'
 import tls from 'node:tls'
 import { log } from './log'
 
-/** The parts of node:tls used here (Node 24.5+); injectable for tests. Each may be missing on an older runtime. */
+/**
+ * The parts of node:tls used here; injectable for tests. Both are feature-detected (trustSystemCertificates skips with
+ * a reason when either is missing), never assumed from a version: getCACertificates arrived in Node 22.15 / 23.10 and
+ * setDefaultCACertificates in 22.19 / 24.5 (per @types/node 22 for the 22.x minors; the 24.x minor is UNVERIFIED).
+ * `orgai doctor` warns below that floor (src/cli/doctor/installChecks.ts node-certs).
+ */
 export interface CertApi {
   getCACertificates?: (type?: 'default' | 'system' | 'bundled' | 'extra') => string[]
   setDefaultCACertificates?: (certs: string[]) => void

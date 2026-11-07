@@ -168,7 +168,15 @@ export function CliShimRow({
           <>
             Use OrgAI from a terminal on this computer. The command needs Terminal access; OrgAI asks before turning it on.
             {/* A live region: "Checking…" turning into the status (or a load failure) is announced (review Low). */}
-            <span className="cli-shim-status" data-testid="cli-shim-status" data-state={state} ref={statusRef} tabIndex={-1} role="status">
+            <span
+              className="cli-shim-status"
+              data-testid="cli-shim-status"
+              data-state={state}
+              data-other-cli={status?.otherCli ? (status.otherCli.channel ?? 'unknown') : undefined}
+              ref={statusRef}
+              tabIndex={-1}
+              role="status"
+            >
               {line}
             </span>
           </>

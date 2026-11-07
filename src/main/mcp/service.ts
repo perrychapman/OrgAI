@@ -23,10 +23,10 @@ import type {
   McpUpsertInput,
   PluginSpec,
   PluginUpsertInput,
-  Project
+  Project,
+  UnreadableSecretSlot
 } from '@shared/types'
 import { MCP_OAUTH_REFRESH_SKEW_MS, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId } from '@shared/defaults'
-import { proposalSecretKey } from '@shared/types'
 import type { ProjectStore } from '../store/projects'
 import type { McpLibraryStore } from '../store/mcpLibrary'
 import {
@@ -57,6 +57,8 @@ import {
 } from './connectors'
 import { insideWorkspace, removeBuildDir, rewritePath, stageBuild, type InstalledBuild } from './builds'
 import { scratchDirFor } from '../quick/scratch'
+import { VAULT_MESSAGES } from '../store/vaultTypes'
+import { ProposalSecretsNotSaved, isProposalSecretSlot, proposalTypedSlots, proposalUpsertedIds, typedSlotValue } from './proposalSecrets'
 import { log } from '../log'
 import type { ConnectorAddInput, ConnectorInfo, ConnectorPresetRemoveInput, ConnectorState, ConnectorTokenInput, ConnectorDef, ConnectorVariant, McpProjectOverridesInput, UserConnectorDef } from '@shared/types'
 import { USER_CONNECTOR_PRESETS_MAX } from '@shared/types'
@@ -131,7 +133,27 @@ function withConnectedAt(entry: McpLibraryEntry, at: number | undefined): McpLib
  */
 export interface LibraryProposalOptions {
   buildWorkspace?: string
+  /**
+   * The values typed on the card (ProposalDecision.secrets, keyed by proposalSecretKey). Wave 7 (round 6 item 10): they
+   * are stored before the library changes; a store that refuses them throws ProposalSecretsNotSaved with nothing changed.
+   */
+  secrets?: Record<string, string>
 }
+
+/** McpService.applyProposal options. projectOnly: work runs (review M3). secrets: as LibraryProposalOptions.secrets. */
+export interface ProjectProposalOptions {
+  projectOnly?: boolean
+  secrets?: Record<string, string>
+}
+
+/** One value an approved proposal stores, under the owner the planned server reads it from. */
+interface PlannedSecret {
+  key: string
+  value: string
+}
+
+/** What a key held before a write that may be rolled back (McpService.priorOf). */
+type SecretPrior = 'unset' | { value: string } | { unreadable: true }
 
 export interface McpOAuthFns {
   runAuthorization: typeof runAuthorization
@@ -208,6 +230,9 @@ function checkClientCredential(value: string, label: string, max: number): void 
   if (value.length > max) throw new Error(`The ${label} is too long (at most ${max} characters).`)
 }
 
+/** How a move refusal names an OAuth slot (5.4 moveRefused). */
+const OAUTH_SLOT_LABELS: Record<string, string> = { accessToken: 'The OAuth access token', refreshToken: 'The OAuth refresh token', clientSecret: 'The OAuth client secret' }
+
 /** ORGAI_MOCK=1: the authorization URL mockAuthorize announces (no network; the CLI and e2e see the flow). */
 export const MOCK_AUTHORIZE_URL = 'https://mock.invalid/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A38917%2Fcallback&state=mock'
 
@@ -252,8 +277,23 @@ export class McpService {
   activeAuthorizationCount(): number { return this.flows.size + (this.fixedPortFlow && ![...this.flows.values()].includes(this.fixedPortFlow.ac) ? 1 : 0) }
   /** In-flight refreshes per owner: refresh tokens rotate, so a second concurrent refresh would be fatal. */
   private refreshing = new Map<string, Promise<void>>()
+  /** Token refreshes in flight (Wave 7, cli-standalone.md 5.6: secrets:reset refuses while one is). */
+  refreshingCount(): number { return this.refreshing.size }
+  /**
+   * Wave 7 (round 6 item 10): the keys an approved proposal stored before changing any record. Set only for the length
+   * of one synchronous apply, so the apply's own removals (stale keys of a new id, a retarget, a removed id added back)
+   * never delete the values it has just stored. Null otherwise.
+   */
+  private keepKeys: ReadonlySet<string> | null = null
   /** The last failed authorization per owner, shown as state 'error' until it succeeds or is revoked. */
   private lastErrors = new Map<string, McpAuthStatus>()
+  /**
+   * Wave 7 (cli-standalone.md round 6 item 9): an inFlightRpcMutations lease held only around an authorization's final
+   * commit (the interactive wait is the activeOAuthFlows source). bootstrap.ts passes the activity tracker's acquire.
+   */
+  private commitLease: (label: string) => () => void
+  /** dispose() ran (the host is shutting down): every flow was aborted and no new one starts. */
+  private disposed = false
 
   constructor(deps: {
     projects: ProjectStore
@@ -281,7 +321,13 @@ export class McpService {
     mock?: boolean
     /** The custom connector preset store. Missing = one in `dataDir`, else none. */
     presets?: ConnectorPresetStore
+    /**
+     * Wave 7: hold an inFlightRpcMutations lease (returns its release) around an authorization's final commit, so a
+     * drain waits for it and never releases the data folder mid-commit. Missing = no lease (tests).
+     */
+    commitLease?: (label: string) => () => void
   }) {
+    this.commitLease = deps.commitLease ?? (() => () => {})
     this.mock = deps.mock === true
     this.dataDir = deps.dataDir
     if (!deps.dataDir) log.warn('McpService has no dataDir: built MCP servers cannot be staged and custom connector presets are unavailable (unless a presets store is passed).')
@@ -374,6 +420,124 @@ export class McpService {
     return this.secrets.has(mcpOwnerOAuthKey(owner, slot))
   }
 
+  /**
+   * Wave 7 (5.5 Deletes): an explicit clear (a null or '' value) asks the store first and throws its sentence before
+   * any record changes (vault corrupt; a Node host without a vault for a key only the app's secrets.json holds).
+   * Removals (a server, an entry, a project) never call this: their deletes never throw.
+   */
+  private refuseClear(key: string, value: string | null | undefined): void {
+    if (value !== null && value !== '' && value !== undefined) return
+    const refusal = this.secrets.clearRefusal(key)
+    if (refusal) throw new Error(refusal)
+  }
+
+  /** deletePrefix, except the keys an approved proposal has just stored (keepKeys); a plain deletePrefix otherwise. */
+  private dropPrefix(prefix: string): void {
+    const keep = this.keepKeys
+    const keys = keep ? this.secrets.keys(prefix) : []
+    if (!keep || !keys.some((k) => keep.has(k))) {
+      this.secrets.deletePrefix(prefix)
+      return
+    }
+    for (const k of keys) if (!keep.has(k)) this.secrets.delete(k)
+  }
+
+  /**
+   * The values an approved MCP proposal's card carries (ProposalDecision.secrets, keyed by proposalSecretKey) for its own
+   * slots, resolved against the servers as `specOf` describes them (planned or stored): only slots of servers the
+   * proposal upserts, only names their definition declares, never an empty value or a multi-line header value, and
+   * nothing for a library entry that keeps its values per project (ownerFor answers null). Values never leave here but
+   * for the SecretStore.
+   */
+  private planProposalSecrets(
+    p: McpServersProposalPayload,
+    values: Record<string, string> | undefined,
+    specOf: (id: string) => McpServerSpec | McpLibraryEntry | undefined,
+    ownerFor: (spec: McpServerSpec | McpLibraryEntry) => McpSecretOwner | null
+  ): PlannedSecret[] {
+    if (!values || typeof values !== 'object') return []
+    // Only the servers this proposal adds or changes take a value: a slot naming any other stored server is dropped.
+    const upserted = proposalUpsertedIds(p)
+    for (const slot of Array.isArray(p.secrets) ? p.secrets : []) {
+      if (isProposalSecretSlot(slot) && !upserted.has(slot.serverId) && typedSlotValue(slot, values) !== undefined) {
+        // installLogging routes console.warn into main.log. Names and values stay out of the line.
+        console.warn('A proposal secret slot names a server the proposal does not add or change; its value was dropped.')
+      }
+    }
+    const out: PlannedSecret[] = []
+    // proposalTypedSlots is the rule the setup:decide storesSecret predicate prepares the vault by (proposalSecrets.ts).
+    for (const { slot, value } of proposalTypedSlots(p, values)) {
+      const spec = specOf(slot.serverId)
+      const slots = spec ? (slot.kind === 'env' ? spec.secretEnv : spec.secretHeaders) : undefined
+      if (!spec || !slots?.includes(slot.name)) continue
+      const owner = ownerFor(spec)
+      if (!owner) {
+        // A per-project entry holds no values of its own: each project sets them. Names and values stay out of the line.
+        console.warn('A library proposal secret was skipped: that entry keeps its secrets per project.')
+        continue
+      }
+      out.push({ key: mcpOwnerSecretKey(owner, slot.kind, slot.name), value })
+    }
+    return out
+  }
+
+  /**
+   * What `key` holds before a write that may have to be rolled back (status(), never a decrypt failure read as unset):
+   * its value, nothing, or a value this host cannot read (pending-legacy, a locked vault, a damaged entry).
+   */
+  private priorOf(key: string): SecretPrior {
+    // An overlay value is never persisted: a rollback must not write it to disk, so it reads like a value that cannot be put back.
+    if (this.secrets.fromOverlay(key)) return { unreadable: true }
+    const st = this.secrets.status(key)
+    if (typeof st === 'object') return { unreadable: true }
+    if (st === 'unset') return 'unset'
+    const value = this.secrets.get(key)
+    // Readable a moment ago; a value that vanished since is treated like one that cannot be read (never deleted).
+    return value === undefined ? { unreadable: true } : { value }
+  }
+
+  /**
+   * Put `key` back to `prior` after a failed write: its old value, deleted when it held none. A value this host could
+   * not read is left as the failed write set it: a delete here would keep only the value just written for undelete and
+   * take the older app copy out of secrets.json for good (5.5 Deletes), so the user keeps the newer value instead of
+   * losing both. Never throws.
+   */
+  private putBack(key: string, prior: SecretPrior, what: string): void {
+    try {
+      if (prior === 'unset') this.secrets.purge(key)
+      else if ('value' in prior) this.secrets.set(key, prior.value)
+      else log.warn(`Kept the new value of a secret after a failed ${what}: the earlier one cannot be read on this host, so it could not be put back.`)
+    } catch (e) {
+      log.warn(`Could not put back a secret after a failed ${what}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /**
+   * Round 6 item 10: store `planned` before any record changes. A failed write puts back every key this call wrote and
+   * throws ProposalSecretsNotSaved with the store's own reason (vault locked, damaged, no secure storage; nothing
+   * changed). Returns the undo for a later failure: each key `only` selects goes back to the value it held (deleted when
+   * it held none; left with the new value when the earlier one could not be read here, see putBack).
+   */
+  private storeFirst(planned: readonly PlannedSecret[]): (only?: (key: string) => boolean) => void {
+    const before = new Map<string, SecretPrior>()
+    const undo = (only?: (key: string) => boolean): void => {
+      for (const [key, prior] of [...before].reverse()) {
+        if (only && !only(key)) continue
+        this.putBack(key, prior, 'proposal apply')
+      }
+    }
+    try {
+      for (const { key, value } of planned) {
+        if (!before.has(key)) before.set(key, this.priorOf(key))
+        this.secrets.set(key, value)
+      }
+    } catch (e) {
+      undo()
+      throw new ProposalSecretsNotSaved(e instanceof Error ? e.message : String(e))
+    }
+    return undo
+  }
+
   /** The stored access token, except the ORGAI_MOCK=1 stand-in outside mock mode (a data dir shared across modes). */
   private realAccessToken(owner: McpSecretOwner): string | undefined {
     const token = this.secrets.get(mcpOwnerOAuthKey(owner, 'accessToken'))
@@ -390,9 +554,8 @@ export class McpService {
     const owner: McpSecretOwner = { libraryId: entry.id }
     // A per-project entry holds no env / header values of its own (projectSecrets carries the per-project state).
     const own = entry.perProjectSecrets !== true
-    const envSet = own ? (entry.secretEnv ?? []).filter((n) => this.secrets.has(mcpOwnerSecretKey(owner, 'env', n))) : []
-    const headersSet = own ? (entry.secretHeaders ?? []).filter((n) => this.secrets.has(mcpOwnerSecretKey(owner, 'header', n))) : []
-    const missingSecrets = own ? [...(entry.secretEnv ?? []).filter((n) => !envSet.includes(n)), ...(entry.secretHeaders ?? []).filter((n) => !headersSet.includes(n))] : []
+    const slots = own ? this.slotStates(owner, entry) : { envSet: [], headersSet: [], missingSecrets: [], unreadable: [] }
+    const { envSet, headersSet, missingSecrets } = slots
     const projectSecrets =
       entry.perProjectSecrets === true
         ? all.flatMap((p) =>
@@ -413,16 +576,58 @@ export class McpService {
       missingSecrets,
       auth: this.statusFor(owner, entry.oauth),
       usedBy: all.filter((p) => p.mcpServers?.some((s) => s.libraryId === entry.id)).map((p) => ({ projectId: p.id, projectName: p.name })),
-      ...(projectSecrets ? { projectSecrets } : {})
+      ...(projectSecrets ? { projectSecrets } : {}),
+      ...(slots.unreadable.length ? { unreadableSecrets: slots.unreadable } : {})
     }
+  }
+
+  /**
+   * Wave 7 (5.4 "Moves and copies refuse unreadable secrets"): throws VAULT_MESSAGES.moveRefused naming the first key
+   * under `prefix` that holds a value this host cannot read. Called before a promote or copy changes any record.
+   */
+  private refuseUnreadableMove(keys: readonly string[], prefix: string, server: string): void {
+    for (const key of keys) {
+      const st = this.secrets.status(key)
+      if (typeof st !== 'object') continue
+      const rest = key.startsWith(prefix) ? key.slice(prefix.length) : key
+      const sep = rest.indexOf(':')
+      const kind = sep < 0 ? '' : rest.slice(0, sep)
+      const name = sep < 0 ? rest : rest.slice(sep + 1)
+      const slot = kind === 'oauth' ? (Object.hasOwn(OAUTH_SLOT_LABELS, name) ? OAUTH_SLOT_LABELS[name] : 'Its sign-in') : name
+      throw new Error(VAULT_MESSAGES.moveRefused(slot, server, st.unreadable))
+    }
+  }
+
+  /**
+   * Wave 7 (5.4): each secret slot of a definition under `owner` through SecretStore.status(): readable ('set'), or
+   * missing (unset, or stored but unreadable here; a run cannot use it either way), with the unreadable ones and why.
+   */
+  private slotStates(owner: McpSecretOwner, spec: { secretEnv?: string[]; secretHeaders?: string[] }): {
+    envSet: string[]
+    headersSet: string[]
+    missingSecrets: string[]
+    unreadable: UnreadableSecretSlot[]
+  } {
+    const envSet: string[] = []
+    const headersSet: string[] = []
+    const missingSecrets: string[] = []
+    const unreadable: UnreadableSecretSlot[] = []
+    for (const [kind, names, set] of [['env', spec.secretEnv ?? [], envSet], ['header', spec.secretHeaders ?? [], headersSet]] as const) {
+      for (const n of names) {
+        const st = this.secrets.status(mcpOwnerSecretKey(owner, kind, n))
+        if (st === 'set') set.push(n)
+        else {
+          missingSecrets.push(n)
+          if (typeof st === 'object') unreadable.push({ name: n, reason: st.unreadable })
+        }
+      }
+    }
+    return { envSet, headersSet, missingSecrets, unreadable }
   }
 
   /** Secret slot names (env, then headers) of a definition with no stored value under `owner`. */
   private slotsWithoutValue(owner: McpSecretOwner, spec: { secretEnv?: string[]; secretHeaders?: string[] }): string[] {
-    return [
-      ...(spec.secretEnv ?? []).filter((n) => !this.secrets.has(mcpOwnerSecretKey(owner, 'env', n))),
-      ...(spec.secretHeaders ?? []).filter((n) => !this.secrets.has(mcpOwnerSecretKey(owner, 'header', n)))
-    ]
+    return this.slotStates(owner, spec).missingSecrets
   }
 
   libraryList(): McpLibraryInfo[] {
@@ -506,12 +711,13 @@ export class McpService {
         this.flows.get(key)?.abort()
         this.lastErrors.delete(key)
       }
-      if (before.oauth || this.secrets.keys(`${key}oauth:`).length) this.secrets.deletePrefix(`${key}oauth:`)
+      if (before.oauth || this.secrets.keys(`${key}oauth:`).length) this.dropPrefix(`${key}oauth:`)
     }
     if (!applied || sameLaunch(before, after)) return false
-    const had = this.secrets.keys(`${key}env:`).length + this.secrets.keys(`${key}header:`).length > 0
-    this.secrets.deletePrefix(`${key}env:`)
-    this.secrets.deletePrefix(`${key}header:`)
+    const keep = this.keepKeys
+    const had = [...this.secrets.keys(`${key}env:`), ...this.secrets.keys(`${key}header:`)].some((k) => !keep?.has(k))
+    this.dropPrefix(`${key}env:`)
+    this.dropPrefix(`${key}header:`)
     return had
   }
 
@@ -546,14 +752,14 @@ export class McpService {
   private removeEntry(libraryId: string): void {
     this.lib().remove(libraryId)
     if (this.dataDir) removeBuildDir(this.dataDir, libraryId)
-    this.secrets.deletePrefix(mcpLibraryPrefix(libraryId))
+    this.dropPrefix(mcpLibraryPrefix(libraryId))
     this.flows.get(mcpLibraryPrefix(libraryId))?.abort()
     this.lastErrors.delete(mcpLibraryPrefix(libraryId))
     for (const p of this.projects.list()) {
       const links = (p.mcpServers ?? []).filter((s) => s.libraryId === libraryId).map((s) => s.id)
       if (!links.length) continue
       // Values a perProjectSecrets link kept in its own project scope go with the link.
-      for (const id of links) this.secrets.deletePrefix(mcpSecretPrefix(p.id, id))
+      for (const id of links) this.dropPrefix(mcpSecretPrefix(p.id, id))
       const roles = p.roles.map((r) => (r.mcpServers?.some((id) => links.includes(id)) ? { ...r, mcpServers: r.mcpServers.filter((id) => !links.includes(id)) } : r))
       const saved = this.projects.save({ ...p, roles, mcpServers: (p.mcpServers ?? []).filter((s) => s.libraryId !== libraryId) })
       this.onProjectChanged?.(saved)
@@ -630,7 +836,9 @@ export class McpService {
     const slots = input.kind === 'env' ? entry.secretEnv : entry.secretHeaders
     if (!slots?.includes(input.name)) throw new Error(`"${input.name}" is not a secret ${input.kind === 'env' ? 'environment variable' : 'header'} of ${entry.name}.`)
     if (typeof input.value === 'string' && input.kind === 'header' && /[\r\n]/.test(input.value)) throw new Error('A header value must be a single line.')
-    this.secrets.set(mcpOwnerSecretKey({ libraryId: entry.id }, input.kind, input.name), input.value)
+    const key = mcpOwnerSecretKey({ libraryId: entry.id }, input.kind, input.name)
+    this.refuseClear(key, input.value)
+    this.secrets.set(key, input.value)
     this.notifyLibrary()
     return this.libraryList()
   }
@@ -673,9 +881,7 @@ export class McpService {
   private info(projectId: string, spec: McpServerSpec, missing = false): McpServerInfo {
     const owner = this.ownerOf(projectId, spec)
     const secretOwner = this.secretOwnerOf(projectId, spec)
-    const envSet = (spec.secretEnv ?? []).filter((n) => this.secrets.has(mcpOwnerSecretKey(secretOwner, 'env', n)))
-    const headersSet = (spec.secretHeaders ?? []).filter((n) => this.secrets.has(mcpOwnerSecretKey(secretOwner, 'header', n)))
-    const missingSecrets = [...(spec.secretEnv ?? []).filter((n) => !envSet.includes(n)), ...(spec.secretHeaders ?? []).filter((n) => !headersSet.includes(n))]
+    const { envSet, headersSet, missingSecrets, unreadable } = this.slotStates(secretOwner, spec)
     const auth: McpAuthStatus = missing ? { state: spec.oauth ? 'notAuthorized' : 'notRequired' } : this.statusFor(owner, spec.oauth)
     return {
       spec,
@@ -684,7 +890,8 @@ export class McpService {
       missingSecrets,
       auth,
       secretScope: 'projectId' in secretOwner ? 'project' : 'library',
-      ...(missing ? { libraryMissing: true as const } : {})
+      ...(missing ? { libraryMissing: true as const } : {}),
+      ...(unreadable.length ? { unreadableSecrets: unreadable } : {})
     }
   }
 
@@ -772,7 +979,9 @@ export class McpService {
     const slots = input.kind === 'env' ? def.secretEnv : def.secretHeaders
     if (!slots?.includes(input.name)) throw new Error(`"${input.name}" is not a secret ${input.kind === 'env' ? 'environment variable' : 'header'} of ${spec.name}.`)
     if (typeof input.value === 'string' && input.kind === 'header' && /[\r\n]/.test(input.value)) throw new Error('A header value must be a single line.')
-    this.secrets.set(mcpOwnerSecretKey({ projectId: project.id, serverId: spec.id }, input.kind, input.name), input.value)
+    const key = mcpOwnerSecretKey({ projectId: project.id, serverId: spec.id }, input.kind, input.name)
+    this.refuseClear(key, input.value)
+    this.secrets.set(key, input.value)
     return this.result(project)
   }
 
@@ -822,6 +1031,8 @@ export class McpService {
     assertValidLibraryEntry(entry, lib.list())
     const from = mcpSecretPrefix(project.id, spec.id)
     const to = mcpLibraryPrefix(entry.id)
+    // Wave 7 (5.4): a move never drops a value it cannot read. Refused before anything changes.
+    this.refuseUnreadableMove(this.secrets.keys(from), from, spec.name)
     // An authorization in flight would save its tokens under the old owner: stop it.
     this.flows.get(from)?.abort()
     this.lastErrors.delete(from)
@@ -891,9 +1102,14 @@ export class McpService {
     assertValidSpec(copy, existing.filter((s) => s.id !== stored.id))
     const from = mcpSecretPrefix(project.id, stored.id)
     const to = mcpSecretPrefix(project.id, copy.id)
+    const source: McpSecretOwner | null = entry.perProjectSecrets === true ? { projectId: project.id, serverId: stored.id } : input.copySecrets === true ? { libraryId: entry.id } : null
+    // Wave 7 (5.4): every slot the copy would carry must be readable here; refused before anything changes.
+    if (source) {
+      const keys = [...(copy.secretEnv ?? []).map((n) => mcpOwnerSecretKey(source, 'env', n)), ...(copy.secretHeaders ?? []).map((n) => mcpOwnerSecretKey(source, 'header', n))]
+      this.refuseUnreadableMove(keys, mcpOwnerPrefix(source), stored.name)
+    }
     this.removeServerSecrets(project.id, copy.id)
     try {
-      const source: McpSecretOwner | null = entry.perProjectSecrets === true ? { projectId: project.id, serverId: stored.id } : input.copySecrets === true ? { libraryId: entry.id } : null
       if (source) {
         const dest: McpSecretOwner = { projectId: project.id, serverId: copy.id }
         for (const n of copy.secretEnv ?? []) {
@@ -926,6 +1142,13 @@ export class McpService {
 
   private statusFor(owner: McpSecretOwner, config: McpOAuthConfig | undefined): McpAuthStatus {
     const base = authStatusFrom(config, { accessToken: this.hasToken(owner, 'accessToken'), refreshToken: this.hasToken(owner, 'refreshToken') }, this.now())
+    // Wave 7 (5.4): a sign-in this host cannot read says why (vault locked, saved by the app), never "not authorized".
+    if (base.state === 'notAuthorized') {
+      const st = this.secrets.status(mcpOwnerOAuthKey(owner, 'accessToken'))
+      const rt = this.secrets.status(mcpOwnerOAuthKey(owner, 'refreshToken'))
+      const why = typeof st === 'object' ? st.unreadable : typeof rt === 'object' ? rt.unreadable : undefined
+      if (why) return { state: 'error', error: why, ...(config?.account ? { account: config.account } : {}) }
+    }
     const failed = this.lastErrors.get(mcpOwnerPrefix(owner))
     if (failed && (base.state === 'notAuthorized' || base.state === 'notRequired')) return { ...failed }
     return base
@@ -977,12 +1200,40 @@ export class McpService {
     }
   }
 
+  /**
+   * Wave 7 (5.6): how an mcp:authorize target signs in, for the dispatcher's storesSecret predicate (a typed client
+   * secret is stored only on the way to an OAuth sign-in): the connector's auth kind, 'oauth' for any other http / sse
+   * server, 'stdio' for a server without OAuth. Undefined when there is no such target. Never throws.
+   */
+  authorizeTargetKind(target: McpAuthTarget): 'oauth' | 'oauthClient' | 'token' | 'none' | 'stdio' | undefined {
+    let ref: AuthRef
+    try {
+      ref = this.targetRef(target)
+    } catch {
+      return undefined
+    }
+    if (!mcpSupportsOAuth(ref.spec)) return 'stdio'
+    return connectorOf(ref.spec, this.customDef)?.variant.auth.kind ?? 'oauth'
+  }
+
   authStatus(target: McpAuthTarget): McpAuthStatus {
     const ref = this.targetRef(target)
     return this.statusFor(ref.owner, ref.spec.oauth)
   }
 
+  /**
+   * The host is shutting down (activity quiesce, cli-standalone.md round 6 item 9): abort every interactive
+   * authorization (each resolves 'Authorization was cancelled.' without saving anything), so Quit and the app's handoff
+   * never wait on a browser the user never finished. New authorizations are refused from now on. Idempotent.
+   */
+  dispose(): void {
+    this.disposed = true
+    for (const ac of this.flows.values()) ac.abort()
+    this.fixedPortFlow?.ac.abort()
+  }
+
   async authorize(input: McpAuthorizeInput): Promise<McpAuthStatus> {
+    if (this.disposed) throw new Error('OrgAI is shutting down; authorize this server once it has started again.')
     const ref = this.targetRef(input)
     // CLI-only flags (cli-spec 6.3(5)); only literal booleans count, so the desktop (which never sets them) is unchanged.
     const announceUrl = input.announceUrl === true
@@ -1035,7 +1286,18 @@ export class McpService {
       }
       if (this.mock && connector) {
         if (announceUrl) this.announceAuthorizeUrl(target, MOCK_AUTHORIZE_URL, false)
-        return this.mockAuthorize(ref, connector.variant.auth.kind === 'oauthClient', clientId)
+        // Wave 7 (round 6 item 4): the vault is ready before the synthetic token is committed (a Node host creates it
+        // here); the owner is read again after the await. The commit itself is leased like the real one (item 9).
+        await this.secrets.prepareWrite()
+        if (ac.signal.aborted) throw new OAuthError('callback', 'Authorization was cancelled.')
+        const releaseMock = this.commitLease('mcp:authorize commit')
+        try {
+          const live = this.refFromOwner(ref.owner)
+          if (!live) throw new OAuthError('token', 'The server was removed while it was being authorized.')
+          return this.mockAuthorize(live, connector.variant.auth.kind === 'oauthClient', clientId)
+        } finally {
+          releaseMock()
+        }
       }
       if (preset?.redirectPort) {
         // One sign-in on the fixed port at a time: the newer one wins, the older resolves 'error'.
@@ -1078,21 +1340,28 @@ export class McpService {
         now: this.now,
         ...(preset ? { preset } : {})
       })
-      if (ac.signal.aborted) throw new OAuthError('callback', 'Authorization was cancelled.')
-      // Re-read the owner: the entry may have been edited while the browser was open.
-      const live = this.refFromOwner(ref.owner)
-      if (!live) throw new OAuthError('token', 'The server was removed while it was being authorized.')
-      // The URL may have changed while the browser was open: tokens for another resource are discarded.
-      if (!mcpSupportsOAuth(live.spec) || resourceOf(live.spec.url) !== result.config.resource) {
-        throw new OAuthError('token', 'The server address changed while it was being authorized. Authorize it again.')
+      // Wave 7 (round 6 item 4): the vault must take the tokens before the final checks (a Node host creates or reopens
+      // it here). Nothing awaits after this line: the checks read the state as it is now and the commit is synchronous.
+      await this.secrets.prepareWrite()
+      // The final commit holds a mutation lease (round 6 item 9), taken before any check so a drain that starts from
+      // here on waits for the saves; the browser wait before it held none (activeOAuthFlows counts it instead).
+      const releaseCommit = this.commitLease('mcp:authorize commit')
+      try {
+        if (ac.signal.aborted) throw new OAuthError('callback', 'Authorization was cancelled.')
+        // Re-read the owner: the entry may have been edited (or removed) while the browser was open.
+        const live = this.refFromOwner(ref.owner)
+        if (!live) throw new OAuthError('token', 'The server was removed while it was being authorized.')
+        // The URL may have changed while the browser was open: tokens for another resource are discarded.
+        if (!mcpSupportsOAuth(live.spec) || resourceOf(live.spec.url) !== result.config.resource) {
+          throw new OAuthError('token', 'The server address changed while it was being authorized. Authorize it again.')
+        }
+        this.commitOAuth(live, { accessToken: result.tokens.accessToken, refreshToken: result.tokens.refreshToken ?? null, ...(result.clientSecret ? { clientSecret: result.clientSecret } : {}) }, { ...result.config })
+        this.lastErrors.delete(key)
+        this.markConnected(ref.owner, true)
+        return this.statusFor(ref.owner, result.config)
+      } finally {
+        releaseCommit()
       }
-      live.saveOAuth({ ...result.config })
-      this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'accessToken'), result.tokens.accessToken)
-      this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), result.tokens.refreshToken ?? null)
-      if (result.clientSecret) this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'clientSecret'), result.clientSecret)
-      this.lastErrors.delete(key)
-      this.markConnected(ref.owner, true)
-      return this.statusFor(ref.owner, result.config)
     } catch (e) {
       const secrets = [enteredSecret ?? '', secretOf() ?? '']
       const cancelled = ac.signal.aborted
@@ -1113,6 +1382,35 @@ export class McpService {
       if (this.fixedPortFlow?.ac === ac) this.fixedPortFlow = undefined
       settled()
       if (ref.library) this.notifyLibrary()
+    }
+  }
+
+  /**
+   * Commit a sign-in: the credentials first, then the configuration that says they exist (round 6 items 4 and 10), with
+   * no await. When a write or the configuration save throws, every slot written here goes back to what it held, so the
+   * stored configuration and the tokens never come from two different sign-ins. Rethrows. The one exception: a slot
+   * whose earlier value this host could not read keeps the new value (putBack), since deleting it would also drop the
+   * OrgAI app's copy; the user signs in again rather than losing both.
+   */
+  private commitOAuth(ref: AuthRef, tokens: { accessToken: string; refreshToken: string | null; clientSecret?: string }, config: McpOAuthConfig): void {
+    const slots: Array<['accessToken' | 'refreshToken' | 'clientSecret', string | null]> = [
+      ['accessToken', tokens.accessToken],
+      ['refreshToken', tokens.refreshToken],
+      ...(tokens.clientSecret ? [['clientSecret', tokens.clientSecret] as ['clientSecret', string]] : [])
+    ]
+    const before = new Map<string, SecretPrior>()
+    try {
+      for (const [slot, value] of slots) {
+        const k = mcpOwnerOAuthKey(ref.owner, slot)
+        before.set(k, this.priorOf(k))
+        this.secrets.set(k, value)
+      }
+      ref.saveOAuth(config)
+    } catch (e) {
+      // A credential this host could not read before (an app sign-in not yet shared, a locked vault) is never deleted
+      // here: putBack keeps the new one rather than dropping the app's copy too.
+      for (const [k, prior] of [...before].reverse()) this.putBack(k, prior, 'sign-in save')
+      throw e
     }
   }
 
@@ -1138,8 +1436,12 @@ export class McpService {
 
   revokeAuth(target: McpAuthTarget): McpAuthStatus {
     const ref = this.targetRef(target)
-    this.secrets.delete(mcpOwnerOAuthKey(ref.owner, 'accessToken'))
-    this.secrets.delete(mcpOwnerOAuthKey(ref.owner, 'refreshToken'))
+    // The user's own sign-out is an explicit clear (5.5): refused before anything changes when the vault cannot record it.
+    this.refuseClear(mcpOwnerOAuthKey(ref.owner, 'accessToken'), null)
+    this.refuseClear(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), null)
+    // clear() throws when the save fails or its outcome is unknown, so the record below is not changed over a token still stored.
+    this.secrets.clear(mcpOwnerOAuthKey(ref.owner, 'accessToken'))
+    this.secrets.clear(mcpOwnerOAuthKey(ref.owner, 'refreshToken'))
     this.lastErrors.delete(mcpOwnerPrefix(ref.owner))
     const cfg = ref.spec.oauth
     const next = cfg ? ((): McpOAuthConfig => { const { authorizedAt: _a, expiresAt: _e, account: _c, ...keep } = cfg; return keep })() : undefined
@@ -1175,6 +1477,11 @@ export class McpService {
     if (!Number.isFinite(expires) || expires - this.now() > MCP_OAUTH_REFRESH_SKEW_MS) return
     const clientSecret = this.secrets.get(mcpOwnerOAuthKey(owner, 'clientSecret'))
     try {
+      // Wave 7 (5.6): a store that cannot take values yet (a Node host's absent vault, a locked one) is prepared before
+      // the request, so a vault that cannot take the new tokens is found before the server rotates the refresh token;
+      // the refresh is then skipped (logged) and the server starts without a usable token. A store that can take values
+      // now (available()) skips this, so the only prepare is the one right before the writes (a no-op on an open vault).
+      if (!this.secrets.available()) await this.secrets.prepareWrite()
       const preset = oauthPresetFor(ref.spec, this.customDef)
       // Defence in depth: a connector's stored token endpoint must still be on its issuer's (or its preset token
       // endpoint's) domain before the client secret is posted there; sign-in checked it, a tampered config would not.
@@ -1196,10 +1503,19 @@ export class McpService {
         this.fetchImpl,
         this.now
       )
+      // Right before the writes (5.6; a no-op on a vault that is already open), then synchronous to the end.
+      await this.secrets.prepareWrite()
+      const live = this.refFromOwner(owner)
+      if (!live?.spec.oauth) throw new Error('the server was removed during the refresh; the new tokens were discarded')
+      // A sign-out (revokeAuth deletes the refresh token) or a new sign-in (a new refresh token) during the request wins
+      // over this refresh: its tokens belong to a sign-in that is no longer the current one.
+      if (this.secrets.get(mcpOwnerOAuthKey(owner, 'refreshToken')) !== refreshToken) {
+        throw new Error('the sign-in changed during the refresh (signed out or signed in again); the new tokens were discarded')
+      }
       this.secrets.set(mcpOwnerOAuthKey(owner, 'accessToken'), tokens.accessToken)
       if (tokens.refreshToken) this.secrets.set(mcpOwnerOAuthKey(owner, 'refreshToken'), tokens.refreshToken)
-      const { expiresAt: _old, ...rest } = cfg
-      ref.saveOAuth({ ...rest, ...(tokens.expiresAt ? { expiresAt: tokens.expiresAt } : {}), authorizedAt: new Date(this.now()).toISOString() })
+      const { expiresAt: _old, ...rest } = live.spec.oauth
+      live.saveOAuth({ ...rest, ...(tokens.expiresAt ? { expiresAt: tokens.expiresAt } : {}), authorizedAt: new Date(this.now()).toISOString() })
       this.lastErrors.delete(mcpOwnerPrefix(owner))
     } catch (e) {
       const text = redactOAuth(e instanceof Error ? e.message : String(e), [refreshToken, clientSecret ?? ''])
@@ -1502,8 +1818,11 @@ export class McpService {
     const slots = slotKind === 'env' ? entry.secretEnv : entry.secretHeaders
     if (!(slots ?? []).includes(auth.header)) throw new Error(`${def.name} has no ${auth.header} slot. Remove it and add it again.`)
     const key = mcpOwnerSecretKey({ libraryId: entry.id }, slotKind, auth.header)
-    if (input.token === null) this.secrets.delete(key)
-    else if (typeof input.token === 'string') this.secrets.set(key, tokenHeaderValue(auth, input.token))
+    // An explicit clear (Wave 7, cli-standalone.md 5.5): refuseClear throws the store's sentence before anything changes.
+    if (input.token === null) {
+      this.refuseClear(key, null)
+      this.secrets.clear(key)
+    } else if (typeof input.token === 'string') this.secrets.set(key, tokenHeaderValue(auth, input.token))
     else throw new Error('The token must be text.')
     this.markConnected({ libraryId: entry.id }, input.token !== null)
     this.notifyLibrary()
@@ -1536,9 +1855,7 @@ export class McpService {
       authorizedAt: new Date(this.now()).toISOString(),
       account: MOCK_CONNECTOR_ACCOUNT
     }
-    ref.saveOAuth(config)
-    this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'accessToken'), MOCK_CONNECTOR_TOKEN)
-    this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), null)
+    this.commitOAuth(ref, { accessToken: MOCK_CONNECTOR_TOKEN, refreshToken: null }, config)
     this.lastErrors.delete(mcpOwnerPrefix(ref.owner))
     this.markConnected(ref.owner, true)
     return this.statusFor(ref.owner, config)
@@ -1575,7 +1892,7 @@ export class McpService {
   /** Forget every stored secret of one project-only server. */
   removeServerSecrets(projectId: string, serverId: string): void {
     this.flows.get(mcpSecretPrefix(projectId, serverId))?.abort()
-    this.secrets.deletePrefix(mcpSecretPrefix(projectId, serverId))
+    this.dropPrefix(mcpSecretPrefix(projectId, serverId))
   }
 
   /** The project is being deleted: forget every secret of its MCP servers (library entries keep theirs). */
@@ -1678,31 +1995,60 @@ export class McpService {
     const saved: McpServerSpec = withOAuth({ ...noProjectScope(noConnector(spec)), source: spec.source === 'registry' ? 'registry' : 'agent' }, undefined)
     // A new server never inherits values left under its id (a removed perProjectSecrets link's, for one).
     this.removeServerSecrets(projectId, saved.id)
+    // Wave 7 (round 6 item 10): the secrets are stored first, under the new owner, so a vault that refuses them changes
+    // neither mcp-library.json nor projects.json; a failed save afterwards removes the values written here.
     if (scope === 'library') {
       const lib = this.lib()
       const entry = libraryEntryFromSpec(saved, newId('mcpl'))
       assertValidLibraryEntry(entry, lib.list())
       const owner: McpSecretOwner = { libraryId: entry.id }
-      lib.save(entry)
+      this.storeNewOwnerSecrets(owner, entry, secrets)
       const link = linkedSpec(entry, { id: saved.id, enabled: saved.enabled, ...(saved.roles ? { roles: saved.roles } : {}), addedAt: saved.addedAt })
       let out: Project
       try {
-        out = this.projects.save({ ...project, mcpServers: [...existing, link] })
+        lib.save(entry)
+        try {
+          out = this.projects.save({ ...project, mcpServers: [...existing, link] })
+        } catch (e) {
+          lib.remove(entry.id)
+          throw e
+        }
       } catch (e) {
-        lib.remove(entry.id)
+        this.secrets.deletePrefix(mcpOwnerPrefix(owner))
         throw e
       }
-      // Secrets only after both saves, so a failed save leaves none behind.
-      for (const n of entry.secretEnv ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'env', n), secrets[n])
-      for (const n of entry.secretHeaders ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'header', n), secrets[n])
       this.notifyLibrary()
       return out
     }
     const owner: McpSecretOwner = { projectId, serverId: saved.id }
-    const out = this.projects.save({ ...project, mcpServers: [...existing, saved] })
-    for (const n of saved.secretEnv ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'env', n), secrets[n])
-    for (const n of saved.secretHeaders ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'header', n), secrets[n])
-    return out
+    this.storeNewOwnerSecrets(owner, saved, secrets)
+    try {
+      return this.projects.save({ ...project, mcpServers: [...existing, saved] })
+    } catch (e) {
+      this.secrets.deletePrefix(mcpOwnerPrefix(owner))
+      throw e
+    }
+  }
+
+  /**
+   * The typed values of a new server's slots under its new owner (nothing else is stored there yet). A failed write
+   * removes every value this call wrote and rethrows, so the caller can refuse without leaving a value behind.
+   */
+  private storeNewOwnerSecrets(owner: McpSecretOwner, spec: { secretEnv?: string[]; secretHeaders?: string[] }, values: Record<string, string>): void {
+    const value = (n: string): string | undefined => (Object.hasOwn(values, n) && typeof values[n] === 'string' && values[n] ? values[n] : undefined)
+    try {
+      for (const n of spec.secretEnv ?? []) {
+        const v = value(n)
+        if (v) this.secrets.set(mcpOwnerSecretKey(owner, 'env', n), v)
+      }
+      for (const n of spec.secretHeaders ?? []) {
+        const v = value(n)
+        if (v) this.secrets.set(mcpOwnerSecretKey(owner, 'header', n), v)
+      }
+    } catch (e) {
+      this.secrets.deletePrefix(mcpOwnerPrefix(owner))
+      throw e
+    }
   }
 
   // ---------- applying MCP proposals (SetupService) ----------
@@ -1725,6 +2071,9 @@ export class McpService {
    * naming no slot, empty values and multi-line header values are ignored. Returns the names of the proposal's
    * upserted servers that still have an unset slot (they do not start until the user sets it). Never throws on a
    * missing server; values never leave the SecretStore.
+   *
+   * RunManager passes the values to applyProposal / applyLibraryProposal instead (they store them before any record
+   * changes, round 6 item 10) and calls this with `values` undefined for the waiting list only.
    */
   storeProposalSecrets(projectId: string | null, p: McpServersProposalPayload, values: Record<string, string> | undefined): string[] {
     const project = projectId === null ? null : this.refreshed(this.project(projectId)).project
@@ -1734,29 +2083,11 @@ export class McpService {
       return entry ? { ...entry, enabled: true } : undefined
     }
     const ownerFor = (spec: McpServerSpec): McpSecretOwner => (project ? this.secretOwnerOf(project.id, spec) : { libraryId: spec.id })
-    // Only the servers this proposal adds or changes take a value: a slot naming any other stored server is dropped.
-    const upserted = new Set((Array.isArray(p.upsert) ? p.upsert : []).map((u) => u?.id).filter((id): id is string => typeof id === 'string'))
-    for (const slot of Array.isArray(p.secrets) ? p.secrets : []) {
-      if (!values || !isSecretKind(slot?.kind) || typeof slot.serverId !== 'string' || typeof slot.name !== 'string') continue
-      if (!upserted.has(slot.serverId)) {
-        // installLogging routes console.warn into main.log. Names and values stay out of the line.
-        console.warn('A proposal secret slot names a server the proposal does not add or change; its value was dropped.')
-        continue
-      }
-      const key = proposalSecretKey(slot)
-      const v = Object.hasOwn(values, key) ? values[key] : undefined
-      if (typeof v !== 'string' || !v || (slot.kind === 'header' && /[\r\n]/.test(v))) continue
-      const spec = specOf(slot.serverId)
-      const slots = spec ? (slot.kind === 'env' ? spec.secretEnv : spec.secretHeaders) : undefined
-      if (!spec || !slots?.includes(slot.name)) continue
-      if (!project && this.library?.get(spec.id)?.perProjectSecrets === true) {
-        // A per-project entry holds no values of its own: each project sets them. Names and values stay out of the line.
-        console.warn('A library proposal secret was skipped: that entry keeps its secrets per project.')
-        continue
-      }
-      this.secrets.set(mcpOwnerSecretKey(ownerFor(spec), slot.kind, slot.name), v)
-    }
-    if (projectId === null) this.notifyLibrary()
+    const planned = this.planProposalSecrets(p, values, specOf, (spec) =>
+      !project && this.library?.get(spec.id)?.perProjectSecrets === true ? null : ownerFor(spec as McpServerSpec)
+    )
+    for (const { key, value } of planned) this.secrets.set(key, value)
+    if (projectId === null && planned.length) this.notifyLibrary()
     const waiting: string[] = []
     for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
       const spec = typeof raw?.id === 'string' ? specOf(raw.id) : undefined
@@ -1793,6 +2124,19 @@ export class McpService {
       commits.push(entry)
     }
     if (problems.length) throw new Error(`Invalid MCP server: ${problems.join(' ')}`)
+    // Wave 7 (round 6 item 10): the values typed on the card are stored first, under the entries as they will be saved;
+    // a store that refuses them throws ProposalSecretsNotSaved before the library changes.
+    const typed = this.planProposalSecrets(
+      p,
+      opts.secrets,
+      (id) => commits.find((e) => e.id === id),
+      (entry) => (lib.get(entry.id)?.perProjectSecrets === true ? null : { libraryId: entry.id })
+    )
+    const undo = this.storeFirst(typed)
+    /** Entries this apply already saved (their new values stay on a later failure) or removed (their values go). */
+    const committed = new Set<string>()
+    const removedNow = new Set<string>()
+    this.keepKeys = new Set(typed.map((x) => x.key))
     // M5: a stdio server that points into the build workspace is copied to <data>/mcp-builds/<entryId>/ first.
     const staged: Array<{ entry: McpLibraryEntry; digest: string; install: () => InstalledBuild; discard: () => void }> = []
     const installed: InstalledBuild[] = []
@@ -1815,16 +2159,28 @@ export class McpService {
           if (entry.args) entry.args = entry.args.map(map)
         }
       }
-      for (const id of removeIds) if (lib.get(id)) this.removeEntry(id)
+      for (const id of removeIds) {
+        if (!lib.get(id)) continue
+        removedNow.add(id)
+        this.removeEntry(id)
+      }
       for (const s of staged) installed.push(s.install())
       for (const entry of commits) {
         const st = staged.find((s) => s.entry === entry)
-        this.relinkProjects(this.commitEntry(entry, { applied: true, ...(st ? { buildDigest: st.digest } : {}) }))
+        const saved = this.commitEntry(entry, { applied: true, ...(st ? { buildDigest: st.digest } : {}) })
+        committed.add(saved.id)
+        this.relinkProjects(saved)
       }
     } catch (e) {
       for (const i of installed) i.rollback()
       for (const s of staged) s.discard()
+      // A saved entry keeps its new values; a removed one (not saved again) keeps none; any other goes back to what it was.
+      const under = (key: string, ids: Set<string>): boolean => [...ids].some((id) => key.startsWith(mcpLibraryPrefix(id)))
+      undo((key) => !under(key, committed) && !under(key, removedNow))
+      for (const { key } of typed) if (under(key, removedNow) && !under(key, committed)) this.secrets.delete(key)
       throw e
+    } finally {
+      this.keepKeys = null
     }
     for (const i of installed) i.finish()
     this.notifyLibrary()
@@ -1836,7 +2192,7 @@ export class McpService {
    * validated first; nothing is saved on any problem.
    */
   /** opts.projectOnly: every new server stays in the project, never the library (work runs, review M3). */
-  applyProposal(projectId: string, p: McpServersProposalPayload, opts: { projectOnly?: boolean } = {}): Project {
+  applyProposal(projectId: string, p: McpServersProposalPayload, opts: ProjectProposalOptions = {}): Project {
     if (p.scope === 'library') throw new Error('A library proposal cannot be applied to a project.')
     const lib = this.library
     const project = this.project(projectId)
@@ -1938,25 +2294,52 @@ export class McpService {
       put(link)
     }
     if (problems.length) throw new Error(`Invalid MCP server: ${problems.join(' ')}`)
-    // A server id the project did not hold before (new project-only servers, new links, a removed id added back) starts
-    // with no stored values: nothing left under that id's prefix may be inherited.
-    const heldBefore = new Set((project.mcpServers ?? []).filter((s) => !removeIds.has(s.id)).map((s) => s.id))
-    for (const s of servers) if (!heldBefore.has(s.id)) this.removeServerSecrets(project.id, s.id)
-    for (const entry of newEntries) lib?.save(entry)
-    // A roles list on a server is the whole answer to "who can use it" (review M2): an explicit Role.mcpServers grant of
-    // a role left off the list goes too, so an ungrant is never reported done while the grant still lets it through.
-    const allowed = new Map<string, Set<string>>()
-    for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
-      const saved = servers.find((s) => s.id === raw?.id || (raw?.libraryId && s.libraryId === raw.libraryId))
-      if (saved && Array.isArray(saved.roles)) allowed.set(saved.id, new Set(saved.roles))
+    // Wave 7 (round 6 item 10): the values typed on the card are stored first, under each server as it will be saved
+    // (a new server's new library entry, a per-project link's project keys); a store that refuses them throws
+    // ProposalSecretsNotSaved before mcp-library.json or projects.json changes. The removals below keep them.
+    const planned = this.planProposalSecrets(
+      p,
+      opts.secrets,
+      (id) => servers.find((s) => s.id === id),
+      (spec) => this.secretOwnerOf(project.id, spec as McpServerSpec)
+    )
+    const undo = this.storeFirst(planned)
+    this.keepKeys = new Set(planned.map((x) => x.key))
+    try {
+      // A server id the project did not hold before (new project-only servers, new links, a removed id added back)
+      // starts with no stored values: nothing left under that id's prefix may be inherited.
+      const heldBefore = new Set((project.mcpServers ?? []).filter((s) => !removeIds.has(s.id)).map((s) => s.id))
+      for (const s of servers) if (!heldBefore.has(s.id)) this.removeServerSecrets(project.id, s.id)
+      // A roles list on a server is the whole answer to "who can use it" (review M2): an explicit Role.mcpServers grant
+      // of a role left off the list goes too, so an ungrant is never reported done while the grant still lets it through.
+      const allowed = new Map<string, Set<string>>()
+      for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
+        const saved = servers.find((s) => s.id === raw?.id || (raw?.libraryId && s.libraryId === raw.libraryId))
+        if (saved && Array.isArray(saved.roles)) allowed.set(saved.id, new Set(saved.roles))
+      }
+      const keeps = (r: { slug: string }, id: string): boolean => !removeIds.has(id) && (!allowed.has(id) || allowed.get(id)!.has(r.slug))
+      const roles = project.roles.map((r) => (r.mcpServers?.some((id) => !keeps(r, id)) ? { ...r, mcpServers: r.mcpServers.filter((id) => keeps(r, id)) } : r))
+      let saved: Project
+      const savedEntries: string[] = []
+      try {
+        for (const entry of newEntries) {
+          lib?.save(entry)
+          savedEntries.push(entry.id)
+        }
+        saved = this.projects.save({ ...project, roles, mcpServers: servers })
+      } catch (e) {
+        // Nothing was applied: the new entries go and every value stored above goes back to what it was.
+        for (const id of savedEntries) lib?.remove(id)
+        undo()
+        throw e
+      }
+      for (const [before, after] of redefined) this.retarget({ projectId: project.id, serverId: before.id }, before, after, true)
+      // Linked or not: a removed server's own project values (a perProjectSecrets link keeps them there) go with it.
+      for (const s of removed) this.removeServerSecrets(project.id, s.id)
+      if (newEntries.length) this.notifyLibrary()
+      return saved
+    } finally {
+      this.keepKeys = null
     }
-    const keeps = (r: { slug: string }, id: string): boolean => !removeIds.has(id) && (!allowed.has(id) || allowed.get(id)!.has(r.slug))
-    const roles = project.roles.map((r) => (r.mcpServers?.some((id) => !keeps(r, id)) ? { ...r, mcpServers: r.mcpServers.filter((id) => keeps(r, id)) } : r))
-    const saved = this.projects.save({ ...project, roles, mcpServers: servers })
-    for (const [before, after] of redefined) this.retarget({ projectId: project.id, serverId: before.id }, before, after, true)
-    // Linked or not: a removed server's own project values (a perProjectSecrets link keeps them there) go with it.
-    for (const s of removed) this.removeServerSecrets(project.id, s.id)
-    if (newEntries.length) this.notifyLibrary()
-    return saved
   }
 }

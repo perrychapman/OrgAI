@@ -1327,6 +1327,11 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
     summary: 'Whether you chose the Terminal access value yourself, so a background host does not override it.',
     surface: 'none',
     control: 'main'
+  },
+  terminalAccessLevelChosen: {
+    summary: 'Whether you chose the Terminal access level yourself, so a background host does not override it.',
+    surface: 'none',
+    control: 'main'
   }
 }
 

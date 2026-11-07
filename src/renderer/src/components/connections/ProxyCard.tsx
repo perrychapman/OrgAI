@@ -19,6 +19,7 @@ import { hostOf, validateProxyForm } from '../../lib/proxyForm'
 import ModelList from './ModelList'
 import TierEditor from './TierEditor'
 import { CopyDetails } from './ConnectionCard'
+import { appSecretReason } from '@shared/view/secretNotices'
 import { ProxyFields } from './ProxyFields'
 import { useConnectionsAnnounce } from './announce'
 
@@ -268,15 +269,17 @@ export default function ProxyCard({
   const host = hostOf(conn.anthropicBaseUrl)
   const lines = checkLines(info.status.checks, host)
   const note = reportsNote(info.status.checks)
+  // The store's reasons for a key that cannot be read name no terminal command (the Dashboard notice has the buttons).
+  const statusDetail = info.status.detail ? appSecretReason(info.status.detail) : undefined
   const keyRemoved = KEY_REMOVED_RE.test(info.status.detail ?? '')
   const kind = connectionKindLabel(conn)
   const summary = useMemo(() => {
     const when = relativeTime(info.status.checkedAt)
     if (state === 'connected') return [kind, models ? `${models.length} models` : info.status.checks?.modelCount != null ? `${info.status.checks.modelCount} models` : '', when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
-    if (state === 'connecting') return info.status.detail ?? 'Testing the proxy'
-    if (state === 'error') return info.status.detail ?? 'Something went wrong.'
-    return `${kind} · ${info.status.detail ?? (conn.hasApiKey ? 'Not connected. Test and connect.' : 'Not connected. Add a key and test.')}`
-  }, [state, info.status, kind, models, conn.hasApiKey])
+    if (state === 'connecting') return statusDetail ?? 'Testing the proxy'
+    if (state === 'error') return statusDetail ?? 'Something went wrong.'
+    return `${kind} · ${statusDetail ?? (conn.hasApiKey ? 'Not connected. Test and connect.' : 'Not connected. Add a key and test.')}`
+  }, [state, info.status, statusDetail, kind, models, conn.hasApiKey])
 
   const removeReasonId = `proxy-remove-reason-${id}`
   const blocked = usedBy.length > 0
@@ -322,8 +325,8 @@ export default function ProxyCard({
         <>
           {state === 'error' && (
             <div className="card-sec">
-              <Banner tone="danger" title="Connection error" actions={<CopyDetails text={info.status.detail ?? ''} />}>
-                {info.status.detail}
+              <Banner tone="danger" title="Connection error" actions={<CopyDetails text={statusDetail ?? ''} />}>
+                {statusDetail}
               </Banner>
             </div>
           )}

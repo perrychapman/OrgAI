@@ -104,6 +104,12 @@ describe('nonces and proofs', () => {
     expect(p).not.toBe(clientProof(SECRET, client))
   })
 
+  it('binds handoff only when true, so other hellos keep their proof (Wave 7)', () => {
+    const p = hostProof(SECRET, host)
+    expect(hostProof(SECRET, { ...host, handoff: false })).toBe(p)
+    expect(hostProof(SECRET, { ...host, handoff: true })).not.toBe(p)
+  })
+
   it('proofMatches compares in constant time and rejects junk', () => {
     const p = clientProof(SECRET, client)
     expect(proofMatches(p, p)).toBe(true)

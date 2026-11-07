@@ -8,6 +8,7 @@ import type { HostStatusResult, PendingCards, Project, RunSummary } from '../../
 import { formatDate } from '../../shared/view/dates'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { parseFlags } from '../flags'
+import { hostKindWord } from '../hostWords'
 import { emit, plural, relativeTime, safeLine, shortDuration, styleFor, styleStatus, type Json } from '../output'
 import { costText, kindLabel, pendingItems, statusWordOf } from '../render'
 import { checkProjectResolution, openReadSource } from '../runRef'
@@ -121,7 +122,7 @@ export const runStatus: CommandFn = async (ctx: CliContext, args: string[]): Pro
       if (host) {
         const act = activityText(host.activity.counts)
         lines.push(
-          `${st.bold('Host:')} ${host.state} (${host.hostKind}) · OrgAI ${safeLine(host.appVersion)} · pid ${host.pid} · up ${shortDuration(now - host.startedAt)}${host.mock ? ' · mock' : ''}`
+          `${st.bold('Host:')} ${host.state} (${hostKindWord(host.hostKind)}) · OrgAI ${safeLine(host.appVersion)} · pid ${host.pid} · up ${shortDuration(now - host.startedAt)}${host.mock ? ' · mock' : ''}`
         )
         lines.push(`  ${st.dim('Data folder:')} ${safeLine(host.dataDir)}`)
         lines.push(`  ${st.dim('Activity:')} ${act || 'idle'}`)
