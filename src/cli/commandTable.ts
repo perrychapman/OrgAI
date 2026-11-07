@@ -108,7 +108,7 @@ export const UNTRUSTED_PROMPT_NOTE =
 const EXEC_START_FLAGS: readonly CommandFlag[] = [
   { name: 'team', takesValue: true, values: ['default', 'single'], summary: 'The org chart (default) or one assistant (single)' },
   { name: 'quick', takesValue: false, summary: 'A Chat run outside any project' },
-  { name: 'allow-edits', takesValue: false, summary: 'With --quick: allow edits in the folder (each still asks)' },
+  { name: 'allow-edits', takesValue: false, summary: 'With --quick: allow edits in the folder (each still asks); without it the chat starts read-only and an edit or command asks' },
   { name: 'create-project', takesValue: false, summary: 'Make the current folder a project when it is not one' }
 ]
 

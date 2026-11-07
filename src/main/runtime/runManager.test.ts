@@ -808,7 +808,7 @@ describe('RunManager with the mock adapter', () => {
     const req = await waitFor(isType('permission.request'))
     m.decide(run.id, req.request.id, decision as never)
     const resolved = await waitFor(isType('permission.resolved'))
-    expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id, ...(saved ? { savedToProject: true } : {}) })
+    expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id, ...(saved ? { savedToProject: true } : {}), ...(decision.behavior === 'allow' && 'scope' in decision ? { scope: decision.scope } : {}) })
     expect('savedToProject' in resolved).toBe(saved)
     await m.stop(run.id)
   })

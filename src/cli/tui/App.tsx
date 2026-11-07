@@ -674,7 +674,7 @@ export function App(props: AppProps) {
           session.startQuick({ prompt: launch.prompt, allowEdits: choice.allowEdits, ...(launch.team ? { team: launch.team } : {}) }).catch((e: unknown) => notify(errText(e), 'danger'))
         } else {
           setQuickEdits(choice.allowEdits)
-          notify(choice.allowEdits ? 'Quick run: edits allowed, each still asks. Type the first message.' : 'Quick run: read-only. Type the first message.')
+          notify(choice.allowEdits ? 'Quick run: edits allowed, each still asks. Type the first message.' : 'Quick run: read-only start, an edit or command asks. Type the first message.')
         }
         return
       }
