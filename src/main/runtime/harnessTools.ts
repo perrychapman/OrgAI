@@ -2288,7 +2288,9 @@ export const proposeAppSettings = defineTool({
       real.push({ field: c.field, from, to: c.value, label: APP_SETTING_FIELD_LABELS[c.field] })
     }
     if (!real.length) return 'Nothing to change: those settings already have these values.'
-    const d = await askProposal(ctx, { kind: 'appSettings', agentId: ROOT_AGENT_ID, title: appSettingsCardTitle(real), payload: { changes: real, rationale } })
+    const cardTitle = appSettingsCardTitle(real)
+    if (cardTitle.length > SETTINGS_CARD_TITLE_MAX) return TITLE_TOO_LONG
+    const d = await askProposal(ctx, { kind: 'appSettings', agentId: ROOT_AGENT_ID, title: cardTitle, payload: { changes: real, rationale } })
     return decisionText(d, 'The app settings were changed.')
   }
 })
@@ -2300,9 +2302,21 @@ export const proposeAppSettings = defineTool({
  */
 const cardValue = (v: unknown): string => (v === null ? 'none' : clampText(String(v), 60))
 
+/**
+ * The card shows at most this many title characters (ProposalCard `oneLine(title, 200)`); a longer built title is
+ * refused with REVISE so no change can sit past the cut (review H1 re-check).
+ */
+export const SETTINGS_CARD_TITLE_MAX = 200
+
+/** Fields that weaken guards or spend more come first, so even the shorter fold summary shows them. */
+const SENSITIVE_APP_FIELDS: readonly string[] = ['defaultPermissionMode', 'defaultMaxBudgetUsd']
+
 export function appSettingsCardTitle(changes: readonly AppSettingChange[]): string {
-  return `Change app settings: ${changes.map((c) => `${c.label} ${cardValue(c.from)} → ${cardValue(c.to)}`).join('; ')}`
+  const ordered = [...changes].sort((a, b) => Number(SENSITIVE_APP_FIELDS.includes(b.field)) - Number(SENSITIVE_APP_FIELDS.includes(a.field)))
+  return `Change app settings: ${ordered.map((c) => `${c.label} ${cardValue(c.from)} → ${cardValue(c.to)}`).join('; ')}`
 }
+
+const TITLE_TOO_LONG = `REVISE. The settings were not shown to the user: the card cannot list that many changes in full. Propose fewer changes per card (its summary must fit ${SETTINGS_CARD_TITLE_MAX} characters), one card after another.`
 
 export function projectSettingsCardTitle(projectName: string, payload: SettingsProposalPayload): string {
   const parts = PROJECT_SETTINGS_PROPOSABLE_FIELDS.filter((k) => payload[k] !== undefined).map((k) =>
@@ -2365,7 +2379,9 @@ export const proposeProjectSettings = defineTool({
       ;(payload as unknown as Record<string, unknown>)[key] = v
     }
     if (Object.keys(payload).every((k) => k === 'rationale')) return 'Nothing to change: no setting was given for that project.'
-    const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title: projectSettingsCardTitle(project.name, payload), payload, target: { projectId: project.id, projectName: project.name } })
+    const cardTitle = projectSettingsCardTitle(project.name, payload)
+    if (cardTitle.length > SETTINGS_CARD_TITLE_MAX) return TITLE_TOO_LONG
+    const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title: cardTitle, payload, target: { projectId: project.id, projectName: project.name } })
     return decisionText(d, 'The project settings were applied; they take effect from its next run.')
   }
 })

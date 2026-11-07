@@ -148,6 +148,25 @@ describe('propose_app_settings', () => {
     expect(req.payload).toEqual({ rationale: 'R', changes: [{ field: 'appearance.theme', from: 'dark', to: 'light', label: 'Theme' }] })
   })
 
+  it('refuses a card whose summary would be cut, and puts guard fields first (review H1 re-check)', async () => {
+    const ctx = chatCtx()
+    const many = [
+      { field: 'appearance.theme', value: 'light' },
+      { field: 'appearance.accent', value: '#123456' },
+      { field: 'appearance.canvas.pattern', value: 'blueprint' },
+      { field: 'appearance.canvas.layout', value: 'radial' },
+      { field: 'appearance.canvas.nodeStyle', value: 'hex' },
+      { field: 'communityPrices', value: !SETTINGS.communityPrices },
+      { field: 'defaultPermissionMode', value: 'acceptEdits' }
+    ]
+    expect(await call(ctx, { changes: many })).toMatch(/^REVISE\. .*Propose fewer changes per card/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+    await call(ctx, { changes: [{ field: 'appearance.theme', value: 'light' }, { field: 'defaultPermissionMode', value: 'acceptEdits' }] })
+    const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
+    expect(req.title.length).toBeLessThanOrEqual(200)
+    expect(req.title).toMatch(/^Change app settings: Permission mode for new projects /)
+  })
+
   it('drops no-op changes and answers when nothing is left', async () => {
     const ctx = chatCtx()
     const text = await call(ctx, { changes: [{ field: 'appearance.theme', value: 'dark' }] })
