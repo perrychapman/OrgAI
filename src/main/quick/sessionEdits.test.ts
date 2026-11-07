@@ -123,6 +123,36 @@ describe('quickFolderEditCovered', () => {
     expect(quickFolderEditCovered(folder, 'a.txt', 'win32')).toBe(true)
   })
 
+  it('refuses raw . and .. segments before any resolution (NH1)', () => {
+    const outside = join(root, 'outside-sub')
+    mkdirSync(outside, { recursive: true })
+    const raw = `${folder}/vendor/../.bashrc`
+    // Even without a link, the raw spelling is refused (a real POSIX writer would follow a link first).
+    expect(quickFolderEditCovered(folder, raw)).toBe(false)
+    try {
+      symlinkSync(outside, join(folder, 'vendor'), process.platform === 'win32' ? 'junction' : 'dir')
+      expect(quickFolderEditCovered(folder, raw)).toBe(false)
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AssertionError') throw e
+    }
+    mkdirSync(join(folder, 'a'), { recursive: true })
+    expect(quickFolderEditCovered(folder, 'a/../b.md')).toBe(false)
+    expect(quickFolderEditCovered(folder, './x.md')).toBe(false)
+    expect(quickFolderEditCovered(folder, `${folder}/./x.md`)).toBe(false)
+    expect(quickFolderEditCovered(folder, 'a\\..\\b.md', 'win32')).toBe(false)
+    expect(quickFolderEditCovered(folder, 'a\\.\\b.md', 'win32')).toBe(false)
+    expect(quickFolderEditCovered(folder, 'a/b/c.md')).toBe(true)
+    expect(quickFolderEditCovered(folder, 'dir.with.dots/..hidden.md')).toBe(true)
+  })
+
+  it('editTargets refuses dot segments in file_path, changes paths (NH1)', () => {
+    expect(editTargets('Edit', { file_path: `${folder}/a/../b.md` })).toBeNull()
+    expect(editTargets('Edit', { file_path: './b.md' })).toBeNull()
+    expect(editTargets('Edit', { changes: [{ path: `${folder}/ok.md` }, { path: 'x\\..\\y.md' }] })).toBeNull()
+    expect(editTargets('Edit', { changes: [{ path: `${folder}/ok.md` }] })).toEqual([`${folder}/ok.md`])
+    expect(editTargets('Write', { file_path: `${folder}/sub/n.md` })).toEqual([`${folder}/sub/n.md`])
+  })
+
   it('refuses a network path', () => {
     expect(quickFolderEditCovered('\\\\host\\share\\chat', '\\\\host\\share\\chat\\a.txt', 'win32')).toBe(false)
   })
