@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useMemo } from 'react'
-import { ArrowLeft, Info } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Info } from 'lucide-react'
 import type { AgentInstance, KnowledgeServedUsage, RunUsage } from '@shared/types'
 import { knowledgeUsageRows } from '../lib/runKnowledge'
 import '../styles/knowledge-run.css'
@@ -10,6 +10,7 @@ import { formatTokens, sumCosts, unpricedModels, type CostInput } from '../lib/c
 import { requestModelPrice } from '../lib/settingsTarget'
 import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, skillLoadsFromTranscript, skillRows, timeRows, tokenRows, type AgentRow } from '../lib/usageView'
 import { connectionLabel } from '../lib/connectionLabel'
+import { noResultAgentsLine } from '../lib/usageEfficiency'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
 import { Button } from './ui/Button'
@@ -130,11 +131,16 @@ function AgentTable({ rows, selectedId, onSelect }: { rows: AgentRow[]; selected
       <tbody>
         {rows.map((r) => (
           <tr key={r.id} className={`${r.producedNothing ? 'dim' : ''}${r.id === selectedId ? ' current' : ''}`} data-testid="usage-agent-row" data-agent-id={r.id} data-dim={r.producedNothing || undefined}>
-            <th scope="row">
-              <button type="button" className="usage-link" onClick={() => onSelect(r.id)} title={r.producedNothing ? `${r.label}: ended without a result` : `Show ${r.label}`} aria-current={r.id === selectedId ? 'true' : undefined}>
+            <th scope="row" title={r.sub ? `${r.label} (${r.sub})` : r.label}>
+              <button type="button" className="usage-link" onClick={() => onSelect(r.id)} title={`${r.sub ? `${r.label} (${r.sub})` : r.label}${r.producedNothing ? ': ended without a result' : ''}`} aria-current={r.id === selectedId ? 'true' : undefined}>
                 {r.label}
               </button>
               {r.sub && <span className="usage-sub">{r.sub}</span>}
+              {r.producedNothing && (
+                <span className="usage-nr-tag" data-testid="usage-no-result-tag">
+                  No result
+                </span>
+              )}
             </th>
             <td className="num" title={r.approximate ? LEGACY_NOTE : undefined}>
               {r.approximate ? '~' : ''}
@@ -266,11 +272,14 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
   const usage = useAppStore((s) => s.runs[runId]?.summary.usage)
   const agents = useAppStore((s) => s.runs[runId]?.agents)
   const selectAgent = useAppStore((s) => s.selectAgent)
+  const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
+  const openUsage = useAppStore((s) => s.openUsage)
   const transcript = useAppStore((s) => s.runs[runId]?.transcript)
   const rows = useMemo(() => (agents ? agentRows(agents) : []), [agents])
   // The root is selected by default, so it shows the whole run; any other agent scopes the tab to itself.
   const scoped = agent && agent.id !== 'root' && agent.parentId ? agent : undefined
   const scopedRow = scoped ? agentRow(scoped) : undefined
+  const noResultLine = useMemo(() => noResultAgentsLine(rows.filter((r) => r.producedNothing).map((r) => r.label)), [rows])
   const skills = useMemo(() => {
     if (!usage) return []
     const seen = skillLoadsFromTranscript(transcript ?? [], scoped?.id)
@@ -279,7 +288,7 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
 
   if (!usage && rows.length === 0) {
     return (
-      <div className="usage-panel" data-testid="usage-panel">
+      <div className="run-usage-panel" data-testid="usage-panel">
         <p className="panel-note" data-testid="usage-empty">
           No usage recorded for this run yet.
         </p>
@@ -291,7 +300,15 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
   const fallbackCost = sumCosts(rows.map((r) => r.cost))
 
   return (
-    <div className="usage-panel" data-testid="usage-panel">
+    <div className="run-usage-panel" data-testid="usage-panel">
+      {projectId && (
+        <p className="usage-all-link">
+          <button type="button" className="link-btn" data-testid="run-usage-all" onClick={() => openUsage({ projectIds: [projectId] })}>
+            All usage
+            <Icon icon={ArrowUpRight} size="xs" />
+          </button>
+        </p>
+      )}
       {scoped && scopedRow ? (
         <>
           <div className="usage-scope" data-testid="usage-scope">
@@ -325,6 +342,11 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
             </Stat>
           </dl>
         </>
+      )}
+      {!scoped && noResultLine && (
+        <p className="panel-note" data-testid="usage-no-result-line">
+          {noResultLine}.
+        </p>
       )}
       {rows.length > 0 && <AgentTable rows={rows} selectedId={scoped?.id} onSelect={selectAgent} />}
       <SkillsLoaded rows={skills} />
