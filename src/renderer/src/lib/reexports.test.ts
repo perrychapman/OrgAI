@@ -26,7 +26,7 @@ const EXPECTED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
     'clampLabel'
   ],
   cost: [
-    'COST_TITLES', 'agentCostInput', 'costView', 'formatDuration', 'formatTokens', 'formatUsd', 'runCostInput',
+    'COST_TITLES', 'agentCostInput', 'costView', 'formatDuration', 'formatTokens', 'formatUsd', 'formatUsdCompact', 'runCostInput',
     'sumCosts', 'unpricedModels'
   ],
   dates: [
