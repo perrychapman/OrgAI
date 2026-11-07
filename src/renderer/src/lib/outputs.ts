@@ -1,5 +1,5 @@
 // Pure helpers for run outputs (docs/design/outputs.md). No React, no DOM, no store.
-import type { OutputKind, OutputPreview, RunOutput } from '@shared/types'
+import { OUTPUT_EDITABLE_KINDS, OUTPUT_EDIT_MAX_BYTES, type OutputKind, type OutputPreview, type RunOutput } from '@shared/types'
 import { formatDate } from './dates'
 
 /** The one visible name of each kind, on every surface (docs/design/outputs.md "Words"). */
@@ -69,9 +69,33 @@ export function canOpenOutput(o: Pick<RunOutput, 'kind' | 'missing'>): boolean {
   return !OUTPUT_NOT_OPENABLE.includes(o.kind) && !o.missing
 }
 
-/** outputs:delete removes only a produced file under the project's outputs folder. */
-export function canDeleteOutput(o: Pick<RunOutput, 'source' | 'missing'>): boolean {
-  return o.source === 'produced' && !o.missing
+/** Outputs 2: every output can be deleted (registered ones with a confirm that names the file; a missing one just leaves OrgAI). */
+export function canDeleteOutput(_o?: Pick<RunOutput, 'source' | 'missing'>): boolean {
+  return true
+}
+
+/** Kinds the user edits as text inside OrgAI (OUTPUT_EDITABLE_KINDS). */
+export function isEditableKind(kind: OutputKind): boolean {
+  return (OUTPUT_EDITABLE_KINDS as readonly OutputKind[]).includes(kind)
+}
+
+/** The app that edits an Office kind outside OrgAI, or null. */
+export function externalAppName(kind: OutputKind): string | null {
+  return kind === 'docx' ? 'Word' : kind === 'xlsx' ? 'Excel' : kind === 'pptx' ? 'PowerPoint' : null
+}
+
+/** Revise needs a text form: image, pdf, other and a missing file cannot be revised (docs/design/outputs-2.md 11.6). */
+export function canReviseFallback(o: Pick<RunOutput, 'kind' | 'missing'>): boolean {
+  return !o.missing && o.kind !== 'image' && o.kind !== 'pdf' && o.kind !== 'other'
+}
+
+/** Why Edit is not offered for an editable kind (visible text, never a missing button); null when it is offered. */
+export function editBlockedReason(o: Pick<RunOutput, 'kind' | 'missing' | 'bytes'>, isCurrent: boolean): string | null {
+  if (!isEditableKind(o.kind)) return null
+  if (o.missing) return 'The file is gone.'
+  if (!isCurrent) return 'Restore this version to edit it.'
+  if (o.bytes > OUTPUT_EDIT_MAX_BYTES) return 'This file is too large to edit here. Edit it in your own app.'
+  return null
 }
 
 /** "512 bytes", "38 KB", "1.2 MB". Never "0 KB" for a non-empty file; an unknown size (not finite) is ''. */
@@ -115,9 +139,23 @@ export function outputsCountLabel(n: number): string {
   return `${n} ${n === 1 ? 'output' : 'outputs'}`
 }
 
-/** Key of a cached preview: a re-produced file changes updatedAt and so misses the cache. */
-export function previewKey(o: Pick<RunOutput, 'id' | 'updatedAt' | 'createdAt'>): string {
+/**
+ * Key of a cached preview: a re-produced file changes updatedAt and so misses the cache. An older version (never
+ * changes) is keyed by its number.
+ */
+export function previewKey(o: Pick<RunOutput, 'id' | 'updatedAt' | 'createdAt'>, olderVersion?: number | null): string {
+  if (olderVersion !== undefined && olderVersion !== null) return `${o.id}#v${olderVersion}`
   return `${o.id}@${o.updatedAt ?? o.createdAt}`
+}
+
+/** The current version's provenance: "Analyst · R2 · 7 Nov 2026", "You · edited · ...", "Changed outside OrgAI · ...". */
+export function currentProvenance(o: Pick<RunOutput, 'role' | 'createdAt' | 'updatedAt' | 'current'>, runTag?: string): string {
+  const c = o.current
+  const at = formatDate(c?.at ?? o.updatedAt ?? o.createdAt)
+  if (c?.source === 'edit') return ['You · edited', at].filter(Boolean).join(' · ')
+  if (c?.source === 'external') return ['Changed outside OrgAI', at].filter(Boolean).join(' · ')
+  if (c?.source === 'restore') return ['Restored by you', at].filter(Boolean).join(' · ')
+  return [(c?.role ?? o.role)?.trim() || 'An agent', runTag, at].filter(Boolean).join(' · ')
 }
 
 /** A small LRU of previews per project (docs/design/outputs.md section 4). */
