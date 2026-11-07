@@ -322,4 +322,22 @@ Decided by the owner, 2026-11-07 (no longer open): a model filter shows the mode
 
 Still open:
 - Budgets and alerts, and tips copy (token-efficiency plan item 10), are separate briefs.
-- Whether Dashboard strip and Trends adopt the page's decimals rule in the same change or the next (5).
+- Whether Dashboard strip and Trends adopt the page's decimals rule in the same change or the next (5). Built: not yet adopted (the next change that touches them).
+
+## 19. Implementation notes (2026-11-07, UI Lead)
+
+Built as specified, with these deviations:
+
+- The client fold (`lib/usageOverview.ts`) answers model, role, bucket, connection, "no price" and Ask/Chat-within-work narrowings from the returned rows; the server rollups are used untouched otherwise. Folded figures of a truncated overview are a lower bound ("At least", no extra "+").
+- Model chip: roles show unknown cost with "Model cost per role is not recorded" (the contract has no per-model cost per role); the connection split puts the model's cost on the run's connection.
+- `--chart-hatch` is `--surface-1`, not `--text-muted` at 60% (the only colour that shows on every series fill in both themes); `--text-muted` does not exist, muted marks use `--text-tertiary`. Measured ratios are in tokens.css. s6 is reserved and never drawn.
+- Ranked rows and legend rows are lists of buttons with one Tab stop and arrows, not `role=listbox` (the More button and Set a price cannot sit inside an option); the narrowed row carries `aria-current`. The "Other" legend row is text naming the folded projects, not a button to the Projects popover.
+- The Projects popover uses native checkboxes in a fieldset per group; Group by uses its own radio markup so a refused bucket can be `aria-disabled` with a reason.
+- `usage-live-note` sits in the topbar beside `usage-updated`, so a run starting or ending shifts nothing (17.5).
+- CSV goes through `runs:usageOverviewCsv` with the page query only; with a client-side narrowing the status line says the other filters are not applied.
+- Efficiency and the run tables use the returned rows; when truncated the efficiency summary says "From the newest 2,000 runs."
+- The filtered-empty state offers "Use 30 days" alone when the period is the only cause (Clear all keeps the period).
+- First-launch empty: when a fetch matches nothing, one unfiltered query with limit 1 decides between `usage-empty-all` and `usage-empty` (and gives the most recent run's date).
+- The Projects popover's test id is `usage-projects-popover` (the panel keeps `usage-projects-panel`).
+
+Open: Reviewer L1 (bar group nests segment buttons), L5 (several status regions, `aria-busy` on the root), L6 (`usage-scope`, `usage-roles`, `usage-empty`, `usage-no-result-tag` also exist on the run Usage tab); no UX walk of the built page yet. Checked by unit tests and `e2e/usage-app.mjs` (see CLAUDE.md Renderer "Usage page").

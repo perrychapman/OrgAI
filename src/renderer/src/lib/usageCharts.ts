@@ -79,7 +79,11 @@ export function formatTick(v: number, metric: 'cost' | 'tokens'): string {
   if (v === 0) return '$0'
   if (v >= 1000) return `$${+(v / 1000).toFixed(1)}k`
   if (v >= 1) return `$${+v.toFixed(2)}`
-  if (v >= 0.01) return `$${v.toFixed(2)}`
+  // Three decimals when the tick needs them ($0.015), never fewer than two ($0.02), so two ticks never read the same.
+  if (v >= 0.01) {
+    const t = String(+v.toFixed(3))
+    return `$${t.length - t.indexOf('.') - 1 < 2 ? (+t).toFixed(2) : t}`
+  }
   return `$${+v.toFixed(4)}`
 }
 
