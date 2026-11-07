@@ -3,8 +3,10 @@
  * Directory record and the central directory of a Buffer (no inflating). ZIP64 is refused. Pure.
  *
  * Limits: at most ZIP_MAX_ENTRIES entries, at most ZIP_MAX_TOTAL_BYTES of declared uncompressed data, and no entry over
- * 1 MB uncompressed with a compression ratio above ZIP_MAX_RATIO:1. The sizes are the central directory's own claims;
- * a file whose local headers lie is not caught here (the unzip libraries read the central directory as well).
+ * 1 MB uncompressed with a compression ratio above ZIP_MAX_RATIO:1. zipProblem trusts the central directory's claims;
+ * zipVerifyEntries then checks the local headers, inflates with a cap, and requires one unambiguous layout (directory
+ * ends exactly at the EOCD, no second EOCD signature, local entries tile [0, cdOffset) with no gap, extra or duplicate
+ * name), so JSZip (directory reader) and unzipper (local-header reader) see the same entries.
  */
 import { inflateRawSync } from 'node:zlib'
 
@@ -69,9 +71,34 @@ interface CenEntry {
  */
 export function zipVerifyEntries(buf: Buffer): string | null {
   const entries: CenEntry[] = []
-  const problem = scan(buf, () => {}, (e) => entries.push(e))
+  let cdStart = 0
+  const problem = scan(buf, () => {}, (e) => entries.push(e), (c) => (cdStart = c))
   if (problem) return problem
   const bad = 'A part of the package does not match its directory.'
+  // Entries must tile [0, cdOffset) exactly in local-header order: no unlisted local entry, gap, overlap or leftover
+  // bytes for a reader that walks local headers (unzipper) to see something the directory does not list.
+  const names = new Set<string>()
+  const lower = new Set<string>()
+  for (const e of entries) {
+    if (names.has(e.name) || lower.has(e.name.toLowerCase())) return bad
+    names.add(e.name)
+    lower.add(e.name.toLowerCase())
+  }
+  let pos = 0
+  for (const e of [...entries].sort((a, b) => a.localOffset - b.localOffset)) {
+    const o = e.localOffset
+    if (o !== pos || o + 30 > buf.length) return bad
+    const end = o + 30 + buf.readUInt16LE(o + 26) + buf.readUInt16LE(o + 28) + e.csize
+    pos = end
+    if ((buf.readUInt16LE(o + 6) & 0x8) !== 0) {
+      if (end + 12 > buf.length) return bad
+      const signed = buf.readUInt32LE(end) === 0x08074b50
+      const d = signed ? end + 4 : end
+      if (d + 12 > buf.length || buf.readUInt32LE(d + 4) !== e.csize || buf.readUInt32LE(d + 8) !== e.usize) return bad
+      pos = d + 12
+    }
+  }
+  if (pos !== cdStart) return bad
   for (const e of entries) {
     const o = e.localOffset
     if (o + 30 > buf.length || buf.readUInt32LE(o) !== LOCAL_SIG) return bad
@@ -99,7 +126,7 @@ export function zipVerifyEntries(buf: Buffer): string | null {
   return null
 }
 
-function scan(buf: Buffer, setTotal: (n: number) => void, onEntry?: (e: CenEntry) => void): string | null {
+function scan(buf: Buffer, setTotal: (n: number) => void, onEntry?: (e: CenEntry) => void, onLayout?: (cdOffset: number) => void): string | null {
   if (buf.length < 22) return 'The file is too small to be an Office document.'
   // EOCD sits at the end, followed by at most a 65535-byte comment.
   const from = Math.max(0, buf.length - 22 - 0xffff)
@@ -124,7 +151,14 @@ function scan(buf: Buffer, setTotal: (n: number) => void, onEntry?: (e: CenEntry
   if (entries === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) return 'ZIP64 packages are not supported.'
   if (disk !== 0 || cdDisk !== 0 || entriesHere !== entries) return 'Split ZIP packages are not supported.'
   if (entries > ZIP_MAX_ENTRIES) return `The package has more than ${ZIP_MAX_ENTRIES} parts.`
-  if (cdOffset + cdSize > eocd) return 'The ZIP directory is damaged.'
+  // The unzip libraries read a different directory than a looser parser would (JSZip: last EOCD signature, records until
+  // the signature stops matching, shifted offsets; unzipper: local headers only). Accept only an archive every reader
+  // reads the same way: the directory ends exactly at the EOCD and no other EOCD signature sits after it.
+  if (cdOffset + cdSize !== eocd) return 'The ZIP directory is damaged.'
+  for (let i = eocd + 1; i + 4 <= buf.length; i++) {
+    if (buf.readUInt32LE(i) === EOCD_SIG) return 'The ZIP directory is damaged.'
+  }
+  onLayout?.(cdOffset)
   let p = cdOffset
   const end = cdOffset + cdSize
   let total = 0
@@ -153,5 +187,6 @@ function scan(buf: Buffer, setTotal: (n: number) => void, onEntry?: (e: CenEntry
     p += 46 + nameLen + extraLen + commentLen
     if (p > end) return 'The ZIP directory is damaged.'
   }
+  if (p !== end) return 'The ZIP directory is damaged.'
   return null
 }
