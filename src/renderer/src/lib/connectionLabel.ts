@@ -1,10 +1,45 @@
-import { isProxyConnection } from '@shared/types'
+import { isBuiltinConnectionId, isProxyConnection } from '@shared/types'
 import type { ConnectionId, ConnectionInfo } from '@shared/types'
-import { CONNECTION_NAME } from './settingsCopy'
+
+const BUILTIN_NAME: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI' }
+
+/** Shown for a proxy id that is no longer in the list (a removed proxy named by an old run, usage row or project). */
+export const REMOVED_PROXY_LABEL = 'Removed proxy'
+
+/**
+ * The renderer's copy of the connection list, fed by the store (it subscribes in useAppStore.ts), so the pure label
+ * helpers below can name a proxy without a React hook. null = not loaded yet.
+ */
+let registry: ReadonlyMap<string, ConnectionInfo> | null = null
+export function setConnectionRegistry(list: readonly ConnectionInfo[] | null | undefined): void {
+  registry = list ? new Map(list.map((c) => [c.connection.id, c])) : null
+}
+
+/**
+ * THE name of a connection, used by every surface (never write "LiteLLM" for a proxy): Anthropic, OpenAI, a proxy's
+ * own name, "Removed proxy" for a proxy id that is not in the loaded list, "Proxy" before the list has loaded.
+ */
+export function connectionLabel(id: ConnectionId | null | undefined): string {
+  if (!id) return 'No connection'
+  if (isBuiltinConnectionId(id)) return BUILTIN_NAME[id]
+  const c = registry?.get(id)?.connection
+  if (c && isProxyConnection(c)) return c.name
+  return registry ? REMOVED_PROXY_LABEL : 'Proxy'
+}
+
+/** The kind in words, for a badge: "Anthropic", "OpenAI", "LiteLLM proxy", "OpenAI-compatible proxy". */
+export function connectionKindLabel(c: ConnectionInfo['connection'] | undefined | null): string {
+  if (!c) return 'Proxy'
+  if (isProxyConnection(c)) return c.kind === 'litellm' ? 'LiteLLM proxy' : 'OpenAI-compatible proxy'
+  return BUILTIN_NAME[c.id] ?? c.id
+}
+
+/** True when the id is a proxy (anything but the two built-ins). */
+export const isProxyId = (id: ConnectionId | null | undefined): boolean => !!id && !isBuiltinConnectionId(id)
 
 /** Name of a connection record: a proxy's own name, else the fixed name. */
 function recordName(c: ConnectionInfo['connection']): string {
-  return isProxyConnection(c) ? c.name : (CONNECTION_NAME[c.id] ?? c.id)
+  return isProxyConnection(c) ? c.name : (BUILTIN_NAME[c.id] ?? c.id)
 }
 
 /**
@@ -28,9 +63,9 @@ export function defaultConnectionInfo(connections: readonly ConnectionInfo[] | n
   return connections?.find((c) => c.isDefault) ?? null
 }
 
-/** Display name of a connection id. */
+/** @deprecated Same as connectionLabel. */
 export function connectionName(id: ConnectionId): string {
-  return CONNECTION_NAME[id] ?? id
+  return connectionLabel(id)
 }
 
 /**

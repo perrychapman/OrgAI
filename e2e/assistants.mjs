@@ -226,6 +226,72 @@ try {
     }
   }
 
+  // ---- Model pickers across connections: a mixed-family proxy on the mock host ----
+  const PROXY_NAME = 'E2E gateway'
+  const proxyId = await page.evaluate(async (name) => {
+    const made = await window.orgai.connections.createProxy({ name, anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'whatever' })
+    const id = made.connection.id
+    await window.orgai.connections.connect(id)
+    return id
+  }, PROXY_NAME)
+  check(!!proxyId, 'a mock proxy was created and connected through IPC', String(proxyId))
+  try {
+    await page.reload()
+    await page.waitForSelector('.sidebar', { timeout: 30_000 })
+    for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+      await setSize(w, h)
+      for (const theme of ['dark', 'light']) {
+        await setTheme(theme)
+        const tag = `at ${w}x${h} ${theme}`
+        await openAppSettings(page)
+        await page.getByRole('tab', { name: 'General', exact: true }).click().catch(() => {})
+        await sleep(400)
+        const adv = page.locator('[data-testid=settings-advanced][data-pane=app-general]')
+        if ((await adv.count()) && !(await adv.evaluate((d) => d.open).catch(() => false))) await adv.locator('summary').click().catch(() => {})
+        await sleep(600)
+        for (const rowId of ['setup-model-row', 'mcp-assist-model-row', 'skill-assist-model-row', 'quick-run-model-row']) {
+          const sel = page.locator(`[data-testid=${rowId}-select]`)
+          if (!(await sel.count())) {
+            log(`SKIP ${rowId}-select absent`)
+            continue
+          }
+          const groups = await sel.evaluate((s) => [...s.querySelectorAll('optgroup')].map((g) => ({ label: g.label, options: [...g.querySelectorAll('option')].map((o) => o.textContent ?? '') })))
+          const labels = groups.map((g) => g.label)
+          check(labels[0] === 'Tiers' && labels.includes('Anthropic') && labels.includes(PROXY_NAME), `${rowId} lists a group per connection, tiers first ${tag}`, labels.join(' | '))
+          const px = groups.find((g) => g.label === PROXY_NAME)
+          check(!!px && px.options.some((o) => / · GPT$/.test(o)) && px.options.some((o) => / · Other$/.test(o)) && px.options.some((o) => / · Claude$/.test(o)), `${rowId} proxy group names each model's family ${tag}`, JSON.stringify(px?.options))
+          check(!!px && px.options.every((o) => !o.includes(PROXY_NAME)), `${rowId} does not repeat the proxy name on each option ${tag}`)
+        }
+      }
+    }
+    // Pick a non-Claude model for an assistant, make the proxy the default, and read the "Runs on" line.
+    await setSize(1600, 1000)
+    await setTheme('dark')
+    await openAppSettings(page)
+    await page.getByRole('tab', { name: 'General', exact: true }).click().catch(() => {})
+    await sleep(400)
+    const skillSel = page.locator('[data-testid=skill-assist-model-row-select]')
+    await skillSel.selectOption('gpt-6-sol')
+    await sleep(900)
+    const saved = await page.evaluate(async () => (await window.orgai.settings.get()).skillAssistModel)
+    check(saved === 'gpt-6-sol', 'picking a GPT model saves it for the Skill assistant', String(saved))
+    await page.evaluate((id) => window.orgai.connections.setDefault(id), proxyId)
+    await sleep(900)
+    await openAssistant('skills')
+    const line = await page.locator('[data-testid=assistant-start-skills] [data-testid=assistant-model-line]').innerText().catch(() => '')
+    check(new RegExp(`Runs on .*gpt.*6.* via ${PROXY_NAME}`, 'i').test(line), 'the model line names the proxy by its own name', line)
+    check(!/LiteLLM/.test(line), 'the model line never says LiteLLM for a named proxy', line)
+    await shot('assistant-model-proxy')
+  } finally {
+    await page.evaluate(async (id) => {
+      await window.orgai.connections.setDefault(null).catch(() => {})
+      const s = await window.orgai.settings.get()
+      await window.orgai.settings.set({ ...s, skillAssistModel: 'deep' }).catch(() => {})
+      await window.orgai.connections.removeProxy(id).catch(() => {})
+    }, proxyId)
+    await sleep(500)
+  }
+
   // ---- Needs the runtime ----
   await setSize(1600, 1000)
   await setTheme('dark')

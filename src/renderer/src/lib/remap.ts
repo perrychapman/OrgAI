@@ -1,5 +1,5 @@
 import type { ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel, Project, RemapChange, RemapResult } from '@shared/types'
-import { MODEL_TIERS } from '@shared/types'
+import { MODEL_TIERS, MODEL_TIER_OPTIONS } from '@shared/types'
 import { adapterForFamily, mixedFamilyRefusal, modelFamily, tierForModel } from '@shared/defaults'
 
 /** One project's predicted or applied model changes, for the notice and the preview dialog. */
@@ -73,8 +73,64 @@ export function previewRemap(input: PreviewInput): ProjectChanges {
   return { projectId: project.id, projectName: project.name, changes }
 }
 
+export interface TierMappingLine {
+  tier: ModelTier
+  tierLabel: string
+  /** The model this tier maps to on the target connection; undefined = no model. */
+  model: ModelRef | undefined
+  /** Roles whose tier this is. */
+  roles: number
+  /** One sentence per tier: "Top: model" or "Top has no model on X; roles on Top keep their current model". */
+  text: string
+}
+
 /**
- * Roles of a LiteLLM project whose model family differs from the orchestrator's. They are allowed: the orchestrator's
+ * What each tier maps to on the target connection, for the "Apply this mapping?" dialog. A tier with no model says so
+ * and, when roles use it, that those roles keep their current model (previewRemap never touches them).
+ */
+export function tierMappingLines(
+  tierModels: Partial<Record<ModelTier, ModelRef>>,
+  roles: readonly { model: ModelRef; tier?: ModelTier }[],
+  connectionName: string
+): TierMappingLine[] {
+  return MODEL_TIERS.map((tier) => {
+    const label = MODEL_TIER_OPTIONS.find((o) => o.value === tier)?.label ?? tier
+    const model = tierModels[tier]
+    const count = roles.filter((r) => roleTier(r) === tier).length
+    const text = model
+      ? `${label}: ${model}`
+      : count > 0
+        ? `${label} has no model on ${connectionName}; ${count === 1 ? 'the role' : 'roles'} on ${label} ${count === 1 ? 'keeps its' : 'keep their'} current model.`
+        : `${label} has no model on ${connectionName}.`
+    return { tier, tierLabel: label, model, roles: count, text }
+  })
+}
+
+export interface RouteLine {
+  /** 'claude' = the Anthropic URL; 'other' = the OpenAI URL. */
+  route: 'claude' | 'other'
+  text: string
+  /** The base URL the mapped models are served through, when the catalog carries it. */
+  url?: string
+}
+
+/**
+ * Which route the mapped models take on a proxy: Claude-family models use the proxy's Anthropic URL, GPT and other
+ * models its OpenAI URL (ProviderModel.family / baseUrl). Empty for a connection with one route, or when nothing maps.
+ */
+export function routeLines(tierModels: Partial<Record<ModelTier, ModelRef>>, catalog: readonly ProviderModel[]): RouteLine[] {
+  const mapped = [...new Set(MODEL_TIERS.map((t) => tierModels[t]).filter((m): m is ModelRef => !!m && m !== 'inherit'))]
+  const find = (id: ModelRef): ProviderModel | undefined => catalog.find((m) => m.id === id)
+  const claude = mapped.map(find).filter((m) => m?.family === 'claude')
+  const other = mapped.map(find).filter((m) => m && m.family !== 'claude')
+  const out: RouteLine[] = []
+  if (claude.length) out.push({ route: 'claude', text: 'Claude models use the Anthropic URL.', url: claude[0]?.baseUrl })
+  if (other.length) out.push({ route: 'other', text: 'GPT and other models use the OpenAI URL.', url: other[0]?.baseUrl })
+  return out
+}
+
+/**
+ * Roles of a proxy project whose model family differs from the orchestrator's. They are allowed: the orchestrator's
  * family picks the adapter and the proxy serves the rest. Used only to word one informational notice.
  */
 export function otherFamilyRoles(

@@ -11,7 +11,8 @@ import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { ModelSelect, type ModelGroup } from '../ui/ModelSelect'
 import RemapPreviewDialog from '../RemapPreviewDialog'
-import { FAMILY_LABEL, groupByFamily, previewRemap } from '../../lib/remap'
+import { groupByFamily, previewRemap } from '../../lib/remap'
+import { FAMILY_WORD, mixedFamilies, withFamily } from '../../lib/modelFamily'
 
 type Draft = Partial<Record<ModelTier, ModelRef>>
 const same = (a: Draft, b: Draft): boolean => MODEL_TIER_OPTIONS.every((o) => (a[o.value] ?? '') === (b[o.value] ?? ''))
@@ -43,10 +44,14 @@ export default function TierEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saved])
 
-  const groups: ModelGroup[] = useMemo(
-    () => groupByFamily(models).map((g) => ({ label: FAMILY_LABEL[g.family], options: g.models.map((m) => ({ value: m.id, label: m.recommended ? `${m.id} (recommended)` : m.id })) })),
-    [models]
-  )
+  // Grouped by family; when the catalog mixes families each option names its own, so a tier can be mapped to a GPT or Qwen model.
+  const groups: ModelGroup[] = useMemo(() => {
+    const mixed = mixedFamilies(models)
+    return groupByFamily(models).map((g) => ({
+      label: FAMILY_WORD[g.family],
+      options: g.models.map((m) => ({ value: m.id, label: withFamily(m.recommended ? `${m.id} (recommended)` : m.id, m.family, mixed) }))
+    }))
+  }, [models])
   const known = new Set(models.map((m) => m.id))
 
   const affected = useMemo(

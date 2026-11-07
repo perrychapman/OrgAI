@@ -5,6 +5,7 @@ import type { AgentImportAction, AgentImportItem, AgentImportMode, AgentImportPr
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { projectConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
+import { connectionLabel } from '../../lib/connectionLabel'
 import {
   buildChoices,
   elevatedLabels,
@@ -35,7 +36,7 @@ const MODES: { value: AgentImportMode; label: string; title: string }[] = [
 
 const SEARCHED = '.claude/agents, .opencode/agents, opencode.json, .codex/agents, .github/agents, .gemini/agents, .kiro/agents, .roomodes and .orgai/org.json'
 
-const CONN_NAME: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+
 
 function ImportRow({
   item,
@@ -370,7 +371,7 @@ export default function ImportAgentsDialog({
             {preview && (
               <>
                 <p className="hint">
-                  Models map to {mock ? "the connection's tiers (mock adapter)" : `${CONN_NAME[preview.connection] ?? preview.connection}'s tiers`}
+                  Models map to {mock ? "the connection's tiers (mock adapter)" : `${connectionLabel(preview.connection)}'s tiers`}
                   {flat ? '; roles without a hierarchy report to the orchestrator' : ''}. Change either below.
                 </p>
                 <ul className="import-roles" aria-busy={loading}>

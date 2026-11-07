@@ -127,11 +127,11 @@ describe('connectionProblems', () => {
   const proj = (connection: ConnectionId) => ({ provider: { id: 'x', connection } }) as never
   it('names a disconnected connection in use and counts its projects', () => {
     const out = connectionProblems([info('anthropic', 'connected'), info('openai', 'disconnected')], new Set<ConnectionId>(['anthropic', 'openai']), [proj('openai'), proj('openai'), proj('anthropic')])
-    expect(out).toEqual([{ id: 'openai', text: 'Codex is not connected. 2 projects use it.' }])
+    expect(out).toEqual([{ id: 'openai', text: 'OpenAI is not connected. 2 projects use it.' }])
   })
   it('says "1 project uses it" and skips connections not in use or fine', () => {
     const out = connectionProblems([info('openai', 'error'), info('litellm', 'disconnected')], new Set<ConnectionId>(['openai']), [proj('openai')])
-    expect(out).toEqual([{ id: 'openai', text: 'Codex has a problem. 1 project uses it.' }])
+    expect(out).toEqual([{ id: 'openai', text: 'OpenAI has a problem. 1 project uses it.' }])
   })
   it('is empty while the list is loading', () => {
     expect(connectionProblems(null, new Set<ConnectionId>(['anthropic']), [])).toEqual([])
