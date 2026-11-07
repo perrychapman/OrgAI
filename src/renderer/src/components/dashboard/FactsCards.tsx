@@ -4,13 +4,15 @@ import type { ConnectionId, UsageStatus } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { locationLabel } from '../../lib/assistants'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
-import { CONNECTION_LABEL, connectionsInUse, periodText, periodsCaption, spendSentence, spendText } from '../../lib/usage'
+import { connectionLabel, isProxyId } from '../../lib/connectionLabel'
+import { connectionsInUse, periodText, periodsCaption, reportsSpend, spendSentence, spendText } from '../../lib/usage'
 import { Cost } from '../ui/Cost'
 import { ConnectionStatusBadge } from '../ui/ConnectionStatusBadge'
 import { SpendBar, tightestWindow, UsageBar } from '../UsageMeter'
 import { connectionProblems, costInWindow, mergeSummaries, topProjectCosts, usageIsStale, windowLabel } from './dashboardProjects'
 
-const ORDER: ConnectionId[] = ['anthropic', 'openai', 'litellm']
+/** Proxies named in full on the Connections card; past this many it says "N proxies connected" and keeps the names in the title. */
+const NAMED_MAX = 3
 
 /** One usage refresh at a time across mounts. */
 let refreshing = false
@@ -22,7 +24,11 @@ function UsageCard(): ReactElement {
   const defaultConnection = useAppStore((s) => s.defaultConnection)
   const projects = useAppStore((s) => s.projects)
   const inUse = useMemo(() => connectionsInUse(connections, defaultConnection, projects), [connections, defaultConnection, projects])
-  const ids = ORDER.filter((id) => inUse.has(id))
+  // connectionIds order: Anthropic, OpenAI, then proxies in list order. A proxy shows a row only while it is connected
+  // and can report spend; one that reports none (OpenAI-compatible) has nothing to show here.
+  const ids: ConnectionId[] = (connections ?? [])
+    .filter((c) => inUse.has(c.connection.id) && (!isProxyId(c.connection.id) || (c.status.state === 'connected' && reportsSpend(c))))
+    .map((c) => c.connection.id)
 
   // Mount only: ask for a fresh reading when the newest one is older than a minute. No timer while the page is open.
   useEffect(() => {
@@ -41,19 +47,20 @@ function UsageCard(): ReactElement {
       <ul className="dash-fact-list">
         {ids.map((id) => {
           const usage = byConnection[id]
-          const tight = id === 'litellm' ? null : tightestWindow(usage)
-          const spend = id === 'litellm' && usage?.available ? usage.spend : undefined
-          // LiteLLM: the same one figure as the account row (today's spend when periods are reported, else the budget
+          const proxy = isProxyId(id)
+          const tight = proxy ? null : tightestWindow(usage)
+          const spend = proxy && usage?.available ? usage.spend : undefined
+          // A proxy: the same one figure as the account row (today's spend when periods are reported, else the budget
           // text), the budget bar, then this week and this month as a caption; the whole sentence in the tooltip.
           const caption = spend ? periodsCaption(spend) : ''
           return (
-            <li key={id} className="dash-usage-row" data-testid="dash-usage-row" data-connection={id} title={spend ? spendSentence(spend) : undefined}>
-              <span className="dash-usage-name">{CONNECTION_LABEL[id]}</span>
-              {id === 'litellm' ? (
+            <li key={id} className="dash-usage-row" data-testid="dash-usage-row" data-connection={id} title={spend ? spendSentence(spend, id) : undefined}>
+              <span className="dash-usage-name">{connectionLabel(id)}</span>
+              {proxy ? (
                 spend ? (
                   <>
                     <span className="dash-fact-line mono">{spend.periods ? periodText(spend.periods.day.usd, 'day') : spendText(spend)}</span>
-                    <SpendBar spend={spend} />
+                    <SpendBar spend={spend} id={id} />
                     {caption && (
                       <span className="dash-fact-line" data-testid="dash-usage-periods">
                         {caption}
@@ -133,6 +140,7 @@ function ConnectionsCard(): ReactElement {
   }, [])
 
   const def = connections?.find((c) => c.connection.id === defaultConnection)
+  const proxyNames = (connections ?? []).filter((c) => isProxyId(c.connection.id) && c.status.state === 'connected').map((c) => connectionLabel(c.connection.id))
   return (
     <section className="dash-fact card-fact" data-testid="dash-connections" aria-labelledby={headingId}>
       <h2 id={headingId}>Connections</h2>
@@ -144,8 +152,13 @@ function ConnectionsCard(): ReactElement {
         <>
           {defaultConnection && def && (
             <p className="dash-conn-default">
-              <span>Default: {CONNECTION_LABEL[defaultConnection]}</span>
+              <span>Default: {connectionLabel(defaultConnection)}</span>
               <ConnectionStatusBadge state={def.status.state} />
+            </p>
+          )}
+          {proxyNames.length > 0 && (
+            <p className="dash-fact-line" data-testid="dash-proxies" title={proxyNames.join(', ')}>
+              {proxyNames.length > NAMED_MAX ? `${proxyNames.length} proxies connected` : `${proxyNames.length === 1 ? 'Proxy' : 'Proxies'}: ${proxyNames.join(', ')}`}
             </p>
           )}
           {problems.length > 0 && (

@@ -6,7 +6,7 @@ import { chatSummaryLine, START_PAGE_COPY } from '../../lib/assistants'
 import { useAssistantRunsOn } from '../../lib/assistantModels'
 import { folderName } from '../../lib/paths'
 import { pathStatus } from '../../lib/projectsForm'
-import { CONNECTION_NAME } from '../../lib/settingsCopy'
+import { connectionLabel } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
@@ -88,7 +88,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
     folderName: folder ? folderName(folder) : undefined,
     allowEdits,
     model,
-    connection: defaultConnection ? CONNECTION_NAME[defaultConnection] : undefined,
+    connection: defaultConnection ? connectionLabel(defaultConnection) : undefined,
     mock
   })
 
