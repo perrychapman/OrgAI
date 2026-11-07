@@ -1,9 +1,12 @@
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import ExcelJS from 'exceljs'
+import JSZip from 'jszip'
 import mammoth from 'mammoth'
 import type { OutputKind, OutputPreview, SheetCell, SheetPreview } from '@shared/types'
 import {
   OUTPUT_PREVIEW_COLUMNS_MAX,
+  OUTPUT_PREVIEW_DOC_IMAGES_TOTAL_BYTES,
+  OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES,
   OUTPUT_PREVIEW_IMAGE_MAX_BYTES,
   OUTPUT_PREVIEW_ROWS_MAX,
   OUTPUT_PREVIEW_SHEETS_MAX,
@@ -11,7 +14,7 @@ import {
 } from '@shared/types'
 import { htmlToBlocks } from './htmlBlocks'
 import { svgProblem } from './writers'
-import { zipInfo, zipProblem, zipSumSizes, zipVerifyEntries } from './zipGuard'
+import { zipEntrySize, zipInfo, zipMaxSize, zipProblem, zipSumSizes, zipVerifyEntries } from './zipGuard'
 
 /**
  * previewFile(path, kind): the inline preview of one output file. Never throws; any problem is { kind: 'none', reason }.
@@ -140,7 +143,12 @@ function readRow(row: ExcelJS.Row, budget: { left: number }): { cells: SheetCell
 /** Largest uncompressed package the full-load fallback reads (workbook.xlsx.load inflates everything into memory). */
 const LOAD_MAX_BYTES = 60 * 1024 * 1024
 
-async function previewXlsx(path: string): Promise<OutputPreview> {
+/** Largest summed non-image package content the xlsx preview loads; measured, see preview.measure.test.ts and ARCHITECTURE.md. */
+export const XLSX_PREVIEW_MAX_XML_BYTES = 8 * 1024 * 1024
+
+const XLSX_TOO_LARGE = 'This workbook is too large to preview here. Open it instead.'
+
+export async function previewXlsx(path: string, maxXmlBytes: number = XLSX_PREVIEW_MAX_XML_BYTES): Promise<OutputPreview> {
   const buf = readCapped(path, DOC_MAX_BYTES)
   if (buf.length > DOC_MAX_BYTES) return none('This spreadsheet is larger than 20 MB, so OrgAI does not preview it; open it instead.')
   const zi = zipInfo(buf)
@@ -148,6 +156,11 @@ async function previewXlsx(path: string): Promise<OutputPreview> {
   const zv = zipVerifyEntries(buf)
   if (zv) return none(`OrgAI did not preview this spreadsheet: ${zv}`)
   if (zi.totalBytes > LOAD_MAX_BYTES) return none('This spreadsheet expands to more than 60 MB, so OrgAI does not preview it; open it instead.')
+  // exceljs holds each part as one string and builds a Cell per <c>: bound the parts it parses (sheets, shared strings,
+  // styles and any other non-image part) and any single read.
+  const xmlSize = zipSumSizes(buf, (n) => !isImagePart(n, 'xl/media/'))
+  const biggest = zipMaxSize(buf, () => true)
+  if ((xmlSize !== null && xmlSize > maxXmlBytes) || (biggest !== null && biggest > PREVIEW_MAX_ENTRY_BYTES)) return none(XLSX_TOO_LARGE)
   // Always the JSZip-based full load: it reads the central directory, which zipGuard checked. exceljs' streaming reader
   // walks local headers and was not safe against a crafted descriptor entry (Reviewer H1), so it is not used.
   return (await previewXlsxLoaded(buf)) ?? none('OrgAI could not read this spreadsheet.')
@@ -202,20 +215,113 @@ export const DOCX_XML_ALLOWANCE = 512 * 1024
 
 const DOCX_TOO_LARGE = 'This document is too large to preview here. Open it instead.'
 
+/** No single package entry above this is read by a preview (one read, one string, one buffer). */
+export const PREVIEW_MAX_ENTRY_BYTES = 16 * 1024 * 1024
+
+/** Images the docx preview converts at most; later references get no image (and no read). */
+export const DOCX_PREVIEW_IMAGES_MAX = 200
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|emf|wmf)$/i
+
+/** A true image part: under `folder` (lower case, trailing slash) with an image extension. Everything else counts as XML. */
+export function isImagePart(name: string, folder: string): boolean {
+  return name.toLowerCase().startsWith(folder) && IMAGE_EXT.test(name)
+}
+
+const REL_NS_DOC = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+const RELS_MAX_BYTES = 64 * 1024
+
+/** The package-relative name a relationship target means (mammoth: strip a leading "/", else join with the base). null = leaves the package. */
+function resolveTarget(base: string, target: string): string | null {
+  const parts: string[] = []
+  const raw = target.startsWith('/') ? target.replace(/^\/+/, '') : `${base}/${target}`
+  for (const seg of raw.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') {
+      if (!parts.length) return null
+      parts.pop()
+    } else parts.push(seg)
+  }
+  return parts.join('/')
+}
+
+function relationshipsOf(xml: string): { type: string; target: string; external: boolean }[] {
+  const out: { type: string; target: string; external: boolean }[] = []
+  for (const m of xml.matchAll(/<(?:\w+:)?Relationship\b([^>]*)>/g)) {
+    const attr = (n: string): string | undefined => new RegExp(`\\b${n}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(m[1])?.slice(1).find((x) => x !== undefined)
+    out.push({ type: attr('Type') ?? '', target: attr('Target') ?? '', external: /^external$/i.test(attr('TargetMode') ?? '') })
+  }
+  return out
+}
+
+async function readSmallPart(buf: Buffer, name: string): Promise<string | null | 'big'> {
+  const size = zipEntrySize(buf, name)
+  if (size === null) return null
+  if (size > RELS_MAX_BYTES) return 'big'
+  const z = await JSZip.loadAsync(buf)
+  return (await z.file(name)?.async('string')) ?? null
+}
+
+/** Why mammoth would read a part outside the layout OrgAI bounds, or null. mammoth takes related parts from relationship targets of any name. */
+async function docxLayoutProblem(buf: Buffer): Promise<string | null> {
+  const bad = 'its parts are not laid out like a Word document'
+  const pkg = await readSmallPart(buf, '_rels/.rels')
+  if (pkg === 'big') return bad
+  if (pkg !== null) {
+    for (const r of relationshipsOf(pkg)) {
+      if (r.type === `${REL_NS_DOC}officeDocument` && resolveTarget('', r.target) !== 'word/document.xml') return bad
+    }
+  }
+  const rels = await readSmallPart(buf, 'word/_rels/document.xml.rels')
+  if (rels === 'big') return bad
+  if (rels !== null) {
+    for (const r of relationshipsOf(rels)) {
+      if (r.external || !r.type.startsWith(REL_NS_DOC)) continue
+      const kind = r.type.slice(REL_NS_DOC.length)
+      const at = resolveTarget('word', r.target)
+      if (['comments', 'endnotes', 'footnotes', 'numbering', 'styles'].includes(kind)) {
+        if (at === null || !at.startsWith('word/') || at.toLowerCase().startsWith('word/media/')) return bad
+      } else if (kind === 'image') {
+        if (at === null || !isImagePart(at, 'word/media/')) return bad
+      }
+    }
+  }
+  return null
+}
+
 /** previewDocx with the document.xml threshold as a parameter (exported for tests and measurement). */
 export async function previewDocx(path: string, maxXmlBytes: number = DOCX_PREVIEW_MAX_XML_BYTES): Promise<OutputPreview> {
   const buf = readCapped(path, DOC_MAX_BYTES)
   if (buf.length > DOC_MAX_BYTES) return none('This document is larger than 20 MB, so OrgAI does not preview it; open it instead.')
   const zp = zipProblem(buf)
   if (zp) return none(`OrgAI did not preview this document: ${zp}`)
-  // mammoth finds the main part through _rels/.rels (any name), so cap every XML / rels part together, not one name.
-  const xmlSize = zipSumSizes(buf, (n) => /\.(xml|rels)$/i.test(n) && !n.toLowerCase().startsWith('word/media/'))
+  // mammoth reads related parts from relationship targets of ANY name (and the style map has none), so cap every entry that
+  // is not a true image part together, and no single entry may be larger than one bounded read.
+  const xmlSize = zipSumSizes(buf, (n) => !isImagePart(n, 'word/media/'))
   if (xmlSize !== null && xmlSize > maxXmlBytes + DOCX_XML_ALLOWANCE) return none(DOCX_TOO_LARGE)
+  const biggest = zipMaxSize(buf, () => true)
+  if (biggest !== null && biggest > PREVIEW_MAX_ENTRY_BYTES) return none(DOCX_TOO_LARGE)
   const zv = zipVerifyEntries(buf)
   if (zv) return none(`OrgAI did not preview this document: ${zv}`)
   try {
+    const lp = await docxLayoutProblem(buf)
+    if (lp) return none(`OrgAI did not preview this document: ${lp}.`)
+    // Image reads are budgeted: mammoth's default converter re-reads and re-encodes the image for EVERY reference, so a few
+    // thousand references to one image would exhaust memory. An image read is charged the largest image part's declared size.
+    const maxImage = zipMaxSize(buf, (n) => isImagePart(n, 'word/media/')) ?? 0
+    const imageReads = { count: 0, bytes: 0 }
+    const noImage = {} as { src: string } // an <img> with no src: htmlBlocks drops it
+    const convertImage = mammoth.images.imgElement(async (image) => {
+      if (imageReads.count >= DOCX_PREVIEW_IMAGES_MAX) return noImage
+      if (maxImage > OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES) return noImage
+      if (imageReads.bytes + maxImage > OUTPUT_PREVIEW_DOC_IMAGES_TOTAL_BYTES) return noImage
+      imageReads.count++
+      imageReads.bytes += maxImage
+      const data = await image.read('base64')
+      return { src: `data:${image.contentType};base64,${data}` }
+    })
     // externalFileAccess: false always: a linked external file must never be read (CVE-2025-11849).
-    const r = await mammoth.convertToHtml({ buffer: buf }, { externalFileAccess: false } as Parameters<typeof mammoth.convertToHtml>[1])
+    const r = await mammoth.convertToHtml({ buffer: buf }, { externalFileAccess: false, includeEmbeddedStyleMap: false, convertImage } as Parameters<typeof mammoth.convertToHtml>[1])
     const { blocks, truncated } = htmlToBlocks(r.value)
     if (!blocks.length) return none('This document has no text to show.')
     return { kind: 'document', blocks, ...(truncated ? { truncated: true as const } : {}) }

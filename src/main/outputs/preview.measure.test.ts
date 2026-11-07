@@ -1,11 +1,12 @@
+import ExcelJS from 'exceljs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { cpus, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { OutputWorkbookInput } from '@shared/types'
-import { DOCX_PREVIEW_MAX_XML_BYTES, previewDocx, previewFile } from './preview'
+import { DOCX_PREVIEW_MAX_XML_BYTES, XLSX_PREVIEW_MAX_XML_BYTES, previewDocx, previewFile, previewXlsx } from './preview'
 import { renderProduced } from './writers'
-import { zipEntrySize, zipVerifyEntries } from './zipGuard'
+import { zipEntrySize, zipSumSizes, zipVerifyEntries } from './zipGuard'
 
 /**
  * Timings of the real preview path on fixtures at the produce caps. Logged, and asserted only against a generous bound
@@ -97,4 +98,31 @@ describe.runIf(process.env.OUTPUTS_MEASURE === '1')('preview timings', () => {
       expect(real.ms).toBeLessThan(10_000)
     }
   }, 300_000)
+  it('xlsx preview time and memory against summed XML size (no threshold), then the cut-off', async () => {
+    console.log(`[measure] threshold XLSX_PREVIEW_MAX_XML_BYTES = ${XLSX_PREVIEW_MAX_XML_BYTES}`)
+    console.log('[measure] target MB | package xml MB | file KB | preview ms (best of 2, no threshold) | heapUsed delta MB | rss MB')
+    for (const mb of [2, 4, 8, 12]) {
+      const cols = 26
+      // Worst case for cells per byte: tiny numbers only (about 27 bytes of XML per cell), written with exceljs directly.
+      const rows = Math.round((mb * 1024 * 1024) / (cols * 27))
+      const wb = new ExcelJS.Workbook()
+      const ws = wb.addWorksheet('Dense')
+      for (let r = 0; r < rows; r++) ws.addRow(Array.from({ length: cols }, (_, c) => (r + c) % 10))
+      const buf = Buffer.from(await wb.xlsx.writeBuffer())
+      const path = join(dir, `x-${mb}.xlsx`)
+      writeFileSync(path, buf)
+      const xml = zipSumSizes(buf, () => true) ?? -1
+      let best = Infinity
+      const h0 = process.memoryUsage().heapUsed
+      for (let run = 1; run <= 2; run++) {
+        const r = await timed(`preview xlsx ${mb} MB target run ${run}`, () => previewXlsx(path, Number.POSITIVE_INFINITY))
+        expect(r.value.kind).toBe('sheets')
+        best = Math.min(best, r.ms)
+      }
+      const m = process.memoryUsage()
+      console.log(`[measure] xlsx table: ${mb} | ${(xml / 1048576).toFixed(1)} | ${Math.round(buf.length / 1024)} | ${best} | ${Math.round((m.heapUsed - h0) / 1048576)} | ${Math.round(m.rss / 1048576)}`)
+      const real = await previewFile(path, 'xlsx')
+      expect(real.kind).toBe(xml > XLSX_PREVIEW_MAX_XML_BYTES ? 'none' : 'sheets')
+    }
+  }, 600_000)
 })
