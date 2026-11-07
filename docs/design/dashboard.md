@@ -1,5 +1,8 @@
 # Dashboard
 
+> Superseded by `dashboard-2.md` for sections 2-5 (and 7-9: keyboard, announcements, visual identity). Section 1
+> (naming), section 6 (start paths: New project dialog, first launch) and the delete / forget confirms still hold.
+
 Replaces the sidebar's top "Projects" item and `views/ProjectsView.tsx`. Input: `ux-review-dashboard.md` (sections A, C,
 D; findings H1-H3, M1-M6, L1, L2), spec 2.1 and 2.4. This spec supersedes 2.4 for the home page; 2.4's New project
 dialog rules (one form, same field order) still hold.
