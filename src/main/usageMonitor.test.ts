@@ -33,6 +33,20 @@ describe('UsageMonitor', () => {
     expect(events.map((e) => (e.type === 'usage.status' ? e.usage.provider : null)).sort()).toEqual(['claude', 'codex'])
   })
 
+  it('keeps a list probe per connection id and drops a removed proxy at the next probe', async () => {
+    const spend = (connection: string, usd: number): UsageStatus => ({ connection, authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, spend: { usd, budgetUsd: null, resetsAt: null, budgetDuration: null, keyAlias: null }, updatedAt: 2 })
+    const answers: UsageStatus[][] = [[spend('litellm', 1), spend('proxy-aaaa1111', 2)], [spend('proxy-aaaa1111', 3)]]
+    const probe = vi.fn(async () => answers.shift() ?? [])
+    const { m, events } = monitor([{ key: 'proxies', probe }])
+    await m.refreshProbe('proxies')
+    expect(m.latestAll().map((u) => [u.connection, u.spend?.usd])).toEqual([['litellm', 1], ['proxy-aaaa1111', 2]])
+    expect(events).toHaveLength(2)
+    await m.refreshProbe('proxies')
+    expect(m.latestAll().map((u) => [u.connection, u.spend?.usd])).toEqual([['proxy-aaaa1111', 3]])
+    await m.refreshProbe('proxies') // an empty list clears every proxy report
+    expect(m.latestAll()).toEqual([])
+  })
+
   it('refreshProbe runs one keyed probe, one call in flight, without probing Claude', async () => {
     const spend: UsageStatus = { connection: 'litellm', authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, spend: { usd: 1, budgetUsd: null, resetsAt: null, budgetDuration: null, keyAlias: null }, updatedAt: 2 }
     let release: () => void = () => {}

@@ -72,6 +72,8 @@ export function isSetupLikeRun(kind: RunKind): boolean {
  */
 export interface RunConnection {
   connection: ConnectionId
+  /** The connection's display name (a proxy's own name), for messages. Not a secret. */
+  name?: string
   /** The adapter adapterForProject chose; equals the adapter receiving this context. */
   adapter: ProviderId
   /**

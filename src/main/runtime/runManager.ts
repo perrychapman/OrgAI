@@ -1144,6 +1144,7 @@ export class RunManager {
       connection: choice.connection,
       adapter: choice.adapter,
       catalog: this.options.catalog?.() ?? [],
+      connectionName: connectionName(choice.connection, settings),
       tierModels: connectionRecord(settings, choice.connection)?.tierModels ?? {},
       root: project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
     })
@@ -1177,6 +1178,7 @@ export class RunManager {
       connection: choice.connection,
       adapter: choice.adapter,
       catalog: this.options.catalog?.() ?? [],
+      connectionName: connectionName(choice.connection, settings),
       tierModels,
       fallbackTier: 'everyday'
     })
