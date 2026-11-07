@@ -16,6 +16,7 @@ import { KeyParser } from './input/keys'
 import { sanitizeTty } from './sanitizeTty'
 import { connectTuiHost, openTuiSession } from './session'
 import { SEQ, chooseBufferMode, createTerminal, gateWrites } from './terminal'
+import { terminalThemeFor } from './theme'
 import type { BufferMode, InputEvent, OpenTuiSessionOptions, TuiEnv, TuiHostConnection, TuiLaunch } from './types'
 
 export const NO_TTY_MESSAGE = 'The terminal UI needs a terminal; use orgai exec for scripts.'
@@ -48,7 +49,9 @@ export function tuiEnvFor(ctx: Pick<CliContext, 'env' | 'globals' | 'platform'>,
     color: ctx.globals.color && !ctx.env.NO_COLOR,
     dumbTerminal: dumb,
     bracketedPaste: !dumb,
-    unicode: !dumb && (ctx.platform === 'win32' || /utf-?8/i.test(locale))
+    terminalTheme: terminalThemeFor(ctx.env),
+    unicode: !dumb && (ctx.platform === 'win32' || /utf-?8/i.test(locale)),
+    ...(ctx.env.ORGAI_REDUCED_MOTION === '1' ? { reducedMotion: true } : {})
   }
 }
 

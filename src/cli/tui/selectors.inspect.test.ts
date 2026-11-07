@@ -48,11 +48,10 @@ const message = (s: TuiState, from: string, to: string | null, toHandle: string,
 const entry = (id: string, agentId: string, block: TranscriptEntry['block']): TranscriptEntry => ({ id, agentId, at: 1, block }) as TranscriptEntry
 
 describe('agent.message in the reducer (F6)', () => {
-  it('keeps who messaged whom and when, never the text', () => {
+  it('keeps traffic facts and a bounded preview for the team handoff view', () => {
     const s = message(base(), 'w1', 'lead', 'mock-lead', NOW)
     const rec = s.runs.run1.messages
-    expect(rec).toEqual([{ from: 'w1', to: 'lead', toHandle: 'mock-lead', at: NOW }])
-    expect(JSON.stringify(s.runs.run1)).not.toContain('SECRET TEXT')
+    expect(rec).toEqual([{ from: 'w1', to: 'lead', toHandle: 'mock-lead', at: NOW, text: 'SECRET TEXT' }])
   })
 
   it('keeps the newest TUI_MESSAGES_MAX and ignores junk and unknown runs', () => {

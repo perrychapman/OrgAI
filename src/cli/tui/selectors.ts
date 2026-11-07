@@ -489,12 +489,12 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
       return text ? { ...base, kind: 'thinking', text, tone: 'dim' } : null
     }
     case 'tool_use':
-      return { ...base, kind: 'tool', text: safeLine(humanizeToolUse(b.name, b.input).label), tone: 'dim' }
+      return { ...base, kind: 'tool', toolUseId: b.id, text: safeLine(humanizeToolUse(b.name, b.input).label), tone: 'dim' }
     case 'tool_result': {
       const row = humanizeToolResult(toolName(b.toolUseId), b.content, b.isError)
       if (!row) return null
       const failed = b.isError || !!row.failed
-      return { ...base, kind: failed ? 'error' : 'result', text: safeLine(row.label), tone: failed ? 'danger' : 'dim' }
+      return { ...base, kind: failed ? 'error' : 'result', toolUseId: b.toolUseId, text: safeLine(row.label), tone: failed ? 'danger' : 'dim' }
     }
     case 'user': {
       const text = safe(b.text).trim()

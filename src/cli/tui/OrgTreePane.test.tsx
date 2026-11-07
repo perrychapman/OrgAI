@@ -1,7 +1,8 @@
 import { render } from 'ink-testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { InputBus } from './context'
-import { OrgTreePane, clipMiddle, treePrefixes } from './OrgTreePane'
+import { OrgTreePane, clipMiddle, rowLine, treePrefixes } from './OrgTreePane'
+import type { TeamMessageRow } from './collaboration'
 import { ESC_RE, Providers, env, key, press, withInkColor } from './panes/testUtil'
 import { textWidth } from './panes/text'
 import type { OrgTreeRow, OrgTreePaneProps, TuiEnv } from './types'
@@ -27,15 +28,17 @@ const ROWS: OrgTreeRow[] = [
   row('old-1', { label: 'old-1', earlier: true, depth: 1, state: 'done', stateWord: 'Finished' })
 ]
 
-function mount(props: Partial<OrgTreePaneProps> = {}, e: TuiEnv = env()) {
+type MotionProps = OrgTreePaneProps & { animated?: boolean; messages?: TeamMessageRow[] }
+
+function mount(props: Partial<MotionProps> = {}, e: TuiEnv = env()) {
   const bus = new InputBus()
-  const all: OrgTreePaneProps = { width: 60, height: 20, focused: false, rows: ROWS, ...props }
+  const all: MotionProps = { width: 60, height: 20, focused: false, rows: ROWS, ...props }
   const r = render(
     <Providers env={e} bus={bus}>
       <OrgTreePane {...all} />
     </Providers>
   )
-  const rerender = (p: Partial<OrgTreePaneProps>): void =>
+  const rerender = (p: Partial<MotionProps>): void =>
     r.rerender(
       <Providers env={e} bus={bus}>
         <OrgTreePane {...all} {...p} />
@@ -277,5 +280,69 @@ describe('OrgTreePane', () => {
       env()
     )
     expect(prefixes).toEqual(['', '├─ ', '  └─ ', '└─ '])
+  })
+
+  it('uses a spinner and shimmer only for current agents doing active work', async () => {
+    await withInkColor(async () => {
+      const live = row('live', { state: 'thinking', stateWord: 'Working' })
+      const old = row('old', { earlier: true, state: 'thinking', stateWord: 'Working' })
+      const waiting = row('waiting', { state: 'waiting', stateWord: 'Waiting' })
+      const r = mount({ rows: [live, old, waiting] }, env())
+      const before = r.lastFrame() ?? ''
+      expect(before).toContain('⠋')
+      expect(before).toContain('●')
+      expect(before).toContain('!')
+      r.rerender({ animated: false })
+      const still = r.lastFrame() ?? ''
+      expect(still).toContain('●')
+      expect(still).not.toContain('⠋')
+      r.unmount()
+    })
+  })
+
+  it('shimmers only the live state word, not the static agent label', () => {
+    const active = row('active', { depth: 0, state: 'thinking', stateWord: 'Working' })
+    const item = { kind: 'row' as const, row: active, prefix: '' }
+    const live = rowLine(item, false, false, 60, env(), 0, true)
+    const shimmer = (segment: unknown): boolean => Boolean((segment as { shimmer?: boolean }).shimmer)
+    expect(shimmer(live.find((segment) => segment.text === 'Working'))).toBe(true)
+    expect(shimmer(live.find((segment) => segment.text === 'active'))).toBe(false)
+
+    const idle = rowLine({ ...item, row: { ...active, state: 'idle', stateWord: 'Idle' } }, false, false, 60, env(), 0, true)
+    expect(shimmer(idle.find((segment) => segment.text === 'Idle'))).toBe(false)
+
+    const tool = rowLine({ ...item, row: { ...active, state: 'tool', stateWord: 'Using a tool' } }, false, false, 60, env(), 0, true)
+    expect(shimmer(tool.find((segment) => segment.text === 'Using a tool'))).toBe(false)
+  })
+
+  it('keeps active row bodies and labels within narrow widths', () => {
+    const r = mount({ width: 12, height: 8, rows: [row('active', { depth: 0, label: 'long-agent-name', activity: 'reading a lot', state: 'tool' })] }, env({ color: false }))
+    for (const line of lines(r.lastFrame())) expect(textWidth(line)).toBeLessThanOrEqual(12)
+    expect(r.lastFrame()).toContain('long-agent')
+    r.unmount()
+  })
+
+  it('shows only the newest two real message previews when the pane has room', () => {
+    const messages: TeamMessageRow[] = [
+      { key: 'm1', runId: 'r1', fromId: 'a', toId: 'b', fromLabel: 'a', toLabel: 'b', text: 'old preview', at: 1 },
+      { key: 'm2', runId: 'r1', fromId: 'b', toId: 'a', fromLabel: 'b', toLabel: 'a', text: 'latest preview', at: 2 },
+      { key: 'm3', runId: 'r1', fromId: 'a', toId: null, fromLabel: 'a', toLabel: 'you', text: 'newest preview', at: 3 }
+    ]
+    const r = mount({ rows: [row('a', { depth: 0, state: 'thinking' }), row('b', { state: 'idle', stateWord: 'Idle', activity: '' })], messages, width: 80, height: 12 }, env({ color: false }))
+    const out = r.lastFrame() ?? ''
+    expect(out).toContain('latest preview')
+    expect(out).toContain('newest preview')
+    expect(out).not.toContain('old preview')
+    r.unmount()
+  })
+
+  it('highlights message participants briefly without changing the state word contract', () => {
+    const active = row('a', { depth: 0, state: 'thinking', stateWord: 'Thinking' })
+    const item = { kind: 'row' as const, row: active, prefix: '' }
+    const highlighted = rowLine(item, false, false, 60, env(), 0, true, true)
+    expect(highlighted.find((segment) => segment.text === 'a')?.tone).toBe('identity')
+    expect(highlighted.find((segment) => segment.text?.includes('Thinking'))?.shimmer).toBe(true)
+    const traffic = rowLine({ ...item, row: { ...active, traffic: true } }, false, false, 60, env(), 0, true, true)
+    expect(traffic.find((segment) => segment.text === '~')?.tone).toBe('message')
   })
 })

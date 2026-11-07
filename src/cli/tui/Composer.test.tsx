@@ -1,9 +1,10 @@
 import { render } from 'ink-testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { Composer, COMPOSER_MAX_ROWS } from './Composer'
-import { InputBus, InputBusContext } from './context'
+import { Composer, COMPOSER_MAX_ROWS, promptGlyph, type ComposerViewProps } from './Composer'
+import { DEFAULT_TUI_ENV, InputBus, InputBusContext, TuiEnvContext } from './context'
 import { KeyParser } from './input/keys'
-import type { ComposerMode, ComposerProps, InputEvent } from './types'
+import type { ComposerMode, InputEvent, TuiEnv } from './types'
+import { withInkColor } from './panes/testUtil'
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0))
 // eslint-disable-next-line no-control-regex
@@ -14,9 +15,9 @@ const keys = (s: string): InputEvent[] => {
   return [...p.feed(s), ...p.flush()]
 }
 
-function setup(over: Partial<ComposerProps> = {}) {
+function setup(over: Partial<ComposerViewProps> = {}, environment: Partial<TuiEnv> = {}) {
   const bus = new InputBus()
-  const props: ComposerProps = {
+  const props: ComposerViewProps = {
     width: 40,
     focused: true,
     mode: 'send' as ComposerMode,
@@ -27,9 +28,11 @@ function setup(over: Partial<ComposerProps> = {}) {
     ...over
   }
   const r = render(
-    <InputBusContext.Provider value={bus}>
-      <Composer {...props} />
-    </InputBusContext.Provider>
+    <TuiEnvContext.Provider value={{ ...DEFAULT_TUI_ENV, ...environment }}>
+      <InputBusContext.Provider value={bus}>
+        <Composer {...props} />
+      </InputBusContext.Provider>
+    </TuiEnvContext.Provider>
   )
   const send = async (s: string | InputEvent): Promise<boolean[]> => {
     const evs = typeof s === 'string' ? keys(s) : [s]
@@ -152,7 +155,130 @@ describe('Composer', () => {
   it('shows the mode glyph and does not register while unfocused', async () => {
     const t = setup({ focused: false, mode: 'start' })
     expect(t.bus.has('composer')).toBe(false)
-    expect(t.frame()).toMatch(/^(✚|\+>) /)
+    expect(t.frame()).toMatch(/^> /)
+    t.r.unmount()
+  })
+
+  it('uses clean prompt glyphs for unicode and ASCII terminals', () => {
+    expect(promptGlyph('send', false)).toBe('›')
+    expect(promptGlyph('start', false)).toBe('›')
+    expect(promptGlyph('send', true)).toBe('>')
+  })
+
+  it('uses a padded borderless input with hints underneath in the reserved height', () => {
+    const t = setup({ height: 5, hints: 'Enter sends | Esc interrupts' })
+    const rows = t.frame().split('\n')
+    expect(rows).toHaveLength(5)
+    expect(rows[0].trim()).toBe('')
+    expect(rows[1]).toMatch(/^  > /)
+    expect(rows[2].trim()).toBe('')
+    expect(rows[3].trim()).toBe('')
+    expect(rows[4]).toContain('Enter sends')
+    expect(rows.every((row) => row.length <= 40)).toBe(true)
+    t.r.unmount()
+  })
+
+  it('keeps focused, working, read-only and unfocused inputs still and unlabelled', () => {
+    const focused = setup({ height: 5, animated: true })
+    const working = setup({ height: 5, working: true, animated: true })
+    const readOnly = setup({ height: 5, mode: 'readOnly', disabledReason: 'Host is draining', animated: true })
+    const unfocused = setup({ height: 5, focused: false, mode: 'start', animated: true })
+    expect(focused.frame().split('\n')).toHaveLength(5)
+    expect(working.frame().split('\n')).toHaveLength(5)
+    expect(readOnly.frame().split('\n')).toHaveLength(5)
+    expect(unfocused.frame().split('\n')).toHaveLength(5)
+    expect(focused.frame()).not.toContain('Reply')
+    expect(readOnly.frame()).toContain('Host is draining')
+    expect(unfocused.frame()).not.toContain('New run')
+    focused.r.unmount()
+    working.r.unmount()
+    readOnly.r.unmount()
+    unfocused.r.unmount()
+  })
+
+  it('uses the spare padding for multiline input without growing the five-row layout', async () => {
+    const t = setup({ width: 60, height: 5 })
+    await t.send({ type: 'paste', text: 'first\nsecond\nthird' })
+    expect(t.frame().split('\n')).toHaveLength(5)
+    for (const text of ['first', 'second', 'third']) expect(t.frame()).toContain(text)
+    expect(t.props.onSubmit).not.toHaveBeenCalled()
+    t.r.unmount()
+  })
+
+  it.each(['dark', 'light'] as const)('paints a paired %s input surface and readable text', async (terminalTheme) => {
+    await withInkColor(async () => {
+      const t = setup({ width: 60, height: 5 }, { color: true, unicode: true, terminalTheme })
+      const initial = t.r.lastFrame() ?? ''
+      expect(initial).toContain(terminalTheme === 'dark' ? '\x1b[40m' : '\x1b[107m')
+      await t.send('Visible text')
+      const typed = t.r.lastFrame() ?? ''
+      expect(typed).toContain(terminalTheme === 'dark' ? '\x1b[97m' : '\x1b[30m')
+      expect(t.frame()).toContain('Visible text')
+      expect(t.frame().split('\n')).toHaveLength(5)
+      t.r.unmount()
+    })
+  })
+
+  it('auto-bands fullscreen composition and grows through six wrapped text rows', async () => {
+    const onRows = vi.fn()
+    const t = setup({ onRows }, { bufferMode: 'fullscreen', unicode: true })
+    expect(t.frame().split('\n')).toHaveLength(5)
+    expect(onRows).toHaveBeenLastCalledWith(5)
+    await t.send({ type: 'paste', text: 'one\ntwo\nthree\nfour\nfive\nsix' })
+    expect(t.frame().split('\n')).toHaveLength(10)
+    expect(t.frame()).toContain('six')
+    expect(onRows).toHaveBeenLastCalledWith(10)
+    t.r.unmount()
+  })
+
+  it('clamps the fullscreen auto-band to maxHeight while keeping the cursor visible', async () => {
+    const onRows = vi.fn()
+    const t = setup({ maxHeight: 6, onRows }, { bufferMode: 'fullscreen', unicode: true })
+    await t.send({ type: 'paste', text: 'one\ntwo\nthree\nfour\nfive\nsix' })
+    expect(t.frame().split('\n')).toHaveLength(6)
+    expect(t.frame()).toContain('six')
+    expect(onRows).toHaveBeenLastCalledWith(6)
+    t.r.unmount()
+  })
+
+  it('keeps inline and compact heights unframed and cursor-visible', async () => {
+    const inline = setup({ height: 1 })
+    await inline.send('one\ntwo')
+    expect(inline.frame().split('\n')).toHaveLength(1)
+    expect(inline.frame()).not.toContain('+--')
+    inline.r.unmount()
+
+    const compact = setup({ width: 14, height: 2 })
+    expect(compact.frame().split('\n')).toHaveLength(2)
+    await compact.send({ type: 'paste', text: 'one\ntwo\nthree' })
+    const rows = compact.frame().split('\n')
+    expect(rows).toHaveLength(2)
+    expect(compact.frame()).toContain('three')
+    compact.r.unmount()
+  })
+
+  it('keeps a multiline cursor visible after a height reduction', async () => {
+    const t = setup({ width: 14, height: 5 })
+    await t.send({ type: 'paste', text: 'one\ntwo\nthree\nfour' })
+    expect(t.frame()).toContain('four')
+    t.props.height = 3
+    t.r.rerender(
+      <TuiEnvContext.Provider value={DEFAULT_TUI_ENV}>
+        <InputBusContext.Provider value={t.bus}>
+          <Composer {...t.props} />
+        </InputBusContext.Provider>
+      </TuiEnvContext.Provider>
+    )
+    expect(t.frame().split('\n')).toHaveLength(3)
+    expect(t.frame()).toContain('four')
+    t.r.unmount()
+  })
+
+  it('renders a plain unicode prompt without color escapes or borders', () => {
+    const t = setup({ height: 3, hints: 'Enter sends' }, { bufferMode: 'fullscreen', unicode: true, color: false })
+    expect(t.frame()).not.toContain('┌')
+    expect(t.frame()).toContain('›')
+    expect(t.frame()).not.toMatch(/\x1b\[/)
     t.r.unmount()
   })
 

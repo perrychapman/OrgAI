@@ -17,14 +17,14 @@ const check = (agentSources?: ProjectPathCheck['agentSources']): ProjectPathChec
   ...(agentSources ? { agentSources } : {})
 })
 
-function mount(c?: ProjectPathCheck, env: Partial<TuiEnv> = {}) {
+function mount(c?: ProjectPathCheck, env: Partial<TuiEnv> = {}, layout: { width?: number; height?: number; accessNotice?: string; decisionsInDesktop?: boolean; busy?: string; checking?: boolean } = {}) {
   const bus = new InputBus()
   const choices: OnboardingChoice[] = []
   const onCancel = vi.fn()
   const r = render(
     <TuiEnvContext.Provider value={{ ...DEFAULT_TUI_ENV, ...env }}>
       <InputBusContext.Provider value={bus}>
-        <Onboarding folder="/work/repo" check={c} onChoose={(x) => choices.push(x)} onCancel={onCancel} />
+        <Onboarding folder="/work/repo" check={c} {...layout} onChoose={(x) => choices.push(x)} onCancel={onCancel} />
       </InputBusContext.Provider>
     </TuiEnvContext.Provider>
   )
@@ -32,7 +32,7 @@ function mount(c?: ProjectPathCheck, env: Partial<TuiEnv> = {}) {
     bus.dispatch(e, 'onboarding')
     await new Promise((r) => setTimeout(r, 5))
   }
-  return { r, choices, onCancel, send }
+  return { r, choices, onCancel, send, bus }
 }
 
 describe('Onboarding copy (#30 L8, L2)', () => {
@@ -132,6 +132,134 @@ describe('Onboarding', () => {
     expect(m.choices).toEqual([])
     await m.send(named('enter'))
     expect(m.choices).toEqual([{ kind: 'default' }])
+    m.r.unmount()
+  })
+
+  it('defaults to quick and moves the selection with arrows before Enter', async () => {
+    const m = mount(check())
+    await m.send(named('enter'))
+    await m.send(named('down'))
+    await m.send(named('enter'))
+    await m.send(named('down'))
+    await m.send(named('enter'))
+    await m.send(named('up'))
+    await m.send(named('enter'))
+    expect(m.choices).toEqual([
+      { kind: 'quick', allowEdits: false },
+      { kind: 'architect' },
+      { kind: 'default' },
+      { kind: 'architect' }
+    ])
+    expect(m.r.lastFrame()).toContain('> [2] Set up project with the Architect')
+    m.r.unmount()
+  })
+
+  it('uses the latest selection when navigation events arrive in one input burst', async () => {
+    const m = mount(check())
+    m.bus.dispatch(named('down'), 'onboarding')
+    m.bus.dispatch(named('down'), 'onboarding')
+    m.bus.dispatch(named('enter'), 'onboarding')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(m.choices).toEqual([{ kind: 'default' }])
+    m.r.unmount()
+  })
+
+  it('uses a compact layout at 60x16 without hiding a choice', () => {
+    const m = mount(check(), {}, { width: 60, height: 16 })
+    const frame = m.r.lastFrame() ?? ''
+    expect(frame).toContain('OrgAI')
+    expect(frame).toContain('Your team starts here.')
+    expect(frame).toContain('Folder: /work/repo')
+    expect(frame).toContain('[1] Quick run in this folder')
+    expect(frame).toContain('[2] Set up project with the Architect')
+    expect(frame).toContain('[3] Create project with default team')
+    expect(frame).not.toContain(QUICK_NOTE)
+    expect(frame.split('\n').length).toBeLessThanOrEqual(16)
+    expect(Math.max(...frame.split('\n').map((line) => line.length))).toBeLessThanOrEqual(60)
+    m.r.unmount()
+  })
+
+  it('wraps a capability notice in the bounded panel and keeps the full warning', () => {
+    const notice = 'Terminal decisions stay in the desktop app. Use Settings > Terminal access > Full control to answer here.'
+    const m = mount(check(), {}, { width: 60, height: 16, accessNotice: notice })
+    const frame = m.r.lastFrame() ?? ''
+    expect(frame).toContain('Before you begin')
+    for (const word of notice.split(' ')) expect(frame).toContain(word)
+    expect(frame).toContain('[1] Quick run in this folder')
+    expect(frame).toContain('[2] Set up project with the Architect')
+    expect(frame).toContain('[3] Create project with default team')
+    expect(frame.split('\n').length).toBeLessThanOrEqual(16)
+    m.r.unmount()
+  })
+
+  it('adds the desktop approval path without changing the selected action', async () => {
+    const m = mount(check(), {}, { width: 60, height: 16, decisionsInDesktop: true })
+    const before = m.r.lastFrame() ?? ''
+    expect(before).toContain('Approvals')
+    expect(before).toContain('What terminals may do')
+    await m.send(named('enter'))
+    expect(m.choices).toEqual([{ kind: 'quick', allowEdits: false }])
+    m.r.unmount()
+  })
+
+  it('keeps every choice visible during a tiny resize with an approval notice', () => {
+    const m = mount(check(), {}, { width: 60, height: 8, decisionsInDesktop: true })
+    const frame = m.r.lastFrame() ?? ''
+    expect(frame).toContain('Before you begin')
+    expect(frame).toContain('[1] Quick run in this folder')
+    expect(frame).toContain('[2] Set up project with the Architect')
+    expect(frame).toContain('[3] Create project with default team')
+    expect(frame.split('\n').length).toBeLessThanOrEqual(8)
+    m.r.unmount()
+  })
+
+  it('keeps pasted text inert and gives screen readers an explicit selection cue', async () => {
+    const m = mount(check(), { screenReader: true, unicode: false }, { width: 60, height: 16 })
+    await m.send({ type: 'paste', text: '3\n' })
+    expect(m.choices).toEqual([])
+    await m.send(named('down'))
+    expect(m.r.lastFrame()).toContain('Selected: [2] Set up project with the Architect')
+    expect(m.r.lastFrame()).not.toContain('✦')
+    expect(m.r.lastFrame()).not.toContain('›')
+    await m.send(named('enter'))
+    expect(m.choices).toEqual([{ kind: 'architect' }])
+    m.r.unmount()
+  })
+
+  it('retains the options in a wide but very short layout', () => {
+    const m = mount(check(), {}, { width: 200, height: 8 })
+    const frame = m.r.lastFrame() ?? ''
+    expect(frame).toContain('[1] Quick run in this folder')
+    expect(frame).toContain('[2] Set up project with the Architect')
+    expect(frame).toContain('[3] Create project with default team')
+    expect(Math.max(...frame.split('\n').map((line) => line.length))).toBeLessThanOrEqual(200)
+    m.r.unmount()
+  })
+
+  it.each([{ width: 160, height: 40 }, { width: 210, height: 40 }, { width: 120, height: 40 }])('keeps imports and permission guidance visible at $width x $height', (layout) => {
+    const m = mount(check([{ source: 'claude', label: 'Claude Code', agentCount: 3 }]), { unicode: true }, {
+      ...layout,
+      decisionsInDesktop: true,
+      accessNotice: 'The CLI and host versions differ. Restart the desktop app after updating to make sure both versions match.'
+    })
+    const frame = m.r.lastFrame() ?? ''
+    for (const label of ['[1]', '[2]', '[3]', '[i]', 'Full control', 'Enter']) expect(frame.replace(/\s+/g, ' ')).toContain(label)
+    expect(frame.split('\n').length).toBeLessThanOrEqual(layout.height)
+    expect(Math.max(...frame.split('\n').map(row => row.length))).toBeLessThanOrEqual(layout.width)
+    m.r.unmount()
+  })
+
+  it('keeps a large screen-reader view linear and consumes choices while setup is busy', async () => {
+    const m = mount(check(), { screenReader: true }, { width: 120, height: 40, busy: 'Creating your project', decisionsInDesktop: true })
+    const frame = m.r.lastFrame() ?? ''
+    expect(frame).toContain('Selected: [1]')
+    expect(frame).not.toContain('QUICK RUN')
+    expect(frame).toContain('Please wait')
+    expect(frame).not.toContain('Enter to continue')
+    expect(frame.replace(/\s+/g, ' ')).toContain('Full control')
+    await m.send(key('3'))
+    await m.send(named('enter'))
+    expect(m.choices).toEqual([])
     m.r.unmount()
   })
 

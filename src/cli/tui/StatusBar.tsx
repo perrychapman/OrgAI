@@ -99,6 +99,7 @@ function buildSegs(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'>, level: L
   const run = [s.runTag, title].filter(Boolean).join(' ')
   if (run) out.push({ text: run })
   if (s.statusWord) out.push({ text: s.statusWord, tone: s.tone })
+  else out.push({ text: 'Ready', dim: true })
   if (s.costText && level.cost) out.push({ text: s.costText, dim: true })
   // "0 need you" means nothing before there is a project or a run (onboarding, R2-L5).
   if (s.needsYou > 0 || s.projectName || s.runTag) out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })

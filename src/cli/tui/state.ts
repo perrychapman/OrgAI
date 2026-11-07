@@ -325,6 +325,9 @@ export function applySnapshot(s: TuiState, res: SnapshotResult, opts: { activeRu
     opts.partials?.clearRun(summary.id)
     runs[summary.id] = prev ? { ...prev, summary, cards, partials: {} } : { ...newRun(summary), cards }
   }
+  if (s.hostInstanceId && s.hostInstanceId !== res.hostInstanceId) {
+    for (const [id, run] of Object.entries(runs)) if (run.messages?.length) runs[id] = { ...run, messages: [] }
+  }
   let out: TuiState = { ...s, runs, hostInstanceId: res.hostInstanceId, lastSeq: res.seq, cardSeq: seq, connection: 'live' }
   if (opts.activeRunId && out.activeRunId !== opts.activeRunId) out = setActiveRun(out, opts.activeRunId)
   out = { ...out, runOrder: withOrder(out, listed) }
@@ -483,14 +486,16 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
       run = { ...run, plan: e.plan }
       break
     case 'agent.message': {
-      // F6: who messaged whom, never the text (untrusted; the sender's transcript already carries the call).
+      // Keep only a bounded, sanitized preview; full content remains in the transcript.
       if (typeof e.from !== 'string' || e.from === '') return out
       const rec = {
         from: e.from,
         to: typeof e.to === 'string' ? e.to : null,
         toHandle: typeof e.toHandle === 'string' ? safeLine(e.toHandle).slice(0, 80) : '',
-        at: typeof e.at === 'number' && Number.isFinite(e.at) ? e.at : now
+        at: typeof e.at === 'number' && Number.isFinite(e.at) ? e.at : now,
+        text: typeof e.text === 'string' ? safeLine(e.text).slice(0, 200) : ''
       }
+      if (run.messages?.some(m => m.from === rec.from && m.to === rec.to && m.toHandle === rec.toHandle && m.at === rec.at && m.text === rec.text)) return out
       run = { ...run, messages: [...(run.messages ?? []), rec].slice(-TUI_MESSAGES_MAX) }
       break
     }

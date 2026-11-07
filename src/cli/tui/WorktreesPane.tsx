@@ -8,7 +8,7 @@ import type { WorktreeStatus } from '../../shared/types'
 import { useFocusHandler, useTuiEnv } from './context'
 import { glyphs } from './theme'
 import type { Tone, TuiEnv, WorktreeRow, WorktreesPaneProps } from './types'
-import { PaneLines, alignSegs, cutSegs, keepVisible, moveIndex, navKey, type PaneLine, type Seg } from './panes/lines'
+import { PaneLines, paneHeading, alignSegs, cutSegs, keepVisible, moveIndex, navKey, type PaneLine, type Seg } from './panes/lines'
 
 /** Plain words per worktree status. */
 export const WORKTREE_STATUS_WORD: Record<WorktreeStatus, string> = {
@@ -95,7 +95,7 @@ export function WorktreesPane(props: WorktreesPaneProps) {
 
   const title: PaneLine = {
     key: 'title',
-    segs: cutSegs([{ text: `Worktrees (${rows.length})`, bold: true, tone: props.focused ? 'accent' : undefined }], width, env)
+    segs: paneHeading(`Worktrees (${rows.length})`, width, props.focused, env)
   }
   let body: PaneLine[]
   if (rows.length === 0) {

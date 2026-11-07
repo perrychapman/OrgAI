@@ -4,7 +4,8 @@
  * (colour, dim, inverse, bold) is ever set.
  */
 import { Box, Text } from 'ink'
-import { glyphs, toneColor } from '../theme'
+import { Shimmer } from '../Motion'
+import { asciiOnly, glyphs, toneColor } from '../theme'
 import type { InputEvent, Tone, TuiEnv } from '../types'
 import { graphemes, padToWidth, textWidth, truncateEnd } from './text'
 
@@ -14,12 +15,21 @@ export interface Seg {
   dim?: boolean
   bold?: boolean
   inverse?: boolean
+  shimmer?: boolean
 }
 
 /** One pane line: segments laid out left to right, already cut to the pane width by the caller. */
 export interface PaneLine {
   key: string
   segs: Seg[]
+}
+
+/** A consistent pane heading with a focus cue that survives NO_COLOR. */
+export function paneHeading(title: string, width: number, focused: boolean, env: TuiEnv): Seg[] {
+  const prefix = focused ? (env.screenReader ? 'Focused: ' : asciiOnly(env) ? '> ' : '› ') : ''
+  const label = `${prefix}${title}`
+  const rule = env.screenReader ? '' : ` ${glyphs(env).h.repeat(Math.max(0, width - textWidth(label) - 1))}`
+  return cutSegs([{ text: label, bold: true, tone: focused ? 'accent' : undefined }, { text: rule, dim: true }], width, env)
 }
 
 export interface StyleProps {
@@ -31,11 +41,12 @@ export interface StyleProps {
 
 /** Ink Text props for a segment; nothing at all when colour is off. */
 export function styleFor(seg: Omit<Seg, 'text'>, env: TuiEnv): StyleProps {
-  if (!env.color) return {}
+  if (!env.color || env.screenReader || env.dumbTerminal) return {}
   const out: StyleProps = {}
   const color = toneColor(seg.tone === 'dim' ? undefined : seg.tone, env)
   if (color) out.color = color
-  if (seg.dim || seg.tone === 'dim') out.dimColor = true
+  // An explicit semantic foreground already carries its hierarchy; don't dim it a second time.
+  if (!color && (seg.dim || seg.tone === 'dim')) out.dimColor = true
   if (seg.bold) out.bold = true
   if (seg.inverse) out.inverse = true
   return out
@@ -102,7 +113,7 @@ function commonPrefix(a: string, b: string): number {
 }
 
 /** Renders lines into a Box of exactly width x height (never more lines than height). */
-export function PaneLines(props: { width: number; height: number; lines: PaneLine[]; env: TuiEnv }) {
+export function PaneLines(props: { width: number; height: number; lines: PaneLine[]; env: TuiEnv; phase?: number }) {
   const width = Math.max(0, Math.floor(props.width))
   const height = Math.max(0, Math.floor(props.height))
   if (width === 0 || height === 0) return <Box width={width} height={height} />
@@ -115,7 +126,7 @@ export function PaneLines(props: { width: number; height: number; lines: PaneLin
             ? ' '
             : l.segs.map((s, i) => (
                 <Text key={i} {...styleFor(s, props.env)}>
-                  {s.text}
+                  {s.shimmer && !s.inverse ? <Shimmer text={s.text} active={false} phase={props.phase ?? 0} /> : s.text}
                 </Text>
               ))}
         </Text>
