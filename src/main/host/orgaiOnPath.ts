@@ -61,7 +61,7 @@ export interface OrgaiPathFs {
   /** lstat: isFile / isSymbolicLink / size; throws as node:fs does. */
   lstat: (path: string) => { isFile(): boolean; isSymbolicLink(): boolean; size: number }
   /** stat (follows links). */
-  stat: (path: string) => { isFile(): boolean; size: number }
+  stat: (path: string) => { isFile(): boolean; size: number; mode?: number }
   readText: (path: string) => string
   realpath: (path: string) => string
 }
@@ -166,7 +166,7 @@ function inspectCandidate(
   fs: OrgaiPathFs,
   p: PlatformPath
 ): OrgaiOnPathEntry | undefined {
-  let st: { isFile(): boolean; size: number }
+  let st: { isFile(): boolean; size: number; mode?: number }
   let link = false
   try {
     const l = fs.lstat(file)
@@ -176,6 +176,8 @@ function inspectCandidate(
     return undefined
   }
   if (!st.isFile()) return undefined
+  // A POSIX shell skips a file with no execute bit; an unknown mode (a fake fs) counts as executable.
+  if (platform !== 'win32' && typeof st.mode === 'number' && (st.mode & 0o111) === 0) return undefined
   const isFile = (x: string): boolean => {
     try {
       return fs.lstat(x).isFile()

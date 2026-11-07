@@ -21,7 +21,7 @@ export function writeRestrictedKeyFile(file, bytes) {
   const who = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
   const sid = /"(S-1-[0-9-]+)"\s*$/m.exec(who.stdout ?? '')?.[1]
   if (!sid) throw new Error(`could not read the user SID: ${who.stdout} ${who.stderr}`)
-  const r = spawnSync('icacls.exe', [file, '/inheritance:r', '/grant:r', `*${sid}:F`], { encoding: 'utf8' })
+  const r = spawnSync('icacls.exe', [file, '/inheritance:r', '/grant:r', `*${sid}:F`, '/remove:g', '*S-1-5-18', '*S-1-5-32-544'], { encoding: 'utf8' })
   if (r.status !== 0) throw new Error(`icacls failed: ${r.stdout} ${r.stderr}`)
 }
 

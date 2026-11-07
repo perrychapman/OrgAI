@@ -1913,3 +1913,49 @@ describe('Wave 7 scan cost', () => {
     }
   })
 })
+
+describe('wave 7 K6 / K7', () => {
+  const data = '/Users/u/Library/Application Support/OrgAI'
+  const ctx: SelfControlContext = { protectedPaths: [data + '/vault.json', data + '/secrets.json'], cwd: '/work/repo', platform: 'darwin', cliRoots: [] }
+  const denied = (command: string, c = ctx) => checkSelfControlDenial('Bash', { command }, c) !== null
+  it('keeps a quoted cd target with a space whole before inline code', () => {
+    expect(denied(`cd "${data}" && python3 -c "print(open('vault.json').read())"`)).toBe(true)
+    expect(denied(`cd "${data}" && node -e "require('fs').readFileSync('vault.json')"`)).toBe(true)
+    expect(denied(`cd "${data}" && python3 -c "open('secrets.json')"`)).toBe(true)
+    expect(denied(`cd "${data}/.." && python3 -c "open('OrgAI/vault.json')"`)).toBe(true)
+    expect(denied(`cd "${data}" && cat vault.json`)).toBe(true)
+  })
+  it('keeps every cd spelling of a spaced data dir whole (review K6 re-check)', () => {
+    const esc = data.replace(/ /g, '\\ ')
+    const code = `python3 -c "open('vault.json')"`
+    for (const cd of [
+      `cd ${esc}`,
+      `cd -- "${data}"`,
+      `cd -L "${data}"`,
+      `cd '${data}'`,
+      `pushd "${data}"`,
+      `Set-Location -LiteralPath "${data}"`,
+      `cd "${data}";`
+    ]) {
+      expect(denied(`${cd} && ${code}`), cd).toBe(true)
+      expect(denied(`${cd} && node -e "require('fs').readFileSync('secrets.json')"`), cd).toBe(true)
+    }
+    expect(denied(`cd "${data}" && cd sub && python3 -c "open('vault.json')"`)).toBe(false)
+    expect(denied(`cd "${data}/.." && ${code}`)).toBe(false)
+  })
+  it('space-free data dir control and unrelated code stay as before', () => {
+    const d = '/Users/u/data'
+    const c: SelfControlContext = { ...ctx, protectedPaths: [d + '/vault.json'] }
+    expect(denied(`cd "${d}" && python3 -c "open('vault.json')"`, c)).toBe(true)
+    expect(denied(`cd "${data}" && python3 -c "print(1)"`)).toBe(false)
+  })
+  it.each([
+    'yarn orgai status', 'pnpm orgai status', 'bun orgai', 'yarn run orgai', 'pnpm run orgai', 'bun run orgai',
+    'deno run npm:orgai-cli', 'deno run -A npm:orgai-cli status', 'deno x npm:orgai-cli', 'yarn @orgai/cli', 'deno run npm:@orgai/cli'
+  ])('denies %s', (cmd) => {
+    expect(checkSelfControlDenial('Bash', { command: cmd }, { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: [] })).not.toBeNull()
+  })
+  it.each(['yarn test', 'pnpm install', 'bun run build', 'deno run main.ts', 'yarn run lint'])('allows %s', (cmd) => {
+    expect(checkSelfControlDenial('Bash', { command: cmd }, { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: [] })).toBeNull()
+  })
+})

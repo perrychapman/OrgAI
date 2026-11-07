@@ -49,6 +49,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       ref: ${{ steps.meta.outputs.ref }}
+      sha: ${{ steps.meta.outputs.sha }}
       tag: ${{ steps.meta.outputs.tag }}
       publish: ${{ steps.meta.outputs.publish }}
     steps:
@@ -90,8 +91,9 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "sha=$commit" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag ref=$ref publish=$publish"
+          echo "tag=$tag ref=$ref sha=$commit publish=$publish"
 
   build:
     name: ${{ matrix.name }}
@@ -120,7 +122,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.meta.outputs.ref }}
+          ref: ${{ needs.meta.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -190,7 +192,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.meta.outputs.ref }}
+          ref: ${{ needs.meta.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -232,7 +234,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15,windows-latest, ubuntu-latest]
+        os: [macos-15, windows-latest, ubuntu-latest]
         # 22.19.0 = scripts/lib/npmPackage.mjs NODE_FLOOR_22 (engines.node), pinned exactly.
         node: ['22.19.0', '24']
     env:
@@ -244,7 +246,7 @@ jobs:
       # Only the scripts are needed (they import nothing from node_modules); no npm ci.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.meta.outputs.ref }}
+          ref: ${{ needs.meta.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -284,6 +286,9 @@ jobs:
   # required reviewers (Settings > Environments > npm-publish: Required reviewers, Deployment branches and tags: allow the tag pattern `v*` (this job runs on a tag ref, which a branch-only rule refuses; the meta job already requires the commit to be on main), then
   # Environment variables: NPM_PUBLISH_ENABLED = true); never as a repository or organisation variable, which every
   # job sees. A refused run publishes nothing and can be re-run once the environment is set up.
+  # The vars context merges environment, repository and organisation variables, so a repository-level
+  # NPM_PUBLISH_ENABLED would satisfy that check alone. A second step therefore asks the API for the environment and
+  # refuses unless it has a required_reviewers rule with at least one reviewer (fails closed on any API error).
   publish-npm:
     needs: [meta, build, npm-package, verify-npm]
     if: needs.meta.outputs.publish == 'true'
@@ -291,9 +296,29 @@ jobs:
     timeout-minutes: 10
     environment: npm-publish
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
+      - name: Require reviewers on the npm-publish environment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          fail() {
+            echo "::error::Not publishing: $1 Open Settings > Environments > npm-publish, add at least one required reviewer, then re-run this job."
+            exit 1
+          }
+          if ! body="$(gh api "repos/$REPO/environments/npm-publish")"; then
+            fail "could not read the npm-publish environment through the GitHub API."
+          fi
+          n="$(printf '%s' "$body" | jq '[.protection_rules[]? | select(.type == "required_reviewers") | (.reviewers // [])[]] | length')" || fail "the API answer for npm-publish could not be read."
+          case "$n" in ''|*[!0-9]*) fail "the API answer for npm-publish could not be read." ;; esac
+          if [ "$n" -lt 1 ]; then
+            fail "the npm-publish environment has no required reviewers."
+          fi
+          echo "npm-publish has $n required reviewer(s)."
       - name: Require a configured npm-publish environment
         shell: bash
         env:

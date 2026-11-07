@@ -13,10 +13,11 @@
  * Plain Node, no electron; relative imports only.
  */
 import { hostKindWord } from './hostWords'
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AppSettings, DaemonInfo, TerminalAccessLevel } from '../shared/types'
 import { HostAlreadyRunningError, HostStartingOrBusyError, withStartupMutex, type StartupMutexOptions } from '../main/host/ownership'
+import { renameSyncRetry } from '../main/host/fsRetry'
 import { normalizeSettings } from '../main/store/settings'
 import { CliError, EXIT } from './types'
 
@@ -117,8 +118,17 @@ export function writeTerminalAccessNow(dataDir: string, change: TerminalAccessCh
   }
   const file = join(dataDir, SETTINGS_FILE)
   const tmp = `${file}.tmp-cli-${process.pid}`
-  writeFileSync(tmp, JSON.stringify({ version: raw?.version ?? 1, settings }, null, 2), 'utf8')
-  renameSync(tmp, file)
+  try {
+    writeFileSync(tmp, JSON.stringify({ version: raw?.version ?? 1, settings }, null, 2), 'utf8')
+    renameSyncRetry(tmp, file)
+  } catch (e) {
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* best effort */
+    }
+    throw e
+  }
   return terminalAccessOf(normalizeSettings(settings as Partial<AppSettings>))
 }
 

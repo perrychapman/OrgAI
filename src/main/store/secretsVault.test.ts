@@ -400,6 +400,23 @@ describe('writes (5.5 Writes)', () => {
     expect((await node()).get('k')).toBe('v2')
   })
 
+  it('3b: a legacy-only write with secrets.json missing resets the other keys, so the next full reconcile keeps them', async () => {
+    const first = await app()
+    for (const k of ['a', 'b', 'c']) first.set(k, `${k}-value`)
+    rmSync(join(dataDir, 'secrets.json'))
+    custody.fail(locked)
+    const l = await app()
+    l.set('b', 'b2')
+    custody.fail(undefined)
+    const a = await app()
+    expect(a.state()).toBe('open')
+    expect(a.get('a')).toBe('a-value')
+    expect(a.get('b')).toBe('b2')
+    expect(a.get('c')).toBe('c-value')
+    expect(Object.keys(vaultJson().tombstones)).toEqual([])
+    expect((await node()).get('a')).toBe('a-value')
+  })
+
   it('a corrupt secrets.json is never rewritten: legacy-only writes refuse, an open vault stores vault-only', async () => {
     writeFileSync(join(dataDir, 'secrets.json'), 'garbage')
     custody.fail(locked)

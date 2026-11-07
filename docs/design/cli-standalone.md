@@ -142,7 +142,7 @@ same outcome without those costs.
   automation token for the one package). The desktop release stays a draft published by hand (code); npm publishing
   is not reversible after 72 hours, so the owner decides (**D2**) whether `publish-npm` also waits for a manual
   approval (a GitHub environment with a required reviewer; recommended).
-- `verify-npm` job (macos-14, windows-latest, ubuntu-latest; Node at the `engines` floor and current 24 LTS), from the
+- `verify-npm` job (macos-15, windows-latest, ubuntu-latest; Node at the `engines` floor and current 24 LTS), from the
   same tarball, in a temp folder outside the checkout with a temp npm prefix and a temp data folder:
   1. `npm i -g <tgz>` (with and without `--ignore-scripts` when the allowlist is empty); the installed tree equals the
      shrinkwrap's entries whose `os` / `cpu` match the runner (other platforms' optional native packages are absent by
@@ -831,14 +831,14 @@ Anything only checked by unit tests or fakes stays marked unverified in CLAUDE.m
 | | Question | Recommended |
 | --- | --- | --- |
 | D1 | Package name `orgai` or `@orgai/cli` | **Decided (owner, 2026-11-06): `orgai-cli`** (npm refused `orgai`); bin `orgai`. Built and in use throughout the code |
-| D2 | npm trusted publishing (OIDC) or an automation token; a manual approval before `publish-npm` | trusted publishing, with approval |
-| D3 | OS tools as child processes, or a native keyring addon (`@napi-rs/keyring`, N-API, one build for Node and Electron; a supply-chain dependency with per-platform prebuilds) | child processes; revisit if the custodian probes are unreliable |
-| D4 | Agent-reachable vault key on all platforms, including the macOS weakening | accept, documented |
-| D5 | When to retire the app-bundled CLI; whether to ship the archive | deprecation in the release after phase A, stub one release later; archive on demand |
-| D6 | Dual-write window | this release and the next |
-| D7 | Codex: bring-your-own with a version check, or a pinned optional dependency | bring-your-own |
-| D8 | Desktop handoff grant (4.4 step 5): `host.status` and `host.stop` (forced included) for any `desktop` hello with `daemon.secret`, whatever Terminal access is. Not an authentication of the app: any same-user process holding the secret can stop a Node host; the descendant check refuses agents where it works | accept |
-| D9 | Node host Terminal access level: stored setting (default `operate`), asked once on `daemon start` from a terminal, changed with `orgai terminal-access` | accept; revisit a `full` default for macOS and Linux, where the peer check refuses the host's own descendants |
+| D2 | npm trusted publishing (OIDC) or an automation token; a manual approval before `publish-npm` | **Accepted (owner, 2026-11-07):** trusted publishing, with approval |
+| D3 | OS tools as child processes, or a native keyring addon (`@napi-rs/keyring`, N-API, one build for Node and Electron; a supply-chain dependency with per-platform prebuilds) | **Accepted (owner, 2026-11-07):** child processes; revisit if the custodian probes are unreliable |
+| D4 | Agent-reachable vault key on all platforms, including the macOS weakening | **Accepted (owner, 2026-11-07):** accept, documented |
+| D5 | When to retire the app-bundled CLI; whether to ship the archive | **Accepted (owner, 2026-11-07):** deprecation in the release after phase A, stub one release later; archive on demand |
+| D6 | Dual-write window | **Accepted (owner, 2026-11-07):** this release and the next |
+| D7 | Codex: bring-your-own with a version check, or a pinned optional dependency | **Accepted (owner, 2026-11-07):** bring-your-own |
+| D8 | Desktop handoff grant (4.4 step 5): `host.status` and `host.stop` (forced included) for any `desktop` hello with `daemon.secret`, whatever Terminal access is. Not an authentication of the app: any same-user process holding the secret can stop a Node host; the descendant check refuses agents where it works | **Accepted (owner, 2026-11-07):** accept |
+| D9 | Node host Terminal access level: stored setting (default `operate`), asked once on `daemon start` from a terminal, changed with `orgai terminal-access` | **Accepted (owner, 2026-11-07):** accept; revisit a `full` default for macOS and Linux, where the peer check refuses the host's own descendants |
 | D10 | Shrinkwrap in the published package | **Owner decision 2026-11-06, to revisit: `NPM_SHRINKWRAP=none`** in release.yml and ci.yml (exact top-level pins, no `npm-shrinkwrap.json`). With npm 11 a honoured shrinkwrap installed every platform's Claude runtime (about 2 GB); `none` installs about 300 MB. The `full` path stays behind that one setting |
 
 ---
@@ -1096,3 +1096,17 @@ Deviations from this spec, each checked against the code:
     notice, a log cap for a running Node host, the certificate reader through `utilityProcess` (9.1).
 14. **Unverified.** See CLAUDE.md "CLI & host", Wave 7, and ARCHITECTURE.md Risks: Windows and Linux, real key stores, the real
     registry and shrinkwrap behaviour, packaged builds, `scripts/probe-custodian.mjs` (not run), the engines floor.
+15. **Review fixes (2026-11-07, PR #24 review: 8 area reviewers, each finding checked by up to three refuters).**
+    Gate: the inline-code path variant is built token by token (`codeVariant`), so a cd target with a space (the macOS
+    data folder) stays one word after `cd "..."`, `cd -- "..."`, `cd -L`, `cd '...'`, `cd a\ b`, `pushd` and
+    `Set-Location -LiteralPath`, and a relative `vault.json` read in `python -c` / `node -e` after it is denied; the old
+    whole-text split stays a variant, so the change only adds denials (K6, medium). `yarn|pnpm|bun [run] orgai` and
+    `deno ... npm:orgai-cli` count as CLI runs (K7). Vault: a save while the vault is not open and `secrets.json` is
+    missing drops every baseline and `lc` flag like a full reconcile's missing branch, so the next unlock no longer
+    soft-deletes the other keys (K0). release.yml: later jobs check out the commit meta verified (`meta.outputs.sha`),
+    not the tag again (K8); publish-npm refuses unless the `npm-publish` environment has a required reviewer, read from
+    the API with `actions: read`, fail closed (K9, unverified live). `findOrgaiOnPath` skips files without an execute bit
+    off Windows (K4); `orgai terminal-access` renames with the win32 retry and removes its temp file on failure (K5).
+    Open, low: a DPAPI / keychain 'denied' on open shows the generic missing-key text with no retry (K1, as 5.4 says);
+    connection discovery is not quiesced before release (K2, pre-existing); a failed forced handoff connect ends the
+    handoff (K3). Unit-tested only.

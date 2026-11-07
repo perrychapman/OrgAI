@@ -407,6 +407,24 @@ function runnerArgsStart(words: readonly string[], k: number): number {
   return -1
 }
 
+const CLI_PACKAGE_WORD = /^(?:@orgai\/cli|orgai|orgai-cli)(?:@[^\s/]*)?$/i
+
+/** yarn / pnpm / bun running the CLI as a script (`yarn orgai`, `pnpm run orgai`) or deno on `npm:orgai-cli`. */
+function directScriptRunner(words: readonly string[], k: number): boolean {
+  const w = words[k]
+  if (wordMayBe(w, ['yarn', 'pnpm', 'bun'])) {
+    let j = k + 1
+    if (words[j] !== undefined && wordMayBe(words[j], ['run'])) j++
+    return words[j] !== undefined && CLI_PACKAGE_WORD.test(words[j])
+  }
+  if (wordMayBe(w, ['deno'])) {
+    for (let j = k + 1; j < words.length && j < k + 12; j++) {
+      if (/^npm:/i.test(words[j]) && CLI_PACKAGE_WORD.test(words[j].slice(4))) return true
+    }
+  }
+  return false
+}
+
 /** A segment that runs a package: npx, pnpx, bunx, `npm exec|x`, `pnpm dlx|exec`, `yarn dlx|exec`, `bun x` (options may come first). */
 function isPackageRunner(words: readonly string[]): boolean {
   // Walked from the end with the subcommands seen so far, so a long segment costs one pass.
@@ -414,6 +432,7 @@ function isPackageRunner(words: readonly string[]): boolean {
   for (let k = words.length - 1; k >= 0; k--) {
     const w = words[k]
     if (wordMayBe(w, RUNNER_PROGRAMS)) return true
+    if (directScriptRunner(words, k)) return true
     for (const [runner, subs] of RUNNER_SUBCOMMANDS) {
       if (subs.some((s) => later.has(s)) && wordMayBe(w, [runner])) return true
     }
@@ -1987,7 +2006,8 @@ const SHELL_TOKEN = /(?:'[^']*'|"(?:[^"\\]|\\[\s\S])*"|\\[\s\S]|`[\s\S]|[^\s'"\\
  * PowerShell backtick-space) written as a quoted one, since the word splitter would otherwise cut
  * `~/Library/Application\ Support/OrgAI/vault.json` in two. The second: the first with quotes, parentheses and commas
  * read as spaces, so a path inside inline code (`node -e "fs.readFileSync('<data>/vault.json')"`) is a word of its
- * own. Spellings equal to the text or to each other are left out.
+ * own; built token by token (codeVariant) so a cd target with a space stays whole, plus the whole-text split as
+ * before. Spellings equal to the text or to each other are left out.
  */
 function pathScanVariants(text: string): string[] | 'limit' {
   let grown = 0
@@ -2005,9 +2025,38 @@ function pathScanVariants(text: string): string[] | 'limit' {
     .replace(/\$\{?XDG_DATA_HOME\}?/g, '$HOME/.local/share')
     .replace(/%APPDATA%|\$\{?env:APPDATA\}?|\$\{?APPDATA\}?/gi, '$HOME/AppData/Roaming')
     .replace(/%LOCALAPPDATA%|\$\{?env:LOCALAPPDATA\}?|\$\{?LOCALAPPDATA\}?/gi, '$HOME/AppData/Local')
-  const code = out.replace(/['"(),]/g, ' ')
+  // The whole text split (the spelling before review K6) stays a variant too, so the token-wise one only adds denials.
+  const wholeSplit = out.replace(/['"(),]/g, ' ')
   out = out.replace(/(?:\\|`)([ \t])/g, "'$1'")
-  return [...new Set([out, code])].filter((v) => v !== text)
+  return [...new Set([out, codeVariant(out), wholeSplit])].filter((v) => v !== text)
+}
+
+/** Words that change the shell's folder; their target is never re-split in the inline-code variant. */
+const CD_WORDS = new Set(['cd', 'pushd', 'chdir', 'set-location', 'sl', 'push-location'])
+/** Tokens that end a shell segment (a later cd starts afresh). */
+const SEGMENT_END = /^(?:&&|\|\||;|\||&|\n)$/
+
+/**
+ * The inline-code spelling of a shell text: quotes, parentheses and commas read as spaces, token by token, except in
+ * the target of a cd-like word (after any options such as `--`, `-L`, `-LiteralPath`). Splitting the whole text lost
+ * cd tracking when the folder had a space (`cd "~/Library/Application Support/OrgAI" && python3 -c "open('vault.json')"`,
+ * review K6). Read after the escaped-space rewrite, so `cd /x\ y` is kept as one quoted word too.
+ */
+function codeVariant(text: string): string {
+  let state: 'none' | 'cd' = 'none'
+  return text.replace(SHELL_TOKEN, (tok) => {
+    if (SEGMENT_END.test(tok)) {
+      state = 'none'
+      return tok
+    }
+    if (state === 'cd') {
+      if (/^-/.test(tok)) return tok
+      state = 'none'
+      return tok
+    }
+    if (CD_WORDS.has(tok.replace(/^[({]+/, '').replace(/['"]/g, '').toLowerCase())) state = 'cd'
+    return tok.replace(/['"(),]/g, ' ')
+  })
 }
 
 /**
