@@ -29,6 +29,7 @@ import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from 
 import { SHELL_TOOLS, isFreeCdTarget, matchOptionsFor, matchingRule, type MatchOptions } from './ruleMatch'
 import { countUsage, setModelTokens, usageOf } from './runUsage'
 import { cliProjectSettings, projectSettingsLoad } from './claude'
+import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -70,6 +71,9 @@ import { cliProjectSettings, projectSettingsLoad } from './claude'
  * ctx.quickSessionEdits() makes later covered edits free (quickEditFree), like the Claude and Codex adapters.
  * [mock:chat-mcp] (CHAT_MCP_STEPS): request_mcp_install for the [mock:mcp-midrun] server through the real harness tool,
  * then "The server was added for this chat." or "You declined the server."; the mock attaches 'now'.
+ * [mock:self-config] (selfConfigSteps) and [mock:self-config-project] (selfConfigProjectSteps): the self-configuration
+ * tools through the real harness tools (app_reference, open_in_app, propose_app_settings; list_projects then
+ * propose_project_settings for the first project), answered by the result's first word (harnessAnswer / firstProject).
  *
  * Every user message and spawn brief goes through ctx.knowledgeContext like the other adapters (knowledgeDelivery.ts);
  * the mock has no model, so what a model would receive is kept in `deliveredMessages` and scripted replies echo only
@@ -172,6 +176,31 @@ export type MockStep =
    * the rest of the turn is skipped, the root goes to 'error' and run.status 'idle' follows; the session stays open.
    */
   | { type: 'fail'; subtype?: string }
+  | MockHarnessAnswerStep
+  | MockFirstProjectStep
+
+/**
+ * A harness tool call from the root, never retried on REVISE; then the root says the `text` of the first answer whose
+ * `prefix` starts the tool's result, else `otherwise` (also when the tool is not bound for the run or the session
+ * stopped mid-call). Used by the self-configuration markers (selfConfigSteps).
+ */
+export interface MockHarnessAnswerStep {
+  type: 'harnessAnswer'
+  name: string
+  args?: Record<string, unknown>
+  answers: { prefix: string; text: string }[]
+  otherwise: string
+}
+
+/**
+ * list_projects from the root, then `then` with `projectId` set to the first project's id in the result
+ * (firstProjectId); without one the root says `none` and the step ends.
+ */
+export interface MockFirstProjectStep {
+  type: 'firstProject'
+  then: MockHarnessAnswerStep
+  none: string
+}
 
 export interface MockScript {
   /** Pause before each step, in milliseconds. Default 400. */
@@ -1228,6 +1257,8 @@ export class MockSession implements RuntimeSession {
     if (this.ctx.run.kind === 'work' && this.ctx.run.quick && this.script.work === DEFAULT_WORK) {
       if (this.ctx.prompt.includes(CHAT_EDIT_TOKEN)) return chatEditSteps(this.ctx.run.quick.folder)
       if (this.ctx.prompt.includes(CHAT_MCP_TOKEN)) return CHAT_MCP_STEPS
+      const selfConfig = selfConfigMarkerSteps(this.ctx.prompt)
+      if (selfConfig) return selfConfig
       const n = this.ctx.listProjects?.().length ?? 0
       return [
         { type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} },
@@ -1430,6 +1461,10 @@ export class MockSession implements RuntimeSession {
       }
       case 'retireFact':
         return this.retireFactStep(step)
+      case 'harnessAnswer':
+        return this.harnessAnswerStep(step)
+      case 'firstProject':
+        return this.firstProjectStep(step)
       case 'wait':
         await this.pause(step.ms)
         return
@@ -1907,6 +1942,105 @@ export class MockSession implements RuntimeSession {
     }
     await this.harnessStep({ type: 'harness', name: KNOWLEDGE_TOOL, args: { action: 'retire', factId, ...(step.reason ? { reason: step.reason } : {}) } })
   }
+
+  /** The harnessAnswer step: one call through the real harness tool (no REVISE retry), then the matching sentence. */
+  private async harnessAnswerStep(step: MockHarnessAnswerStep): Promise<void> {
+    const result = await this.harnessStep({ type: 'harness', name: step.name, args: step.args ?? {}, retryOnRevise: false })
+    if (this.stopped || this.interrupted) return
+    const answer = result === undefined ? undefined : step.answers.find((a) => result.startsWith(a.prefix))
+    await this.step({ type: 'text', text: answer?.text ?? step.otherwise })
+  }
+
+  /** The firstProject step: list_projects, then `then` for the first project's id, or the `none` sentence. */
+  private async firstProjectStep(step: MockFirstProjectStep): Promise<void> {
+    const listed = await this.harnessStep({ type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} })
+    if (this.stopped || this.interrupted) return
+    const projectId = listed === undefined ? undefined : firstProjectId(listed)
+    if (!projectId) {
+      this.log('info', 'Mock: list_projects named no project, so the project settings proposal is skipped.')
+      await this.step({ type: 'text', text: step.none })
+      return
+    }
+    await this.harnessAnswerStep({ ...step.then, args: { ...step.then.args, projectId } })
+  }
+}
+
+/** Trigger token (Chat / quick runs, default script): look up the theme, open Appearance, propose the light theme (selfConfigSteps). */
+export const SELF_CONFIG_TOKEN = '[mock:self-config]'
+/** Trigger token (Chat / quick runs, default script): propose a $5 spend cap for the first listed project (selfConfigProjectSteps). */
+export const SELF_CONFIG_PROJECT_TOKEN = '[mock:self-config-project]'
+export const MOCK_SELF_CONFIG_LOOKUP = "Let me look that up in OrgAI's reference."
+export const MOCK_SELF_CONFIG_DONE = 'Done: the theme is now light.'
+export const MOCK_SELF_CONFIG_SAME = 'The theme is already light.'
+export const MOCK_SELF_CONFIG_LEFT = 'Understood; I left the settings alone.'
+export const MOCK_SELF_CONFIG_PROJECT_DONE = 'Done: that project now has a $5 cap from its next run.'
+export const MOCK_SELF_CONFIG_PROJECT_LEFT = 'Understood; I left the project alone.'
+export const MOCK_SELF_CONFIG_NO_PROJECT = 'You have no OrgAI projects yet.'
+
+/**
+ * The [mock:self-config] turn: app_reference locate "theme" (the text result is not read), open_in_app on
+ * app-settings-general-appearance, then propose_app_settings appearance.theme = light. A result starting APPROVED says
+ * MOCK_SELF_CONFIG_DONE, "Nothing to change" MOCK_SELF_CONFIG_SAME, anything else (REVISE, DECLINED, a refusal, the
+ * tool's own unavailable text, an unbound tool) MOCK_SELF_CONFIG_LEFT. Every call goes through the real harness tool.
+ */
+export function selfConfigSteps(): MockStep[] {
+  return [
+    { type: 'text', text: MOCK_SELF_CONFIG_LOOKUP },
+    { type: 'harness', name: APP_REFERENCE_TOOL, args: { action: 'locate', query: 'theme' } },
+    { type: 'harness', name: OPEN_IN_APP_TOOL, args: { surfaceId: 'app-settings-general-appearance' } },
+    {
+      type: 'harnessAnswer',
+      name: PROPOSE_APP_SETTINGS_TOOL,
+      args: { title: 'Switch to the light theme', rationale: 'You asked for a lighter look.', changes: [{ field: 'appearance.theme', value: 'light' }] },
+      answers: [
+        { prefix: 'APPROVED', text: MOCK_SELF_CONFIG_DONE },
+        { prefix: 'Nothing to change', text: MOCK_SELF_CONFIG_SAME }
+      ],
+      otherwise: MOCK_SELF_CONFIG_LEFT
+    }
+  ]
+}
+
+/**
+ * The [mock:self-config-project] turn: list_projects, then propose_project_settings maxBudgetUsd 5 for the first
+ * project's id (MOCK_SELF_CONFIG_PROJECT_DONE on APPROVED, else MOCK_SELF_CONFIG_PROJECT_LEFT), or
+ * MOCK_SELF_CONFIG_NO_PROJECT when the list names none.
+ */
+export function selfConfigProjectSteps(): MockStep[] {
+  return [
+    {
+      type: 'firstProject',
+      none: MOCK_SELF_CONFIG_NO_PROJECT,
+      then: {
+        type: 'harnessAnswer',
+        name: PROPOSE_PROJECT_SETTINGS_TOOL,
+        args: { title: 'Cap the spend', rationale: 'A small cap for a test project.', maxBudgetUsd: 5 },
+        answers: [{ prefix: 'APPROVED', text: MOCK_SELF_CONFIG_PROJECT_DONE }],
+        otherwise: MOCK_SELF_CONFIG_PROJECT_LEFT
+      }
+    }
+  ]
+}
+
+/** The self-configuration marker's first turn for a quick run's prompt, or null when neither marker is set. */
+export function selfConfigMarkerSteps(prompt: string): MockStep[] | null {
+  if (prompt.includes(SELF_CONFIG_PROJECT_TOKEN)) return selfConfigProjectSteps()
+  if (prompt.includes(SELF_CONFIG_TOKEN)) return selfConfigSteps()
+  return null
+}
+
+/**
+ * The id of the first project in a list_projects result: the `id=<id>` field of the first line inside `<projects>`
+ * (fields are joined by " | "). undefined when the block is missing or empty (no projects, the tool unavailable).
+ */
+export function firstProjectId(result: string): string | undefined {
+  const lines = result.split('\n')
+  const open = lines.indexOf('<projects>')
+  if (open < 0) return undefined
+  const line = lines[open + 1]
+  if (line === undefined || line === '</projects>') return undefined
+  const m = /(?:^| \| )id=([A-Za-z0-9_-]+)(?: \||$)/.exec(line)
+  return m?.[1]
 }
 
 export interface MockAdapterOptions {
