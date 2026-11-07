@@ -17,81 +17,85 @@ import {
   skillEvaluationOf,
   storedSkillEvaluation
 } from './defaults'
-import type { ProviderConnections, Role, UsageStatus } from './types'
+import type { ProviderConnections, ProxyConnection, Role, UsageStatus } from './types'
 
 // Self-configuration helpers (the "self-configuring harness" pass): pure, token-free.
 
 describe('effectiveDefaultConnection', () => {
   it('keeps the stored default while it is connected', () => {
-    expect(effectiveDefaultConnection({ stored: 'openai', states: { anthropic: 'connected', openai: 'connected' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'openai', states: { anthropic: 'connected', openai: 'connected' } })).toBe('openai')
   })
 
   it('moves to the only connected connection when the stored one is definitely disconnected', () => {
-    expect(effectiveDefaultConnection({ stored: 'anthropic', states: { anthropic: 'disconnected', litellm: 'connected' } })).toBe('litellm')
-    expect(effectiveDefaultConnection({ stored: 'anthropic', states: { anthropic: 'disconnected', openai: 'connected' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', states: { anthropic: 'disconnected', litellm: 'connected' } })).toBe('litellm')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', states: { anthropic: 'disconnected', openai: 'connected' } })).toBe('openai')
   })
 
   it('never moves on error (a probe throw, CLI timeout or failed discovery)', () => {
-    expect(effectiveDefaultConnection({ stored: 'anthropic', states: { anthropic: 'error', openai: 'connected' } })).toBe('anthropic')
-    expect(effectiveDefaultConnection({ stored: 'litellm', states: { anthropic: 'connected', openai: 'connected', litellm: 'error' } })).toBe('litellm')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', states: { anthropic: 'error', openai: 'connected' } })).toBe('anthropic')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'litellm', states: { anthropic: 'connected', openai: 'connected', litellm: 'error' } })).toBe('litellm')
   })
 
   it('picks the first connected in CONNECTION_IDS order, LiteLLM only when it is the only connected one', () => {
-    expect(effectiveDefaultConnection({ stored: 'anthropic', states: { anthropic: 'disconnected', openai: 'connected', litellm: 'connected' } })).toBe('openai')
-    expect(effectiveDefaultConnection({ stored: 'openai', states: { anthropic: 'connected', openai: 'disconnected', litellm: 'connected' } })).toBe('anthropic')
-    expect(effectiveDefaultConnection({ stored: 'openai', states: { anthropic: 'error', openai: 'disconnected', litellm: 'connected' } })).toBe('litellm')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', states: { anthropic: 'disconnected', openai: 'connected', litellm: 'connected' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'openai', states: { anthropic: 'connected', openai: 'disconnected', litellm: 'connected' } })).toBe('anthropic')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'openai', states: { anthropic: 'error', openai: 'disconnected', litellm: 'connected' } })).toBe('litellm')
   })
 
   it('moves back to the replaced connection once it is connected, only while automatic', () => {
-    expect(effectiveDefaultConnection({ stored: 'litellm', replaced: 'anthropic', states: { anthropic: 'connected', litellm: 'connected' } })).toBe('anthropic')
-    expect(effectiveDefaultConnection({ stored: 'litellm', replaced: 'anthropic', states: { anthropic: 'error', litellm: 'connected' } })).toBe('litellm')
-    expect(effectiveDefaultConnection({ stored: 'litellm', chosen: true, replaced: 'anthropic', states: { anthropic: 'connected', litellm: 'connected' } })).toBe('litellm')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'litellm', replaced: 'anthropic', states: { anthropic: 'connected', litellm: 'connected' } })).toBe('anthropic')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'litellm', replaced: 'anthropic', states: { anthropic: 'error', litellm: 'connected' } })).toBe('litellm')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'litellm', chosen: true, replaced: 'anthropic', states: { anthropic: 'connected', litellm: 'connected' } })).toBe('litellm')
   })
 
   it('never picks a connection that is not configured, a turned-off Anthropic included', () => {
-    expect(effectiveDefaultConnection({ stored: 'anthropic', states: { openai: 'disconnected' } })).toBe('openai')
-    expect(effectiveDefaultConnection({ stored: 'anthropic', chosen: true, states: { openai: 'connected' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', states: { openai: 'disconnected' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', chosen: true, states: { openai: 'connected' } })).toBe('openai')
   })
 
   it('falls back to the stored value (anthropic when unset) when nothing is connected', () => {
-    expect(effectiveDefaultConnection({ stored: 'openai', states: { anthropic: 'disconnected', openai: 'error' } })).toBe('openai')
-    expect(effectiveDefaultConnection({ stored: undefined, states: {} })).toBe('anthropic')
-    expect(effectiveDefaultConnection({ stored: 'bogus' as never, states: { anthropic: 'disconnected', openai: 'disconnected' } })).toBe('anthropic')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'openai', states: { anthropic: 'disconnected', openai: 'error' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: undefined, states: {} })).toBe('anthropic')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'bogus' as never, states: { anthropic: 'disconnected', openai: 'disconnected' } })).toBe('anthropic')
   })
 
   it('does not flip while the stored default is still being probed', () => {
-    expect(effectiveDefaultConnection({ stored: 'openai', states: { anthropic: 'connected', openai: 'connecting' } })).toBe('openai')
-    expect(effectiveDefaultConnection({ stored: 'openai', states: { anthropic: 'connected', openai: 'unknown' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'openai', states: { anthropic: 'connected', openai: 'connecting' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'openai', states: { anthropic: 'connected', openai: 'unknown' } })).toBe('openai')
   })
 
   it('ignores connections left out of states (not configured)', () => {
-    expect(effectiveDefaultConnection({ stored: 'anthropic', states: { anthropic: 'disconnected' } })).toBe('anthropic')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', states: { anthropic: 'disconnected' } })).toBe('anthropic')
   })
 
   it('keeps a chosen connection whatever its state (H1)', () => {
     for (const state of ['disconnected', 'error', 'connecting', 'unknown'] as const) {
-      expect(effectiveDefaultConnection({ stored: 'anthropic', chosen: true, states: { anthropic: state, openai: 'connected' } })).toBe('anthropic')
+      expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', chosen: true, states: { anthropic: state, openai: 'connected' } })).toBe('anthropic')
     }
-    expect(effectiveDefaultConnection({ stored: 'anthropic', chosen: false, states: { anthropic: 'disconnected', openai: 'connected' } })).toBe('openai')
+    expect(effectiveDefaultConnection({ proxies: [{ id: 'litellm' }], stored: 'anthropic', chosen: false, states: { anthropic: 'disconnected', openai: 'connected' } })).toBe('openai')
   })
 })
 
 describe('connectionConfigured / connectionUsable', () => {
-  const c = (patch: Partial<ProviderConnections>): ProviderConnections => ({ ...DEFAULT_APP_SETTINGS.connections, ...patch })
-  it('anthropic is always configured; openai when enabled; litellm with base URL and key', () => {
+  const c = (patch: Partial<ProviderConnections>, proxies: ProxyConnection[] = []): { connections: ProviderConnections; proxies: ProxyConnection[] } => ({
+    connections: { ...DEFAULT_APP_SETTINGS.connections, ...patch },
+    proxies
+  })
+  const px = (over: Partial<ProxyConnection>): ProxyConnection => ({ id: 'litellm', name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: '', enabled: false, hasApiKey: false, tierModels: {}, ...over })
+  it('anthropic is always configured; openai when enabled; a proxy with base URL and key', () => {
     const base = DEFAULT_APP_SETTINGS.connections
-    expect(connectionConfigured('anthropic', base)).toBe(true)
+    expect(connectionConfigured('anthropic', c({}))).toBe(true)
     expect(connectionConfigured('openai', c({ openai: { ...base.openai, enabled: false } }))).toBe(false)
     expect(connectionConfigured('openai', c({ openai: { ...base.openai, enabled: true } }))).toBe(true)
-    expect(connectionConfigured('litellm', c({ litellm: { ...base.litellm, enabled: true, baseUrl: 'http://x', hasApiKey: false } }))).toBe(false)
-    expect(connectionConfigured('litellm', c({ litellm: { ...base.litellm, enabled: true, baseUrl: '  ', hasApiKey: true } }))).toBe(false)
-    expect(connectionConfigured('litellm', c({ litellm: { ...base.litellm, enabled: true, baseUrl: 'http://x', hasApiKey: true } }))).toBe(true)
+    expect(connectionConfigured('litellm', c({}, [px({ enabled: true, anthropicBaseUrl: 'http://x', hasApiKey: false })]))).toBe(false)
+    expect(connectionConfigured('litellm', c({}, [px({ enabled: true, anthropicBaseUrl: '  ', hasApiKey: true })]))).toBe(false)
+    expect(connectionConfigured('litellm', c({}, [px({ enabled: true, anthropicBaseUrl: 'http://x', hasApiKey: true })]))).toBe(true)
   })
   it('usable also needs a connected status', () => {
     const base = DEFAULT_APP_SETTINGS.connections
-    expect(connectionUsable('anthropic', base, 'connected')).toBe(true)
-    expect(connectionUsable('anthropic', base, 'error')).toBe(false)
-    expect(connectionUsable('anthropic', base, undefined)).toBe(false)
+    expect(connectionUsable('anthropic', c({}), 'connected')).toBe(true)
+    expect(connectionUsable('anthropic', c({}), 'error')).toBe(false)
+    expect(connectionUsable('anthropic', c({}), undefined)).toBe(false)
     // L2: a turned-off Anthropic connection is not configured.
     expect(connectionConfigured('anthropic', c({ anthropic: { ...base.anthropic, enabled: false } }))).toBe(false)
     expect(connectionUsable('anthropic', c({ anthropic: { ...base.anthropic, enabled: false } }), 'connected')).toBe(false)

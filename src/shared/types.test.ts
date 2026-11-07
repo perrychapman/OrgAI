@@ -97,7 +97,6 @@ describe('catalog', () => {
   it('defaults connections with the legacy auth and no secrets', () => {
     const c = defaultConnections({ kind: 'apiKey', envVar: 'KEY' })
     expect(c.anthropic.auth).toEqual({ kind: 'apiKey', envVar: 'KEY' })
-    expect(c.litellm).toEqual({ id: 'litellm', enabled: false, baseUrl: '', hasApiKey: false, tierModels: {} })
     expect(Object.keys(c)).toEqual([...CONNECTION_IDS])
     expect(structuredClone(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
   })

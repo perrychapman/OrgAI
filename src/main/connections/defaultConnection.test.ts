@@ -23,6 +23,7 @@ function setup(anthropic: { state: ConnectionStatus['state'] } = { state: 'conne
   const dataDir = mkdtempSync(join(tmpdir(), 'orgai-defconn-'))
   dirs.push(dataDir)
   const settings = new SettingsStore(dataDir)
+  settings.setProxies([{ id: 'litellm', name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: '', enabled: false, hasApiKey: false, tierModels: {} }])
   const logs: string[] = []
   const probe = { current: anthropic, throws: opts.throwProbe === true }
   const fetchImpl = { fail: false }
@@ -58,7 +59,7 @@ function setup(anthropic: { state: ConnectionStatus['state'] } = { state: 'conne
     now: () => 1000
   })
   const addLiteLLM = async () => {
-    await service.update({ ...settings.get().connections.litellm, baseUrl: 'http://localhost:4000/' })
+    await service.update({ ...settings.get().proxies[0], anthropicBaseUrl: 'http://localhost:4000/' })
     await service.setSecret({ id: 'litellm', apiKey: 'sk-test-key' })
   }
   return { settings, service, logs, probe, fetchImpl, addLiteLLM, cipher, defaultChanged, statuses }
@@ -105,7 +106,7 @@ describe('review hardening (self-configuration fix-up)', () => {
     await ctx.service.connect('litellm')
     expect(ctx.settings.get().defaultConnection).toBe('litellm')
     const logs = ctx.logs.length
-    await ctx.service.update({ ...ctx.settings.get().connections.litellm, baseUrl: 'http://localhost:4001/' })
+    await ctx.service.update({ ...ctx.settings.get().proxies[0], anthropicBaseUrl: 'http://localhost:4001/' })
     expect(ctx.statuses.at(-1)).toEqual({ connection: 'litellm', state: 'disconnected' })
     expect(ctx.settings.get().defaultConnection).toBe('litellm')
     expect(ctx.service.effectiveDefault()).toBe('litellm')
@@ -151,7 +152,7 @@ describe('review hardening (self-configuration fix-up)', () => {
     await ctx.service.setDefault('litellm')
     await ctx.service.setDefault(null)
     expect(ctx.settings.get().defaultConnection).toBe('litellm')
-    await ctx.service.update({ ...ctx.settings.get().connections.litellm, baseUrl: '' })
+    await ctx.service.update({ ...ctx.settings.get().proxies[0], anthropicBaseUrl: '' })
     expect(ctx.settings.get()).toMatchObject({ defaultConnection: 'anthropic', defaultConnectionChosen: false })
     expect(ctx.service.effectiveDefault()).toBe('anthropic')
   })
@@ -312,12 +313,16 @@ describe('setDefault', () => {
 })
 
 describe('defaultRefusal', () => {
+  const base = { connections: DEFAULT_APP_SETTINGS.connections }
   const conns = DEFAULT_APP_SETTINGS.connections
-  it('names the connection and for LiteLLM the missing piece', () => {
-    expect(defaultRefusal('anthropic', conns)).toBe('Anthropic is not connected. Connect it first, then make it the default.')
-    expect(defaultRefusal('anthropic', { ...conns, anthropic: { ...conns.anthropic, enabled: false } })).toMatch(/turned off/)
-    expect(defaultRefusal('openai', conns)).toBe('OpenAI is not connected. Connect it first, then make it the default.')
-    expect(defaultRefusal('litellm', { ...conns, litellm: { ...conns.litellm, enabled: true, baseUrl: '', hasApiKey: true } })).toMatch(/no base URL/)
-    expect(defaultRefusal('litellm', { ...conns, litellm: { ...conns.litellm, enabled: true, baseUrl: 'http://x', hasApiKey: false } })).toMatch(/no API key/)
+  const px = (over: Record<string, unknown>) => ({ proxies: [{ id: 'litellm', name: 'Team gateway', kind: 'litellm' as const, anthropicBaseUrl: '', enabled: true, hasApiKey: true, tierModels: {}, ...over }] })
+  it('names the connection and for a proxy the missing piece', () => {
+    expect(defaultRefusal('anthropic', base)).toBe('Anthropic is not connected. Connect it first, then make it the default.')
+    expect(defaultRefusal('anthropic', { connections: { ...conns, anthropic: { ...conns.anthropic, enabled: false } } })).toMatch(/turned off/)
+    expect(defaultRefusal('openai', base)).toBe('OpenAI is not connected. Connect it first, then make it the default.')
+    expect(defaultRefusal('litellm', px({ anthropicBaseUrl: '' }))).toBe('Team gateway has no base URL yet. Add it and connect, then make it the default.')
+    expect(defaultRefusal('litellm', px({ anthropicBaseUrl: 'http://x', hasApiKey: false }))).toMatch(/Team gateway has no API key/)
+    expect(defaultRefusal('litellm', px({ anthropicBaseUrl: 'http://x' }))).toBe('Team gateway is not connected. Connect it first, then make it the default.')
+    expect(defaultRefusal('proxy-0a1b2c3d', base)).toMatch(/no longer exists/)
   })
 })
