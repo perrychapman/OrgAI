@@ -222,9 +222,8 @@ sat in the middle of the list.
   body is always the one scroller with the footer after it, wherever the card is mounted. While a proposal body overflows,
   `DecisionCard` gives it one Tab stop (`tabindex=0`, `role=group`, "<Kind> details, scrollable", `data-scrolls`) with a
   2 px inset `:focus-visible` ring, so the keyboard can scroll a list that has no controls of its own.
-- Checked by `e2e/proposals.mjs` scenario 4 (29 changes, a work run in the Live tray and an Architect session in the Team
-  tab, 1024x640 and 1600x1000, dark and light): the body is its own scroller, scrolls to its end, the last block ends inside
+- Checked by `e2e/proposals.mjs` scenario 4 (29 changes, a work run and an org change session in the Live tray,
+  1024x640 and 1600x1000, dark and light): the body is its own scroller, scrolls to its end, the last block ends inside
   it, the footer sits below it, the page does not scroll, Tab reaches the body with a ring.
-- Open: in the Team tab at 1024x640 the Architect tray (about 210 px) is shorter than the proposal card, so the tray
-  scrolls to reach the footer (focus moves to Approve at arrival, which should scroll it into view; not asserted). Making the card fill that tray needs
-  `team.css` / `TeamView` changes (a flex chain down to the card, a larger tray share), outside this fix.
+- The Team tab's Architect tray this fix first covered is gone: org change sessions are ordinary setup runs whose cards
+  show in the Live tray (CLAUDE.md "Org change sessions"), so its 1024x640 tray-height open item no longer applies.

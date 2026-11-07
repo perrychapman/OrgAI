@@ -8,11 +8,11 @@ import { projectKindOf } from '@shared/defaults'
 import { agentLabel, hasLiveDescendant, normalizeParents } from '@shared/view/agentTree'
 import { isSettledAt } from './foldFinished'
 import { nodeActivity, isWorkingAgent, worktreeLabel } from './agentActivity'
-import { locationLabel, runKindLabel } from './assistants'
+import { locationLabel } from './assistants'
 import { oneLine } from '@shared/view/decisionTitle'
 import { runCostInput } from './cost'
 import { elapsedLabel, planStepLabel } from './dashboard'
-import { runName } from './runLabels'
+import { displayRunName, runKindWord } from './orgChange'
 import { statusOfRun, statusText, type RunStatusView } from './runStatus'
 
 /** The neutral role colour, as the canvas resolves it (LiveRunView NEUTRAL_ROLE_TOKEN). */
@@ -336,8 +336,8 @@ export function bandModel(
       group,
       status,
       word: statusText(status),
-      name: runName(r.summary),
-      ...(isVirtualProjectId(r.summary.projectId) || r.summary.quick || r.summary.kind !== 'work' || r.summary.team === 'single' ? { chip: runKindLabel(r.summary) } : {}),
+      name: displayRunName(r.summary),
+      ...(isVirtualProjectId(r.summary.projectId) || r.summary.quick || r.summary.kind !== 'work' || r.summary.team === 'single' ? { chip: runKindWord(r.summary) } : {}),
       planStep: planStepLabel(r.plan),
       line2: step ?? (root ? nodeActivity(root, { isRoot: true }) : ''),
       decisions: r.decisions,

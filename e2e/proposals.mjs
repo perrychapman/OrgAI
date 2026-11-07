@@ -2,7 +2,7 @@
 // H1 compact frame, M2 kind labels, M5 proposer, M7 roomy frame). A project MCP assistant proposes to narrow one server,
 // remove another and add a new one; a work run leaves two background permission cards, an ask_user question and then an
 // org chart proposal open together (the stepper). Checks at 1024x640 (dark and light) and 1600x1000. Scenario 4 is a
-// 29-change org chart proposal in the Live tray and the Team tab's Architect tray (proposal-cards.md section 12).
+// 29-change org chart proposal in the Live tray of a work run and of an org change session (proposal-cards.md section 12).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, sleep } from './lib.mjs'
@@ -456,8 +456,8 @@ try {
   check(settled === 0, 'no proposal card is left open', String(settled))
 
   // ---- Scenario 4: a long org chart proposal (29 changes). Fix "long proposals" (proposal-cards.md): the body is the one
-  // scroller and reaches its end, the footer sits under it, nothing scrolls the page. In the Live tray (a work run) and
-  // in the Team tab's Architect tray (a setup run), where the list used to run on under the footer. ----
+  // scroller and reaches its end, the footer sits under it, nothing scrolls the page. In the Live tray of a work run and
+  // of an org change session (a setup run started from Team > Design). ----
   await endSession(page)
   const now = await page.evaluate(async (id) => (await window.orgai.projects.list()).find((p) => p.id === id)?.roles ?? [], pid)
   const nameOfNow = (id) => now.find((r) => r.id === id)?.name ?? null
@@ -556,25 +556,26 @@ try {
   await sleep(800)
   await endSession(page)
 
-  // Team tab, Architect tray (setup run).
+  // Org change session (setup run) started from Team > Design: its card shows in the Live tray like any run's.
   await setSize(1024, 640)
   await projectTab(page, 'Team').click()
   const teamTray = page.locator('[data-testid=team-assistant]')
   await teamTray.locator('[data-testid=architect-open]').click()
-  await teamTray.locator('textarea').first().fill('Grow the team')
-  await teamTray.getByRole('button', { name: 'Revise with the Architect' }).click()
-  await page.locator('[data-testid=architect-decisions] .decision-card.kind-proposal').waitFor({ timeout: 30_000 })
+  await teamTray.getByLabel('What should change').fill('Grow the team')
+  await teamTray.locator('[data-testid=org-change-start]').click()
+  const setupCard = 'section.frame-tray .decision-card.kind-proposal'
+  await page.locator(setupCard).first().waitFor({ timeout: 30_000 })
   await sleep(600)
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
     await setSize(w, h)
     for (const theme of ['dark', 'light']) {
       await setTheme(theme)
-      await checkLong('[data-testid=architect-decisions] .decision-card.kind-proposal', `in the Team tab's Architect tray at ${w}x${h} ${theme}`)
-      await shot(`long-org-team-${w}-${theme}`)
+      await checkLong(setupCard, `in an org change session's Live tray at ${w}x${h} ${theme}`)
+      await shot(`long-org-change-${w}-${theme}`)
     }
   }
   await setTheme('dark')
-  await page.locator('[data-testid=architect-decisions] .decision-card.kind-proposal .btn.primary').click()
+  await page.locator(`${setupCard} .btn.primary`).click()
   await sleep(1000)
 } finally {
   await cleanup(app, page, NAME)

@@ -23,7 +23,7 @@ import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFo
 import { chainCanvas, earlierLabel, isEarlierKey } from '../lib/chainView'
 import { foldFinished, groupParentOf, isSettledAt, nextSettleAt, settleTimerDelay } from '../lib/foldFinished'
 import { mergeChainFeed } from '../lib/transcriptRows'
-import { runName } from '../lib/runLabels'
+import { displayRunName, isOrgChangeRun, orgChangeBannerTitle, setupBannerShows } from '../lib/orgChange'
 import { registerMenuHandler, runMenuAction } from '../lib/menuRegistry'
 import ChatStartPage from '../components/assistants/ChatStartPage'
 import McpAssistantStartPage from '../components/assistants/McpAssistantStartPage'
@@ -945,7 +945,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (d.behavior === 'approve') setApprovedKinds((k) => (k.includes(p.kind) ? k : [...k, p.kind]))
   }
 
-  const setupDone = isSetupRun && project.setup?.state === 'complete' && (status === 'finished' || status === 'idle')
+  // Walk M2 (ux-review-org-change-session-pre.md): never on a run cut off by a quit, and an org change needs an approval.
+  const setupDone = setupBannerShows({ summary: run.summary,setupComplete: project.setup?.state === 'complete', cut: !!run.cutWhile, approved: approvedKinds })
+  const orgChangeRun = isOrgChangeRun(run.summary)
 
   return (
     <div className="run-view">
@@ -958,7 +960,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         <Banner
           tone="success"
           testId="setup-complete"
-          title={`Setup complete: ${[project.setup?.architecturePath ? 'architecture' : '', `${project.roles.length} role${project.roles.length === 1 ? '' : 's'}`, approvedKinds.includes('settings') ? 'settings applied' : ''].filter(Boolean).join(', ')}`}
+          title={orgChangeRun ? orgChangeBannerTitle(approvedKinds, projectKindOf(project)) : `Setup complete: ${[project.setup?.architecturePath ? 'architecture' : '', `${project.roles.length} role${project.roles.length === 1 ? '' : 's'}`, approvedKinds.includes('settings') ? 'settings applied' : ''].filter(Boolean).join(', ')}`}
           actions={
             <>
               <Button size="sm" variant="primary" onClick={() => setView('team')}>
@@ -972,7 +974,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             </>
           }
         >
-          The Architect is done. Review or adjust what it set up on the Team tab.
+          {orgChangeRun ? 'Review or adjust the changes on the Team tab.' : 'The Architect is done. Review or adjust what it set up on the Team tab.'}
         </Banner>
       )}
       <div className="run-body" ref={bodyRef} data-layout={layout}>
@@ -1068,7 +1070,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         {successor && newestRun && newestRun.id !== runId ? (
           <div className="composer composer-ended" data-testid="composer-superseded">
             <div className="composer-notice info">
-              This conversation continues in {runName(newestRun)}.
+              This conversation continues in {displayRunName(newestRun)}.
             </div>
             <Button variant="secondary" size="sm" testId="go-to-latest" onClick={() => void openRun(newestRun.id).then(() => focusComposer())}>
               Go to latest

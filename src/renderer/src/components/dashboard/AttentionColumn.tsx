@@ -17,7 +17,7 @@ import { waitingItems } from '../../lib/needsYou'
 import { hideUserEnded, pausedCaption } from '../../lib/needsInline'
 import { openTeamFilesDecision, useTeamAttentionItems } from '../../lib/menuActions'
 import { canContinue, relativeTime } from '../../lib/runChains'
-import { runName } from '../../lib/runLabels'
+import { displayRunName } from '../../lib/orgChange'
 import { statusOfRun, statusText } from '../../lib/runStatus'
 
 export { useLastSeen } from './useLastSeen'
@@ -73,7 +73,7 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
           key={needsItemKey(it)}
           item={it}
           projectName={it.kind === 'team' ? it.projectName : decisionLocationLabel(it.run.summary, projects)}
-          runName={it.kind === 'team' ? undefined : runName(it.run.summary)}
+          runName={it.kind === 'team' ? undefined : displayRunName(it.run.summary)}
           onAnnounce={onAnnounce}
           onOpen={() => (it.kind === 'team' ? openTeamFilesDecision(it.projectId) : void jumpToDecision(it.projectId, it.runId, it.kind === 'plan' ? undefined : it.key))}
         />
@@ -159,7 +159,7 @@ function SinceSection({
               <span className="dash-row-text">
                 <span className="dash-row-line">
                   <span className="dash-status">{word}</span>
-                  <span className="dash-row-name">{runName(s)}</span>
+                  <span className="dash-row-name">{displayRunName(s)}</span>
                 </span>
                 <span className="dash-row-cap">
                   <span className="dash-clip">
@@ -173,7 +173,7 @@ function SinceSection({
             </button>
             {canGo && (
               <span className="dash-row-side">
-                <Button variant="secondary" size="sm" testId="dash-since-continue" ariaLabel={`Continue ${runName(s)}`} onClick={() => void continueFromHistory(s.id, s.projectId)}>
+                <Button variant="secondary" size="sm" testId="dash-since-continue" ariaLabel={`Continue ${displayRunName(s)}`} onClick={() => void continueFromHistory(s.id, s.projectId)}>
                   Continue
                 </Button>
               </span>
@@ -206,7 +206,7 @@ function PausedSection({ cap, summaries }: { cap: number; summaries: RunSummary[
             <span className="dash-row-text">
               <span className="dash-row-line">
                 <span className="dash-status">{statusText(statusOfRun({ summary: s }, projectOf(s.projectId), false))}</span>
-                <span className="dash-row-name">{runName(s)}</span>
+                <span className="dash-row-name">{displayRunName(s)}</span>
               </span>
               <span className="dash-row-cap">
                 <span className="dash-clip">
@@ -217,7 +217,7 @@ function PausedSection({ cap, summaries }: { cap: number; summaries: RunSummary[
             </span>
           </button>
           <span className="dash-row-side">
-            <Button variant="secondary" size="sm" testId="dash-paused-resume" ariaLabel={`Resume ${runName(s)} now`} onClick={() => void resumeNow(s.id)}>
+            <Button variant="secondary" size="sm" testId="dash-paused-resume" ariaLabel={`Resume ${displayRunName(s)} now`} onClick={() => void resumeNow(s.id)}>
               Resume now
             </Button>
           </span>
