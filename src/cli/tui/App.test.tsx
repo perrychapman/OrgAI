@@ -363,7 +363,7 @@ describe('App focus and routing', () => {
     expect(m.frame()).toContain('COMPOSER*[]')
     expect(m.s.api.notify).not.toHaveBeenCalledWith(PRESS_AGAIN)
     await m.send(ctrlKey('c'))
-    expect(m.s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN, undefined)
+    expect(m.s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN, 'warn')
     t += CTRL_C_QUIT_MS + 1
     await m.send(ctrlKey('c'))
     expect(m.exits).toEqual([])
@@ -612,7 +612,7 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
     let t = 1000
     const m = mount({ session: s, launch: LAUNCH, now: () => t })
     await m.send(ctrlKey('c'))
-    expect(s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN_STOP, undefined)
+    expect(s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN_STOP, 'warn')
     t += 100
     await m.send(ctrlKey('c'))
     await tick()

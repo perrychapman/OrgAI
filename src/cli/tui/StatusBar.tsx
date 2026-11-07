@@ -98,7 +98,8 @@ function buildSegs(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'>, level: L
   if (run) out.push({ text: run })
   if (s.statusWord) out.push({ text: s.statusWord, tone: s.tone })
   if (s.costText && level.cost) out.push({ text: s.costText, dim: true })
-  out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })
+  // "0 need you" means nothing before there is a project or a run (onboarding, R2-L5).
+  if (s.needsYou > 0 || s.projectName || s.runTag) out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })
   const chips = s.runChips
   if (chips && chips.length > 0) {
     const tone = chips.some((c) => c.needsYou) ? { tone: 'warn' as const } : { dim: true }
@@ -159,7 +160,12 @@ export function StatusBar(props: StatusBarProps) {
       if (segs.length > 0) segs.push({ text: sep, dim: true })
       segs.push(seg)
     }
-    for (const t of tail) if (t) segs.push(gap, t)
+    for (const t of tail) {
+      if (!t) continue
+      // A screen reader hears ". " between parts; a part that already ends in a stop gets a plain space, not "..".
+      const prev = segs[segs.length - 1]?.text ?? ''
+      segs.push(env.screenReader && /[.!?]$/.test(prev) ? { text: ' ' } : gap, t)
+    }
     return segs
   }
   const fits = (segs: Seg[]): boolean => textWidth(segs.map((s) => s.text).join('')) <= width
@@ -190,7 +196,8 @@ export function StatusBar(props: StatusBarProps) {
     chosen = tryLevels([hintSeg(items.length)]) ?? tryTrimmed(undefined)
   }
   // Nothing fits whole (a very narrow bar): cut the last-resort line with an ellipsis.
-  const line = chosen ?? cutSegs(build(last, [noticeSeg ?? hintSeg(items.length)]), width, env)
+  // A danger / warn notice that is wider than the bar is cut by itself: the status words never push it out of sight.
+  const line = chosen ?? (noticeSeg && urgent(notice) ? cutSegs([noticeSeg], width, env) : cutSegs(build(last, [noticeSeg ?? hintSeg(items.length)]), width, env))
   return (
     <Box width={width} height={1} overflow="hidden">
       <Text wrap="truncate-end">

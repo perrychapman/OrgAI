@@ -140,11 +140,14 @@ describe('computeLayout', () => {
     expect(some.composer.height).toBe(3)
   })
 
-  it('returns the inline plan: a height-0 transcript box and a 3-line pinned footer', () => {
-    const plan = computeLayout(input({ bufferMode: 'inline', cols: 90, rows: 20, trayRows: 4, composerRows: 3 }))
+  it('returns the inline plan: a height-0 transcript box and a pinned footer (status, tray rows, one composer row)', () => {
+    const plan = computeLayout(input({ bufferMode: 'inline', cols: 90, rows: 20, trayRows: 1, composerRows: 3 }))
     expect(plan.mode).toBe('stacked')
     expect(plan.panes).toEqual([{ pane: 'transcript', column: 0, width: 90, height: 0 }])
     expect(plan.statusRows + plan.tray.height + plan.composer.height).toBe(3)
+    // R2-M2: a focused tray may take up to INLINE_TRAY_MAX rows for its title and wrapped key rows, never more.
+    expect(computeLayout(input({ bufferMode: 'inline', cols: 90, rows: 20, trayRows: 3, composerRows: 3 })).tray.height).toBe(3)
+    expect(computeLayout(input({ bufferMode: 'inline', cols: 90, rows: 20, trayRows: 9, composerRows: 3 })).tray.height).toBe(4)
   })
 
   it('reserves the palette rows between the tray and the composer and honours composer rows 1..7', () => {

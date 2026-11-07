@@ -143,6 +143,30 @@ describe('StatusBar', () => {
     expect(frame({}, env({ unicode: false }))).toContain('Shop | R2')
   })
 
+  it('R2-M1: a warn notice (the first Ctrl+C) shows at every width from 70 down to 20, with or without run chips', () => {
+    const text = 'Press Ctrl+C again to quit'
+    const chips: RunChip[] = Array.from({ length: 8 }, (_, i) => ({ tag: `R${i + 1}`, runId: `r${i}`, followed: i === 0, needsYou: i < 5 }))
+    const summary = { ...SUMMARY, projectName: 'Demo', runTag: 'R1', runTitle: 'Mockdeep-tree Build the report', statusWord: 'Needs you', needsYou: 5, liveRuns: 8, runChips: chips }
+    for (let width = 70; width >= 20; width -= 5) {
+      const f = frame({ width, summary, notice: { id: 1, text, tone: 'warn', at: 1000 }, now: () => 1000 })
+      expect(textWidth(f), `width ${width}`).toBeLessThanOrEqual(width)
+      const visible = width >= text.length ? text : text.slice(0, Math.max(1, width - 4))
+      expect(f, `width ${width}`).toContain(visible)
+    }
+  })
+
+  it('a notice that the screen reader already ends with a stop is not followed by a second one (R2-L4)', () => {
+    const f = frame({ width: 120, summary: SUMMARY, notice: { id: 1, text: 'Opened R1: it needs you. /new starts a new run.', at: 1000 }, now: () => 1000 }, env({ screenReader: true }))
+    expect(f).toContain('/new starts a new run. Tab focus')
+    expect(f).not.toContain('..')
+  })
+
+  it('no "0 need you" before a project or a run exists (onboarding, R2-L5)', () => {
+    const bare: StatusSummary = { needsYou: 0, liveRuns: 0, connection: 'live' }
+    expect(frame({ summary: bare })).not.toContain('need you')
+    expect(frame({ summary: { ...bare, needsYou: 2 } })).toContain('2 need you')
+  })
+
   it('survives width 0 and 1', () => {
     expect(frame({ width: 0 })).toBe('')
     expect(textWidth(frame({ width: 1 }))).toBeLessThanOrEqual(1)

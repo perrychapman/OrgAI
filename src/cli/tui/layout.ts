@@ -23,6 +23,8 @@ const SPLIT_PLAN_MIN = 4
 /** Split: worktrees take at most this share of the left column, and are left out below this many rows. */
 const SPLIT_WORKTREES_SHARE = 0.4
 const PANE_MIN = 3
+/** Inline footer: the tray's most rows (a title line and three rows of keys). */
+export const INLINE_TRAY_MAX = 4
 /** Stacked shares of the body rows. */
 const STACKED_SHARE: Record<'tree' | 'plan' | 'worktrees', number> = { tree: 0.3, plan: 0.25, worktrees: 0.2 }
 /** Stacked: the transcript keeps at least this many rows; panes are dropped in this order until it does. */
@@ -44,11 +46,12 @@ export function computeLayout(input: LayoutInput): LayoutPlan {
 
   if (input.bufferMode === 'inline') {
     // Pinned footer: one status line, one composer line (the shell passes the real count, but the footer keeps one),
-    // one tray line; an open palette takes its rows above the composer (bounded by rows).
+    // the tray's rows (its title line, and the key row wrapped at separators while it has focus, at most INLINE_TRAY_MAX);
+    // an open palette takes its rows above the composer (bounded by rows).
     const statusRows = Math.min(1, rows)
     const composerH = Math.min(nat(input.composerRows) > 0 ? 1 : 0, rows - statusRows)
     const paletteH = Math.min(nat(input.paletteRows ?? 0), rows - statusRows - composerH)
-    const trayH = Math.min(nat(input.trayRows) > 0 ? 1 : 0, rows - statusRows - composerH - paletteH)
+    const trayH = Math.min(nat(input.trayRows), INLINE_TRAY_MAX, rows - statusRows - composerH - paletteH)
     return {
       mode: 'stacked',
       statusRows,

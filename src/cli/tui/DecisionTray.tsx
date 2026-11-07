@@ -99,6 +99,10 @@ function bindingKeyOf(e: KeyEvent): string | undefined {
   return e.ch.toLowerCase()
 }
 
+/** What a key inside the swap-guard window is told: the card was replaced, or it only just arrived (R2-L6). */
+export const GUARD_SWAPPED_NOTICE = 'The card just changed: wait a moment, then press the key again.'
+export const GUARD_ARRIVED_NOTICE = 'This card only just arrived: wait a moment, then press the key again.'
+
 /** Shown instead of the decision keys while the tray is not focused. */
 const UNFOCUSED_HINT = 'Alt+D or F2 to answer'
 
@@ -472,7 +476,7 @@ export function DecisionTray(props: DecisionTrayProps) {
     if (!guard.accepts(now())) {
       st.guardHint = true
       st.pending = undefined
-      notice('The card just changed: wait a moment, then press the key again.')
+      notice(guard.replaced ? GUARD_SWAPPED_NOTICE : GUARD_ARRIVED_NOTICE)
       bump()
       return true
     }
@@ -572,13 +576,24 @@ export function DecisionTray(props: DecisionTrayProps) {
 
   if (props.variant === 'footer') {
     const who = top.agentLabel ? `${top.agentLabel}: ` : ''
-    const hintText = focused ? hintPhrases(top, env.dumbTerminal).join(sep) : UNFOCUSED_HINT
-    const text = modeLine ?? (st.status ? `${title}${sep}${st.status.text}` : `${top.runTag} ${who}${title}${sep}${hintText}`)
+    const phrases = hintPhrases(top, env.dumbTerminal)
+    // With room for more than one row the keys get rows of their own, wrapped at separators, so none is cut off (R2-M2);
+    // with one row they follow the title on the same line as before.
+    const keyRows = focused && !modeLine && !st.status && height > 1 ? wrapPhrases(phrases, sep, width, ell).slice(0, height - 1) : []
+    const hintText = focused ? phrases.join(sep) : UNFOCUSED_HINT
+    const text =
+      modeLine ??
+      (st.status ? `${title}${sep}${st.status.text}` : keyRows.length > 0 ? `${top.runTag} ${who}${title}` : `${top.runTag} ${who}${title}${sep}${hintText}`)
     return (
-      <Box width={width}>
+      <Box flexDirection="column" width={width}>
         <Text wrap="truncate-end" {...styleFor(modeLine ? { tone: 'warn' } : {}, env)}>
           {truncateEnd(`${text}${guardMark}`, width, ell)}
         </Text>
+        {keyRows.map((r, i) => (
+          <Text key={i} wrap="truncate-end" {...styleFor({ tone: 'accent' }, env)}>
+            {truncateEnd(r, width, ell)}
+          </Text>
+        ))}
       </Box>
     )
   }

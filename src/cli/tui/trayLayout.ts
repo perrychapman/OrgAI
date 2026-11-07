@@ -2,6 +2,7 @@
  * How many rows the Decision Tray gets (moved out of App.tsx so the tray owns its own sizing; issues #25, #28). Pure.
  */
 import { cardDetailLines, hintPhrases, wrapPhrases } from './decisions'
+import { INLINE_TRAY_MAX } from './layout'
 import type { TrayCard } from './types'
 
 /** Cards listed under the top card before the rest collapse to a count. */
@@ -13,9 +14,17 @@ export const NEXT_CARDS_MAX = 3
  * and at most about a third of the window (12 at the most), so a short card leaves the tree room (ux-review-tui-org.md
  * F3). Inline mode keeps its one footer line (3 = the footer's three lines).
  */
-export function trayHeight(cards: readonly TrayCard[], cols: number, rows: number, inline: boolean): number {
+export function trayHeight(cards: readonly TrayCard[], cols: number, rows: number, inline: boolean, focused = true): number {
   if (cards.length === 0) return inline ? 0 : 1
-  if (inline) return 3
+  if (inline) {
+    // The footer: the card's title line, then its key row wrapped at separators (only while the tray has focus; R2-M2).
+    if (!focused) return 1
+    try {
+      return Math.min(INLINE_TRAY_MAX, 1 + wrapPhrases(hintPhrases(cards[0], false), ' · ', Math.max(20, cols)).length)
+    } catch {
+      return 2
+    }
+  }
   const cap = Math.max(5, Math.min(12, Math.floor(rows * 0.35)))
   const width = Math.max(20, cols)
   let detail = 3
