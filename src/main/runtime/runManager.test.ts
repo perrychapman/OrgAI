@@ -1255,7 +1255,9 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const codex = recorder('codex')
       const p = litellm('sonnet', { engineer: 'gpt-5', reviewer: 'gpt-5' })
       const appSettings = () => ({ ...defaultSettingsLite(), proxies: [proxyRecord('litellm', 'LiteLLM')] })
-      const { m } = setupManager(p, { claude: claude.adapter, codex: codex.adapter }, { appSettings })
+      // Reports of the other family are bridged (child sessions start on delegation), so the run needs the role-connection resolver.
+      const resolveRoleConnection = (_p: Project, t: { connection: string; adapter: string }) => ({ connection: t.connection, adapter: t.adapter }) as never
+      const { m } = setupManager(p, { claude: claude.adapter, codex: codex.adapter }, { appSettings, resolveRoleConnection })
       await m.start({ project: p, prompt: 'go' })
       expect(claude.ctxs).toHaveLength(1)
       expect(codex.ctxs).toHaveLength(0)

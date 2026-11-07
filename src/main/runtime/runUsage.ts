@@ -235,8 +235,12 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   })
 
   const cost = mergeCosts(usages)
+  // Multi-provider runs: cost and agent count per connection, each agent priced by its own connection.
+  const runConnection = summary.connection
+  const multi = runConnection !== undefined && agents.some((a) => a.connection !== undefined && a.connection !== runConnection)
   const provider = inputs.providerTotalUsd
-  const hasProvider = provider !== undefined && Number.isFinite(provider) && provider > 0
+  // The adapter's total covers only the root's own session, never a bridged child's, so it cannot stand for a multi-provider run.
+  const hasProvider = !multi && provider !== undefined && Number.isFinite(provider) && provider > 0
   // The provider's run total covers the whole run, so it wins when the agents' costs are provider-priced, and it
   // fills in when agent costs are missing altogether (no per-model cost reported). Computed costs keep their sum.
   const useProvider = hasProvider && (cost.costSource === 'provider' || cost.costSource === 'none' || cost.costSource === 'unknown')
@@ -260,6 +264,18 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
     updatedAt: now
   }
   if (cost.costPartial && !useProvider) usage.costPartial = true
+  if (multi) {
+    const groups = new Map<string, { parts: AgentUsage[]; agents: number }>()
+    agents.forEach((a, i) => {
+      const key = a.connection ?? runConnection!
+      const g = groups.get(key) ?? { parts: [], agents: 0 }
+      g.parts.push(usages[i]!)
+      g.agents++
+      groups.set(key, g)
+    })
+    // The contract types the map as a total Record over ConnectionId (anthropic, openai, proxy ids); only the used keys exist.
+    usage.connections = Object.fromEntries([...groups].map(([k, g]) => [k, { costUsd: mergeCosts(g.parts).costUsd, agents: g.agents }])) as RunUsage['connections']
+  }
   if (hasProvider) usage.providerCostUsd = provider
   if (legacy) usage.legacy = true
   const skills = mergeSkillCounts([inputs.skills ?? []])
