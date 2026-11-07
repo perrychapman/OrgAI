@@ -29,7 +29,7 @@ try {
   const list = await cli([...d, 'connections', 'list', '--output-format', 'json'], { cwd: repo })
   const lj = json(list.out)
   check(list.code === 0 && lj?.schemaVersion === 1, 'connections list json exits 0', show(list))
-  check(JSON.stringify(lj?.connections?.map((c) => c.id)) === '["anthropic","openai","litellm"]', 'three connections in order', list.out.slice(0, 300))
+  check(JSON.stringify(lj?.connections?.map((c) => c.id)) === '["anthropic","openai"]', 'built-in connections in order (no proxy on a fresh profile)', JSON.stringify(lj?.connections?.map((c) => c.id)))
   check(lj?.connections?.filter((c) => c.isDefault).length === 1, 'exactly one default connection')
   check(!/"(apiKey|key|keyHash|secret)"\s*:|sk-/i.test(list.out), 'no key material in the JSON')
   const text = await cli([...d, 'connections', 'list'], { cwd: repo })
