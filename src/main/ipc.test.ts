@@ -421,12 +421,12 @@ describe('connection id guards (connections:test / logout, models:list / refresh
     }
   })
 
-  it('connectionSecretArgs rebuilds the LiteLLM key input and never echoes the value', () => {
+  it('connectionSecretArgs rebuilds the proxy key input and never echoes the value', () => {
     expect(connectionSecretArgs({ id: 'litellm', apiKey: 'sk-abc', extra: 1 })).toEqual({ id: 'litellm', apiKey: 'sk-abc' })
     expect(connectionSecretArgs({ id: 'litellm', apiKey: null })).toEqual({ id: 'litellm', apiKey: null })
     expect(connectionSecretArgs({ id: 'litellm' })).toEqual({ id: 'litellm', apiKey: null })
     for (const bad of [null, 'litellm', [], { id: 'anthropic', apiKey: 'k' }, { id: '__proto__', apiKey: 'k' }]) {
-      expect(() => connectionSecretArgs(bad), JSON.stringify(bad)).toThrow('Only the LiteLLM connection has a stored secret')
+      expect(() => connectionSecretArgs(bad), JSON.stringify(bad)).toThrow('Only a proxy connection has a stored secret')
     }
     expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 42 })).toThrow('The API key must be text.')
     expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 'k'.repeat(CONNECTION_SECRET_MAX_CHARS + 1) })).toThrow('too long')
@@ -512,9 +512,9 @@ describe('settingsSetArgs hostile payloads (QA)', () => {
     for (const bad of ['a'.repeat(1_000_000), new String('litellm'), Object.create({ toString: () => 'litellm' }), Symbol.iterator as never]) {
       expect(() => connectionIdArg(bad), typeof bad).toThrow('Unknown connection')
     }
-    expect(() => connectionSecretArgs({ id: new String('litellm'), apiKey: 'k' })).toThrow('Only the LiteLLM connection has a stored secret')
-    expect(() => connectionSecretArgs({ id: ['litellm'], apiKey: 'k' })).toThrow('Only the LiteLLM connection has a stored secret')
-    expect(() => connectionSecretArgs(JSON.parse('{"__proto__":{"id":"litellm"},"apiKey":"k"}'))).toThrow('Only the LiteLLM connection has a stored secret')
+    expect(() => connectionSecretArgs({ id: new String('litellm'), apiKey: 'k' })).toThrow('Only a proxy connection has a stored secret')
+    expect(() => connectionSecretArgs({ id: ['litellm'], apiKey: 'k' })).toThrow('Only a proxy connection has a stored secret')
+    expect(() => connectionSecretArgs(JSON.parse('{"__proto__":{"id":"litellm"},"apiKey":"k"}'))).toThrow('Only a proxy connection has a stored secret')
     expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 'k'.repeat(10_000_000) })).toThrow('too long')
     expect(() => connectionSecretArgs({ id: 'litellm', apiKey: ['k'] })).toThrow('The API key must be text.')
   })
