@@ -367,7 +367,25 @@ const api: OrgAIApi = {
     reveal: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsReveal, ref),
     saveAs: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsSaveAs, ref),
     forget: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsForget, ref),
-    delete: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsDelete, ref)
+    delete: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsDelete, input),
+    deletePreview: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsDeletePreview, ref),
+    versions: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsVersions, ref),
+    readSource: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsReadSource, ref),
+    thumb: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsThumb, ref),
+    compare: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsCompare, input),
+    notes: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsNotes, ref),
+    revisions: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsRevisions, ref),
+    reviseOptions: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsReviseOptions, ref),
+    saveEdit: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsSaveEdit, input),
+    restore: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsRestore, ref),
+    update: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsUpdate, input),
+    noteAdd: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsNoteAdd, input),
+    noteUpdate: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsNoteUpdate, input),
+    noteRemove: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsNoteRemove, input),
+    revise: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsRevise, input),
+    watch: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsWatch, ref),
+    unwatch: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsUnwatch, ref),
+    saveImage: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsSaveImage, input)
   },
   onOutputsChanged: (cb) => {
     const listener = (_e: IpcRendererEvent, event: OutputsChangedEvent): void => cb(event)

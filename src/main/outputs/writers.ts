@@ -11,6 +11,8 @@ import {
 } from '@shared/types'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { markdownToDocx } from './markdownDoc'
+import { renderDeck, type DeckImageReader } from './formats'
+import type { SlideDeckInput } from '@shared/types'
 
 /**
  * Per-kind validation and rendering of produce_output content. Every refusal is Error(one plain sentence).
@@ -399,14 +401,20 @@ async function renderWorkbook(c: unknown): Promise<Buffer> {
 
 // ---------- entry ----------
 
-/** Render the content of a produce_output call to the file's bytes. Throws a plain sentence on bad content. */
-export async function renderProduced(input: OutputProduceInput): Promise<Buffer> {
+/**
+ * Render the content of a produce_output call to the file's bytes. Throws a plain sentence on bad content. `images`
+ * reads deck images under register_output's confinement (pptx only; the service builds it from the scope).
+ */
+export async function renderProduced(input: OutputProduceInput, images?: DeckImageReader): Promise<Buffer> {
   if (!input || !(OUTPUT_PRODUCE_KINDS as readonly string[]).includes(input.kind)) throw new Error('That kind of file cannot be produced.')
   switch (input.kind) {
     case 'docx':
       return markdownToDocx(textContent(input), input.title)
     case 'xlsx':
       return renderWorkbook(input.content)
+    case 'pptx':
+      if (!images) throw new Error('A deck needs the project folder to read its images from.')
+      return renderDeck(input.content as SlideDeckInput, images)
     case 'json': {
       const t = textContent(input)
       try {

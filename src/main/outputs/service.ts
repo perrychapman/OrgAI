@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 import type { OutputKind, OutputPreview, OutputProduceInput, OutputRegisterInput, RunOutput } from '@shared/types'
 import { OUTPUT_DESCRIPTION_MAX_CHARS, OUTPUT_KINDS, OUTPUT_TITLE_MAX_CHARS, outputKindForPath } from '@shared/types'
 import { hiddenCharProblem } from '../capabilities/sanitize'
-import type { OutputScope, OutputSource, OutputWriteResult, OutputsServiceApi } from './api'
+import type { OutputScope, OutputSource, OutputWriteResult, OutputsServiceApi, OutputsServiceOptions } from './api'
 import { NOT_OPENABLE_MESSAGE, checkDeletablePath, checkRegisteredPath, isOpenablePath, relPathFor, resolveProducedTarget, writeProduced } from './paths'
 import { previewFile } from './preview'
 import { createOutputStore } from './store'
@@ -34,6 +34,10 @@ function queuedPreview(path: string, kind: OutputKind): Promise<OutputPreview> {
 }
 
 const NOT_LISTED ="That output is not in this project's list."
+
+function notBuilt(): never {
+  throw new Error('Not built yet.')
+}
 
 function cleanTitle(raw: unknown): string {
   if (typeof raw !== 'string') throw new Error('The title must be text.')
@@ -76,7 +80,7 @@ function decorate(o: RunOutput): RunOutput {
   return { ...o, missing: true }
 }
 
-export function createOutputsService(dataDir: string): OutputsServiceApi {
+export function createOutputsService(dataDir: string, _options: OutputsServiceOptions = {}): OutputsServiceApi {
   const store = createOutputStore(dataDir)
 
   function entryOf(projectId: string, outputId: string): RunOutput {
@@ -234,7 +238,28 @@ export function createOutputsService(dataDir: string): OutputsServiceApi {
       return list(projectId)
     },
 
-    delete(scope: OutputScope, outputId: string): RunOutput[] {
+    // PHASE-B STUBS (outputs-2): replaced by the store / versions engineer.
+    deletePreview: () => notBuilt(),
+    versions: () => notBuilt(),
+    readSource: async () => notBuilt(),
+    thumb: async () => notBuilt(),
+    compare: async () => notBuilt(),
+    saveEdit: async () => notBuilt(),
+    restore: async () => notBuilt(),
+    update: () => notBuilt(),
+    captureExternal: async () => notBuilt(),
+    statCurrent: () => notBuilt(),
+    notes: () => notBuilt(),
+    noteAdd: () => notBuilt(),
+    noteUpdate: () => notBuilt(),
+    noteRemove: () => notBuilt(),
+    revisions: () => notBuilt(),
+    recordRevision: () => notBuilt(),
+    runEnded: () => notBuilt(),
+    readForAgent: async () => notBuilt(),
+
+    async delete(scope: OutputScope, input: { outputId: string; expectedVersionCount?: number }): Promise<RunOutput[]> {
+      const outputId = input.outputId
       checkScope(scope)
       const e = entryOf(scope.projectId, outputId)
       const real = checkDeletablePath(e.path, scope)

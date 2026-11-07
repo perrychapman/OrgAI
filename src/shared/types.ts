@@ -3425,6 +3425,8 @@ export type RunEvent =
   | { type: 'knowledge.recalled'; runId: string; agentId: string; nodeIds: string[]; at: number; via: 'recall' | 'auto' }
   /** An agent produced or registered a deliverable (types.ts "Run outputs"); RunManager emits it after the index write. */
   | { type: 'output.created'; runId: string; output: RunOutput }
+  /** An agent added a version to an output it (or another run) made before (outputs-2 identity rule); `output` is the entry after it. */
+  | { type: 'output.versioned'; runId: string; output: RunOutput }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
@@ -7763,22 +7765,29 @@ export interface OrgAIApi {
 // register_output harness tools (work runs of stored projects, team 'default' and 'single'; never quick, setup-like or
 // trust-restricted runs); the user through the outputs:* channels. Everything here is structured-clone safe.
 
-/** What an output is. docx, xlsx, mermaid, markdown, text, csv, json, svg and image preview inline; pdf and other are open-only. */
-export type OutputKind = 'docx' | 'xlsx' | 'mermaid' | 'markdown' | 'text' | 'csv' | 'json' | 'svg' | 'image' | 'pdf' | 'other'
+/**
+ * What an output is. docx, xlsx, pptx, mermaid, markdown, text, csv, json, svg and image preview inline; pdf and other
+ * are open-only. pptx (outputs-2 Phase B) is a PowerPoint deck: produced from a SlideDeckInput or registered.
+ */
+export type OutputKind = 'docx' | 'xlsx' | 'pptx' | 'mermaid' | 'markdown' | 'text' | 'csv' | 'json' | 'svg' | 'image' | 'pdf' | 'other'
 
-export const OUTPUT_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image', 'pdf', 'other']
+export const OUTPUT_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'pptx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image', 'pdf', 'other']
 
 /** Kinds the renderer previews inline (outputs:preview answers kind 'none' for the rest). */
-export const OUTPUT_PREVIEW_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image']
+export const OUTPUT_PREVIEW_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'pptx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image']
 
-/** Kinds produce_output writes (main renders docx / xlsx; the rest are the text written as the file). */
-export const OUTPUT_PRODUCE_KINDS = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg'] as const
+/** Kinds produce_output writes (main renders docx / xlsx / pptx; the rest are the text written as the file). */
+export const OUTPUT_PRODUCE_KINDS = ['docx', 'xlsx', 'pptx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg'] as const
 export type OutputProduceKind = (typeof OUTPUT_PRODUCE_KINDS)[number]
+
+/** Kinds the user edits as text inside OrgAI (outputs:readSource / outputs:saveEdit). */
+export const OUTPUT_EDITABLE_KINDS: readonly OutputKind[] = ['markdown', 'text', 'csv', 'json', 'mermaid', 'svg']
 
 /** File extension main forces per produced kind (without the dot). */
 export const OUTPUT_PRODUCE_EXTENSIONS: Readonly<Record<OutputProduceKind, string>> = {
   docx: 'docx',
   xlsx: 'xlsx',
+  pptx: 'pptx',
   mermaid: 'mmd',
   markdown: 'md',
   text: 'txt',
@@ -7823,12 +7832,143 @@ export const OUTPUT_PREVIEW_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 /** RunOutput.id shape. */
 export const OUTPUT_ID_RE = /^out_[0-9a-f]{16}$/
 
+// Outputs 2 (docs/design/outputs-2.md section 16): versions, notes, revise, decks, compare, watch.
+/** Versions kept per output; past it the oldest version that is not v1, not current and not named is dropped (log line). */
+export const OUTPUT_VERSIONS_MAX = 100
+/** Snapshot bytes kept per project; past it the oldest droppable versions across outputs go first (same rule). */
+export const OUTPUT_VERSIONS_BYTES_MAX = 500 * 1024 * 1024
+/** OutputVersion.label length (a user name for a version; a named version is never pruned). */
+export const OUTPUT_VERSION_LABEL_MAX_CHARS = 60
+/** OutputNote.text length (1..this), no hidden characters (prose: line breaks allowed). */
+export const OUTPUT_NOTE_TEXT_MAX = 2000
+/** Notes per output (all versions together). */
+export const OUTPUT_NOTES_MAX = 500
+/** Quote / label caps inside a note anchor (untrusted document text; cut, never refused). */
+export const OUTPUT_NOTE_QUOTE_MAX_CHARS = 400
+export const OUTPUT_NOTE_LABELS_MAX = 20
+export const OUTPUT_NOTE_LABEL_MAX_CHARS = 80
+/** OutputReviseInput.instruction length, no hidden characters (prose). */
+export const OUTPUT_REVISE_TEXT_MAX = 4000
+/** Revision requests kept per output (oldest dropped). */
+export const OUTPUT_REVISIONS_MAX = 50
+/** produce_output pptx caps (SlideDeckInput). */
+export const OUTPUT_PPTX_MAX_SLIDES = 100
+export const OUTPUT_PPTX_ELEMENTS_PER_SLIDE = 40
+export const OUTPUT_PPTX_TEXT_MAX_CHARS = 5000
+export const OUTPUT_PPTX_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+export const OUTPUT_PPTX_TOTAL_MAX_BYTES = 40 * 1024 * 1024
+export const OUTPUT_PPTX_FONT_MAX_CHARS = 64
+/** pptx preview caps (SlidePreview). */
+export const OUTPUT_PREVIEW_SLIDES_MAX = 200
+export const OUTPUT_PPTX_PREVIEW_XML_MAX_BYTES = 8 * 1024 * 1024
+export const OUTPUT_PREVIEW_DECK_IMAGES_TOTAL_BYTES = 20 * 1024 * 1024
+/** Shapes drawn per previewed slide (more are dropped; the slide carries truncatedShapes). */
+export const OUTPUT_PREVIEW_SLIDE_SHAPES_MAX = 200
+/** In-OrgAI text editing cap (outputs:readSource / outputs:saveEdit). */
+export const OUTPUT_EDIT_MAX_BYTES = OUTPUT_TEXT_MAX_BYTES
+/** outputs:saveImage payload cap (decoded bytes). */
+export const OUTPUT_EXPORT_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+/** An external change is accepted once size and mtime held still this long. */
+export const OUTPUT_EXTERNAL_SETTLE_MS = 1500
+/** Outputs one window may watch at once, and how long a watch lives after its last outputs:watch / outputs:open. */
+export const OUTPUT_WATCH_MAX = 8
+export const OUTPUT_WATCH_TTL_MS = 600_000
+/** outputs:compare caps. */
+export const OUTPUT_DIFF_TEXT_LINES_MAX = 5000
+export const OUTPUT_DIFF_SLIDES_MAX = 200
+/** Thumbnail caps (OutputThumb). */
+export const OUTPUT_THUMB_IMAGE_MAX_BYTES = 24 * 1024
+export const OUTPUT_THUMB_LINES_MAX_CHARS = 240
+/** OutputNote.id / OutputRevisionRequest.id shapes. */
+export const OUTPUT_NOTE_ID_RE = /^note_[0-9a-f]{16}$/
+export const OUTPUT_REVISION_ID_RE = /^rev_[0-9a-f]{16}$/
+
+/** Who made a version: an agent (produce / register, a revision too: then `answers` is set), the user's save in OrgAI, a change seen on disk, a restore. */
+export type OutputVersionSource = 'agent' | 'edit' | 'external' | 'restore'
+
+/**
+ * One version of an output (newest has the highest n). Versions are never edited (except `label`); each has a snapshot
+ * in OrgAI's data folder (`<data>/projects/<id>/outputs/<outputId>/v<n>.<ext>`). runId / agentId / role only for
+ * source 'agent' (from the run's agent record, never the agent). `title` is the output title when this version was made.
+ */
+export interface OutputVersion {
+  n: number
+  source: OutputVersionSource
+  createdAt: number
+  runId?: string
+  agentId?: string
+  role?: string
+  title: string
+  label?: string
+  bytes: number
+  /** sha256 hex of the snapshot. */
+  digest: string
+  /** The revision request (rev_...) this version answers. */
+  answers?: string
+  /** source 'restore': the version restored. */
+  restoredFrom?: number
+  noteCount: number
+  openNoteCount: number
+}
+
+/** Where a note points (offsets and fractions are of the version it belongs to). quote / labels are untrusted document text. */
+export type OutputNoteAnchor =
+  /** text, markdown (source offsets), json, csv as text, mermaid / svg source: UTF-16 offsets, end exclusive. */
+  | { type: 'text'; start: number; end: number; quote: string }
+  /** docx: a preview block index and a character range inside that block's text. */
+  | { type: 'block'; index: number; start: number; end: number; quote: string }
+  /** sheet / csv grid, 0-based inclusive; sheet '' for csv. */
+  | { type: 'cells'; sheet: string; r1: number; c1: number; r2: number; c2: number; quote?: string }
+  /** slide (1-based `slide`), image, svg, diagram: x, y, w, h fractions 0..1 of the drawing; labels are shape texts the region covers. */
+  | { type: 'region'; slide?: number; shape: 'box' | 'ellipse'; x: number; y: number; w: number; h: number; labels?: string[] }
+  /** A whole slide (1-based). */
+  | { type: 'slide'; slide: number }
+  | { type: 'whole' }
+
+export type OutputNoteStatus = 'open' | 'resolved' | 'sent'
+
+/** A user's note on one version of an output. Agents never write notes. */
+export interface OutputNote {
+  id: string
+  outputId: string
+  version: number
+  anchor: OutputNoteAnchor
+  text: string
+  status: OutputNoteStatus
+  createdAt: number
+  resolvedAt?: number
+  /** The revision request (rev_...) it was sent in. */
+  sentIn?: string
+}
+
+/** A request to the team to revise an output (outputs:revise), kept per output (at most OUTPUT_REVISIONS_MAX). */
+export interface OutputRevisionRequest {
+  id: string
+  outputId: string
+  /** The version the user looked at when asking. */
+  version: number
+  /** The run that got the request (a continuation's new run id for 'continued', the new run for 'started'). */
+  runId: string
+  mode: 'sent' | 'continued' | 'started'
+  scope: 'whole' | 'selection' | 'notes'
+  noteIds?: string[]
+  createdAt: number
+  /** The version that answered it (set when that run produced or registered a version of this output). */
+  answeredBy?: number
+  /** Set when the run reached an outcome without answering. */
+  endedAt?: number
+}
+
 /**
  * One deliverable in the project's index. `path` is absolute (inside the project folder or one of
  * Project.allowedDirectories; produced ones under `<project>/outputs/`); `relPath` is what the user sees (relative to
  * the project folder, or the absolute path for an allowed folder outside it), forward slashes. `agentId` / `role` come
  * from RunManager (the run's agent record), never from the agent. `missing` is set by outputs:list when the file is
  * gone; the entry is kept until the user forgets it.
+ *
+ * Outputs 2: an output is one file (identity = the case-folded real path on win32 / darwin). `runId` / `agentId` /
+ * `role` are of the run that made v1; the current version's maker is in `current` and outputs:versions. The version
+ * fields are optional in the type only so older renderer fixtures compile: main always sets them (index format 2).
  */
 export interface RunOutput {
   id: string
@@ -7844,11 +7984,24 @@ export interface RunOutput {
   path: string
   relPath: string
   bytes: number
-  /** Epoch ms of the first index write (a re-register or overwrite keeps it and sets updatedAt). */
+  /** Epoch ms of the first index write (a new version keeps it and sets updatedAt). */
   createdAt: number
+  /** The current version's createdAt. */
   updatedAt?: number
   source: 'produced' | 'registered'
   missing?: true
+  /** Current version number (1-based). */
+  version?: number
+  /** Versions kept (after pruning; can be lower than `version`). */
+  versionCount?: number
+  /** sha256 hex of the current version's snapshot (equality only). */
+  contentDigest?: string
+  /** Open notes over all versions. */
+  openNoteCount?: number
+  /** Who made the current version and when. */
+  current?: { source: OutputVersionSource; at: number; runId?: string; agentId?: string; role?: string }
+  /** Set once versions were pruned by a cap. */
+  versionsPruned?: true
 }
 
 /** produce_output xlsx content: one entry per sheet. */
@@ -7867,25 +8020,67 @@ export interface OutputWorkbookInput {
 /**
  * produce_output input (what the tool hands RuntimeContext.outputs.produce after its own shape checks). `content` is
  * Markdown (docx; a subset: headings, paragraphs, bold, italic, code, lists one level deep, GFM tables, fenced code,
- * rules), an OutputWorkbookInput (xlsx), or the file's text (the rest). `fileName` is relative to
- * `<project>/outputs/` (sub-folders allowed, never `..`, absolute, device or UNC; the kind's extension is forced);
- * missing = a safe name from the title. An existing file gets a " (2)" style suffix unless `overwrite` is true and
- * that file's index entry was produced by this run.
+ * rules), an OutputWorkbookInput (xlsx), a SlideDeckInput (pptx), or the file's text (the rest). `fileName` is
+ * relative to `<project>/outputs/` (sub-folders allowed, never `..`, absolute, device or UNC; the kind's extension is
+ * forced); missing = a safe name from the title.
+ *
+ * Identity rule (outputs-2 section 3): a target path that is an indexed output of this project (any run) adds a version
+ * to it (no version when the content digest is unchanged); a path that exists but is not indexed gets a " (2)" style
+ * suffix and becomes a new output; `separate: true` always takes the suffix route. `overwrite` is accepted and ignored.
  */
 export interface OutputProduceInput {
   kind: OutputProduceKind
   title: string
   fileName?: string
   description?: string
+  /** Ignored since outputs 2 (kept so older prompts validate). */
   overwrite?: boolean
-  content: string | OutputWorkbookInput
+  separate?: boolean
+  content: string | OutputWorkbookInput | SlideDeckInput
+}
+
+/** A colour in deck input and slide previews: lowercase or uppercase `#rrggbb` only. */
+export const OUTPUT_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+
+/** A block in a two-content slide column. */
+export type SlideBlock =
+  | { type: 'bullets'; bullets: { text: string; level?: 0 | 1 | 2 }[] }
+  | { type: 'body'; text: string }
+  | { type: 'image'; path: string; alt: string; caption?: string }
+  | { type: 'table'; rows: string[][]; header?: boolean }
+
+/**
+ * One slide of produce_output pptx. Strings are plain text (never markup). `image.path` follows register_output's
+ * confinement (inside the project or an allowed folder, regular file, no link, png / jpeg / gif / webp, at most
+ * OUTPUT_PPTX_IMAGE_MAX_BYTES); no URLs.
+ */
+export interface SlideInput {
+  layout: 'title' | 'section' | 'content' | 'two-content' | 'image' | 'blank'
+  title?: string
+  subtitle?: string
+  bullets?: { text: string; level?: 0 | 1 | 2 }[]
+  body?: string
+  left?: SlideBlock[]
+  right?: SlideBlock[]
+  image?: { path: string; alt: string; caption?: string }
+  table?: { rows: string[][]; header?: boolean }
+  /** Speaker notes. */
+  notes?: string
+}
+
+/** produce_output pptx content. Fonts are names only (printable, at most OUTPUT_PPTX_FONT_MAX_CHARS). */
+export interface SlideDeckInput {
+  size?: '16:9' | '4:3'
+  theme?: { accent?: string; fontHeading?: string; fontBody?: string }
+  slides: SlideInput[]
 }
 
 /**
  * register_output input: a file the agent wrote itself. `path` absolute or relative to the project folder; it must
  * be a regular file (no link or junction) whose real path is inside the project folder or an allowed folder, never a
  * reference folder, OrgAI's data folder or under `.git`, at most OUTPUT_FILE_MAX_BYTES. `kind` missing = from the
- * extension (outputKindForPath). A path already in the index updates that entry's title / description / kind.
+ * extension (outputKindForPath). A path already in the index (any run) adds a version when its content changed, else
+ * changes nothing but title / description. `.pptm` (macro-bearing) is refused.
  */
 export interface OutputRegisterInput {
   path: string
@@ -7894,16 +8089,24 @@ export interface OutputRegisterInput {
   description?: string
 }
 
-/** outputs:preview input. */
+/** outputs:preview input. `version` missing = the current version (read from its snapshot when not current). */
 export interface OutputPreviewInput {
   projectId: string
   outputId: string
+  version?: number
 }
 
 /** outputs:open / reveal / saveAs / forget / delete input. */
 export interface OutputRef {
   projectId: string
   outputId: string
+}
+
+/** outputs:readSource / thumb / restore input. */
+export interface OutputVersionRef {
+  projectId: string
+  outputId: string
+  version: number
 }
 
 /** A run of text in a document preview. `href` only http:, https: or mailto:. */
@@ -7957,19 +8160,243 @@ export type OutputPreview =
   | { kind: 'text'; text: string; truncated?: true }
   | { kind: 'svg'; text: string }
   | { kind: 'image'; dataUrl: string }
+  /** pptx: `size` in points; `truncatedSlides` = slides past OUTPUT_PREVIEW_SLIDES_MAX not shown (a lower bound). */
+  | { kind: 'slides'; size: { w: number; h: number }; slides: SlidePreview[]; truncatedSlides?: number }
   | { kind: 'none'; reason: string }
+
+/** A run in a slide preview: DocumentRun plus size (pt), colour (`#rrggbb` only) and a font name used only as a hint. */
+export interface SlideRun extends DocumentRun {
+  sizePt?: number
+  color?: string
+  font?: string
+}
+
+export interface SlideParagraph {
+  runs: SlideRun[]
+  level?: number
+  bullet?: 'disc' | 'number'
+  align?: 'left' | 'center' | 'right'
+}
+
+/** Geometry of every shape: fractions (0..1, may overflow slightly) of the slide width / height. */
+export interface SlideBox {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** One drawable thing on a slide. Colours `#rrggbb` only; images only safe data URLs within the deck image caps. */
+export type SlideShape =
+  | (SlideBox & { type: 'text'; paragraphs: SlideParagraph[]; anchor?: 'top' | 'middle' | 'bottom'; fill?: string; line?: string })
+  | (SlideBox & { type: 'image'; dataUrl: string; alt?: string })
+  | (SlideBox & { type: 'shape'; geometry: 'rect' | 'roundRect' | 'ellipse' | 'other'; fill?: string; line?: string })
+  | (SlideBox & { type: 'table'; rows: DocumentRun[][][] })
+  | (SlideBox & { type: 'placeholder'; label: 'Chart' | 'SmartArt' | 'Video' | 'Picture' | 'Object'; alt?: string })
+
+/** One slide of a deck preview (`n` 1-based). `notes` = speaker notes as plain text. */
+export interface SlidePreview {
+  n: number
+  title?: string
+  background?: string
+  shapes: SlideShape[]
+  notes?: string
+  /** Shapes past OUTPUT_PREVIEW_SLIDE_SHAPES_MAX not drawn. */
+  truncatedShapes?: number
+}
+
+/**
+ * outputs:thumb result (small, lazy; the renderer caches it by id + version). 'svg' carries the checked SVG text (the
+ * renderer rasterizes it); 'image' a data URL of at most OUTPUT_THUMB_IMAGE_MAX_BYTES (else 'none'); 'lines' at most
+ * 4 lines / OUTPUT_THUMB_LINES_MAX_CHARS; 'cells' the top-left 4 x 6 block of the first sheet.
+ */
+export type OutputThumb =
+  | { kind: 'slide'; size: { w: number; h: number }; slide: SlidePreview }
+  | { kind: 'image'; dataUrl: string }
+  | { kind: 'svg'; text: string }
+  | { kind: 'lines'; lines: string[] }
+  | { kind: 'cells'; rows: (string | number | boolean | null)[][] }
+  | { kind: 'none' }
+
+/** A changed span inside a line or block text: [start, end) UTF-16 offsets. */
+export type OutputDiffMark = [number, number]
+
+export interface OutputDiffLine {
+  op: 'eq' | 'add' | 'del'
+  /** 1-based line numbers in A / B. */
+  a?: number
+  b?: number
+  text: string
+  marks?: OutputDiffMark[]
+}
+
+export interface OutputDiffHunk {
+  aStart: number
+  aCount: number
+  bStart: number
+  bCount: number
+  lines: OutputDiffLine[]
+}
+
+export interface OutputDiffCellChange {
+  r: number
+  c: number
+  op: 'add' | 'del' | 'chg'
+  was?: string | number | boolean | null
+  now?: string | number | boolean | null
+}
+
+/**
+ * outputs:compare result. Data only (no HTML). 'text' for text kinds (3 lines of context; `truncated` past
+ * OUTPUT_DIFF_TEXT_LINES_MAX changed lines), 'blocks' for docx (by preview block, word marks on changed ones; a/b are
+ * block indexes), 'cells' for xlsx and csv (per sheet, within the preview caps), 'slides' for pptx (aligned pairs, a/b
+ * 1-based slide numbers), 'none' for kinds with no text form or a failed read.
+ */
+export type OutputDiff =
+  | { kind: 'text'; hunks: OutputDiffHunk[]; added: number; removed: number; truncated?: true }
+  | { kind: 'blocks'; rows: { op: 'eq' | 'add' | 'del' | 'chg'; a?: number; b?: number; marks?: { a?: OutputDiffMark[]; b?: OutputDiffMark[] } }[]; truncated?: true }
+  | {
+      kind: 'cells'
+      sheets: { name: string; status: 'same' | 'changed' | 'added' | 'removed'; changes: OutputDiffCellChange[]; rowOps: { r: number; op: 'add' | 'del' }[]; truncated?: true }[]
+    }
+  | { kind: 'slides'; pairs: { a?: number; b?: number; status: 'same' | 'changed' | 'added' | 'removed' }[]; truncated?: true }
+  | { kind: 'none'; reason: string }
+
+/** outputs:compare input: two version numbers of one output. */
+export interface OutputCompareInput {
+  projectId: string
+  outputId: string
+  a: number
+  b: number
+}
+
+/** outputs:readSource result (editable kinds, at most OUTPUT_EDIT_MAX_BYTES). */
+export type OutputSourceResult = { text: string; digest: string } | { refused: string }
+
+/** outputs:saveEdit input: the whole new text of an editable output, based on `baseVersion`. `forceNew` saves even when a newer version exists. */
+export interface OutputSaveEditInput {
+  projectId: string
+  outputId: string
+  baseVersion: number
+  text: string
+  forceNew?: boolean
+}
+
+export type OutputSaveEditResult = { ok: true; output: RunOutput; version: number } | { stale: true; currentVersion: number } | { refused: string }
+
+/** outputs:restore result. */
+export type OutputRestoreResult = { ok: true; output: RunOutput; version: number } | { refused: string }
+
+/** outputs:update input: rename / describe the output, name a version. No file change, no new version. Absent = unchanged; description '' clears; label '' clears. */
+export interface OutputUpdateInput {
+  projectId: string
+  outputId: string
+  title?: string
+  description?: string
+  versionLabel?: { n: number; label: string }
+}
+
+/** outputs:deletePreview result: what a delete would remove, for the renderer's confirm. */
+export interface OutputDeletePreview {
+  path: string
+  relPath: string
+  outsideOutputsFolder: boolean
+  /** Stored versions (snapshots) the delete removes. */
+  versions: number
+  /** The OS trash is available (else the file is deleted for good). */
+  trash: boolean
+  missing: boolean
+}
+
+/**
+ * outputs:delete input. `expectedVersionCount` is the preview's `versions`; main refuses ("This output changed. Check it
+ * and delete again.") when it differs. It may be left out only for a produced output with one version (the pre-outputs-2
+ * delete); every other delete must send it.
+ */
+export interface OutputDeleteInput {
+  projectId: string
+  outputId: string
+  expectedVersionCount?: number
+}
+
+/** outputs:noteAdd input. */
+export interface OutputNoteAddInput {
+  projectId: string
+  outputId: string
+  version: number
+  anchor: OutputNoteAnchor
+  text: string
+}
+
+/** outputs:noteUpdate input: new text and / or status ('sent' is main-only and refused here). */
+export interface OutputNoteUpdateInput {
+  projectId: string
+  outputId: string
+  noteId: string
+  text?: string
+  status?: 'open' | 'resolved'
+}
+
+export interface OutputNoteRemoveInput {
+  projectId: string
+  outputId: string
+  noteId: string
+}
+
+/** Where a revise request goes: an existing run (live: a message; ended and continuable: a continuation) or a new run. */
+export type OutputReviseTarget = { type: 'run'; runId: string } | { type: 'new' }
+
+/** outputs:revise input. `anchor` with scope 'selection'; `noteIds` with scope 'notes'. instruction may be '' only for 'notes'. */
+export interface OutputReviseInput {
+  projectId: string
+  outputId: string
+  version: number
+  scope: 'whole' | 'selection' | 'notes'
+  anchor?: OutputNoteAnchor
+  noteIds?: string[]
+  instruction: string
+  target: OutputReviseTarget
+}
+
+/**
+ * outputs:reviseOptions result, in the order the renderer offers them: the run that made the current version when live
+ * ('live') or held by an interrupt / limit / open card ('held'; sending is refused until the user answers), or ended
+ * and continuable ('continuable'); then other live runs of the project; `newRunAllowed` for "A new run".
+ */
+export interface OutputReviseOptions {
+  runs: { runId: string; label: string; state: 'live' | 'continuable' | 'held'; madeCurrent: boolean }[]
+  newRunAllowed: boolean
+}
+
+export type OutputReviseResult = { requestId: string; runId: string; mode: 'sent' | 'continued' | 'started' } | { refused: string }
+
+/** outputs:watch / unwatch result: watched = now polled; `refused` a plain sentence (cap, path rules). */
+export type OutputWatchResult = { watched: boolean } | { refused: string }
+
+/** outputs:saveImage input (an exported diagram picture). Desktop only; the path comes from the native save dialog. */
+export interface OutputSaveImageInput {
+  projectId: string
+  outputId: string
+  suggestedName: string
+  mime: 'image/png' | 'image/svg+xml'
+  dataBase64: string
+}
 
 /** outputs:saveAs result. */
 export type OutputSaveAsResult = { path: string } | { cancelled: true }
 
-/** outputs:changed push: an agent or the user changed a project's index. */
+/**
+ * outputs:changed push: an agent or the user changed a project's outputs. 'version' = a new version (agent, edit,
+ * external, restore); 'notes' = notes added / changed / removed; 'watch' = a watched output's state changed (a
+ * missing file, a watch expired); 'revision' = a revise request was made, answered or ended.
+ */
 export interface OutputsChangedEvent {
   projectId: string
   ids: string[]
-  what: 'added' | 'removed' | 'updated'
+  what: 'added' | 'removed' | 'updated' | 'version' | 'notes' | 'watch' | 'revision'
 }
 
-/** The kind a file's extension implies (register_output without a kind). */
+/** The kind a file's extension implies (register_output without a kind). `.pptm`, `.ppt` and `.odp` are 'other'. */
 export function outputKindForPath(path: string): OutputKind {
   const m = /\.([A-Za-z0-9]+)$/.exec(path)
   switch (m ? m[1].toLowerCase() : '') {
@@ -7977,6 +8404,8 @@ export function outputKindForPath(path: string): OutputKind {
       return 'docx'
     case 'xlsx':
       return 'xlsx'
+    case 'pptx':
+      return 'pptx'
     case 'md':
     case 'markdown':
       return 'markdown'
@@ -8004,8 +8433,15 @@ export function outputKindForPath(path: string): OutputKind {
   }
 }
 
-/** Harness tool names. */
-export const OUTPUT_TOOLS = { produce: 'produce_output', register: 'register_output' } as const
+/** Harness tool names. read_output (outputs 2) lets agents read an output's text and its open notes. */
+export const OUTPUT_TOOLS = { produce: 'produce_output', register: 'register_output', read: 'read_output' } as const
+
+/** read_output input (RuntimeContext.outputs.read). */
+export interface OutputReadInput {
+  action: 'list' | 'read' | 'notes'
+  outputId?: string
+  version?: number
+}
 
 /** Channels of this section. Not spread into IPC (declared after it); host lists name OUTPUTS_IPC like TEAM_FILES_IPC. */
 export const OUTPUTS_IPC = {
@@ -8013,16 +8449,55 @@ export const OUTPUTS_IPC = {
   outputsList: 'outputs:list',
   /** (OutputPreviewInput) -> OutputPreview. Never rejects for a bad file. Scope read. */
   outputsPreview: 'outputs:preview',
-  /** (OutputRef) -> '' or an error sentence (shell.openPath). Path re-checked every call. Desktop only. */
+  /** (OutputRef) -> '' or an error sentence (shell.openPath). Path re-checked every call; extends an active watch. Desktop only. */
   outputsOpen: 'outputs:open',
   /** (OutputRef) -> '' or an error sentence (shell.showItemInFolder). Desktop only. */
   outputsReveal: 'outputs:reveal',
   /** (OutputRef) -> OutputSaveAsResult (main save dialog, copies the file). Desktop only. */
   outputsSaveAs: 'outputs:saveAs',
-  /** (OutputRef) -> RunOutput[] afterwards; removes the index entry only. Scope configure. */
+  /** (OutputRef) -> RunOutput[] afterwards; removes the entry, its stored versions, notes and revision requests; the file stays. Scope configure. */
   outputsForget: 'outputs:forget',
-  /** (OutputRef) -> RunOutput[] afterwards; removes the entry and a regular file under the project's outputs folder. Scope configure. */
+  /**
+   * (OutputDeleteInput) -> RunOutput[] afterwards. Every source: moves the file to the OS trash (permanent delete when
+   * there is none), removes the entry, versions, notes and requests; a missing file just removes the entry. Scope configure.
+   */
   outputsDelete: 'outputs:delete',
+  /** (OutputRef) -> OutputDeletePreview. Scope read. */
+  outputsDeletePreview: 'outputs:deletePreview',
+  /** (OutputRef) -> OutputVersion[] newest first. Scope read. */
+  outputsVersions: 'outputs:versions',
+  /** (OutputVersionRef) -> OutputSourceResult (editable kinds only). Scope read. */
+  outputsReadSource: 'outputs:readSource',
+  /** (OutputVersionRef) -> OutputThumb (main queue: 2 at a time). Never rejects for a bad file ('none'). Scope read. */
+  outputsThumb: 'outputs:thumb',
+  /** (OutputCompareInput) -> OutputDiff. Never rejects for a bad file ('none'). Scope read. */
+  outputsCompare: 'outputs:compare',
+  /** (OutputRef) -> OutputNote[] (all versions, oldest first). Scope read. */
+  outputsNotes: 'outputs:notes',
+  /** (OutputRef) -> OutputRevisionRequest[] newest first. Scope read. */
+  outputsRevisions: 'outputs:revisions',
+  /** (OutputRef) -> OutputReviseOptions. Scope read. */
+  outputsReviseOptions: 'outputs:reviseOptions',
+  /** (OutputSaveEditInput) -> OutputSaveEditResult. Scope configure. */
+  outputsSaveEdit: 'outputs:saveEdit',
+  /** (OutputVersionRef) -> OutputRestoreResult (a new version with the old content; the file is rewritten). Scope configure. */
+  outputsRestore: 'outputs:restore',
+  /** (OutputUpdateInput) -> RunOutput. No file change. Scope configure. */
+  outputsUpdate: 'outputs:update',
+  /** (OutputNoteAddInput) -> OutputNote. Scope operate. */
+  outputsNoteAdd: 'outputs:noteAdd',
+  /** (OutputNoteUpdateInput) -> OutputNote. Scope operate. */
+  outputsNoteUpdate: 'outputs:noteUpdate',
+  /** (OutputNoteRemoveInput) -> OutputNote[] afterwards. Scope operate. */
+  outputsNoteRemove: 'outputs:noteRemove',
+  /** (OutputReviseInput) -> OutputReviseResult (through RunManager send / continue / start; a gate answers { refused }). Scope operate. */
+  outputsRevise: 'outputs:revise',
+  /** (OutputRef) -> OutputWatchResult: poll the file for outside edits (OUTPUT_WATCH_MAX per caller, OUTPUT_WATCH_TTL_MS). Scope operate. */
+  outputsWatch: 'outputs:watch',
+  /** (OutputRef) -> OutputWatchResult ({ watched: false }). Scope operate. */
+  outputsUnwatch: 'outputs:unwatch',
+  /** (OutputSaveImageInput) -> OutputSaveAsResult (native save dialog; PNG magic and SVG active-content checks). Desktop only. */
+  outputsSaveImage: 'outputs:saveImage',
   /** main -> renderer push carrying OutputsChangedEvent. */
   outputsChanged: 'outputs:changed'
 } as const
@@ -8037,10 +8512,28 @@ export interface OrgAIApi {
     /** '' when shown, else a plain sentence. */
     reveal(ref: OutputRef): Promise<string>
     saveAs(ref: OutputRef): Promise<OutputSaveAsResult>
-    /** Removes the index entry; the file stays. Resolves to the list afterwards. */
+    /** Removes the entry, its versions and notes; the file stays. Resolves to the list afterwards. */
     forget(ref: OutputRef): Promise<RunOutput[]>
-    /** Removes the entry and its file (only a regular file under `<project>/outputs/`). The renderer confirms first. */
-    delete(ref: OutputRef): Promise<RunOutput[]>
+    /** Trashes the file and removes the output (send the preview's version count). The renderer confirms first. An OutputRef still works for a produced one-version output. */
+    delete(input: OutputDeleteInput): Promise<RunOutput[]>
+    deletePreview(ref: OutputRef): Promise<OutputDeletePreview>
+    versions(ref: OutputRef): Promise<OutputVersion[]>
+    readSource(ref: OutputVersionRef): Promise<OutputSourceResult>
+    thumb(ref: OutputVersionRef): Promise<OutputThumb>
+    compare(input: OutputCompareInput): Promise<OutputDiff>
+    notes(ref: OutputRef): Promise<OutputNote[]>
+    revisions(ref: OutputRef): Promise<OutputRevisionRequest[]>
+    reviseOptions(ref: OutputRef): Promise<OutputReviseOptions>
+    saveEdit(input: OutputSaveEditInput): Promise<OutputSaveEditResult>
+    restore(ref: OutputVersionRef): Promise<OutputRestoreResult>
+    update(input: OutputUpdateInput): Promise<RunOutput>
+    noteAdd(input: OutputNoteAddInput): Promise<OutputNote>
+    noteUpdate(input: OutputNoteUpdateInput): Promise<OutputNote>
+    noteRemove(input: OutputNoteRemoveInput): Promise<OutputNote[]>
+    revise(input: OutputReviseInput): Promise<OutputReviseResult>
+    watch(ref: OutputRef): Promise<OutputWatchResult>
+    unwatch(ref: OutputRef): Promise<OutputWatchResult>
+    saveImage(input: OutputSaveImageInput): Promise<OutputSaveAsResult>
   }
   onOutputsChanged(cb: (event: OutputsChangedEvent) => void): () => void
 }
