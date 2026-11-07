@@ -52,8 +52,38 @@ export function editHasMove(input: unknown): boolean {
 }
 
 /**
+ * True when a raw path string has a segment made only of dots (`.`, `..`, and `...` too, which Win32 strips to nothing),
+ * split on both `/` and `\`. Lexical resolution (path.join / resolve) collapses `..` before any symlink walk, while a
+ * writer that hands the raw string to the kernel follows a link first: `<folder>/vendor/../.bashrc` with `vendor` a
+ * link to `$HOME/sub` lands in `$HOME` (review NH1). Callers treat such a path as one they cannot clear. Pure.
+ */
+export function hasDotSegment(p: string): boolean {
+  return p.split(/[\\/]/).some((s) => s.length > 0 && /^\.+$/.test(s))
+}
+
+/**
+ * True when any path the edit input names (`file_path`, `notebook_path`, each `changes[].path` and each move
+ * destination: `movePath` / `move_path` at the change or in its `kind`) is a string with a dot segment (hasDotSegment).
+ * Checked on the raw text, before editInputAt joins anything. Pure.
+ */
+export function editHasDotSegment(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false
+  const o = input as Record<string, unknown>
+  const bad = (p: unknown): boolean => typeof p === 'string' && hasDotSegment(p)
+  if (bad(o.file_path) || bad(o.notebook_path)) return true
+  if (!Array.isArray(o.changes)) return false
+  return o.changes.some((c) => {
+    if (!c || typeof c !== 'object') return false
+    const r = c as Record<string, unknown>
+    const kind = r.kind && typeof r.kind === 'object' ? (r.kind as Record<string, unknown>) : undefined
+    return [r.path, r.movePath, r.move_path, kind?.movePath, kind?.move_path].some(bad)
+  })
+}
+
+/**
  * True when a quick run's session edit grant covers this edit (relative targets resolved against `cwd`). An edit that
- * moves a file (editHasMove) is never covered, whatever quick/sessionEdits.ts decides.
+ * moves a file (editHasMove) or names a path with a `.` / `..` segment (editHasDotSegment, review NH1) is never
+ * covered, whatever quick/sessionEdits.ts decides.
  */
 export function quickEditFree(
   ctx: { run: Pick<RunSummary, 'quick'>; quickSessionEdits?: () => boolean },
@@ -61,13 +91,13 @@ export function quickEditFree(
   input: unknown,
   cwd: string
 ): boolean {
-  if (editHasMove(input)) return false
+  if (editHasMove(input) || editHasDotSegment(input)) return false
   return quickEditPreApproved(ctx, toolName, editInputAt(input, cwd))
 }
 
 /**
  * The card's suggestions and labels: the provider-side suggestions (already filtered for the run) plus, on a quick run
- * whose edit is covered, the quick session edit suggestion with QUICK_SESSION_EDIT_LABEL. `provider` is returned
+ * whose edit is covered (no move, no dot segment), the quick session edit suggestion with QUICK_SESSION_EDIT_LABEL. `provider` is returned
  * untouched so the adapter can keep handing only it to applyAllowScope.
  */
 export function quickEditCard(
@@ -77,7 +107,7 @@ export function quickEditCard(
   cwd: string,
   provider: PermissionSuggestion[]
 ): { suggestions: PermissionSuggestion[]; ruleLabels: string[]; quick: boolean } {
-  const offer = editHasMove(input) ? null : quickSessionEditSuggestion(run, toolName, editInputAt(input, cwd))
+  const offer = editHasMove(input) || editHasDotSegment(input) ? null : quickSessionEditSuggestion(run, toolName, editInputAt(input, cwd))
   const labels = suggestionLabels(provider)
   if (!offer) return { suggestions: provider, ruleLabels: labels, quick: false }
   return { suggestions: [...provider, offer], ruleLabels: [...labels, QUICK_SESSION_EDIT_LABEL], quick: true }

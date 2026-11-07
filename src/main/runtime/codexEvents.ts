@@ -281,13 +281,18 @@ function moveDestination(c: Record<string, unknown>): string | undefined {
   return typeof raw === 'string' && raw.trim() !== '' ? raw : ''
 }
 
+/**
+ * One summary per raw change, in order. A change with no usable path (not an object, or `path` missing, empty or not a
+ * string) is kept with path '' (review NL2): an approval covers the whole item, so dropping it would let the other
+ * changes be accepted on its behalf; '' fails every check and shows on the card.
+ */
 export function fileChanges(item: CodexItem): FileChangeSummary[] {
   if (!Array.isArray(item.changes)) return []
-  return item.changes.flatMap((c): FileChangeSummary[] => {
-    if (!isRec(c) || !str(c.path)) return []
+  return item.changes.map((c): FileChangeSummary => {
+    if (!isRec(c)) return { path: '', kind: 'update' }
     const kind = isRec(c.kind) ? str(c.kind.type) : str(c.kind)
     const movePath = moveDestination(c)
-    return [{ path: str(c.path) as string, kind: kind === 'add' || kind === 'delete' ? kind : 'update', ...(movePath !== undefined ? { movePath } : {}) }]
+    return { path: str(c.path) ?? '', kind: kind === 'add' || kind === 'delete' ? kind : 'update', ...(movePath !== undefined ? { movePath } : {}) }
   })
 }
 

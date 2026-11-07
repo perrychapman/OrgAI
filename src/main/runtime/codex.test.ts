@@ -690,6 +690,53 @@ describe('CodexAdapter session', () => {
         expect(blanket.ctx.requestPermission).toHaveBeenCalledTimes(2)
       })
 
+      it('asks for a raw `.` / `..` segment in a path or move destination under accept-edits and a blanket Edit rule (review NL1)', async () => {
+        // Raw text, never join: each resolves lexically inside the project, so only the raw-segment check asks.
+        const up = `${dir}/sub/../a.ts`
+        const back = `${dir}\\sub\\..\\a.ts`
+        const here = `${dir}/./a.ts`
+        const mv = (s: FakeServer, dest: string, id: string) =>
+          s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path: join(dir, 'a.ts'), kind: { type: 'update', move_path: dest }, diff: '' }] } })
+        const { ctx, s } = await started('acceptEdits')
+        let n = 0
+        for (const p of [up, back, here]) {
+          chg(s, p, `d${n}`)
+          // The fake card allows, so the answer is 'accept' either way: the card count is what proves it asked.
+          await s.ask('item/fileChange/requestApproval', fe(`d${n}`))
+          n++
+          expect(ctx.requestPermission, p).toHaveBeenCalledTimes(n)
+        }
+        mv(s, up, 'dm')
+        await s.ask('item/fileChange/requestApproval', fe('dm'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(n + 1)
+        // Sanity: the same file spelled plainly is still free.
+        chg(s, join(dir, 'a.ts'), 'plain')
+        expect(await s.ask('item/fileChange/requestApproval', fe('plain'))).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(n + 1)
+        const free = (paths: string[]) => (session as any).editPathsFree(paths) as boolean
+        expect(free([up])).toBe(false)
+        expect(free([join(dir, 'a.ts')])).toBe(true)
+        await session?.stop()
+        const blanket = await started('default', { allowedRules: () => ['Edit'] })
+        chg(blanket.s, up, 'b1')
+        await blanket.s.ask('item/fileChange/requestApproval', fe('b1'))
+        mv(blanket.s, `${dir}/../x.ts`, 'b2')
+        await blanket.s.ask('item/fileChange/requestApproval', fe('b2'))
+        expect(blanket.ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('a raw change with no usable path keeps the whole item asking (review NL2)', async () => {
+        const { ctx, s } = await started('acceptEdits', { allowedRules: () => ['Edit'] })
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'np', status: 'inProgress', changes: [{ path: join(dir, 'a.ts'), kind: 'update', diff: '' }, { kind: 'update', diff: 'x' }, 'junk'] } })
+        await s.ask('item/fileChange/requestApproval', fe('np'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        expect((ctx.requestPermission as any).mock.calls[0][0].input.changes).toEqual([
+          { path: join(dir, 'a.ts'), kind: 'update' },
+          { path: '', kind: 'update' },
+          { path: '', kind: 'update' }
+        ])
+      })
+
       it('declines a build-session update moved under .claude/ without a card (review H1)', async () => {
         const { ctx, s } = await started('default', { run: runSummary({ kind: 'mcp-assist', buildWorkspace: dir }) })
         s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'f', status: 'inProgress', changes: [{ path: join(dir, 'a.ts'), kind: { type: 'update', move_path: join(dir, '.claude', 'settings.json') }, diff: '' }] } })
@@ -1262,6 +1309,24 @@ describe('CodexAdapter session', () => {
         } finally {
           rmSync(outside, { recursive: true, force: true })
         }
+      })
+
+      it('a change with a raw `..` in its path or move destination asks with the grant on and never offers it (review NH1)', async () => {
+        const { ctx, s, editsOn } = await startedQuick(() => ({ behavior: 'allow', scope: 'session' }))
+        change(s, [join(dir, 'a.md')])
+        await s.ask('item/fileChange/requestApproval', edit)
+        expect(editsOn()).toBe(true)
+        // Lexically inside the folder, so only the raw-segment check stops them.
+        change(s, [`${dir}/sub/../b.md`], 'dd1')
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'dd1' })
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'dd2', status: 'inProgress', changes: [{ path: join(dir, 'a.md'), kind: { type: 'update', move_path: `${dir}/sub/../c.md` }, diff: '' }] } })
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'dd2' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(3)
+        for (const call of (ctx.requestPermission as any).mock.calls.slice(1)) expect(call[0].ruleLabels ?? []).not.toContain(QUICK_SESSION_EDIT_LABEL)
+        // A plain spelling is still covered.
+        change(s, [join(dir, 'sub', 'b.md')], 'dd3')
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'dd3' })).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(3)
       })
 
       it('"Allow for session" on npm test frees the next npm test; compound and other commands still ask', async () => {

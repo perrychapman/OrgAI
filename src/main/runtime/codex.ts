@@ -57,7 +57,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { isGitRepo } from './worktrees'
 import { canonicalDeep, isInsideEither, isNetworkPath, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { lstatSync } from 'node:fs'
-import { quickEditCard, quickEditFree } from './quickEditCard'
+import { hasDotSegment, quickEditCard, quickEditFree } from './quickEditCard'
 import { commandReferenceTouch, referenceCommandMessage, referenceFolderMessage, referenceFolderOf, referenceRefusalEntry } from './referenceDirectories'
 
 /**
@@ -1104,7 +1104,8 @@ class CodexSession implements RuntimeSession {
     const opts = this.matchOpts()
     if (!opts) return false
     return paths.every((p) => {
-      if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p)) return false
+      // A raw `.` / `..` segment is never free: a lexical check collapses it before the kernel follows a link (NL1).
+      if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p) || hasDotSegment(p)) return false
       if (refs.length && referenceFolderOf(p, refs, this.ctx.project.path)) return false
       if (!isFreeCdTarget(dirname(p), opts)) return false
       let real: string
@@ -1323,9 +1324,11 @@ class CodexSession implements RuntimeSession {
     const saved = this.ctx.allowedRules?.() ?? this.savedRules()
     const paths = targets
     // Settings, hooks and VCS folders are never accepted silently, whatever rule or mode is in force.
-    // Lexical and real path both (a link inside the project can name a protected folder elsewhere).
+    // Lexical and real path both (a link inside the project can name a protected folder elsewhere). A raw `.` / `..`
+    // segment counts as protected (review NL1): resolving it lexically hides where a link in front of it leads, so such
+    // a change always asks, never a silent accept by rule or mode.
     const protectedPath = (p: string): boolean => {
-      if (hasProtectedSegment(p)) return true
+      if (hasProtectedSegment(p) || hasDotSegment(p)) return true
       try {
         return hasProtectedSegment(canonicalDeep(p))
       } catch {
