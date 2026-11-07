@@ -1,11 +1,11 @@
 import type { ReactElement } from 'react'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { isVirtualProjectId, type Project, type RunSummary } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { Cost } from '../ui/Cost'
-import { AttentionSection, focusAfterRemoval, headingAfter } from './AttentionSection'
+import { AttentionSection, focusAfterRemoval, headingAfter, rowMotionProps, useRowExits } from './AttentionSection'
 import type { DashCaps } from './dashCaps'
 import { NeedsRow, needsItemKey, useNewDecisionAnnouncer, type NeedsItem } from './NeedsInline'
 import { useAllSummaries, useNow, useWaitingRuns } from './useDashboardData'
@@ -58,8 +58,19 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
     [items, projects]
   )
   useNewDecisionAnnouncer(announced, ready, onAnnounce)
+  // Arrival rule: rows present once the data is in (plus a beat for pending cards to arrive) are the baseline and never
+  // animate; a decision that arrives later enters. Same settle as the announcer, so the page loading in stays still.
+  const [settled, setSettled] = useState(false)
+  useEffect(() => {
+    if (!ready) return undefined
+    const t = window.setTimeout(() => setSettled(true), 1500)
+    return () => window.clearTimeout(t)
+  }, [ready])
+  const exits = useRowExits()
   return (
     <AttentionSection
+      arrive={settled}
+      exits={exits}
       testId="dash-needs-you"
       moreTestId="dash-needs-more"
       title="Needs you"
@@ -68,10 +79,12 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
       cap={cap}
       itemKey={needsItemKey}
       quiet
-      renderItem={(it) => (
+      renderItem={(it, motion) => (
         <NeedsRow
           key={needsItemKey(it)}
           item={it}
+          motion={motion}
+          onExpectExit={(on) => (on ? exits.mark([needsItemKey(it)]) : exits.unmark(needsItemKey(it)))}
           projectName={it.kind === 'team' ? it.projectName : decisionLocationLabel(it.run.summary, projects)}
           runName={it.kind === 'team' ? undefined : displayRunName(it.run.summary)}
           onAnnounce={onAnnounce}
@@ -123,11 +136,14 @@ function SinceSection({
   const openRow = (projectId: string, runId: string): void => {
     void focusRun(projectId, runId).then(settleFocus)
   }
+  const exits = useRowExits()
 
   const clear = (): void => {
     // The section disappears: hand focus to the next visible section heading after it (else the previous, else the
     // topbar h1) once React has removed it (spec 12.2).
     const target = headingAfter(document.querySelector('[data-testid=dash-since]'))
+    // The user's own removal: the rows fade and fold shut (100 ms) instead of vanishing.
+    exits.mark(items.map((it) => it.run.id))
     onMarkAllSeen()
     focusAfterRemoval(target)
   }
@@ -140,12 +156,13 @@ function SinceSection({
       items={items}
       cap={cap}
       itemKey={(it) => it.run.id}
+      exits={exits}
       action={
         <Button variant="ghost" size="sm" testId="dash-since-clear" ariaLabel="Clear recently ended runs" onClick={clear}>
           Clear
         </Button>
       }
-      renderItem={(it) => {
+      renderItem={(it, motion) => {
         const s = it.run
         const view = statusOfRun({ summary: s }, projectOf(s.projectId), false)
         const word = statusText(view)
@@ -153,7 +170,7 @@ function SinceSection({
         const closedWaiting = it.kind === 'closed-waiting'
         const canGo = closedWaiting && canContinue(summaries, s.id)
         return (
-          <li key={s.id} className="dash-row dash-row-since" data-testid="dash-since-row" data-status={view.word} data-row-key={s.id} data-has-action={canGo ? 'true' : undefined}>
+          <li key={s.id} {...rowMotionProps(motion, 'dash-row dash-row-since')} data-testid="dash-since-row" data-status={view.word} data-row-key={s.id} data-has-action={canGo ? 'true' : undefined}>
             <button type="button" className="dash-row-main" data-row-main="" onClick={() => openRow(s.projectId, s.id)}>
               <Dot tone={view.tone} />
               <span className="dash-row-text">
