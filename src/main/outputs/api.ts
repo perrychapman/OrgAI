@@ -49,6 +49,12 @@ export interface OutputsServiceApi {
    * outputs:open / reveal / saveAs. Throws a plain sentence otherwise.
    */
   checkedPath(scope: OutputScope, outputId: string): string
+  /**
+   * checkedPath plus the open allowlist (paths.ts OPENABLE_EXTENSIONS, judged on the real file's extension, not the
+   * stored kind). For outputs:open only; reveal and saveAs use checkedPath. Optional so older fakes still compile;
+   * callers without it must apply isOpenablePath themselves.
+   */
+  openablePath?(scope: OutputScope, outputId: string): string
   /** Remove the index entry only. Returns the list afterwards. */
   forget(projectId: string, outputId: string): RunOutput[]
   /** Remove the entry and its file: only a regular file under `<projectPath>/outputs/`. Returns the list afterwards. */

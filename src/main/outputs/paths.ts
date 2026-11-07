@@ -18,7 +18,26 @@ export interface PathScope {
   referenceDirectories: readonly string[]
 }
 
-const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
+const RESERVED = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)$/i
+
+/**
+ * Extensions OrgAI hands to the OS default handler (outputs:open). Anything else (.lnk, .bat, .hta, .js, .url, .exe,
+ * .msi, .scr, .cpl, .docm ...) can only be revealed or saved, never launched. Checked on the REAL file's extension.
+ * Residual risk (review L7): the checks are made before the OS acts, so an attacker who can swap a folder for a
+ * junction between check and use needs shell access in the project already; agent-written files carry no
+ * Mark-of-the-Web, which is why this list exists.
+ */
+export const OPENABLE_EXTENSIONS: ReadonlySet<string> = new Set([
+  'docx', 'xlsx', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'md', 'markdown', 'txt', 'csv', 'json', 'mmd'
+])
+
+export const NOT_OPENABLE_MESSAGE = 'OrgAI does not open this kind of file. Use Show in folder instead.'
+
+/** True when the file's final extension (case-insensitive) is on OPENABLE_EXTENSIONS. No extension, or a trailing dot or space, is not. */
+export function isOpenablePath(file: string): boolean {
+  const m = /\.([A-Za-z0-9]+)$/.exec(basename(file))
+  return !!m && OPENABLE_EXTENSIONS.has(m[1].toLowerCase())
+}
 const BAD_CHARS = /[<>:"|?*]/
 
 /** A safe file name slug from a title: ASCII-folded, at most 80 chars, fallback "output". */
@@ -91,7 +110,7 @@ function checkProjectDir(projectPath: string): string {
 /** True when a `.git` segment lies between `root` and `real` (or `real` is under a .git of its own root). */
 function hasGitSegment(root: string, real: string): boolean {
   const rel = relative(pathKey(root), pathKey(real))
-  return rel.split(/[\\/]/).some((s) => s === '.git')
+  return rel.split(/[\\/]/).some((s) => s.toLowerCase() === '.git')
 }
 
 export interface ProducedTarget {
@@ -232,13 +251,35 @@ export function relPathFor(projectPath: string, real: string): string {
 }
 
 /** The rules for a registered (or re-checked) path. Throws a plain sentence. */
-export function checkRegisteredPath(raw: unknown, scope: PathScope, dataDir: string): CheckedFile {
+export function checkRegisteredPath(raw: unknown, scope: PathScope, dataDir: string, opts: { strictNames?: boolean } = {}): CheckedFile {
   if (typeof raw !== 'string' || !raw.trim()) throw new Error('The path is empty.')
   if (raw.length > OUTPUT_PATH_MAX_CHARS) throw new Error(`The path is longer than ${OUTPUT_PATH_MAX_CHARS} characters.`)
   const hidden = hiddenCharIn(raw)
   if (hidden) throw new Error(`The path contains a hidden character (${hidden}).`)
   const abs = isAbsolute(raw) ? resolve(raw) : resolve(scope.projectPath, raw)
   if (isNetworkPath(raw) || isNetworkPath(abs)) throw new Error('Network and device paths are not accepted.')
+  // NTFS alternate data streams (a.txt:x.exe): no ':' after the drive prefix on win32.
+  if (process.platform === 'win32' && abs.replace(/^[A-Za-z]:/, '').includes(':')) throw new Error('A path with ":" after the drive letter (an alternate data stream) is not accepted.')
+  // Containment first, on the lexical path and on the real path of the nearest existing ancestor, so a refusal for a
+  // path outside the scope never says whether the file exists, is a link, or how big it is.
+  const roots = [scope.projectPath, ...scope.allowedDirectories].filter((r) => typeof r === 'string' && r.length > 0)
+  let canon = abs
+  try {
+    canon = canonicalDeep(abs)
+  } catch {
+    throw new Error('OrgAI could not check that path against the project folder.')
+  }
+  if (isNetworkPath(canon)) throw new Error('Network and device paths are not accepted.')
+  const lexRoot = roots.find((r) => isInsideEither(r, abs) && isInsideEither(r, canon))
+  if (!lexRoot) throw new Error('That file is outside the project folder and its allowed folders.')
+  checkNotForbidden(abs, scope, dataDir)
+  checkNotForbidden(canon, scope, dataDir)
+  if (hasGitSegment(lexRoot, abs)) throw new Error('Files under .git are not accepted.')
+  if (opts.strictNames) {
+    const rel = relative(pathKey(lexRoot), pathKey(abs))
+    const hiddenName = rel.split(/[\\/]/).find((s) => s.startsWith('.') && s !== '.' && s !== '..')
+    if (hiddenName) throw new Error(`Files and folders whose name starts with a dot (${hiddenName}) hold settings or secrets and are not accepted as outputs. Copy the content to a normal file name first.`)
+  }
   const st = lstatOrNull(abs)
   if (!st) throw new Error('That file does not exist.')
   if (st.isSymbolicLink()) throw new Error('That path is a link; outputs are not registered through links.')
@@ -252,7 +293,6 @@ export function checkRegisteredPath(raw: unknown, scope: PathScope, dataDir: str
   }
   if (isNetworkPath(real)) throw new Error('Network and device paths are not accepted.')
   // Any link along the way must resolve inside an accepted root (checked below on the real path).
-  const roots = [scope.projectPath, ...scope.allowedDirectories].filter((r) => typeof r === 'string' && r.length > 0)
   const root = roots.find((r) => isInsideEither(r, real))
   if (!root) throw new Error('That file is outside the project folder and its allowed folders.')
   checkNotForbidden(real, scope, dataDir)

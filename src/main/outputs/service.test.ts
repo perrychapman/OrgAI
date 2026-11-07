@@ -112,11 +112,67 @@ describe('register', () => {
     const r = await svc.register(scope, { path: 'report.csv', title: 'Report' }, src)
     expect(r.created).toBe(true)
     expect(r.output).toMatchObject({ kind: 'csv', fileName: 'report.csv', relPath: 'report.csv', bytes: 3, source: 'registered', runId: 'run_a' })
-    const again = await svc.register(scope, { path: join(project, 'report.csv'), title: 'Report v2', kind: 'text', description: 'd' }, { runId: 'run_b' })
+    const again = await svc.register(scope, { path: join(project, 'report.csv'), title: 'Report v2', kind: 'csv', description: 'd' }, src)
     expect(again.created).toBe(false)
-    expect(again.output).toMatchObject({ id: r.output.id, title: 'Report v2', kind: 'text', runId: 'run_a', source: 'registered', createdAt: r.output.createdAt, description: 'd' })
+    expect(again.output).toMatchObject({ id: r.output.id, title: 'Report v2', kind: 'csv', runId: 'run_a', source: 'registered', createdAt: r.output.createdAt, description: 'd' })
     expect(again.output.updatedAt).toBeTruthy()
     expect(svc.list('p1')).toHaveLength(1)
+  })
+  it('refuses an explicit kind that disagrees with the real extension (a .bat is never a docx)', async () => {
+    writeFileSync(join(project, 'report.bat'), 'calc')
+    writeFileSync(join(project, 'a.csv'), 'x')
+    await expect(svc.register(scope, { path: 'report.bat', title: 'Quarterly report', kind: 'docx' }, src)).rejects.toThrow(/extension/)
+    await expect(svc.register(scope, { path: 'a.csv', title: 'A', kind: 'text' }, src)).rejects.toThrow(/csv/)
+    // an unknown extension is 'other'; claiming anything else is refused, 'other' or no kind is fine
+    await expect(svc.register(scope, { path: 'report.bat', title: 'R', kind: 'pdf' }, src)).rejects.toThrow()
+    expect((await svc.register(scope, { path: 'report.bat', title: 'R', kind: 'other' }, src)).output.kind).toBe('other')
+    expect(svc.list('p1')).toHaveLength(1)
+  })
+  it('refuses a re-register across runs and allows a same-run update', async () => {
+    writeFileSync(join(project, 'a.md'), 'x')
+    const r = await svc.register(scope, { path: 'a.md', title: 'A' }, src)
+    await expect(svc.register(scope, { path: 'a.md', title: 'Hijack' }, { runId: 'run_b' })).rejects.toThrow('That file is already listed as an output of another run.')
+    expect(svc.get('p1', r.output.id)?.title).toBe('A')
+    const p = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    await expect(svc.register(scope, { path: join(project, 'outputs', 'd.md'), title: 'Mine now' }, { runId: 'run_b' })).rejects.toThrow(/another run/)
+    expect(svc.get('p1', p.output.id)?.title).toBe('Doc')
+    expect((await svc.register(scope, { path: 'a.md', title: 'A2' }, src)).created).toBe(false)
+  })
+  it('refuses dot files, dot folders and .orgai/ (plain sentence)', async () => {
+    mkdirSync(join(project, '.claude'))
+    mkdirSync(join(project, '.orgai'))
+    mkdirSync(join(project, 'sub', '.vscode'), { recursive: true })
+    writeFileSync(join(project, '.env'), 'K=1')
+    writeFileSync(join(project, '.mcp.json'), '{}')
+    writeFileSync(join(project, '.claude', 'settings.json'), '{}')
+    writeFileSync(join(project, '.orgai', 'org.json'), '{}')
+    writeFileSync(join(project, 'sub', '.vscode', 'x.json'), '{}')
+    for (const p of ['.env', '.mcp.json', '.claude/settings.json', '.orgai/org.json', 'sub/.vscode/x.json', '.ENV']) {
+      await expect(svc.register(scope, { path: p, title: 'X' }, src)).rejects.toThrow(/starts with a dot|exist/)
+    }
+    await expect(svc.register(scope, { path: '.env', title: 'X' }, src)).rejects.toThrow(/starts with a dot/)
+    expect(svc.list('p1')).toEqual([])
+  })
+  it('a refusal for a path outside the scope never says whether it exists', async () => {
+    writeFileSync(join(root, 'real.md'), 'x')
+    const a = await svc.register(scope, { path: join(root, 'real.md'), title: 'A' }, src).catch((e: Error) => e.message)
+    const b = await svc.register(scope, { path: join(root, 'nope.md'), title: 'A' }, src).catch((e: Error) => e.message)
+    expect(a).toBe(b)
+    expect(a).toMatch(/outside/)
+  })
+  it('openablePath answers only allowlisted real extensions; checkedPath still serves reveal / save', async () => {
+    for (const f of ['ok.docx', 'ok.DOCX', 'x.lnk', 'x.bat', 'x.BaT', 'x.exe', 'x.hta', 'x.js', 'x.url', 'x.msi', 'x.scr', 'x.cpl', 'x.docm', 'report.docx.bat', 'noext']) writeFileSync(join(project, f), 'x')
+    const reg = async (f: string) => (await svc.register(scope, { path: f, title: f }, src)).output
+    for (const f of ['ok.docx', 'ok.DOCX']) expect(svc.openablePath!(scope, (await reg(f)).id)).toMatch(/ok\.docx$/i)
+    for (const f of ['x.lnk', 'x.bat', 'x.BaT', 'x.exe', 'x.hta', 'x.js', 'x.url', 'x.msi', 'x.scr', 'x.cpl', 'x.docm', 'report.docx.bat', 'noext']) {
+      const o = await reg(f)
+      expect(() => svc.openablePath!(scope, o.id)).toThrow('OrgAI does not open this kind of file. Use Show in folder instead.')
+      expect(svc.checkedPath(scope, o.id)).toBeTruthy()
+    }
+  })
+  it('openablePath judges the real file, not the stored kind', async () => {
+    const r = await svc.produce(scope, md('Doc', { fileName: 'd.md' }), src)
+    expect(svc.openablePath!(scope, r.output.id)).toMatch(/d\.md$/)
   })
   it('registers a file in an allowed folder with an absolute relPath', async () => {
     const extra = join(root, 'extra')

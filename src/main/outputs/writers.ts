@@ -12,7 +12,13 @@ import {
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { markdownToDocx } from './markdownDoc'
 
-/** Per-kind validation and rendering of produce_output content. Every refusal is Error(one plain sentence). */
+/**
+ * Per-kind validation and rendering of produce_output content. Every refusal is Error(one plain sentence).
+ *
+ * Residual risk (review L9 / L10): a .csv is written verbatim, so a cell starting with = + - or @ is a formula when the
+ * user opens it in Excel (xlsx cells are written as values, not formulas). An SVG is checked as text, not rendered by
+ * a full XML parser, so the check is a deny-by-default scan, not a proof; previews never run it as a document.
+ */
 
 // eslint-disable-next-line no-control-regex
 const XML_BAD = /[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]/g
@@ -57,6 +63,19 @@ export function mermaidProblem(text: string): string | null {
 // ---------- svg ----------
 
 const SVG_FORBIDDEN_ELEMENTS = new Set(['script', 'foreignobject', 'iframe', 'embed', 'object'])
+const SVG_NS = 'http://www.w3.org/2000/svg'
+/** Standard SVG 1.1 / 2 elements (lower case); anything else is refused so a foreign-namespace or HTML element cannot ride along. */
+const SVG_ELEMENTS = new Set(
+  (
+    'svg g defs symbol use image path rect circle ellipse line polyline polygon text tspan textpath title desc metadata style ' +
+    'lineargradient radialgradient stop pattern clippath mask marker filter switch view a animate animatetransform animatemotion set mpath ' +
+    'feblend fecolormatrix fecomponenttransfer fecomposite feconvolvematrix fediffuselighting fedisplacementmap fedistantlight fedropshadow ' +
+    'feflood fefunca fefuncb fefuncg fefuncr fegaussianblur feimage femerge femergenode femorphology feoffset fepointlight fespecularlighting ' +
+    'fespotlight fetile feturbulence'
+  ).split(' ')
+)
+/** Attributes (any namespace) that load or submit something. */
+const SVG_FORBIDDEN_ATTRS = new Set(['src', 'srcset', 'action', 'formaction', 'data', 'poster', 'background'])
 const NAME_CHAR = /[A-Za-z0-9_:.\-·À-￿]/
 const ENTITY = /&(?:amp|lt|gt|quot|apos|#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6});/y
 const SVG_MAX_DEPTH = 1000
@@ -91,6 +110,7 @@ function cssProblem(raw: string): string | null {
   const s = decodeEntities(raw)
   if (s.includes('\\')) return 'The SVG has a backslash escape in its style.'
   const lower = s.toLowerCase()
+  if (lower.includes('image-set(')) return 'The SVG loads an image through image-set(), which is not allowed.'
   if (lower.includes('@import')) return 'The SVG imports an external style sheet (@import).'
   if (lower.includes('expression(') || lower.includes('javascript:')) return 'The SVG has a script in its style.'
   let i = lower.indexOf('url(')
@@ -123,6 +143,8 @@ export function svgProblem(raw: string): string | null {
   let rootClosed = false
   let first = true
   let attrTotal = 0
+  /** Namespace bindings in scope per open element (prefix '' = default namespace). */
+  const nsStack: Array<Map<string, string>> = []
   while (i < n) {
     const lt = text.indexOf('<', i)
     const between = text.slice(i, lt < 0 ? n : lt)
@@ -175,6 +197,7 @@ export function svgProblem(raw: string): string | null {
       while (j < n && /\s/.test(text[j])) j++
       if (text[j] !== '>' || !name) return 'The SVG has a malformed closing tag.'
       if (stack.pop() !== name) return `The SVG has a closing tag </${name}> that does not match.`
+      nsStack.pop()
       if (!stack.length) rootClosed = true
       i = j + 1
       continue
@@ -187,6 +210,7 @@ export function svgProblem(raw: string): string | null {
     const local = name.slice(name.lastIndexOf(':') + 1)
     const lowerLocal = local.toLowerCase()
     if (SVG_FORBIDDEN_ELEMENTS.has(lowerLocal)) return `The SVG contains a <${local}> element, which is not allowed.`
+    if (!SVG_ELEMENTS.has(lowerLocal)) return `The SVG contains a <${local}> element, which is not a standard SVG element.`
     if (rootClosed) return 'The SVG has more than one root element.'
     if (!sawRoot) {
       if (local !== 'svg') return 'The root element must be <svg>.'
@@ -195,6 +219,7 @@ export function svgProblem(raw: string): string | null {
     let selfClose = false
     let attrName = ''
     let attributeNameValue = ''
+    const decls: Array<[string, string]> = []
     for (;;) {
       const hadSpace = j < n && /\s/.test(text[j])
       while (j < n && /\s/.test(text[j])) j++
@@ -228,6 +253,9 @@ export function svgProblem(raw: string): string | null {
       if (entityProblem(value)) return 'The SVG uses an entity that is not defined (only &amp; &lt; &gt; &quot; &apos; and numbers).'
       if (++attrTotal > SVG_MAX_ATTRS * 100) return 'The SVG has too many attributes.'
       const aLocal = attrName.slice(attrName.lastIndexOf(':') + 1).toLowerCase()
+      if (attrName === 'xmlns') decls.push(['', decodeEntities(value).trim()])
+      else if (attrName.startsWith('xmlns:')) decls.push([attrName.slice(6), decodeEntities(value).trim()])
+      if (SVG_FORBIDDEN_ATTRS.has(aLocal)) return `The SVG has a ${attrName} attribute, which loads outside content and is not allowed.`
       if (aLocal.startsWith('on')) return `The SVG has an event attribute (${attrName}), which is not allowed.`
       const decoded = decodeEntities(value)
       if (aLocal === 'href' && !decoded.trim().startsWith('#')) return 'The SVG links to an outside address; only #fragments are allowed in href.'
@@ -235,12 +263,24 @@ export function svgProblem(raw: string): string | null {
       const css = cssProblem(value)
       if (css) return css
     }
+    const parentNs = nsStack[nsStack.length - 1] ?? new Map<string, string>()
+    let ns = parentNs
+    if (decls.length) {
+      ns = new Map(parentNs)
+      for (const [pfx, uri] of decls) {
+        if (pfx === '' && uri !== SVG_NS) return 'The SVG changes its default namespace; only the SVG namespace is allowed.'
+        ns.set(pfx, uri)
+      }
+    }
+    const elPrefix = name.includes(':') ? name.slice(0, name.indexOf(':')) : ''
+    if (elPrefix && ns.get(elPrefix) !== SVG_NS) return `The SVG contains <${name}>, an element outside the SVG namespace.`
     if (attributeNameValue && (lowerLocal === 'set' || lowerLocal === 'animate' || lowerLocal === 'animatetransform' || lowerLocal === 'animatemotion')) {
       const t = attributeNameValue.slice(attributeNameValue.lastIndexOf(':') + 1)
       if (t === 'href' || t.startsWith('on')) return 'The SVG animates a link or an event attribute, which is not allowed.'
     }
     if (!selfClose) {
       stack.push(name)
+      nsStack.push(ns)
       if (stack.length > SVG_MAX_DEPTH) return 'The SVG is nested too deeply.'
     } else if (!stack.length) rootClosed = true
     i = j

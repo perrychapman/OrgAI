@@ -63,6 +63,57 @@ describe('outputs desktop-only channels', () => {
     await expect(call(OUTPUTS_IPC.outputsOpen)).resolves.toBe('')
   })
 
+  it('open refuses a launchable type even when the service would hand its path over; reveal still works', async () => {
+    for (const name of ['x.lnk', 'x.bat', 'x.BaT', 'x.exe', 'report.docx.bat', 'x.docm', 'x.hta']) {
+      const file = join(dir, name)
+      writeFileSync(file, 'x')
+      handlers.clear()
+      shell.openPath.mockClear()
+      shell.showItemInFolder.mockClear()
+      registerOutputsIpc({
+        outputs: { checkedPath: vi.fn(() => file), openablePath: undefined, get: vi.fn() } as unknown as OutputsServiceApi,
+        projects: { get: () => makeProject({ id: 'p1', path: dir }) },
+        dataDir: join(dir, 'data')
+      })
+      await expect(call(OUTPUTS_IPC.outputsOpen)).resolves.toBe('OrgAI does not open this kind of file. Use Show in folder instead.')
+      expect(shell.openPath).not.toHaveBeenCalled()
+      expect(call(OUTPUTS_IPC.outputsReveal)).toBe('')
+      expect(shell.showItemInFolder).toHaveBeenCalledWith(file)
+    }
+  })
+
+  it('reveal and saveAs re-check the entry on every call (saveAs again right before the copy) and work for non-openable files', async () => {
+    const file = join(dir, 'tool.exe')
+    writeFileSync(file, 'x')
+    const checkedPath = vi.fn(() => file)
+    register({ checkedPath })
+    expect(call(OUTPUTS_IPC.outputsReveal)).toBe('')
+    expect(checkedPath).toHaveBeenCalledTimes(1)
+    dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: join(dir, 'copy.exe') })
+    await call(OUTPUTS_IPC.outputsSaveAs)
+    expect(checkedPath).toHaveBeenCalledTimes(3)
+    expect(readFileSync(join(dir, 'copy.exe'), 'utf8')).toBe('x')
+    checkedPath.mockImplementation(() => { throw new Error('gone') })
+    expect(call(OUTPUTS_IPC.outputsReveal)).toBe('gone')
+  })
+
+  it('open re-checks the allowlist on the path the service returns (a service that skips it is not trusted)', async () => {
+    const bad = join(dir, 'evil.bat')
+    writeFileSync(bad, 'x')
+    register({ openablePath: vi.fn(() => bad) })
+    await expect(call(OUTPUTS_IPC.outputsOpen)).resolves.toMatch(/does not open this kind/)
+    expect(shell.openPath).not.toHaveBeenCalled()
+  })
+
+  it('open uses the service openablePath when present and relays its refusal', async () => {
+    const { file, service } = register({ openablePath: vi.fn(() => join(dir, 'report.docx')) })
+    await call(OUTPUTS_IPC.outputsOpen)
+    expect(service.openablePath).toHaveBeenCalled()
+    expect(shell.openPath).toHaveBeenCalledWith(file)
+    register({ openablePath: vi.fn(() => { throw new Error('nope') }) })
+    await expect(call(OUTPUTS_IPC.outputsOpen)).resolves.toBe('nope')
+  })
+
   it('open and reveal turn a refusal into its sentence and never reject or open anything', async () => {
     register({
       checkedPath: vi.fn(() => {
