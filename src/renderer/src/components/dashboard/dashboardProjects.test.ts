@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { ConnectionId } from '@shared/types'
 import { WEEK_MS } from '../../lib/dashboard'
+import { NEUTRAL_ROLE_COLOR } from '../../lib/dashboardBand'
 import {
   branchesWaiting,
   continueLabel,
   newestSummary,
   tileChips,
   tileRunCaption,
+  captionText,
+  tileStatusLine,
+  statusParts,
+  tileTeam,
+  openLabel,
   worktreeTargets,
   connectionProblems,
   costInWindow,
@@ -171,8 +177,45 @@ describe('tile signals', () => {
     expect(continueLabel('x'.repeat(40))).toBe(`Continue ${'x'.repeat(31)}…`)
   })
   it('words the newest run caption', () => {
-    expect(tileRunCaption({ live: true, statusWord: 'Idle', activity: 'Waiting for your reply', now: 0 })).toBe('Idle · Waiting for your reply')
-    expect(tileRunCaption({ live: true, statusWord: 'Running', now: 0 })).toBe('Running')
-    expect(tileRunCaption({ live: false, statusWord: 'Finished', endedAt: 1, now: 2 * 3_600_000 })).toMatch(/^Finished · /)
+    expect(tileRunCaption({ live: true, statusWord: 'Running', step: 'Write the tests' })).toEqual({ text: 'Running · Write the tests' })
+    expect(tileRunCaption({ live: true, statusWord: 'Running' })).toEqual({ text: 'Running' })
+    expect(tileRunCaption({ live: true, statusWord: 'Needs you', decisionLine: 'Allow: Run npm test', step: 'x' })).toEqual({ lead: 'Needs you', text: 'Allow: Run npm test' })
+    expect(captionText({ lead: 'Needs you', text: 'Allow: Run npm test' })).toBe('Needs you · Allow: Run npm test')
+  })
+  it('says an ended run once: the age in the status line, the outcome in the caption', () => {
+    expect(tileRunCaption({ live: false, statusWord: 'Ended when OrgAI closed', decisionLine: 'Allow: x', step: 'y' })).toEqual({ text: 'Ended when OrgAI closed' })
+    const now = 10 * 86_400_000
+    const line = tileStatusLine({ subtitle: 'Last run 9 d ago · Ended when OrgAI closed', open: 0, decisions: 0, newestStartedAt: now - 9 * 86_400_000, now })
+    expect(line).toBe('Last run 9 d ago')
+    expect(tileStatusLine({ subtitle: '1 decision · 1 run', open: 1, decisions: 1, newestStartedAt: 0, now })).toBe('1 decision · 1 run')
+    expect(tileStatusLine({ subtitle: '', open: 0, decisions: 0, now })).toBe('No runs yet')
+  })
+  it('splits the decision part of the status line', () => {
+    expect(statusParts('2 decisions · 1 run', 2)).toEqual({ decision: '2 decisions', rest: ' · 1 run' })
+    expect(statusParts('1 open', 0)).toEqual({ rest: '1 open' })
+  })
+  it('orders the team row breadth first, root first, capped at 8', () => {
+    const r = (id: string, reportsTo: string | null, color = '#fff') => ({ id, name: id.toUpperCase(), color, reportsTo })
+    const roles = [r('c1', 'a'), r('b1', 'a'), r('a', null), r('c2', 'b1'), r('d', 'c1')]
+    const t = tileTeam(roles)
+    expect(t.marks.map((m) => m.id)).toEqual(['a', 'c1', 'b1', 'd', 'c2'])
+    expect(t.more).toBe(0)
+    expect(t.total).toBe(5)
+    const many = [r('root', null), ...Array.from({ length: 10 }, (_, i) => r(`k${i}`, 'root'))]
+    const big = tileTeam(many)
+    expect(big.marks).toHaveLength(8)
+    expect(big.marks[0].id).toBe('root')
+    expect(big.more).toBe(3)
+    expect(tileTeam([]).marks).toEqual([])
+    expect(tileTeam(undefined).total).toBe(0)
+    expect(tileTeam([r('solo', null, '')]).marks[0].color).toBe(NEUTRAL_ROLE_COLOR)
+    // A dangling or cyclic reportsTo still shows every role once.
+    expect(tileTeam([r('a', null), r('x', 'y'), r('y', 'x')]).marks.map((m) => m.id)).toEqual(['a', 'x', 'y'])
+  })
+  it('names the team in the Open button', () => {
+    const team = { total: 9, names: ['Orchestrator', 'Implementer', 'Reviewer', 'Tester'] }
+    expect(openLabel({ name: 'Billing API', statusLine: '1 decision · 1 run', team, newestName: 'Fix login' })).toBe('Open Billing API, 1 decision · 1 run, team of 9: Orchestrator, Implementer, Reviewer and 6 more, Fix login')
+    expect(openLabel({ name: 'P', statusLine: 'No runs yet', team: { total: 0, names: [] }, setupPending: true })).toBe('Open P, No runs yet, setup pending')
+    expect(openLabel({ name: 'P', statusLine: 's', team: { total: 1, names: ['Boss'] } })).toBe('Open P, s, team of 1: Boss')
   })
 })

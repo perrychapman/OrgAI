@@ -4,7 +4,7 @@ import type { Project, RunSummary } from '@shared/types'
 import { isRunLive, pendingDecisionCount, useAppStore, type RunState } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { projectKindOf } from '@shared/defaults'
-import { nodeActivity } from '../../lib/agentActivity'
+import { currentStep, decisionLine } from '../../lib/dashboardBand'
 import { hasFolderTrustField } from '../../lib/folderTrust'
 import { openProjectSettings } from '../../lib/openProjectSettings'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
@@ -14,7 +14,7 @@ import { projectQueue } from './projectQueue'
 import { useProjectSignals, type ProjectSignal } from './useProjectSignals'
 import { buildAttentionCtx, deleteProjectBody, projectAttentionOrder, removeConfirmLabel } from '../../lib/dashboard'
 import { useForgetEngagement } from './useForgetEngagement'
-import { combinedDecisionCount, teamDecisionsFor } from '../../lib/needsYou'
+import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../../lib/needsYou'
 import { useTeamAttentionItems } from '../../lib/menuActions'
 import type { TeamAttentionItem } from '../../lib/teamFiles'
 import { projectStatus } from '../../lib/projectStatus'
@@ -24,7 +24,7 @@ import { statusOfRun, statusText } from '../../lib/runStatus'
 import { Input } from '../ui/Input'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { ProjectTile, type TileModel } from './ProjectTile'
-import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, SEARCH_AFTER, tileChips, tileRunCaption, type TileChipKind } from './dashboardProjects'
+import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, SEARCH_AFTER, tileChips, tileRunCaption, tileStatusLine, tileTeam, type TileChipKind } from './dashboardProjects'
 
 /** The tile model of one project from its live runs and saved history. */
 function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[], signal: ProjectSignal | undefined): TileModel {
@@ -39,22 +39,25 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
   const status = newest ? statusOfRun(newestRun ? { ...newestRun } : { summary: newest }, project, newestRun ? pendingDecisionCount(newestRun) > 0 : false) : undefined
   const decisions = combinedDecisionCount(runs, teamDecisionsFor(teamItems, project.id))
   const st = projectStatus({ open: live.length, decisions, newest: newest && status ? { startedAt: newest.startedAt, status } : undefined, now })
-  const root = newestRun ? Object.values(newestRun.agents).find((a) => a.parentId === null) : undefined
   const isLive = !!newestRun && isRunLive(newestRun)
+  // The caption never prints the root's raw activity (walk-3 M5): the first open decision's Needs you label, else the plan step.
+  const firstDecision = newestRun && isLive ? waitingItems(newestRun, projectKindOf(project))[0]?.label : undefined
+  const team = tileTeam(project.roles)
   const continuable = newest && !isLive && canContinue(summaries, newest.id) ? { id: newest.id, name: runName(newest) } : null
   return {
     project,
     decisions,
     live: live.length,
     working: runs.some((r) => r.summary.status === 'running' || r.summary.status === 'starting'),
-    statusLine: st.subtitle || 'No runs yet',
+    statusLine: tileStatusLine({ subtitle: st.subtitle, open: live.length, decisions, newestStartedAt: newest?.startedAt, now }),
+    team,
     newest:
       newest && status
         ? {
             id: newest.id,
             name: runName(newest),
             word: status.word,
-            caption: tileRunCaption({ live: isLive, statusWord: statusText(status), activity: root ? nodeActivity(root, { isRoot: true }) : undefined, endedAt: newest.endedAt ?? newest.startedAt, now })
+            caption: tileRunCaption({ live: isLive, statusWord: statusText(status), decisionLine: decisionLine(firstDecision), step: currentStep(newestRun?.plan) })
           }
         : null,
     continuable,

@@ -1,4 +1,5 @@
-import { isVirtualProjectId, type ConnectionId, type ConnectionInfo, type PendingWorktree, type Project, type RunSummary } from '@shared/types'
+import { isVirtualProjectId, type ConnectionId, type ConnectionInfo, type PendingWorktree, type Project, type Role, type RunSummary } from '@shared/types'
+import { NEUTRAL_ROLE_COLOR } from '../../lib/dashboardBand'
 import { projectConnection, projectKindOf } from '@shared/defaults'
 import { relativeTime } from '../../lib/runChains'
 import { runCostInput, sumCosts, type CostInput } from '../../lib/cost'
@@ -171,8 +172,114 @@ export function continueLabel(name: string): string {
   return `Continue ${chars.length > 32 ? `${chars.slice(0, 31).join('')}…` : name}`
 }
 
-/** The caption of a tile's newest run: live "Idle · Waiting for your reply", ended "Finished · 2 h ago". */
-export function tileRunCaption(input: { live: boolean; statusWord: string; activity?: string; endedAt?: number; now: number }): string {
-  if (input.live) return input.activity ? `${input.statusWord} · ${input.activity}` : input.statusWord
-  return input.endedAt ? `${input.statusWord} · ${relativeTime(input.endedAt, input.now)}` : input.statusWord
+/** The tile caption of the newest run: `lead` is "Needs you" (drawn in the warning colour), `text` the rest. */
+export interface TileCaption {
+  lead?: string
+  text: string
+}
+
+/**
+ * The caption of a tile's newest run (walk-3 M5, L3). A live run with an open decision reads "Needs you · <decision
+ * line>", never the raw command or activity. Another live run reads "<status word> · <plan step>", else the word alone.
+ * An ended run reads only its outcome; the age lives in the status line, so nothing is said twice.
+ */
+export function tileRunCaption(input: { live: boolean; statusWord: string; decisionLine?: string; step?: string }): TileCaption {
+  if (!input.live) return { text: input.statusWord }
+  if (input.decisionLine) return { lead: 'Needs you', text: input.decisionLine }
+  return { text: input.step ? `${input.statusWord} · ${input.step}` : input.statusWord }
+}
+
+/** The caption as one string (the plain-text form of `tileRunCaption`). */
+export function captionText(c: TileCaption): string {
+  return c.lead ? `${c.lead} · ${c.text}` : c.text
+}
+
+/**
+ * The tile's status line. A project with nothing open or waiting says only how long ago its newest run started
+ * ("Last run 9 d ago"); the run's outcome is the caption's job (walk-3 L3). Otherwise the shared subtitle.
+ */
+export function tileStatusLine(input: { subtitle: string; open: number; decisions: number; newestStartedAt?: number; now: number }): string {
+  if (input.decisions === 0 && input.open === 0 && input.newestStartedAt !== undefined) return `Last run ${relativeTime(input.newestStartedAt, input.now)}`
+  return input.subtitle || 'No runs yet'
+}
+
+/** "1 decision · 1 run" split into the decision part and the rest, so only the decision part takes the warning colour. */
+export function statusParts(statusLine: string, decisions: number): { decision?: string; rest: string } {
+  if (decisions <= 0) return { rest: statusLine }
+  const at = statusLine.indexOf(' · ')
+  if (at < 0) return { decision: statusLine, rest: '' }
+  return { decision: statusLine.slice(0, at), rest: statusLine.slice(at) }
+}
+
+// ---------- The tile's team row ----------
+
+/** The most marks a tile's team row draws (the root plus seven). */
+export const TILE_TEAM_MARKS = 8
+
+export interface TileTeamMark {
+  id: string
+  name: string
+  /** CSS colour of the role (the neutral colour when the role has none). */
+  color: string
+}
+
+export interface TileTeam {
+  /** Root first, then breadth-first chart order, at most `TILE_TEAM_MARKS`. */
+  marks: TileTeamMark[]
+  /** Roles beyond the marks. */
+  more: number
+  /** Every role name, in the same order (for the accessible name). */
+  names: string[]
+  total: number
+}
+
+/**
+ * The chart in breadth-first order for the team row: the root (no `reportsTo`, else the first role) first, then each
+ * level in chart order; roles the walk never reaches (a dangling or cyclic `reportsTo`) follow in stored order.
+ */
+export function tileTeam(roles: readonly Pick<Role, 'id' | 'name' | 'color' | 'reportsTo'>[] | undefined, cap = TILE_TEAM_MARKS): TileTeam {
+  const list = roles ?? []
+  const ordered = bfsRoles(list)
+  const marks = ordered.slice(0, Math.max(0, cap)).map((r) => ({ id: r.id, name: r.name, color: r.color || NEUTRAL_ROLE_COLOR }))
+  return { marks, more: Math.max(0, ordered.length - marks.length), names: ordered.map((r) => r.name), total: ordered.length }
+}
+
+function bfsRoles<T extends Pick<Role, 'id' | 'reportsTo'>>(list: readonly T[]): T[] {
+  if (list.length === 0) return []
+  const root = list.find((r) => r.reportsTo === null || r.reportsTo === undefined) ?? list[0]
+  const children = new Map<string, T[]>()
+  for (const r of list) {
+    if (r === root || r.reportsTo == null) continue
+    const kids = children.get(r.reportsTo)
+    if (kids) kids.push(r)
+    else children.set(r.reportsTo, [r])
+  }
+  const seen = new Set<string>([root.id])
+  const out: T[] = [root]
+  for (let i = 0; i < out.length; i++) {
+    for (const kid of children.get(out[i].id) ?? []) {
+      if (seen.has(kid.id)) continue
+      seen.add(kid.id)
+      out.push(kid)
+    }
+  }
+  for (const r of list) {
+    if (seen.has(r.id)) continue
+    seen.add(r.id)
+    out.push(r)
+  }
+  return out
+}
+
+/** The "Open" button's accessible name: status, newest run and, when there is a chart, "team of 9: A, B, C and 6 more". */
+export function openLabel(input: { name: string; statusLine: string; team: Pick<TileTeam, 'total' | 'names'>; newestName?: string; setupPending?: boolean }): string {
+  const parts = [`Open ${input.name}`, input.statusLine]
+  if (input.team.total > 0) {
+    const shown = input.team.names.slice(0, 3)
+    const rest = input.team.total - shown.length
+    parts.push(`team of ${input.team.total}: ${shown.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`)
+  }
+  if (input.newestName) parts.push(input.newestName)
+  if (input.setupPending) parts.push('setup pending')
+  return parts.join(', ')
 }
