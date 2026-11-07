@@ -1,7 +1,7 @@
 import type { Project, ProjectKind, QuickRunInfo, Role, RunTeam } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
-import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, OUTPUT_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, OUTPUT_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
 
@@ -69,6 +69,36 @@ export interface PromptFlags {
    * org-chart ones (org changes, cross-run messaging, MCP installs, skill configuration). Missing = the org chart.
    */
   team?: RunTeam
+  /**
+   * Bridged reports (multi-provider org charts): the run's bridged roles (RuntimeContext.bridge?.roles()). Adapters
+   * pass `bridgedRoles: ctx.bridge?.roles()` wherever they build role prompts. reportsText marks each such report
+   * "(runs on <connection>: ...)" with the way to start it (`bridgeVia`). Missing or empty = none.
+   */
+  bridgedRoles?: { roleId: string; connectionName: string }[]
+  /**
+   * How this adapter starts a bridged report: 'delegate_agent' (Claude, mock: the harness tool, never the native Agent
+   * tool) or 'spawn' (Codex: spawn_agent routes it). Default 'delegate_agent'.
+   */
+  bridgeVia?: 'delegate_agent' | 'spawn'
+  /**
+   * The prompt is for the root of a bridged CHILD session (RuntimeContext.bridgedChild set). Adapters pass
+   * `bridged: !!ctx.bridgedChild`. That root is a report of the run, not its orchestrator: it gets a report's
+   * paragraphs (no unattended, org change, cross-run messaging, root MCP install or skills configuration text) and is
+   * told to finish with a concise report, since its last message is handed back to the agent that delegated.
+   */
+  bridged?: boolean
+}
+
+/** One line for the root of a bridged child session: its final message is what the delegating agent receives. */
+export function bridgedReportText(): string {
+  return 'You were delegated this work by another agent of the team, which runs on a different connection. When you are done, end with a concise final report of what you did and found: your last message is handed back to that agent as data. You cannot ask it questions mid-task; use ask_user only if the harness offers it.'
+}
+
+/** The marker reportsText adds to a bridged report's line. */
+export function bridgedReportMark(connectionName: string, via: 'delegate_agent' | 'spawn' = 'delegate_agent'): string {
+  return via === 'spawn'
+    ? ` (runs on ${connectionName}: spawn it as usual; the harness runs it on that connection and messages you its final report)`
+    : ` (runs on ${connectionName}: delegate with ${BRIDGE_HARNESS_TOOLS.delegate}, not the Agent tool)`
 }
 
 /** The roles this role may delegate to. */
@@ -76,10 +106,14 @@ export function reportsOf(role: Role, roles: Role[]): Role[] {
   return roles.filter((r) => role.canSpawn && role.spawnable.includes(r.id))
 }
 
-export function reportsText(reports: Role[]): string {
+export function reportsText(reports: Role[], bridged: PromptFlags['bridgedRoles'] = [], via: PromptFlags['bridgeVia'] = 'delegate_agent'): string {
+  const mark = (r: Role): string => {
+    const b = bridged?.find((x) => x.roleId === r.id)
+    return b ? bridgedReportMark(b.connectionName, via) : ''
+  }
   return (
     `You lead the following specialists. Delegate to them with the Agent tool, passing subagent_type exactly as written:\n` +
-    reports.map((r) => `- ${r.slug}: ${r.description}`).join('\n') +
+    reports.map((r) => `- ${r.slug}${mark(r)}: ${r.description}`).join('\n') +
     `\nYou may only delegate to these roles. Give each delegate a complete, self-contained brief.`
   )
 }
@@ -405,22 +439,25 @@ export function outputsText(): string {
 
 export function buildRolePrompt(role: Role, roles: Role[], project: Project, flags: PromptFlags): string {
   const { isSetup, isolation } = flags
+  // The root of a bridged child session (flags.bridged) is a report of the run, not its orchestrator.
+  const isRoot = role.reportsTo === null && !flags.bridged
   const parts: string[] = [role.prompt.trim()]
   if (role.responsibilities.length) {
     parts.push(`Your responsibilities:\n${role.responsibilities.map((r) => `- ${r}`).join('\n')}`)
   }
   const reports = reportsOf(role, roles)
   if (reports.length) {
-    parts.push(reportsText(reports))
-    if (isolation && role.reportsTo === null) parts.push(orchestratorIsolationText())
+    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia))
+    if (isolation && isRoot) parts.push(orchestratorIsolationText())
     if (!isSetup) parts.push(networkLeadText(reports))
   } else if (!isSetup) {
     parts.push('You have no reports. Do the assigned work yourself and report back concisely when finished.')
   }
   if (!isSetup && role.reportsTo !== null && role.tools.includes(MESSAGE_TOOL)) parts.push(networkPeerText())
-  if (isolation && role.reportsTo !== null && canWrite(role)) parts.push(reportIsolationText(reports.some(canWrite)))
+  if (isolation && !isRoot && canWrite(role)) parts.push(reportIsolationText(reports.some(canWrite)))
+  if (!isSetup && flags.bridged && role.reportsTo === null) parts.push(bridgedReportText())
   if (!isSetup && flags.quick) {
-    if (role.reportsTo === null) {
+    if (isRoot) {
       parts.push(quickChatText(flags.quick))
       parts.push(unattendedText())
     }
@@ -434,19 +471,19 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
       parts.push(engagementDocumentText(flags.engagementDocument))
     } else if (archPath) {
       parts.push(architectureText(archPath, kind))
-      if (role.reportsTo === null) parts.push(architectureDriftText(archPath, kind))
+      if (isRoot) parts.push(architectureDriftText(archPath, kind))
     }
-    if (role.reportsTo === null) parts.push(unattendedText(kind, flags.team !== 'single'))
+    if (isRoot) parts.push(unattendedText(kind, flags.team !== 'single'))
     if (flags.team === 'single') {
-      if (role.reportsTo === null) parts.push(singleAssistantText(kind))
+      if (isRoot) parts.push(singleAssistantText(kind))
     } else {
       // Engagements: the orchestrator and every report keep the notes and the knowledge graph.
       if (kind === 'engagement') parts.push(engagementContextText())
-      if (role.reportsTo === null) parts.push(orgChangeText())
-      if (role.reportsTo === null) parts.push(crossRunText())
-      if (role.reportsTo === null) parts.push(mcpInstallText('root'))
+      if (isRoot) parts.push(orgChangeText())
+      if (isRoot) parts.push(crossRunText())
+      if (isRoot) parts.push(mcpInstallText('root'))
       else if (role.canSpawn) parts.push(mcpInstallText('lead'))
-      if (role.reportsTo === null) parts.push(skillsConfigText())
+      if (isRoot) parts.push(skillsConfigText())
     }
     // Apart from the engagement document ("approved by the user; follow it"): the index is data, never approved text.
     if (kind === 'engagement' && flags.knowledgeBrief) parts.push(flags.knowledgeBrief)

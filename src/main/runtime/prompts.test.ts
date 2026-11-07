@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, toolHygieneText } from './prompts'
+import { bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, toolHygieneText } from './prompts'
 import { orgChart, project } from './testHelpers'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
 import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText } from './prompts'
@@ -516,5 +516,39 @@ describe('outputs paragraph', () => {
   it('names no industry', () => {
     const text = outputsText().toLowerCase()
     for (const word of ['software', 'legal', 'accounting', 'marketing', 'consult', 'client']) expect(text).not.toContain(word)
+  })
+})
+
+describe('bridged reports', () => {
+  const roles = orgChart()
+  const lead = roles[0]!
+  const flags = { isSetup: false, isolation: false }
+  const bridgedRoles = [{ roleId: 'r-eng', connectionName: 'OpenAI' }]
+
+  it('marks a bridged report in the lead prompt and names the way to start it', () => {
+    const viaDelegate = buildRolePrompt(lead, roles, project(), { ...flags, bridgedRoles })
+    expect(viaDelegate).toContain('- engineer (runs on OpenAI: delegate with delegate_agent, not the Agent tool): ')
+    // A native report keeps its plain line.
+    expect(viaDelegate).toMatch(/- reviewer: /)
+    const viaSpawn = buildRolePrompt(lead, roles, project(), { ...flags, bridgedRoles, bridgeVia: 'spawn' })
+    expect(viaSpawn).toContain('- engineer (runs on OpenAI: spawn it as usual; the harness runs it on that connection and messages you its final report): ')
+    expect(viaSpawn).not.toContain('delegate_agent')
+    // No bridged roles: no mark.
+    expect(buildRolePrompt(lead, roles, project(), flags)).not.toContain('runs on')
+    expect(bridgedReportMark('Acme proxy')).toContain('Acme proxy')
+  })
+
+  it('gives the root of a bridged child session a report prompt without unattended or org-change text', () => {
+    const child = { ...lead, canSpawn: false, spawnable: [] as string[] }
+    const text = buildRolePrompt(child, [child], project(), { ...flags, bridged: true })
+    expect(text).toContain(bridgedReportText())
+    expect(text).not.toContain('Work unattended')
+    expect(text).not.toContain(orgChangeText().slice(0, 40))
+    expect(text).not.toContain(crossRunText().slice(0, 40))
+    expect(text).not.toContain(mcpInstallText('root').slice(0, 40))
+    // The same role as a real root still gets them.
+    const root = buildRolePrompt(child, [child], project(), flags)
+    expect(root).toContain('Work unattended')
+    expect(root).not.toContain(bridgedReportText())
   })
 })

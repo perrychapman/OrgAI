@@ -109,6 +109,41 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
   - resolveBuiltinModel takes `fallbackTier` (default 'deep'; 'everyday' for the Chat's single assistant) and also serves AppSettings.skillAssistModel (SKILL_ASSIST_MODEL_LABEL) and quickRunModel (QUICK_RUN_MODEL_LABEL). RuntimeContext gained listProjects (quick runs only), skillCatalog and readSkill (skill-assist only); RunManagerOptions gained quickProject, listProjects and skillAssist. Harness tools by kind (harnessToolsFor): quick runs get QUICK_TOOL_DEFS (plan tools, ask_user, integrate_worktrees, request_permission_rules, list_projects; no org change, run messaging or MCP tools), 'skill-assist' gets list_skill_library, read_library_skill, propose_skills, ask_user, request_permission_rules. prompts.ts `quickChatText` replaces the project paragraphs for quick runs (PromptFlags.quick).
 - `src/main/runtime/testHelpers.ts`
 
+### Multi-provider org charts (bridged reports)
+
+Phase 1, 2026-11-07. Design and limits are in docs/design/multi-provider.md. It is verified by unit tests, fake
+query(), a fake Codex server and the mock only.
+
+- **Role connection:** `Role.connection` is read only through defaults.ts `roleConnection`. The root always runs on
+  the project's connection. A role's model resolves through its own connection (`roleTierContext`).
+- **Which roles are bridged:** `adapterForProject` fills `AdapterChoice.bridged`. That covers non-root roles on
+  another connection, and roles on the root's proxy whose family needs the other adapter. `mismatched` covers only the
+  root's connection.
+- **Refusal:** `roleConnectionProblems` gives the readable work-run refusal.
+- **Connections per run:** RunManager `resolveBridged` builds one RunConnection per (connection, adapter) through
+  `ConnectionService.runConnectionFor`. It never bridges setup-like, quick, single, virtual-project or
+  trust-restricted runs.
+- **Child sessions:** `runtime/bridge.ts` `BridgedSessions` runs each bridged role in a child RuntimeSession on its
+  own adapter and connection only.
+  - The child has `RuntimeContext.bridgedChild` set: no root-audience tools, a report prompt through
+    `PromptFlags.bridged`, `isolateWriters` off, and depth and concurrency reduced by what the parent uses.
+  - Hooks pass through to the parent with agent ids remapped. The child's root gets `ag_…` under the delegating
+    agent; its other agents get `<rootId>:<childId>`.
+  - The child's run.* and card events are dropped.
+  - Its final text comes back fenced and capped at `BRIDGE_RESULT_MAX_CHARS`.
+  - Every secret of every RunConnection of the run is redacted from forwarded text.
+- **Starting a bridged report:** Claude and mock use the harness tool `delegate_agent` (`BRIDGE_HARNESS_TOOLS`,
+  'spawners', non-blocking for node state). On Claude, a bridged role gets no AgentDefinition, and PreToolUse denies
+  native spawns of it and checks delegate_agent's caller. Codex routes `spawn_agent` to `ctx.bridge.spawn` and
+  delivers the result as a report message (`harnessToolsFor` option `bridgeThroughSpawn`).
+- **Usage:** `AgentInstance.connection` and per-connection pricing; `RunUsage.connections` is filled only for runs
+  that used another connection.
+- **Remaps, usedBy and Architect drafts:**
+  - Remaps work per role connection.
+  - `usedBy` and `removeProxy` count roles naming a proxy.
+  - Architect drafts may name a configured connection (`RuntimeContext.connectionModels`).
+  - `mergeOrgChart` takes the proposal's connection.
+
 ### Provider adapters
 
 SDK event mapping and hook mechanics only. Only the Adapter Engineer edits claude.ts and mock.ts.
@@ -659,6 +694,23 @@ components/layout:
 ## Risks and gaps
 
 - Chat asks, review follow-up (2026-11-07): session edit grants are checked at the time of the call, so a link created between `quickFolderEditCovered` and the provider's write is not caught (check-then-write gap; only the folder's own contents, which the user shares with the agent, can race it). A session edit grant covers in-folder edits of package.json, Makefile, .husky and similar files; a later Bash session rule can run them (accepted). `quickFolderEditCovered` takes no data dir: a folder is validated at start to neither contain nor sit inside the data dir except the scratch root, and links are refused, so a covered target cannot reach the data dir (an explicit data-dir parameter would need an adapter change; open). Codex's own destination gating (`movePath` carried through codexEvents.ts / codex.ts) is the Adapter Engineer's part of the same fix.
+- Bridged reports (phase 1, 2026-11-07; Reviewer: no Critical or High, M1-M3 fixed):
+  - **Not checked live:** nothing ran live.
+    - A long delegate_agent call vs the Claude CLI MCP idle timeout and auto-background (found in the binary's text
+      only).
+    - Codex delivery through the real app-server.
+    - A proxy serving `/v1/responses` for Codex. Mixed-family proxy charts now bridge their other-family reports.
+  - **Phase 1 limits:**
+    - Bridged writers run in the project folder with no worktree.
+    - A bridged report answers once and cannot be messaged.
+    - No nested bridging.
+    - A Claude delegate call has no tool_use id.
+    - A child Claude query gets the project's maxBudgetUsd as its own cap.
+  - **Not built:** a renderer surface for Role.connection.
+  - **Open Lows:**
+    - The approval card should name a role's connection change (L7).
+    - `sanitizeRoleModels` falls back through the project's connection (L3).
+    - Team files, import and kit role mapping were not traced for Role.connection.
 
 - Team files: a pulled or agent-edited prompt or brief applies at once by the owner's decision, so it can rewrite the instructions of a role holding Bash with no card; Undo is the remedy. Tombstone coming back still pends on every branch switch for a server that was removed by the checkout. Deleting a skill folder removes a private file kept in it. If a save fails in the stale-rebuild path, the post-save cleanup is skipped and a leftover skill folder or connector entry is possible (untested). Generations for stale-save matching stay in memory, last 4 only, so an older stale copy can revert pulled values. `teamFiles:enable` overwrites files pulled while removed (user-initiated). Re-check Lows N1-N5 fixed (unit-tested only): a main-process removal of a server forgets its tombstone (hook, `forgetTombstone`); an approved org chart moves only its own roles onto a live run (`overlayOwnRoles`); a connector with no entry yet says "and you will need to sign in"; approve and createFromFolder refuse when a linked server's target or stored state differs from what status/found showed (in-memory snapshot, so after an app restart the first approve has none and is not re-checked); createFromFolder's connector entry and skill files are rolled back by a next-tick sweep when ProjectStore.create never stores the project. See "Team files" for what is unverified.
 

@@ -2,7 +2,7 @@ import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role,
 import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult, type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
 import {
   METHOD,
@@ -45,7 +45,7 @@ import {
   type NetworkHost,
   type SpawnRequest
 } from './codexAgents'
-import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
+import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
@@ -283,6 +283,8 @@ class CodexSession implements RuntimeSession {
   private sessionDirs: string[] = []
   private limited = false
   private ending = false
+  /** Bridged reports started through spawn_agent and still working: harness agent id -> who they report to. */
+  private bridgedLive = new Map<string, { handle: string; roleSlug: string; connectionName: string; parentId: string }>()
   private ended = false
   private launch: LaunchConfig = { config: [], env: {}, summary: [], skipped: [] }
   private mcpRestartPending = false
@@ -324,7 +326,8 @@ class CodexSession implements RuntimeSession {
       addMcpServer: (spec) => this.addMcpServer(spec),
       configChanged: (change) => this.configChanged(change)
     }
-    this.harness = harnessToolsFor(ctx, hooks)
+    // Bridged reports go through spawn_agent (spawnBridged), so no delegate_agent here.
+    this.harness = harnessToolsFor(ctx, hooks, { bridgeThroughSpawn: true })
     for (const t of this.harness) this.harnessByCodexName.set(codexToolName(t.name), t)
     this.mapper = new CodexEventMapper({
       harnessToolNames: this.harnessByCodexName.keys(),
@@ -354,7 +357,8 @@ class CodexSession implements RuntimeSession {
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
-      liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length,
+      // Bridged reports are not threads of this session but still count as working reports.
+      liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size,
       pendingInteractions: () => ctx.pendingInteractions(),
       rateLimited: () => this.limited,
       stopping: () => this.ending || this.restarting,
@@ -636,7 +640,7 @@ class CodexSession implements RuntimeSession {
     const engagementDocument = this.ctx.engagementDocument?.()
     // Constant for the run (RunManager computes it once), so every thread's instructions carry the same index.
     const knowledgeBrief = this.ctx.knowledgeBrief?.()
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags() })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -1413,7 +1417,96 @@ class CodexSession implements RuntimeSession {
     announce: (m: AgentMessage, text: string) => {
       this.emit({ type: 'agent.message', runId: this.ctx.run.id, ...m })
       this.transcript(m.from, { kind: 'system', text })
+    },
+    bridgedRole: (role) => {
+      const b = this.bridgedRoles().find((x) => x.roleId === role.id)
+      return b ? { connectionName: b.connectionName } : undefined
+    },
+    spawnBridged: (req) => this.spawnBridged(req),
+    bridgedAgents: () => this.bridgedLive.values()
+  }
+
+  /** The run's bridged roles (RuntimeContext.bridge, read at call time); none in a bridged child or when unreadable. */
+  private bridgedRoles(): BridgedRole[] {
+    if (!this.ctx.bridge || this.ctx.bridgedChild) return []
+    try {
+      return this.ctx.bridge.roles()
+    } catch (e) {
+      this.log('warn', `Could not read the run's bridged roles: ${(e as Error).message}`)
+      return []
     }
+  }
+
+  /** PromptFlags for bridged reports: their marks (started through spawn_agent) and a bridged child's report prompt. */
+  private bridgeFlags(): { bridgedRoles?: BridgedRole[]; bridgeVia?: 'spawn'; bridged?: boolean } {
+    const roles = this.bridgedRoles()
+    return { ...(roles.length ? { bridgedRoles: roles, bridgeVia: 'spawn' as const } : {}), ...(this.ctx.bridgedChild ? { bridged: true } : {}) }
+  }
+
+  /**
+   * spawn_agent for a bridged role: RuntimeContext.bridge.spawn starts it in its own child session (the harness remaps
+   * its events into this run). Resolves once the child exists (onStarted), so the tool call is answered at once; when
+   * the child's final text arrives it goes to the parent like a native report's (deliverTo, a harness message), fenced
+   * through bridgedResultText. A refusal before the child exists rejects with RunManager's message.
+   */
+  private spawnBridged(req: SpawnRequest & { name?: string }): Promise<{ agentId: string; handle: string }> {
+    const bridge = this.ctx.bridge
+    if (!bridge) return Promise.reject(new Error('no report in this run runs on another connection'))
+    const b = this.bridgedRoles().find((x) => x.roleId === req.role.id)
+    const connectionName = b?.connectionName ?? 'another connection'
+    const parentRole = this.net.roleOf(req.parentId) ?? this.root
+    return new Promise((resolve, reject) => {
+      let started: { agentId: string; handle: string } | undefined
+      const adopt = (info: { agentId: string; handle: string }): void => {
+        if (started) return
+        started = { agentId: info.agentId, handle: info.handle }
+        this.net.adopt(req.id, info.agentId, info.handle)
+        this.bridgedLive.set(info.agentId, { handle: info.handle, roleSlug: req.role.slug, connectionName, parentId: req.parentId })
+        this.noteActivity('subagent')
+        resolve(started)
+      }
+      let pending: Promise<BridgeSpawnResult>
+      try {
+        pending = bridge.spawn({
+          role: req.role.id,
+          brief: req.brief,
+          ...(req.name ? { name: req.name } : {}),
+          ...(req.description ? { description: req.description } : {}),
+          parentAgentId: req.parentId,
+          parentRoleId: parentRole.id,
+          ...(req.callId ? { toolUseId: req.callId } : {}),
+          onStarted: adopt
+        })
+      } catch (e) {
+        reject(e)
+        return
+      }
+      pending.then(
+        (r) => {
+          adopt({ agentId: r.agentId, handle: r.handle })
+          this.bridgedFinished(r, req.role.name)
+        },
+        (e) => {
+          if (!started) reject(e)
+          else {
+            this.log('warn', `Bridged report ${started.handle} ended without a result: ${(e as Error)?.message ?? String(e)}`)
+            this.bridgedFinished({ ...started, ok: false, text: (e as Error)?.message ?? 'It ended without a result.' }, req.role.name)
+          }
+        }
+      )
+    })
+  }
+
+  /** A bridged report finished: hand its final text (or failure) to the agent that spawned it. */
+  private bridgedFinished(r: BridgeSpawnResult, roleName: string): void {
+    const live = this.bridgedLive.get(r.agentId)
+    this.bridgedLive.delete(r.agentId)
+    this.net.finish(r.agentId)
+    this.noteActivity('report')
+    if (this.ending) return
+    const parentId = live?.parentId ?? ROOT_AGENT_ID
+    const text = `Harness: ${bridgedResultText(r, roleName)}`
+    this.deliverTo(parentId, text).catch((e) => this.log('warn', `Could not deliver the report of ${r.handle}: ${(e as Error).message}`))
   }
 
   private async spawnChild(req: SpawnRequest): Promise<void> {

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { z } from 'zod'
 import type { AgentInstance, AgentMessage, Role } from '@shared/types'
+import { BRIDGE_BRIEF_MAX_CHARS } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
 import { NETWORK_TOOLS } from './codexEvents'
@@ -179,6 +180,17 @@ export class CodexAgentNetwork {
     return { ok: true, id, role: target, parentId, depth, handle }
   }
 
+  /**
+   * A bridged report started (RuntimeContext.bridge): the reservation from begin() takes the agent id and handle the
+   * harness gave it, so it counts as a live report (concurrency, depth) until finish(agentId).
+   */
+  adopt(reservedId: string, agentId: string, handle: string): void {
+    const m = this.members.get(reservedId)
+    if (!m) return
+    this.members.delete(reservedId)
+    this.members.set(agentId, { ...m, id: agentId, handle })
+  }
+
   /** Spawn failed after begin(): forget the reservation. */
   abort(agentId: string): void {
     this.members.delete(agentId)
@@ -220,6 +232,19 @@ export interface NetworkHost {
   deliver(toAgentId: string, text: string): Promise<void>
   /** Draw the message on the canvas and keep a copy in the sender's transcript. */
   announce(m: AgentMessage, transcriptText: string): void
+  /**
+   * Multi-provider org charts: the connection name when `role` is bridged (RuntimeContext.bridge.roles()), else
+   * undefined. A bridged role is never started as a thread; spawn_agent routes it to spawnBridged.
+   */
+  bridgedRole?(role: Role): { connectionName: string } | undefined
+  /**
+   * Start a bridged report through RuntimeContext.bridge.spawn. Resolves with the harness's agent id and handle once the
+   * child exists, after moving the reservation `req.id` to that id (CodexAgentNetwork.adopt, synchronously, so a fast
+   * finish is never lost); its final report reaches the parent later as a harness message. Throws a model-readable refusal.
+   */
+  spawnBridged?(req: SpawnRequest & { name?: string }): Promise<{ agentId: string; handle: string }>
+  /** Bridged reports still working, for list_agents (they are not threads of this session). */
+  bridgedAgents?(): Iterable<{ handle: string; roleSlug: string; connectionName: string }>
 }
 
 export interface ToolOutcome {
@@ -248,6 +273,7 @@ export async function callNetworkTool(
   try {
     if (tool === NETWORK_TOOLS.list) {
       const lines = [...host.agents()].filter((a) => a.id !== callerId && a.state !== 'done' && a.state !== 'error').map(agentLine)
+      for (const b of host.bridgedAgents?.() ?? []) lines.push(`${b.handle} · ${b.roleSlug} · running on ${b.connectionName} (its final report arrives as a harness message; it cannot receive messages)`)
       return { text: lines.length ? `Running now:\n${lines.join('\n')}` : 'No other agents are running.', success: true }
     }
     if (tool === NETWORK_TOOLS.message) {
@@ -273,6 +299,32 @@ export async function callNetworkTool(
       if (!parsed.success) return fail(`spawn_agent needs {role, brief}: ${parsed.error.issues.map((i) => i.message).join('; ')}`)
       const check = net.begin(callerId, { role: parsed.data.role, name: parsed.data.name }, host.agents())
       if (!check.ok) return fail(check.message)
+      // A bridged role runs in its own child session on another connection (RuntimeContext.bridge), never as a thread.
+      const bridged = host.bridgedRole?.(check.role)
+      if (bridged) {
+        // Same cap and wording as delegate_agent (the brief becomes the child's first message).
+        if (parsed.data.brief.trim().length > BRIDGE_BRIEF_MAX_CHARS) {
+          net.abort(check.id)
+          return fail(`REFUSED: the brief is longer than ${BRIDGE_BRIEF_MAX_CHARS} characters. Shorten it.`)
+        }
+        if (!host.spawnBridged) {
+          net.abort(check.id)
+          return fail(`Could not start ${check.role.slug}: it runs on ${bridged.connectionName}, which this session cannot reach.`)
+        }
+        let started: { agentId: string; handle: string }
+        try {
+          const name = parsed.data.name?.trim()
+          started = await host.spawnBridged({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId, ...(name ? { name } : {}) })
+        } catch (e) {
+          net.abort(check.id)
+          return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
+        }
+        // The host already moved the reservation to the harness's agent id (CodexAgentNetwork.adopt) when the child started.
+        return {
+          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive send_message while it runs.`,
+          success: true
+        }
+      }
       try {
         await host.spawn({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId })
       } catch (e) {

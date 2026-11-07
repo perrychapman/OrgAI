@@ -14,6 +14,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
+import { connectionConfigured, connectionIds } from '../../shared/defaults'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -417,6 +418,18 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     appSettings: () => settings.get(),
     communityPrices: () => communityPrices.get(),
     resolveConnection: (project, choice) => connections.runConnection(project, choice),
+    // Bridged reports (multi-provider org charts): a role on another connection runs on its own RunConnection.
+    resolveRoleConnection: (project, target) => connections.runConnectionFor(project, target),
+    // Architect drafts may name any configured connection; their tiers map through that connection's own mapping.
+    connectionModels: () => {
+      const s = settings.get()
+      return connectionIds(s)
+        .filter((id) => connectionConfigured(id, s))
+        .map((id) => {
+          const c = connections.importModelContext(id)
+          return { connection: id, name: c.connectionName, tierModels: c.tierModels, models: c.catalog.map((m) => m.id) }
+        })
+    },
     fastModel: (_project, choice) => connections.fastModel(choice),
     mcp: {
       enabledServers: (project) => mcp.enabledServers(project),

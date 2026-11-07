@@ -15,6 +15,10 @@ import type {
   UsageStatsQuery,
   AppSettings,
   AdapterChoice,
+  BridgedRoleChoice,
+  ConnectionId,
+  ModelRef,
+  ModelTier,
   CardKind,
   DecisionLookup,
   DecisionOptions,
@@ -70,7 +74,8 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, connectionName, connectionRecord, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { BridgedSessions, bridgeKey } from './bridge'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
@@ -492,6 +497,12 @@ interface ActiveRun {
   chainPriorCostUsd: number
   /** Agents already checked for an unpriced model (exec budget). */
   priceChecked: Set<string>
+  /** Bridged reports (multi-provider org charts): the child sessions of this run. Set at start when roles are bridged. */
+  bridge?: BridgedSessions
+  /** Agents the bridge wrapper emitted (remapped id -> the bridged role's connection); later upserts keep it. */
+  bridgedAgents?: Map<string, ConnectionId>
+  /** RunConnection per distinct connection of bridged roles, for pricing (never emitted, logged or persisted). */
+  bridgedConnections?: RunConnection[]
   /** Whether a model setting or id has a known price on this run's connection (exec budget). Set in start(). */
   modelPriced?: (model: string) => boolean
   /** teardown ran (it may be reached from both the finalizer and session.finished). */
@@ -671,6 +682,17 @@ export interface RunManagerOptions {
     Partial<Pick<AppSettings, 'modelPrices' | 'communityPrices' | 'skillAssistModel' | 'quickRunModel'>>
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
+  /**
+   * Bridged reports (multi-provider org charts): the RunConnection of a role on another connection / adapter than the
+   * run's root (ConnectionService.runConnectionFor). Throws a readable error when it cannot be used; the run is then
+   * refused. Missing = only 'mock' bridged roles can run ("This project has roles on other connections...").
+   */
+  resolveRoleConnection?: (project: Project, target: { connection: ConnectionId; adapter: ProviderId }) => RunConnection
+  /**
+   * RuntimeContext.connectionModels on setup runs: every connection a drafted role may name (connectionConfigured),
+   * with its tier mapping and catalog ids. Missing = drafts may not name another connection.
+   */
+  connectionModels?: () => { connection: ConnectionId; name: string; tierModels: Partial<Record<ModelTier, ModelRef>>; models: ModelRef[] }[]
   /**
    * The connection's fast-tier model for one-shot helpers (run titles). Missing or undefined = the adapter's
    * default model.
@@ -1184,6 +1206,46 @@ export class RunManager {
   }
 
   /**
+   * Bridged reports (multi-provider org charts): roles of a work run whose (connection, adapter) differs from the
+   * root's run in child sessions. Only team work runs of a stored project bridge; quick, single, setup-like,
+   * trust-restricted and virtual-project runs ignore the list. Refuses the run (throws) before it exists when a role's
+   * connection cannot be used or this build cannot run it. Returns the RunConnection per distinct pair.
+   */
+  private resolveBridged(
+    project: Project,
+    choice: AdapterChoice,
+    kind: RunKind,
+    flags: { quick?: unknown; team?: RunTeam; buildWorkspace?: string }
+  ): { bridged: BridgedRoleChoice[]; connections: Map<string, RunConnection> } {
+    const none = { bridged: [] as BridgedRoleChoice[], connections: new Map<string, RunConnection>() }
+    const list = choice.bridged ?? []
+    if (!list.length) return none
+    if (kind !== 'work' || flags.quick || flags.team === 'single' || isVirtualProjectId(project.id) || isTrustRestrictedRun({ quick: flags.quick as QuickRunInfo | undefined, buildWorkspace: flags.buildWorkspace })) return none
+    const settings = this.options.appSettings?.()
+    const problem = roleConnectionProblems(project, settings)[0]
+    if (problem) throw new Error(problem.message)
+    const connections = new Map<string, RunConnection>()
+    for (const b of list) {
+      const key = bridgeKey(b.connection, b.adapter)
+      if (connections.has(key)) continue
+      const roleName = project.roles.find((r) => r.id === b.roleId)?.name ?? b.roleId
+      const where = connectionName(b.connection, settings)
+      if (!this.adapters[b.adapter]) throw new Error(`Role ${logText(roleName)} runs on ${where}: no runtime adapter for provider "${b.adapter}".`)
+      if (b.adapter === 'mock') {
+        connections.set(key, { connection: b.connection, adapter: 'mock' })
+        continue
+      }
+      if (!this.options.resolveRoleConnection) throw new Error('This project has roles on other connections, which this build cannot run.')
+      try {
+        connections.set(key, this.options.resolveRoleConnection(project, { connection: b.connection, adapter: b.adapter }))
+      } catch (e) {
+        throw new Error(`Role ${logText(roleName)} runs on ${where}: ${(e as Error).message}`)
+      }
+    }
+    return { bridged: list, connections }
+  }
+
+  /**
    * The model of a setup or MCP assistant run's built-in role, from App settings, resolved against the run's
    * connection (builtinModel.ts). undefined for work runs or without settings (the role's default applies).
    */
@@ -1317,6 +1379,7 @@ export class RunManager {
     }
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
     const { adapter, choice } = this.choose(project, kind)
+    const bridging = this.resolveBridged(project, choice, kind, { quick, team, buildWorkspace })
     const connection = this.options.resolveConnection?.(project, choice)
     const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
     if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project, libraryEntries(), buildWorkspace ? { allowBuild: true } : {})
@@ -1399,24 +1462,31 @@ export class RunManager {
       chainPriorCostUsd: overrides?.execChainId ? this.chainPriorCost(project.id, overrides.execChainId, summary.id) : 0,
       priceChecked: new Set()
     }
+    if (bridging.bridged.length) {
+      active.bridgedAgents = new Map()
+      active.bridgedConnections = [...bridging.connections.values()]
+    }
     this.runs.set(summary.id, active)
     // Only the automatic resume of a waitForReset chain is the same invocation; nothing else re-applies the grant.
     if (allowWidening && overrides?.execMode && overrides.waitForReset) this.widenedRuns.add(summary.id)
     this.store.upsert(summary)
 
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
-    const pricing = (): PricingContext => {
+    const pricingFor = (on: ConnectionId): PricingContext => {
       const s = this.options.appSettings?.()
       const community = s?.communityPrices === false ? undefined : this.options.communityPrices?.()
+      // A bridged agent is priced by ITS connection: that RunConnection's pricing record and tier aliases.
+      const rc = on === choice.connection ? connection : active.bridgedConnections?.find((c) => c.connection === on)
       return {
-        connection: choice.connection,
+        connection: on,
         overrides: s?.modelPrices ?? [],
-        ...(connection?.pricing ? { pricing: connection.pricing } : {}),
+        ...(rc?.pricing ? { pricing: rc.pricing } : {}),
         catalog: this.options.catalog?.() ?? [],
-        aliases: aliasesFor(connection, connectionRecord(s ?? {}, choice.connection)?.tierModels),
+        aliases: aliasesFor(rc, connectionRecord(s ?? {}, on)?.tierModels),
         ...(community ? { community } : {})
       }
     }
+    const pricing = (): PricingContext => pricingFor(choice.connection)
     // Exec budgets (cli-spec 6.2(3)): a role's model setting is read like the pricing aliases (tier name -> the
     // connection's tier model) before its price is looked up. 'inherit' has no model of its own and is not checked.
     active.modelPriced = (setting: string): boolean => {
@@ -1432,7 +1502,7 @@ export class RunManager {
       return !!settingTier(resolved.model) && !Object.hasOwn(ctx.aliases ?? {}, resolved.model)
     }
 
-    const emit = (raw: RunEvent): void => {
+    const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
       if (raw.type === 'run.usage') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
@@ -1465,8 +1535,18 @@ export class RunManager {
           if (isLiveAgent(agent)) active.cutOff?.add(agent.id)
           agent = settleAgent(agent, !!active.cutOff?.has(agent.id), active.outcome, ROOT_AGENT_ID)
         }
+        // The connection is RunManager's: a bridged child's agent keeps the wrapper's value, everything else gets its
+        // role's connection (the root: the run's). An adapter's own value is replaced.
+        let on: ConnectionId
+        if (from?.bridged && agent.connection) {
+          on = agent.connection
+          active.bridgedAgents?.set(agent.id, on)
+        } else {
+          const role = agent.roleId ? project.roles.find((r) => r.id === agent.roleId) : undefined
+          on = active.bridgedAgents?.get(agent.id) ?? (role && agent.id !== ROOT_AGENT_ID ? roleConnection(role, project) : choice.connection)
+        }
         // Priced into a copy (never the adapter's object) before it is recorded or broadcast.
-        e = { ...e, agent: priceAgent(agent, pricing()) }
+        e = { ...e, agent: priceAgent({ ...agent, connection: on }, pricingFor(on)) }
       }
       const closing = e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')
       if (e.type === 'run.status') {
@@ -1827,6 +1907,20 @@ export class RunManager {
       // What the run sees (cli-spec 6.2(1)): the project with its overrides applied, before ctx exists, so the adapter's
       // permission mode and continuation host read the effective values from turn 1.
       const runProject = effectiveRunProject(project, summary.overrides, { allowWidening: active.allowWidening })
+      const bridge = bridging.bridged.length
+        ? new BridgedSessions({
+            adapters: this.adapters,
+            parent: () => ctx,
+            bridged: bridging.bridged,
+            connections: bridging.connections,
+            extraConnections: connection ? [connection] : [],
+            emit: (e) => emit(e, { bridged: true }),
+            agents: () => Object.values(active.record.agents),
+            connectionName: (id) => connectionName(id, this.options.appSettings?.()),
+            log: { info: (m) => log.info(m), warn: (m) => log.warn(m) }
+          })
+        : undefined
+      active.bridge = bridge
       const ctx: RuntimeContext = {
         run: summary,
         project: runProject,
@@ -1845,6 +1939,16 @@ export class RunManager {
         listRuns: () => this.listRunsFor(active),
         messageRun: (targetId, text) => this.messageRun(active, targetId, text),
         ...(connection ? { connection } : {}),
+        ...(bridge
+          ? {
+              bridge: { roles: () => bridge.roles(), spawn: (input) => bridge.spawn(input) },
+              agentConnection: (roleId: string) => {
+                const r = ctx.roles.find((x) => x.id === roleId)
+                return r ? roleConnection(r, live) : undefined
+              }
+            }
+          : {}),
+        ...(kind === 'setup' && this.options.connectionModels ? { connectionModels: () => this.options.connectionModels!() } : {}),
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) =>
           this.requestProposal(active, req, (saved) => {
@@ -2211,6 +2315,8 @@ export class RunManager {
     if (!a.summary.overrides?.execMode || a.finalizing || this.runs.get(a.summary.id) !== a) return
     const st = a.summary.status
     if (st !== 'running' && st !== 'idle') return
+    // A bridged child still working keeps the run open; poll like an adapter with pending work.
+    if (a.bridge?.hasActive()) return this.armSettle(a, EXEC_SETTLE_POLL_MS)
     const settlement = a.session?.settlement?.()
     const input = {
       settlement,
@@ -2931,6 +3037,8 @@ export class RunManager {
     }
     active.tornDown = true
     const runId = active.summary.id
+    // Bridged children never outlive their run.
+    if (active.bridge?.hasActive()) void active.bridge.stopAll('the run ended').catch(() => {})
     // A widened chain's grant lives only until its own automatic resume (an armed timer); any other end drops it.
     if (!this.resumeTimers.has(runId)) this.widenedRuns.delete(runId)
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
@@ -3058,7 +3166,7 @@ export class RunManager {
       held: a.held,
       limitHold: !!a.limitHold,
       agents: Object.values(a.record.agents),
-      peerMessagesPending: a.inbox.length > 0 || !!a.flushing,
+      peerMessagesPending: a.inbox.length > 0 || !!a.flushing || !!a.bridge?.hasActive(),
       ...(settlement ? { settlement } : {})
     })
   }
@@ -3796,6 +3904,8 @@ export class RunManager {
   async interrupt(runId: string): Promise<void> {
     const active = this.runs.get(runId)
     if (active?.session) active.held = true
+    // A bridged report works for the delegating agent, not for the user's next message: an interrupt ends it.
+    await active?.bridge?.stopAll('the user interrupted the run')
     await active?.session?.interrupt()
   }
 
@@ -3861,7 +3971,10 @@ export class RunManager {
   private stopSession(r: ActiveRun): Promise<void> | undefined {
     if (!r.session) return undefined
     if (r.stopCall) return r.stopCall
-    const call = r.session.stop()
+    // Bridged children go first (their spawns resolve "Stopped"); the root's stop starts in the same tick.
+    const children = r.bridge?.hasActive() ? r.bridge.stopAll(r.endedBy === 'app' ? 'OrgAI is closing' : 'the run was stopped') : undefined
+    const root = r.session.stop()
+    const call = children ? Promise.all([children, root]).then(() => undefined) : root
     r.stopCall = call
     call.catch(() => {
       if (r.stopCall === call) r.stopCall = undefined
