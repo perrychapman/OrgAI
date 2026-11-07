@@ -6,12 +6,17 @@
  *   connect <id>                          configure: enables, probes, discovers models and remaps roles
  *   login openai [--device-code|--browser] configure: the ChatGPT sign-in (cli-spec 6.3(5)); device code by default
  *                                         over SSH or on Linux without a display
- *   logout <id> [--yes] | set-default <id|auto> | set-secret litellm (--from-env VAR | --stdin | --clear)
+ *   logout <id> [--yes] | set-default <id|auto> | set-secret <proxy id> (--from-env VAR | --stdin | --clear)
  *   update <id> [--base-url <url|none>] [--enable|--disable]
+ *   proxy add --name N --anthropic-url U [--openai-url U] [--models-url U] [--kind litellm|openai-compatible]
+ *             [--key-env VAR | --key-stdin] [--connect]
+ *   proxy edit <id> [--name N] [--anthropic-url U] [--openai-url U|none] [--models-url U|none] [--enable|--disable]
+ *   proxy remove <id> [--yes]
  *
- * Secrets never travel on argv and are never printed (the LiteLLM key goes in through readSecretValue only).
+ * Any number of named proxies exist besides anthropic and openai; ids are 'litellm' (the migrated one) or
+ * `proxy-<8 hex>`. Secrets never travel on argv and are never printed (a proxy key goes in through readSecretValue only).
  */
-import { CONNECTION_IDS, type AppSettings, type ConnectionEvent, type ConnectionId, type ConnectionInfo, type ConnectionLoginMethod, type ConnectionLoginStart, type ConnectionLoginUpdate, type ConnectionStatus, type HostScope, type Project, type ProviderConnection, type RemapResult } from '../../shared/types'
+import { BUILTIN_CONNECTION_IDS, PROXY_KINDS, isBuiltinConnectionId, isProxyConnection, isProxyConnectionId, type AppSettings, type ConnectionEvent, type ConnectionId, type ConnectionInfo, type ConnectionLoginMethod, type ConnectionLoginStart, type ConnectionLoginUpdate, type ConnectionStatus, type HostScope, type Project, type ProviderConnection, type ProxyConnection, type ProxyCreateInput, type ProxyKind, type ProxyRemoveResult, type RemapResult } from '../../shared/types'
 import { formatDateTime } from '../../shared/view/dates'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, isRemoteSession, readSecretValue, runSubcommands, subscribeTopics, withHost } from '../manage'
@@ -22,15 +27,38 @@ export const READ: HostScope[] = ['read']
 export const OPERATE: HostScope[] = ['read', 'operate']
 export const CONFIGURE: HostScope[] = ['read', 'configure']
 
-export const CONNECTION_LABELS: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+/** Display names of the fixed ids. A proxy is named by its record (`connectionLabel`); an id with no entry shows as itself. */
+export const CONNECTION_LABELS: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 
-const USAGE = 'connections <list|show|test|connect|login|logout|set-default|set-secret|update> [options]'
+/** The name to show for a connection id (proxy names need the record; see `connectionLabel`). */
+export function labelOfId(id: string, names?: Readonly<Record<string, string>>): string {
+  return names?.[id] ?? CONNECTION_LABELS[id] ?? safeLine(id)
+}
 
-/** A connection id argument; anything else is exit 2. */
+/** The name to show for a connection record: a proxy's own name, else the built-in label. */
+export function connectionLabel(c: ProviderConnection): string {
+  return isProxyConnection(c) ? safeLine(c.name) : labelOfId(c.id)
+}
+
+const USAGE = 'connections <list|show|test|connect|login|logout|set-default|set-secret|update|proxy> [options]'
+const PROXY_USAGE = 'connections proxy <add|edit|remove> [options]'
+
+/**
+ * A connection id argument: anthropic, openai or a proxy id by shape ('litellm' or proxy-<8 hex>); anything else is
+ * exit 2. Whether the proxy exists is the host's answer.
+ */
 export function connectionArg(raw: string | undefined, what = 'a connection'): ConnectionId {
-  if (raw === undefined) throw new CliError(`Name ${what}: ${CONNECTION_IDS.join(', ')}.`, EXIT.usage)
-  if (!(CONNECTION_IDS as readonly string[]).includes(raw)) throw new CliError(`Unknown connection "${safeLine(raw).slice(0, 40)}". Use one of: ${CONNECTION_IDS.join(', ')}.`, EXIT.usage)
-  return raw as ConnectionId
+  const hint = `${BUILTIN_CONNECTION_IDS.join(', ')}, litellm or a proxy id (see \`orgai connections list\`)`
+  if (raw === undefined) throw new CliError(`Name ${what}: ${hint}.`, EXIT.usage)
+  if (!isBuiltinConnectionId(raw) && !isProxyConnectionId(raw)) throw new CliError(`Unknown connection "${safeLine(raw).slice(0, 40)}". Use one of: ${hint}.`, EXIT.usage)
+  return raw
+}
+
+/** A proxy id argument; a built-in or any other shape is exit 2. */
+export function proxyArg(raw: string | undefined): string {
+  if (raw === undefined) throw new CliError('Name a proxy by its id (see `orgai connections list`).', EXIT.usage)
+  if (!isProxyConnectionId(raw)) throw new CliError(`"${safeLine(raw).slice(0, 40)}" is not a proxy id (litellm or proxy-<8 hex>).`, EXIT.usage)
+  return raw
 }
 
 function onePositional(positionals: string[], what: string): string | undefined {
@@ -85,7 +113,7 @@ export function connectionJson(info: ConnectionInfo, mode?: DefaultMode): Json {
   const c = info.connection
   return {
     id: c.id,
-    label: CONNECTION_LABELS[c.id],
+    label: connectionLabel(c),
     enabled: c.enabled,
     status: info.status.state,
     ...(info.status.detail ? { detail: info.status.detail } : {}),
@@ -97,9 +125,19 @@ export function connectionJson(info: ConnectionInfo, mode?: DefaultMode): Json {
     ...(info.modelsRefreshedAt ? { modelsRefreshedAt: info.modelsRefreshedAt } : {}),
     ...(info.modelsError ? { modelsError: info.modelsError } : {}),
     tierModels: { ...c.tierModels },
-    ...(c.id === 'anthropic' ? { auth: c.auth.kind } : {}),
-    ...(c.id === 'openai' ? { auth: c.auth.kind, ...(c.auth.kind === 'apiKey' ? { envVar: c.auth.envVar } : {}) } : {}),
-    ...(c.id === 'litellm' ? { baseUrl: c.baseUrl, hasApiKey: c.hasApiKey } : {})
+    ...(c.id === 'anthropic' && !isProxyConnection(c) ? { auth: c.auth.kind } : {}),
+    ...(c.id === 'openai' && !isProxyConnection(c) ? { auth: c.auth.kind, ...(c.auth.kind === 'apiKey' ? { envVar: c.auth.envVar } : {}) } : {}),
+    ...(isProxyConnection(c)
+      ? {
+          kind: c.kind,
+          anthropicBaseUrl: c.anthropicBaseUrl,
+          // Kept for scripts written against the single LiteLLM connection.
+          baseUrl: c.anthropicBaseUrl,
+          ...(c.openaiBaseUrl ? { openaiBaseUrl: c.openaiBaseUrl } : {}),
+          ...(c.modelsUrl ? { modelsUrl: c.modelsUrl } : {}),
+          hasApiKey: c.hasApiKey
+        }
+      : {})
   }
 }
 
@@ -120,17 +158,38 @@ async function listInfos(client: HostClient): Promise<ConnectionInfo[]> {
 
 // ---------- list / show ----------
 
+async function labelFor(client: HostClient, id: string): Promise<string> {
+  return isBuiltinConnectionId(id) ? labelOfId(id) : labelOfId(id, await proxyNames(client))
+}
+
+/** Built-ins first (anthropic, openai), then the proxies in the order the host listed them. */
+function orderedInfos(infos: ConnectionInfo[]): ConnectionInfo[] {
+  const builtin = infos.filter((i) => isBuiltinConnectionId(i.connection.id))
+  return [...builtin, ...infos.filter((i) => !isBuiltinConnectionId(i.connection.id))]
+}
+
+/** id -> name of every proxy the host lists; best effort (a failed list gives {}). */
+async function proxyNames(client: HostClient): Promise<Record<string, string>> {
+  const names: Record<string, string> = {}
+  try {
+    for (const i of await listInfos(client)) if (isProxyConnection(i.connection)) names[i.connection.id] = i.connection.name
+  } catch {
+    // Names are cosmetic.
+  }
+  return names
+}
+
 const runList = async (ctx: CliContext, args: string[]): Promise<number> => {
   noPositionals(parseFlags(args, {}).positionals)
   return withHost(ctx, READ, async (client) => {
     const infos = await listInfos(client)
     const mode = defaultModeOf(await settingsOf(client))
-    emit(ctx, { connections: infos.map((i) => connectionJson(i, mode)) }, () => {
+    emit(ctx, { connections: orderedInfos(infos).map((i) => connectionJson(i, mode)) }, () => {
       const st = styleFor(ctx)
       return table(
         [{ header: 'CONNECTION', min: 9 }, { header: 'ENABLED', min: 3 }, { header: 'STATUS', min: 6 }, { header: 'ACCOUNT', flex: true, min: 6 }, { header: 'DEFAULT', min: 7 }],
-        infos.map((i) => [
-          `${i.connection.id} (${CONNECTION_LABELS[i.connection.id]})`,
+        orderedInfos(infos).map((i) => [
+          `${i.connection.id} (${connectionLabel(i.connection)})`,
           i.connection.enabled ? 'yes' : 'no',
           STATE_WORDS[i.status.state] ?? safeLine(i.status.state),
           safeLine(i.status.account ?? ''),
@@ -146,15 +205,17 @@ const runList = async (ctx: CliContext, args: string[]): Promise<number> => {
 
 function showLines(info: ConnectionInfo, mode: DefaultMode): string[] {
   const c = info.connection
-  const lines = [`${CONNECTION_LABELS[c.id]} (${c.id})`, `  Enabled: ${c.enabled ? 'yes' : 'no'}`, `  Status: ${statusLine(info.status)}`]
+  const lines = [`${connectionLabel(c)} (${c.id})`, `  Enabled: ${c.enabled ? 'yes' : 'no'}`, `  Status: ${statusLine(info.status)}`]
   if (info.status.account) lines.push(`  Account: ${safeLine(info.status.account)}`)
   if (info.isDefault) lines.push(`  ${defaultWord(mode)}`)
-  if (c.id === 'anthropic') lines.push(`  Auth: ${safeLine(c.auth.kind)}`)
-  if (c.id === 'openai') lines.push(`  Auth: ${c.auth.kind === 'apiKey' ? `API key from ${safeLine(c.auth.envVar)}` : 'ChatGPT sign-in'}`)
-  if (c.id === 'litellm') {
-    lines.push(`  Base URL: ${c.baseUrl ? safeLine(c.baseUrl) : '(not set)'}`)
+  if (isProxyConnection(c)) {
+    lines.push(`  Kind: ${safeLine(c.kind)}`)
+    lines.push(`  Anthropic URL: ${c.anthropicBaseUrl ? safeLine(c.anthropicBaseUrl) : '(not set)'}`)
+    if (c.openaiBaseUrl) lines.push(`  OpenAI URL: ${safeLine(c.openaiBaseUrl)}`)
+    if (c.modelsUrl) lines.push(`  Models URL: ${safeLine(c.modelsUrl)}`)
     lines.push(`  API key: ${c.hasApiKey ? 'stored' : 'not set'}`)
-  }
+  } else if (c.id === 'anthropic') lines.push(`  Auth: ${safeLine(c.auth.kind)}`)
+  else if (c.id === 'openai') lines.push(`  Auth: ${c.auth.kind === 'apiKey' ? `API key from ${safeLine(c.auth.envVar)}` : 'ChatGPT sign-in'}`)
   lines.push(`  Models: ${info.modelCount}${info.modelsRefreshedAt ? `, refreshed ${formatDateTime(info.modelsRefreshedAt)}` : ''}`)
   if (info.modelsError) lines.push(`  Last refresh failed: ${safeLine(info.modelsError)}`)
   const tiers = Object.entries(c.tierModels).filter(([, m]) => !!m)
@@ -166,7 +227,7 @@ const runShow = async (ctx: CliContext, args: string[]): Promise<number> => {
   const id = connectionArg(onePositional(parseFlags(args, {}).positionals, 'the connection'))
   return withHost(ctx, READ, async (client) => {
     const info = (await listInfos(client)).find((i) => i.connection.id === id)
-    if (!info) throw new CliError(`The host did not list ${CONNECTION_LABELS[id]}.`, EXIT.failure)
+    if (!info) throw new CliError(`The host did not list ${labelOfId(id)}.`, EXIT.failure)
     const mode = defaultModeOf(await settingsOf(client))
     emit(ctx, { connection: connectionJson(info, mode) }, () => showLines(info, mode))
     return EXIT.ok
@@ -180,8 +241,9 @@ const runTest = async (ctx: CliContext, args: string[]): Promise<number> => {
   return withHost(ctx, OPERATE, async (client) => {
     const status = await hostCall<ConnectionStatus>(client, 'connections:test', [id])
     const code = statusExit(status)
+    const label = await labelFor(client, id)
     emit(ctx, { id, status: status.state, ...(status.detail ? { detail: status.detail } : {}), ...(status.account ? { account: status.account } : {}), ok: code === EXIT.ok }, () => [
-      `${CONNECTION_LABELS[id]}: ${statusLine(status)}`,
+      `${label}: ${statusLine(status)}`,
       ...(status.account ? [`Account: ${safeLine(status.account)}`] : [])
     ])
     return code
@@ -215,7 +277,7 @@ const runConnect = async (ctx: CliContext, args: string[]): Promise<number> => {
       await new Promise((r) => setTimeout(r, 20))
       const projects = remaps.length ? await client.call<Project[]>('projects:list', []).catch(() => [] as Project[]) : []
       const code = statusExit(info.status)
-      emit(ctx, { connection: connectionJson(info), remapped: remaps }, () => [`${CONNECTION_LABELS[id]}: ${statusLine(info.status)}`, ...remapLines(remaps, Array.isArray(projects) ? projects : [])])
+      emit(ctx, { connection: connectionJson(info), remapped: remaps }, () => [`${connectionLabel(info.connection)}: ${statusLine(info.status)}`, ...remapLines(remaps, Array.isArray(projects) ? projects : [])])
       return code
     } finally {
       off()
@@ -228,10 +290,9 @@ const runConnect = async (ctx: CliContext, args: string[]): Promise<number> => {
 /** Swappable in tests: how long a sign-in may wait for its result. */
 export const loginDeps = { timeoutMs: 15 * 60_000 }
 
-const LOGIN_HINTS: Record<Exclude<ConnectionId, 'openai'>, string> = {
-  anthropic: 'Anthropic has no sign-in here: run `claude` and type /login, or set an API key, then `orgai connections test anthropic`.',
-  litellm: 'LiteLLM has no sign-in: store its key with `orgai connections set-secret litellm --from-env VAR` (or --stdin).'
-}
+const ANTHROPIC_LOGIN_HINT = 'Anthropic has no sign-in here: run `claude` and type /login, or set an API key, then `orgai connections test anthropic`.'
+const loginHint = (id: string): string =>
+  id === 'anthropic' ? ANTHROPIC_LOGIN_HINT : `A proxy has no sign-in: store its key with \`orgai connections set-secret ${id} --from-env VAR\` (or --stdin).`
 
 /** deviceCode with --device-code or on a remote session (SSH, Linux without a display); browser otherwise. */
 export function loginMethodFor(flags: { deviceCode?: boolean; browser?: boolean }, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): ConnectionLoginMethod {
@@ -267,7 +328,7 @@ function startJson(start: ConnectionLoginStart): Json {
 const runLogin = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, { 'device-code': { type: 'boolean' }, browser: { type: 'boolean' } })
   const id = connectionArg(onePositional(positionals, 'the connection'))
-  if (id !== 'openai') throw new CliError(LOGIN_HINTS[id], EXIT.usage)
+  if (id !== 'openai') throw new CliError(loginHint(id), EXIT.usage)
   if (values['device-code'] && values.browser) throw new CliError('Give --device-code or --browser, not both.', EXIT.usage)
   const remote = isRemoteSession(ctx.env, ctx.platform)
   const method = loginMethodFor({ deviceCode: values['device-code'], browser: values.browser }, ctx.env, ctx.platform)
@@ -354,13 +415,13 @@ const runLogin = async (ctx: CliContext, args: string[]): Promise<number> => {
 const runLogout = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, { yes: { type: 'boolean', short: 'y' } })
   const id = connectionArg(onePositional(positionals, 'the connection'))
-  if (!(await confirm(ctx, `Sign out of ${CONNECTION_LABELS[id]}?`, !!values.yes))) {
+  if (!(await confirm(ctx, `Sign out of ${labelOfId(id)}?`, !!values.yes))) {
     printText(ctx, 'Nothing changed.')
     return EXIT.failure
   }
   return withHost(ctx, CONFIGURE, async (client) => {
     const info = await hostCall<ConnectionInfo>(client, 'connections:logout', [id])
-    emit(ctx, { connection: connectionJson(info) }, () => [`${CONNECTION_LABELS[id]}: ${statusLine(info.status)}`])
+    emit(ctx, { connection: connectionJson(info) }, () => [`${connectionLabel(info.connection)}: ${statusLine(info.status)}`])
     return EXIT.ok
   })
 }
@@ -374,7 +435,7 @@ const runSetDefault = async (ctx: CliContext, args: string[]): Promise<number> =
     const def = list.find((i) => i.isDefault)
     const mode: DefaultMode = input === null ? 'automatic' : 'chosen'
     emit(ctx, { defaultConnection: def?.connection.id ?? null, defaultMode: mode, connections: list.map((i) => connectionJson(i, mode)) }, () =>
-      def ? `Default connection: ${CONNECTION_LABELS[def.connection.id]} (${mode === 'chosen' ? 'Chosen' : 'Automatic'}).` : 'Default connection updated.'
+      def ? `Default connection: ${connectionLabel(def.connection)} (${mode === 'chosen' ? 'Chosen' : 'Automatic'}).` : 'Default connection updated.'
     )
     return EXIT.ok
   })
@@ -387,39 +448,66 @@ const runSetSecret = async (ctx: CliContext, args: string[]): Promise<number> =>
   // Never echo a second word: it may be a key typed on the command line.
   if (positionals.length > 1) throw new CliError('set-secret takes the connection only; secrets are never taken as arguments. Use --from-env <VAR> or --stdin.', EXIT.usage)
   const id = connectionArg(positionals[0])
-  if (id !== 'litellm') throw new CliError(`Only LiteLLM keeps a key in OrgAI. ${id === 'anthropic' ? LOGIN_HINTS.anthropic : 'Sign in to OpenAI with `orgai connections login openai`.'}`, EXIT.usage)
+  if (!isProxyConnectionId(id)) throw new CliError(`Only a proxy keeps a key in OrgAI. ${id === 'anthropic' ? ANTHROPIC_LOGIN_HINT : 'Sign in to OpenAI with `orgai connections login openai`.'}`, EXIT.usage)
   if (values.clear && (values['from-env'] !== undefined || values.stdin)) throw new CliError('--clear takes no key; leave out --from-env and --stdin.', EXIT.usage)
-  const apiKey = values.clear ? null : await readSecretValue(ctx, { fromEnv: values['from-env'], stdin: values.stdin, what: 'the LiteLLM API key' })
+  const apiKey = values.clear ? null : await readSecretValue(ctx, { fromEnv: values['from-env'], stdin: values.stdin, what: 'the proxy API key' })
   return withHost(ctx, CONFIGURE, async (client) => {
-    const info = await refusable<ConnectionInfo>(client, 'connections:setSecret', [{ id: 'litellm', apiKey }])
+    const info = await refusable<ConnectionInfo>(client, 'connections:setSecret', [{ id, apiKey }])
     const message = apiKey === null ? 'Key removed.' : 'Key saved. Test and connect to apply.'
-    emit(ctx, { id: 'litellm', hasApiKey: info.connection.id === 'litellm' ? info.connection.hasApiKey : apiKey !== null, message, status: info.status.state }, () => message)
+    emit(ctx, { id, hasApiKey: isProxyConnection(info.connection) ? info.connection.hasApiKey : apiKey !== null, message, status: info.status.state }, () => message)
     return EXIT.ok
   })
 }
 
-/** A --base-url value: 'none' clears it; else an http(s) URL without credentials. */
-export function baseUrlArg(raw: string): string {
+/** A URL flag value: 'none' (or '') clears it; else an http(s) URL without credentials, trailing slashes dropped. */
+function urlFlag(flag: string, raw: string): string {
   if (raw === 'none' || raw === '') return ''
   let url: URL
   try {
     url = new URL(raw)
   } catch {
-    throw new CliError(`--base-url needs an http or https URL (or none), not "${safeLine(raw).slice(0, 80)}".`, EXIT.usage)
+    throw new CliError(`${flag} needs an http or https URL (or none), not "${safeLine(raw).slice(0, 80)}".`, EXIT.usage)
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new CliError('--base-url needs an http or https URL (or none).', EXIT.usage)
-  if (url.username || url.password) throw new CliError('--base-url must not carry a user name or password; store the key with set-secret.', EXIT.usage)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new CliError(`${flag} needs an http or https URL (or none).`, EXIT.usage)
+  if (url.username || url.password) throw new CliError(`${flag} must not carry a user name or password; store the key with set-secret.`, EXIT.usage)
   return raw.replace(/\/+$/, '')
 }
 
+/** A --base-url value: 'none' clears it; else an http(s) URL without credentials. */
+export function baseUrlArg(raw: string): string {
+  return urlFlag('--base-url', raw)
+}
+
+/** What `update` and `proxy edit` may change. A '' URL clears it. */
+export interface ConnectionChange {
+  /** Legacy `update --base-url`: the proxy's Anthropic URL. */
+  baseUrl?: string
+  anthropicUrl?: string
+  openaiUrl?: string
+  modelsUrl?: string
+  name?: string
+  enabled?: boolean
+}
+
 /** The connection record with the requested changes. */
-export function updatedConnection(c: ProviderConnection, change: { baseUrl?: string; enabled?: boolean }): ProviderConnection {
+export function updatedConnection(c: ProviderConnection, change: ConnectionChange): ProviderConnection {
   const next = { ...c, ...(change.enabled !== undefined ? { enabled: change.enabled } : {}) } as ProviderConnection
-  if (change.baseUrl !== undefined) {
-    if (next.id !== 'litellm') throw new CliError('Only LiteLLM has a base URL.', EXIT.usage)
-    return { ...next, baseUrl: change.baseUrl }
+  const proxyChange = change.baseUrl !== undefined || change.anthropicUrl !== undefined || change.openaiUrl !== undefined || change.modelsUrl !== undefined || change.name !== undefined
+  if (!proxyChange) return next
+  if (!isProxyConnection(next)) throw new CliError('Only a proxy has a name or URLs.', EXIT.usage)
+  const p: ProxyConnection = { ...next }
+  const anthropic = change.anthropicUrl ?? change.baseUrl
+  if (anthropic !== undefined) p.anthropicBaseUrl = anthropic
+  if (change.openaiUrl !== undefined) {
+    if (change.openaiUrl === '') delete p.openaiBaseUrl
+    else p.openaiBaseUrl = change.openaiUrl
   }
-  return next
+  if (change.modelsUrl !== undefined) {
+    if (change.modelsUrl === '') delete p.modelsUrl
+    else p.modelsUrl = change.modelsUrl
+  }
+  if (change.name !== undefined) p.name = change.name
+  return p
 }
 
 const runUpdate = async (ctx: CliContext, args: string[]): Promise<number> => {
@@ -427,11 +515,15 @@ const runUpdate = async (ctx: CliContext, args: string[]): Promise<number> => {
   const id = connectionArg(onePositional(positionals, 'the connection'))
   if (values.enable && values.disable) throw new CliError('Give --enable or --disable, not both.', EXIT.usage)
   if (values['base-url'] === undefined && !values.enable && !values.disable) throw new CliError('Nothing to change: give --base-url, --enable or --disable.', EXIT.usage)
-  if (values['base-url'] !== undefined && id !== 'litellm') throw new CliError('Only LiteLLM has a base URL.', EXIT.usage)
-  const change = { ...(values['base-url'] !== undefined ? { baseUrl: baseUrlArg(values['base-url']) } : {}), ...(values.enable ? { enabled: true } : values.disable ? { enabled: false } : {}) }
+  if (values['base-url'] !== undefined && !isProxyConnectionId(id)) throw new CliError('Only a proxy has a base URL.', EXIT.usage)
+  const change: ConnectionChange = { ...(values['base-url'] !== undefined ? { baseUrl: baseUrlArg(values['base-url']) } : {}), ...(values.enable ? { enabled: true } : values.disable ? { enabled: false } : {}) }
+  return applyChange(ctx, id, change)
+}
+
+async function applyChange(ctx: CliContext, id: ConnectionId, change: ConnectionChange): Promise<number> {
   return withHost(ctx, CONFIGURE, async (client) => {
     const current = (await listInfos(client)).find((i) => i.connection.id === id)
-    if (!current) throw new CliError(`The host did not list ${CONNECTION_LABELS[id]}.`, EXIT.failure)
+    if (!current) throw new CliError(`The host did not list ${labelOfId(id)}.`, EXIT.failure)
     const info = await refusable<ConnectionInfo>(client, 'connections:update', [updatedConnection(current.connection, change)])
     const mode = defaultModeOf(await settingsOf(client))
     emit(ctx, { connection: connectionJson(info, mode) }, () => showLines(info, mode))
@@ -439,10 +531,106 @@ const runUpdate = async (ctx: CliContext, args: string[]): Promise<number> => {
   })
 }
 
+// ---------- proxy add / edit / remove ----------
+
+function kindFlag(raw: string | undefined): ProxyKind | undefined {
+  if (raw === undefined) return undefined
+  if (!(PROXY_KINDS as readonly string[]).includes(raw)) throw new CliError(`--kind must be one of: ${PROXY_KINDS.join(', ')}.`, EXIT.usage)
+  return raw as ProxyKind
+}
+
+const runProxyAdd = async (ctx: CliContext, args: string[]): Promise<number> => {
+  const { values, positionals } = parseFlags(args, {
+    name: { type: 'string' },
+    'anthropic-url': { type: 'string' },
+    'openai-url': { type: 'string' },
+    'models-url': { type: 'string' },
+    kind: { type: 'string' },
+    'key-env': { type: 'string' },
+    'key-stdin': { type: 'boolean' },
+    connect: { type: 'boolean' }
+  })
+  // Never echo a positional: it may be a key typed on the command line.
+  if (positionals.length > 0) throw new CliError('proxy add takes options only; the key is never an argument. Use --key-env <VAR> or --key-stdin.', EXIT.usage)
+  if (values.name === undefined || values.name.trim() === '') throw new CliError('Give the proxy a name with --name.', EXIT.usage)
+  if (values['anthropic-url'] === undefined) throw new CliError('Give the proxy address with --anthropic-url.', EXIT.usage)
+  const anthropicBaseUrl = urlFlag('--anthropic-url', values['anthropic-url'])
+  if (anthropicBaseUrl === '') throw new CliError('--anthropic-url needs a URL.', EXIT.usage)
+  const input: ProxyCreateInput = { name: values.name, anthropicBaseUrl }
+  const kind = kindFlag(values.kind)
+  if (kind) input.kind = kind
+  const openai = values['openai-url'] === undefined ? '' : urlFlag('--openai-url', values['openai-url'])
+  if (openai) input.openaiBaseUrl = openai
+  const models = values['models-url'] === undefined ? '' : urlFlag('--models-url', values['models-url'])
+  if (models) input.modelsUrl = models
+  const wantsKey = values['key-env'] !== undefined || values['key-stdin']
+  // Before withHost: reading takes the variable out of the environment so a host this command starts never inherits it.
+  if (wantsKey) input.apiKey = await readSecretValue(ctx, { fromEnv: values['key-env'], stdin: values['key-stdin'], what: 'the proxy API key' })
+  return withHost(ctx, CONFIGURE, async (client) => {
+    const created = await refusable<ConnectionInfo>(client, 'connections:createProxy', [input])
+    const id = created.connection.id
+    let info = created
+    let code: number = EXIT.ok
+    if (values.connect) {
+      info = await refusable<ConnectionInfo>(client, 'connections:connect', [id])
+      code = statusExit(info.status)
+    }
+    const message = values.connect ? statusLine(info.status) : 'Added. Test and connect to apply.'
+    emit(ctx, { id, added: true, connection: connectionJson(info), message }, () => [`Added ${connectionLabel(info.connection)} (${id}).`, values.connect ? statusLine(info.status) : 'Test and connect it to apply: orgai connections connect ' + id])
+    return code
+  })
+}
+
+const runProxyEdit = async (ctx: CliContext, args: string[]): Promise<number> => {
+  const { values, positionals } = parseFlags(args, {
+    name: { type: 'string' },
+    'anthropic-url': { type: 'string' },
+    'openai-url': { type: 'string' },
+    'models-url': { type: 'string' },
+    enable: { type: 'boolean' },
+    disable: { type: 'boolean' }
+  })
+  const id = proxyArg(onePositional(positionals, 'the proxy'))
+  if (values.enable && values.disable) throw new CliError('Give --enable or --disable, not both.', EXIT.usage)
+  const change: ConnectionChange = {}
+  if (values.name !== undefined) {
+    if (values.name.trim() === '') throw new CliError('--name cannot be empty.', EXIT.usage)
+    change.name = values.name
+  }
+  if (values['anthropic-url'] !== undefined) {
+    change.anthropicUrl = urlFlag('--anthropic-url', values['anthropic-url'])
+    if (change.anthropicUrl === '') throw new CliError('--anthropic-url needs a URL.', EXIT.usage)
+  }
+  if (values['openai-url'] !== undefined) change.openaiUrl = urlFlag('--openai-url', values['openai-url'])
+  if (values['models-url'] !== undefined) change.modelsUrl = urlFlag('--models-url', values['models-url'])
+  if (values.enable) change.enabled = true
+  if (values.disable) change.enabled = false
+  if (Object.keys(change).length === 0) throw new CliError('Nothing to change: give --name, --anthropic-url, --openai-url, --models-url, --enable or --disable.', EXIT.usage)
+  return applyChange(ctx, id, change)
+}
+
+const runProxyRemove = async (ctx: CliContext, args: string[]): Promise<number> => {
+  const { values, positionals } = parseFlags(args, { yes: { type: 'boolean', short: 'y' } })
+  const id = proxyArg(onePositional(positionals, 'the proxy'))
+  if (!(await confirm(ctx, `Remove the proxy ${id}? Its stored key and model list go with it.`, !!values.yes))) {
+    printText(ctx, 'Nothing changed.')
+    return EXIT.failure
+  }
+  return withHost(ctx, CONFIGURE, async (client) => {
+    const result = await refusable<ProxyRemoveResult>(client, 'connections:removeProxy', [id])
+    const list = Array.isArray(result?.connections) ? result.connections : []
+    emit(ctx, { id, removed: true, connections: orderedInfos(list).map((i) => connectionJson(i)) }, () => `Removed ${id}.`)
+    return EXIT.ok
+  })
+}
+
+const runProxy = async (ctx: CliContext, args: string[]): Promise<number> =>
+  runSubcommands(ctx, args, { add: runProxyAdd, edit: runProxyEdit, remove: runProxyRemove }, PROXY_USAGE)
+
 export const runConnections: CommandFn = (ctx, args) =>
   runSubcommands(
     ctx,
     args,
-    { list: runList, show: runShow, test: runTest, connect: runConnect, login: runLogin, logout: runLogout, 'set-default': runSetDefault, 'set-secret': runSetSecret, update: runUpdate },
+    { list: runList, show: runShow, test: runTest, connect: runConnect, login: runLogin, logout: runLogout, 'set-default': runSetDefault, 'set-secret': runSetSecret, update: runUpdate, proxy: runProxy },
     USAGE
   )

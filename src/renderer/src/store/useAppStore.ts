@@ -1730,7 +1730,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           manual: 'after a manual update on'
         }
         const first = results[0]
-        const name = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }[first.connection]
+        const names: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+        const proxyName = get().connections?.find((c) => c.connection.id === first.connection)?.connection
+        const name = names[first.connection] ?? (proxyName && 'name' in proxyName ? proxyName.name : undefined) ?? first.connection
         void get()
           .loadProjects()
           .then(() => get().pushRemapNotice(`${cause[first.reason] ?? 'after a change to'} ${name}`, results, before))

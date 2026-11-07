@@ -66,7 +66,7 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, connectionName, connectionRecord, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
@@ -74,7 +74,7 @@ import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, isBuiltinConnectionId, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
@@ -618,7 +618,7 @@ export interface RunManagerOptions {
   communityPrices?: () => Record<string, ModelPrice> | undefined
   /** Delay between a turn ending and the automatic-continue check (RuntimeContext.continuationDelayMs). */
   continuationDelayMs?: number
-  /** The model catalog used to decide which adapter a LiteLLM project runs on (adapterForProject). Default: empty. */
+  /** The model catalog used to decide which adapter a proxy project runs on (adapterForProject). Default: empty. */
   catalog?: () => ProviderModel[]
   /**
    * App settings for the built-in roles' models (setupModel, mcpAssistModel) and the connections' tier mappings.
@@ -749,7 +749,6 @@ export function mergeInstallEdit(requested: McpServerSpec, edit: McpServerSpec |
 
 /** Human label of a model family for refusal messages. */
 const FAMILY_LABEL: Record<string, string> = { claude: 'Claude', openai: 'OpenAI', other: 'other' }
-const CONNECTION_LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 /** A project or role name for one log line: control characters become spaces, at most 80 chars. */
 const logText = (s: string): string => s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').slice(0, 80)
 
@@ -1074,7 +1073,7 @@ export class RunManager {
     if (input.tier === 'fast') {
       model = this.options.fastModel?.(project, choice) ?? (choice.adapter === 'claude' ? 'haiku' : undefined)
     } else if (choice.adapter !== 'mock') {
-      const tiered = this.options.appSettings?.().connections?.[choice.connection]?.tierModels?.everyday
+      const tiered = connectionRecord(this.options.appSettings?.() ?? {}, choice.connection)?.tierModels?.everyday
       const fromRole = project.roles.find((r) => r.tier === 'everyday' && r.model !== 'inherit')?.model
       model = (typeof tiered === 'string' && tiered.trim()) || fromRole || undefined
     }
@@ -1093,18 +1092,22 @@ export class RunManager {
 
   /**
    * Pick the adapter for a run (mixedFamilyRefusal decides whether a work run whose roles span model families may
-   * start). On LiteLLM a mixed chart starts with one info line naming the roles on another family; setup-like runs
+   * start). On a proxy a mixed chart starts with one info line naming the roles on another family; setup-like runs
    * use a built-in role and only need the root's adapter.
    */
   private choose(project: Project, kind: RunKind): { adapter: RuntimeAdapter; choice: AdapterChoice } {
     const catalog = this.options.catalog?.() ?? []
     const choice = adapterForProject(project, catalog)
+    const known = this.options.appSettings?.()
+    if (known && choice.adapter !== 'mock' && !isKnownConnection(known, choice.connection)) {
+      throw new Error('That connection no longer exists. Pick another in Project settings > Connection.')
+    }
     if (!isSetupLikeRun(kind) && choice.mismatched.length) {
       const bad = choice.mismatched.map((id) => project.roles.find((r) => r.id === id)).filter((r): r is Role => !!r)
       const names = (bad.length ? bad.map((r) => r.name) : choice.mismatched).map((n) => logText(String(n)))
       const families = [...new Set(bad.map((r) => catalog.find((m) => m.id === r.model && m.connection === choice.connection)?.family ?? modelFamily(r.model)))]
       const other = families.length ? families.map((f) => (f === 'other' ? 'non-Claude' : (FAMILY_LABEL[f] ?? f))).join('/') : 'other'
-      const where = CONNECTION_LABEL[choice.connection] ?? choice.connection
+      const where = connectionName(choice.connection, this.options.appSettings?.())
       const refusal = mixedFamilyRefusal(choice)
       if (refusal === 'no-root-family') {
         throw new Error(
@@ -1141,7 +1144,8 @@ export class RunManager {
       connection: choice.connection,
       adapter: choice.adapter,
       catalog: this.options.catalog?.() ?? [],
-      tierModels: settings.connections?.[choice.connection]?.tierModels ?? {},
+      connectionName: connectionName(choice.connection, settings),
+      tierModels: connectionRecord(settings, choice.connection)?.tierModels ?? {},
       root: project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
     })
   }
@@ -1157,7 +1161,7 @@ export class RunManager {
     if (!role) return { project }
     const settings = this.options.appSettings?.()
     const connection = projectConnection(project)
-    const tierModels = settings?.connections?.[connection]?.tierModels ?? {}
+    const tierModels = connectionRecord(settings ?? {}, connection)?.tierModels ?? {}
     const tier = settingTier(role.model)
     const hint = tier ? tierModels[tier]?.trim() || 'inherit' : role.model
     const withModel = (model: string, tierName?: Role['tier']): Project => ({
@@ -1174,6 +1178,7 @@ export class RunManager {
       connection: choice.connection,
       adapter: choice.adapter,
       catalog: this.options.catalog?.() ?? [],
+      connectionName: connectionName(choice.connection, settings),
       tierModels,
       fallbackTier: 'everyday'
     })
@@ -1282,7 +1287,7 @@ export class RunManager {
       status: 'starting',
       startedAt: Date.now(),
       totalCostUsd: 0,
-      // Labels the run's cost in the UI (CLI estimate, LiteLLM prices, or none on a ChatGPT plan).
+      // Labels the run's cost in the UI (CLI estimate, proxy prices, or none on a ChatGPT plan).
       connection: connection?.connection ?? choice.connection
     }
     if (resumedFrom) summary.resumedFrom = resumedFrom
@@ -1354,14 +1359,14 @@ export class RunManager {
         overrides: s?.modelPrices ?? [],
         ...(connection?.pricing ? { pricing: connection.pricing } : {}),
         catalog: this.options.catalog?.() ?? [],
-        aliases: aliasesFor(connection, s?.connections?.[choice.connection]?.tierModels),
+        aliases: aliasesFor(connection, connectionRecord(s ?? {}, choice.connection)?.tierModels),
         ...(community ? { community } : {})
       }
     }
     // Exec budgets (cli-spec 6.2(3)): a role's model setting is read like the pricing aliases (tier name -> the
     // connection's tier model) before its price is looked up. 'inherit' has no model of its own and is not checked.
     active.modelPriced = (setting: string): boolean => {
-      const tierModels = this.options.appSettings?.().connections?.[choice.connection]?.tierModels ?? {}
+      const tierModels = connectionRecord(this.options.appSettings?.() ?? {}, choice.connection)?.tierModels ?? {}
       // An empty catalog means "not discovered yet": the connection's builtin list answers then (modelForTier).
       const catalog = this.options.catalog?.() ?? []
       const resolved = resolveModelSetting(setting, { connection: choice.connection, tierModels, ...(catalog.length ? { catalog } : {}) })
@@ -1442,7 +1447,7 @@ export class RunManager {
         e = withEndFacts(e, summary)
       } else if (e.type === 'run.cost') {
         // The provider's own total feeds RunUsage; summary.totalCostUsd follows usage.costUsd.
-        // On a priced (LiteLLM) connection the adapter's total is a proxy estimate, not the provider's own figure.
+        // On a priced (proxy) connection the adapter's total is a proxy estimate, not the provider's own figure.
         if (!connection?.pricing) active.providerTotalUsd = e.totalCostUsd
       }
       this.recordEvent(active, e)
@@ -3800,8 +3805,8 @@ export class RunManager {
       resumeSessionId: sessionId,
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
-      // On a LiteLLM project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.
-      resumeBaseCostUsd: projectConnection(project) === 'litellm' ? 0 : target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
+      // On a proxy project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.
+      resumeBaseCostUsd: !isBuiltinConnectionId(projectConnection(project)) ? 0 : target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
       plan: target.kind === 'work' ? this.get(target.id)?.plan : undefined,
       ...(target.id !== from.id
         ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }

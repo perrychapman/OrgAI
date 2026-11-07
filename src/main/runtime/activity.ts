@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import type { AgentInstance, AgentState, ConnectionId, RunStatus } from '@shared/types'
-import { MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
+import { MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS, isBuiltinConnectionId } from '@shared/types'
 import { PLAN_TOOLS } from './continuation'
 
 /**
@@ -203,10 +203,12 @@ export function scrubAuthDetail(text: string): string {
  * The one-line run error for an authentication failure on `connection`. It names the connection and says where
  * to fix it. Never includes the raw provider text (it may echo a key fragment).
  */
-export function authFailureMessage(connection: ConnectionId | undefined): string {
+export function authFailureMessage(connection: ConnectionId | undefined, name?: string): string {
+  if (connection !== undefined && !isBuiltinConnectionId(connection)) {
+    const label = name?.trim() || (connection === 'litellm' ? 'LiteLLM' : 'proxy')
+    return `The ${label} connection was refused: the proxy did not accept the API key. Check the key and base URL in Settings > Connections.`
+  }
   switch (connection) {
-    case 'litellm':
-      return 'The LiteLLM connection was refused: the proxy did not accept the API key. Check the key and base URL in Settings > Connections.'
     case 'openai':
       return 'The OpenAI connection was refused: sign in again or check the API key in Settings > Connections.'
     default:

@@ -1,3 +1,4 @@
+import { isBuiltinConnectionId, isProxyConnection } from '@shared/types'
 import type { ConnectionInfo, Project } from '@shared/types'
 import { projectConnection } from '@shared/defaults'
 
@@ -11,11 +12,11 @@ export type ProjectMetering = 'metered' | 'subscription' | 'unknown'
 
 export function projectMetering(project: Pick<Project, 'provider'>, connections: readonly ConnectionInfo[] | null | undefined): ProjectMetering {
   const id = projectConnection(project)
-  if (id === 'litellm') return 'metered'
+  if (!isBuiltinConnectionId(id)) return 'metered'
   const info = connections?.find((c) => c.connection.id === id)
   if (!info) return 'unknown'
   const conn = info.connection
-  if (conn.id === 'litellm') return 'metered'
+  if (isProxyConnection(conn)) return 'metered'
   return conn.auth.kind === 'apiKey' ? 'metered' : 'subscription'
 }
 

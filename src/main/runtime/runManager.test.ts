@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride, Project, Proposal, RunEvent, RunSummary, TokenUsage } from '@shared/types'
+import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride, Project, Proposal, ProxyConnection, RunEvent, RunSummary, TokenUsage } from '@shared/types'
 import { setModelTokens } from './runUsage'
 import type { RunSkill, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
@@ -368,6 +368,38 @@ describe('RunManager usage and pricing', () => {
     expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(5, 9)
   })
 
+  it('prices two live proxy runs from their own proxy prices', async () => {
+    const conns = [
+      { connection: 'proxy-aaaa1111', adapter: 'claude' as const, env: {}, pricing: { shared: { inputPerToken: 0.000001, outputPerToken: 0 } } },
+      { connection: 'proxy-bbbb2222', adapter: 'claude' as const, env: {}, pricing: { shared: { inputPerToken: 0.000003, outputPerToken: 0 } } }
+    ]
+    let n = 0
+    const { m, p, ctxs } = setup({ resolveConnection: () => conns[n++]! })
+    const r1 = await m.start({ project: p, prompt: 'one' })
+    const r2 = await m.start({ project: p, prompt: 'two' })
+    expect(m.summaryOf(r1.id)!.connection).toBe('proxy-aaaa1111')
+    expect(m.summaryOf(r2.id)!.connection).toBe('proxy-bbbb2222')
+    for (const [i, id] of [r1.id, r2.id].entries()) {
+      const a = agentWith()
+      setModelTokens(a, 'shared', tok(1_000_000))
+      ctxs[i]!.emit({ type: 'agent.upsert', runId: id, agent: a })
+    }
+    expect(m.get(r1.id)!.agents.root!.usage!.costUsd).toBeCloseTo(1, 9)
+    expect(m.get(r2.id)!.agents.root!.usage!.costUsd).toBeCloseTo(3, 9)
+    expect(m.get(r1.id)!.agents.root!.usage!.models[0]).toMatchObject({ priceSource: 'proxy' })
+  })
+
+  it('leaves a model unknown, never $0, on a proxy that reported no prices', async () => {
+    const { m, p, ctxs } = setup({ resolveConnection: () => ({ connection: 'proxy-cccc3333', adapter: 'claude', env: {} }) })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'house-model-7', tok(100, 50))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    const s = m.summaryOf(run.id)!
+    expect(s.connection).toBe('proxy-cccc3333')
+    expect(s.usage).toMatchObject({ costUsd: null, costSource: 'unknown' })
+  })
+
   it('drops a run.usage an adapter sends', async () => {
     const { m, p, ctxs } = setup()
     const run = await m.start({ project: p, prompt: 'go' })
@@ -579,6 +611,11 @@ function computeEmpty() {
 
 function defaultSettingsLite() {
   return { setupModel: 'opus', mcpAssistModel: 'opus', connections: defaultConnections({ kind: 'subscription' }) }
+}
+
+/** A proxy connection record for the settings the manager reads (example.com hosts only). */
+function proxyRecord(id: string, name: string, tierModels: ProxyConnection['tierModels'] = {}, kind: ProxyConnection['kind'] = 'litellm'): ProxyConnection {
+  return { id, name, kind, enabled: true, tierModels, anthropicBaseUrl: `https://${id}.proxy.example.com`, hasApiKey: true }
 }
 
 describe('RunManager with the mock adapter', () => {
@@ -1217,7 +1254,8 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const claude = recorder('claude')
       const codex = recorder('codex')
       const p = litellm('sonnet', { engineer: 'gpt-5', reviewer: 'gpt-5' })
-      const { m } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      const appSettings = () => ({ ...defaultSettingsLite(), proxies: [proxyRecord('litellm', 'LiteLLM')] })
+      const { m } = setupManager(p, { claude: claude.adapter, codex: codex.adapter }, { appSettings })
       await m.start({ project: p, prompt: 'go' })
       expect(claude.ctxs).toHaveLength(1)
       expect(codex.ctxs).toHaveLength(0)
@@ -1238,7 +1276,8 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const claude = recorder('claude')
       const codex = recorder('codex')
       const p = litellm('inherit', { engineer: 'gpt-5' })
-      const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      const appSettings = () => ({ ...defaultSettingsLite(), proxies: [proxyRecord('litellm', 'LiteLLM')] })
+      const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter }, { appSettings })
       await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow(
         "Roles Engineer use OpenAI-family models, but this LiteLLM project's orchestrator has no model of its own, so OrgAI cannot tell which runtime to use. Give the orchestrator a model."
       )
@@ -1283,8 +1322,8 @@ describe('RunManager adapter selection, connections and MCP', () => {
         { id: 'gpt-5-mini', label: 'm', connection: 'litellm' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'discovered' as const }
       ]
       const connections = defaultConnections()
-      connections.litellm.tierModels = { deep: 'gpt-5', everyday: 'gpt-5-mini' }
-      const appSettings = () => ({ setupModel: 'gpt-5-mini', mcpAssistModel: 'claude-sonnet-4-5', connections })
+      const proxies = [proxyRecord('litellm', 'LiteLLM', { deep: 'gpt-5', everyday: 'gpt-5-mini' })]
+      const appSettings = () => ({ setupModel: 'gpt-5-mini', mcpAssistModel: 'claude-sonnet-4-5', connections, proxies })
       const { m } = setupManager(p, { codex: codex.adapter }, { catalog, appSettings })
       const setupRun = await m.start({ project: p, prompt: 'set up', kind: 'setup' })
       const assistRun = await m.start({ project: p, prompt: 'mcp', kind: 'mcp-assist' })
@@ -1304,6 +1343,45 @@ describe('RunManager adapter selection, connections and MCP', () => {
       // the catalog says gpt-5 is a Claude-family model here, so the Claude adapter is needed and absent
       await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow('No runtime adapter for provider "claude"')
       expect(catalog).toHaveBeenCalled()
+    })
+
+    it('refuses to start a project whose proxy was removed, with a readable message and no run record', async () => {
+      const claude = recorder('claude')
+      const p = litellm('sonnet')
+      p.provider.connection = 'proxy-deadbeef'
+      const resolveConnection = vi.fn()
+      const appSettings = () => ({ ...defaultSettingsLite(), proxies: [proxyRecord('proxy-aaaa1111', 'Team proxy')] })
+      const { m, store } = setupManager(p, { claude: claude.adapter }, { appSettings, resolveConnection })
+      await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow('That connection no longer exists. Pick another in Project settings > Connection.')
+      expect(resolveConnection).not.toHaveBeenCalled()
+      expect(store.list(p.id)).toEqual([])
+    })
+
+    it('names the project proxy in the mixed-family refusal and resolves the right proxy for two projects', async () => {
+      const claude = recorder('claude')
+      const appSettings = () => ({
+        ...defaultSettingsLite(),
+        proxies: [proxyRecord('proxy-aaaa1111', 'Team gateway', { deep: 'sonnet' }), proxyRecord('proxy-bbbb2222', 'Lab gateway', { deep: 'sonnet' }, 'openai-compatible')]
+      })
+      const a = litellm('sonnet')
+      a.provider.connection = 'proxy-aaaa1111'
+      const b = litellm('sonnet')
+      b.id = 'p-other'
+      b.provider.connection = 'proxy-bbbb2222'
+      const seen: string[] = []
+      const resolveConnection = vi.fn((_p: Project, choice: { connection: string }) => {
+        seen.push(choice.connection)
+        return { connection: choice.connection, adapter: 'claude' as const, env: { ANTHROPIC_BASE_URL: `https://${choice.connection}.example.com` } }
+      })
+      const { m } = setupManager(a, { claude: claude.adapter }, { appSettings, resolveConnection: resolveConnection as never })
+      await m.start({ project: a, prompt: 'go' })
+      await m.start({ project: b, prompt: 'go' })
+      expect(seen).toEqual(['proxy-aaaa1111', 'proxy-bbbb2222'])
+      expect(claude.ctxs.map((c) => c.connection?.env?.ANTHROPIC_BASE_URL)).toEqual(['https://proxy-aaaa1111.example.com', 'https://proxy-bbbb2222.example.com'])
+      const mixed = litellm('inherit', { engineer: 'gpt-5' })
+      mixed.provider.connection = 'proxy-bbbb2222'
+      await expect(m.start({ project: mixed, prompt: 'go' })).rejects.toThrow("this Lab gateway project's orchestrator")
+      await m.stopAll()
     })
 
     it('hands the resolved connection to the adapter, and a failure refuses the start', async () => {

@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   Notification: class {}
 }))
 
-const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs, connectionIdArg, connectionSecretArgs, CONNECTION_SECRET_MAX_CHARS, modelsQueryArg, withEffectiveDefault } = await import('./ipc')
+const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs, connectionIdArg, connectionSecretArgs, proxyCreateArgs, proxyIdArg, CONNECTION_SECRET_MAX_CHARS, modelsQueryArg, withEffectiveDefault } = await import('./ipc')
 const { DEFAULT_APP_SETTINGS } = await import('@shared/defaults')
 const { openPathRefusal, lstatDirectory, OPEN_PATH_REFUSAL } = await import('./ipc')
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
@@ -377,11 +377,13 @@ describe('settingsSetArgs (settings:set, self-configuration H3 / M3)', () => {
         defaultConnectionChosen: true,
         defaultConnectionReplaced: 'litellm',
         connections: conns,
+        proxies: [{ id: 'proxy-0a1b2c3d', name: 'Evil', kind: 'litellm', anthropicBaseUrl: 'https://example.com', hasApiKey: true, enabled: true, tierModels: {} }],
         providerAuth: { kind: 'apiKey', envVar: 'X' },
         notifications: false
-      },
+      } as never,
       stored
     )
+    expect(out.proxies).toEqual(stored.proxies)
     expect(out.defaultConnection).toBe('openai')
     expect(out.defaultConnectionChosen).toBe(false)
     expect(out.defaultConnectionReplaced).toBe('anthropic')
@@ -415,18 +417,19 @@ describe('settingsSetArgs terminalServerChosen (cli-spec 3.3)', () => {
 
 describe('connection id guards (connections:test / logout, models:list / refresh)', () => {
   it('connectionIdArg accepts only known ids, never prototype keys', () => {
-    for (const id of ['anthropic', 'openai', 'litellm']) expect(connectionIdArg(id)).toBe(id)
+    for (const id of ['anthropic', 'openai', 'litellm', 'proxy-0a1b2c3d']) expect(connectionIdArg(id)).toBe(id)
+    for (const bad of ['proxy-0A1B2C3D', 'proxy-0a1b2c3', 'proxy-0a1b2c3dd', 'Litellm']) expect(() => connectionIdArg(bad), bad).toThrow('Unknown connection')
     for (const bad of ['bogus', '__proto__', 'constructor', 'hasOwnProperty', '', 'Anthropic', null, undefined, 1, {}, ['anthropic']]) {
       expect(() => connectionIdArg(bad), String(bad)).toThrow('Unknown connection')
     }
   })
 
-  it('connectionSecretArgs rebuilds the LiteLLM key input and never echoes the value', () => {
+  it('connectionSecretArgs rebuilds the proxy key input and never echoes the value', () => {
     expect(connectionSecretArgs({ id: 'litellm', apiKey: 'sk-abc', extra: 1 })).toEqual({ id: 'litellm', apiKey: 'sk-abc' })
     expect(connectionSecretArgs({ id: 'litellm', apiKey: null })).toEqual({ id: 'litellm', apiKey: null })
     expect(connectionSecretArgs({ id: 'litellm' })).toEqual({ id: 'litellm', apiKey: null })
     for (const bad of [null, 'litellm', [], { id: 'anthropic', apiKey: 'k' }, { id: '__proto__', apiKey: 'k' }]) {
-      expect(() => connectionSecretArgs(bad), JSON.stringify(bad)).toThrow('Only the LiteLLM connection has a stored secret')
+      expect(() => connectionSecretArgs(bad), JSON.stringify(bad)).toThrow('Only a proxy connection has a stored secret')
     }
     expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 42 })).toThrow('The API key must be text.')
     expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 'k'.repeat(CONNECTION_SECRET_MAX_CHARS + 1) })).toThrow('too long')
@@ -439,6 +442,32 @@ describe('connection id guards (connections:test / logout, models:list / refresh
       }
       expect(message, JSON.stringify(bad)).toBe('The API key contains line breaks or hidden characters.')
     }
+  })
+
+  it('connectionSecretArgs accepts any proxy-shaped id', () => {
+    expect(connectionSecretArgs({ id: 'proxy-0a1b2c3d', apiKey: 'k' })).toEqual({ id: 'proxy-0a1b2c3d', apiKey: 'k' })
+    expect(() => connectionSecretArgs({ id: 'proxy-zz', apiKey: 'k' })).toThrow('Only a proxy connection has a stored secret')
+  })
+
+  it('proxyIdArg and proxyCreateArgs rebuild their input', () => {
+    expect(proxyIdArg('proxy-0a1b2c3d')).toBe('proxy-0a1b2c3d')
+    for (const bad of ['anthropic', 'proxy-', '', null, 7, ['litellm'], 'constructor']) expect(() => proxyIdArg(bad), String(bad)).toThrow('Unknown connection')
+    expect(
+      proxyCreateArgs({ name: 'Gateway', kind: 'openai-compatible', anthropicBaseUrl: 'https://example.com', openaiBaseUrl: 'https://example.com/v1', modelsUrl: 'https://example.com/m', apiKey: 'sk-abc', extra: 1 })
+    ).toEqual({ name: 'Gateway', kind: 'openai-compatible', anthropicBaseUrl: 'https://example.com', openaiBaseUrl: 'https://example.com/v1', modelsUrl: 'https://example.com/m', apiKey: 'sk-abc' })
+    expect(proxyCreateArgs({ name: 'G', anthropicBaseUrl: 'https://example.com' })).toEqual({ name: 'G', anthropicBaseUrl: 'https://example.com' })
+    for (const bad of [null, 'x', [], { anthropicBaseUrl: 'https://example.com' }, { name: 'G' }, { name: 'x'.repeat(201), anthropicBaseUrl: 'u' }, { name: 'G', anthropicBaseUrl: 'u'.repeat(2049) }, { name: 'G', anthropicBaseUrl: 'u', kind: 'other' }, { name: 'G', anthropicBaseUrl: 'u', modelsUrl: 5 }, JSON.parse('{"__proto__":{},"name":"G","anthropicBaseUrl":"u"}')]) {
+      expect(() => proxyCreateArgs(bad), JSON.stringify(bad)).toThrow()
+    }
+    const secret = 'sk-secret\nline'
+    try {
+      proxyCreateArgs({ name: 'G', anthropicBaseUrl: 'u', apiKey: secret })
+      throw new Error('should refuse')
+    } catch (e) {
+      expect(String((e as Error).message)).not.toContain('sk-secret')
+      expect(String((e as Error).message)).toContain('hidden characters')
+    }
+    expect(() => proxyCreateArgs({ name: 'G', anthropicBaseUrl: 'u', apiKey: 'k'.repeat(CONNECTION_SECRET_MAX_CHARS + 1) })).toThrow('too long')
   })
 
   it('modelsQueryArg rebuilds the query and refuses junk connections', () => {
@@ -512,9 +541,9 @@ describe('settingsSetArgs hostile payloads (QA)', () => {
     for (const bad of ['a'.repeat(1_000_000), new String('litellm'), Object.create({ toString: () => 'litellm' }), Symbol.iterator as never]) {
       expect(() => connectionIdArg(bad), typeof bad).toThrow('Unknown connection')
     }
-    expect(() => connectionSecretArgs({ id: new String('litellm'), apiKey: 'k' })).toThrow('Only the LiteLLM connection has a stored secret')
-    expect(() => connectionSecretArgs({ id: ['litellm'], apiKey: 'k' })).toThrow('Only the LiteLLM connection has a stored secret')
-    expect(() => connectionSecretArgs(JSON.parse('{"__proto__":{"id":"litellm"},"apiKey":"k"}'))).toThrow('Only the LiteLLM connection has a stored secret')
+    expect(() => connectionSecretArgs({ id: new String('litellm'), apiKey: 'k' })).toThrow('Only a proxy connection has a stored secret')
+    expect(() => connectionSecretArgs({ id: ['litellm'], apiKey: 'k' })).toThrow('Only a proxy connection has a stored secret')
+    expect(() => connectionSecretArgs(JSON.parse('{"__proto__":{"id":"litellm"},"apiKey":"k"}'))).toThrow('Only a proxy connection has a stored secret')
     expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 'k'.repeat(10_000_000) })).toThrow('too long')
     expect(() => connectionSecretArgs({ id: 'litellm', apiKey: ['k'] })).toThrow('The API key must be text.')
   })

@@ -32,6 +32,7 @@ import type {
   ConnectionLoginMethod,
   ConnectionLoginStart,
   ConnectionStatus,
+  ProxyRemoveResult,
   ConnectorInfo,
   ContinueRunInput,
   DraftRequest,
@@ -101,7 +102,6 @@ import type {
   UsageStatsQuery
 } from '../../shared/types'
 import {
-  CONNECTION_IDS,
   HARNESS_PROJECT_ID,
   HOST_IPC,
   HOST_METHODS,
@@ -168,6 +168,8 @@ import {
   projectCreateInput,
   teamFilesArgs,
   connectionSecretArgs,
+  proxyCreateArgs,
+  proxyIdArg,
   connectorArgs,
   effectiveRemoveRuns,
   harnessProjectFor,
@@ -879,7 +881,7 @@ function registerCapabilityIpc(handle: Register, capabilities: CapabilityService
 /** Connections, model catalog and remaps: ConnectionService 1:1. */
 function registerConnectionIpc(handle: Register, projects: ProjectStore, connections: ConnectionService): void {
   handle(IPC.connectionsSetDefault, (_e, raw: unknown): Promise<ConnectionInfo[]> => {
-    if (raw !== null && !(typeof raw === 'string' && (CONNECTION_IDS as readonly string[]).includes(raw))) throw new Error('Unknown connection')
+    if (raw !== null) connectionIdArg(raw)
     return connections.setDefault(raw as ConnectionId | null)
   })
   handle(IPC.connectionsList, (): Promise<ConnectionInfo[]> => connections.list())
@@ -889,6 +891,8 @@ function registerConnectionIpc(handle: Register, projects: ProjectStore, connect
     return connections.update(connection)
   })
   handle(IPC.connectionsSetSecret, (_e, input: unknown): Promise<ConnectionInfo> => connections.setSecret(connectionSecretArgs(input)))
+  handle(IPC.connectionsCreateProxy, (_e, input: unknown): Promise<ConnectionInfo> => connections.createProxy(proxyCreateArgs(input)))
+  handle(IPC.connectionsRemoveProxy, (_e, id: unknown): Promise<ProxyRemoveResult> => connections.removeProxy(proxyIdArg(id)))
   handle(IPC.connectionsTest, (_e, id: unknown): Promise<ConnectionStatus> => connections.test(connectionIdArg(id)))
   handle(IPC.connectionsConnect, (_e, id: unknown): Promise<ConnectionInfo> => connections.connect(connectionIdArg(id)))
   handle(IPC.connectionsLogin, (_e, id: 'openai', method?: ConnectionLoginMethod): Promise<ConnectionLoginStart> =>
@@ -900,7 +904,7 @@ function registerConnectionIpc(handle: Register, projects: ProjectStore, connect
   handle(IPC.modelsRefresh, (_e, query?: unknown): Promise<ProviderModel[]> => connections.refresh(modelsQueryArg(query)))
   handle(IPC.modelsPrices, (_e, query?: ModelPricesQuery): ModelPriceInfo[] => {
     const connection = query && typeof query === 'object' ? query.connection : undefined
-    if (connection !== undefined && !CONNECTION_IDS.includes(connection)) throw new Error('Unknown connection')
+    if (connection !== undefined) connectionIdArg(connection)
     return connections.prices(connection ? { connection } : undefined)
   })
   handle(IPC.projectsRemapModels, (_e, input: RemapModelsInput): RemapModelsOutput => {

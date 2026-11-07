@@ -146,7 +146,9 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.connectionsList]: NONE,
   [IPC.connectionsUpdate]: OBJECT,
   [IPC.connectionsSetSecret]: OBJECT,
-  // connectionIdArg checks the id against CONNECTION_IDS.
+  [IPC.connectionsCreateProxy]: OBJECT,
+  [IPC.connectionsRemoveProxy]: STRING,
+  // connectionIdArg checks the id's shape (built-in or PROXY_ID_RE); ConnectionService checks it exists.
   [IPC.connectionsTest]: STRING,
   [IPC.connectionsConnect]: STRING,
   // (id, method?): the preload always passes both, so method may arrive as null over JSON.

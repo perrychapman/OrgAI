@@ -60,6 +60,9 @@ describe('authFailureMessage', () => {
       expect(m).not.toMatch(/\n/)
     }
     expect(authFailureMessage('litellm')).toMatch(/LiteLLM/)
+    expect(authFailureMessage('proxy-aaaa1111')).toMatch(/The proxy connection was refused/)
+    expect(authFailureMessage('proxy-aaaa1111', 'Team gateway')).toMatch(/The Team gateway connection was refused/)
+    expect(authFailureMessage('proxy-aaaa1111', 'Team gateway')).not.toMatch(/Anthropic/)
     expect(authFailureMessage('anthropic')).toMatch(/Anthropic/)
   })
 })

@@ -6,6 +6,8 @@ import { validModelId } from '../../connections/codexAccount'
 /** What the model mapping needs from the project's connection (ConnectionService). */
 export interface ModelContext {
   connection: ConnectionId
+  /** The connection's display name for messages (a proxy's own name); falls back to the id. */
+  connectionName?: string
   /** The connection's catalog (builtin plus discovered). Entries of other connections are ignored. */
   catalog: readonly ProviderModel[]
   /** The connection's tier mapping. */
@@ -54,9 +56,9 @@ function catalogEntry(model: string, ctx: ModelContext): ProviderModel | undefin
 function viaTier(tier: ModelTier, ctx: ModelContext, reason: AgentImportModelReason, note?: string): MappedModel {
   const hit = modelForTier(tier, ctx)
   if (!hit) {
-    return { model: 'inherit', reason: 'inherit', note: `No model is mapped for any tier on the ${ctx.connection} connection, so it inherits. Map tiers in App settings > Connections.` }
+    return { model: 'inherit', reason: 'inherit', note: `No model is mapped for any tier on the ${ctx.connectionName ?? ctx.connection} connection, so it inherits. Map tiers in App settings > Connections.` }
   }
-  const moved = hit.tier !== tier ? `No ${tier} model on ${ctx.connection}; using the ${hit.tier} tier.` : undefined
+  const moved = hit.tier !== tier ? `No ${tier} model on ${ctx.connectionName ?? ctx.connection}; using the ${hit.tier} tier.` : undefined
   return { model: hit.model, tier: hit.tier, reason, note: [note, moved].filter(Boolean).join(' ') || undefined }
 }
 
@@ -95,5 +97,5 @@ export function mapChosenModel(choice: string, ctx: ModelContext, roleName: stri
     if (t && t.tier === value) return { model: t.model, tier: value, reason: 'chosen' }
   }
   const shown = validModelId(value) ? `"${value.slice(0, 80)}"` : 'That model id'
-  throw new Error(`${shown} is not a model of the ${ctx.connection} connection, so ${roleName.slice(0, 80)} cannot use it. Pick a model from the list.`)
+  throw new Error(`${shown} is not a model of the ${ctx.connectionName ?? ctx.connection} connection, so ${roleName.slice(0, 80)} cannot use it. Pick a model from the list.`)
 }

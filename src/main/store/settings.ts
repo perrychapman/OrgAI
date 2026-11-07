@@ -9,10 +9,12 @@ import type {
   ModelTier,
   OpenAIAuth,
   ProviderAuth,
-  ProviderConnections
+  ProviderConnections,
+  ProxyConnection
 } from '@shared/types'
-import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
-import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections, isConnectionId } from '@shared/defaults'
+import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, PROXIES_MAX, PROXY_KINDS, THEME_MODES, isModelTier, isPermissionMode, isProxyConnectionId } from '@shared/types'
+import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections, isConnectionId, isKnownConnection } from '@shared/defaults'
+import { normalizeProxyUrl, readableProxyName } from '../connections/proxy'
 import { normalizeModelId, sanitizeModelPrice } from '../runtime/pricing'
 import { validModelId } from '../connections/codexAccount'
 
@@ -66,7 +68,7 @@ export function normalizeModelPrices(raw: unknown): ModelPriceOverride[] {
     if (!price) continue
     let connection: ConnectionId | undefined
     if (o.connection !== undefined && o.connection !== null) {
-      if (!(CONNECTION_IDS as readonly unknown[]).includes(o.connection)) continue
+      if (!isConnectionId(o.connection)) continue
       connection = o.connection as ConnectionId
     }
     const key = `${connection ?? '*'}|${normalizeModelId(model)}`
@@ -83,6 +85,12 @@ type RawConnection =Partial<{
   autoTiers: unknown
   baseUrl: unknown
   hasApiKey: unknown
+  id: unknown
+  name: unknown
+  kind: unknown
+  anthropicBaseUrl: unknown
+  openaiBaseUrl: unknown
+  modelsUrl: unknown
 }>
 
 /** ConnectionBase.autoTiers: known tiers, each once; anything else (or a non-array) is undefined (derived later). */
@@ -112,7 +120,6 @@ export function normalizeConnections(raw: unknown, legacyAuth: ProviderAuth): Pr
   const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback)
   const a = r.anthropic ?? {}
   const o = r.openai ?? {}
-  const l = r.litellm ?? {}
   const anthropicAuth = (): ProviderAuth => {
     const x = a.auth as Partial<{ kind: string; envVar: string }> | undefined
     if (x?.kind === 'apiKey') return { kind: 'apiKey', envVar: typeof x.envVar === 'string' && x.envVar.trim() ? x.envVar.trim() : 'ANTHROPIC_API_KEY' }
@@ -132,16 +139,76 @@ export function normalizeConnections(raw: unknown, legacyAuth: ProviderAuth): Pr
       tierModels: tierModels(a.tierModels, d.anthropic.tierModels),
       ...autoTiers(a.autoTiers)
     },
-    openai: { id: 'openai', enabled: bool(o.enabled, d.openai.enabled), auth: openaiAuth(), tierModels: tierModels(o.tierModels, d.openai.tierModels), ...autoTiers(o.autoTiers) },
-    litellm: {
-      id: 'litellm',
-      enabled: bool(l.enabled, d.litellm.enabled),
-      baseUrl: typeof l.baseUrl === 'string' ? l.baseUrl.trim() : d.litellm.baseUrl,
-      hasApiKey: bool(l.hasApiKey, d.litellm.hasApiKey),
-      tierModels: tierModels(l.tierModels, d.litellm.tierModels),
-      ...autoTiers(l.autoTiers)
-    }
+    openai: { id: 'openai', enabled: bool(o.enabled, d.openai.enabled), auth: openaiAuth(), tierModels: tierModels(o.tierModels, d.openai.tierModels), ...autoTiers(o.autoTiers) }
   }
+}
+
+/** A stored LiteLLM record (settings saved before proxies) that holds anything worth migrating. */
+function legacyLiteLLM(raw: unknown): RawConnection | undefined {
+  const connections = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined
+  const l = connections && Object.hasOwn(connections, 'litellm') ? connections.litellm : undefined
+  if (!l || typeof l !== 'object' || Array.isArray(l)) return undefined
+  const r = l as RawConnection
+  const configured =
+    r.enabled === true || r.hasApiKey === true || (typeof r.baseUrl === 'string' && r.baseUrl.trim() !== '') || (!!r.tierModels && typeof r.tierModels === 'object' && Object.keys(r.tierModels).length > 0)
+  return configured ? r : undefined
+}
+
+/** A stored URL field: valid after proxy rules, else ''. Never throws. */
+function storedUrl(v: unknown): string {
+  if (typeof v !== 'string' || !v.trim()) return ''
+  try {
+    return normalizeProxyUrl(v, 'URL')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * AppSettings.proxies from disk or the renderer. An array is rebuilt entry by entry (at most PROXIES_MAX): the id must
+ * have the proxy shape and be unique, the name is cleaned and made unique (a clash gets " 2", an unusable name drops
+ * the entry, except the migrated 'litellm', which falls back to "LiteLLM"), kind defaults to 'openai-compatible'
+ * ('litellm' for the id 'litellm'), URLs pass normalizeProxyUrl or become '' (unset for the optional ones), tierModels
+ * and autoTiers read like the built-ins, junk is dropped. With no array, a stored `connections.litellm` that holds
+ * anything migrates to proxies[0] (id 'litellm', name 'LiteLLM', kind 'litellm', anthropicBaseUrl = its old baseUrl); a
+ * blank default record migrates to nothing. The old key is not written back (normalizeSettings never emits it).
+ */
+export function normalizeProxies(rawProxies: unknown, rawConnections?: unknown): ProxyConnection[] {
+  let source: unknown[]
+  if (Array.isArray(rawProxies)) source = rawProxies.slice(0, PROXIES_MAX * 4)
+  else {
+    const legacy = legacyLiteLLM(rawConnections)
+    source = legacy ? [{ ...legacy, id: 'litellm', name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: legacy.baseUrl }] : []
+  }
+  const out: ProxyConnection[] = []
+  const ids = new Set<string>()
+  const names: string[] = []
+  for (const item of source) {
+    if (out.length >= PROXIES_MAX) break
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const p = item as RawConnection
+    if (!isProxyConnectionId(p.id) || ids.has(p.id)) continue
+    const name = readableProxyName(p.name ?? (p.id === 'litellm' ? 'LiteLLM' : undefined), names)
+    if (!name) continue
+    const kind = PROXY_KINDS.find((k) => k === p.kind) ?? (p.id === 'litellm' ? 'litellm' : 'openai-compatible')
+    const openaiBaseUrl = storedUrl(p.openaiBaseUrl)
+    const modelsUrl = storedUrl(p.modelsUrl)
+    ids.add(p.id)
+    names.push(name)
+    out.push({
+      id: p.id,
+      name,
+      kind,
+      anthropicBaseUrl: storedUrl(p.anthropicBaseUrl),
+      ...(openaiBaseUrl ? { openaiBaseUrl } : {}),
+      ...(modelsUrl ? { modelsUrl } : {}),
+      enabled: p.enabled === true,
+      hasApiKey: p.hasApiKey === true,
+      tierModels: tierModels(p.tierModels, {}),
+      ...autoTiers(p.autoTiers)
+    })
+  }
+  return out
 }
 
 const sameAuth = (x: ProviderAuth | undefined, y: ProviderAuth | undefined): boolean =>
@@ -214,12 +281,19 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
       : typeof r.defaultPreferSonnetNearLimit === 'boolean'
         ? r.defaultPreferSonnetNearLimit
         : d.defaultPreferEverydayNearLimit
-  const defaultConnection: ConnectionId = isConnectionId(r.defaultConnection) ? r.defaultConnection : d.defaultConnection
+  const proxies = normalizeProxies(r.proxies, r.connections)
+  const view = { proxies }
+  // A default naming a proxy that no longer exists falls back to anthropic and automatic (nothing to be chosen).
+  const knownDefault = isKnownConnection(view, r.defaultConnection)
+  const defaultConnection: ConnectionId = knownDefault ? (r.defaultConnection as ConnectionId) : d.defaultConnection
   // Explicit booleans are kept. A file saved before the field existed: a default other than anthropic was the user's
   // pick (the old code never changed it on its own), anthropic is automatic. Automatic writes always store false.
-  const defaultConnectionChosen = typeof r.defaultConnectionChosen === 'boolean' ? r.defaultConnectionChosen : defaultConnection !== 'anthropic'
+  const defaultConnectionChosen =
+    typeof r.defaultConnectionChosen === 'boolean' && (knownDefault || r.defaultConnection === undefined)
+      ? r.defaultConnectionChosen
+      : defaultConnection !== 'anthropic'
   const replaced =
-    !defaultConnectionChosen && isConnectionId(r.defaultConnectionReplaced) && r.defaultConnectionReplaced !== defaultConnection
+    !defaultConnectionChosen && isKnownConnection(view, r.defaultConnectionReplaced) && r.defaultConnectionReplaced !== defaultConnection
       ? r.defaultConnectionReplaced
       : undefined
   return {
@@ -236,6 +310,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     // The connection is authoritative; the legacy field mirrors it (see reconcileAnthropicAuth).
     providerAuth: { ...connections.anthropic.auth },
     connections,
+    proxies,
     defaultConnection,
     defaultConnectionChosen,
     ...(replaced !== undefined ? { defaultConnectionReplaced: replaced } : {}),
@@ -309,8 +384,9 @@ export class SettingsStore {
   }
 
   /**
-   * Save settings from the renderer. LiteLLM's hasApiKey is owned by the main process and kept as stored.
-   * appearance merges over the stored value, so a caller that leaves it out (or sends part of it) keeps the rest.
+   * Save settings from the renderer. The proxy list (and with it every hasApiKey) is owned by the main process and
+   * kept as stored: change it only with setProxies / setProxyKeyStored. An old renderer's `connections.litellm` is
+   * ignored. appearance merges over the stored value, so a caller that leaves it out (or sends part of it) keeps the rest.
    */
   set(next: Partial<AppSettings>): AppSettings {
     // A partial appearance (or none, from an older renderer) is merged over the stored one, not the defaults.
@@ -319,10 +395,14 @@ export class SettingsStore {
     const appearance = { ...stored, ...given, canvas: { ...stored.canvas, ...(given.canvas ?? {}) } }
     // modelPrices left out (an older renderer) keeps the stored overrides; an array (even empty) replaces them.
     const modelPrices = next.modelPrices !== undefined ? next.modelPrices : this.settings.modelPrices
-    const normalized = normalizeSettings(reconcileNearLimit(this.settings, reconcileAnthropicAuth(this.settings, { ...next, appearance, modelPrices })))
-    normalized.connections.litellm.hasApiKey = this.settings.connections.litellm.hasApiKey
+    const proxies = this.settings.proxies
+    const normalized = normalizeSettings(reconcileNearLimit(this.settings, reconcileAnthropicAuth(this.settings, { ...next, appearance, modelPrices, proxies })))
     this.settings = normalized
     this.persist()
+    return this.notify()
+  }
+
+  private notify(): AppSettings {
     const saved = this.get()
     for (const listener of this.listeners) {
       try {
@@ -334,16 +414,33 @@ export class SettingsStore {
     return saved
   }
 
+  /**
+   * Replace the proxy list (main only: ConnectionService create / update / remove). The list is normalized (a name
+   * clash is suffixed, junk dropped, PROXIES_MAX), a default naming a removed proxy returns to anthropic / automatic,
+   * and the saved settings are sent to listeners like set().
+   */
+  setProxies(proxies: ProxyConnection[]): AppSettings {
+    this.settings = normalizeSettings({ ...this.settings, proxies })
+    this.persist()
+    return this.notify()
+  }
+
   /** Called with the saved settings after every set(). Returns an unsubscribe function. */
   onChange(listener: (settings: AppSettings) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
 
-  /** Record whether a LiteLLM key is stored in safeStorage (called by the secret store, never the renderer). */
-  setLiteLLMKeyStored(stored: boolean): AppSettings {
-    this.settings.connections.litellm.hasApiKey = stored
-    this.persist()
+  /**
+   * Record whether a proxy's key is stored in safeStorage (called by the connection service, never the renderer).
+   * Does not notify listeners (the service announces the change). An unknown proxy id changes nothing.
+   */
+  setProxyKeyStored(id: string, stored: boolean): AppSettings {
+    const p = this.settings.proxies.find((x) => x.id === id)
+    if (p && p.hasApiKey !== stored) {
+      p.hasApiKey = stored
+      this.persist()
+    }
     return this.get()
   }
 }

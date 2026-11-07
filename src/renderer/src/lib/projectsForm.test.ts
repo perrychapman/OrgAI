@@ -4,7 +4,7 @@ import { LAST_PROJECT_KIND_KEY, addReferenceFolder, effectiveName, isFullPath, n
 
 describe('newProjectConnectionView', () => {
   const info = (id: 'anthropic' | 'openai' | 'litellm', state: string, isDefault: boolean, auth?: object): never =>
-    ({ connection: { id, enabled: true, tierModels: {}, auth: auth ?? { kind: 'subscription' }, baseUrl: 'http://x', hasApiKey: true }, status: { state }, modelCount: 0, isDefault }) as never
+    ({ connection: { id, enabled: true, tierModels: {}, auth: auth ?? { kind: 'subscription' }, ...(id === 'litellm' ? { name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: 'http://x' } : {}), hasApiKey: true }, status: { state }, modelCount: 0, isDefault }) as never
   it('names the effective default with its auth method and offers Change', () => {
     expect(newProjectConnectionView([info('anthropic', 'connected', true)])).toEqual({ text: 'Runs on Anthropic (Claude Code login).', link: 'Change' })
     expect(newProjectConnectionView([info('anthropic', 'disconnected', false), info('openai', 'connected', true, { kind: 'chatgpt' })])).toEqual({

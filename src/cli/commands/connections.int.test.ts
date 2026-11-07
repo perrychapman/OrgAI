@@ -58,11 +58,17 @@ describe('connections, models, usage and notes against a real inproc host', () =
     const r = await cli(['connections', 'list', '--output-format', 'json'])
     expect(r.code).toBe(0)
     const j = JSON.parse(r.out)
-    expect(j.connections.map((c: { id: string }) => c.id)).toEqual(['anthropic', 'openai', 'litellm'])
+    const ids = j.connections.map((c: { id: string }) => c.id) as string[]
+    // Built-ins first, then the proxies (a fresh profile has none; an old settings file migrates its LiteLLM as 'litellm').
+    expect(ids.slice(0, 2)).toEqual(['anthropic', 'openai'])
+    for (const id of ids.slice(2)) expect(id).toMatch(/^(litellm|proxy-[0-9a-f]{8})$/)
     expect(j.connections.filter((c: { isDefault: boolean }) => c.isDefault)).toHaveLength(1)
-    const show = await cli(['connections', 'show', 'litellm'])
-    expect(show.code).toBe(0)
-    expect(show.out).toContain('API key: not set')
+    for (const id of ids.slice(2)) {
+      const show = await cli(['connections', 'show', id])
+      expect(show.code).toBe(0)
+      expect(show.out).toContain('API key: not set')
+    }
+    expect(JSON.stringify(j)).not.toMatch(/apiKey|sk-/)
   })
 
   it('set-default to a connection that is not connected exits 1 with the host sentence', async () => {
