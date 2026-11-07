@@ -576,6 +576,13 @@ export interface RuntimeContext {
   /** The connection a role's agents run on in this run (defaults.ts roleConnection), for adapters that label agents. Missing = the run's connection. */
   agentConnection?(roleId: string): ConnectionId | undefined
   /**
+   * Setup runs (propose_org_chart drafts with a `connection`): every connection a role may name right now
+   * (connectionConfigured, the anthropic connection included), with its display name, tier mapping and catalog ids,
+   * so a draft's tier maps through ITS connection. Read at call time. Missing = drafts may not name a connection
+   * other than the run's (the tool answers REVISE). Never secrets.
+   */
+  connectionModels?(): { connection: ConnectionId; name: string; tierModels: Partial<Record<ModelTier, ModelRef>>; models: ModelRef[] }[]
+  /**
    * Set only on the RuntimeContext of a bridged child session (runtime/bridge.ts). The child's root (`roles` holds the
    * bridged role with reportsTo null plus the roles reachable through its spawnable chain) is NOT the run's root:
    * harnessToolsFor gives it no 'root'-audience tools (no plan, proposal, org-change, messaging or ask_user tools),
