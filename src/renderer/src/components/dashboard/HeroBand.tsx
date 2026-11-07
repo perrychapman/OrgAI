@@ -1,20 +1,25 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ConnectionId, UsageStatus } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { Badge } from '../ui/Badge'
-import { Cost } from '../ui/Cost'
-import { costView, runCostInput, sumCosts } from '../../lib/cost'
 import { isDevBuild } from '../../lib/buildChannel'
-import { combinedDecisionCount } from '../../lib/needsYou'
-import { useTeamAttentionItems } from '../../lib/menuActions'
-import { FIRST_LAUNCH_LINE, WEEK_MS, heroFigure, heroSublineParts, pausedRuns, sinceLastSeen } from '../../lib/dashboard'
+import { connectionLabel, isProxyId } from '../../lib/connectionLabel'
+import { isWorkingAgent } from '../../lib/agentActivity'
+import { clockLabel, pausedRuns, resetsAtText, resetsInLabel, sinceLastSeen, statusSentence } from '../../lib/dashboard'
+import { statusOfRun } from '../../lib/runStatus'
+import { connectionsInUse, reportsSpend, spendLevel, spendRowLabel, spendSentence } from '../../lib/usage'
+import { SpendBar, tightestWindowRow, usageRows } from '../UsageMeter'
+import { usageIsStale, windowLabel } from './dashboardProjects'
 import { useAllSummaries, useLiveRuns, useNow, useWaitingRuns } from './useDashboardData'
 
 /**
- * The Dashboard's hero (spec 3): one figure, one subline, quiet app facts. No buttons. The figure is always visible;
- * the polite live region `dashboard-live` is a visually hidden sibling that stays empty on mount and speaks only when
- * the figure changes afterwards, or when `announce` changes to a new message.
+ * The Dashboard's status bar (docs/design/dashboard-2.md section 4): one sentence about the work, the plan limits in use
+ * and the quiet app facts. No buttons. The polite live region `dashboard-live` is the page's only one: a visually
+ * hidden sibling that stays empty on mount and speaks only the messages passed in `announce` (never the sentence,
+ * never limits, counts or times); messages within 1.5 s are spoken as one.
  */
+
 /** A message for the page's one live region; `seq` rises with every message so a repeated text still speaks. */
 export interface DashboardAnnouncement {
   text: string
@@ -22,6 +27,50 @@ export interface DashboardAnnouncement {
 }
 
 const TOGETHER_MS = 1500
+/** Limit entries shown before "+N more". */
+const LIMITS_MAX = 2
+
+/** One usage refresh at a time across mounts. */
+let refreshing = false
+
+interface LimitEntry {
+  id: ConnectionId
+  kind: 'window' | 'spend'
+  level: '' | 'warn' | 'danger'
+  /** Parts of the visible text. */
+  name: string
+  main: string
+  resets: string
+  /** Bar fill, 0..100; null = no bar. */
+  pct: number | null
+  title: string
+  /** The spend bar element, for a proxy with a budget. */
+  spend?: UsageStatus['spend']
+}
+
+/** The full window list of a connection: "5-hour window 62%, resets 14:10. 7-day window 41%, resets Thu 09:00." */
+function windowsTitle(usage: UsageStatus, now: number): string {
+  return usageRows(usage)
+    .filter((r) => r.window.utilization !== null)
+    .map((r) => {
+      const at = resetsAtText(r.window.resetsAt, now)
+      return `${windowLabel(r.label)} ${Math.round(r.window.utilization ?? 0)}%${at ? `, resets ${at}` : ''}.`
+    })
+    .join(' ')
+}
+
+function windowEntry(id: ConnectionId, usage: UsageStatus, now: number): LimitEntry | null {
+  const t = tightestWindowRow(usage)
+  if (!t) return null
+  const name = `${connectionLabel(id)} plan`
+  const title = windowsTitle(usage, now)
+  if (usage.status === 'rejected' && t.row.limited) {
+    const until = clockLabel(usage.limitedUntil)
+    return { id, kind: 'window', level: 'danger', name, main: until ? `limited until ${until}` : 'limited', resets: '', pct: 100, title }
+  }
+  const resets = resetsInLabel(t.row.window.resetsAt, now)
+  return { id, kind: 'window', level: t.level, name, main: `${windowLabel(t.label)} ${Math.round(t.pct)}%`, resets, pct: Math.min(100, Math.max(0, t.pct)), title }
+}
 
 export function HeroBand({
   firstLaunch,
@@ -34,81 +83,131 @@ export function HeroBand({
   lastSeen: number
   clearedAt: number
 }): ReactElement {
-  const projectCount = useAppStore((s) => s.projects.length)
   const appInfo = useAppStore((s) => s.appInfo)
+  const connections = useAppStore((s) => s.connections)
+  const defaultConnection = useAppStore((s) => s.defaultConnection)
+  const projects = useAppStore((s) => s.projects)
+  const usageByConnection = useAppStore((s) => s.usageByConnection)
   const waiting = useWaitingRuns()
   const live = useLiveRuns()
   const summaries = useAllSummaries()
   const now = useNow()
 
-  const teamItems = useTeamAttentionItems()
-  const decisions = combinedDecisionCount(waiting, teamItems)
-  const paused = useMemo(() => pausedRuns(summaries).length, [summaries])
-  const { figure } = heroFigure({ decisions, running: live.length, paused, projects: projectCount })
+  const counts = useMemo(() => {
+    const needsYou = new Set(waiting.map((r) => r.summary.id))
+    let workingAgents = 0
+    let agentRuns = 0
+    let workingRuns = 0
+    for (const run of live) {
+      const n = Object.values(run.agents).filter((a) => isWorkingAgent(a.state)).length
+      workingAgents += n
+      if (n > 0) agentRuns += 1
+      const project = projects.find((p) => p.id === run.summary.projectId)
+      if (!needsYou.has(run.summary.id) && statusOfRun(run, project, false).word === 'Running') workingRuns += 1
+    }
+    return { workingAgents, agentRuns, workingRuns }
+  }, [live, waiting, projects])
+
+  const paused = useMemo(() => pausedRuns(summaries), [summaries])
+  const pausedUntil = useMemo(() => {
+    const times = paused.filter((r) => r.autoResume && typeof r.pausedUntil === 'number').map((r) => r.pausedUntil as number)
+    return times.length > 0 ? Math.min(...times) : null
+  }, [paused])
   const closedWaiting = useMemo(
     () => sinceLastSeen(summaries, lastSeen, now, { cap: Number.MAX_SAFE_INTEGER, clearedAt }).items.filter((it) => it.kind === 'closed-waiting').length,
     [summaries, lastSeen, clearedAt, now]
   )
 
-  const cost = useMemo(() => {
-    const from = now - WEEK_MS
-    return sumCosts(summaries.filter((s) => s.startedAt >= from).map(runCostInput))
-  }, [summaries, now])
-  const showCost = !firstLaunch && costView(cost).kind !== 'none'
-  const parts = heroSublineParts({ projects: projectCount, openRuns: live.length, closedWaiting, quiet: figure === 'All quiet' })
+  const sentence = statusSentence({ firstLaunch, ...counts, openRuns: live.length, pausedRuns: paused.length, pausedUntil, closedWaiting })
 
-  const [spoken, setSpoken] = useState('')
-  const lastFigure = useRef(figure)
-  const lastAnnounce = useRef(announce)
-  // M4: a message and a figure change within one beat are spoken as one sentence, so neither overwrites the other.
-  const figureAt = useRef(0)
-  const announceAt = useRef(0)
+  // Limits: one entry per connection in use that reports something, none under the mock adapter or for API keys.
+  const entries = useMemo<LimitEntry[]>(() => {
+    if (firstLaunch || appInfo?.mockAdapter) return []
+    const inUse = connectionsInUse(connections, defaultConnection, projects)
+    const out: LimitEntry[] = []
+    for (const c of connections ?? []) {
+      const id = c.connection.id
+      if (!inUse.has(id)) continue
+      const usage = usageByConnection[id]
+      if (!usage?.available) continue
+      if (isProxyId(id)) {
+        if (c.status.state !== 'connected' || !reportsSpend(c) || !usage.spend) continue
+        const spend = usage.spend
+        out.push({ id, kind: 'spend', level: spendLevel(spend), name: '', main: spendRowLabel(spend, id), resets: '', pct: null, title: spendSentence(spend, id), spend })
+      } else {
+        const e = windowEntry(id, usage, now)
+        if (e) out.push(e)
+      }
+    }
+    return out
+  }, [firstLaunch, appInfo?.mockAdapter, connections, defaultConnection, projects, usageByConnection, now])
+  const shown = entries.slice(0, LIMITS_MAX)
+  const more = entries.length - shown.length
+
+  // Mount only: ask for a fresh reading when the newest one is older than a minute. No timer while the page is open.
   useEffect(() => {
-    if (lastFigure.current === figure) return
-    lastFigure.current = figure
-    const t = Date.now()
-    figureAt.current = t
-    const msg = lastAnnounce.current
-    setSpoken(msg && t - announceAt.current < TOGETHER_MS ? `${msg.text} ${figure}.` : figure)
-  }, [figure])
+    const state = useAppStore.getState()
+    if (refreshing || !usageIsStale(Object.values(state.usageByConnection) as UsageStatus[], Date.now())) return
+    refreshing = true
+    void state.refreshUsage().finally(() => {
+      refreshing = false
+    })
+  }, [])
+
+  // The one live region speaks only what `announce` carries; messages within one beat join into one sentence.
+  const [spoken, setSpoken] = useState('')
+  const lastAnnounce = useRef(announce)
+  const spokenRef = useRef('')
+  const announceAt = useRef(0)
   useEffect(() => {
     if (lastAnnounce.current?.seq === announce?.seq) return
     lastAnnounce.current = announce
     if (!announce) return
     const t = Date.now()
+    const text = t - announceAt.current < TOGETHER_MS && spokenRef.current ? `${spokenRef.current} ${announce.text}` : announce.text
     announceAt.current = t
-    setSpoken(t - figureAt.current < TOGETHER_MS ? `${announce.text} ${lastFigure.current}.` : announce.text)
+    spokenRef.current = text
+    setSpoken(text)
   }, [announce])
 
   const version = appInfo?.version
   return (
     <section className="dash-hero" data-testid="dashboard-hero" aria-label="Overview">
-      <span className="dash-hero-mark" aria-hidden="true" />
-      <div className="dash-hero-main">
-        <p className="dash-hero-figure" data-testid="dashboard-figure">
-          {firstLaunch ? 'Welcome to OrgAI' : figure}
-        </p>
-        <p className="dash-hero-sub">
-          {firstLaunch ? (
-            FIRST_LAUNCH_LINE
-          ) : (
-            <>
-              {parts.map((p, i) => (
-                <span key={p}>
-                  {i > 0 && <span className="dash-sep"> · </span>}
-                  <span className="dash-num">{p}</span>
-                </span>
-              ))}
-              {showCost && (
-                <span>
-                  {parts.length > 0 && <span className="dash-sep"> · </span>}
-                  <Cost value={cost} className="dash-num" /> in the last 7 days
+      <p className="dash-status-line" data-testid="dash-status-line" data-working={counts.workingAgents} data-open={live.length} data-paused={paused.length}>
+        {sentence}
+      </p>
+      {shown.length > 0 && (
+        <ul className="dash-limits" data-testid="dash-limits">
+          {shown.map((e) => (
+            <li key={e.id} className="dash-limit" data-testid="dash-limit" data-connection={e.id} data-kind={e.kind} data-level={e.level} title={e.title}>
+              {e.name && (
+                <>
+                  <span className="dash-limit-name">{e.name}</span>
+                  <span className="dash-sep" aria-hidden="true">
+                    ·
+                  </span>
+                </>
+              )}
+              <span className="dash-limit-main">{e.main}</span>
+              {e.resets && (
+                <>
+                  <span className="dash-sep" aria-hidden="true">
+                    ·
+                  </span>
+                  <span className="dash-limit-resets">{e.resets}</span>
+                </>
+              )}
+              {e.kind === 'window' && e.pct !== null && (
+                <span className={`usage-mini ${e.level}`} aria-hidden="true">
+                  <i style={{ width: `${e.pct}%` }} />
                 </span>
               )}
-            </>
-          )}
-        </p>
-      </div>
+              {e.kind === 'spend' && <SpendBar spend={e.spend} id={e.id} />}
+            </li>
+          ))}
+          {more > 0 && <li className="dash-limit-more">+{more} more</li>}
+        </ul>
+      )}
       <div className="dash-hero-facts" data-testid="dashboard-app-facts">
         {version && <span className="dash-num">OrgAI {version}</span>}
         {isDevBuild(version) && <Badge tone="info">Dev</Badge>}

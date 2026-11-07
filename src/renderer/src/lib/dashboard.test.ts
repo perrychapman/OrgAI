@@ -10,16 +10,19 @@ import {
   forgetNoticeText,
   removeConfirmLabel,
   tileRemoveLabel,
-  heroFigure,
-  heroSublineParts,
+  FIRST_LAUNCH_LINE,
+  clockLabel,
   pausedRuns,
+  resetsAtText,
   planStepLabel,
   projectAttentionOrder,
   readLastSeen,
+  resetsInLabel,
   sinceLastSeen,
-  weekCost,
+  statusSentence,
   writeLastSeen,
-  type EndedRunLike
+  type EndedRunLike,
+  type StatusInput
 } from './dashboard'
 
 const MIN = 60_000
@@ -224,29 +227,6 @@ describe('errorFirstLine', () => {
   })
 })
 
-describe('weekCost', () => {
-  const run = (id: string, startedAt: number, usage?: { costUsd: number | null; costPartial?: true }): { id: string; startedAt: number; usage?: { costUsd: number | null; costPartial?: true } } => ({ id, startedAt, usage })
-  it('sums runs in the rolling week', () => {
-    const out = weekCost([run('a', NOW - DAY, { costUsd: 1.5 }), run('b', NOW - 6 * DAY, { costUsd: 0.5 }), run('old', NOW - 8 * DAY, { costUsd: 99 })], NOW)
-    expect(out).toEqual({ costUsd: 2, partial: false, runs: 2 })
-  })
-  it('marks partial when one cost is unknown or partial', () => {
-    expect(weekCost([run('a', NOW, { costUsd: 1 }), run('b', NOW, { costUsd: null })], NOW)).toEqual({ costUsd: 1, partial: true, runs: 2 })
-    expect(weekCost([run('a', NOW, { costUsd: 1, costPartial: true })], NOW)).toEqual({ costUsd: 1, partial: true, runs: 1 })
-    expect(weekCost([run('a', NOW, { costUsd: 1 }), run('b', NOW)], NOW).partial).toBe(true)
-  })
-  it('is null, not 0, when everything is unknown', () => {
-    expect(weekCost([run('a', NOW, { costUsd: null }), run('b', NOW)], NOW)).toEqual({ costUsd: null, partial: true, runs: 2 })
-  })
-  it('keeps a known zero', () => {
-    expect(weekCost([run('a', NOW, { costUsd: 0 })], NOW)).toEqual({ costUsd: 0, partial: false, runs: 1 })
-  })
-  it('dedupes by run id and handles no runs', () => {
-    expect(weekCost([run('a', NOW, { costUsd: 2 }), run('a', NOW, { costUsd: 2 })], NOW)).toEqual({ costUsd: 2, partial: false, runs: 1 })
-    expect(weekCost([], NOW)).toEqual({ costUsd: 0, partial: false, runs: 0 })
-  })
-})
-
 describe('elapsedLabel', () => {
   it('formats', () => {
     expect(elapsedLabel(NOW, NOW)).toBe('just started')
@@ -282,30 +262,73 @@ describe('planStepLabel', () => {
   })
 })
 
-describe('heroFigure', () => {
-  const f = (decisions: number, running: number, paused: number, projects = 2): string => heroFigure({ decisions, running, paused, projects }).figure
-  it('prefers decisions, then running, then paused, then quiet', () => {
-    expect(f(3, 2, 1)).toBe('3 need you')
-    expect(f(1, 0, 0)).toBe('1 needs you')
-    expect(f(0, 2, 1)).toBe('2 running')
-    expect(f(0, 0, 1)).toBe('1 paused')
-    expect(f(0, 0, 4)).toBe('4 paused')
-    expect(f(0, 0, 0)).toBe('All quiet')
+describe('statusSentence', () => {
+  const base: StatusInput = { workingAgents: 0, agentRuns: 0, workingRuns: 0, openRuns: 0, pausedRuns: 0, closedWaiting: 0 }
+  const s = (over: Partial<StatusInput>): string => statusSentence({ ...base, ...over })
+  it('names working agents and their runs', () => {
+    expect(s({ workingAgents: 1, agentRuns: 1, workingRuns: 1, openRuns: 1 })).toBe('1 agent working in 1 run.')
+    expect(s({ workingAgents: 3, agentRuns: 2, workingRuns: 2, openRuns: 4 })).toBe('3 agents working in 2 runs.')
   })
-  it('welcomes a user with no projects', () => {
-    expect(f(0, 0, 0, 0)).toBe('Welcome to OrgAI')
+  it('falls back to working runs, then open runs, then nothing', () => {
+    expect(s({ workingRuns: 2, openRuns: 2 })).toBe('2 runs working.')
+    expect(s({ workingRuns: 1, openRuns: 1 })).toBe('1 run working.')
+    expect(s({ openRuns: 1 })).toBe('1 run open, none working.')
+    expect(s({ openRuns: 3 })).toBe('3 runs open, none working.')
+    expect(s({})).toBe('Nothing is running.')
+  })
+  it('never mentions decisions', () => {
+    expect(s({ openRuns: 2 })).not.toMatch(/decision|need/i)
+  })
+  it('adds paused, with the soonest resume time when there is one', () => {
+    expect(s({ pausedRuns: 2 })).toBe('Nothing is running. 2 paused.')
+    const at = new Date(2026, 10, 7, 14, 5).getTime()
+    const time = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    expect(s({ pausedRuns: 1, pausedUntil: at })).toBe(`Nothing is running. 1 paused until ${time}.`)
+    expect(s({ pausedRuns: 1, pausedUntil: null })).toBe('Nothing is running. 1 paused.')
+  })
+  it('keeps the runs cut by a quit', () => {
+    expect(s({ closedWaiting: 1 })).toBe('Nothing is running. 1 was waiting on you when OrgAI closed.')
+    expect(s({ closedWaiting: 2, openRuns: 1, workingRuns: 1, pausedRuns: 1 })).toBe('1 run working. 1 paused. 2 were waiting on you when OrgAI closed.')
+  })
+  it('welcomes on first launch', () => {
+    expect(s({ firstLaunch: true, workingAgents: 4 })).toBe(`Welcome to OrgAI. ${FIRST_LAUNCH_LINE}`)
   })
 })
 
-describe('heroSublineParts', () => {
-  it('leaves empty parts out', () => {
-    expect(heroSublineParts({ projects: 3, openRuns: 2 })).toEqual(['3 projects', '2 runs open'])
-    expect(heroSublineParts({ projects: 1, openRuns: 1 })).toEqual(['1 project', '1 run open'])
-    expect(heroSublineParts({ projects: 2, openRuns: 0 })).toEqual(['2 projects'])
-    expect(heroSublineParts({ projects: 0, openRuns: 0 })).toEqual([])
-    expect(heroSublineParts({ projects: 2, openRuns: 0, closedWaiting: 1, quiet: true })).toEqual(['2 projects', '1 was waiting on you when OrgAI closed'])
-    expect(heroSublineParts({ projects: 2, openRuns: 0, closedWaiting: 2, quiet: true })[1]).toBe('2 were waiting on you when OrgAI closed')
-    expect(heroSublineParts({ projects: 2, openRuns: 1, closedWaiting: 2, quiet: false })).toEqual(['2 projects', '1 run open'])
+describe('resetsAtText and clockLabel', () => {
+  const now = new Date(2026, 10, 7, 12, 0, 0).getTime()
+  it('prints a clock time within a day and the weekday beyond', () => {
+    const soon = new Date(2026, 10, 7, 14, 10).getTime()
+    expect(resetsAtText(soon, now)).toBe(clockLabel(soon))
+    expect(resetsAtText(soon, now)).not.toMatch(/[A-Za-z]{3}/)
+    const later = new Date(2026, 10, 12, 9, 0).getTime()
+    expect(resetsAtText(later, now)).toContain(new Date(later).toLocaleDateString([], { weekday: 'short' }))
+  })
+  it('is empty for unknown times', () => {
+    expect(resetsAtText(null, now)).toBe('')
+    expect(clockLabel(undefined)).toBe('')
+  })
+})
+
+describe('resetsInLabel', () => {
+  const now = new Date(2026, 10, 7, 12, 0, 0).getTime()
+  it('is empty without a reset time', () => {
+    expect(resetsInLabel(null, now)).toBe('')
+    expect(resetsInLabel(undefined, now)).toBe('')
+    expect(resetsInLabel(Number.NaN, now)).toBe('')
+  })
+  it('counts down in minutes and hours', () => {
+    expect(resetsInLabel(now + 30_000, now)).toBe('resets in under a minute')
+    expect(resetsInLabel(now - 5_000, now)).toBe('resets in under a minute')
+    expect(resetsInLabel(now + 25 * MIN, now)).toBe('resets in 25 min')
+    expect(resetsInLabel(now + 2 * HOUR + 10 * MIN, now)).toBe('resets in 2 h 10 min')
+    expect(resetsInLabel(now + 3 * HOUR, now)).toBe('resets in 3 h')
+  })
+  it('names the weekday and time from 24 h on', () => {
+    const at = new Date(2026, 10, 12, 9, 0).getTime()
+    const label = resetsInLabel(at, now)
+    expect(label).toBe(`resets ${new Date(at).toLocaleDateString([], { weekday: 'short' })} ${new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`)
+    expect(resetsInLabel(now + 24 * HOUR, now)).toMatch(/^resets \S+ \S+/)
   })
 })
 
