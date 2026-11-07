@@ -328,18 +328,26 @@ export interface RunStatusFact {
 
 const LIVE_STATUSES: readonly RunStatus[] = ['starting', 'running', 'idle', 'stopping']
 
+/** A live run that started this close before the overview was generated may have missed it. */
+const NEW_RUN_SLACK_MS = 2000
+
 /** Ended or paused: the statuses that make the page refetch. */
 export const settledStatus = (s: RunStatus): boolean => !LIVE_STATUSES.includes(s)
 
 /**
  * Runs that ended or paused since the overview was built: a live row whose store status is no longer live, or a run
- * the overview never listed that started in the span and ended after it was generated. Empty after the next fetch.
+ * the overview never listed that started in the span and ended after it was generated. Also a live run the overview
+ * never listed that started after it was generated (a run begun with the page open), so the "still going" note shows
+ * at once instead of after the run ends. Empty after the next fetch.
  */
 export function staleRunIds(rows: readonly Pick<UsageOverviewRow, 'runId' | 'live'>[], facts: readonly RunStatusFact[], generatedAt: number, since: number): string[] {
   const byId = new Map(rows.map((r) => [r.runId, r]))
   const out: string[] = []
   for (const f of facts) {
-    if (!settledStatus(f.status)) continue
+    if (!settledStatus(f.status)) {
+      if (!byId.has(f.id) && f.startedAt >= since && f.startedAt >= generatedAt - NEW_RUN_SLACK_MS) out.push(f.id)
+      continue
+    }
     const row = byId.get(f.id)
     if (row) {
       if (row.live) out.push(f.id)
