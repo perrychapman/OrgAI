@@ -8,7 +8,8 @@ import { Button } from './ui/Button'
 import { ModelSelect, type ModelGroup } from './ui/ModelSelect'
 import { connectionLabel, isProxyId } from '../lib/connectionLabel'
 import { roleTier } from '../lib/remap'
-import { connectionsViewOf, isPinned, ownConnection, roleProblems, runsOnOptions, showRunsOn } from '../lib/roleConnection'
+import { connectionsViewOf, isPinned, isWriterRole, ownConnection, rootRunsOnLine, roleProblems, runsOnDefaultText, runsOnHintText, runsOnOptions, showRunsOn } from '../lib/roleConnection'
+import { useFrameAnnounce } from './layout/CanvasFrame'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { TIER_LABEL, applyExactModel, applyModelChoice, effortView, exactModelGroups, exactModelValue, roleModelChoice, tierOptionLabel } from '../lib/roleModels'
 
@@ -66,6 +67,14 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   // What a Runs on change did to the model, said once under the select (only for the role it was made on).
   const [movedNote, setMovedNote] = useState<{ roleId: string; text: string } | null>(null)
   const moved = movedNote?.roleId === role.id ? movedNote.text : null
+  const writer = isWriterRole(role)
+  // A change of Runs on is said through the frame's polite announcer; outside a frame a local status region says it.
+  const frameAnnounce = useFrameAnnounce()
+  const [said, setSaid] = useState('')
+  const say = (text: string): void => {
+    if (frameAnnounce) frameAnnounce(text)
+    else setSaid(text)
+  }
   const runsOnSelect = runsOn ? (
     <div className="field role-runs-on">
       <label htmlFor={`role-runs-on-${role.id}`}>Runs on</label>
@@ -105,6 +114,8 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
             })
           )
           setMovedNote(note ? { roleId: role.id, text: note } : null)
+          const after = roleConnection(next === undefined ? { ...role, connection: undefined } : { ...role, connection: next }, project)
+          say(`${after !== base ? runsOnHintText(after, writer) : runsOnDefaultText(base)}${note ? ` ${note}` : ''}`)
         }}
       >
         {runsOnOptions(role, project, list).map((o) => (
@@ -119,11 +130,21 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
         </span>
       ) : pinned || moved ? (
         <span className="hint" id={`role-runs-on-hint-${role.id}`} data-testid="role-runs-on-hint">
-          {pinned ? `Bills and routes through ${connectionLabel(connection)}, not the project default.` : ''}
+          {pinned ? runsOnHintText(connection, writer) : ''}
           {moved ? `${pinned ? ' ' : ''}${moved}` : ''}
         </span>
       ) : null}
+      {!frameAnnounce && (
+        <span className="sr-only" role="status" aria-live="polite" data-testid="role-runs-on-status">
+          {said}
+        </span>
+      )}
     </div>
+  ) : null
+  const rootLine = isRoot ? (
+    <p className="hint" data-testid="role-runs-on-root">
+      {rootRunsOnLine(base)}
+    </p>
   ) : null
 
   const choice = roleModelChoice(role, tierModels)
@@ -151,6 +172,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
     return (
       <div className="role-model-field stack-2">
         {runsOnSelect}
+        {rootLine}
         <div className="field">
         <label htmlFor={`role-model-disabled-${role.id}`} className="sr-only">
           Model
@@ -201,6 +223,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   return (
     <div className="role-model-field stack-2">
       {runsOnSelect}
+      {rootLine}
       {error ? (
         <div className="field">
           <span className="hint invalid-text">Could not load models</span>

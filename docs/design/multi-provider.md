@@ -113,6 +113,12 @@ Built 2026-11-07 from the UX pre-walk (`ux-review-multi-provider-pre.md`, answer
 
 ### What was built
 
+- **Walk fix-up (2026-11-07, `ux-review-multi-provider.md`):** the pinned hint states the Phase 1 limits (own session,
+  answers once, cannot be messaged, no nested bridging; no worktree for writers, `isWriterRole`), the same limits as one
+  line beside the project roles line (`project-connection-bridged-note`), a change of Runs on is announced politely, the
+  closed Model summary reads "<tier> · Runs on <name>", the root's Model section says where it runs
+  (`role-runs-on-root`), the agent card's provider tag keeps its width and a folded group's tooltip names other providers.
+
 - **Helpers:** `lib/roleConnection.ts` (pure, unit-tested) rebuilds the defaults.ts input from connections:list
   (`connectionsViewOf`, `connectionStatesOf`) and words role problems in the panel's terms (`roleProblems`,
   `roleProblemText`). `ownConnection` is main's switch rule: a non-root role with any valid `connection` keeps it on a

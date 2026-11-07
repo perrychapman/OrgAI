@@ -106,7 +106,13 @@ try {
   check(((await chip.textContent()) ?? '').includes(PROXY), 'the node chip adds the provider ("Everyday · <proxy>")', (await chip.textContent()) ?? '')
   check(/^Runs on /.test((await chip.getAttribute('title')) ?? ''), 'the chip tooltip names the provider in full', (await chip.getAttribute('title')) ?? '')
   const summary = (await page.locator('[data-testid=role-model-fold] > summary').innerText()).replace(/\s+/g, ' ')
-  check(summary.includes(PROXY), 'the Model fold summary names the pinned provider', summary)
+  check(summary.includes(`Runs on ${PROXY}`), 'the Model fold summary reads "<tier> · Runs on <name>" when pinned', summary)
+  const hint = ((await page.locator('[data-testid=role-runs-on-hint]').textContent()) ?? '').replace(/\s+/g, ' ')
+  check(hint.includes('its own session') && hint.includes('answers its lead once and cannot be messaged') && hint.includes('not bridged'), 'the Runs on hint states the bridged limits', hint)
+  check(!hint.includes('no worktree'), 'a read-only role gets no worktree line', hint)
+  const describedBy = await page.locator('[data-testid=role-runs-on]').getAttribute('aria-describedby')
+  check(!!describedBy && (await page.locator(`[id="${describedBy}"]`).count()) === 1, 'Runs on keeps aria-describedby on the hint', String(describedBy))
+  check((await page.locator('[data-testid=role-model-fold] .role-fold-summary').count()) === 1, 'one fold summary')
   // Keyboard: Runs on is a focusable native select.
   await page.locator('[data-testid=role-runs-on]').focus()
   check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'role-runs-on'), 'Runs on takes keyboard focus')
@@ -115,9 +121,20 @@ try {
   // Project default clears the pin, then pin again.
   await page.locator('[data-testid=role-runs-on]').selectOption('')
   await sleep(900)
+  const said = await page.evaluate(() => [...document.querySelectorAll('[role=status]')].map((e) => e.textContent).join(' | '))
+  check(/Runs on the project default/.test(said), 'changing Runs on is announced through a polite status region', said.slice(0, 200))
   check((await findProject(page, M)).roles.find((r) => r.name === 'Reviewer')?.connection === undefined, '"Project default" clears Role.connection')
   await page.locator('[data-testid=role-runs-on]').selectOption(proxyId)
   await sleep(900)
+
+  // The root has no Runs on; its Model section says where it runs.
+  await page.locator('.react-flow__node', { hasText: 'Orchestrator' }).first().click()
+  await page.waitForFunction(() => !!document.querySelector('[data-testid=role-model-fold]'), undefined, { timeout: 10_000 })
+  await page.evaluate(() => { const f = document.querySelector('[data-testid=role-model-fold]'); if (f) f.open = true })
+  const rootLine = page.locator('[data-testid=role-runs-on-root]')
+  await rootLine.waitFor({ timeout: 10_000 })
+  check(/The orchestrator runs on the project's connection \(.+\); change it in Project settings > Connection\./.test((await rootLine.textContent()) ?? ''), 'the root role shows its one quiet "runs on" line', (await rootLine.textContent()) ?? '')
+  check((await page.locator('[data-testid=role-runs-on]').count()) === 0, 'the root has no Runs on select')
 
   // --- Bridged run: the Reviewer runs as a bridged report on the proxy
   await projectTab(page, 'Live').click()
@@ -129,7 +146,10 @@ try {
   const tag = page.locator(`.agent-node [data-testid=agent-connection][data-connection="${proxyId}"]`).first()
   await tag.waitFor({ timeout: 30_000 }).catch(() => {})
   check((await tag.count()) === 1 && ((await tag.textContent()) ?? '').includes(PROXY), 'the bridged agent shows its provider tag on the canvas')
-  const bridgedNode = page.locator('.agent-node', { has: page.locator('[data-testid=agent-connection]') }).first()
+  check(((await tag.getAttribute('title')) ?? '').includes(PROXY), 'the agent tag title names the provider in full')
+  const handleW = await tag.evaluate((t) => t.parentElement?.firstElementChild?.getBoundingClientRect().width ?? 0)
+  check(handleW >= 40, 'the handle stays readable beside the provider tag', String(handleW))
+  const bridgedNode =page.locator('.agent-node', { has: page.locator('[data-testid=agent-connection]') }).first()
   await page.waitForFunction(() => {
     const n = [...document.querySelectorAll('.agent-node')].find((e) => e.querySelector('[data-testid=agent-connection]'))
     return !!n && n.classList.contains('state-done')
@@ -157,6 +177,8 @@ try {
   const rolesLine = page.locator('[data-testid=project-connection-roles-line]')
   await rolesLine.waitFor({ timeout: 10_000 })
   check(/1 runs on its own connection/.test((await rolesLine.textContent()) ?? ''), 'the roles line counts the pinned role', (await rolesLine.textContent()) ?? '')
+  const note = page.locator('[data-testid=project-connection-bridged-note]')
+  check((await note.count()) === 1 && /cannot be messaged/.test((await note.textContent()) ?? ''), 'the bridged limit note sits beside the roles line')
 
   // --- Real project: pin, then preview a connection switch
   const pinnedR = await pinReviewer(R, proxyId)

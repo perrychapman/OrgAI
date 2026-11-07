@@ -16,6 +16,7 @@ import { Textarea } from './ui/Textarea'
 import { initials } from '../lib/layout'
 import { setReportsTo, wouldCycle } from '../lib/roleOps'
 import { roleModelSummary } from '../lib/roleModels'
+import { modelFoldSummary } from '../lib/roleConnection'
 
 interface Props {
   project: Project
@@ -154,7 +155,7 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
         <details className="role-fold stack-2" open={roomy} data-testid="role-model-fold">
           <summary className="side-section-title" id={id('model')}>
             Model
-            <span className="role-fold-summary muted">{roleModelSummary(role, tierModels ?? {}, roleConnection(role, project), projectConnection(project))}</span>
+            <span className="role-fold-summary muted">{modelFoldSummary(roleModelSummary(role, tierModels ?? {}), roleConnection(role, project), projectConnection(project))}</span>
           </summary>
           <RoleModelPicker project={project} role={role} />
         </details>

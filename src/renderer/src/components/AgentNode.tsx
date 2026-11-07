@@ -64,7 +64,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
   // A provider tag only when this agent runs on another connection than its run (set by main on every agent).
   const runConnection = useAppStore((s) => activeRun(s)?.summary.connection)
   const onTag = connectionTag(agent.connection, runConnection)
-  const onTitle = onTag && agent.connection && runConnection ? connectionTagTitle(agent.connection, runConnection, 'run') : undefined
+  const onTitle = onTag && agent.connection && runConnection ? connectionTagTitle(agent.connection, runConnection, 'run') : (onTag ?? undefined)
   const costInput = agentCostInput(agent)
   const hasCost = !costView(costInput).empty
   // Ended without result text: its tokens bought nothing. A quiet dim and a tooltip, no badge.

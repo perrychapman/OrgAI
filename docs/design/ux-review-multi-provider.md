@@ -6,6 +6,18 @@ Reviewer: UX Researcher. Build: 2d0c6c40 (`npm run build` in this worktree). Ran
 
 PARTLY FIXED. The pre-walk's main asks landed and work: "Runs on" sits first in the Model fold, never says "Connection", follows the model, Exact model and Effort lists, shows a tag on the node chip, the roles line and the remap's "Not changed" group read well, and a turned-off pin is refused with one clear sentence on three surfaces while Start stays enabled. The gap is honesty and discoverability. The panel promises only "Bills and routes through X", while the runtime runs a pinned role as a bridged report with no worktree, one answer and no messaging. Nothing in the UI says so, even for a writer role. Choosing the provider is also silent for assistive tech, and the control sits below the fold.
 
+## Status after fix-up (2026-11-07)
+
+| Finding | Status | What changed |
+| --- | --- | --- |
+| H1 bridged limits unsaid | Fixed | `role-runs-on-hint` adds the limits ("runs as its own session on <name>, answers its lead once and cannot be messaged. Roles it would create on other connections are not bridged."), plus "It works in the project folder with no worktree." for roles with Edit, Write or Bash; `project-connection-bridged-note` beside the roles line when a role has its own connection. Not done: a note on the parent's agent card |
+| M1 silent change | Fixed | the new hint text is said through the frame's polite announcer (a local `role-runs-on-status` outside a frame); `aria-describedby` kept |
+| M2 fold discoverability | Fixed | closed summary reads "Everyday · Runs on <name>" when pinned. Not done: a cue when unpinned with two connections |
+| M3 tag cut, group loses it | Partly | the tag no longer shrinks (handle at least 10ch, model shrinks first), `title` always set; a folded group's tooltip adds " · ran on <name>". The tag is still cut at max 45% on very long names |
+| M4 root unexplained | Fixed | `role-runs-on-root` line in the root's Model section |
+
+Checked by `e2e/multi-provider.mjs` (both sizes and themes by geometry) and unit tests; not seen by eye or with a screen reader.
+
 ## Pre-walk status
 
 | Pre-walk item | Status | Evidence |

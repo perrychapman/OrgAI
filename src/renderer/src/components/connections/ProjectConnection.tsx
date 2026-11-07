@@ -18,7 +18,7 @@ import { SettingsSection } from '../settings/SettingsSection'
 import { SettingRow } from '../ui/SettingRow'
 import RemapPreviewDialog from '../RemapPreviewDialog'
 import { otherFamilyRoles, previewRemap, projectStartRefusal, proxyFamilyNotice, roleTier, routeLines, tierMappingLines, FAMILY_LABEL } from '../../lib/remap'
-import { ownConnection } from '../../lib/roleConnection'
+import { BRIDGED_NOTE, ownConnection } from '../../lib/roleConnection'
 import { connectionKindLabel, connectionLabel, connectionWithAuth, isProxyId } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestModelPrice } from '../../lib/settingsTarget'
 
@@ -195,6 +195,11 @@ export default function ProjectConnection({ project }: { project: Project }): Re
             {rolesLine}
           </p>
         )}
+        {ownCount > 0 && (
+          <p className="hint" data-testid="project-connection-bridged-note">
+            {BRIDGED_NOTE}
+          </p>
+        )}
         {error && <Banner tone="danger">{error}</Banner>}
         {refusalBanner}
         {proxyNotice}
@@ -339,6 +344,11 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         <p className="settings-card-note" data-testid="project-connection-roles-line">
           {rolesLine}
         </p>
+        {ownCount > 0 && (
+          <p className="settings-card-note" data-testid="project-connection-bridged-note">
+            {BRIDGED_NOTE}
+          </p>
+        )}
         <details className="setting-row-more role-models" data-testid="role-models">
           <summary>Role models</summary>
           <ul className="remap-roles flush">
