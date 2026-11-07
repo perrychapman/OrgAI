@@ -1,6 +1,9 @@
 import type { CSSProperties, KeyboardEvent, ReactElement } from 'react'
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUpRight } from 'lucide-react'
 import { formatDuration } from '../../lib/cost'
+import { useAppStore } from '../../store/useAppStore'
+import { Icon } from '../ui/Icon'
 import { barHeight, dayAriaLabel, dayLedger, dayReadout, ledgerTicks, ledgerTotals, maxDayCost, shortDate, waitedShown, weekdayInitial, type DayBucket } from '../../lib/activityStrip'
 import { Cost } from '../ui/Cost'
 import { useRovingFocus } from '../connectors/useRovingFocus'
@@ -99,6 +102,7 @@ function DayColumn({
 export function ActivityStrip({ size, dense = false }: { size: StripSize; dense?: boolean }): ReactElement {
   const drawn: keyof typeof SIZES = size === 'compact' && dense ? 'dense' : size
   const headingId = useId()
+  const openUsage = useAppStore((s) => s.openUsage)
   const summaries = useAllSummaries()
   const now = useNow(60_000)
   const days = useMemo(() => dayLedger(summaries, now), [summaries, now])
@@ -121,6 +125,16 @@ export function ActivityStrip({ size, dense = false }: { size: StripSize; dense?
   })
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    // Enter on a focused day opens the Usage page on that day (Space and a click keep pinning its readout).
+    if (e.key === 'Enter' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      const key = (e.target as HTMLElement).closest<HTMLElement>('[data-testid=dash-strip-day]')?.dataset.day
+      const day = key ? days.find((d) => d.key === key) : undefined
+      if (day) {
+        e.preventDefault()
+        openUsage({ day: day.start })
+        return
+      }
+    }
     if (e.key === 'Escape' && pinned) {
       e.stopPropagation()
       setPinned(null)
@@ -134,7 +148,10 @@ export function ActivityStrip({ size, dense = false }: { size: StripSize; dense?
     <section className="dash-section dash-strip" data-testid="dash-strip" data-size={size} data-dense={drawn === 'dense' ? '' : undefined} aria-labelledby={headingId}>
       <div className="dash-strip-head">
         <h2 id={headingId} className="dash-strip-title">
-          Last 14 days
+          <button type="button" className="dash-strip-usage-link" data-testid="dash-strip-usage-link" title="Open Usage" onClick={() => openUsage({ period: { kind: 'days', days: 30 } })}>
+            Last 14 days
+            <Icon icon={ArrowUpRight} size="xs" />
+          </button>
         </h2>
         <dl className="dash-strip-totals">
           <div data-testid="dash-strip-runs">
@@ -155,7 +172,7 @@ export function ActivityStrip({ size, dense = false }: { size: StripSize; dense?
           )}
         </dl>
       </div>
-      <div ref={groupRef} className="dash-strip-days" role="group" aria-label="Runs and cost per day, last 14 days" onKeyDown={onKeyDown} onFocus={roving.onFocus}>
+      <div ref={groupRef} className="dash-strip-days" role="group" aria-label="Runs and cost per day, last 14 days. Space shows a day; Enter opens it in Usage." onKeyDown={onKeyDown} onFocus={roving.onFocus}>
         {days.map((d, i) => (
           <DayColumn
             key={d.key}

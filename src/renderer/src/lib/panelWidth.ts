@@ -11,7 +11,9 @@ export const PANEL_WIDE_PX = 480
 /** Hysteresis: once wide, the panel stays wide until it is narrower than this, so a drag across 480 does not flip the layout back and forth. */
 export const PANEL_NARROW_PX = 448
 /** Next wide/narrow state for a measured panel width. */
-export const nextWide = (was: boolean, width: number): boolean => (was ? width >= PANEL_NARROW_PX : width >= PANEL_WIDE_PX)
+/** The width a panel opens at on an arrival that needs room (the Usage page's run link): the saved width, at least wide. Never saved. */
+export const arrivalWidth = (saved: number | null): number => Math.max(saved ?? 0, PANEL_WIDE_PX)
+export const nextWide =(was: boolean, width: number): boolean => (was ? width >= PANEL_NARROW_PX : width >= PANEL_WIDE_PX)
 /** The main area next to the sidebar never gets narrower than this. */
 export const MAIN_MIN_PX = 480
 /** Arrow-key step and the Shift step (px). */
