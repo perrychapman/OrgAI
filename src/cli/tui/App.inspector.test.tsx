@@ -210,7 +210,7 @@ describe('agent inspector (F4)', () => {
     await m.send(key('d'))
     // The tray now has focus on that agent's card.
     expect(m.frame()).toContain('Run npm test')
-    expect(m.frame()).toContain('Esc back')
+    expect(m.frame()).toMatch(/Esc [Bb]ack/)
   })
 
   it('w opens the worktree diff in the pager path (overlay without a pager)', async () => {
@@ -337,16 +337,16 @@ describe('run chips and switching (F8)', () => {
 
   it('the status bar lists the live runs as chips when there is room, else a count, and keeps the hint (issue #26)', async () => {
     const wide = mount({ cols: 180, rows: 40, state: liveRuns() })
-    expect(lines(wide.frame())[0]).toMatch(/R1\*!? R2/)
+    expect(lines(wide.frame()).at(-1)).toMatch(/R1\*!? R2/)
     for (const [cols, rows] of [
       [120, 40],
       [90, 30],
       [100, 24]
     ]) {
       const m = mount({ cols, rows, state: liveRuns() })
-      const top = lines(m.frame())[0]
-      expect(top, `${cols}x${rows}`).toMatch(/R1\*!? R2|2 live/)
-      expect(top, `${cols}x${rows}`).toContain('Enter sends')
+      const footer = lines(m.frame()).at(-1) ?? ''
+      expect(footer, `${cols}x${rows}`).toMatch(/R1\*!? R2|2 live/)
+      expect(m.frame(), `${cols}x${rows}`).toContain('Enter sends')
     }
   })
 
@@ -358,7 +358,7 @@ describe('run chips and switching (F8)', () => {
 
   it('screen reader reads words, not marks', async () => {
     const m = mount({ cols: 200, rows: 40, env: { screenReader: true, unicode: false }, state: liveRuns() })
-    expect(lines(m.frame())[0]).toContain('R1 followed')
+    expect(lines(m.frame()).at(-1)).toContain('R1 followed')
   })
 
   it('] follows the next live run through focusRun; [ the previous', async () => {
@@ -445,7 +445,9 @@ describe('which-key overlay and hints (F9)', () => {
     expect(f).toContain('Keys: Agents')
     expect(f).toContain('Open the agent inspector')
     expect(f).toContain('Glyphs')
-    expect(f).toContain('○ idle  ● thinking  ◆ tool')
+    await m.send(named('pagedown'))
+    const scrolled = m.frame()
+    expect(scrolled).toContain('○ idle  ● thinking  ◆ tool')
     await m.send(named('escape'))
     expect(m.frame()).not.toContain('Keys: Agents')
   })

@@ -1,7 +1,7 @@
 import { render } from 'ink-testing-library'
 import { describe, expect, it } from 'vitest'
 import { InputBus } from './context'
-import { TranscriptPane, dividerLine } from './TranscriptPane'
+import { TranscriptPane, dividerLine, groupToolRows, rowLines } from './TranscriptPane'
 import { ESC_RE, Providers, env, key, press, withInkColor } from './panes/testUtil'
 import { textWidth } from './panes/text'
 import type { BufferMode, PartialRow, TranscriptPaneProps, TranscriptRow, TuiEnv } from './types'
@@ -39,6 +39,34 @@ function mount(props: Partial<Props> = {}, e: TuiEnv = env()) {
 const lines = (frame: string | undefined): string[] => (frame ?? '').split('\n')
 
 describe('TranscriptPane (full-screen)', () => {
+  it('formats headings, inline code and fenced code without printing Markdown fences', () => {
+    const formatted = rowLines(r('md', { text: '# Result\n- Updated **authentication** in `auth.ts`\n```ts\nconst ok = true\n```' }), 80, env())
+    expect(formatted.map(l => l.text).join('\n')).toContain('const ok = true')
+    expect(formatted.map(l => l.text).join('\n')).not.toContain('```')
+    expect(formatted.some(l => l.segs?.some(s => s.bold))).toBe(true)
+    expect(formatted.some(l => l.segs?.some(s => s.text === 'auth.ts' && s.tone === 'accent'))).toBe(true)
+    for (const l of formatted) expect(textWidth(l.text)).toBeLessThanOrEqual(80)
+  })
+
+  it('keeps unmatched Markdown fences and incomplete parallel tools literal', () => {
+    expect(rowLines(r('literal', { text: '```ts\nunfinished code' }), 80, env()).map(l => l.text).join('\n')).toContain('```ts')
+    const rows = [r('a', { kind: 'tool' }), r('b', { kind: 'tool' }), r('a-result', { kind: 'result' })]
+    expect(groupToolRows(rows)).toEqual(rows)
+  })
+
+  it('expands grouped tool activity and always leaves failures visible', async () => {
+    const rows = [r('t1', { kind: 'tool', text: 'Read one.ts' }), r('r1', { kind: 'result', text: 'Read complete' }), r('t2', { kind: 'tool', text: 'Read two.ts' }), r('r2', { kind: 'result', text: 'Read complete' }), r('fail', { kind: 'error', text: 'Check failed' })]
+    expect(groupToolRows(rows)).toHaveLength(2)
+    const app = mount({ rows, focused: true })
+    expect(app.lastFrame()).toContain('2 tool calls completed')
+    expect(app.lastFrame()).toContain('Check failed')
+    press(app.bus, 'transcript', key('enter'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(app.lastFrame()).toContain('Read one.ts')
+    expect(app.lastFrame()).toContain('Read two.ts')
+    app.unmount()
+  })
+
   it('styles each row kind', () => {
     const rows: TranscriptRow[] = [
       r('u', { kind: 'user', text: 'please fix the bug', agentLabel: undefined }),
@@ -52,11 +80,11 @@ describe('TranscriptPane (full-screen)', () => {
     ]
     const t = mount({ rows, height: 20 })
     const out = lines(t.lastFrame())
-    expect(out).toContain('you: please fix the bug')
-    expect(out).toContain('orchestrator: On it.')
+    expect(out).toContain('› please fix the bug')
+    expect(out).toContain('• orchestrator: On it.')
     expect(out).toContain('orchestrator (thinking): considering')
     expect(out).toContain('→ orchestrator: Read src/a.ts')
-    expect(out).toContain('  ok')
+    expect(out).toContain('└─ ok')
     expect(out).toContain('✗ orchestrator: boom')
     const div = out.find((l) => l.includes('Continued 3 min later'))!
     expect(div.startsWith('── Continued 3 min later ─')).toBe(true)
@@ -69,8 +97,8 @@ describe('TranscriptPane (full-screen)', () => {
     const rows = [r('a', { text: 'first line\nsecond line that is quite a bit longer than the pane' }), r('w', { text: '漢字'.repeat(20) })]
     const t = mount({ rows, width: 24, height: 20 })
     const out = lines(t.lastFrame())
-    expect(out[0]).toBe('orchestrator: first line')
-    expect(out[1]).toBe('second line that is')
+    expect(out[0]).toBe('• orchestrator: first')
+    expect(out[1]).toBe('  line')
     for (const l of out) expect(textWidth(l)).toBeLessThanOrEqual(24)
     t.unmount()
   })
@@ -80,16 +108,16 @@ describe('TranscriptPane (full-screen)', () => {
     const t = mount({ rows: [r('a')], partials, omitted: 1200 })
     const out = lines(t.lastFrame())
     expect(out[0]).toBe('1,200 earlier entries not shown')
-    expect(out[1]).toBe('orchestrator: text of a')
-    expect(out[2]).toBe('dev-1: streaming…')
+    expect(out[1]).toBe('• orchestrator: text of a')
+    expect(out[2]).toBe('• dev-1: streaming…')
     t.unmount()
   })
 
   it('stays pinned to the bottom, and holds its place with a "new rows below" line after scrolling up', () => {
     const t = mount({ rows: numbered(30), height: 5 })
-    expect(lines(t.lastFrame()).at(-1)).toBe('orchestrator: line 29')
+    expect(lines(t.lastFrame()).at(-1)).toBe('• orchestrator: line 29')
     t.rerender({ rows: numbered(31) })
-    expect(lines(t.lastFrame()).at(-1)).toBe('orchestrator: line 30')
+    expect(lines(t.lastFrame()).at(-1)).toBe('• orchestrator: line 30')
     // Not focused: keys are not consumed.
     expect(press(t.bus, 'transcript', key('pageup'))).toEqual([false])
     t.rerender({ focused: true })
@@ -108,14 +136,14 @@ describe('TranscriptPane (full-screen)', () => {
     press(t.bus, 'transcript', key('end'))
     t.rerender({})
     out = lines(t.lastFrame())
-    expect(out.at(-1)).toBe('orchestrator: line 33')
+    expect(out.at(-1)).toBe('• orchestrator: line 33')
     expect(out.join('\n')).not.toContain('End to jump')
     press(t.bus, 'transcript', key('home'))
     t.rerender({})
-    expect(lines(t.lastFrame())[0]).toBe('orchestrator: line 4')
+    expect(lines(t.lastFrame())[0]).toBe('• orchestrator: line 4')
     press(t.bus, 'transcript', ...Array.from({ length: 12 }, () => key('pagedown')))
     t.rerender({})
-    expect(lines(t.lastFrame()).at(-1)).toBe('orchestrator: line 33')
+    expect(lines(t.lastFrame()).at(-1)).toBe('• orchestrator: line 33')
     t.unmount()
   })
 
@@ -136,6 +164,38 @@ describe('TranscriptPane (full-screen)', () => {
       expect(out).not.toMatch(/[→✗─]/)
       sr.unmount()
     })
+  })
+
+  it('uses turn markers, hanging indents, and one gap between meaningful user turns', () => {
+    const rows: TranscriptRow[] = [
+      r('u1', { kind: 'user', text: 'find the bug', agentLabel: undefined }),
+      r('a1', { text: 'A compact answer with enough detail to wrap.' }),
+      r('tool', { kind: 'tool', text: 'Read src/cli/tui/TranscriptPane.tsx and inspect the row layout.' }),
+      r('res', { kind: 'result', text: 'The result has enough detail to wrap under its branch.' }),
+      r('u2', { kind: 'user', text: 'now make the fix', agentLabel: undefined })
+    ]
+    const t = mount({ rows, width: 32, height: 20 })
+    const out = lines(t.lastFrame())
+    const assistant = out.findIndex((line) => line.startsWith('• orchestrator:'))
+    const assistantIndent = '  '
+    expect(out).toContain('› find the bug')
+    expect(assistant).toBeGreaterThanOrEqual(0)
+    expect(out[assistant + 1]?.startsWith(assistantIndent)).toBe(true)
+    const tool = out.findIndex((line) => line.startsWith('→ orchestrator:'))
+    const toolIndent = '  '
+    expect(tool).toBeGreaterThanOrEqual(0)
+    expect(out[tool + 1]?.startsWith(toolIndent)).toBe(true)
+    const nextUser = out.findIndex((line) => line === '› now make the fix')
+    expect(nextUser).toBeGreaterThan(1)
+    expect(out[nextUser - 1]?.trim()).toBe('')
+    expect(out[nextUser - 2]?.trim()).not.toBe('')
+    t.unmount()
+  })
+
+  it('keeps row bodies visible when a label is wider than the pane', () => {
+    const t = mount({ width: 1, height: 6, rows: [r('narrow', { agentLabel: 'a-very-long-agent', text: 'body' })] })
+    expect(lines(t.lastFrame()).slice(0, 5)).toEqual(['•', 'b', 'o', 'd', 'y'])
+    t.unmount()
   })
 
   it('survives width or height 0 and 1', () => {

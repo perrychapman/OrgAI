@@ -8,7 +8,7 @@ import { useRef, useState } from 'react'
 import { useFocusHandler, useTuiEnv } from './context'
 import { asciiOnly } from './theme'
 import type { PlanPaneProps, PlanStepView, Tone, TuiEnv } from './types'
-import { PaneLines, alignSegs, cutSegs, moveIndex, navKey, type PaneLine } from './panes/lines'
+import { PaneLines, paneHeading, alignSegs, cutSegs, moveIndex, navKey, type PaneLine } from './panes/lines'
 
 type StepStatus = PlanStepView['status']
 
@@ -60,7 +60,7 @@ export function PlanPane(props: PlanPaneProps) {
   const head: PaneLine[] = []
   const steps: PaneLine[] = []
   if (plan) {
-    head.push({ key: 'title', segs: cutSegs([{ text: 'Plan', bold: true, tone: props.focused ? 'accent' : undefined }], width, env) })
+    head.push({ key: 'title', segs: paneHeading('Plan', width, props.focused, env) })
     head.push({ key: 'goal', segs: cutSegs([{ text: plan.goal || 'No goal set' }], width, env) })
     head.push({ key: 'progress', segs: cutSegs([{ text: `${plan.done}/${plan.total} done`, dim: true }, { text: plan.statusWord ? `  ${plan.statusWord}` : '' }], width, env) })
     const bodyH = Math.max(0, height - head.length)
@@ -76,7 +76,7 @@ export function PlanPane(props: PlanPaneProps) {
       if (withNotes && step.note) steps.push({ key: `note:${step.id}`, segs: cutSegs([{ text: `    ${step.note}`, dim: true }], width, env) })
     }
   } else {
-    head.push({ key: 'title', segs: cutSegs([{ text: 'Plan', bold: true, tone: props.focused ? 'accent' : undefined }], width, env) })
+    head.push({ key: 'title', segs: paneHeading('Plan', width, props.focused, env) })
     head.push({ key: 'empty', segs: cutSegs([{ text: 'No plan yet', dim: true }], width, env) })
   }
 

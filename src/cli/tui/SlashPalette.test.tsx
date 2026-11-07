@@ -59,6 +59,8 @@ const runCalls = (fn: SlashPaletteProps['onRun']) => (fn as ReturnType<typeof vi
 describe('SlashPalette', () => {
   it('lists the available commands and filters as you type', async () => {
     const t = setup()
+    expect(t.frame()).toContain('Commands')
+    expect(t.frame()).toContain('Type to search commands')
     expect(t.frame()).toContain('/help')
     expect(t.frame()).toContain('/quit')
     // interrupt / stop need an open active run.
@@ -89,7 +91,7 @@ describe('SlashPalette', () => {
     const t = setup()
     await t.send('ne')
     await t.send('\t')
-    expect(t.frame().split('\n')[0].trim()).toBe('/new _')
+    expect(t.frame().split('\n')[0].trim()).toBe('Commands  /new _')
     await t.send('fix the build\r')
     expect(runCalls(t.props.onRun)).toEqual([['new', 'fix the build']])
     t.r.unmount()
@@ -109,7 +111,7 @@ describe('SlashPalette', () => {
     const u = setup({ query: '/h' })
     await u.send('\x7f')
     expect(u.props.onClose).not.toHaveBeenCalled()
-    expect(u.frame().split('\n')[0].trim()).toBe('/_')
+    expect(u.frame().split('\n')[0]).toContain('Commands  /_')
     await u.send('\x7f')
     expect(u.props.onClose).toHaveBeenCalledTimes(1)
     t.r.unmount()
@@ -173,5 +175,18 @@ describe('SlashPalette', () => {
     expect(rows.length).toBe(3)
     expect(rows.some((r) => r.includes('›') || r.includes('>'))).toBe(true)
     t.r.unmount()
+  })
+
+  it('honors one- and two-row palette heights', () => {
+    const one = setup({ height: 1 })
+    expect(one.frame().split('\n')).toHaveLength(1)
+    expect(one.frame()).toContain('/')
+    one.r.unmount()
+
+    const two = setup({ height: 2 })
+    expect(two.frame().split('\n')).toHaveLength(2)
+    expect(two.frame()).toContain('Commands')
+    expect(two.frame()).toContain('/help')
+    two.r.unmount()
   })
 })

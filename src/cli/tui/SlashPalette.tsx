@@ -116,10 +116,11 @@ export function SlashPalette(props: SlashPaletteProps) {
     [matches.length, props.commands, props.state, st.query]
   )
   const width = Math.max(0, Math.floor(props.width))
-  const listRows = Math.max(1, props.height - 1)
+  const height = Math.max(0, Math.floor(props.height))
+  const listRows = Math.max(0, height - 1)
   // When more commands match than rows, the last row says how many are not shown.
-  const overflow = matches.length > listRows
-  const cap = overflow ? Math.max(1, listRows - 1) : listRows
+  const overflow = listRows >= 2 && matches.length > listRows
+  const cap = overflow ? listRows - 1 : listRows
   const sel = Math.min(st.selected, Math.max(0, matches.length - 1))
   const first = Math.max(0, Math.min(sel - cap + 1, matches.length - cap))
   const shown = matches.slice(first, first + cap)
@@ -136,7 +137,7 @@ export function SlashPalette(props: SlashPaletteProps) {
 
   // The cursor: an inverse cell with colour, an underscore without (no SGR attribute is ever set with colour off).
   const cursor: Seg[] = props.focused ? (env.color ? [{ text: ' ', inverse: true }] : [{ text: '_' }]) : []
-  const rows: ReactNode[] = [row('query', [{ text: st.query, tone: 'accent' }, ...cursor])]
+  const rows: ReactNode[] = [row('query', [...(width >= 24 ? [{ text: 'Commands  ', bold: true }] : []), { text: st.query, tone: 'accent' }, ...cursor, ...(st.query === '/' && width >= 45 ? [{ text: '  Type to search commands', dim: true }] : [])])]
   if (matches.length === 0) {
     rows.push(
       unavailable
@@ -158,8 +159,8 @@ export function SlashPalette(props: SlashPaletteProps) {
   }
 
   return (
-    <Box flexDirection="column" width={width}>
-      {rows}
+    <Box flexDirection="column" width={width} height={height} overflow="hidden">
+      {rows.slice(0, height)}
     </Box>
   )
 }

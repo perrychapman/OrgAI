@@ -112,6 +112,10 @@ export interface TuiEnv {
   dumbTerminal: boolean
   bracketedPaste: boolean
   unicode: boolean
+  /** Resolved terminal appearance for filled input surfaces. */
+  terminalTheme?: 'dark' | 'light'
+  /** Opt out of decorative motion (ORGAI_REDUCED_MOTION=1). */
+  reducedMotion?: boolean
 }
 
 // ---------- Input ----------
@@ -208,12 +212,13 @@ export interface PeerCount {
   count: number
 }
 
-/** One agent-to-agent message the TUI keeps (no text: it is untrusted and already in the transcript). */
+/** One live message; a sanitized preview accompanies the traffic facts. */
 export interface RunMessageRec {
   from: string
   to: string | null
   toHandle: string
   at: number
+  text?: string
 }
 
 /** The agent inspector's facts (every field sanitized; missing facts are left out). */
@@ -257,6 +262,8 @@ export interface TranscriptRow {
   text: string
   tone?: Tone
   at?: number
+  /** Correlates tool calls and results before compacting completed activity. */
+  toolUseId?: string
 }
 
 /** A streaming (agent.partial) row for one agent. */

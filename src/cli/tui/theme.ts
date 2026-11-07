@@ -1,24 +1,37 @@
 /**
- * TUI colours and glyphs. Colours are Ink colour names (chalk), none when colour is off (--no-color, NO_COLOR, a
+ * TUI colours and glyphs. Colours are Ink/chalk names or hex values, none when colour is off (--no-color, NO_COLOR, a
  * non-TTY). Glyphs fall back to ASCII without Unicode, for screen readers and on TERM=dumb.
  */
 import type { AgentState } from '../../shared/types'
 import type { Tone, TuiEnv } from './types'
 
-/**
- * ANSI-16 names only (the terminal's own palette decides the shade). 'dim' has no foreground: it is the dimColor
- * attribute alone, because grey plus dimColor stacked into text too faint to read (issue #32). 'running' is
- * blueBright, not blue (plain blue is nearly invisible on PowerShell's dark-blue background), and 'warn' is magenta,
- * not yellow (yellow washes out on a white background). UNVERIFIED: no real light or dark terminal background was
- * looked at; this is chosen from the usual palettes (Windows Terminal Campbell / One Half Light, macOS Terminal Basic).
- */
+/** Prefer an explicit override, then the terminal's advertised ANSI background. */
+export function terminalThemeFor(env: Record<string, string | undefined>): 'dark' | 'light' {
+  if (env.ORGAI_THEME === 'dark' || env.ORGAI_THEME === 'light') return env.ORGAI_THEME
+  const value = env.COLORFGBG?.split(';').at(-1)
+  if (value && /^\d+$/.test(value)) {
+    const background = Number(value)
+    if (background === 7 || (background >= 9 && background <= 15)) return 'light'
+  }
+  return 'dark'
+}
+
+/** Pair fill and text so the prompt stays readable even without terminal theme metadata. */
+export function composerSurface(env: TuiEnv): { backgroundColor?: string; color?: string } {
+  if (!env.color || env.screenReader || env.dumbTerminal) return {}
+  return env.terminalTheme === 'light'
+    ? { backgroundColor: '#f5f5f5', color: '#202124' }
+    : { backgroundColor: '#2d2e34', color: '#e4e7ef' }
+}
+
 const TONE_COLORS: Record<Tone, string | undefined> = {
   ok: 'green',
-  warn: 'magenta',
+  // Middle tones retain contrast on both light Terminal.app profiles and dark terminals.
+  warn: '#a87422',
   danger: 'red',
   dim: undefined,
-  accent: 'cyan',
-  running: 'blueBright'
+  accent: '#287fc0',
+  running: '#287fc0'
 }
 
 /** The Ink colour for a tone, or undefined when colour is off, no tone is given or the tone has no foreground ('dim'). */

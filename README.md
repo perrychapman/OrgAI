@@ -26,6 +26,32 @@ a task, and the live view draws that chart as the work runs: every agent appears
 spawned, with its state, activity, tokens and cost. It runs on your own Claude Code login or API key, Codex (OpenAI) or
 a LiteLLM proxy. Projects, runs and settings are stored on your computer.
 
+## Terminal workspace
+
+After building, run `npm run cli -- tui` (or `orgai` when installed on your PATH). The terminal opens with a
+window-sized workspace with a compact header at the top left and a prompt at the bottom. Active runs show the conversation, agents, plan and worktrees, with
+live activity and elapsed time. Working agents have individual spinners, and a live activity line sits above
+the prompt. A soft shimmer marks thinking labels; the logo, menus and borderless input stay still. Type `/` for searchable commands; Tab moves between panes, Alt+D focuses
+decisions, and Esc twice interrupts a working run from the composer. Enter sends; Alt+Enter adds a line.
+
+Folders that are not registered projects open setup choices in the same terminal flow, at the current window size. Use Up/Down and
+Enter to choose a quick run, guided setup, or the default team; the numbered shortcuts still work. Any terminal
+access limitation appears alongside those choices, without changing the permissions granted by the desktop app.
+
+`--inline` keeps the conversation in terminal scrollback. `--ax-screen-reader` uses plain labels, and
+`--no-color` disables styling. Set `ORGAI_REDUCED_MOTION=1` to keep shimmer and activity indicators still. Animation also
+stays off in inline mode, for screen readers, dumb terminals and no-color output. Spinners appear only while a
+folder check, project setup, or run is actually working.
+
+The input surface follows `COLORFGBG` when available, with a readable dark default.
+Set `ORGAI_THEME=light` or `ORGAI_THEME=dark` to choose its appearance explicitly.
+
+Agent messages appear beside the team, with recent exchanges in the agent inspector (Enter on an agent).
+The transcript marks teammates joining and finishing, renders basic Markdown, and groups completed tool
+activity; Enter in the transcript expands or collapses those groups. A finished run shows its recorded
+outcome, elapsed time, file changes and check results. Message previews are bounded and begin when the
+terminal attaches; they are not a reconstructed message history.
+
 | | |
 | --- | --- |
 | **Plan** | An Architect agent interviews you or reads your repository, then proposes the architecture, the org chart and the run settings as cards you approve. |

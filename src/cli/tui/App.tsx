@@ -12,6 +12,11 @@ import { nextSettleAt, settleTimerDelay } from '../../shared/view/foldFinished'
 import { isOpenStatus } from '../../shared/view/runChains'
 import { statusOfRun, statusText } from '../../shared/view/runStatus'
 import { Composer } from './Composer'
+import { teamMessageRows, withTeamMilestones } from './collaboration'
+import { Welcome } from './Welcome'
+import { RunActivity } from './RunActivity'
+import { RunCompletion } from './RunCompletion'
+import { TUI_NO_DECIDE_NOTICE } from './session'
 import { InputBus, InputBusContext, TuiEnvContext } from './context'
 import { DecisionTray, GUARD_ARRIVED_NOTICE, GUARD_SWAPPED_NOTICE } from './DecisionTray'
 import { cardDetailLines } from './decisions'
@@ -19,7 +24,7 @@ import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
 import { InspectorPane } from './InspectorPane'
 import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
-import { Onboarding, type OnboardingChoice } from './Onboarding'
+import { Onboarding, DESKTOP_DECISIONS_NOTICE, type OnboardingChoice } from './Onboarding'
 import { OrgTreePane } from './OrgTreePane'
 import { showInPager } from './pager'
 import { PlanPane } from './PlanPane'
@@ -64,7 +69,7 @@ const EXIT_FAILURE = 1
 
 /** Two Ctrl+C presses within this window quit. */
 export const CTRL_C_QUIT_MS = 1500
-export const COMPOSER_ROWS = 3
+export const COMPOSER_ROWS = 5
 export const PANE_ORDER: readonly PaneId[] = ['tree', 'transcript', 'plan', 'worktrees']
 
 export const NOTHING_NEEDS_YOU = 'Nothing needs you'
@@ -295,6 +300,9 @@ export function App(props: AppProps) {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const [onboarding, setOnboarding] = useState<boolean>(launch.onboarding !== undefined)
   const [check, setCheck] = useState<ProjectPathCheck | undefined>(undefined)
+  const [checkingFolder, setCheckingFolder] = useState(launch.onboarding !== undefined)
+  const [onboardingBusy, setOnboardingBusy] = useState<string | undefined>()
+  const onboardingPending = useRef(false)
   const [quickEdits, setQuickEdits] = useState<boolean | undefined>(undefined)
   const [focus, setFocusRaw] = useState<FocusTarget>(launch.onboarding ? 'onboarding' : 'composer')
   // Focus lives in a ref too, updated synchronously by every focus change, and input that arrives while a change is
@@ -307,7 +315,7 @@ export function App(props: AppProps) {
   const lastEsc = useRef<number | undefined>(undefined)
   const panesNoticeShown = useRef(false)
   const openedNoticeDone = useRef(false)
-  const [composerRows, setComposerRows] = useState(1)
+  const [composerRows, setComposerRows] = useState(env.bufferMode === 'inline' ? 1 : COMPOSER_ROWS)
   // Tree and transcript are on unless /tree or /transcript hide them; Plan and Worktrees follow `userPanes` when the user
   // asked (/plan, /wt), else show only while something needs them (a blocked plan, a worktree in review or conflict).
   const [visible, setVisible] = useState<Record<PaneId, boolean>>({ tree: true, transcript: true, plan: true, worktrees: true })
@@ -365,10 +373,21 @@ export function App(props: AppProps) {
   const activeStatus = state.activeRunId ? state.runs[state.activeRunId]?.summary.status : undefined
   const inline = env.bufferMode === 'inline'
   const readOnly = state.readOnlyReason !== undefined
+  const welcoming = !state.activeRunId && transcriptRows(state).rows.length === 0
+  const messages = teamMessageRows(state)
+  const decisionsInDesktop = conn.hello?.grantedScopes !== undefined && !conn.hello.grantedScopes.includes('decide')
+  const connectionNotice = state.connection === 'gone' ? 'Connection lost. Reconnect to continue.' : state.connection === 'reconnecting' ? 'Reconnecting to the host.' : undefined
+  const ordinaryNotice = state.notices.filter(n => n.text !== TUI_NO_DECIDE_NOTICE).at(-1)?.text
+  const accessNotice = [
+    connectionNotice,
+    state.readOnlyReason,
+    ordinaryNotice,
+    ...(decisionsInDesktop ? [DESKTOP_DECISIONS_NOTICE] : [])
+  ].filter(Boolean).join(' ')
   const mode: ComposerMode = readOnly ? 'readOnly' : quickEdits !== undefined && !state.project && !state.activeRunId ? 'quick' : composerMode(state)
 
   const focusedCard = trayFocusKey ? (cards.find((c) => c.key === trayFocusKey) ?? cards[0]) : cards[0]
-  const trayRows = trayHeight(focusedCard ? [focusedCard, ...cards.filter((c) => c !== focusedCard)] : cards, size.cols, size.rows, inline, focus === 'tray')
+  const trayRows = cards.length ? trayHeight(focusedCard ? [focusedCard, ...cards.filter((c) => c !== focusedCard)] : cards, size.cols, size.rows, inline, focus === 'tray') : inline ? 0 : 1
 
   // Plan and Worktrees appear on their own only when something needs them.
   const planData = planView(state)
@@ -377,7 +396,7 @@ export function App(props: AppProps) {
   const autoPlan = planData !== undefined && activePlan?.status === 'blocked'
   const autoWorktrees = worktreeData.some((w) => w.status === 'review' || w.status === 'conflict' || w.reviewId !== undefined)
   const chosen: Record<PaneId, boolean> = { ...visible, plan: userPanes.plan ?? autoPlan, worktrees: userPanes.worktrees ?? autoWorktrees }
-  const effective: Record<PaneId, boolean> = maximised ? { tree: false, transcript: true, plan: false, worktrees: false } : chosen
+  const effective: Record<PaneId, boolean> = maximised || welcoming ? { tree: false, transcript: true, plan: false, worktrees: false } : chosen
   const effectiveRef = useRef(chosen)
   effectiveRef.current = chosen
 
@@ -425,7 +444,7 @@ export function App(props: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settleDue])
 
-  const treeWanted = treeRows.length + 2
+  const treeWanted = treeRows.length + 2 + (messages.length ? Math.min(5, messages.length * 2 + 1) : 0)
   // The inspector takes the right column (split) or the whole body; the layout keeps a transcript column for it.
   const layoutVisible: Record<PaneId, boolean> = inspecting ? { ...effective, transcript: true, plan: false } : effective
   const paletteWanted = focus === 'palette' ? Math.min(10, Math.max(3, Math.floor(size.rows / 3))) : 0
@@ -666,6 +685,7 @@ export function App(props: AppProps) {
 
   const chooseOnboarding = useCallback(
     async (choice: OnboardingChoice): Promise<void> => {
+      if (onboardingPending.current) return
       const folder = launch.onboarding?.folder ?? state.folder
       if (choice.kind === 'quick') {
         setOnboarding(false)
@@ -686,6 +706,8 @@ export function App(props: AppProps) {
         ...(processEnv.ORGAI_MOCK === '1' ? { mock: true } : {}),
         ...(choice.kind === 'import' ? { importAgents: choice.sources } : {})
       }
+      onboardingPending.current = true
+      setOnboardingBusy(choice.kind === 'architect' ? 'Starting the Architect' : 'Creating your project')
       try {
         notify(choice.kind === 'architect' ? 'Creating the project and starting the Architect...' : 'Creating the project...')
         const project = await conn.createProject(input)
@@ -700,6 +722,9 @@ export function App(props: AppProps) {
         setFocusState('composer')
       } catch (e) {
         notify(`Could not create the project: ${errText(e)}`, 'danger')
+      } finally {
+        onboardingPending.current = false
+        setOnboardingBusy(undefined)
       }
     },
     [launch, state.folder, processEnv, conn, switchSession, session, notify]
@@ -714,6 +739,7 @@ export function App(props: AppProps) {
         .checkPath(launch.onboarding.folder)
         .then(setCheck)
         .catch(() => undefined)
+        .finally(() => setCheckingFolder(false))
       return
     }
     if (launch.prompt) startLaunchRun(session, launch)
@@ -1136,7 +1162,8 @@ export function App(props: AppProps) {
   // ---------- Render ----------
 
   const zoomFilter = zoomIds ? { agentIds: zoomIds } : {}
-  const transcript = transcriptRows(state, zoomFilter)
+  const rawTranscript = transcriptRows(state, zoomFilter)
+  const transcript = { ...rawTranscript, rows: zoomIds ? rawTranscript.rows : withTeamMilestones(state, rawTranscript.rows) }
   // The footer shows the focused card (the inspector's `d` and Enter on a waiting row move it), so that is the one printed.
   const { rows: scrollback, printed: printedCards } = useScrollback(inline, transcript.rows, focusedCard, size.cols)
   const latestNotice = state.notices.at(-1)
@@ -1161,6 +1188,7 @@ export function App(props: AppProps) {
         height={inspectorBox.height}
         focused={focus === 'inspector'}
         view={inspectorView}
+        messages={messages}
         rows={rows}
         partials={partialRows(state, { agentIds: new Set([inspectorId]) })}
         omitted={mine.omitted}
@@ -1196,6 +1224,8 @@ export function App(props: AppProps) {
             key="tree"
             {...common}
             rows={treeRows}
+            messages={messages}
+            animated={!terminal.suspended}
             {...(selectedRow ? { selectedId: selectedRow } : {})}
             onSelect={setSelectedAgent}
             onExpand={expandGroup}
@@ -1212,7 +1242,15 @@ export function App(props: AppProps) {
           />
         )
       case 'transcript':
-        return <TranscriptPane key="transcript" {...common} mode={env.bufferMode} rows={transcript.rows} partials={partialRows(state, zoomFilter)} omitted={transcript.omitted} />
+        if (welcoming) return <Welcome key="welcome" width={box.width} height={height} folder={state.folder} projectName={state.project?.name} />
+        {
+          const completed = activeStatus === 'finished' || activeStatus === 'error'
+          const completionHeight = completed && height >= 10 ? 5 : 0
+          return <Box key="transcript" width={box.width} height={height} flexDirection="column">
+            <TranscriptPane {...common} height={height - completionHeight} mode={env.bufferMode} rows={transcript.rows} partials={partialRows(state, zoomFilter)} omitted={transcript.omitted} />
+            {completionHeight ? <RunCompletion width={box.width} height={completionHeight} state={state} /> : null}
+          </Box>
+        }
       case 'plan':
         return <PlanPane key="plan" {...common} plan={planData} />
       case 'worktrees':
@@ -1232,8 +1270,9 @@ export function App(props: AppProps) {
     }
   }
 
-  const tray =
-    cards.length || !inline ? (
+  const tray = !inline && cards.length === 0 && plan.tray.height > 0 && (isWorking(activeStatus) || activeStatus === 'finished')
+    ? <RunActivity width={size.cols} rows={treeRows} status={activeStatus!} startedAt={state.activeRunId ? state.runs[state.activeRunId]?.summary.startedAt : undefined} endedAt={state.activeRunId ? state.runs[state.activeRunId]?.summary.endedAt : undefined} animated={!terminal.suspended} canInterrupt={!readOnly} />
+    : cards.length || !inline ? (
       <DecisionTray
         width={plan.tray.width || size.cols}
         height={plan.tray.height || trayRows}
@@ -1267,7 +1306,7 @@ export function App(props: AppProps) {
       focused={focus === 'composer'}
       hidden={focus === 'palette'}
       mode={mode}
-      placeholder={placeholderFor(mode, state, plan.composer.width || size.cols, env)}
+      placeholder={welcoming && mode === 'start' ? 'What would you like your team to work on?' : placeholderFor(mode, state, plan.composer.width || size.cols, env)}
       {...(state.readOnlyReason ? { disabledReason: state.readOnlyReason } : {})}
       onSubmit={submit}
       onOpenPalette={(initial) => {
@@ -1277,6 +1316,8 @@ export function App(props: AppProps) {
       onLeave={focusTray}
       onHelp={() => openKeys('composer')}
       onRows={onComposerRows}
+      maxHeight={inline ? undefined : Math.max(1, size.rows - 2)}
+      hints={inline ? undefined : focus === 'composer' ? hints : ['Esc prompt', 'Tab panes'].join(listSep)}
     />
   )
 
@@ -1299,7 +1340,8 @@ export function App(props: AppProps) {
       />
     ) : null
 
-  const status = <StatusBar width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={hints} now={now} />
+  // Fullscreen keys live beside their control; keep the last line for run state and notices.
+  const status = <StatusBar width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={inline || size.rows < 10 ? hints : ''} now={now} />
 
   const overlayNode = overlay ? (
     overlay.kind === 'runs' ? (
@@ -1348,10 +1390,9 @@ export function App(props: AppProps) {
   let body
   if (onboarding) {
     body = (
-      <Box flexDirection="column">
-        <Onboarding folder={launch.onboarding?.folder ?? state.folder} check={check} onChoose={(c) => void chooseOnboarding(c)} onCancel={() => doExit(0)} />
+      <Box flexDirection="column" width={size.cols} height={inline ? undefined : size.rows}>
+        <Onboarding folder={launch.onboarding?.folder ?? state.folder} check={check} width={size.cols} height={size.rows} checking={checkingFolder} busy={onboardingBusy} animated={!terminal.suspended} accessNotice={accessNotice} decisionsInDesktop={decisionsInDesktop} onChoose={(c) => void chooseOnboarding(c)} onCancel={() => doExit(0)} />
         {overlayNode}
-        {status}
       </Box>
     )
   } else if (inline) {
@@ -1370,7 +1411,7 @@ export function App(props: AppProps) {
     const col = (c: 0 | 1) => panes.filter((p) => p.column === c)
     body = (
       <Box flexDirection="column" width={size.cols} height={size.rows}>
-        {status}
+        <Box width={size.cols} height={bodyRows} flexShrink={0}>
         {overlayNode ?? (
           <Box flexDirection={plan.mode === 'split' ? 'row' : 'column'} flexGrow={1}>
             {plan.mode === 'split' ? (
@@ -1386,9 +1427,11 @@ export function App(props: AppProps) {
             )}
           </Box>
         )}
+        </Box>
         {tray}
         {palette}
         {composer}
+        {status}
       </Box>
     )
   }

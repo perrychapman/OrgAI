@@ -150,7 +150,7 @@ const tick = () => new Promise((r) => setTimeout(r, 10))
 
 interface TestState {
   folder: string
-  runs: Record<string, { summary: Partial<RunSummary> }>
+  runs: Record<string, TestRun>
   runOrder: string[]
   activeChain: string[]
   activeRunId?: string
@@ -166,12 +166,54 @@ interface TestState {
   testRows?: { key: string; runId: string; kind: string; text: string }[]
 }
 
+/** Keep App fixtures on the same shape as the session's real TuiRun snapshots. */
+interface TestRun {
+  summary: Partial<RunSummary>
+  agents?: Record<string, never>
+  transcript?: unknown[]
+  partials?: Record<string, string>
+  cards?: {
+    permissions: unknown[]
+    questions: unknown[]
+    proposals: unknown[]
+    ruleRequests: unknown[]
+    mergeReviews: unknown[]
+    mcpInstalls: unknown[]
+  }
+  recordLoaded?: boolean
+  messages?: unknown[]
+}
+
+const completeRun = (id: string, run: TestRun): TestRun => ({
+  ...run,
+  summary: { id, status: 'idle', ...run.summary },
+  agents: run.agents ?? {},
+  transcript: run.transcript ?? [],
+  partials: run.partials ?? {},
+  cards: run.cards ?? { permissions: [], questions: [], proposals: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] },
+  recordLoaded: run.recordLoaded ?? true
+})
+
+const completeRuns = (runs: Record<string, TestRun>): Record<string, TestRun> =>
+  Object.fromEntries(Object.entries(runs).map(([id, run]) => [id, completeRun(id, run)]))
+
 function fakeSession(initial: Partial<TestState> = {}, hostKind: 'daemon' | 'inproc' | 'desktop' = 'daemon') {
-  let state: TestState = { folder: '/work/repo', runs: {}, runOrder: [], activeChain: [], composeTarget: 'active', notices: [], resolved: [], cardSeq: 0, connection: 'live', ...initial }
+  let state: TestState = {
+    folder: '/work/repo',
+    runOrder: [],
+    activeChain: [],
+    composeTarget: 'active',
+    notices: [],
+    resolved: [],
+    cardSeq: 0,
+    connection: 'live',
+    ...initial,
+    runs: completeRuns(initial.runs ?? {})
+  }
   const subs = new Set<() => void>()
   let n = 0
   const set = (patch: Partial<TestState>) => {
-    state = { ...state, ...patch }
+    state = { ...state, ...patch, ...(patch.runs ? { runs: completeRuns(patch.runs) } : {}) }
     for (const fn of [...subs]) fn()
   }
   const api = {
@@ -282,7 +324,13 @@ describe('App launch prompt and suspension', () => {
   })
 
   it('holds the view still while the terminal is suspended and redraws on resume', async () => {
-    const s = fakeSession({ testRows: [{ key: 'a', runId: 'r', kind: 'text', text: 'first' }] })
+    const s = fakeSession({
+      activeRunId: 'run_1',
+      activeChain: ['run_1'],
+      runOrder: ['run_1'],
+      runs: { run_1: { summary: { id: 'run_1', status: 'running' } } },
+      testRows: [{ key: 'a', runId: 'r', kind: 'text', text: 'first' }]
+    })
     const m = mount({ session: s })
     await tick()
     expect(m.frame()).toContain('first')
@@ -343,7 +391,14 @@ describe('App focus and routing', () => {
   })
 
   it('Tab cycles the visible panes and back to the composer', async () => {
-    const m = mount()
+    const m = mount({
+      session: fakeSession({
+        activeRunId: 'run_1',
+        activeChain: ['run_1'],
+        runOrder: ['run_1'],
+        runs: { run_1: { summary: { id: 'run_1', status: 'running' } } }
+      })
+    })
     const order: string[] = []
     // Plan and Worktrees show only when something needs them (nothing does here), so the ring is tree, transcript, composer.
     for (let i = 0; i < 3; i++) {
@@ -513,6 +568,7 @@ describe('App onboarding', () => {
 
   it('[2] starts the Architect on the new project and focuses that setup run', async () => {
     const m = mount({ onboarding: true })
+    await tick()
     await m.send(key('2'))
     await tick()
     expect(m.conn.startSetup).toHaveBeenCalledWith('p_new')
@@ -522,10 +578,12 @@ describe('App onboarding', () => {
 
   it('[1] then a message starts a quick run; Esc cancels with exit 0', async () => {
     const m = mount({ onboarding: true })
+    await tick()
     await m.send(key('e'), key('1'), key('o'), key('k'), named('enter'))
     expect(m.s.api.startQuick).toHaveBeenCalledWith({ prompt: 'ok', allowEdits: true })
     m.r.unmount()
     const c = mount({ onboarding: true })
+    await tick()
     await c.send(named('escape'))
     expect(c.exits.map((e) => e[0])).toEqual([0])
     c.r.unmount()

@@ -7,6 +7,7 @@
  * string arrives sanitized from selectors.ts `agentDetail` / `transcriptRows`; nothing here reads the host.
  */
 import { Box } from 'ink'
+import type { TeamMessageRow } from './collaboration'
 import { useTuiEnv } from './context'
 import { asciiOnly, glyphs, stateGlyph, stateTone } from './theme'
 import { TranscriptPane } from './TranscriptPane'
@@ -27,6 +28,8 @@ export interface InspectorPaneProps extends PaneProps {
   onToggleThinking?(): void
   onUsage?(): void
   onNotice?(text: string): void
+  /** Sanitized live previews involving the inspected agent; the inspector keeps only the newest three. */
+  messages?: TeamMessageRow[]
 }
 
 const total = (peers: readonly PeerCount[]): number => peers.reduce((n, p) => n + p.count, 0)
@@ -89,17 +92,31 @@ export function InspectorPane(props: InspectorPaneProps) {
   ]
 
   const facts = inspectorFacts(v, env, width)
+  const recentMessages = (props.messages ?? []).filter((message) => message.fromId === v.id || message.toId === v.id).slice(-3)
   const hintLine = props.focused ? paneHint('inspector', v.waiting > 0 ? 'waiting' : v.worktree ? 'agent' : 'bare', 5, width, asciiOnly(env) ? ' | ' : ' · ') : ''
   // Fixed lines: header, facts, rule and the hint; the transcript keeps at least three rows or the facts give way.
   let shownFacts = facts.length
-  const fixed = (n: number): number => 1 + n + 1 + (hintLine ? 1 : 0)
-  while (shownFacts > 0 && height - fixed(shownFacts) < 3) shownFacts--
-  const transcriptH = Math.max(0, height - fixed(shownFacts))
+  let shownMessages = recentMessages
+  const fixed = (factCount: number, messageCount: number): number => 1 + factCount + (messageCount > 0 ? 1 + messageCount : 0) + 1 + (hintLine ? 1 : 0)
+  while (shownFacts > 0 && height - fixed(shownFacts, shownMessages.length) < 3) shownFacts--
+  while (shownMessages.length > 0 && height - fixed(shownFacts, shownMessages.length) < 3) shownMessages = shownMessages.slice(1)
+  const transcriptH = Math.max(0, height - fixed(shownFacts, shownMessages.length))
 
   const lines: PaneLine[] = [{ key: 'head', segs: cutSegs(header, width, env) }]
   facts.slice(0, shownFacts).forEach(([left, right], i) => {
     lines.push({ key: `fact${i}`, segs: alignSegs([{ text: left }], right ? { text: right, tone: 'accent' } : undefined, width, env) })
   })
+  if (shownMessages.length > 0) {
+    lines.push({ key: 'exchange-rule', segs: cutSegs([{ text: ' recent exchanges ', dim: true }], width, env) })
+    shownMessages.forEach((message, i) => {
+      const target = message.toLabel || (message.toId ? 'Unknown recipient' : 'you')
+      const preview = message.text.replace(/\s+/g, ' ').trim()
+      const text = env.screenReader
+        ? `from ${message.fromLabel} to ${target}: ${preview}`
+        : `${glyphs(env).arrow} ${message.fromLabel} to ${target}: ${preview}`
+      lines.push({ key: `exchange${i}`, segs: cutSegs([{ text, dim: true }], width, env) })
+    })
+  }
   const label = props.showThinking ? ' transcript (this agent) ' : ' transcript (this agent, thinking hidden: t) '
   const rule = `${g.h}${g.h}${label}`
   lines.push({ key: 'rule', segs: cutSegs([{ text: rule + g.h.repeat(Math.max(0, width - rule.length)), dim: true }], width, env) })

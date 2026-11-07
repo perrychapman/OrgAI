@@ -89,6 +89,7 @@ describe('tuiEnvFor', () => {
       color: true,
       dumbTerminal: false,
       bracketedPaste: true,
+      terminalTheme: 'dark',
       unicode: true
     })
     expect(tuiEnvFor(ctx({ TERM: 'dumb', LANG: 'en_GB.UTF-8' }), { inline: false, screenReader: false }, 'inline')).toMatchObject({ dumbTerminal: true, bracketedPaste: false, unicode: false })
