@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { OUTPUT_PREVIEW_COLUMNS_MAX, OUTPUT_PREVIEW_IMAGE_MAX_BYTES, OUTPUT_PREVIEW_ROWS_MAX, OUTPUT_PREVIEW_SHEETS_MAX, OUTPUT_PREVIEW_TEXT_MAX_BYTES } from '@shared/types'
 import { markdownToDocx } from './markdownDoc'
-import { DOCX_PREVIEW_MAX_XML_BYTES, DOCX_XML_ALLOWANCE, previewDocx, previewFile } from './preview'
+import { DOCX_PREVIEW_MAX_XML_BYTES, DOCX_XML_ALLOWANCE, isImagePart, previewDocx, previewFile } from './preview'
 import { renderProduced } from './writers'
 import { zipSumSizes, zipVerifyEntries } from './zipGuard'
 

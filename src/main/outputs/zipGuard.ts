@@ -61,6 +61,15 @@ export function zipSumSizes(buf: Buffer, pick: (name: string) => boolean): numbe
   return problem ? null : sum
 }
 
+/** Largest declared uncompressed size among the entries `pick` accepts (0 when none); null when the package is refused. */
+export function zipMaxSize(buf: Buffer, pick: (name: string) => boolean): number | null {
+  let max = 0
+  const problem = scan(buf, () => {}, (e) => {
+    if (pick(e.name) && e.usize > max) max = e.usize
+  })
+  return problem ? null : max
+}
+
 /** Entry names in central directory order (empty when the package is refused). */
 export function zipEntryNames(buf: Buffer): string[] {
   const names: string[] = []
@@ -90,12 +99,14 @@ export function zipVerifyEntries(buf: Buffer): string | null {
   const bad = 'A part of the package does not match its directory.'
   // Entries must tile [0, cdOffset) exactly in local-header order: no unlisted local entry, gap, overlap or leftover
   // bytes for a reader that walks local headers (unzipper) to see something the directory does not list.
+  // exceljs strips a leading '/' from entry names, so "/a" and "a" are one name to it.
   const names = new Set<string>()
   const lower = new Set<string>()
   for (const e of entries) {
-    if (names.has(e.name) || lower.has(e.name.toLowerCase())) return bad
-    names.add(e.name)
-    lower.add(e.name.toLowerCase())
+    const key = e.name.replace(/^\/+/, '')
+    if (names.has(key) || lower.has(key.toLowerCase())) return bad
+    names.add(key)
+    lower.add(key.toLowerCase())
   }
   let pos = 0
   for (const e of [...entries].sort((a, b) => a.localOffset - b.localOffset)) {
