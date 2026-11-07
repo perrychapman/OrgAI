@@ -394,6 +394,19 @@
   --dur-slow: 260ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Motion system (docs/design/motion.md). Enter = --dur-base / --dur-slow with --ease-out; exit = --dur-fast with
+     --ease-in; the user's own press = --dur-instant / --dur-fast. --dur-fade is the length of an opacity-only fade. */
+  --dur-instant: 50ms;
+  --dur-fade: 80ms;
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  /* Overshoot for switch thumbs and popovers only (tune by eye); never on layout or page-level motion. */
+  --ease-spring: linear(0, 0.55 12%, 0.95 28%, 1.04 42%, 1 60%, 1);
+  /* Entry offset and start scale: reduced motion sets them to 0 / 1 so every entry degrades to a plain fade. */
+  --motion-distance: 8px;
+  --motion-distance-sm: 4px;
+  --motion-scale-from: 0.96;
+  /* Stagger step for lists (at most 6 items, spec 2). */
+  --motion-stagger: 30ms;
 
   /* Z-index (spec 4.7) plus the sticky header step. */
   --z-sticky: 2;
@@ -451,6 +464,33 @@
      saturated chips in dashboard.css .roles until brief 3B restyles them. */
   --text-on-brand: #ffffff;
   --text-on-role: #ffffff;
+}
+
+/* Reduced motion (docs/design/motion.md 3): system preference or AppearanceSettings.reduceMotion = 'on'. Entries lose
+   their offset and scale so they are plain fades; the global rule in global.css still caps every duration at 0.01ms. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-distance: 0px;
+    --motion-distance-sm: 0px;
+    --motion-scale-from: 1;
+    --motion-stagger: 0ms;
+    --dur-instant: 0.01ms;
+    --dur-fast: 0.01ms;
+    --dur-base: 0.01ms;
+    --dur-slow: 0.01ms;
+    --dur-fade: 0.01ms;
+  }
+}
+:root[data-reduce-motion='on'] {
+  --motion-distance: 0px;
+  --motion-distance-sm: 0px;
+  --motion-scale-from: 1;
+  --motion-stagger: 0ms;
+  --dur-instant: 0.01ms;
+  --dur-fast: 0.01ms;
+  --dur-base: 0.01ms;
+  --dur-slow: 0.01ms;
+  --dur-fade: 0.01ms;
 }
 
 /* ---------- 5. Element-scoped composites (need the element's own --role) ---------- */
