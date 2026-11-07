@@ -11,6 +11,7 @@ const A = 'E2E proxy project A (orgai test)'
 const B = 'E2E default project B (orgai test)'
 const PROXY = 'E2E mock gateway'
 const IDLE = 'E2E idle gateway'
+const ALT = 'E2E alt gateway' // stands in for Anthropic where no Claude login exists (CI)
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-pconn-'))
 const repoA = path.join(base, 'repo-a')
 const repoB = path.join(base, 'repo-b')
@@ -40,13 +41,17 @@ async function makeProject(name, dir) {
 
 try {
   // Two proxies: one connected, one left not connected. Keys and URLs are made up and on the mock host.
-  const ids = await page.evaluate(async ([a, b]) => {
+  const ids = await page.evaluate(async ([a, b, c]) => {
     const one = await window.orgai.connections.createProxy({ name: a, kind: 'openai-compatible', anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'any-key' })
     await window.orgai.connections.connect(one.connection.id)
     const two = await window.orgai.connections.createProxy({ name: b, kind: 'litellm', anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'any-key' })
-    return [one.connection.id, two.connection.id]
-  }, [PROXY, IDLE])
-  const [proxyId, idleId] = ids
+    const alt = (await window.orgai.connections.list()).some((x) => x.connection.id === 'anthropic' && x.status.state === 'connected')
+      ? null
+      : await window.orgai.connections.createProxy({ name: c, kind: 'openai-compatible', anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'any-key' })
+    if (alt) await window.orgai.connections.connect(alt.connection.id)
+    return [one.connection.id, two.connection.id, alt ? alt.connection.id : null]
+  }, [PROXY, IDLE, ALT])
+  const [proxyId, idleId, altId] = ids
   check(!!proxyId && !!idleId, 'two proxies created', ids.join(', '))
   await sleep(800)
   const listed = await page.evaluate(() => window.orgai.connections.list())
@@ -58,7 +63,7 @@ try {
   const select = form.locator('[data-testid=new-project-connection-select]')
   await select.waitFor({ timeout: 10_000 })
   const optionTexts = (await select.locator('option').allTextContents()).map((t) => t.trim())
-  check(optionTexts.some((t) => /^Anthropic/.test(t)) && optionTexts.some((t) => t.startsWith(PROXY)), 'Connection Select lists Anthropic and the proxy', optionTexts.join(' | '))
+  check(optionTexts.some((t) => /^Anthropic/.test(t) || (altId && t.startsWith(ALT))) && optionTexts.some((t) => t.startsWith(PROXY)), 'Connection Select lists Anthropic and the proxy', optionTexts.join(' | '))
   check(!optionTexts.some((t) => t.startsWith(IDLE)), 'a not-connected proxy is not offered in the Select')
   check((await form.locator('label[for]', { hasText: /^Connection$/ }).count()) === 1, 'the Select has a visible label "Connection"')
   check((await form.locator('[data-testid=new-project-connection-change]').count()) === 1, 'Manage connections link present beside the Select')
@@ -81,11 +86,12 @@ try {
   // Project B on the default connection
   const second = await makeProject(B, repoB)
   await second.select.waitFor({ timeout: 10_000 })
+  if (altId) await second.select.selectOption(altId)
   await second.form.getByRole('button', { name: 'Create project', exact: true }).click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 30_000 })
   await sleep(800)
   const projB = await page.evaluate((n) => window.orgai.projects.list().then((l) => l.find((p) => p.name === n)), B)
-  const defaultId = listed.find((c) => c.isDefault)?.connection.id
+  const defaultId = altId ?? listed.find((c) => c.isDefault)?.connection.id
   check(projB?.provider?.connection === defaultId, 'project B (Select left on the default) is on the default connection', `${projB?.provider?.connection} vs ${defaultId}`)
 
   // --- Project settings > General > Connection at both sizes and themes
