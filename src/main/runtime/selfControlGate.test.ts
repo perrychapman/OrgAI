@@ -525,7 +525,8 @@ describe('false positives in ordinary work (review M3)', () => {
     expect(command.length).toBeGreaterThan(32 * 1024)
     const t0 = Date.now()
     expect(deny('Bash', { command }, ctx)).toBeNull()
-    expect(Date.now() - t0).toBeLessThan(5000)
+    // A hang guard, not a benchmark: one check of 3,000 paths took 4.4-5.6 s on a loaded Windows box after the spaced-cd scan variant (PR #24).
+    expect(Date.now() - t0).toBeLessThan(10_000)
     expect(deny('Bash', { command: `${command} ${join(s.data, 'secrets.json')}` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
   })
 
