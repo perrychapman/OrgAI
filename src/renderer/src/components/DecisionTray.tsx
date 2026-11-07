@@ -3,6 +3,7 @@ import type { KeyboardEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { decisionFocus } from './DecisionCard'
+import { useArrival } from '../lib/useArrival'
 import { Icon } from './ui/Icon'
 
 export interface DecisionItem {
@@ -35,7 +36,23 @@ export default function DecisionTray({
   }, [selected, items.length])
   // The chips are one Tab stop (roving tabindex): the focused chip, else the selected one.
   const [focused, setFocused] = useState<number | null>(null)
-  if (items.length === 0) return null
+  // Arrival rule: a card present at mount (relaunch, pending cards) never animates; one that arrives while the user is
+  // here enters with a rise and a one-shot ring. A switch between cards already there is a short view fade. The class
+  // is decided once per shown card (a running animation must keep its class) and never speaks: tray-announce does.
+  const isNew = useArrival(
+    items.map((it) => it.key),
+    'tray'
+  )
+  const shownKey = (items[selected] ?? items[items.length - 1])?.key
+  const motion = useRef<{ key: string | undefined; cls: string | undefined }>({ key: undefined, cls: undefined })
+  if (shownKey !== undefined && motion.current.key !== shownKey) {
+    const hadCard = motion.current.key !== undefined
+    motion.current = { key: shownKey, cls: isNew(shownKey) ? 'motion-enter-xl motion-ring' : hadCard ? 'motion-view' : undefined }
+  }
+  if (items.length === 0) {
+    motion.current = { key: undefined, cls: undefined }
+    return null
+  }
   const rover = Math.min(focused ?? selected, items.length - 1)
   const onChipKey = (e: KeyboardEvent<HTMLButtonElement>, i: number): void => {
     const to = e.key === 'ArrowRight' ? Math.min(i + 1, items.length - 1) : e.key === 'ArrowLeft' ? Math.max(i - 1, 0) : e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : -1
@@ -113,7 +130,7 @@ export default function DecisionTray({
           </span>
         </div>
       )}
-      <div key={current.key} className="decision" onPointerDownCapture={onPin} onKeyDownCapture={onPin}>
+      <div key={current.key} className={motion.current.cls ? `decision ${motion.current.cls}` : 'decision'} onPointerDownCapture={onPin} onKeyDownCapture={onPin}>
         {current.node}
       </div>
     </>

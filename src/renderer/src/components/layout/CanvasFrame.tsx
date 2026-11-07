@@ -1,5 +1,7 @@
 import type { ReactElement, ReactNode, Ref } from 'react'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { beginLayoutMotion } from '../../lib/layoutMotion'
+import { exitProps, tokenMs, useExitPresence } from '../../lib/useExitPresence'
 
 /** Frame height under which the tray's cards switch to their compact layout (data-compact on section.frame-tray). */
 export const COMPACT_FRAME_HEIGHT = 480
@@ -195,11 +197,36 @@ export function FrameTray({
   shortcutKeys?: string
 }): ReactElement | null {
   const { compact } = useContext(FrameContext)
-  if (!hasContent(children)) return null
+  const has = hasContent(children)
+  // Resolve: the emptied tray stays one --dur-fast (fade and fold, inert) with its last cards, then goes. An empty tray
+  // that has finished leaving still renders nothing, so the docking selector (.frame-tray:not(:empty)) and the blank-column
+  // rule are unchanged.
+  const exit = useExitPresence(has)
+  const last = useRef<ReactNode>(null)
+  if (has) last.current = children
+  // Arrival rule: a tray present at the first render (relaunch, pending cards) never animates; one that opens later does.
+  const wasEmpty = useRef(!has)
+  if (!has) wasEmpty.current = true
+  const prevHas = useRef(has)
+  useEffect(() => {
+    // The stage resizes while the tray opens or folds shut: tell the canvas to refit once afterwards, not every frame.
+    if (prevHas.current !== has) beginLayoutMotion(tokenMs('--dur-base'))
+    prevHas.current = has
+  }, [has])
+  if (!has && !exit.mounted) return null
   return (
     // tabIndex -1: a programmatic jump can land on the region itself when it holds no button.
-    <section className="frame-tray" data-compact={compact ? 'true' : undefined} aria-label={label} tabIndex={-1} title={shortcutHint} aria-keyshortcuts={shortcutKeys}>
-      {children}
+    <section
+      className="frame-tray"
+      data-compact={compact ? 'true' : undefined}
+      data-arrive={has && wasEmpty.current ? 'true' : undefined}
+      aria-label={label}
+      tabIndex={-1}
+      title={shortcutHint}
+      aria-keyshortcuts={shortcutKeys}
+      {...(has ? {} : exitProps(exit.state))}
+    >
+      {has ? children : last.current}
     </section>
   )
 }
