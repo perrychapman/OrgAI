@@ -8,7 +8,7 @@ import { fenceDatum, fencedBlock, knowledgeField, knowledgeListItem } from '@sha
 import { skillProposalProblem } from '../skills/assist'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId, projectDocumentPath, projectKindOf } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import { toRoles, type DraftModelContext } from '../ai/draft'
+import { revisedRoleModel, toRoles, type DraftModelContext } from '../ai/draft'
 import { mergeOrgChart, type OrgMergeResult } from '../setup/orgMerge'
 import { sameDefinition, specFromRegistry, validateLibraryEntry, validateSpec, type RegistryChoice } from '../mcp/validate'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RunMessageOutcome, type RunSkill, type RuntimeContext } from './types'
@@ -417,10 +417,11 @@ function reviseKeepingUnmentioned(
     rootCandidates.push(i)
   })
   const keptRoot = keptRoles.find((k) => k.reportsTo === null)
-  // A draft that names no manager is the new root; a draft with an unknown manager only is when no draft names none.
+  // A draft that names no manager is the new root; one whose manager is unknown (or removed) is never promoted to root,
+  // it goes under the root.
   const explicitRoots = rootCandidates.filter((i) => !unresolved.has(i))
   const draftRoot = explicitRoots[0]
-  const rootId: string | undefined = draftRoot !== undefined ? converted[draftRoot].id : keptRoot?.id ?? (rootCandidates.length ? converted[rootCandidates[0]].id : undefined)
+  const rootId: string | undefined = draftRoot !== undefined ? converted[draftRoot].id : keptRoot?.id
 
   drafts.forEach((_, i) => {
     const role = converted[i]
@@ -542,7 +543,8 @@ export const proposeArchitecture = defineTool({
 
 export const proposeOrgChart = defineTool({
   name: PROPOSAL_TOOLS.orgChart,
-  description: 'Propose the org chart of agent roles. Blocks until the user approves or asks for changes.',
+  description:
+    'Propose the org chart of agent roles. Blocks until the user approves or asks for changes. First-time setup: the roles you list are the whole chart. Revisions (setup already complete): list only roles that change plus new ones; roles you do not mention are kept unchanged, omit model to keep a role\'s model, and pass remove to drop roles.',
   inputSchema: z.object({
     title: z.string(),
     rationale: z.string().describe('Two or three sentences on why this structure fits the project'),
@@ -553,9 +555,13 @@ export const proposeOrgChart = defineTool({
     fromTemplate: z
       .string()
       .optional()
-      .describe("A saved team template id (from the user's request): the chart starts from its roles. Nothing applies until the user approves")
+      .describe("A saved team template id (from the user's request): the chart starts from its roles. Nothing applies until the user approves. On a revision the template defines the whole chart"),
+    remove: z
+      .array(z.string())
+      .optional()
+      .describe('Revisions only: slugs of existing roles to remove. Roles you do not mention are kept unchanged. Ignored in first-time setup.')
   }),
-  async handler(ctx, { title, rationale, roles, fromTemplate }, hooks) {
+  async handler(ctx, { title, rationale, roles, fromTemplate, remove }, hooks) {
     let drafts: DraftRole[]
     let extraModels: string[] = []
     if (fromTemplate !== undefined && fromTemplate.trim() !== '') {
@@ -573,7 +579,9 @@ export const proposeOrgChart = defineTool({
       if (!roles) return 'REVISE. The org chart was not shown to the user: pass roles, or fromTemplate to start from a saved team template.'
       drafts = roles
     }
-    const built = rolesFromDrafts(ctx, rationale, drafts, extraModels)
+    // Revision mode (setup complete, no template): unmentioned roles are kept; a template is a full replacement.
+    const revision = ctx.project.setup?.state === 'complete' && !(fromTemplate !== undefined && fromTemplate.trim() !== '') ? { remove: remove ?? [] } : undefined
+    const built = rolesFromDrafts(ctx, rationale, drafts, extraModels, revision)
     if ('error' in built) return built.error
     const d = await askProposal(ctx, { kind: 'orgChart', agentId: ROOT_AGENT_ID, title, payload: { roles: built.merged.roles, rationale } })
     hooks.onDecided?.()

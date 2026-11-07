@@ -16,6 +16,12 @@ import { scanAgentSources } from './import/scan'
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 import type { LibraryProposalOptions } from '../mcp/service'
 
+/** A role's model for the Architect: `tier <t>: <id>`, `model <id>` without a tier, or `inherit`. Quoted as data. */
+export function roleModelLabel(r: Pick<Project['roles'][number], 'model' | 'tier'>): string {
+  if (r.model === 'inherit' && !r.tier) return 'inherit'
+  return r.tier ? `tier ${promptDatum(r.tier, 20)}: ${promptDatum(r.model, 80)}` : `model ${promptDatum(r.model, 80)}`
+}
+
 /** Caps of the Architect's "Detected agent definitions" block. */
 const DETECTED_PROMPT_EXCERPT = 600
 const DETECTED_BLOCK_MAX = 16_000
@@ -168,7 +174,7 @@ export class SetupService {
   }
 
   /** What happened in a run, condensed for the Architect: outcomes per role, warnings, and the final report. */
-  retroContext(record: RunRecord): string {
+  retroContext(record: RunRecord, project?: Pick<Project, 'roles'>): string {
     const s = record.summary
     const agents = Object.values(record.agents)
     const byId = new Map(agents.map((a) => [a.id, a]))
@@ -186,6 +192,16 @@ export class SetupService {
       lines.push(
         `- ${a.name} [${a.roleSlug}, ${a.model ?? 'model unknown'}]${parent ? ` under ${parent}` : ''}: ${a.state}, ${a.inputTokens + a.outputTokens} tokens, $${a.costUsd.toFixed(2)}${wt}${result ? `. Report: ${result}` : ''}`
       )
+    }
+    if (project?.roles.length) {
+      const took = new Set(agents.map((a) => a.roleSlug))
+      const idle = project.roles.filter((r) => !took.has(r.slug))
+      if (idle.length) {
+        lines.push(
+          '',
+          `Roles in the chart that did not take part in this run (not needed for this task; keep them unless there is other evidence): ${idle.map((r) => `${promptDatum(r.name, 80)} (${promptDatum(r.slug, 80)})`).join(', ')}`
+        )
+      }
     }
     const noteworthy = record.logs.filter((l) => l.level !== 'info').map((l) => `- [${l.level}] ${l.message.slice(0, 200)}`)
     if (noteworthy.length) lines.push('', 'Warnings and errors from the harness:', ...noteworthy.slice(0, 40))
@@ -216,8 +232,8 @@ export class SetupService {
     if (setup?.architecture) parts.push(`Previously approved architecture summary: ${promptDatum(setup.architecture.summary, 4000, true)}`)
     if (project.roles.length) {
       parts.push(
-        `Current org chart roles (revise rather than replace when they still fit): ${project.roles
-          .map((r) => `${promptDatum(r.name, 80)} [${promptDatum(r.model, 40)}] -> ${promptDatum(project.roles.find((x) => x.id === r.reportsTo)?.name ?? 'root', 80)}`)
+        `Current org chart roles (revise rather than replace when they still fit; roles you do not mention in a revision are kept unchanged): ${project.roles
+          .map((r) => `${promptDatum(r.name, 80)} (${promptDatum(r.slug, 80)}) [${roleModelLabel(r)}] -> ${promptDatum(project.roles.find((x) => x.id === r.reportsTo)?.name ?? 'root', 80)}`)
           .join('; ')}`
       )
     }

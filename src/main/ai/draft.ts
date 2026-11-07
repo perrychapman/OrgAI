@@ -126,7 +126,8 @@ export function resolveDraftModel(raw: unknown, ctx: DraftModelContext | undefin
 
 /**
  * A proposed model for a NEW role. Strict resolution first (resolveDraftModel). Otherwise, for an unmapped tier or an
- * omitted / unlisted value (wanted tier: the named one, else 'everyday'): (a) a listed model whose tier matches,
+ * omitted / unlisted value (an unlisted value is first tried as the everyday tier; wanted tier: the named one, else
+ * 'everyday'): (a) a listed model whose tier matches,
  * trying the nearest tiers in order; (b) ctx.fallback (the chart root's concrete model); (c) 'inherit'. Inherit is
  * the last resort because a subagent that inherits runs its parent's model, which silently changes the role's cost
  * and ability; an arbitrary unrelated listed model is never picked. An explicit 'inherit' stays 'inherit'.
@@ -134,7 +135,13 @@ export function resolveDraftModel(raw: unknown, ctx: DraftModelContext | undefin
 function mapModel(raw: unknown, ctx: DraftModelContext | undefined): ResolvedModel {
   const hit = resolveDraftModel(raw, ctx)
   if (hit) return hit
-  const wanted = settingTier(typeof raw === 'string' ? raw : undefined) ?? 'everyday'
+  const named = settingTier(typeof raw === 'string' ? raw : undefined)
+  const wanted = named ?? 'everyday'
+  // An omitted or unlisted value is the everyday tier, when the connection maps it (or a tier near it).
+  if (!named) {
+    const everyday = resolveDraftModel('everyday', ctx)
+    if (everyday) return everyday
+  }
   for (const t of nearestTiers(wanted)) {
     const id = ctx?.models?.find((m) => tierForModel(m) === t)
     if (id) return { model: id, tier: t }
