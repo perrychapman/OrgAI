@@ -139,6 +139,7 @@
 .connector-tile[data-highlight] {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 2px var(--accent-soft-border);
+  animation: highlight-fade calc(var(--dur-slow) * 8) var(--ease-in);
 }
 .connector-tile[data-state='connected'] {
   border-color: var(--success-border);
