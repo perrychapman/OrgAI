@@ -57,7 +57,8 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { isGitRepo } from './worktrees'
 import { canonicalDeep, isInsideEither, isNetworkPath, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { lstatSync } from 'node:fs'
-import { hasDotSegment, quickEditCard, quickEditFree } from './quickEditCard'
+import { quickEditCard, quickEditFree } from './quickEditCard'
+import { hasDotSegment } from '../quick/sessionEdits'
 import { commandReferenceTouch, referenceCommandMessage, referenceFolderMessage, referenceFolderOf, referenceRefusalEntry } from './referenceDirectories'
 
 /**

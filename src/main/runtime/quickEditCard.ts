@@ -1,6 +1,6 @@
 import { isAbsolute, join } from 'node:path'
 import type { PermissionSuggestion, RunSummary } from '@shared/types'
-import { quickEditPreApproved, quickSessionEditSuggestion } from '../quick/sessionEdits'
+import { hasDotSegment, quickEditPreApproved, quickSessionEditSuggestion } from '../quick/sessionEdits'
 import { suggestionLabels } from './permissionRules'
 
 /**
@@ -49,16 +49,6 @@ export function editHasMove(input: unknown): boolean {
   const moves = (o: unknown): boolean =>
     !!o && typeof o === 'object' && ['movePath', 'move_path'].some((k) => k in o && (o as Record<string, unknown>)[k] != null)
   return changes.some((c) => moves(c) || (!!c && typeof c === 'object' && moves((c as { kind?: unknown }).kind)))
-}
-
-/**
- * True when a raw path string has a segment made only of dots (`.`, `..`, and `...` too, which Win32 strips to nothing),
- * split on both `/` and `\`. Lexical resolution (path.join / resolve) collapses `..` before any symlink walk, while a
- * writer that hands the raw string to the kernel follows a link first: `<folder>/vendor/../.bashrc` with `vendor` a
- * link to `$HOME/sub` lands in `$HOME` (review NH1). Callers treat such a path as one they cannot clear. Pure.
- */
-export function hasDotSegment(p: string): boolean {
-  return p.split(/[\\/]/).some((s) => s.length > 0 && /^\.+$/.test(s))
 }
 
 /**

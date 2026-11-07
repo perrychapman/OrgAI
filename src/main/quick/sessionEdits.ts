@@ -75,11 +75,12 @@ export function editTargets(toolName: string, input: unknown): string[] | null {
 }
 
 /**
- * NH1: true when the raw path text has a `.` or `..` segment (split on both separators, before any resolve). On POSIX a
+ * NH1: true when the raw path text has a segment made only of dots (`.`, `..`, `...`: Win32 strips `...` to nothing),
+ * split on both separators, before any resolve. On POSIX a
  * writer follows `link/../x` through the link first, which a lexical resolve hides, so such a path is never covered.
  */
 export function hasDotSegment(raw: string): boolean {
-  return raw.split(/[\\/]/).some((s) => s === '.' || s === '..')
+  return raw.split(/[\\/]/).some((s) => s.length > 0 && /^\.+$/.test(s))
 }
 
 // eslint-disable-next-line no-control-regex

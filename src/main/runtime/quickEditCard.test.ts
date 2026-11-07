@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { PermissionSuggestion } from '@shared/types'
-import { QUICK_SESSION_EDIT_LABEL, editHasDotSegment, editHasMove, editInputAt, hasDotSegment, quickEditCard, quickEditFree } from './quickEditCard'
+import { QUICK_SESSION_EDIT_LABEL, editHasDotSegment, editHasMove, editInputAt, quickEditCard, quickEditFree } from './quickEditCard'
+import { hasDotSegment } from '../quick/sessionEdits'
 import { runSummary } from './testHelpers'
 
 const folder = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-quick-card-')))
