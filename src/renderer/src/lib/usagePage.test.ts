@@ -252,6 +252,15 @@ describe('live policy', () => {
     expect(staleRunIds(rows, [{ id: 'live', status: 'running', startedAt: NOW }], NOW, 0)).toEqual([])
     expect(staleRunIds(rows, [{ id: 'live', status: 'idle', startedAt: NOW }], NOW, 0)).toEqual([])
   })
+  it('finds a live run the overview never listed that started after it was generated', () => {
+    const facts = [
+      { id: 'fresh', status: 'running' as const, startedAt: NOW + 500 },
+      { id: 'just-before', status: 'starting' as const, startedAt: NOW - 1000 },
+      { id: 'old-live', status: 'running' as const, startedAt: NOW - 60_000 },
+      { id: 'out', status: 'running' as const, startedAt: NOW - 100 * DAY }
+    ]
+    expect(staleRunIds(rows, facts, NOW, NOW - 30 * DAY)).toEqual(['fresh', 'just-before'])
+  })
   it('polls only while live, focused and visible', () => {
     expect(anyLiveRow(rows)).toBe(true)
     expect(anyLiveRow([row('x')])).toBe(false)

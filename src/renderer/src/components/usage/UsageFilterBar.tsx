@@ -331,7 +331,7 @@ export default function UsageFilterBar({ filters, onChange, now, compact, groups
               triggerTitle="Projects"
               label="Projects"
               className="usage-picker-panel"
-              testId="usage-projects-panel"
+              testId="usage-projects-popover"
             >
               {projectsPicker}
             </Popover>
