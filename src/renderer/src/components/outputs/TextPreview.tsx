@@ -1,19 +1,63 @@
 import type { ReactElement } from 'react'
-import { lazy, Suspense, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { OutputKind } from '@shared/types'
 import { Markdown } from '../Markdown'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { parseCsv, prettyJson } from '../../lib/outputPreview'
+import {
+  anchorDescription,
+  findQuote,
+  mapEndByNonWhitespace,
+  mapRenderedToSource,
+  mapStartByNonWhitespace,
+  quoteOf,
+  textAnchorRange,
+  textRanges,
+  type TextRange
+} from '../../lib/outputNotes'
+import { scrollWithin } from '../../lib/scrollWithin'
+import { useOutputDetail } from './outputDetailContext'
+import { MarkedText, findNoted, selectedOffsets, useScrollToShown, useTextSelection, useViewedNotes } from './NoteMarks'
+import { inRange } from '../../lib/outputNotes'
+import { useGridNotes } from './SheetView'
 
 // Mermaid is large: its code loads only when a diagram is opened.
 const MermaidView = lazy(() => import('./MermaidView'))
 
 type MdView = 'rendered' | 'source'
 
-function Pre({ text, title, testId, what }: { text: string; title: string; testId: string; what: string }): ReactElement {
+/** The text anchor for a selection whose offsets are in the file text. */
+function textSelection(raw: string, start: number, end: number): { anchor: { type: 'text'; start: number; end: number; quote: string }; description: string } {
+  const anchor = { type: 'text' as const, start, end, quote: quoteOf(raw.slice(start, end)) }
+  return { anchor, description: anchorDescription(anchor) }
+}
+
+/**
+ * Plain text in a focusable region. `display` is what is drawn; `raw` is the file text the notes' offsets are in (they differ
+ * only for pretty-printed JSON, where the two agree on every non-blank character).
+ */
+function Pre({ display, raw, title, testId, what }: { display: string; raw: string; title: string; testId: string; what: string }): ReactElement {
+  const ref = useRef<HTMLPreElement>(null)
+  const notes = useViewedNotes()
+  const same = display === raw
+  const ranges = useMemo<TextRange[]>(() => {
+    const r = textRanges(notes, raw.length, textAnchorRange)
+    if (same) return r
+    return r
+      .map((x) => ({ ...x, start: mapStartByNonWhitespace(raw, display, x.start), end: mapEndByNonWhitespace(raw, display, x.end) }))
+      .filter((x) => x.end > x.start)
+  }, [notes, raw, display, same])
+  useTextSelection(ref, (root) => {
+    const s = selectedOffsets(root)
+    if (!s) return null
+    const start = same ? s.start : mapStartByNonWhitespace(display, raw, s.start)
+    const end = same ? s.end : mapEndByNonWhitespace(display, raw, s.end)
+    return end > start ? textSelection(raw, start, end) : null
+  })
+  useScrollToShown(ref, findNoted, ranges)
   return (
-    <pre className="output-scroll output-pre" data-testid={testId} role="region" aria-label={`${title} ${what}`} tabIndex={0}>
-      {text}
+    <pre ref={ref} className="output-scroll output-pre" data-testid={testId} role="region" aria-label={`${title} ${what}`} tabIndex={0}>
+      <MarkedText text={display} ranges={ranges} />
     </pre>
   )
 }
@@ -21,15 +65,34 @@ function Pre({ text, title, testId, what }: { text: string; title: string; testI
 function CsvTable({ rows, more, title }: { rows: string[][]; more: boolean; title: string }): ReactElement {
   const cols = rows.reduce((n, r) => Math.max(n, r.length), 0)
   const [head, ...body] = rows
+  const grid = useGridNotes('', rows.length, cols, (r, c) => rows[r]?.[c] ?? '')
+  const scroller = useRef<HTMLDivElement>(null)
+  useScrollToShown(scroller, findNoted, grid.noted)
+  const cell = (r: number, c: number): Record<string, unknown> => {
+    const nc = grid.noted.get(`${r},${c}`)
+    return {
+      'aria-selected': grid.range ? inRange(grid.range, r, c) : false,
+      'data-note-state': nc?.state,
+      'data-notes': nc?.ids.join(' '),
+      'aria-description': nc ? `Note: ${nc.text}` : undefined,
+      onMouseDown: (e: React.MouseEvent) => {
+        if (e.shiftKey) e.preventDefault()
+      },
+      onClick: (e: React.MouseEvent) => {
+        if (window.getSelection()?.toString()) return
+        grid.choose(r, c, e.shiftKey)
+      }
+    }
+  }
   return (
     <>
-      <div className="output-scroll output-sheet-region" role="region" aria-label={`${title} table`} tabIndex={0}>
-        <table className="output-sheet-table output-csv-table" data-testid="output-csv-table">
+      <div ref={scroller} className="output-scroll output-sheet-region" role="region" aria-label={`${title} table`} tabIndex={0} onKeyDown={grid.onKeyDown}>
+        <table className="output-sheet-table output-csv-table" data-testid="output-csv-table" role="grid" aria-readonly="true" aria-multiselectable="true">
           <caption className="sr-only">{title}</caption>
           <thead>
             <tr>
               {Array.from({ length: cols }, (_, c) => (
-                <th key={c} scope="col">
+                <th key={c} scope="col" {...cell(0, c)}>
                   {head[c] ?? ''}
                 </th>
               ))}
@@ -39,7 +102,9 @@ function CsvTable({ rows, more, title }: { rows: string[][]; more: boolean; titl
             {body.map((r, i) => (
               <tr key={i}>
                 {Array.from({ length: cols }, (_, c) => (
-                  <td key={c}>{r[c] ?? ''}</td>
+                  <td key={c} {...cell(i + 1, c)}>
+                    {r[c] ?? ''}
+                  </td>
                 ))}
               </tr>
             ))}
@@ -52,6 +117,88 @@ function CsvTable({ rows, more, title }: { rows: string[][]; more: boolean; titl
         </p>
       )}
     </>
+  )
+}
+
+/** Marks for the rendered Markdown without touching its tree: the CSS Highlight API over the notes' quotes. */
+function useRenderedMarks(rootRef: React.RefObject<HTMLElement | null>, text: string): void {
+  const notes = useViewedNotes()
+  const shown = useOutputDetail()?.shownNote ?? null
+  const byId = useRef(new Map<string, Range>())
+  const scrolled = useRef<string | null>(null)
+  useEffect(() => {
+    byId.current = new Map()
+    const root = rootRef.current
+    const api = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights
+    const Hl = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight
+    if (!root || !api || !Hl) return undefined
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const nodes: { t: Text; start: number }[] = []
+    let all = ''
+    for (let t = walker.nextNode() as Text | null; t; t = walker.nextNode() as Text | null) {
+      nodes.push({ t, start: all.length })
+      all += t.data
+    }
+    const point = (pos: number, end: boolean): [Text, number] | null => {
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const n = nodes[i]
+        if (pos > n.start || (pos === n.start && !end)) return [n.t, Math.min(n.t.data.length, pos - n.start)]
+        if (pos === n.start && end && i === 0) return [n.t, 0]
+      }
+      return null
+    }
+    const open: Range[] = []
+    const done: Range[] = []
+    for (const n of notes) {
+      const a = n.anchor
+      if (a.type !== 'text') continue
+      const quote = text
+        .slice(a.start, a.end)
+        .replace(/[*_`#>[\]()]/g, '')
+      const hit = findQuote(all, quote)
+      if (!hit) continue
+      const s = point(hit.start, false)
+      const e = point(hit.end, true)
+      if (!s || !e) continue
+      const r = document.createRange()
+      try {
+        r.setStart(s[0], s[1])
+        r.setEnd(e[0], e[1])
+      } catch {
+        continue
+      }
+      byId.current.set(n.id, r)
+      ;(n.status === 'resolved' ? done : open).push(r)
+    }
+    if (!shown) scrolled.current = null
+    else if (scrolled.current !== shown) {
+      const target = byId.current.get(shown)
+      if (target) {
+        scrolled.current = shown
+        scrollWithin(target.startContainer.parentElement, 'center')
+      }
+    }
+    if (open.length) api.set('output-note-open', new Hl(...open))
+    if (done.length) api.set('output-note-resolved', new Hl(...done))
+    return () => {
+      api.delete('output-note-open')
+      api.delete('output-note-resolved')
+    }
+  }, [notes, text, rootRef, shown])
+}
+
+function RenderedMarkdown({ text, title }: { text: string; title: string }): ReactElement {
+  const ref = useRef<HTMLDivElement>(null)
+  useRenderedMarks(ref, text)
+  useTextSelection(ref, () => {
+    const sel = window.getSelection()?.toString() ?? ''
+    const r = mapRenderedToSource(text, sel)
+    return r && r.end > r.start ? textSelection(text, r.start, r.end) : null
+  })
+  return (
+    <div ref={ref} className="output-scroll output-md" data-testid="output-md-rendered" role="region" aria-label={`${title} text`} tabIndex={0}>
+      <Markdown text={text} />
+    </div>
   )
 }
 
@@ -90,21 +237,15 @@ export default function TextPreview({ kind, text, truncated, title }: { kind: Ou
             ]}
           />
         </div>
-        {mdView === 'rendered' ? (
-          <div className="output-scroll output-md" data-testid="output-md-rendered" role="region" aria-label={`${title} text`} tabIndex={0}>
-            <Markdown text={text} />
-          </div>
-        ) : (
-          <Pre text={text} title={title} testId="output-source" what="source" />
-        )}
+        {mdView === 'rendered' ? <RenderedMarkdown text={text} title={title} /> : <Pre display={text} raw={text} title={title} testId="output-source" what="source" />}
       </>
     )
   } else if (kind === 'csv' && csv) {
     body = <CsvTable rows={csv.rows} more={csv.more} title={title} />
   } else if (kind === 'json' && json !== null) {
-    body = <Pre text={json} title={title} testId="output-text" what="text" />
+    body = <Pre display={json} raw={text} title={title} testId="output-text" what="text" />
   } else {
-    body = <Pre text={text} title={title} testId="output-text" what="text" />
+    body = <Pre display={text} raw={text} title={title} testId="output-text" what="text" />
   }
 
   return (
