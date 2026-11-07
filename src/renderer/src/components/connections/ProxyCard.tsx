@@ -120,12 +120,49 @@ export default function ProxyCard({
   useEffect(() => {
     if (focusToken !== id) return
     // The Add dialog is still closing: wait a frame so the focus is not swallowed by the inert page.
-    const t = setTimeout(() => {
-      card.current?.querySelector<HTMLElement>('.conn-title h4')?.focus()
-      onFocused()
+    // The token is spent at once and the timer is not cancelled by a re-render, so a remounted card can never
+    // take focus later from whatever the user (or Save key) moved it to.
+    onFocused()
+    const el = card.current
+    setTimeout(() => {
+      if (!el?.isConnected) return
+      const a = document.activeElement
+      // Do not pull focus off something the user already moved to inside this card.
+      if (a && a !== document.body && el.contains(a)) return
+      el.querySelector<HTMLElement>('.conn-title h4')?.focus()
     }, 60)
-    return () => clearTimeout(t)
   }, [focusToken, id, onFocused])
+
+  // Save changes and Save key unmount their own button; focus goes to the action that logically follows (Test and connect).
+  // Runs after every commit while a request is pending, so it waits for the button to remount and become enabled
+  // instead of racing the re-render with timers.
+  const wantTestFocus = useRef(0)
+  const focusTestSoon = (): void => {
+    wantTestFocus.current = Date.now() + 3000
+    setFocusTick((n) => n + 1)
+    // One late pass in case nothing else re-renders once the buttons settle.
+    setTimeout(() => setFocusTick((n) => n + 1), 300)
+  }
+  const [focusTick, setFocusTick] = useState(0)
+  useEffect(() => {
+    if (!wantTestFocus.current) return
+    if (Date.now() > wantTestFocus.current) {
+      wantTestFocus.current = 0
+      return
+    }
+    const active = document.activeElement
+    // Only rescue focus that was dropped (page body) or sits on a control that just went away.
+    if (active && active !== document.body && active.isConnected && !active.closest('[data-testid=secret-field]')) {
+      wantTestFocus.current = 0
+      return
+    }
+    const btn = card.current?.querySelector<HTMLButtonElement>('[data-testid=proxy-test]')
+    if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+      btn.focus()
+      if (document.activeElement === btn) wantTestFocus.current = 0
+    }
+  })
+  void focusTick
 
   const save = async (): Promise<ConnectionInfo | null> => {
     setShowErrors(true)
@@ -335,6 +372,7 @@ export default function ProxyCard({
                   onSave={async (v) => {
                     setInfo(await window.orgai.connections.setSecret({ id, apiKey: v }))
                     setNotice('Key saved. Test and connect to apply.')
+                    focusTestSoon()
                   }}
                   onClear={async () => {
                     setInfo(await window.orgai.connections.setSecret({ id, apiKey: null }))
@@ -354,7 +392,7 @@ export default function ProxyCard({
               )}
               <div className="conn-actions">
                 {dirty && (
-                  <Button loading={busy === 'save'} disabled={busy !== null} onClick={() => void save()} testId="proxy-save">
+                  <Button loading={busy === 'save'} disabled={busy !== null} onClick={() => void save().then((r) => r && focusTestSoon())} testId="proxy-save">
                     Save changes
                   </Button>
                 )}

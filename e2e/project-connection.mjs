@@ -69,12 +69,19 @@ try {
   check((await form.locator('[data-testid=new-project-connection-change]').count()) === 1, 'Manage connections link present beside the Select')
   // Keyboard: the Select is a native select; ArrowDown on a focused select moves the value.
   await select.focus()
-  const before = await select.inputValue()
   if (process.platform === 'darwin') {
-    // macOS opens a native popup on an arrow key (Playwright cannot drive it, and Enter would submit the form): the
-    // keyboard half of this check is that the Select takes focus and lists the connections.
-    check(await select.evaluate((el) => document.activeElement === el), 'the Connection Select takes keyboard focus (macOS opens its native popup on an arrow key)')
+    // On macOS arrow keys on a focused native select open the popup menu instead of changing the value,
+    // so prove reachability only and skip the value change.
+    const state = await select.evaluate((el) => ({
+      focused: document.activeElement === el,
+      enabled: !el.disabled,
+      inert: !!el.closest('[inert]') || el.getAttribute('aria-disabled') === 'true',
+      options: el.options.length,
+    }))
+    console.log('NOTE darwin: native select opens its menu on arrow keys; checking focus and options only', JSON.stringify(state))
+    check(state.focused && state.enabled && !state.inert && state.options > 1, 'the Connection Select is focusable, enabled, not inert and has several options', JSON.stringify(state))
   } else {
+    const before = await select.inputValue()
     await page.keyboard.press('ArrowDown')
     let after = await select.inputValue()
     if (after === before) {

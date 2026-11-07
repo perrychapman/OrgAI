@@ -514,9 +514,32 @@ try {
   await lg.getByRole('button', { name: 'Save', exact: true }).click()
   await lg.locator('[data-testid=proxy-notice]').waitFor({ timeout: 5000 })
   check(/Key saved\. Test and connect to apply\./.test((await lg.locator('[data-testid=proxy-notice]').textContent()) ?? ''), 'saving a key says to test and connect')
+  await sleep(200)
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid=proxy-test]') === true), 'focus moves to Test and connect after Save key (M6)', await page.evaluate(() => { const a = document.activeElement; return `${a?.tagName}#${a?.getAttribute('data-testid') ?? ''}.${a?.className ?? ''}` }))
   await lg.locator('[data-testid=proxy-test]').click()
   await page.waitForFunction(() => document.querySelector('[data-testid=connection-card][data-name="Lite gateway"] [data-testid=proxy-check][data-check=models]'), null, { timeout: 15_000 })
   check((await lg.locator('[data-testid=proxy-check][data-ok=true]').count()) === 3, 'the good key passes all three checks')
+
+  // M1: a partial mapping keeps Automatic tiers showing what they resolve to; Apply announces and keeps focus (M6).
+  await lg.getByRole('button', { name: /Model tiers/ }).click()
+  const tierSel = (t) => lg.locator(`[data-testid=tier-select][data-tier=${t}]`)
+  await tierSel('top').waitFor({ timeout: 5000 })
+  const autosBefore = await lg.locator('[data-testid=tier-auto]').count()
+  const topValues = await tierSel('top').locator('option').evaluateAll((os) => os.map((o) => o.value).filter(Boolean))
+  await tierSel('top').selectOption(topValues[topValues.length - 1])
+  await lg.getByRole('button', { name: 'Apply mapping' }).click()
+  await page.waitForFunction(() => /Mapping applied/.test(document.querySelector('[data-testid=connections-live]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+  check(/Mapping applied/.test((await live.textContent()) ?? ''), 'Apply mapping is announced through connections-live', (await live.textContent()) ?? '')
+  await sleep(200)
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid=tier-select]') === true), 'focus stays in the tier editor after Apply mapping (M6)')
+  check((await lg.locator('[data-testid=tier-auto]').count()) >= Math.min(autosBefore, 1) || autosBefore === 0, 'Automatic badges stay after a partial apply (M1)', String(autosBefore))
+  // An unmapped tier has value '' by design and shows "Automatic: <model>" as its (disabled) placeholder; "No model" is the empty case.
+  const shownTiers = () => lg.locator('[data-testid=tier-select]').evaluateAll((els) => els.map((e) => e.value || e.selectedOptions[0]?.text || ''))
+  const noneEmpty = (v) => v.length === 4 && v.every((t) => t && t !== 'No model')
+  const t0 = Date.now()
+  let vals = await shownTiers()
+  while (!noneEmpty(vals) && Date.now() - t0 < 5000) { await sleep(150); vals = await shownTiers() }
+  check(noneEmpty(vals),'after a partial apply no tier select is left empty (M1)', vals.join('|'))
 
   // Edit a URL; the models endpoint on another host gets a note.
   const lid = (await lg.getAttribute('data-provider')) ?? ''
@@ -524,6 +547,8 @@ try {
   await lg.locator('[data-testid=proxy-save]').click()
   await lg.locator('[data-testid=proxy-notice]').waitFor({ timeout: 5000 })
   check(/Changed\. Test and connect to apply\./.test((await lg.locator('[data-testid=proxy-notice]').textContent()) ?? ''), 'saving a changed URL says "Changed. Test and connect to apply."')
+  await sleep(200)
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid=proxy-test]') === true), 'focus moves to Test and connect after Save changes (M6)')
   check((await page.evaluate(async (i) => (await window.orgai.connections.list()).find((c) => c.connection.id === i)?.connection.anthropicBaseUrl, lid)) === `${MOCK}/gw`, 'the changed URL is saved')
   await lg.locator(`#pc-${lid}-modelsUrl`).fill('https://other.example.com/v1/models')
   check(/other\.example\.com/.test((await lg.locator('[data-testid=proxy-models-host-note]').textContent().catch(() => '')) ?? ''), 'a models endpoint on another host shows the key note')

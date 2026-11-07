@@ -210,7 +210,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         ))}
       </ul>
       {routes.length > 0 && (
-        <ul className="remap-mapping-list" data-testid="remap-routes">
+        <ul className="remap-mapping-list remap-routes" data-testid="remap-routes" aria-label="How the mapped models are reached">
           {routes.map((r) => (
             <li key={r.route} data-route={r.route}>
               {r.text}
