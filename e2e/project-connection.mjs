@@ -69,15 +69,28 @@ try {
   check((await form.locator('[data-testid=new-project-connection-change]').count()) === 1, 'Manage connections link present beside the Select')
   // Keyboard: the Select is a native select; ArrowDown on a focused select moves the value.
   await select.focus()
-  const before = await select.inputValue()
-  await page.keyboard.press('ArrowDown')
-  let after = await select.inputValue()
-  if (after === before) {
-    // The value was already the last option (without a Claude login the default is the last proxy): go up instead.
-    await page.keyboard.press('ArrowUp')
-    after = await select.inputValue()
+  if (process.platform === 'darwin') {
+    // On macOS arrow keys on a focused native select open the popup menu instead of changing the value,
+    // so prove reachability only and skip the value change.
+    const state = await select.evaluate((el) => ({
+      focused: document.activeElement === el,
+      enabled: !el.disabled,
+      inert: !!el.closest('[inert]') || el.getAttribute('aria-disabled') === 'true',
+      options: el.options.length,
+    }))
+    console.log('NOTE darwin: native select opens its menu on arrow keys; checking focus and options only', JSON.stringify(state))
+    check(state.focused && state.enabled && !state.inert && state.options > 1, 'the Connection Select is focusable, enabled, not inert and has several options', JSON.stringify(state))
+  } else {
+    const before = await select.inputValue()
+    await page.keyboard.press('ArrowDown')
+    let after = await select.inputValue()
+    if (after === before) {
+      // The value was already the last option (without a Claude login the default is the last proxy): go up instead.
+      await page.keyboard.press('ArrowUp')
+      after = await select.inputValue()
+    }
+    check(before !== after || optionTexts.length < 2, 'ArrowDown changes the Connection Select value', `${before} -> ${after}`)
   }
-  check(before !== after || optionTexts.length < 2, 'ArrowDown changes the Connection Select value', `${before} -> ${after}`)
   await select.selectOption(proxyId)
   check(/tier models/.test((await form.locator('[data-testid=new-project-connection-hint]').textContent()) ?? ''), 'a proxy pick shows the tier-mapping note')
   await shot('form-select')
