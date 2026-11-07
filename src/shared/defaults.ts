@@ -17,8 +17,10 @@ import type {
   ProjectKind,
   ProjectRulesLocation,
   ProviderAuth,
+  ProviderConnection,
   ProviderConnections,
   ProviderId,
+  ProxyConnection,
   ProviderModel,
   QuickRunTeam,
   Role,
@@ -31,7 +33,7 @@ import type {
   ToolName
 } from './types'
 import { SPAWN_TOOL } from './types'
-import { CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier, isProjectKind } from './types'
+import { BUILTIN_CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isBuiltinConnectionId, isModelTier, isProjectKind, isProxyConnectionId } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
@@ -435,7 +437,7 @@ export function adapterForProject(project: Pick<Project, 'provider' | 'roles'>, 
  */
 export function mixedFamilyRefusal(choice: Pick<AdapterChoice, 'connection' | 'family' | 'mismatched'>): 'no-root-family' | 'single-family-connection' | null {
   if (!choice.mismatched.length) return null
-  if (choice.connection !== 'litellm') return 'single-family-connection'
+  if (isBuiltinConnectionId(choice.connection)) return 'single-family-connection'
   return choice.family === undefined ? 'no-root-family' : null
 }
 
@@ -443,9 +445,13 @@ export function mixedFamilyRefusal(choice: Pick<AdapterChoice, 'connection' | 'f
 export function defaultConnections(auth: ProviderAuth = { kind: 'subscription' }): ProviderConnections {
   return {
     anthropic: { id: 'anthropic', enabled: true, auth: { ...auth }, tierModels: defaultTierModels(ANTHROPIC_BUILTIN_MODELS) },
-    openai: { id: 'openai', enabled: false, auth: { kind: 'chatgpt' }, tierModels: defaultTierModels(OPENAI_PLACEHOLDER_MODELS) },
-    litellm: { id: 'litellm', enabled: false, baseUrl: '', hasApiKey: false, tierModels: {} }
+    openai: { id: 'openai', enabled: false, auth: { kind: 'chatgpt' }, tierModels: defaultTierModels(OPENAI_PLACEHOLDER_MODELS) }
   }
+}
+
+/** Proxy connections for fresh settings: none (the user adds them, or an old settings.json migrates its LiteLLM record). */
+export function defaultProxies(): ProxyConnection[] {
+  return []
 }
 
 // ---------- MCP ----------
@@ -600,6 +606,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   quickRunModel: 'everyday',
   providerAuth: { kind: 'subscription' },
   connections: defaultConnections(),
+  proxies: defaultProxies(),
   defaultConnection: 'anthropic',
   notifications: true,
   appearance: DEFAULT_APPEARANCE,
@@ -705,31 +712,97 @@ export function claudeProviderLabel(auth: AppSettings['providerAuth']): string {
   return auth.kind === 'apiKey' ? `Claude (API key from ${auth.envVar})` : 'Claude (Claude Code login)'
 }
 
+/** What the connection helpers read from settings: the built-in records and the proxy list. Callers pass `settings` itself. */
+export type ConnectionsView = Partial<Pick<AppSettings, 'connections' | 'proxies'>>
+
+/** Every connection id: 'anthropic', 'openai', then the proxy ids in list order. */
+export function connectionIds(v?: { proxies?: readonly Pick<ProxyConnection, 'id'>[] }): ConnectionId[] {
+  return [...BUILTIN_CONNECTION_IDS, ...(Array.isArray(v?.proxies) ? v.proxies.map((p) => p.id) : [])]
+}
+
+/** The proxy record with this id (own list entry only; never a prototype key), or undefined. */
+export function proxyOf(v: ConnectionsView | undefined, id: ConnectionId): ProxyConnection | undefined {
+  if (typeof id !== 'string' || isBuiltinConnectionId(id)) return undefined
+  return Array.isArray(v?.proxies) ? v.proxies.find((p) => p.id === id) : undefined
+}
+
+/** The record of any connection (built-in or proxy), or undefined. */
+export function connectionRecord(v: ConnectionsView | undefined, id: ConnectionId): ProviderConnection | undefined {
+  if (id === 'anthropic') return v?.connections?.anthropic
+  if (id === 'openai') return v?.connections?.openai
+  return proxyOf(v, id)
+}
+
+/** A built-in id or a proxy id by shape: says nothing about whether the proxy exists (see isKnownConnection). Pure. */
+export function isConnectionId(v: unknown): v is ConnectionId {
+  return isBuiltinConnectionId(v) || isProxyConnectionId(v)
+}
+
+/** A built-in id, or the id of a proxy that exists in `v.proxies`. Never true for a prototype key. Pure. */
+export function isKnownConnection(v: ConnectionsView | undefined, id: unknown): id is ConnectionId {
+  return isBuiltinConnectionId(id) || (typeof id === 'string' && proxyOf(v, id) !== undefined)
+}
+
+/** Display name: 'Anthropic', 'OpenAI', the proxy's name, or 'Proxy' when the proxy is gone. */
+export function connectionName(id: ConnectionId, v?: ConnectionsView): string {
+  if (id === 'anthropic') return 'Anthropic'
+  if (id === 'openai') return 'OpenAI'
+  return proxyOf(v, id)?.name || 'Proxy'
+}
+
+const trimSlashes = (u: string): string => u.trim().replace(/\/+$/, '')
+
+/** The OpenAI / Codex base URL of a proxy: openaiBaseUrl when set, else `<anthropicBaseUrl>/v1` (not doubled when it already ends in /v1). '' when neither is set. */
+export function proxyOpenAIBase(p: Pick<ProxyConnection, 'anthropicBaseUrl' | 'openaiBaseUrl'>): string {
+  const own = trimSlashes(p.openaiBaseUrl ?? '')
+  if (own) return own
+  const base = trimSlashes(p.anthropicBaseUrl ?? '')
+  if (!base) return ''
+  return /\/v1$/i.test(base) ? base : `${base}/v1`
+}
+
+/** The model list URL of a proxy: modelsUrl when set, else `<proxyOpenAIBase>/models`. '' when there is no base. */
+export function proxyModelsUrl(p: Pick<ProxyConnection, 'anthropicBaseUrl' | 'openaiBaseUrl' | 'modelsUrl'>): string {
+  const own = (p.modelsUrl ?? '').trim()
+  if (own) return own
+  const base = proxyOpenAIBase(p)
+  return base ? `${base}/models` : ''
+}
+
+/**
+ * The family of a model a proxy lists. An id modelFamily() already calls claude or openai wins (a gateway may list
+ * claude-opus-5-high under owned_by 'antigravity'); else owned_by 'anthropic' -> claude, 'openai' -> openai; else
+ * 'other'.
+ */
+export function proxyModelFamily(id: string, ownedBy?: string): ModelFamily {
+  const f = modelFamily(id)
+  if (f !== 'other') return f
+  const o = (ownedBy ?? '').trim().toLowerCase()
+  return o === 'anthropic' ? 'claude' : o === 'openai' ? 'openai' : 'other'
+}
+
 /**
  * The connection a new project starts on: settings.defaultConnection when it is usable (anthropic always; openai
- * when enabled; litellm when enabled with a base URL and an API key), otherwise 'anthropic'.
+ * when enabled; a proxy when enabled with a base URL and an API key), otherwise 'anthropic'.
  */
-export function creationConnection(settings: Pick<AppSettings, 'defaultConnection' | 'connections'> | undefined): ConnectionId {
+export function creationConnection(settings: (Pick<AppSettings, 'defaultConnection'> & ConnectionsView) | undefined): ConnectionId {
   const want = settings?.defaultConnection
-  const c = settings?.connections
-  if (!want || !c) return 'anthropic'
-  if (want === 'openai') return c.openai?.enabled ? 'openai' : 'anthropic'
-  if (want === 'litellm') return c.litellm?.enabled && !!c.litellm.baseUrl?.trim() && c.litellm.hasApiKey ? 'litellm' : 'anthropic'
-  return 'anthropic'
+  if (!want || !settings || want === 'anthropic') return 'anthropic'
+  return connectionConfigured(want, settings) ? want : 'anthropic'
 }
 
 /**
  * Whether a connection is in use: enabled (anthropic always counts as enabled, as in `creationConnection`) and
  * either the app's default connection or the connection of at least one project (`projectConnection`; mock
  * projects follow the same rule). Idle probes that cost a process spawn or a network call (Codex plan usage,
- * LiteLLM key spend) run only then. Pure.
+ * proxy key spend) run only then. Pure.
  */
 export function connectionInUse(
   id: ConnectionId,
-  settings: Pick<AppSettings, 'defaultConnection' | 'connections'>,
+  settings: Pick<AppSettings, 'defaultConnection'> & ConnectionsView,
   projects: readonly Pick<Project, 'provider'>[]
 ): boolean {
-  const enabled = id === 'anthropic' || settings.connections?.[id]?.enabled === true
+  const enabled = id === 'anthropic' || connectionRecord(settings, id)?.enabled === true
   if (!enabled) return false
   if ((settings.defaultConnection ?? 'anthropic') === id) return true
   return projects.some((p) => projectConnection(p) === id)
@@ -737,37 +810,40 @@ export function connectionInUse(
 
 /**
  * Whether a connection's record allows it to be used at all: anthropic unless it was turned off (enabled false, the
- * card's Disconnect); openai when enabled; litellm when enabled with a base URL and a stored key. Says nothing about
- * its live status. Pure.
+ * card's Disconnect); openai when enabled; a proxy when it exists, is enabled and has a base URL and a stored key.
+ * Says nothing about its live status. Pure.
  */
-export function connectionConfigured(id: ConnectionId, connections: Partial<ProviderConnections> | undefined): boolean {
-  if (id === 'anthropic') return connections?.anthropic?.enabled !== false
-  if (id === 'openai') return connections?.openai?.enabled === true
-  const l = connections?.litellm
-  return l?.enabled === true && !!l.baseUrl?.trim() && l.hasApiKey === true
+export function connectionConfigured(id: ConnectionId, v: ConnectionsView | undefined): boolean {
+  if (id === 'anthropic') return v?.connections?.anthropic?.enabled !== false
+  if (id === 'openai') return v?.connections?.openai?.enabled === true
+  const p = proxyOf(v, id)
+  return p?.enabled === true && !!p.anthropicBaseUrl?.trim() && p.hasApiKey === true
 }
 
 /** Whether a connection can be the default: configured (connectionConfigured) and its live status is 'connected'. Pure. */
-export function connectionUsable(id: ConnectionId, connections: Partial<ProviderConnections> | undefined, state: ConnectionStatus['state'] | undefined): boolean {
-  return connectionConfigured(id, connections) && state === 'connected'
+export function connectionUsable(id: ConnectionId, v: ConnectionsView | undefined, state: ConnectionStatus['state'] | undefined): boolean {
+  return connectionConfigured(id, v) && state === 'connected'
 }
 
 /**
  * The default connection consumers use (new projects, Chat, the MCP and Skill assistants). `states` holds the live
  * state of every configured connection (connectionConfigured), 'unknown' while it has not been probed yet; leave out
- * connections that are not configured. Pure.
+ * connections that are not configured. `proxies` is the proxy list (AppSettings.proxies), which fixes the id order.
+ * Pure.
  * - chosen (the user picked it): the stored value whatever its state, so a run fails with that connection's own error
  *   (the honest outcome). Only a chosen connection that is no longer configured (turned off) falls through.
  * - automatic: the connection an automatic rewrite replaced (`replaced`) as soon as it is 'connected' again; else the
  *   stored value unless it is definitely 'disconnected' or not configured ('error', 'connecting' and 'unknown' keep
  *   it: a probe throw, a CLI timeout or a failed discovery never moves the default); else the first connected
- *   connection in CONNECTION_IDS order other than LiteLLM, LiteLLM only when it is the only connected one; else the
- *   stored value when configured, else the first configured connection, else the stored value (anthropic when unset).
+ *   built-in connection, a proxy only when exactly one proxy is connected and no built-in is (two or more connected
+ *   proxies and no built-in is undecided); else the stored value when configured, else the first configured
+ *   connection, else the stored value (anthropic when unset).
  */
 export function effectiveDefaultConnection(input: {
   stored: ConnectionId | undefined
   chosen?: boolean
   replaced?: ConnectionId
+  proxies?: readonly Pick<ProxyConnection, 'id'>[]
   states: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>>
 }): ConnectionId {
   const stored = isConnectionId(input.stored) ? input.stored : 'anthropic'
@@ -776,21 +852,18 @@ export function effectiveDefaultConnection(input: {
   const replaced = input.chosen !== true && isConnectionId(input.replaced) ? input.replaced : undefined
   if (replaced && input.states[replaced] === 'connected') return replaced
   if (own !== undefined && own !== 'disconnected') return stored
-  const connected = CONNECTION_IDS.filter((id) => input.states[id] === 'connected')
-  const pick = connected.find((id) => id !== 'litellm') ?? (connected.length === 1 ? connected[0] : undefined)
+  const ids = connectionIds(input)
+  const connected = ids.filter((id) => input.states[id] === 'connected')
+  const proxies = connected.filter((id) => !isBuiltinConnectionId(id))
+  const pick = connected.find((id) => isBuiltinConnectionId(id)) ?? (proxies.length === 1 ? proxies[0] : undefined)
   if (pick) return pick
   if (own !== undefined) return stored
-  return CONNECTION_IDS.find((id) => input.states[id] !== undefined) ?? stored
+  return ids.find((id) => input.states[id] !== undefined) ?? stored
 }
 
-/** A known ConnectionId (own property of the id list, never a prototype key). Pure. */
-export function isConnectionId(v: unknown): v is ConnectionId {
-  return typeof v === 'string' && (CONNECTION_IDS as readonly string[]).includes(v)
-}
-
-/** Provider label for a connection. Anthropic follows the auth choice. */
-export function connectionProviderLabel(id: ConnectionId, auth: AppSettings['providerAuth']): string {
-  return id === 'anthropic' ? claudeProviderLabel(auth) : id === 'openai' ? 'Codex (ChatGPT)' : 'LiteLLM'
+/** Provider label for a connection. Anthropic follows the auth choice; a proxy is labelled with its name (`v` supplies it). */
+export function connectionProviderLabel(id: ConnectionId, auth: AppSettings['providerAuth'], v?: ConnectionsView): string {
+  return id === 'anthropic' ? claudeProviderLabel(auth) : id === 'openai' ? 'Codex (ChatGPT)' : connectionName(id, v)
 }
 
 export function slugify(name: string): string {
