@@ -34,6 +34,7 @@ const PURE_NODE_MODULES = [
   '../store/secrets',
   '../store/mcpLibrary',
   '../store/knowledge',
+  '../outputs/service',
   '../runtime/runManager',
   '../runtime/claude',
   '../runtime/codex',
