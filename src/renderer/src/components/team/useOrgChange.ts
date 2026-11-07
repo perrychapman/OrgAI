@@ -6,7 +6,7 @@ import { needsYou } from '../../lib/runChains'
 import { liveOrgChangeRun, orgChangePrompt } from '../../lib/orgChange'
 
 /** Spoken once the session's tab is open on Live (focus is already in its composer or on its card). */
-export const ORG_CHANGE_STARTED = 'Org change session started. Its questions and proposals appear here, and it stays in the sidebar while it is open.'
+export const ORG_CHANGE_STARTED = 'Org change session started. Its questions and proposals appear here.'
 export const ORG_CHANGE_SENT = 'Sent to the open org change session.'
 
 export interface OrgChangeControls {

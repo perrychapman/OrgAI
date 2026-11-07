@@ -8,7 +8,7 @@ import { newRunLead, projectKindCopy, projectNoun } from '../lib/projectKindCopy
 import { SegmentedControl } from './ui/SegmentedControl'
 import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
 import { promptLine, runTag } from '../lib/runLabels'
-import { displayRunName } from '../lib/orgChange'
+import { displayRunName, isOrgChangeRun } from '../lib/orgChange'
 import { Button } from './ui/Button'
 import { EmptyState } from './ui/EmptyState'
 import TeamFilesPointer from './team/TeamFilesPointer'
@@ -47,6 +47,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
         .map((r) => ({ id: r.summary.id, kind: r.summary.kind, prompt: r.summary.prompt, title: r.summary.title })),
     [runs, project.id]
   )
+  const liveSetup = useMemo(() => [...others].reverse().find((o) => o.kind === 'setup'), [others])
   const indexes = useRunIndexes()
   const [busy, setBusy] = useState(false)
   const [setupBusy, setSetupBusy] = useState(false)
@@ -102,9 +103,16 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
                 : 'The Architect scans the repository, reads the code, and proposes an architecture document, an org chart that fits the work already done, and run settings. You approve each one.'
             }
             actions={
-              <Button variant="primary" loading={setupBusy} onClick={() => void beginSetup()}>
-                {setupBusy ? 'Scanning…' : project.setup?.state === 'pending' ? 'Start setup' : 'Resume setup'}
-              </Button>
+              // An open Architect session (setup or org change) is offered instead of a second one (UX re-walk M-new-2).
+              liveSetup ? (
+                <Button variant="primary" testId="new-run-open-setup" onClick={() => void openRun(liveSetup.id)}>
+                  {isOrgChangeRun(liveSetup) ? 'Open the org change session' : 'Open the setup session'}
+                </Button>
+              ) : (
+                <Button variant="primary" loading={setupBusy} onClick={() => void beginSetup()}>
+                  {setupBusy ? 'Scanning…' : project.setup?.state === 'pending' ? 'Start setup' : 'Resume setup'}
+                </Button>
+              )
             }
           />
         ) : ask ? (
