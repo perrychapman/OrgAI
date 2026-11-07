@@ -7,7 +7,8 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { CliShimResult, CliShimStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
+import { registerOutputsIpc } from './outputsIpc'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, OUTPUTS_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
 import type { FolderConfigTrustResult, TeamFilesActionResult, TeamFilesCommitResult } from '@shared/types'
 import { applyFolderConfigTrust, folderConfigReview } from './runtime/folderConfigTrust'
 import { projectRulesFile } from './store/projectData'
@@ -114,7 +115,10 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   TEAM_FILES_IPC.teamFilesReject,
   TEAM_FILES_IPC.teamFilesUndo,
   TEAM_FILES_IPC.teamFilesEnable,
-  TEAM_FILES_IPC.teamFilesCommit
+  TEAM_FILES_IPC.teamFilesCommit,
+  OUTPUTS_IPC.outputsOpen,
+  OUTPUTS_IPC.outputsReveal,
+  OUTPUTS_IPC.outputsSaveAs
 ]
 
 /** Served over the socket only: HOST_IPC channels and host.* methods never get an ipcMain handler. */
@@ -213,6 +217,7 @@ export function registerIpc(services: IpcServices): void {
   registerCliShimIpc(services.cliShim)
   if (kit) registerKitIpc(kit)
   if (services.repoClone) registerRepoIpc(services.repoClone)
+  registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir })
 }
 
 // ---- Start a project from a repository (clone or fork); desktop only ----

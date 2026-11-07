@@ -24,6 +24,9 @@ import type {
   MergeDecision,
   MergeReview,
   ModelPrice,
+  OutputProduceInput,
+  OutputRegisterInput,
+  RunOutput,
   PermissionDecision,
   PermissionRuleDecision,
   PermissionRuleRequest,
@@ -331,6 +334,21 @@ export interface RuntimeContext {
     /** from / to are node ids (the tool resolves names first). */
     link(input: Omit<KnowledgeEdgeSaveInput, 'projectId' | 'edgeId' | 'retired'>, caller: KnowledgeCaller): KnowledgeEdgeWriteResult
     retire(input: KnowledgeRetireInput, caller: KnowledgeCaller): KnowledgeRetireResult
+  }
+  /**
+   * produce_output / register_output (OUTPUT_TOOLS; types.ts "Run outputs"). RunManager provides it on work runs of a
+   * stored project (team 'default' or 'single', code or engagement; never bare, quick, trust-restricted, setup-like or
+   * virtual-project runs); missing = the tools answer "Outputs are not available in this run.". On each call RunManager
+   * resolves the folder scope from the stored project (path, allowed and reference folders) at call time, fills the
+   * OutputSource from the run's agent record (never a value the agent supplied), counts it toward OUTPUTS_RUN_MAX (past
+   * it the call throws "The output limit for this run (200) is reached; nothing was saved."), and on success emits
+   * `output.created`, writes one quiet harness transcript row on the calling agent and pushes outputs:changed. Every
+   * refusal (path rules, caps, hidden characters, an unrenderable document) throws with the sentence the tool shows
+   * after "REFUSED: ".
+   */
+  outputs?: {
+    produce(input: OutputProduceInput, caller: KnowledgeCaller): Promise<RunOutput>
+    register(input: OutputRegisterInput, caller: KnowledgeCaller): Promise<RunOutput>
   }
   /**
    * knowledge_recall (KNOWLEDGE_RECALL_TOOL): one budgeted, ranked answer as fenced data. RunManager provides it on

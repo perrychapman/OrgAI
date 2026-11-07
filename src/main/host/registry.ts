@@ -16,7 +16,8 @@ import {
   RPC_BULK_FRAME_MAX_BYTES,
   RPC_CONTROL_REQUEST_MAX_BYTES,
   RPC_CONTROL_RESPONSE_MAX_BYTES,
-  TEAM_FILES_IPC
+  TEAM_FILES_IPC,
+  OUTPUTS_IPC
 } from '../../shared/types'
 import type { HostKind, HostRpcError, HostRpcErrorCode, HostScope, HostSubscribeTopic } from '../../shared/types'
 import { CHANNEL_JSON_FIELDS, decodeRequest } from './jsonCodec'
@@ -112,7 +113,8 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'models:list', 'models:prices', 'mcp:list', 'mcp:registrySearch', 'mcpLibrary:list', 'connectors:list',
     'connectorPresets:list', 'skills:list', 'skills:read', 'skills:previewImport', 'skills:lastEvaluation', 'skillLibrary:list',
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',
-    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention'
+    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention',
+    'outputs:list', 'outputs:preview'
   ],
   operate: [
     'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
@@ -135,14 +137,16 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'capabilities:undo', 'capabilities:dismiss', 'capabilities:restore', 'maintenance:integrateWorktree',
     'maintenance:discardWorktree', 'maintenance:uninstallRepo', 'templates:saveFromProject', 'templates:remove',
     'templates:apply', 'knowledge:saveNode', 'knowledge:removeNode', 'knowledge:saveEdge', 'knowledge:removeEdge',
-    'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'teamFiles:status'
+    'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'teamFiles:status',
+    'outputs:forget', 'outputs:delete'
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
     'kit:previewImport', 'kit:applyImport', 'menu:setState', 'app:openPath', 'app:openLogs', 'app:setNotifications',
     'app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim', 'projects:parseRepoSource', 'projects:repoTools',
     'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'teamFiles:approve', 'teamFiles:reject',
-    'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit'
+    'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit',
+    'outputs:open', 'outputs:reveal', 'outputs:saveAs'
   ]
 }
 
@@ -156,6 +160,7 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.capabilitiesProgress]: { delivery: 'socket_subscribable', topic: 'capabilities', source: 'index.ts CapabilityService onProgress -> host/events.ts' },
   [IPC.capabilitiesReviewUpdated]: { delivery: 'socket_subscribable', topic: 'capabilities', source: 'index.ts CapabilityService onReviewUpdated -> host/events.ts' },
   [IPC.projectsEngagementChanged]: { delivery: 'socket_subscribable', topic: 'engagement', source: 'host/dispatcher.ts + RunManager engagementChanged -> host/events.ts' },
+  [OUTPUTS_IPC.outputsChanged]: { delivery: 'socket_subscribable', topic: 'engagement', source: 'host/dispatcher.ts outputs handlers + RunManager outputsChanged -> host/events.ts' },
   [IPC.appFocusRun]: { delivery: 'desktop_only', source: 'notifications.ts (notification click focuses a run)' },
   [IPC.menuAction]: { delivery: 'desktop_only', source: 'appMenu.ts (application menu item click)' },
   [IPC.projectsCloneProgress]: { delivery: 'desktop_only', source: 'ipc.ts registerRepoIpc (progress of a clone the window started)' },
@@ -205,6 +210,8 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     TEAM_FILES_IPC.teamFilesStatus, TEAM_FILES_IPC.teamFilesListAttention, TEAM_FILES_IPC.teamFilesApprove, TEAM_FILES_IPC.teamFilesReject,
     TEAM_FILES_IPC.teamFilesUndo, TEAM_FILES_IPC.teamFilesCommit, TEAM_FILES_IPC.teamFilesEnable
   ],
+  'host dispatcher outputs handlers (host/outputsHandlers.ts)': [OUTPUTS_IPC.outputsList, OUTPUTS_IPC.outputsPreview, OUTPUTS_IPC.outputsForget, OUTPUTS_IPC.outputsDelete],
+  'outputsIpc.ts registerOutputsIpc (desktop-only; shell and save dialog)': [OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs],
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],

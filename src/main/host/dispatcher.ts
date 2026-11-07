@@ -195,6 +195,7 @@ import {
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
+import { registerOutputsHandlers } from './outputsHandlers'
 import { HostRpcFailure, gateRequest, type GateFn } from './registry'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
@@ -673,6 +674,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerCapabilityIpc(handle, capabilities)
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
+  registerOutputsHandlers(handle, { outputs: services.outputs, projects, events, dataDir: settings.dataDir })
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {

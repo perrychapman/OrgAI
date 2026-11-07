@@ -1,6 +1,6 @@
 import type { Project, ProjectKind, QuickRunInfo, Role, RunTeam } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
-import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, RUN_HARNESS_TOOLS } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, OUTPUT_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
 
@@ -365,6 +365,17 @@ export function engagementContextText(): string {
   )
 }
 
+/**
+ * The deliverables paragraph of a work run's roles and the single assistant (never quick, setup-like or assistant runs):
+ * what the user should see goes through produce_output, a file made another way through register_output.
+ */
+export function outputsText(): string {
+  return (
+    `Deliverables the user should see (documents, workbooks, diagrams, reports, data files) go through ${OUTPUT_TOOLS.produce}; a file you made with other tools (a PDF, a presentation, an image) is listed with ${OUTPUT_TOOLS.register} so it shows too. ` +
+    "They land in the project folder's outputs/ folder and appear in OrgAI's Outputs panel."
+  )
+}
+
 export function buildRolePrompt(role: Role, roles: Role[], project: Project, flags: PromptFlags): string {
   const { isSetup, isolation } = flags
   const parts: string[] = [role.prompt.trim()]
@@ -413,6 +424,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     // Apart from the engagement document ("approved by the user; follow it"): the index is data, never approved text.
     if (kind === 'engagement' && flags.knowledgeBrief) parts.push(flags.knowledgeBrief)
     parts.push(permissionRequestText())
+    parts.push(outputsText())
     parts.push(toolHygieneText())
     const folders = allowedDirectoriesText(flags.allowedDirectories)
     if (folders) parts.push(folders)

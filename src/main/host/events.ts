@@ -8,13 +8,14 @@
  *
  * Electron-free (noElectronImport.test.ts); relative imports only.
  */
-import { IPC } from '../../shared/types'
+import { IPC, OUTPUTS_IPC } from '../../shared/types'
 import type {
   AppSettingsInfo,
   CapabilityProgressEvent,
   ConnectionEvent,
   EngagementChangedEvent,
   McpLibraryInfo,
+  OutputsChangedEvent,
   RunEvent,
   SkillLibraryInfo,
   TeamReviewSummary
@@ -30,9 +31,10 @@ export interface HostPushPayloads {
   'capabilities:progress': CapabilityProgressEvent
   'capabilities:reviewUpdated': TeamReviewSummary
   'projects:engagementChanged': EngagementChangedEvent
+  'outputs:changed': OutputsChangedEvent
 }
 
-/** The 8 socket-subscribable push channels. */
+/** The 9 socket-subscribable push channels. */
 export type HostPushChannel =
   | typeof IPC.runEvent
   | typeof IPC.settingsChanged
@@ -42,6 +44,7 @@ export type HostPushChannel =
   | typeof IPC.capabilitiesProgress
   | typeof IPC.capabilitiesReviewUpdated
   | typeof IPC.projectsEngagementChanged
+  | typeof OUTPUTS_IPC.outputsChanged
 
 // Compile-time check that the payload map and the channel union name the same channels.
 type SameKeys<A, B> = [Exclude<A, B>, Exclude<B, A>] extends [never, never] ? true : never
@@ -56,7 +59,8 @@ export const HOST_PUSH_CHANNELS: readonly HostPushChannel[] = [
   IPC.skillLibraryChanged,
   IPC.capabilitiesProgress,
   IPC.capabilitiesReviewUpdated,
-  IPC.projectsEngagementChanged
+  IPC.projectsEngagementChanged,
+  OUTPUTS_IPC.outputsChanged
 ]
 
 export type HostEventListener = <C extends HostPushChannel>(channel: C, payload: HostPushPayloads[C]) => void

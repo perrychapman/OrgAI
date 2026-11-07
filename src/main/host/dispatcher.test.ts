@@ -47,7 +47,10 @@ const DESKTOP_ONLY = [
   'teamFiles:reject',
   'teamFiles:undo',
   'teamFiles:enable',
-  'teamFiles:commit'
+  'teamFiles:commit',
+  'outputs:open',
+  'outputs:reveal',
+  'outputs:saveAs'
 ]
 
 const DESKTOP = { surface: 'desktop' as const, senderId: 1 }

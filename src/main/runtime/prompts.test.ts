@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orgChangeText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, toolHygieneText } from './prompts'
+import { buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, toolHygieneText } from './prompts'
 import { orgChart, project } from './testHelpers'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -123,8 +123,8 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, tool hygiene, brief
-    expect(parts).toHaveLength(14)
+    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, brief
+    expect(parts).toHaveLength(15)
   })
 
   it('tells every work-run role to edit with the edit tools and avoid cd chains, never setup runs', () => {
@@ -450,5 +450,33 @@ describe('single-agent runs and context notes', () => {
   it('names no industry', () => {
     const text = `${engagementContextText()} ${singleAssistantText()} ${singleAssistantText('engagement')}`.toLowerCase()
     for (const word of ['software', 'legal', 'accounting', 'marketing', 'consult', 'code', 'client']) expect(text).not.toContain(word)
+  })
+})
+
+describe('outputs paragraph', () => {
+  const roles = orgChart()
+  const flags = { isSetup: false, isolation: false }
+  const quick = { folder: '/data/quick/q1', scratch: true as const, team: 'single' as const, allowEdits: false, gitRepo: false }
+
+  it('every work role and the single assistant get it', () => {
+    for (const r of roles) expect(buildRolePrompt(r, roles, project(), flags)).toContain('produce_output')
+    const single = buildRolePrompt(roles[0], roles, project(), { ...flags, team: 'single' })
+    expect(single).toContain('produce_output')
+    expect(single).toContain('register_output')
+    expect(single).toContain('Outputs panel')
+  })
+
+  it('engagements get it too', () => {
+    expect(buildRolePrompt(roles[0], roles, project({ kind: 'engagement', setup: { kind: 'new', state: 'complete' } }), flags)).toContain('produce_output')
+  })
+
+  it('setup runs and quick runs do not', () => {
+    expect(buildRolePrompt(roles[0], roles, project(), { ...flags, isSetup: true })).not.toContain('produce_output')
+    expect(buildRolePrompt(roles[0], roles, project(), { ...flags, quick })).not.toContain('produce_output')
+  })
+
+  it('names no industry', () => {
+    const text = outputsText().toLowerCase()
+    for (const word of ['software', 'legal', 'accounting', 'marketing', 'consult', 'client']) expect(text).not.toContain(word)
   })
 })
