@@ -5,16 +5,23 @@
 import type { AgentState } from '../../shared/types'
 import type { Tone, TuiEnv } from './types'
 
-const TONE_COLORS: Record<Tone, string> = {
+/**
+ * ANSI-16 names only (the terminal's own palette decides the shade). 'dim' has no foreground: it is the dimColor
+ * attribute alone, because grey plus dimColor stacked into text too faint to read (issue #32). 'running' is
+ * blueBright, not blue (plain blue is nearly invisible on PowerShell's dark-blue background), and 'warn' is magenta,
+ * not yellow (yellow washes out on a white background). UNVERIFIED: no real light or dark terminal background was
+ * looked at; this is chosen from the usual palettes (Windows Terminal Campbell / One Half Light, macOS Terminal Basic).
+ */
+const TONE_COLORS: Record<Tone, string | undefined> = {
   ok: 'green',
-  warn: 'yellow',
+  warn: 'magenta',
   danger: 'red',
-  dim: 'gray',
+  dim: undefined,
   accent: 'cyan',
-  running: 'blue'
+  running: 'blueBright'
 }
 
-/** The Ink colour for a tone, or undefined when colour is off or no tone is given. */
+/** The Ink colour for a tone, or undefined when colour is off, no tone is given or the tone has no foreground ('dim'). */
 export function toneColor(tone: Tone | undefined, env: TuiEnv): string | undefined {
   if (!env.color || !tone) return undefined
   return TONE_COLORS[tone]

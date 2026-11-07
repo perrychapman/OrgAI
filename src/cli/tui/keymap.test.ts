@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { glyphLegend, helpKeyLines, KEYMAP, keysFor, paneHint, scopeOf, statusHint, whichKeyLines, type KeyScope } from './keymap'
+import { glyphLegend, helpKeyLines, hintItems, KEYMAP, keysFor, paneHint, scopeOf, statusHint, whichKeyLines, type KeyScope } from './keymap'
 import { HELP_TEXT, SLASH_COMMANDS } from './slashCommands'
 
 const UNI = { unicode: true, screenReader: false, dumbTerminal: false }
@@ -84,6 +84,32 @@ describe('hints are pane-aware and short', () => {
     expect(statusHint('composer', { readOnly: true, stopOnQuit: false })).not.toContain('Enter sends')
     expect(statusHint('composer', { readOnly: false, stopOnQuit: true })).toContain('stops and quits')
     expect(statusHint('tray', { readOnly: false, stopOnQuit: false })).toContain('Esc back')
+  })
+
+  it('the exact composer and tray hints, per buffer mode and separator rule', () => {
+    const full = { unicode: true, screenReader: false, dumbTerminal: false, bufferMode: 'fullscreen' as const }
+    const o = { readOnly: false, stopOnQuit: false }
+    expect(statusHint('composer', { ...o, env: full })).toBe('Enter sends · / commands · Alt+D decisions · Tab panes · Esc Esc interrupts · Ctrl+C twice quits')
+    const inline = statusHint('composer', { ...o, env: { ...full, bufferMode: 'inline' } })
+    expect(inline).toBe('Enter sends · / commands · Alt+D decisions · /agent <name> shows an agent · Esc Esc interrupts · Ctrl+C twice quits')
+    expect(inline).not.toContain('Tab panes')
+    expect(statusHint('composer', { readOnly: true, stopOnQuit: false, env: { ...full, bufferMode: 'inline' } })).not.toContain('Tab panes')
+    expect(statusHint('tray', { ...o, env: full })).toBe('Keys on the card · ? keys · Esc back')
+    expect(statusHint('tray', { ...o, env: { ...full, screenReader: true } })).toBe('Keys on the card, ? keys, Esc back')
+    expect(statusHint('tray', { ...o, env: { ...full, unicode: false } })).toBe('Keys on the card | ? keys | Esc back')
+    expect(statusHint('composer', { ...o, env: { ...full, screenReader: true } })).not.toContain('·')
+    expect(hintItems('a · b · c', ' · ')).toEqual(['a', 'b', 'c'])
+  })
+
+  it('the Esc, ? and tray wording', () => {
+    const find = (scope: string, keys: string) => KEYMAP.find((k) => k.scope === scope && k.keys === keys)
+    expect(find('global', 'Esc')?.label).toBe('From a pane: back to the composer. On the composer: press Esc twice to interrupt the running turn')
+    expect(find('global', '?')?.label).toBe('The keys of the focused pane, the tray, or an empty composer')
+    expect(find('composer', 'Esc')?.label).toBe('Interrupt the running turn (press twice)')
+    expect(find('composer', 'Esc')?.hint?.text).toBe('Esc Esc interrupts')
+    expect(find('composer', '? (empty composer)')?.label).toBe("The composer's keys")
+    expect(find('tray', '?')?.label).toBe("The tray's keys")
+    expect(find('tray', 'Permission')?.label).toContain('n deny (opens an optional note), v full view; Up/Down scroll a long card, and y/s/a work once its end was shown')
   })
 
   it('scopeOf maps pane focus targets and not the palette', () => {
