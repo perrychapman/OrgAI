@@ -12,7 +12,7 @@ import {
 } from '@shared/types'
 import { htmlToBlocks } from './htmlBlocks'
 import { svgProblem } from './writers'
-import { zipInfo, zipProblem } from './zipGuard'
+import { zipEntryNames, zipEntrySize, zipInfo, zipProblem, zipVerifyEntries } from './zipGuard'
 
 /**
  * previewFile(path, kind): the inline preview of one output file. Never throws; any problem is { kind: 'none', reason }.
@@ -151,12 +151,33 @@ async function previewXlsx(path: string): Promise<OutputPreview> {
   if (buf.length > DOC_MAX_BYTES) return none('This spreadsheet is larger than 20 MB, so OrgAI does not preview it; open it instead.')
   const zi = zipInfo(buf)
   if (zi.problem) return none(`OrgAI did not preview this spreadsheet: ${zi.problem}`)
+  const zv = zipVerifyEntries(buf)
+  if (zv) return none(`OrgAI did not preview this spreadsheet: ${zv}`)
+  const small = zi.totalBytes <= LOAD_FALLBACK_MAX_BYTES
+  // exceljs' streaming reader reads the zip in order: workbook.xml, its rels and sharedStrings.xml must come before the
+  // first sheet, or it drops sheets, names them SheetN and leaves string cells empty WITHOUT throwing (measured on
+  // re-ordered copies of one workbook). So the stream is used only for a package in that order; any other order, or a
+  // stream that throws, takes a full load (bounded by uncompressed size).
+  if (small && !streamSafeOrder(zipEntryNames(buf))) {
+    const loaded = await previewXlsxLoaded(buf)
+    if (loaded) return loaded
+  }
   const streamed = await previewXlsxStream(buf)
   if (streamed.kind !== 'none') return streamed
-  // exceljs' streaming reader needs xl/workbook.xml before the sheets in the zip and throws otherwise (and exceljs' own
-  // writer does not always keep that order), so a failed stream falls back to a full load, bounded by uncompressed size.
-  if (zi.totalBytes > LOAD_FALLBACK_MAX_BYTES) return streamed
+  if (!small) return streamed
   return (await previewXlsxLoaded(buf)) ?? streamed
+}
+
+/** True when workbook.xml, its rels and (when present) sharedStrings.xml all precede the first worksheet entry. */
+export function streamSafeOrder(names: string[]): boolean {
+  const at = (n: string): number => names.indexOf(n)
+  const firstSheet = names.findIndex((n) => n.startsWith('xl/worksheets/') && n.endsWith('.xml'))
+  if (firstSheet < 0) return true
+  const before = (n: string, required: boolean): boolean => {
+    const i = at(n)
+    return i < 0 ? !required : i < firstSheet
+  }
+  return before('xl/workbook.xml', true) && before('xl/_rels/workbook.xml.rels', true) && before('xl/sharedStrings.xml', false)
 }
 
 /** Full-load reader: exact row and column totals, first OUTPUT_PREVIEW_* shown. Null when it cannot read the file. */
@@ -262,11 +283,24 @@ async function previewXlsxStream(buf: Buffer): Promise<OutputPreview> {
 
 // ---------- docx ----------
 
-async function previewDocx(path: string): Promise<OutputPreview> {
+/**
+ * Largest word/document.xml (uncompressed) the docx preview converts. mammoth runs on the main thread and its time grows
+ * with this size, so a bigger document answers "too large to preview" at once (see preview.measure.test.ts for the table).
+ */
+export const DOCX_PREVIEW_MAX_XML_BYTES = 3 * 1024 * 1024
+
+const DOCX_TOO_LARGE = 'This document is too large to preview here. Open it instead.'
+
+/** previewDocx with the document.xml threshold as a parameter (exported for tests and measurement). */
+export async function previewDocx(path: string, maxXmlBytes: number = DOCX_PREVIEW_MAX_XML_BYTES): Promise<OutputPreview> {
   const buf = readCapped(path, DOC_MAX_BYTES)
   if (buf.length > DOC_MAX_BYTES) return none('This document is larger than 20 MB, so OrgAI does not preview it; open it instead.')
   const zp = zipProblem(buf)
   if (zp) return none(`OrgAI did not preview this document: ${zp}`)
+  const xmlSize = zipEntrySize(buf, 'word/document.xml')
+  if (xmlSize !== null && xmlSize > maxXmlBytes) return none(DOCX_TOO_LARGE)
+  const zv = zipVerifyEntries(buf)
+  if (zv) return none(`OrgAI did not preview this document: ${zv}`)
   try {
     // externalFileAccess: false always: a linked external file must never be read (CVE-2025-11849).
     const r = await mammoth.convertToHtml({ buffer: buf }, { externalFileAccess: false } as Parameters<typeof mammoth.convertToHtml>[1])

@@ -3,8 +3,9 @@ import { cpus, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { OutputWorkbookInput } from '@shared/types'
-import { previewFile } from './preview'
+import { DOCX_PREVIEW_MAX_XML_BYTES, previewDocx, previewFile } from './preview'
 import { renderProduced } from './writers'
+import { zipEntrySize, zipVerifyEntries } from './zipGuard'
 
 /**
  * Timings of the real preview path on fixtures at the produce caps. Logged, and asserted only against a generous bound
@@ -28,11 +29,13 @@ const grid = (rows: number, cols: number): OutputWorkbookInput => ({
   ]
 })
 
-const markdown = (): string => {
+const markdown = (size = 1_000_000): string => {
   const parts: string[] = []
   let i = 0
-  while (parts.join('\n').length < 1_000_000) {
+  let len = 0
+  while (len < size) {
     parts.push(`## Section ${i}\n\nParagraph ${i} with **bold**, *italic* and a [link](https://example.org/${i}) plus filler text to take space.\n\n- item a ${i}\n- item b ${i}\n  - nested ${i}\n\n1. first\n2. second\n\n| Name | Qty | Note |\n|---|---:|---|\n| apple ${i} | ${i} | red |\n| pear ${i} | ${i + 1} | green |\n`)
+    len += parts[parts.length - 1].length + 1
     i++
   }
   return parts.join('\n')
@@ -54,6 +57,9 @@ describe('preview timings', () => {
       const path = join(dir, `g-${rows}x${cols}.xlsx`)
       writeFileSync(path, buf)
       console.log(`[measure] xlsx ${rows}x${cols} file: ${Math.round(buf.length / 1024)} KB`)
+      const v0 = performance.now()
+      expect(zipVerifyEntries(buf as Buffer)).toBeNull()
+      console.log(`[measure] xlsx ${rows}x${cols} zipVerifyEntries: ${Math.round((performance.now() - v0) * 10) / 10} ms`)
       for (let run = 1; run <= 3; run++) {
         const r = await timed(`preview xlsx ${rows}x${cols} run ${run}`, () => previewFile(path, 'xlsx'))
         expect(r.value.kind).toBe('sheets')
@@ -65,18 +71,29 @@ describe('preview timings', () => {
       }
     }
   }, 120_000)
-  it('docx from about 1 MB of markdown', async () => {
-    const md = markdown()
-    console.log(`[measure] markdown: ${Math.round(md.length / 1024)} KB`)
-    const buf = (await timed('write docx', () => renderProduced({ kind: 'docx', title: 't', content: md }))).value
-    const path = join(dir, 'big.docx')
-    writeFileSync(path, buf)
-    console.log(`[measure] docx file: ${Math.round(buf.length / 1024)} KB`)
-    for (let run = 1; run <= 3; run++) {
-      const r = await timed(`preview docx run ${run}`, () => previewFile(path, 'docx'))
-      expect(r.value.kind).toBe('document')
-      if (r.value.kind === 'document' && run === 1) console.log(`[measure]   blocks ${r.value.blocks.length}, truncated ${r.value.truncated === true}`)
-      expect(r.ms).toBeLessThan(10_000)
+  it('docx preview time against document.xml size (no threshold), then the cut-off', async () => {
+    console.log(`[measure] threshold DOCX_PREVIEW_MAX_XML_BYTES = ${DOCX_PREVIEW_MAX_XML_BYTES}`)
+    console.log('[measure] md KB | document.xml KB | docx KB | preview ms (best of 3, no threshold)')
+    for (const kb of [100, 200, 300, 500, 1000]) {
+      const md = markdown(kb * 1000)
+      const buf = (await renderProduced({ kind: 'docx', title: 't', content: md })) as Buffer
+      const path = join(dir, `md-${kb}.docx`)
+      writeFileSync(path, buf)
+      const xml = zipEntrySize(buf, 'word/document.xml') ?? -1
+      let best = Infinity
+      for (let run = 1; run <= 3; run++) {
+        const r = await timed(`preview docx ${kb} KB markdown run ${run}`, () => previewDocx(path, Number.POSITIVE_INFINITY))
+        expect(r.value.kind).toBe('document')
+        best = Math.min(best, r.ms)
+        expect(r.ms).toBeLessThan(10_000)
+      }
+      const v0 = performance.now()
+      expect(zipVerifyEntries(buf)).toBeNull()
+      const verifyMs = Math.round((performance.now() - v0) * 10) / 10
+      console.log(`[measure] table: ${Math.round(md.length / 1024)} | ${Math.round(xml / 1024)} | ${Math.round(buf.length / 1024)} | ${best} | verify ${verifyMs}`)
+      const real = await timed(`previewFile docx ${kb} KB markdown (real threshold)`, () => previewFile(path, 'docx'))
+      expect(real.value.kind).toBe(xml > DOCX_PREVIEW_MAX_XML_BYTES ? 'none' : 'document')
+      expect(real.ms).toBeLessThan(10_000)
     }
-  }, 120_000)
+  }, 300_000)
 })
