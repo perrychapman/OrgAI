@@ -649,6 +649,21 @@ describe.runIf(posix)('HostSocketServer requests', () => {
     expect(st.calls[0].ctx).toMatchObject({ surface: 'socket', clientKind: 'tui', pid: 999, grantedScopes: ['read'] })
   })
 
+  it('L6: the context carries the connection id, and its output watches are dropped when the socket closes', async () => {
+    const dropped: string[] = []
+    const fake = await start()
+    ;(fake.host.services as unknown as Msg).outputWatcher = { dropOwner: (o: string) => dropped.push(o) }
+    const c = await client()
+    await hello(c, { kind: 'tui', pid: 999, scopes: ['read'] })
+    c.send(rpcRequest(7, 'runs:list', ['p1']))
+    await c.response(7)
+    const id = st.calls[0].ctx.connectionId
+    expect(typeof id).toBe('string')
+    expect(st.calls[0].ctx.connectionId).not.toBe(String(st.calls[0].ctx.pid))
+    c.socket.destroy()
+    await vi.waitFor(() => expect(dropped).toEqual([`socket:${id}`]))
+  })
+
   it("under version skew 'configure' covers host.stop only; read and operate still work (review L)", async () => {
     st.result = (method) => ({ method })
     await start()

@@ -62,10 +62,10 @@ export function outputScopeFor(deps: Pick<OutputsHandlerDeps, 'projects' | 'data
   return outputScopeOf(project, deps.dataDir)
 }
 
-/** Who owns a watch: a window (its web contents id) or a socket client (its pid, as far as the context tells). */
-export function watchOwnerOf(ctx: Pick<InvokeContext, 'surface' | 'senderId' | 'pid' | 'clientKind'>): string {
+/** Who owns a watch: a window (its web contents id) or a socket connection (its host-assigned id, never the client-reported pid). */
+export function watchOwnerOf(ctx: Pick<InvokeContext, 'surface' | 'senderId' | 'connectionId' | 'clientKind'>): string {
   if (ctx.surface === 'desktop') return `window:${ctx.senderId ?? 0}`
-  return `${ctx.surface}:${ctx.pid ?? ctx.clientKind ?? 'client'}`
+  return `${ctx.surface}:${ctx.connectionId ?? ctx.clientKind ?? 'client'}`
 }
 
 export function registerOutputsHandlers(handle: HandleFn, deps: OutputsHandlerDeps): void {

@@ -2812,8 +2812,8 @@ export class RunManager {
     const projectId = a.summary.projectId
     if (!service || isVirtualProjectId(projectId)) return
     try {
-      const ids = service.runEnded(projectId, a.summary.id)
-      if (ids.length) this.options.outputsChanged?.({ projectId, ids, what: 'revision' })
+      // The service's own onChange pushes the 'revision' change; emitting it here too would double it.
+      service.runEnded(projectId, a.summary.id)
     } catch (e) {
       log.warn(`outputs runEnded failed for run ${a.summary.id}: ${e instanceof Error ? e.message : String(e)}`)
     }

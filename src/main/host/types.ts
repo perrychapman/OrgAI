@@ -138,6 +138,8 @@ export interface InvokeContext {
   clientKind?: HostClientKind
   /** The client's pid (socket, from host.hello). */
   pid?: number
+  /** The socket connection's id (socket surface only; host-assigned, never client-reported). */
+  connectionId?: string
   grantedScopes?: readonly HostScope[]
 }
 
