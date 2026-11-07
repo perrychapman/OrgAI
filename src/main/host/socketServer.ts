@@ -578,6 +578,12 @@ export class HostSocketServer {
   private cleanup(conn: Conn): void {
     if (conn.timer) clearTimeout(conn.timer)
     conn.timer = undefined
+    // Output watches are keyed on this connection (watchOwnerOf); drop them with it, silently.
+    try {
+      this.host?.services.outputWatcher?.dropOwner(`socket:${String(conn.id)}`)
+    } catch {
+      /* a watcher failure never blocks cleanup */
+    }
     conn.state = 'closed'
     conn.runs = undefined
     conn.topics.clear()
@@ -893,7 +899,7 @@ export class HostSocketServer {
     conn.inflight++
     let p: Promise<unknown>
     try {
-      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, grantedScopes })
+      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, connectionId: String(conn.id), grantedScopes })
     } catch (e) {
       p = Promise.reject(e)
     }

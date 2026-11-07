@@ -6,6 +6,7 @@ import { formatDate } from './dates'
 export const OUTPUT_KIND_LABEL: Readonly<Record<OutputKind, string>> = {
   docx: 'Word document',
   xlsx: 'Excel workbook',
+  pptx: 'PowerPoint deck',
   mermaid: 'Diagram',
   markdown: 'Markdown',
   text: 'Text',
@@ -18,12 +19,13 @@ export const OUTPUT_KIND_LABEL: Readonly<Record<OutputKind, string>> = {
 }
 
 /** The kind chips may shorten the two Office names; the full label is their title. */
-const KIND_CHIP_LABEL: Partial<Record<OutputKind, string>> = { docx: 'Word', xlsx: 'Excel' }
+const KIND_CHIP_LABEL: Partial<Record<OutputKind, string>> = { docx: 'Word', xlsx: 'Excel', pptx: 'PowerPoint' }
 
 /** Extra words the search matches per kind (the app's name for it, what a user would type). */
 const KIND_SEARCH_WORDS: Partial<Record<OutputKind, readonly string[]>> = {
   docx: ['word', 'document'],
   xlsx: ['excel', 'spreadsheet', 'workbook'],
+  pptx: ['powerpoint', 'deck', 'slides', 'presentation'],
   mermaid: ['diagram', 'chart'],
   image: ['picture', 'photo']
 }

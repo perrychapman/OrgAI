@@ -34,7 +34,7 @@ import { sweepStaleSkillDirs } from '../runtime/claudeSkills'
 import { CodexAdapter } from '../runtime/codex'
 import { MockAdapter } from '../runtime/mock'
 import { repoLockActivity } from '../runtime/repoLock'
-import { RunManager } from '../runtime/runManager'
+import { RunManager, outputScopeOf } from '../runtime/runManager'
 import { controlProtectedPaths } from '../runtime/selfControlGate'
 import type { RunConnection, RuntimeAdapter } from '../runtime/types'
 import { AgentImportService } from '../setup/import/importer'
@@ -45,6 +45,7 @@ import { SkillEvaluationService } from '../skills/evaluation'
 import { SkillService } from '../skills/service'
 import { knowledgeStore } from '../store/knowledge'
 import { createOutputsService } from '../outputs/service'
+import { createOutputWatcher } from '../outputs/watch'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from '../store/projectData'
 import { ProjectStore } from '../store/projects'
@@ -437,7 +438,20 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     }
   })
   // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
-  const outputs = createOutputsService(dataDir)
+  // The OS trash only on the desktop (Electron shell.trashItem); every other host deletes for good. The service raises
+  // outputs:changed itself for the versions the watcher captures and the revision ends it settles.
+  const outputs = createOutputsService(dataDir, {
+    ...(opts.desktop?.trashItem ? { trash: opts.desktop.trashItem } : {}),
+    onChange: (projectId, ids, what) => events.emit(OUTPUTS_IPC.outputsChanged, { projectId, ids, what })
+  })
+  const outputWatcher = createOutputWatcher({
+    service: outputs,
+    scopeOf: (projectId) => {
+      const p = projects.get(projectId)
+      return p ? outputScopeOf(p, dataDir) : null
+    },
+    emit: (event) => events.emit(OUTPUTS_IPC.outputsChanged, event)
+  })
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
     selfKnowledge: {
@@ -733,6 +747,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     kit,
     teamFiles,
     outputs,
+    outputWatcher,
     events,
     activity,
     usage: { refresh: () => monitor.refresh() },
@@ -759,6 +774,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const dispose = (): void => {
     if (disposed) return
     disposed = true
+    outputWatcher.dispose()
     caps.dispose()
     connections.dispose()
     communityPrices.dispose()

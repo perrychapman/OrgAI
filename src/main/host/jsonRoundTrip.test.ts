@@ -27,6 +27,7 @@ import {
   type RunSummary,
   type SkillBundleInput
 } from '../../shared/types'
+import { outputArgs } from './args'
 import { CHANNEL_JSON_FIELDS, decodeRequest, encodeRequest, parseJsonSafe, PUSH_CHANNELS, requestChannels, stringifyJson } from './jsonCodec'
 
 /** Request over the wire: encode, JSON (safe parse on the host), decode. */
@@ -50,15 +51,15 @@ describe('(a) completeness', () => {
   // HOST_IPC (socket only) and SECRETS_IPC (Wave 7, every surface): channels added for the host.
   const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 
-  it('matches the spec counts: 191 existing channels (177 request + 14 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
+  it('matches the spec counts: 209 existing channels (195 request + 14 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
-    expect(existing.length).toBe(191)
+    expect(existing.length).toBe(209)
     expect(existing.filter((c) => push.has(c)).length).toBe(14)
-    expect(existing.filter((c) => !push.has(c)).length).toBe(177)
+    expect(existing.filter((c) => !push.has(c)).length).toBe(195)
     expect(Object.values(HOST_IPC).length).toBe(6)
     expect(Object.values(SECRETS_IPC).length).toBe(5)
-    expect(requestChannels().length).toBe(188)
+    expect(requestChannels().length).toBe(206)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {
@@ -305,5 +306,87 @@ describe('(c) representative round trips', () => {
     it('the project fixture has roles', () => {
       expect(project.roles.length).toBeGreaterThan(0)
     })
+  })
+})
+
+describe('(d) outputs:* channels over the wire', () => {
+  const OID = 'out_0123456789abcdef'
+  const ref = { projectId: 'p1', outputId: OID }
+  const NOTE = 'note_0123456789abcdef'
+  /** Every outputs request channel: a representative first argument and the rebuilder the handler runs on it. */
+  const samples: Record<string, { arg: unknown; build?: (a: unknown) => unknown }> = {
+    'outputs:list': { arg: 'p1' },
+    'outputs:preview': { arg: { ...ref, version: 2 }, build: outputArgs.preview },
+    'outputs:open': { arg: ref, build: outputArgs.ref },
+    'outputs:reveal': { arg: ref, build: outputArgs.ref },
+    'outputs:saveAs': { arg: ref, build: outputArgs.ref },
+    'outputs:saveImage': { arg: { ...ref, suggestedName: 'a', mime: 'image/png', dataBase64: 'AAAA' }, build: outputArgs.saveImage },
+    'outputs:forget': { arg: ref, build: outputArgs.ref },
+    'outputs:delete': { arg: { ...ref, expectedVersionCount: 3 }, build: outputArgs.delete },
+    'outputs:deletePreview': { arg: ref, build: outputArgs.ref },
+    'outputs:versions': { arg: ref, build: outputArgs.ref },
+    'outputs:readSource': { arg: { ...ref, version: 1 }, build: outputArgs.versionRef },
+    'outputs:thumb': { arg: { ...ref, version: 1 }, build: outputArgs.versionRef },
+    'outputs:compare': { arg: { ...ref, a: 1, b: 2 }, build: outputArgs.compare },
+    'outputs:notes': { arg: ref, build: outputArgs.ref },
+    'outputs:revisions': { arg: ref, build: outputArgs.ref },
+    'outputs:reviseOptions': { arg: ref, build: outputArgs.ref },
+    'outputs:saveEdit': { arg: { ...ref, baseVersion: 2, text: 'new', forceNew: true }, build: outputArgs.saveEdit },
+    'outputs:restore': { arg: { ...ref, version: 1 }, build: outputArgs.versionRef },
+    'outputs:update': { arg: { ...ref, title: 'T', description: '', versionLabel: { n: 1, label: '' } }, build: outputArgs.update },
+    'outputs:noteAdd': { arg: { ...ref, version: 1, anchor: { type: 'region', slide: 2, shape: 'box', x: 0.1, y: 0.2, w: 0.3, h: 0.4, labels: ['A'] }, text: 'hi' }, build: outputArgs.noteAdd },
+    'outputs:noteUpdate': { arg: { ...ref, noteId: NOTE, text: 'x', status: 'resolved' }, build: outputArgs.noteUpdate },
+    'outputs:noteRemove': { arg: { ...ref, noteId: NOTE }, build: outputArgs.noteRemove },
+    'outputs:revise': { arg: { ...ref, version: 2, scope: 'notes', noteIds: [NOTE], instruction: '', target: { type: 'run', runId: 'run_1' } }, build: outputArgs.revise },
+    'outputs:watch': { arg: ref, build: outputArgs.ref },
+    'outputs:unwatch': { arg: ref, build: outputArgs.ref }
+  }
+
+  it('covers every outputs request channel', () => {
+    const channels = Object.values(OUTPUTS_IPC).filter((c) => c !== OUTPUTS_IPC.outputsChanged)
+    expect(Object.keys(samples).sort()).toEqual([...channels].sort())
+    for (const c of channels) expect(Object.hasOwn(CHANNEL_JSON_FIELDS, c), c).toBe(true)
+  })
+
+  it('each request survives encode, JSON, safe parse and decode, then its rebuilder returns the same value', () => {
+    for (const [channel, { arg, build }] of Object.entries(samples)) {
+      const back = overWire(channel, [arg])
+      expect(back, channel).toEqual([arg])
+      if (build) expect(build(back[0]), channel).toEqual(arg)
+    }
+  })
+
+  it('optional fields sent as undefined (structured clone) or null (JSON) mean "absent": the rebuilders drop them', () => {
+    const cases: [string, Record<string, unknown>, (a: unknown) => unknown, Record<string, unknown>][] = [
+      ['outputs:preview', { ...ref, version: undefined }, outputArgs.preview, ref],
+      ['outputs:delete', { ...ref, expectedVersionCount: undefined }, outputArgs.delete, ref],
+      ['outputs:saveEdit', { ...ref, baseVersion: 1, text: 't', forceNew: undefined }, outputArgs.saveEdit, { ...ref, baseVersion: 1, text: 't' }],
+      ['outputs:update', { ...ref, title: undefined, description: 'd', versionLabel: undefined }, outputArgs.update, { ...ref, description: 'd' }],
+      ['outputs:noteUpdate', { ...ref, noteId: NOTE, text: undefined, status: 'open' }, outputArgs.noteUpdate, { ...ref, noteId: NOTE, status: 'open' }],
+      ['outputs:revise', { ...ref, version: 1, scope: 'whole', instruction: 'x', target: { type: 'new' }, anchor: undefined, noteIds: undefined }, outputArgs.revise, { ...ref, version: 1, scope: 'whole', instruction: 'x', target: { type: 'new' } }]
+    ]
+    for (const [channel, arg, build, want] of cases) {
+      const back = overWire(channel, [arg])
+      // The wire turned an own undefined into null and decode turned it back into an own undefined (never a stray null).
+      for (const [k, v] of Object.entries(arg)) if (v === undefined) expect(Object.hasOwn(back[0] as object, k) && (back[0] as Record<string, unknown>)[k] === undefined, `${channel}.${k}`).toBe(true)
+      expect(build(back[0]), channel).toEqual(want)
+      // A JSON client may also send null.
+      const nulls = Object.fromEntries(Object.entries(arg).map(([k, v]) => [k, v === undefined ? null : v]))
+      expect(build(nulls), `${channel} null`).toEqual(want)
+    }
+  })
+
+  it('responses carry no undefined-only information: version, notes and revision shapes survive JSON', () => {
+    const responses = [
+      { runs: [{ runId: 'run_1', label: 'R1 (still running)', state: 'live', madeCurrent: true }], newRunAllowed: true },
+      { requestId: 'rev_0123456789abcdef', runId: 'run_2', mode: 'continued' },
+      { refused: 'R2 is held waiting for you. Answer its card first.' },
+      { watched: true },
+      { ok: true, version: 3, output: { id: OID, projectId: 'p1', runId: 'r', kind: 'docx', title: 'T', fileName: 'a.docx', path: '/a', relPath: 'a', bytes: 1, createdAt: 1, source: 'produced', version: 3, versionCount: 3 } },
+      { stale: true, currentVersion: 4 },
+      { path: '/x/y.png' },
+      { cancelled: true }
+    ]
+    for (const r of responses) expect(parseJsonSafe(stringifyJson(r))).toEqual(dropUndefined(r))
   })
 })

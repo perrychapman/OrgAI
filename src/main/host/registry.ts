@@ -127,13 +127,14 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'connectorPresets:list', 'skills:list', 'skills:read', 'skills:previewImport', 'skills:lastEvaluation', 'skillLibrary:list',
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',
     'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention', 'secrets:status',
-    'app:reference', 'outputs:list', 'outputs:preview'
+    'app:reference', 'outputs:list', 'outputs:preview', 'outputs:deletePreview', 'outputs:versions', 'outputs:readSource', 'outputs:thumb', 'outputs:compare', 'outputs:notes', 'outputs:revisions', 'outputs:reviseOptions'
   ],
   operate: [
     'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
     'runs:cancelAutoResume', 'setup:start', 'setup:retro', 'mcp:startAssist', 'skills:startAssist', 'usage:refresh',
     'connections:test', 'models:refresh', 'mcp:test', 'mcpLibrary:test', 'capabilities:discover', 'capabilities:recommend',
-    'capabilities:cancel', 'capabilities:review', 'skills:evaluate', 'draft:orgChart', 'window:openRun'
+    'capabilities:cancel', 'capabilities:review', 'skills:evaluate', 'draft:orgChart', 'window:openRun', 'outputs:noteAdd', 'outputs:noteUpdate',
+    'outputs:noteRemove', 'outputs:revise', 'outputs:watch', 'outputs:unwatch'
   ],
   decide: ['runs:decide', 'permissions:decideRequest', 'setup:decide', 'setup:answer', 'merges:decide', 'mcp:answerInstall'],
   configure: [
@@ -151,7 +152,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'maintenance:discardWorktree', 'maintenance:uninstallRepo', 'templates:saveFromProject', 'templates:remove',
     'templates:apply', 'knowledge:saveNode', 'knowledge:removeNode', 'knowledge:saveEdge', 'knowledge:removeEdge',
     'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'teamFiles:status', 'secrets:init', 'secrets:reset',
-    'secrets:undelete', 'secrets:confirmDelete', 'outputs:forget', 'outputs:delete'
+    'secrets:undelete', 'secrets:confirmDelete', 'outputs:forget', 'outputs:delete', 'outputs:saveEdit', 'outputs:restore', 'outputs:update'
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
@@ -159,7 +160,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim', 'projects:parseRepoSource', 'projects:repoTools',
     'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'teamFiles:approve', 'teamFiles:reject',
     'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit',
-    'outputs:open', 'outputs:reveal', 'outputs:saveAs'
+    'outputs:open', 'outputs:reveal', 'outputs:saveAs', 'outputs:saveImage'
   ]
 }
 
@@ -224,8 +225,14 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     TEAM_FILES_IPC.teamFilesStatus, TEAM_FILES_IPC.teamFilesListAttention, TEAM_FILES_IPC.teamFilesApprove, TEAM_FILES_IPC.teamFilesReject,
     TEAM_FILES_IPC.teamFilesUndo, TEAM_FILES_IPC.teamFilesCommit, TEAM_FILES_IPC.teamFilesEnable
   ],
-  'host dispatcher outputs handlers (host/outputsHandlers.ts)': [OUTPUTS_IPC.outputsList, OUTPUTS_IPC.outputsPreview, OUTPUTS_IPC.outputsForget, OUTPUTS_IPC.outputsDelete],
-  'outputsIpc.ts registerOutputsIpc (desktop-only; shell and save dialog)': [OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs],
+  'host dispatcher outputs handlers (host/outputsHandlers.ts)': [
+    OUTPUTS_IPC.outputsList, OUTPUTS_IPC.outputsPreview, OUTPUTS_IPC.outputsForget, OUTPUTS_IPC.outputsDelete, OUTPUTS_IPC.outputsDeletePreview,
+    OUTPUTS_IPC.outputsVersions, OUTPUTS_IPC.outputsReadSource, OUTPUTS_IPC.outputsThumb, OUTPUTS_IPC.outputsCompare, OUTPUTS_IPC.outputsNotes,
+    OUTPUTS_IPC.outputsRevisions, OUTPUTS_IPC.outputsReviseOptions, OUTPUTS_IPC.outputsSaveEdit, OUTPUTS_IPC.outputsRestore,
+    OUTPUTS_IPC.outputsUpdate, OUTPUTS_IPC.outputsNoteAdd, OUTPUTS_IPC.outputsNoteUpdate, OUTPUTS_IPC.outputsNoteRemove,
+    OUTPUTS_IPC.outputsRevise, OUTPUTS_IPC.outputsWatch, OUTPUTS_IPC.outputsUnwatch
+  ],
+  'outputsIpc.ts registerOutputsIpc (desktop-only; shell and save dialog)': [OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs, OUTPUTS_IPC.outputsSaveImage],
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],

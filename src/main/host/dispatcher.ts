@@ -786,7 +786,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
   registerSecretsIpc(handle, services.secrets, mcp, state)
-  registerOutputsHandlers(handle, { outputs: services.outputs, projects, events, dataDir: settings.dataDir })
+  registerOutputsHandlers(handle, { outputs: services.outputs, projects, events, dataDir: settings.dataDir, runs, watcher: services.outputWatcher })
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {

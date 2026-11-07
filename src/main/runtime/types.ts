@@ -25,8 +25,8 @@ import type {
   MergeReview,
   ModelPrice,
   OutputProduceInput,
+  OutputReadInput,
   OutputRegisterInput,
-  RunOutput,
   PermissionDecision,
   PermissionRuleDecision,
   PermissionRuleRequest,
@@ -55,6 +55,7 @@ import type {
   UsageStatus,
   UserQuestion
 } from '@shared/types'
+import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
 import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId } from '@shared/types'
 
 /**
@@ -370,8 +371,14 @@ export interface RuntimeContext {
    * after "REFUSED: ".
    */
   outputs?: {
-    produce(input: OutputProduceInput, caller: KnowledgeCaller): Promise<RunOutput>
-    register(input: OutputRegisterInput, caller: KnowledgeCaller): Promise<RunOutput>
+    /**
+     * Identity rule (outputs 2): a path that is an indexed output adds a version (`versioned`), an unchanged result
+     * changes nothing (`created` and `versioned` both false). RunManager emits `output.created` or `output.versioned`.
+     */
+    produce(input: OutputProduceInput, caller: KnowledgeCaller): Promise<OutputWriteResult>
+    register(input: OutputRegisterInput, caller: KnowledgeCaller): Promise<OutputWriteResult>
+    /** read_output (list / read / notes) over the service; a refusal throws a sentence the tool shows after "REFUSED: ". Read-only, no cap. */
+    read(input: OutputReadInput, caller: KnowledgeCaller): Promise<OutputReadResult>
   }
   /**
    * knowledge_recall (KNOWLEDGE_RECALL_TOOL): one budgeted, ranked answer as fenced data. RunManager provides it on

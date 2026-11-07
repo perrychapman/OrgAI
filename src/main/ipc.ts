@@ -121,7 +121,8 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   TEAM_FILES_IPC.teamFilesCommit,
   OUTPUTS_IPC.outputsOpen,
   OUTPUTS_IPC.outputsReveal,
-  OUTPUTS_IPC.outputsSaveAs
+  OUTPUTS_IPC.outputsSaveAs,
+  OUTPUTS_IPC.outputsSaveImage
 ]
 
 /**
@@ -159,7 +160,9 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
   [TEAM_FILES_IPC.teamFilesEnable]: true,
   [OUTPUTS_IPC.outputsOpen]: false,
   [OUTPUTS_IPC.outputsReveal]: false,
-  [OUTPUTS_IPC.outputsSaveAs]: false
+  [OUTPUTS_IPC.outputsSaveAs]: false,
+  // The path comes from the native save dialog; the write is temp + rename beside the destination (like saveAs).
+  [OUTPUTS_IPC.outputsSaveImage]: false
 }
 
 /**
@@ -300,7 +303,7 @@ export function registerIpc(services: IpcServices): void {
   registerCliShimIpc(activity, services.cliShim)
   if (kit) registerKitIpc(activity, kit)
   if (services.repoClone) registerRepoIpc(activity, services.repoClone)
-  registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir, handleReadOnly })
+  registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir, handleReadOnly, watcher: services.outputWatcher })
 }
 
 // ---- Start a project from a repository (clone or fork); desktop only ----

@@ -8,6 +8,7 @@ import type {
   EngagementNoteWriter,
   FolderConfigState,
   OutputProduceInput,
+  OutputReadInput,
   OutputRegisterInput,
   OutputsChangedEvent,
   RunOutput,
@@ -109,7 +110,7 @@ import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateE
 import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
 import { clampText } from '../capabilities/sanitize'
 import { datum } from './harnessTools'
-import type { OutputScope, OutputsServiceApi } from '../outputs/api'
+import type { OutputScope, OutputWriteResult, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -190,7 +191,7 @@ export function outputScopeOf(project: Project, dataDir: string | undefined): Ou
 
 /** The noun of the transcript row "Produced <word> <title>". */
 function producedWord(kind: string): string {
-  return kind === 'docx' ? 'document' : kind === 'xlsx' ? 'workbook' : kind === 'mermaid' || kind === 'svg' ? 'diagram' : 'file'
+  return kind === 'docx' ? 'document' : kind === 'xlsx' ? 'workbook' : kind === 'pptx' ? 'deck' : kind === 'mermaid' || kind === 'svg' ? 'diagram' : 'file'
 }
 
 /** OrgAI's data folder in both spellings (deduped); empty without a data dir. */
@@ -1550,6 +1551,8 @@ export class RunManager {
       }
       // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
       if (outcome || (e.type === 'run.status' && e.status === 'paused')) this.cancelCards(active)
+      // Revision requests this run never answered are closed (a paused run may still answer; only an outcome ends them).
+      if (outcome) this.outputsRunEnded(active)
       if (e.type === 'agent.upsert') {
         let agent = e.agent
         if (active.outcome) {
@@ -2759,9 +2762,9 @@ export class RunManager {
   ): NonNullable<RuntimeContext['outputs']> {
     const done = async (
       caller: KnowledgeCaller,
-      call: (scope: OutputScope, source: { runId: string; agentId?: string; role?: string }) => Promise<{ output: RunOutput; created: boolean }>,
+      call: (scope: OutputScope, source: { runId: string; agentId?: string; role?: string }) => Promise<OutputWriteResult>,
       row: (o: RunOutput) => string
-    ): Promise<RunOutput> => {
+    ): Promise<OutputWriteResult> => {
       if (a.outputsMade >= OUTPUTS_RUN_MAX) {
         if (!a.outputsCapWarned) {
           a.outputsCapWarned = true
@@ -2771,25 +2774,30 @@ export class RunManager {
       }
       // Reserve the slot before the await so parallel calls cannot pass the check together; release it on failure.
       let known: ReturnType<RunManager['knowledgeSource']>
-      let output: RunOutput
-      let created: boolean
+      let result: OutputWriteResult
       a.outputsMade++
       try {
         known = this.knowledgeSource(a, caller, roles())
         const scope = outputScopeOf(project(), this.options.dataDir)
-        ;({ output, created } = await call(scope, { runId: a.summary.id, agentId: known.agentId, ...(known.role ? { role: known.role } : {}) }))
+        result = await call(scope, { runId: a.summary.id, agentId: known.agentId, ...(known.role ? { role: known.role } : {}) })
       } catch (e) {
         a.outputsMade--
         throw e
       }
-      a.emit({ type: 'output.created', runId: a.summary.id, output })
-      this.knowledgeRow(a, known.agentId, row(output))
+      const { output, created } = result
+      const versioned = !created && !!result.versioned
+      // A call that changed nothing (same content) costs no slot and emits no event; the transcript still says so.
+      if (!created && !versioned) a.outputsMade--
+      const n = output.version ?? 1
+      if (created) a.emit({ type: 'output.created', runId: a.summary.id, output })
+      else if (versioned) a.emit({ type: 'output.versioned', runId: a.summary.id, output })
+      this.knowledgeRow(a, known.agentId, created ? row(output) : versioned ? `Updated ${datum(output.title, 120)} to version ${n}` : `No change; still version ${n}`)
       try {
-        this.options.outputsChanged?.({ projectId, ids: [output.id], what: created ? 'added' : 'updated' })
+        this.options.outputsChanged?.({ projectId, ids: [output.id], what: created ? 'added' : versioned ? 'version' : 'updated' })
       } catch (e) {
         log.warn(`outputsChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
       }
-      return output
+      return result
     }
     return {
       produce: (input: OutputProduceInput, caller) =>
@@ -2803,8 +2811,38 @@ export class RunManager {
           caller,
           (scope, source) => service.register(scope, input, source),
           (o) => `Registered output ${datum(o.title, 120)}`
-        )
+        ),
+      // Read-only: no cap, no event, no row. The service resolves the scope's folders for its own path checks.
+      read: (input: OutputReadInput) => service.readForAgent(outputScopeOf(project(), this.options.dataDir), input)
     }
+  }
+
+  /**
+   * A run reached an outcome (finished, error, stopped): let the outputs service close the revision requests it never
+   * answered and push 'revision' for the outputs they touch. Never throws, never waits for the caller.
+   */
+  private outputsRunEnded(a: ActiveRun): void {
+    const service = this.options.outputs
+    const projectId = a.summary.projectId
+    if (!service || isVirtualProjectId(projectId)) return
+    try {
+      // The service's own onChange pushes the 'revision' change; emitting it here too would double it.
+      service.runEnded(projectId, a.summary.id)
+    } catch (e) {
+      log.warn(`outputs runEnded failed for run ${a.summary.id}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /** Revise routing (outputs/revise.ts): how a live run stands, or null when it is not live. */
+  liveRunFacts(runId: string): { status: RunSummary['status']; limitHold: boolean; pendingCards: number } | null {
+    const a = this.runs.get(runId)
+    if (!a || !LIVE_STATUSES.has(a.summary.status)) return null
+    return { status: a.summary.status, limitHold: !!a.limitHold, pendingCards: pendingCount(a) }
+  }
+
+  /** Revise routing: OrgAI is quitting, so nothing starts, continues or takes a message. */
+  isQuitting(): boolean {
+    return this.quitting
   }
 
   /** RuntimeContext.knowledge over the store: provenance, the writes cap, one transcript row per write, the push. */

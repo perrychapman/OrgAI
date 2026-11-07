@@ -1,6 +1,6 @@
-import { type Stats, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { type Stats, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { OutputProduceKind } from '@shared/types'
 import { OUTPUTS_DIR_NAME, OUTPUT_FILE_MAX_BYTES, OUTPUT_PATH_MAX_CHARS, OUTPUT_PRODUCE_EXTENSIONS } from '@shared/types'
 import { hiddenCharIn } from '../capabilities/sanitize'
@@ -28,7 +28,7 @@ const RESERVED = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout
  * Mark-of-the-Web, which is why this list exists.
  */
 export const OPENABLE_EXTENSIONS: ReadonlySet<string> = new Set([
-  'docx', 'xlsx', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'md', 'markdown', 'txt', 'csv', 'json', 'mmd', 'mermaid'
+  'docx', 'xlsx', 'pptx', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'md', 'markdown', 'txt', 'csv', 'json', 'mmd', 'mermaid'
 ])
 // svg is deliberately absent (review N1): the OS handler (Edge on Windows) runs embedded script from file://, and an
 // agent can rewrite the file after produce checked it. The in-app preview re-runs svgProblem and stays.
@@ -122,7 +122,7 @@ export interface ProducedTarget {
   dir: string
   /** The name chosen (differs from the request when suffixed). */
   fileName: string
-  /** True when an existing file is to be replaced (overwrite allowed). */
+  /** True when the target is an existing indexed file the caller will replace (a new version of it). */
   overwrite: boolean
   /** True when " (n)" was added because the file existed. */
   renamed: boolean
@@ -155,9 +155,10 @@ export interface ResolveProducedInput {
   kind: OutputProduceKind
   title: string
   fileName?: string
-  overwrite?: boolean
-  /** True when the store's entry for the exact path is source 'produced' with the caller's run id. */
-  mayOverwrite: (absPath: string) => boolean
+  /** Identity rule: true when the path (logical spelling) is an indexed output of this project, from any run. */
+  known: (absPath: string) => boolean
+  /** Always take the " (n)" suffix route for an existing file, even an indexed one. */
+  separate?: boolean
 }
 
 /** Resolve (and create the folders of) the produced target. Throws a plain sentence on any refusal. */
@@ -193,7 +194,7 @@ export function resolveProducedTarget(i: ResolveProducedInput): ProducedTarget {
   const first = join(dir, leaf)
   const firstSt = lstatOrNull(first)
   if (!firstSt) return { file: first, dir, fileName: leaf, overwrite: false, renamed: false }
-  if (i.overwrite && firstSt.isFile() && !firstSt.isSymbolicLink() && i.mayOverwrite(first)) {
+  if (!i.separate && firstSt.isFile() && !firstSt.isSymbolicLink() && i.known(first)) {
     return { file: first, dir, fileName: leaf, overwrite: true, renamed: false }
   }
   for (let n = 2; n <= 999; n++) {
@@ -219,19 +220,31 @@ export function writeProduced(t: ProducedTarget, data: Buffer): number {
     }
     return data.length
   }
-  const st = lstatOrNull(t.file)
-  if (!st || !st.isFile() || st.isSymbolicLink()) throw new Error('The file to overwrite is no longer a regular file.')
-  const tmp = join(t.dir, `.${basename(t.file)}.${randomBytes(6).toString('hex')}.tmp`)
+  writeFileAtomic(t.file, data)
+  return data.length
+}
+
+/**
+ * Replace (or create) a regular file through a temp file in the same folder and a rename. Refuses a link or a
+ * non-file at the target, and never writes through one. Throws a plain sentence.
+ */
+export function writeFileAtomic(file: string, data: Buffer): void {
+  const st = lstatOrNull(file)
+  if (st && (!st.isFile() || st.isSymbolicLink())) throw new Error('The file to write is no longer a regular file.')
+  if (st && st.nlink > 1) throw new Error(HARDLINK_MESSAGE)
+  const tmp = join(dirname(file), `.${basename(file)}.${randomBytes(6).toString('hex')}.tmp`)
   try {
     writeFileSync(tmp, data, { flag: 'wx' })
-    const again = lstatOrNull(t.file)
-    if (!again || !again.isFile() || again.isSymbolicLink()) throw new Error('The file to overwrite is no longer a regular file.')
-    renameSync(tmp, t.file)
+    // Keep the old file's permissions (a replace must not widen or narrow them); POSIX only.
+    if (st && process.platform !== 'win32') chmodSync(tmp, st.mode & 0o7777)
+    const again = lstatOrNull(file)
+    if (again && (!again.isFile() || again.isSymbolicLink())) throw new Error('The file to write is no longer a regular file.')
+    if (again && again.nlink > 1) throw new Error(HARDLINK_MESSAGE)
+    renameSync(tmp, file)
   } catch (e) {
     rmSync(tmp, { force: true })
     throw e instanceof Error ? e : new Error(String(e))
   }
-  return data.length
 }
 
 export interface CheckedFile {
@@ -239,6 +252,44 @@ export interface CheckedFile {
   path: string
   relPath: string
   bytes: number
+  /** Identity from the lstat the check made; pass it to readRegularCapped so a swapped file is refused. */
+  dev: number
+  ino: number
+}
+
+const HARDLINK_MESSAGE = 'That file has more than one hard link, so it may be the same file as one elsewhere; OrgAI does not use it.'
+
+/**
+ * Read a regular file through ONE descriptor: opened with O_NOFOLLOW and O_NONBLOCK where the platform has them (a FIFO
+ * or device swapped in after a check then cannot block the main thread), fstat-ed (regular file, size <= cap, one hard
+ * link, and the same dev/ino as the earlier lstat when `expect` is given), then read for at most `cap` bytes. Throws a
+ * plain sentence.
+ */
+export function readRegularCapped(file: string, cap: number, expect?: { dev: number; ino: number }): Buffer {
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+  let fd: number
+  try {
+    fd = openSync(file, flags)
+  } catch (e) {
+    throw new Error(`Could not read the file: ${(e as Error).message}`)
+  }
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) throw new Error('That path is not a regular file.')
+    if (st.nlink > 1) throw new Error(HARDLINK_MESSAGE)
+    if (st.size > cap) throw new Error(`That file is larger than ${Math.round(cap / 1024 / 1024)} MB.`)
+    if (expect && (st.dev !== expect.dev || st.ino !== expect.ino)) throw new Error('That file changed while OrgAI was reading it.')
+    const buf = Buffer.alloc(st.size)
+    let got = 0
+    while (got < buf.length) {
+      const n = readSync(fd, buf, got, buf.length - got, got)
+      if (n <= 0) break
+      got += n
+    }
+    return got === buf.length ? buf : buf.subarray(0, got)
+  } finally {
+    closeSync(fd)
+  }
 }
 
 /** relPath: relative to the project with forward slashes when inside it, else the absolute real path. */
@@ -286,6 +337,7 @@ export function checkRegisteredPath(raw: unknown, scope: PathScope, dataDir: str
   if (!st) throw new Error('That file does not exist.')
   if (st.isSymbolicLink()) throw new Error('That path is a link; outputs are not registered through links.')
   if (!st.isFile()) throw new Error('That path is not a regular file.')
+  if (st.nlink > 1) throw new Error(HARDLINK_MESSAGE)
   if (st.size > OUTPUT_FILE_MAX_BYTES) throw new Error(`That file is larger than ${Math.round(OUTPUT_FILE_MAX_BYTES / 1024 / 1024)} MB.`)
   let real: string
   try {
@@ -305,7 +357,7 @@ export function checkRegisteredPath(raw: unknown, scope: PathScope, dataDir: str
     /* keep */
   }
   if (hasGitSegment(realRoot, real) || hasGitSegment(root, real)) throw new Error('Files under .git are not accepted.')
-  return { path: real, relPath: relPathFor(scope.projectPath, real), bytes: st.size }
+  return { path: real, relPath: relPathFor(scope.projectPath, real), bytes: st.size, dev: st.dev, ino: st.ino }
 }
 
 /** True when `a` and `b` are the same file path (case-folded where the platform folds). */
@@ -314,29 +366,48 @@ export function sameFile(a: string, b: string): boolean {
 }
 
 /**
- * The path delete may unlink: the stored path's real path must be a regular file inside `<projectPath>/outputs/`.
- * Returns null when the file is already gone. Throws a plain sentence otherwise.
+ * The path delete may trash or unlink: the stored path re-checked with the register rules (regular file, no link, real
+ * path inside the project or an allowed folder, not a reference folder, data folder or .git) whose real path must still
+ * be the stored one. Returns null when the file is already gone. Throws a plain sentence otherwise.
  */
-export function checkDeletablePath(stored: string, scope: PathScope): string | null {
+export function checkDeletableFile(stored: string, scope: PathScope, dataDir: string): string | null {
   const st = lstatOrNull(stored)
   if (!st) return null
   if (st.isSymbolicLink()) throw new Error('That file is a link; OrgAI does not delete through links.')
   if (!st.isFile()) throw new Error('That path is not a regular file.')
-  const outputsDir = join(scope.projectPath, OUTPUTS_DIR_NAME)
-  let realDir: string
-  let real: string
+  const checked = checkRegisteredPath(stored, scope, dataDir)
+  if (!sameFile(checked.path, stored)) throw new Error('That file is no longer where the list says it is; nothing was deleted.')
+  return checked.path
+}
+
+/**
+ * The path an output's file may be written to (saveEdit, restore): the stored path re-checked by the register rules
+ * when the file exists (its real path must still be the stored one), or, for a file that vanished, a plain folder
+ * (no link) whose real path is inside the project or an allowed folder, not a reference folder, the data folder or
+ * .git, spelled the same as the stored path. Returns the real path. Throws a plain sentence.
+ */
+export function checkWritablePath(stored: string, scope: PathScope, dataDir: string): string {
+  if (lstatOrNull(stored)) {
+    const c = checkRegisteredPath(stored, scope, dataDir)
+    if (!sameFile(c.path, stored)) throw new Error('That file is no longer where the list says it is.')
+    return c.path
+  }
+  const parent = dirname(stored)
+  const pst = lstatOrNull(parent)
+  if (!pst || pst.isSymbolicLink() || !pst.isDirectory()) throw new Error('The folder that held this file is gone or is a link.')
+  let realParent: string
   try {
-    if (!existsSync(outputsDir)) throw new Error('missing')
-    realDir = realpathSync.native(outputsDir)
-    real = realpathSync.native(stored)
-  } catch {
-    throw new Error("Only files in the project's outputs folder can be deleted; this one is elsewhere.")
+    realParent = realpathSync.native(parent)
+  } catch (e) {
+    throw new Error(`Could not resolve the folder: ${(e as Error).message}`)
   }
-  if (!isInsideEither(realDir, real) || pathKey(realDir) === pathKey(real) || !isInsideEither(scope.projectPath, realDir)) {
-    throw new Error("Only files in the project's outputs folder can be deleted; this one is elsewhere.")
-  }
-  // The folder itself must not be a link out of the project.
-  const dst = lstatOrNull(outputsDir)
-  if (!dst || dst.isSymbolicLink()) throw new Error('The outputs folder is a link; OrgAI does not delete through links.')
+  if (isNetworkPath(realParent)) throw new Error('Network and device paths are not accepted.')
+  const roots = [scope.projectPath, ...scope.allowedDirectories].filter((r) => typeof r === 'string' && r.length > 0)
+  const root = roots.find((r) => isInsideEither(r, realParent))
+  if (!root) throw new Error('That file is outside the project folder and its allowed folders.')
+  checkNotForbidden(realParent, scope, dataDir)
+  if (hasGitSegment(root, realParent)) throw new Error('Files under .git are not accepted.')
+  const real = join(realParent, basename(stored))
+  if (!sameFile(real, stored)) throw new Error('That file is no longer where the list says it is.')
   return real
 }

@@ -59,15 +59,15 @@ function register(over: Partial<OutputsServiceApi> = {}, withService = true) {
 const call = (channel: string, input: unknown = ref, sender: unknown = { id: 1 }): unknown => handlers.get(channel)!({ sender }, input)
 
 describe('outputs desktop-only channels', () => {
-  it('registers open, reveal and saveAs', () => {
+  it('registers open, reveal, saveAs and saveImage', () => {
     register()
-    expect([...handlers.keys()].sort()).toEqual([OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs])
+    expect([...handlers.keys()].sort()).toEqual([OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs, OUTPUTS_IPC.outputsSaveImage].sort())
   })
 
-  it('registers the three channels through the read-only path, classified non-mutating', () => {
+  it('registers the four channels through the read-only path, classified non-mutating', () => {
     readOnlyCalls.length = 0
     register()
-    expect([...readOnlyCalls].sort()).toEqual([OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs].sort())
+    expect([...readOnlyCalls].sort()).toEqual([OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs, OUTPUTS_IPC.outputsSaveImage].sort())
     for (const c of readOnlyCalls) expect(DESKTOP_CHANNEL_MUTATES[c], c).toBe(false)
   })
 
@@ -207,5 +207,111 @@ describe('outputs desktop-only channels', () => {
     dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: target })
     await expect(call(OUTPUTS_IPC.outputsSaveAs)).rejects.toThrow('no longer inside the project')
     expect(() => readFileSync(target)).toThrow()
+  })
+})
+
+describe('outputs:open extends a watch', () => {
+  it('touches the watcher for the output it opened, only after the path checks', async () => {
+    const touch = vi.fn()
+    const file = join(dir, 'report.docx')
+    writeFileSync(file, 'x')
+    registerOutputsIpc({
+      outputs: { checkedPath: vi.fn(() => file), get: vi.fn() } as unknown as OutputsServiceApi,
+      projects: { get: () => makeProject({ id: 'p1', path: dir }) },
+      dataDir: join(dir, 'data'),
+      watcher: { touch } as never
+    })
+    await call(OUTPUTS_IPC.outputsOpen)
+    expect(touch).toHaveBeenCalledWith({ projectId: 'p1', outputId: OID })
+    touch.mockClear()
+    const bat = join(dir, 'x.bat')
+    writeFileSync(bat, 'x')
+    registerOutputsIpc({
+      outputs: { checkedPath: vi.fn(() => bat), get: vi.fn() } as unknown as OutputsServiceApi,
+      projects: { get: () => makeProject({ id: 'p1', path: dir }) },
+      dataDir: join(dir, 'data'),
+      watcher: { touch } as never
+    })
+    await call(OUTPUTS_IPC.outputsOpen)
+    expect(touch).not.toHaveBeenCalled()
+  })
+})
+
+describe('outputs:saveImage', () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('rest of a png')])
+  const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>'
+  const input = (over: Record<string, unknown> = {}) => ({ ...ref, suggestedName: 'Architecture', mime: 'image/png', dataBase64: PNG.toString('base64'), ...over })
+
+  it('saves a PNG to the path the dialog chose (temp + rename), parented to the sender, with a sanitized default name', async () => {
+    const out = join(dir, 'out')
+    mkdirSync(out)
+    register()
+    const target = join(out, 'diagram.png')
+    dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: target })
+    await expect(call(OUTPUTS_IPC.outputsSaveImage, input({ suggestedName: '..\\..\\evil/Architecture: v2?.PNG' }))).resolves.toEqual({ path: target })
+    expect(readFileSync(target)).toEqual(PNG)
+    expect(readdirSync(out)).toEqual(['diagram.png'])
+    const [parent, options] = dialog.showSaveDialog.mock.calls[0] as unknown as [unknown, { defaultPath: string; filters: { extensions: string[] }[] }]
+    expect(parent).toBe(win)
+    expect(options.defaultPath).toBe('Architecture v2.png')
+    expect(options.filters[0].extensions).toEqual(['png'])
+  })
+
+  it('saves a plain SVG as text; a cancelled dialog writes nothing', async () => {
+    register()
+    const target = join(dir, 'd.svg')
+    dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: target })
+    await call(OUTPUTS_IPC.outputsSaveImage, input({ mime: 'image/svg+xml', dataBase64: Buffer.from(SVG).toString('base64') }))
+    expect(readFileSync(target, 'utf8')).toBe(SVG)
+    dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true })
+    await expect(call(OUTPUTS_IPC.outputsSaveImage, input())).resolves.toEqual({ cancelled: true })
+    expect(readdirSync(dir).filter((f) => f.endsWith('.part'))).toEqual([])
+  })
+
+  it('refuses before any dialog: bad base64, a PNG without the signature, an SVG with a script, invalid UTF-8, too large, an unknown output', async () => {
+    register()
+    const refuse = async (over: Record<string, unknown>, text: string | RegExp): Promise<void> => {
+      dialog.showSaveDialog.mockClear()
+      await expect(Promise.resolve().then(() => call(OUTPUTS_IPC.outputsSaveImage, input(over)))).rejects.toThrow(text)
+      expect(dialog.showSaveDialog).not.toHaveBeenCalled()
+    }
+    await refuse({ dataBase64: 'not base64!' }, 'The picture is not valid.')
+    await refuse({ dataBase64: 'AAA' }, 'The picture is not valid.')
+    await refuse({ dataBase64: 'AA AA' }, 'The picture is not valid.')
+    await refuse({ dataBase64: '' }, 'The picture is not valid.')
+    await refuse({ dataBase64: Buffer.from('GIF89a....').toString('base64') }, 'That is not a PNG picture.')
+    await refuse({ mime: 'image/svg+xml', dataBase64: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>').toString('base64') }, /active content/)
+    await refuse({ mime: 'image/svg+xml', dataBase64: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><foreignObject/></svg>').toString('base64') }, /active content/)
+    await refuse({ mime: 'image/svg+xml', dataBase64: Buffer.from([0x3c, 0x73, 0x76, 0x67, 0xff, 0xfe, 0x3e]).toString('base64') }, 'The drawing is not valid text.')
+    await refuse({ dataBase64: 'A'.repeat(Math.ceil((25 * 1024 * 1024 + 1000) / 3) * 4) }, /too (large|long)/)
+    register({ get: vi.fn(() => undefined) })
+    await refuse({}, 'Output not found')
+  })
+
+  it('the path comes only from the dialog: a path field in the input is dropped, and a virtual or unknown project is refused', async () => {
+    register()
+    const target = join(dir, 'p.png')
+    dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: target })
+    await call(OUTPUTS_IPC.outputsSaveImage, input({ path: join(dir, 'other.png'), filePath: join(dir, 'other2.png') }))
+    expect(readdirSync(dir).sort()).toEqual(['p.png', 'report.docx'])
+    await expect(Promise.resolve().then(() => call(OUTPUTS_IPC.outputsSaveImage, input({ projectId: 'quick' })))).rejects.toThrow('Assistants have no outputs.')
+    await expect(Promise.resolve().then(() => call(OUTPUTS_IPC.outputsSaveImage, input({ projectId: 'p_nope' })))).rejects.toThrow('Project not found')
+  })
+
+  it('no partial file stays when the write fails (the destination folder is gone)', async () => {
+    register()
+    dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: join(dir, 'nope', 'x.png') })
+    await expect(call(OUTPUTS_IPC.outputsSaveImage, input())).rejects.toThrow()
+    expect(readdirSync(dir)).toEqual(['report.docx'])
+  })
+
+  it('exportImageName strips folders, extensions and forbidden characters, avoids reserved names and falls back', async () => {
+    const { exportImageName } = await import('./outputsIpc')
+    expect(exportImageName('..\\a/b/Map.svg', 'image/png', 'T')).toBe('Map.png')
+    expect(exportImageName('NUL', 'image/png', 'T')).toBe('_NUL.png')
+    expect(exportImageName('', 'image/svg+xml', 'Big map')).toBe('Big map.svg')
+    expect(exportImageName('  ... ', 'image/png', '')).toBe('diagram.png')
+    expect(exportImageName('a'.repeat(300), 'image/png', 'T')).toHaveLength(104)
+    expect(exportImageName('x\u0000y|z', 'image/png', 'T')).toBe('xyz.png')
   })
 })

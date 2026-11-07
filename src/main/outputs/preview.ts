@@ -15,6 +15,7 @@ import {
   OUTPUT_PREVIEW_TEXT_MAX_BYTES
 } from '@shared/types'
 import { htmlToBlocks } from './htmlBlocks'
+import { previewPptxFile } from './pptxPreview'
 import { svgProblem } from './writers'
 import { zipInfo, zipMaxSize, zipProblem, zipSumSizes, zipVerifyEntries } from './zipGuard'
 
@@ -324,6 +325,8 @@ export async function previewFile(path: string, kind: OutputKind): Promise<Outpu
         return await previewDocx(path)
       case 'xlsx':
         return await previewXlsx(path)
+      case 'pptx':
+        return await previewPptxFile(path)
       case 'markdown':
       case 'text':
       case 'csv':

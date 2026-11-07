@@ -138,7 +138,7 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
     default:
       body = (
         <p className="output-preview-note" data-testid="output-preview-none">
-          {p.reason}
+          {p.kind === 'none' ? p.reason : 'Open the deck to see its slides.'}
         </p>
       )
   }

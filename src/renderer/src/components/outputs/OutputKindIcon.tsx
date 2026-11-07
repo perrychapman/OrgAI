@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { Braces, File, FileBadge, FileSpreadsheet, FileText, FileType, Image, NotebookText, PenTool, Table, Workflow, type LucideIcon } from 'lucide-react'
+import { Braces, File, FileBadge, FileSpreadsheet, FileText, FileType, Image, NotebookText, PenTool, Presentation, Table, Workflow, type LucideIcon } from 'lucide-react'
 import type { OutputKind } from '@shared/types'
 import { Icon, type IconSize } from '../ui/Icon'
 
@@ -7,6 +7,7 @@ import { Icon, type IconSize } from '../ui/Icon'
 export const OUTPUT_KIND_ICON: Readonly<Record<OutputKind, LucideIcon>> = {
   docx: FileText,
   xlsx: FileSpreadsheet,
+  pptx: Presentation,
   mermaid: Workflow,
   markdown: NotebookText,
   text: FileType,
