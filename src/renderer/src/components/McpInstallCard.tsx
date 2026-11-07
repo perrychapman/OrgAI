@@ -13,6 +13,7 @@ import { SecretField } from './ui/SecretField'
 import { clampLabel } from '../lib/clampLabel'
 import { pinnedVersionOf } from '../lib/mcpVersion'
 import { installTitle } from '../lib/decisionTitle'
+import { RUN_ONLY_APPROVE, RUN_ONLY_DENY, RUN_ONLY_INSTALL_LINE, runOnlyInstallTitle, runOnlyOutcome } from '../lib/chatPermissions'
 
 /** The exact command line (stdio) or endpoint (http/sse) the server would run, never shortened. */
 export function installCommand(request: McpInstallRequest): string {
@@ -21,7 +22,8 @@ export function installCommand(request: McpInstallRequest): string {
   return spec.url ?? ''
 }
 
-function describeOutcome(o: McpInstallOutcome): string {
+function describeOutcome(o: McpInstallOutcome, runOnly: boolean): string {
+  if (runOnly) return !o.approved && o.note ? `${runOnlyOutcome(false)}. Note sent: ${o.note}` : runOnlyOutcome(o.approved)
   if (o.approved) return o.scope === 'library' ? 'Approved for this project and your library' : o.scope === 'project' ? 'Approved for this project' : 'Approved for this run'
   return o.note ? `Denied. Note sent: ${o.note}` : 'Denied'
 }
@@ -60,7 +62,8 @@ export default function McpInstallCard({
   const remote = spec.transport !== 'stdio'
   const unpinned = !remote && !version
   const time = new Date(request.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const title = installTitle(spec.name)
+  const runOnly = request.runOnly === true
+  const title = runOnly ? runOnlyInstallTitle(spec.name) : installTitle(spec.name)
 
   const answer = async (approved: boolean): Promise<void> => {
     setBusy(true)
@@ -70,7 +73,7 @@ export default function McpInstallCard({
         runId,
         requestId: request.id,
         decision: approved
-          ? { approved: true, secrets: Object.keys(secrets).length > 0 ? secrets : undefined, note: note.trim() || undefined, scope }
+          ? { approved: true, secrets: Object.keys(secrets).length > 0 ? secrets : undefined, note: note.trim() || undefined, scope: runOnly ? 'run' : scope }
           : { approved: false, note: note.trim() || undefined, scope: 'run' }
       })
       setSecrets({})
@@ -96,7 +99,7 @@ export default function McpInstallCard({
         agentId={request.agentId}
         title={title}
         noAutoFocus
-        headerExtra={<Badge tone={resolved.approved ? 'success' : 'danger'}>{resolved.approved ? 'Approved' : 'Denied'}</Badge>}
+        headerExtra={<Badge tone={resolved.approved ? 'success' : 'danger'}>{resolved.approved ? (runOnly ? 'Added' : 'Approved') : runOnly ? 'Not added' : 'Denied'}</Badge>}
         primary={
           onDismiss ? (
             <Button size="sm" variant="ghost" onClick={onDismiss}>
@@ -109,7 +112,7 @@ export default function McpInstallCard({
           <span className={`mcpi-resolved-icon ${resolved.approved ? 'ok' : 'denied'}`}>
             <Icon icon={resolved.approved ? Check : X} size="sm" />
           </span>
-          <span className="mcpi-resolved-text">{describeOutcome(resolved)}</span>
+          <span className="mcpi-resolved-text">{describeOutcome(resolved, runOnly)}</span>
         </div>
       </DecisionCard>
     )
@@ -131,19 +134,32 @@ export default function McpInstallCard({
           <span className="tabular">{time}</span>
         </span>
       }
-      helper={unpinned ? <span className="mcpi-reason-disabled">Only pinned versions can be approved. Runs code on this machine.</span> : 'Approving runs code on this machine. Scope below decides how long it stays.'}
+      helper={
+        unpinned ? (
+          <span className="mcpi-reason-disabled">Only pinned versions can be approved. Runs code on this machine.</span>
+        ) : runOnly ? (
+          spec.transport === 'stdio' ? 'Adding it runs code on this machine until this chat ends.' : 'Adding it connects this chat to that address until the chat ends.'
+        ) : (
+          'Approving runs code on this machine. Scope below decides how long it stays.'
+        )
+      }
       primary={
-        <Button variant="primary" size="sm" loading={busy} disabled={unpinned} title={unpinned ? 'Only pinned versions can be approved' : undefined} onClick={() => void answer(true)}>
-          {busy ? 'Installing...' : error ? 'Retry' : 'Approve'}
+        <Button variant="primary" size="sm" loading={busy} disabled={unpinned} testId="mcp-install-approve" title={unpinned ? 'Only pinned versions can be approved' : undefined} onClick={() => void answer(true)}>
+          {busy ? 'Installing...' : error ? 'Retry' : runOnly ? RUN_ONLY_APPROVE : 'Approve'}
         </Button>
       }
       deny={
-        <Button variant="danger" size="sm" disabled={busy} onClick={() => void answer(false)}>
-          Deny
+        <Button variant="danger" size="sm" disabled={busy} testId="mcp-install-deny" onClick={() => void answer(false)}>
+          {runOnly ? RUN_ONLY_DENY : 'Deny'}
         </Button>
       }
     >
       <div className="mcpi-body">
+        {runOnly && (
+          <p className="mcpi-run-only" data-testid="mcp-install-run-only">
+            {RUN_ONLY_INSTALL_LINE}
+          </p>
+        )}
         <div className="mcpi-sec">
           <div className="mcpi-label">Why</div>
           <p className={`mcpi-reason ${more ? '' : 'clamped'}`}>{reason || 'No reason given.'}</p>
@@ -219,6 +235,7 @@ export default function McpInstallCard({
             </div>
           )}
 
+          {!runOnly && (
           <fieldset className="mcpi-sec mcpi-scope" disabled={busy}>
             <legend className="mcpi-label">Scope</legend>
             {(
@@ -237,6 +254,7 @@ export default function McpInstallCard({
               </label>
             ))}
           </fieldset>
+          )}
         </div>
 
         <div className="field mcpi-note">

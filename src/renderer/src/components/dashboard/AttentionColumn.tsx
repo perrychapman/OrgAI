@@ -12,6 +12,7 @@ import { useAllSummaries, useNow, useWaitingRuns } from './useDashboardData'
 import { runCostInput } from '../../lib/cost'
 import { errorFirstLine, pausedRuns, sinceLastSeen } from '../../lib/dashboard'
 import { locationLabel } from '../../lib/assistants'
+import { decisionLocationLabel } from '../../lib/chatPermissions'
 import { waitingItems } from '../../lib/needsYou'
 import { hideUserEnded, pausedCaption } from '../../lib/needsInline'
 import { openTeamFilesDecision, useTeamAttentionItems } from '../../lib/menuActions'
@@ -53,7 +54,7 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
     [waiting, projects, teamItems]
   )
   const announced = useMemo(
-    () => items.map((it) => ({ key: needsItemKey(it), project: it.kind === 'team' ? it.projectName : locationLabel(it.projectId, projects), label: it.label })),
+    () => items.map((it) => ({ key: needsItemKey(it), project: it.kind === 'team' ? it.projectName : decisionLocationLabel(it.run.summary, projects), label: it.label })),
     [items, projects]
   )
   useNewDecisionAnnouncer(announced, ready, onAnnounce)
@@ -71,7 +72,7 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
         <NeedsRow
           key={needsItemKey(it)}
           item={it}
-          projectName={it.kind === 'team' ? it.projectName : locationLabel(it.projectId, projects)}
+          projectName={it.kind === 'team' ? it.projectName : decisionLocationLabel(it.run.summary, projects)}
           runName={it.kind === 'team' ? undefined : runName(it.run.summary)}
           onAnnounce={onAnnounce}
           onOpen={() => (it.kind === 'team' ? openTeamFilesDecision(it.projectId) : void jumpToDecision(it.projectId, it.runId, it.kind === 'plan' ? undefined : it.key))}

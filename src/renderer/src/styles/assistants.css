@@ -104,10 +104,9 @@
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
 }
-/* aria-disabled keeps the control in the tab order; it still has to look off. */
-.switch[aria-disabled='true'] {
-  opacity: 0.5;
-  cursor: default;
+.chat-asks-line {
+  margin: 0;
+  text-align: center;
 }
 .chat-folder-actions {
   display: inline-flex;
