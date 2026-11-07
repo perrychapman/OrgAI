@@ -5,8 +5,8 @@
  *
  * Fitting (issue #26): the key hint and a fresh notice are what the user needs, so the status segments give way first,
  * in this order: the run chips shrink to "R1* R2! +N" and then "+N live", the cost goes, the run title is cut at a word
- * boundary (then dropped), the project name goes. Only then does the hint lose items from its end, at separators,
- * never mid-word. When only one of notice and hint fits, a danger / warn notice wins for its lifetime, otherwise the
+ * boundary (then dropped). Then the hint loses items from its end, at separators, never mid-word, down to one item.
+ * The project name ("where am I") is the last thing to go (issue #34). When only one of notice and hint fits, a danger / warn notice wins for its lifetime, otherwise the
  * hint. A notice is fresh for TUI_NOTICE_TTL_MS from `notice.at` (clock: props.now ?? Date.now); the bar re-renders at
  * expiry by itself. One separator rule everywhere (theme.ts separatorFor).
  */
@@ -72,9 +72,11 @@ const LEVELS: readonly Level[] = [
   { chips: 'count', cost: false, title: Infinity, project: true },
   { chips: 'count', cost: false, title: 24, project: true },
   { chips: 'count', cost: false, title: 12, project: true },
-  { chips: 'count', cost: false, title: 0, project: true },
-  { chips: 'count', cost: false, title: 0, project: false }
+  { chips: 'count', cost: false, title: 0, project: true }
 ]
+
+/** The very last resort (issue #34): only after the hint has shrunk to one item does the project name go. */
+const NO_PROJECT: Level = { chips: 'count', cost: false, title: 0, project: false }
 
 /** `title` cut to `max` columns at a word boundary with an ellipsis; '' when no whole word fits. */
 function cutTitle(title: string, max: number, ellipsis: string): string {
@@ -176,28 +178,36 @@ export function StatusBar(props: StatusBarProps) {
     }
     return undefined
   }
-  const last = LEVELS[LEVELS.length - 1]!
-  const tryTrimmed = (lead: Seg | undefined): Seg[] | undefined => {
+  const lastP = LEVELS[LEVELS.length - 1]!
+  const tryTrimmed = (lead: Seg | undefined, level: Level): Seg[] | undefined => {
     for (let n = items.length - 1; n >= 1; n--) {
-      const segs = build(last, [lead, hintSeg(n)])
+      const segs = build(level, [lead, hintSeg(n)])
       if (fits(segs)) return segs
     }
     return undefined
   }
+  const noProj = (tail: (Seg | undefined)[]): Seg[] | undefined => {
+    const segs = build(NO_PROJECT, tail)
+    return fits(segs) ? segs : undefined
+  }
+  // Order: status segments give way, then the hint's later items, then (last) the project name.
+  const fitAll = (lead: Seg | undefined): Seg[] | undefined =>
+    tryLevels([lead, hintSeg(items.length)]) ?? tryTrimmed(lead, lastP) ?? noProj([lead, hintSeg(items.length)]) ?? tryTrimmed(lead, NO_PROJECT)
+  const fitOnly = (tail: (Seg | undefined)[]): Seg[] | undefined => tryLevels(tail) ?? noProj(tail)
 
   let chosen: Seg[] | undefined
   if (noticeSeg) {
-    chosen = tryLevels([noticeSeg, hintSeg(items.length)]) ?? tryTrimmed(noticeSeg)
+    chosen = fitAll(noticeSeg)
     // Only one fits: a danger / warn notice wins over the hint (then it may push the whole status out), else the hint.
-    if (!chosen && urgent(notice)) chosen = tryLevels([noticeSeg]) ?? (fits([noticeSeg]) ? [noticeSeg] : undefined)
-    if (!chosen) chosen = tryLevels([hintSeg(items.length)]) ?? tryTrimmed(undefined)
-    if (!chosen) chosen = tryLevels([noticeSeg])
+    if (!chosen && urgent(notice)) chosen = fitOnly([noticeSeg]) ?? (fits([noticeSeg]) ? [noticeSeg] : undefined)
+    if (!chosen) chosen = fitAll(undefined)
+    if (!chosen) chosen = fitOnly([noticeSeg])
   } else {
-    chosen = tryLevels([hintSeg(items.length)]) ?? tryTrimmed(undefined)
+    chosen = fitAll(undefined)
   }
   // Nothing fits whole (a very narrow bar): cut the last-resort line with an ellipsis.
   // A danger / warn notice that is wider than the bar is cut by itself: the status words never push it out of sight.
-  const line = chosen ?? (noticeSeg && urgent(notice) ? cutSegs([noticeSeg], width, env) : cutSegs(build(last, [noticeSeg ?? hintSeg(items.length)]), width, env))
+  const line = chosen ?? (noticeSeg && urgent(notice) ? cutSegs([noticeSeg], width, env) : cutSegs(build(NO_PROJECT, [noticeSeg ?? hintSeg(items.length)]), width, env))
   return (
     <Box width={width} height={1} overflow="hidden">
       <Text wrap="truncate-end">

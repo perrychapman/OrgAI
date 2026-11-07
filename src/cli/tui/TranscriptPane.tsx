@@ -85,7 +85,7 @@ function partialLines(p: PartialRow, width: number): string[] {
   return wrapText(`${p.agentLabel}: ${p.text}`, width)
 }
 
-interface Built {
+export interface Built {
   lines: PaneLine[]
   /** First line index of each row key. */
   starts: Map<string, number>
@@ -93,7 +93,23 @@ interface Built {
   rowOfLine: string[]
 }
 
-function build(rows: readonly TranscriptRow[], omitted: number, width: number, env: TuiEnv): Built {
+/** Wrapped lines per row key, kept while width and env stay the same (issue #35 M1: an appended row re-wraps nothing else). */
+export interface RowCache {
+  width: number
+  env: TuiEnv
+  rows: Map<string, { row: TranscriptRow; lines: { text: string; style: RowStyle }[] }>
+}
+
+const sameRow = (a: TranscriptRow, b: TranscriptRow): boolean =>
+  a.kind === b.kind && a.text === b.text && a.tone === b.tone && a.agentLabel === b.agentLabel
+
+export function build(rows: readonly TranscriptRow[], omitted: number, width: number, env: TuiEnv, cache?: RowCache): Built {
+  if (cache && (cache.width !== width || cache.env !== env)) {
+    cache.width = width
+    cache.env = env
+    cache.rows.clear()
+  }
+  const seen = new Set<string>()
   const lines: PaneLine[] = []
   const starts = new Map<string, number>()
   const rowOfLine: string[] = []
@@ -103,11 +119,18 @@ function build(rows: readonly TranscriptRow[], omitted: number, width: number, e
   }
   for (const row of rows) {
     starts.set(row.key, lines.length)
-    rowLines(row, width, env).forEach((l, i) => {
+    let wrapped = cache?.rows.get(row.key)
+    if (!wrapped || !sameRow(wrapped.row, row)) {
+      wrapped = { row, lines: rowLines(row, width, env) }
+      cache?.rows.set(row.key, wrapped)
+    }
+    seen.add(row.key)
+    wrapped.lines.forEach((l, i) => {
       lines.push({ key: `${row.key}:${i}`, segs: [{ text: l.text, tone: l.style.tone, dim: l.style.dim }] })
       rowOfLine.push(row.key)
     })
   }
+  if (cache) for (const k of [...cache.rows.keys()]) if (!seen.has(k)) cache.rows.delete(k)
   return { lines, starts, rowOfLine }
 }
 
@@ -130,7 +153,8 @@ function FullTranscript(props: TranscriptPaneProps) {
   const height = Math.max(0, Math.floor(props.height))
   const [anchor, setAnchor] = useState<Anchor | undefined>(undefined)
 
-  const built = useMemo(() => build(props.rows, props.omitted ?? 0, width, env), [props.rows, props.omitted, width, env])
+  const rowCache = useRef<RowCache>({ width, env, rows: new Map() })
+  const built = useMemo(() => build(props.rows, props.omitted ?? 0, width, env, rowCache.current), [props.rows, props.omitted, width, env])
   const partial: PaneLine[] = []
   for (const p of props.partials) {
     partialLines(p, width).forEach((text, i) => partial.push({ key: `partial:${p.key}:${i}`, segs: [{ text, dim: true }] }))

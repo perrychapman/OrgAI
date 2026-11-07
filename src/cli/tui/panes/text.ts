@@ -131,18 +131,24 @@ export function textWidth(s: string): number {
   return w
 }
 
-/** The longest prefix of `s` that fits in `width` columns; never splits a grapheme cluster. */
+/** The grapheme clusters of `s`, produced lazily (a caller that stops early never segments the rest). */
+function* lazyGraphemes(s: string): Generator<string> {
+  for (const x of segmenter.segment(s)) yield x.segment
+}
+
+/** The longest prefix of `s` that fits in `width` columns; never splits a grapheme cluster. Lazy: stops at the cut. */
 export function sliceToWidth(s: string, width: number): string {
   if (width <= 0) return ''
+  if (PLAIN_ASCII.test(s)) return s.length <= width ? s : s.slice(0, width)
   let w = 0
-  let out = ''
-  for (const g of graphemes(s)) {
+  let end = 0
+  for (const g of lazyGraphemes(s)) {
     const cw = graphemeWidth(g)
     if (w + cw > width) break
     w += cw
-    out += g
+    end += g.length
   }
-  return out
+  return s.slice(0, end)
 }
 
 /** Cut `s` to `width` columns, ending in `ellipsis` when it was cut. */
@@ -174,39 +180,72 @@ export function alignRight(left: string, right: string, width: number, ellipsis 
   return l + ' '.repeat(w - textWidth(l) - rw) + right
 }
 
+/** A plain-ASCII logical line, wrapped with slices (one pass, each head is at most `w` characters). */
+function wrapAscii(line: string, w: number, out: string[]): void {
+  let start = 0
+  while (line.length - start > w) {
+    const head = line.slice(start, start + w)
+    const space = head.lastIndexOf(' ')
+    if (space > 0 && line[start + w] !== ' ') {
+      out.push(head.slice(0, space))
+      start += space + 1
+    } else {
+      out.push(head)
+      start += w
+      if (line[start] === ' ') start++
+    }
+  }
+  out.push(line.slice(start))
+}
+
 /**
- * Wraps text to `width` columns: every logical line (split on \n) is broken at spaces where possible, else hard.
- * An empty logical line stays one empty line. width <= 0 gives no lines.
+ * A logical line with wide or combining characters: one lazy pass over its grapheme clusters. The current output line
+ * is a list of clusters; at an overflow it breaks at the last space (the clusters after it carry over) or hard.
+ */
+function wrapWide(line: string, w: number, out: string[]): void {
+  let cur: string[] = []
+  let curW = 0
+  let lastSp = -1
+  const add = (g: string): void => {
+    const cw = graphemeWidth(g)
+    if (curW + cw <= w) {
+      cur.push(g)
+      curW += cw
+      if (g === ' ' && cur.length > 1) lastSp = cur.length - 1
+      return
+    }
+    // A character wider than the whole line cannot be shown: drop it.
+    if (cur.length === 0) return
+    let carry: string[] = []
+    if (lastSp > 0 && g[0] !== ' ') {
+      out.push(cur.slice(0, lastSp).join(''))
+      carry = cur.slice(lastSp + 1)
+    } else {
+      out.push(cur.join(''))
+      if (g[0] === ' ') g = ''
+    }
+    cur = []
+    curW = 0
+    lastSp = -1
+    for (const c of carry) add(c)
+    if (g) add(g)
+  }
+  for (const g of lazyGraphemes(line)) add(g)
+  out.push(cur.join(''))
+}
+
+/**
+ * Wraps text to `width` columns: every logical line (split on newline) is broken at spaces where possible, else hard.
+ * An empty logical line stays one empty line. width <= 0 gives no lines. One pass over each line (issue #35 M1).
  */
 export function wrapText(text: string, width: number): string[] {
   const w = Math.floor(width)
   if (w <= 0) return []
   const out: string[] = []
   for (const logical of text.split('\n')) {
-    let rest = logical
-    if (rest === '') {
-      out.push('')
-      continue
-    }
-    while (textWidth(rest) > w) {
-      const head = sliceToWidth(rest, w)
-      // A character wider than the whole line cannot be shown: drop it.
-      if (head.length === 0) {
-        const first = graphemes(rest)[0] ?? ' '
-        rest = rest.slice(first.length)
-        continue
-      }
-      const space = head.lastIndexOf(' ')
-      if (space > 0 && rest[head.length] !== ' ') {
-        out.push(head.slice(0, space))
-        rest = rest.slice(space + 1)
-      } else {
-        out.push(head)
-        rest = rest.slice(head.length)
-        if (rest.startsWith(' ')) rest = rest.slice(1)
-      }
-    }
-    out.push(rest)
+    if (logical === '') out.push('')
+    else if (PLAIN_ASCII.test(logical)) wrapAscii(logical, w, out)
+    else wrapWide(logical, w, out)
   }
   return out
 }
