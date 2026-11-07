@@ -397,7 +397,7 @@ function fakeVault({ leak = false, staleAfterClear = false } = {}) {
       st.keyFile = a[a.indexOf('--key-file') + 1]
       return { code: 0, stdout: '', stderr: '' }
     }
-    if (has('connections', 'update')) return { code: 0, stdout: '', stderr: '' }
+    if (has('connections', 'proxy', 'add')) return { code: 0, stdout: JSON.stringify({ id: 'proxy-0a1b2c3d', added: true }), stderr: '' }
     if (has('connections', 'set-secret', '--stdin')) {
       st.key = String(cmd.input ?? '').trim()
       return { code: 0, stdout: '', stderr: '' }
@@ -429,16 +429,16 @@ test('main step (6): a working key-file vault passes: stored, read in another pr
     assert.ok(v.st.proxyKey.startsWith('sk-verify-'), 'the proxy gets the synthetic key')
     assert.doesNotMatch(r.out, new RegExp(v.st.proxyKey))
     assert.deepEqual(
-      v.st.cmds.map((c) => c.replace(/--key-file \S+/, '--key-file K').replace(/--base-url \S+/, '--base-url U')),
+      v.st.cmds.map((c) => c.replace(/--key-file \S+/, '--key-file K').replace(/--anthropic-url \S+/, '--anthropic-url U')),
       [
         'secrets status',
         'secrets init --key-file K',
-        'connections update litellm --base-url U --enable',
-        'connections set-secret litellm --stdin',
-        'connections test litellm',
+        'connections proxy add --name verify-npm --kind litellm --anthropic-url U',
+        'connections set-secret proxy-0a1b2c3d --stdin',
+        'connections test proxy-0a1b2c3d',
         'secrets status',
-        'connections set-secret litellm --clear',
-        'connections test litellm'
+        'connections set-secret proxy-0a1b2c3d --clear',
+        'connections test proxy-0a1b2c3d'
       ]
     )
   } finally {

@@ -681,10 +681,21 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         return r
       }
       await step('secrets init', ['secrets', 'init', '--key-file', keyFile])
-      await step('base url', ['connections', 'update', 'litellm', '--base-url', proxy.url, '--enable'])
-      await step('set-secret', ['connections', 'set-secret', 'litellm', '--stdin'], { input: `${synthetic}\n` })
+      // A fresh data folder has no proxy: add one (its id is generated), then store, read and clear its key.
+      const added = await step('proxy add', ['--output-format', 'json', 'connections', 'proxy', 'add', '--name', 'verify-npm', '--kind', 'litellm', '--anthropic-url', proxy.url])
+      let proxyId
+      try {
+        proxyId = JSON.parse(added.stdout).id
+      } catch {
+        // reported below
+      }
+      if (typeof proxyId !== 'string' || !/^proxy-[0-9a-f]{8}$/.test(proxyId)) {
+        problems6.push('proxy add: no proxy id in its answer')
+        proxyId = 'proxy-00000000'
+      }
+      await step('set-secret', ['connections', 'set-secret', proxyId, '--stdin'], { input: `${synthetic}\n` })
       const testState = async () => {
-        const r = await orgai(['--host', 'inproc', '--output-format', 'json', 'connections', 'test', 'litellm'], userDataDir, { env: { ORGAI_VAULT_KEY_FILE: keyFile } })
+        const r = await orgai(['--host', 'inproc', '--output-format', 'json', 'connections', 'test', proxyId], userDataDir, { env: { ORGAI_VAULT_KEY_FILE: keyFile } })
         outputs.push(r)
         return connectionTestState(r.stdout)
       }
@@ -696,7 +707,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       outputs.push(mm)
       const mmState = vaultState(mm.stdout)
       if (mmState !== 'key-mismatch') problems6.push(`another key file: expected key-mismatch, got ${mmState ?? showRun(mm)}`)
-      await step('clear', ['connections', 'set-secret', 'litellm', '--clear'])
+      await step('clear', ['connections', 'set-secret', proxyId, '--clear'])
       const after = await testState()
       if (after !== 'disconnected') problems6.push(`after the delete: expected disconnected, got ${after ?? 'no answer'}`)
       // Never echo a problem that could carry the key: only say that it leaked.

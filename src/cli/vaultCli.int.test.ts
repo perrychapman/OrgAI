@@ -107,12 +107,16 @@ describe.skipIf(!posix || !existsSync(bundle))('the vault across CLI processes (
     expect((json(before).secrets as { state: string }).state).toBe('absent')
     expect((await step(['secrets', 'init', '--key-file', keyFile])).code).toBe(0)
     expect(existsSync(join(data, 'data', 'vault.json'))).toBe(true)
-    expect((await step(['connections', 'update', 'litellm', '--base-url', url, '--enable'])).code).toBe(0)
-    expect((await step(['connections', 'set-secret', 'litellm', '--stdin'], { input: `${synthetic}\n` })).code).toBe(0)
+    // A fresh data folder has no proxy: add one (its id is generated).
+    const added = await step(['--output-format', 'json', 'connections', 'proxy', 'add', '--name', 'vault cli', '--kind', 'litellm', '--anthropic-url', url])
+    expect(added.code).toBe(0)
+    const proxyId = json(added).id as string
+    expect(proxyId).toMatch(/^proxy-[0-9a-f]{8}$/)
+    expect((await step(['connections', 'set-secret', proxyId, '--stdin'], { input: `${synthetic}\n` })).code).toBe(0)
     // The key is in secure storage, not in secrets.json.
     expect(existsSync(join(data, 'data', 'secrets.json')) ? readFileSync(join(data, 'data', 'secrets.json'), 'utf8') : '').not.toContain(synthetic)
 
-    const connected = await step(['--output-format', 'json', 'connections', 'test', 'litellm'])
+    const connected = await step(['--output-format', 'json', 'connections', 'test', proxyId])
     expect(json(connected).status).toBe('connected')
     expect(hits.authorized).toBeGreaterThan(0)
 
@@ -122,8 +126,8 @@ describe.skipIf(!posix || !existsSync(bundle))('the vault across CLI processes (
     const mismatch = await step(['--output-format', 'json', 'secrets', 'status'], { env: { ORGAI_VAULT_KEY_FILE: otherKey } })
     expect((json(mismatch).secrets as { state: string }).state).toBe('key-mismatch')
 
-    expect((await step(['connections', 'set-secret', 'litellm', '--clear'])).code).toBe(0)
-    const after = await step(['--output-format', 'json', 'connections', 'test', 'litellm'])
+    expect((await step(['connections', 'set-secret', proxyId, '--clear'])).code).toBe(0)
+    const after = await step(['--output-format', 'json', 'connections', 'test', proxyId])
     expect(json(after).status).toBe('disconnected')
     // No command printed the key.
     expect(all.some((r) => `${r.stdout}${r.stderr}`.includes(synthetic))).toBe(false)
