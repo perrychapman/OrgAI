@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useId, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, Search, SearchX } from 'lucide-react'
 import type { ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel } from '@shared/types'
-import { MODEL_TIER_OPTIONS } from '@shared/types'
+import { effectiveTiers } from '../../lib/tierMapping'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -32,10 +32,9 @@ export default function ModelList({
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const listId = useId()
-  const tierOf = (m: string): string | undefined => {
-    const t = (Object.keys(tierModels) as ModelTier[]).find((k) => tierModels[k] === m)
-    return t ? MODEL_TIER_OPTIONS.find((o) => o.value === t)?.label : undefined
-  }
+  // Effective mapping: a tier that follows the catalog (Automatic) still tags the model it resolves to.
+  const effective = useMemo(() => effectiveTiers(id, tierModels, models ?? []), [id, tierModels, models])
+  const tierOf = (m: string): string | undefined => effective.find((t) => t.model === m)?.label
   const counts = useMemo(() => {
     const c: Record<Filter, number> = { all: models?.length ?? 0, claude: 0, openai: 0, other: 0 }
     for (const m of models ?? []) c[m.family]++

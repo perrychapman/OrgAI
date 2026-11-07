@@ -82,6 +82,17 @@ describe('modelSettingGroups', () => {
     expect(groups[1].options.map((o) => o.label)).toEqual(['GPT X (recommended)', 'GPT Y'])
     expect(groups[2].options.map((o) => o.label)).toEqual(['claude-a · Claude', 'gpt-5 · GPT', 'gemini-2.5-pro · Other'])
   })
+  it('lists an id shared by two connections once and never renders an empty group', () => {
+    const a = { ...catalog[0], id: 'same', label: 'same', connection: 'px_1' as const, recommended: false }
+    const b = { ...a, connection: 'px_2' as const }
+    const two: ModelSource[] = [
+      { id: 'px_1', name: 'Work', tierModels: {}, catalog: [a] },
+      { id: 'px_2', name: 'Lite', tierModels: {}, catalog: [b] }
+    ]
+    const groups = modelSettingGroups('deep', two, false)
+    expect(groups.map((g) => g.label)).toEqual(['Tiers', 'Work'])
+    expect(groups.every((g) => g.options.length > 0)).toBe(true)
+  })
   it('offers inherit only when allowed', () => {
     expect(modelSettingGroups('deep', [], true)[0].options[0].value).toBe('inherit')
     expect(modelSettingGroups('deep', [], false).some((g) => g.label === 'Inherit')).toBe(false)
