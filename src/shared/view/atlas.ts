@@ -37,7 +37,6 @@ export const ATLAS_SURFACE_IDS = [
   'project-history',
   'project-history-runs',
   'project-history-trends',
-  'project-outputs',
   'project-knowledge',
   'project-knowledge-list',
   'project-knowledge-graph',
@@ -92,7 +91,6 @@ export const ATLAS_SURFACE_IDS = [
   'run-transcript',
   'run-usage',
   'run-knowledge',
-  'run-outputs',
   'run-decision-tray',
   'run-composer',
   'run-conversation',
@@ -458,16 +456,6 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     summary: 'Cost, tokens and run counts over time, by role, model and kind of run, with a CSV export.',
     reach: [{ via: 'button', label: 'Trends', on: 'project-history' }],
     testIds: ['usage-trends']
-  },
-  {
-    id: 'project-outputs',
-    label: 'Outputs',
-    path: [PROJ, 'Outputs'],
-    kind: 'tab',
-    scope: 'project',
-    summary: 'Every output the agents of this project produced or registered, with search, kind and run filters and an in-window preview.',
-    reach: [{ via: 'tab', label: 'Outputs' }],
-    testIds: ['tab-outputs', 'outputs-search', 'outputs-list', 'output-row', 'outputs-detail']
   },
   {
     id: 'project-knowledge',
@@ -1097,19 +1085,6 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     summary: 'What the team recalled and recorded in this run. Engagement work runs only.',
     reach: [{ via: 'button', label: 'Knowledge', on: 'run-side-panel' }],
     testIds: ['side-tab-knowledge']
-  },
-  {
-    id: 'run-outputs',
-    label: 'Outputs',
-    path: [PROJ, 'Live', 'Side panel', 'Outputs'],
-    kind: 'tab',
-    scope: 'run',
-    summary: 'Documents, workbooks, diagrams and other files the agents of this run produced, shown inside OrgAI. Work runs of stored projects.',
-    reach: [
-      { via: 'button', label: 'Outputs', on: 'run-side-panel' },
-      { via: 'button', label: 'outputs', on: 'run-toolbar' }
-    ],
-    testIds: ['side-tab-outputs', 'run-outputs', 'run-output-row', 'run-output-show', 'output-detail', 'output-preview']
   },
   {
     id: 'run-decision-tray',
