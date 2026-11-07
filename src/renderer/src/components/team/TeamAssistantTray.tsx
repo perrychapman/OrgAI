@@ -76,7 +76,8 @@ function writeSeenAt(projectId: string): void {
 
 /**
  * Body of the canvas frame's tray on the Team tab: the Team assistant. Both modes stay mounted (the inactive one is
- * hidden) so a search keeps running while the user designs, and the other way round. Nothing here is a Live run.
+ * hidden) so a search keeps running while the user designs, and the other way round. Design starts an org change
+ * session, an ordinary setup run on Live; the tray only points at it.
  */
 export default function TeamAssistantTray({
   project,
@@ -89,25 +90,8 @@ export default function TeamAssistantTray({
   mode: TeamAssistantMode
   onModeChange: (mode: TeamAssistantMode) => void
 }): ReactElement {
-  // A Needs-you jump to this project's Architect session shows Design.
-  const jump = useTeamAssistantStore((s) => s.designJump)
-  const jumpFor = jump && jump.projectId === project.id ? jump.n : 0
-  useEffect(() => {
-    if (jumpFor) onModeChange('design')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jumpFor])
   const hasResults = useTeamAssistantStore((s) => !!s.sessions[project.id]?.result)
-  const designRunId = useTeamAssistantStore((s) => s.designRun[project.id])
-  // Design: working or waiting on decisions changes the tray's height, so the phase says which.
-  const designPhase = useAppStore((s) => {
-    const run = designRunId ? s.runs[designRunId] : undefined
-    if (!run) return 'design'
-    const open = (run.questions?.length ?? 0) + run.proposals.length + run.permissions.length + (run.ruleRequests?.length ?? 0) + (run.mergeReviews?.length ?? 0) + (run.mcpInstalls?.length ?? 0)
-    if (open > 0) return 'design-decisions'
-    const st = run.summary.status
-    return st === 'starting' || st === 'running' ? 'design-running' : 'design'
-  })
-  const trayPhase = mode === 'design' ? designPhase : hasResults ? 'results' : 'recommend'
+  const trayPhase = mode === 'design' ? 'design' : hasResults ? 'results' : 'recommend'
   return (
     <div className="team-assistant" data-testid="team-assistant" data-mode={mode} data-tray-phase={trayPhase}>
       <div className="team-tray-head">
@@ -127,7 +111,7 @@ export default function TeamAssistantTray({
         <RecommendPane project={project} scope={scope} active={mode === 'recommend'} onDesign={() => onModeChange('design')} />
       </div>
       <div role="tabpanel" id={panelDomId('team-mode', 'design')} hidden={mode !== 'design'} className="team-mode-pane team-tray-body">
-        <DraftPanel project={project} variant="tray" />
+        <DraftPanel project={project} />
       </div>
     </div>
   )

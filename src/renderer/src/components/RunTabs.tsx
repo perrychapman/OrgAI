@@ -2,14 +2,15 @@ import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppWindow, ChevronDown, CircleAlert, EyeOff, Pencil, Plus, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
-import type { Project, VirtualProjectId } from '@shared/types'
+import type { Project, RunSummary, VirtualProjectId } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { newSessionLabel } from '../lib/assistants'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { chainGroups, needsYou } from '../lib/runChains'
 import { runMenuAction } from '../lib/menuRegistry'
 import { openRunWindow } from '../lib/menuActions'
-import { runName, runTag, shortPrompt } from '../lib/runLabels'
+import { runTag, shortPrompt } from '../lib/runLabels'
+import { displayRunName, runKindWord } from '../lib/orgChange'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
 
@@ -27,7 +28,7 @@ interface TabItem {
   /** The chain's newest loaded member. */
   run?: RunState
   /** The chain's first member: it names the tab. */
-  first?: { id: string; title?: string; prompt: string }
+  first?: Pick<RunSummary, 'id' | 'title' | 'prompt' | 'kind' | 'quick' | 'team'>
   sessions: number
 }
 
@@ -137,7 +138,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     const words = statusText(st)
     const first = item.first ?? run.summary
     const tag = runTag(indexes.get(first.id))
-    const name = runName(first)
+    const name = displayRunName(first)
     // Untrusted text in a tooltip: capped. The full prompt lives only in the transcript.
     const full = shortPrompt(first.prompt, PROMPT_TIP_CHARS)
     const sessions = item.sessions > 1 ? `${item.sessions} sessions` : ''
@@ -147,7 +148,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     return {
       tag,
       title: name,
-      tooltip: `${tag}: ${full}\n${words}${st.note && st.note !== words ? ` (${st.note})` : ''}${sessions ? ` · ${sessions}` : ''}${run.summary.kind === 'setup' ? ' · Setup' : ''}`,
+      tooltip: `${tag}: ${full}\n${words}${st.note && st.note !== words ? ` (${st.note})` : ''}${sessions ? ` · ${sessions}` : ''}${run.summary.kind === 'setup' ? ` · ${runKindWord(first)}` : ''}`,
       label: `${tag}: ${name}. ${words}.${sessions ? ` ${sessions}.` : ''}${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
       tone: st.tone,
       word: words,

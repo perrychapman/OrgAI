@@ -28,13 +28,6 @@ interface TeamAssistantState {
   clearNew: (projectId: string) => void
   sessions: Record<string, TeamSession>
   updateSession: (projectId: string, patch: (s: TeamSession) => Partial<TeamSession>) => void
-  /** The Team-tab Architect session per project (survives tab switches). */
-  designRun: Record<string, string>
-  setDesignRun: (projectId: string, runId: string) => void
-  /** A request to show the Design mode (a Needs-you jump); `request` names the card to focus. */
-  designJump: { projectId: string; runId: string; request: string | null; n: number } | null
-  requestDesign: (projectId: string, runId: string, request?: string | null) => void
-  clearDesignJump: () => void
 }
 
 export const useTeamAssistantStore = create<TeamAssistantState>((set) => ({
@@ -51,16 +44,7 @@ export const useTeamAssistantStore = create<TeamAssistantState>((set) => ({
     set((st) => {
       const cur = st.sessions[projectId] ?? EMPTY_SESSION
       return { sessions: { ...st.sessions, [projectId]: { ...cur, ...patch(cur) } } }
-    }),
-  designRun: {},
-  setDesignRun: (projectId, runId) => set((st) => ({ designRun: { ...st.designRun, [projectId]: runId } })),
-  designJump: null,
-  requestDesign: (projectId, runId, request = null) =>
-    set((st) => ({
-      designRun: { ...st.designRun, [projectId]: runId },
-      designJump: { projectId, runId, request, n: (st.designJump?.n ?? 0) + 1 }
-    })),
-  clearDesignJump: () => set({ designJump: null })
+    })
 }))
 
 export function useTeamReviewSummary(projectId: string | null | undefined): TeamReviewSummary | undefined {

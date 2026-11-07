@@ -10,8 +10,7 @@ import { combinedDecisionCount, teamDecisionsFor } from '../../lib/needsYou'
 import { useTeamAttentionItems } from '../../lib/menuActions'
 import type { TeamAttentionItem } from '../../lib/teamFiles'
 import { projectStatus } from '../../lib/projectStatus'
-import { runName } from '../../lib/runLabels'
-import { isTeamSurfaceRun } from '../../lib/runSurface'
+import { displayRunName } from '../../lib/orgChange'
 import { statusOfRun } from '../../lib/runStatus'
 import { Input } from '../ui/Input'
 import { useConfirm } from '../ui/ConfirmDialog'
@@ -34,7 +33,7 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
     decisions,
     live: live.length,
     statusLine: st.subtitle || 'No runs yet',
-    newestRun: newest ? runName(newest) : null,
+    newestRun: newest ? displayRunName(newest) : null,
     weekCost: costInWindow(summaries, now).cost
   }
 }
@@ -88,7 +87,6 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   const models = useMemo(() => {
     const byProject = new Map<string, RunState[]>()
     for (const r of Object.values(runs)) {
-      if (isTeamSurfaceRun(r.summary)) continue
       const list = byProject.get(r.summary.projectId)
       if (list) list.push(r)
       else byProject.set(r.summary.projectId, [r])
@@ -104,7 +102,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
 
   const remove = async (model: TileModel): Promise<void> => {
     const { project } = model
-    const mine = Object.values(runs).filter((r) => r.summary.projectId === project.id && !isTeamSurfaceRun(r.summary))
+    const mine = Object.values(runs).filter((r) => r.summary.projectId === project.id)
     const openRuns = mine.filter((r) => isRunLive(r) || r.summary.status === 'paused').length
     const historyRuns = mergeSummaries(
       mine.map((r) => r.summary),

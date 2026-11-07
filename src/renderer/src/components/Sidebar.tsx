@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { BellRing, Briefcase, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { BellRing, Briefcase, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
@@ -11,8 +11,8 @@ import { openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions
 import { groupByClient, readCollapsedClients, writeCollapsedClients } from '../lib/clientGroups'
 import { needsYou } from '../lib/runChains'
 import { oneLine } from '../lib/decisionTitle'
-import { promptLine, runName, runTag } from '../lib/runLabels'
-import { isTeamSurfaceRun } from '../lib/runSurface'
+import { promptLine, runTag } from '../lib/runLabels'
+import { displayRunName, isOrgChangeRun, ORG_CHANGE_KIND_LABEL } from '../lib/orgChange'
 import { statusOfRun, statusText } from '../lib/runStatus'
 import { chainGroups } from '../lib/runChains'
 import { projectStatus } from '../lib/projectStatus'
@@ -58,7 +58,7 @@ interface NavEntry {
 /** Open runs of a project, the ones that need the user first, then the newest. */
 function openRunsOf(runs: RunState[]): RunState[] {
   return runs
-    .filter((r) => isRunLive(r) && !isTeamSurfaceRun(r.summary))
+    .filter((r) => isRunLive(r))
     .sort((a, b) => Number(needsYou(b)) - Number(needsYou(a)) || b.summary.startedAt - a.summary.startedAt)
 }
 
@@ -195,16 +195,15 @@ export default function Sidebar({
   const renderEntry = (entry: NavEntry): ReactElement => {
     const { id, name, project: p } = entry
     const projectRuns = allRuns.filter((r) => r.summary.projectId === id)
-    const visibleRuns = projectRuns.filter((r) => !isTeamSurfaceRun(r.summary))
-    const open = openRunsOf(visibleRuns)
+    const open = openRunsOf(projectRuns)
     const expanded = !rail && open.length > 0 && !collapsed[id]
-    const newest = [...(history[id] ?? []), ...visibleRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
+    const newest = [...(history[id] ?? []), ...projectRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
     const last = newest ? statusOfRun(projectRuns.find((x) => x.summary.id === newest.id) ?? { summary: newest }, p, false) : undefined
     // An open run's tag and name are its chain's first member's (one conversation, one name).
     const firstOf = new Map<string, RunSummary>()
     if (open.length > 0) {
       const known = new Map<string, RunSummary>((history[id] ?? []).map((h) => [h.id, h]))
-      for (const r of visibleRuns) known.set(r.summary.id, r.summary)
+      for (const r of projectRuns) known.set(r.summary.id, r.summary)
       for (const g of chainGroups([...known.values()])) for (const m of g.members) firstOf.set(m.id, g.first)
     }
     // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
@@ -274,13 +273,17 @@ export default function Sidebar({
               const first = firstOf.get(r.summary.id) ?? r.summary
               const tag = runTag(indexes.get(first.id))
               const here = active && viewedId === r.summary.id
+              const orgChange = isOrgChangeRun(first)
               return (
                 <li key={r.summary.id}>
                   <button
                     type="button"
                     className={`nav-run ${here ? 'active' : ''}`}
                     aria-current={here ? 'true' : undefined}
-                    title={`${tag}: ${oneLine(promptLine(first.prompt), 300)}\n${statusText(rs)}`}
+                    data-testid="nav-run"
+                    data-run={r.summary.id}
+                    data-kind={orgChange ? 'org-change' : undefined}
+                    title={`${tag}: ${orgChange ? `${ORG_CHANGE_KIND_LABEL} · ` : ''}${oneLine(promptLine(first.prompt), 300)}\n${statusText(rs)}`}
                     onClick={() => {
                       if (selectedId !== id) selectProject(id)
                       void openRun(r.summary.id)
@@ -288,7 +291,12 @@ export default function Sidebar({
                   >
                     <span className={`run-dot ${rs.tone}`} aria-hidden="true" />
                     <span className="run-index">{tag}</span>
-                    <span className="nav-run-title">{runName(first)}</span>
+                    {orgChange && (
+                      <span className="nav-kind" data-testid="nav-run-kind-mark">
+                        <Icon icon={Network} size="xs" label={ORG_CHANGE_KIND_LABEL} />
+                      </span>
+                    )}
+                    <span className="nav-run-title">{displayRunName(first)}</span>
                     <span className="sr-only">{statusText(rs)}</span>
                   </button>
                 </li>
@@ -416,7 +424,7 @@ export default function Sidebar({
                       >
                         <span className="needs-what">{it.label}</span>
                         <span className="needs-where">
-                          {projectName(r.summary.projectId)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {runName(r.summary)}
+                          {projectName(r.summary.projectId)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {displayRunName(r.summary)}
                         </span>
                       </button>
                     </li>

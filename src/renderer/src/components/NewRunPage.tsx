@@ -7,7 +7,8 @@ import { projectKindOf } from '@shared/defaults'
 import { newRunLead, projectKindCopy, projectNoun } from '../lib/projectKindCopy'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
-import { promptLine, runTitle } from '../lib/runLabels'
+import { promptLine, runTag } from '../lib/runLabels'
+import { displayRunName } from '../lib/orgChange'
 import { Button } from './ui/Button'
 import { EmptyState } from './ui/EmptyState'
 import TeamFilesPointer from './team/TeamFilesPointer'
@@ -43,7 +44,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
       Object.values(runs)
         .filter((r) => r.summary.projectId === project.id && isRunLive(r))
         .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
-        .map((r) => ({ id: r.summary.id, prompt: r.summary.prompt })),
+        .map((r) => ({ id: r.summary.id, kind: r.summary.kind, prompt: r.summary.prompt, title: r.summary.title })),
     [runs, project.id]
   )
   const indexes = useRunIndexes()
@@ -173,7 +174,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               {others.map((o) => (
                 <li key={o.id}>
                   <button type="button" className="link-btn" title={promptLine(o.prompt)} onClick={() => void openRun(o.id)}>
-                    {runTitle(indexes.get(o.id), o)}
+                    {`${runTag(indexes.get(o.id))}: ${displayRunName(o)}`}
                   </button>
                 </li>
               ))}

@@ -1,74 +1,58 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
 import type { Project } from '@shared/types'
-import { useAppStore } from '../store/useAppStore'
+import { projectKindOf } from '@shared/defaults'
+import { isRunLive, useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
-import { Button } from './ui/Button'
-import ArchitectDecisions from './team/ArchitectDecisions'
-import { useTeamAssistantStore } from '../store/teamAssistant'
-import { isTeamSurfaceRun } from '../lib/runSurface'
+import { needsYou } from '../lib/runChains'
+import { statusOfRun, statusText } from '../lib/runStatus'
+import { displayRunName, liveOrgChangeRun, orgChangePrompt } from '../lib/orgChange'
 import { cleanIpcError } from '../lib/ipcError'
+import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
-import { Input } from './ui/Input'
 import { useConfirm } from './ui/ConfirmDialog'
 
-/** Status line and every open decision of a Team-tab Architect session, answered in place (the run is not on the Live strip). */
-function ArchitectRunCards({ runId, project }: { runId: string; project: Project }): ReactElement | null {
-  const run = useAppStore((s) => s.runs[runId])
+/** Spoken once the session's tab is open on Live (focus is already in its composer). */
+const STARTED_NOTICE = 'Org change session started. Its questions and proposals appear here, and it stays in the sidebar while it is open.'
+
+/**
+ * One quiet line on the Team tab while an org change session of this project is open: its name, its status word and
+ * "Open session", which shows the run's tab on Live. The cards and the composer live there, never in this tray.
+ */
+function OrgChangePointer({ project }: { project: Project }): ReactElement | null {
+  const runId = useAppStore((s) => liveOrgChangeRun(Object.values(s.runs), project.id, isRunLive, needsYou)?.summary.id ?? null)
+  const run = useAppStore((s) => (runId ? s.runs[runId] : undefined))
+  const openRun = useAppStore((s) => s.openRun)
+  const focusComposer = useAppStore((s) => s.focusComposer)
+  const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   if (!run) return null
-  const open = (run.questions?.length ?? 0) + run.proposals.length + run.permissions.length + (run.ruleRequests?.length ?? 0) + (run.mergeReviews?.length ?? 0) + (run.mcpInstalls?.length ?? 0)
-  const status = run.summary.status
-  const live = status === 'starting' || status === 'running'
-  const message =
-    open > 0
-      ? `The Architect needs ${open === 1 ? 'your decision' : `your ${open} decisions`}.`
-      : live
-        ? 'The Architect is working. Its questions, permission requests and proposals appear here.'
-        : status === 'finished' || status === 'idle'
-          ? 'The Architect session ended.'
-          : 'The Architect session stopped.'
-  // Nothing to answer and nothing running: only the status line, no box around it.
-  if (open === 0 && !live) {
-    return (
-      <p className="hint" role="status" data-testid="architect-session" data-status={status}>
-        {message}
-      </p>
-    )
+  const waiting = needsYou(run)
+  const word = statusText(statusOfRun(run, project, waiting))
+  const name = displayRunName(run.summary)
+  const open = (): void => {
+    // A waiting session lands on its first card; otherwise on the composer.
+    if (waiting) void jumpToDecision(project.id, run.summary.id)
+    else void openRun(run.summary.id).then(() => focusComposer())
   }
   return (
-    <section className="draft-box stack-2" aria-label="Architect session" data-testid="architect-session" data-status={status}>
-      <p className="hint" role="status">
-        {message}
-      </p>
-      <ArchitectDecisions runId={runId} project={project} />
-    </section>
+    <p className="org-change-pointer" data-testid="org-change-pointer" data-run={run.summary.id} data-status={run.summary.status}>
+      <span className="org-change-pointer-name">
+        {name} is open · {word}.
+      </span>
+      <button type="button" className="link-btn" data-testid="org-change-open" aria-label={`Open session: ${name}`} onClick={open}>
+        Open session
+      </button>
+    </p>
   )
 }
 
 /**
- * The Architect and quick draft. `variant="tray"` is the Team tab's tray form (a header row with a close button and no
- * sticky side header); `panel` is the old side-panel form.
+ * Design mode of the Team tab's tray: "Revise with the Architect" starts an org change session (an ordinary setup run
+ * with its own run tab, sidebar row and History row) and switches to it; the quick draft stays here.
  */
-export default function DraftPanel({ project, variant = 'panel', onClose }: { project: Project; variant?: 'panel' | 'tray'; onClose?: () => void }): ReactElement {
-  void onClose
-  const storedRun = useTeamAssistantStore((s) => s.designRun[project.id])
-  const setDesignRun = useTeamAssistantStore((s) => s.setDesignRun)
-  // The newest live Team-surface session of this project when none was started here (a reload, another window).
-  const liveTeamRun = useAppStore((s) => {
-    let best: { id: string; at: number } | null = null
-    for (const r of Object.values(s.runs)) {
-      const sm = r.summary
-      if (sm.projectId !== project.id || !isTeamSurfaceRun(sm) || (sm.status !== 'starting' && sm.status !== 'running' && sm.status !== 'idle')) continue
-      if (!best || sm.startedAt > best.at) best = { id: sm.id, at: sm.startedAt }
-    }
-    return best?.id ?? null
-  })
-  const teamRunId = storedRun ?? liveTeamRun
-  const sessionStatus = useAppStore((s) => (teamRunId ? s.runs[teamRunId]?.summary.status : undefined))
-  const sessionLive = sessionStatus === 'starting' || sessionStatus === 'running'
+export default function DraftPanel({ project }: { project: Project }): ReactElement {
   const [startError, setStartError] = useState<string | null>(null)
-  const tray = variant === 'tray'
   const drafting = useAppStore((s) => s.drafting)
   const draftResult = useAppStore((s) => s.draftResult)
   const draftError = useAppStore((s) => s.draftError)
@@ -76,8 +60,11 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
   const applyDraft = useAppStore((s) => s.applyDraft)
   const discardDraft = useAppStore((s) => s.discardDraft)
   const startSetup = useAppStore((s) => s.startSetup)
+  const focusComposer = useAppStore((s) => s.focusComposer)
+  const setTabNotice = useAppStore((s) => s.setTabNotice)
   const mock = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
   const cost = mock ? '(mock, no tokens)' : '(spends tokens)'
+  const engagement = projectKindOf(project) === 'engagement'
   const { confirm, dialog } = useConfirm()
   const [instruction, setInstruction] = useState('')
   const [startFresh, setStartFresh] = useState(false)
@@ -89,25 +76,20 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
     if (!text) {
       const ok = await confirm({
         title: 'Review the whole project?',
-        body: `With nothing written, the Architect reviews the repository and revises the architecture document, org chart and settings. Starts an Architect session ${cost}.`,
+        body: `With nothing written, the Architect reviews the ${engagement ? 'engagement' : 'repository'} and revises the ${engagement ? 'plan' : 'architecture document'}, org chart and settings. Starts an org change session ${cost}.`,
         confirmLabel: 'Start full review'
       })
       if (!ok) return
     }
     setArchitectBusy(true)
     setStartError(null)
-    const instruction = text
-      ? `Revise this project's org chart and setup: ${text}`
-      : 'Review this project and revise its architecture document, org chart and settings where they no longer fit the code.'
     try {
-      if (tray) {
-        // A Team-tab session stays on the Team tab: no navigation to Live, no run tab.
-        const summary = await window.orgai.setup.start({ projectId: project.id, instruction, surface: 'team' })
-        setDesignRun(project.id, summary.id)
-      } else {
-        await startSetup(instruction)
-      }
+      // An ordinary setup run: startSetup opens its tab on Live; focus goes to its composer and the start is announced.
+      await startSetup(orgChangePrompt(text, projectKindOf(project)))
       setRevision('')
+      // The Live view mounts with this render; the composer takes a token bumped after its mount.
+      window.requestAnimationFrame(() => focusComposer())
+      setTabNotice(STARTED_NOTICE)
     } catch (e) {
       setStartError(cleanIpcError(e))
     } finally {
@@ -117,58 +99,37 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
 
   return (
     <>
-      {!tray && (
-        <div className="side-header">
-          <h2>Design the org chart with AI</h2>
-        </div>
-      )}
-      <div className={tray ? 'team-tray-body stack-3' : 'side-body stack-3'}>
-        {tray && sessionLive ? (
-          <section className="draft-revise-line" aria-labelledby="draft-architect">
-            <h3 className="sr-only" id="draft-architect">
-              Revise with the Architect
-            </h3>
-            <Input aria-label="What should change" value={revision} onChange={setRevision} placeholder="Say what else should change" />
-            <Button variant="primary" loading={architectBusy} onClick={() => void reviseWithArchitect()}>
+      <div className="team-tray-body stack-3">
+        <OrgChangePointer project={project} />
+        <section className="draft-box stack-2" aria-labelledby="draft-architect">
+          <h3 className="side-section-title" id="draft-architect">
+            Revise with the Architect
+          </h3>
+          <p className="rationale">
+            Say what should change. The Architect reads the {engagement ? 'engagement' : 'repository'} and the current chart, then proposes the revised
+            roles for you to approve. The session opens on Live and stays in the sidebar, so you can leave it and come back. Leave it empty for a full
+            review.
+            {project.setup?.architecturePath ? ` The architecture document at ${project.setup.architecturePath} is revised too.` : ''}
+          </p>
+          <Textarea
+            aria-label="What should change"
+            rows={4}
+            value={revision}
+            onChange={setRevision}
+            placeholder='e.g. "Add a database specialist under the orchestrator, make the reviewer check accessibility, and move the researcher to the fast tier."'
+          />
+          <div className="row gap-2 wrap">
+            <Button variant="primary" loading={architectBusy} testId="org-change-start" onClick={() => void reviseWithArchitect()}>
               {architectBusy ? 'Starting…' : 'Revise with the Architect'}
             </Button>
-            {startError && (
-              <p className="capability-warn" role="alert">
-                {startError}
-              </p>
-            )}
-          </section>
-        ) : (
-          <section className="draft-box stack-2" aria-labelledby="draft-architect">
-            <h3 className="side-section-title" id="draft-architect">
-              Revise with the Architect
-            </h3>
-            <p className="rationale">
-              Say what should change. The Architect reads the repository and the current chart, then proposes the revised roles
-              {tray ? ' in the tray' : ' on the live view'} for you to approve. Leave it empty for a full review.
-              {project.setup?.architecturePath ? ` The architecture document at ${project.setup.architecturePath} is revised too.` : ''}
+            <span className="hint">Starts an org change session {cost}.</span>
+          </div>
+          {startError && (
+            <p className="capability-warn" role="alert">
+              {startError}
             </p>
-            <Textarea
-              aria-label="What should change"
-              rows={4}
-              value={revision}
-              onChange={setRevision}
-              placeholder='e.g. "Add a database specialist under the orchestrator, make the reviewer check accessibility, and move the researcher to the fast tier."'
-            />
-            <div className="row gap-2 wrap">
-              <Button variant="primary" loading={architectBusy} onClick={() => void reviseWithArchitect()}>
-                {architectBusy ? 'Starting…' : 'Revise with the Architect'}
-              </Button>
-              <span className="hint">Starts an Architect session {cost}.</span>
-            </div>
-            {startError && (
-              <p className="capability-warn" role="alert">
-                {startError}
-              </p>
-            )}
-          </section>
-        )}
-        {teamRunId && <ArchitectRunCards runId={teamRunId} project={project} />}
+          )}
+        </section>
 
         <details className="disclosure">
           <summary>Advanced: quick draft</summary>

@@ -15,6 +15,7 @@ import { isolateWritersOn, projectKindOf } from '@shared/defaults'
 import { cleanIpcError } from '../../lib/ipcError'
 import { clearCountsLine } from '../../lib/knowledge'
 import { MAINTENANCE_ENGAGEMENT_LINE } from '../../lib/settingsCopy'
+import { orgChangePrompt } from '../../lib/orgChange'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
 /** The Maintenance notice after knowledge:clear (docs/design/knowledge.md section 9). */
@@ -24,11 +25,12 @@ export const KNOWLEDGE_CLEARED_NOTICE = 'Cleared everything the team recorded.'
 export const ENGAGEMENT_DANGER_TEXT =
   'Deletes everything OrgAI keeps for this engagement: the plan, context notes, what the team recorded, saved permission rules, run history and costs, and saved service values for it. Files in the working folder and in reference folders are not touched.'
 
-/** Leftover report branches, the architecture document, and (in a danger zone at the foot) removing OrgAI's files. */
+/** Leftover report branches, the org chart and setup review, and (in a danger zone at the foot) removing OrgAI's files. */
 export function MaintenanceSection({ project }: { project: Project }): ReactElement {
   const loadProjects = useAppStore((s) => s.loadProjects)
   const startSetup = useAppStore((s) => s.startSetup)
   const setView = useAppStore((s) => s.setView)
+  const focusComposer = useAppStore((s) => s.focusComposer)
   const { confirm, dialog } = useConfirm()
   const [worktrees, setWorktrees] = useState<PendingWorktree[] | null>(null)
   const { forget, dialog: forgetDialog } = useForgetEngagement()
@@ -268,35 +270,39 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
         )}
       </div>}
 
-      {project.setup?.architecturePath && (
-        <SettingsCard>
-          <SettingRow
-            title="Architecture document"
-            description={
-              project.setup.architectureUpdatedAt
-                ? `Updated ${new Date(project.setup.architectureUpdatedAt).toLocaleDateString()}.`
-                : 'Not edited by agents since setup.'
-            }
-            control={
-              <Button
-                size="sm"
-                disabled={busy !== null}
-                onClick={() => {
-                  setBusy('review')
-                  void startSetup(
-                    'Review .orgai/ARCHITECTURE.md against the current code and propose an updated architecture, then re-check the org chart and settings.'
-                  )
-                    .then(() => setView('run'))
-                    .catch((e: Error) => setNotice({ ok: false, message: e.message }))
-                    .finally(() => setBusy(null))
-                }}
-              >
-                {busy === 'review' ? 'Starting…' : 'Review with the Architect'}
-              </Button>
-            }
-          />
-        </SettingsCard>
-      )}
+      <SettingsCard>
+        <SettingRow
+          title="Org chart and setup"
+          description={`The Architect reviews the ${engagement ? 'engagement' : 'code'}, the org chart and the settings${
+            project.setup?.architecturePath ? `, and the ${engagement ? 'plan' : 'architecture document'}` : ''
+          }, then proposes changes for you to approve. It opens as an org change session on Live.${
+            project.setup?.architecturePath
+              ? project.setup.architectureUpdatedAt
+                ? ` The ${engagement ? 'plan' : 'architecture document'} was updated ${new Date(project.setup.architectureUpdatedAt).toLocaleDateString()}.`
+                : ` The ${engagement ? 'plan' : 'architecture document'} has not been edited by agents since setup.`
+              : ''
+          }`}
+          control={
+            <Button
+              size="sm"
+              testId="maintenance-org-review"
+              disabled={busy !== null}
+              onClick={() => {
+                setBusy('review')
+                void startSetup(orgChangePrompt('', projectKindOf(project)))
+                  .then(() => {
+                    setView('run')
+                    window.requestAnimationFrame(() => focusComposer())
+                  })
+                  .catch((e: Error) => setNotice({ ok: false, message: cleanIpcError(e) }))
+                  .finally(() => setBusy(null))
+              }}
+            >
+              {busy === 'review' ? 'Starting…' : 'Review the org chart and setup'}
+            </Button>
+          }
+        />
+      </SettingsCard>
 
       {notice && (
         <div ref={noticeRef} tabIndex={-1} className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'} data-testid="maintenance-notice">

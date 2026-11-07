@@ -26,7 +26,8 @@ import { Tabs, type TabItem } from './components/ui/Tabs'
 import { chainOf, needsYou } from './lib/runChains'
 import { teamDecisionsFor, waitingItems } from './lib/needsYou'
 import { openTeamFilesDecision, useTeamAttentionItems } from './lib/menuActions'
-import { runName, runTag } from './lib/runLabels'
+import { runTag } from './lib/runLabels'
+import { displayRunName } from './lib/orgChange'
 import { folderName } from './lib/paths'
 import { assistantLabel } from './lib/assistants'
 import ProjectClient from './components/ProjectClient'
@@ -118,7 +119,7 @@ export default function App(): ReactElement {
     const where = selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project?.name
     if (view === 'appSettings') document.title = 'App settings · OrgAI'
     else if (!where || view === 'projects') document.title = 'OrgAI'
-    else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${runName(first)} · OrgAI`
+    else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${displayRunName(first)} · OrgAI`
     else document.title = `${where} · OrgAI`
   }, [run, first, runIndex, view, project, isVirtual])
 

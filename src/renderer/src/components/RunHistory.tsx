@@ -7,7 +7,8 @@ import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunInd
 import { Cost } from './ui/Cost'
 import { runCostInput, sumCosts } from '../lib/cost'
 import { canContinueIn, chainGroups, isOpenStatus, lastActivityAt, needsYou, relativeTime, type ChainGroup } from '../lib/runChains'
-import { promptLine, runName, runTag, shortPrompt } from '../lib/runLabels'
+import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
+import { displayRunName, isOrgChangeRun, runKindWord } from '../lib/orgChange'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
@@ -16,7 +17,7 @@ import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import UsageTrends from './UsageTrends'
 import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
-import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, runKindLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
+import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
 
 /** Untrusted prompt text in a tooltip is capped. */
 const TIP_CHARS = 300
@@ -192,6 +193,7 @@ function HistoryChain({
   const open = isOpenStatus(newest.status)
   const tag = runTag(indexes.get(first.id))
   const cost = useMemo(() => sumCosts(members.map(runCostInput)), [members])
+  const orgChange = isOrgChangeRun(first)
   return (
     <>
       <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions}>
@@ -199,10 +201,10 @@ function HistoryChain({
           <div className="run-head">
             {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={`Sessions of ${tag}`} expanded={isExpanded} controls={isExpanded ? members.map((m) => memberRowId(m.id)).join(' ') : undefined} onClick={onToggle} testId="history-sessions-toggle" />}
             <div className="run-head-text">
-              {first.title ? (
+              {first.title || orgChange ? (
                 <>
-                  <div className="run-name" title={runName(first)}>
-                    <span className="run-index">{tag}</span> {runName(first)}
+                  <div className="run-name" title={displayRunName(first)}>
+                    <span className="run-index">{tag}</span> {displayRunName(first)}
                   </div>
                   <div className="prompt muted" title={shortPrompt(first.prompt, TIP_CHARS)}>
                     {promptLine(first.prompt)}
@@ -234,8 +236,8 @@ function HistoryChain({
           {relativeTime(last)}
         </td>
         <td className="col-kind">
-          <span data-testid="run-kind" data-kind={first.quick ? 'chat' : first.team === 'single' ? 'ask' : first.kind === 'work' ? 'work' : first.kind}>
-            <Badge tone={first.kind === 'setup' ? 'accent' : 'neutral'}>{runKindLabel(first)}</Badge>
+          <span data-testid="run-kind" data-kind={first.quick ? 'chat' : first.team === 'single' ? 'ask' : first.kind === 'work' ? 'work' : orgChange ? 'org-change' : first.kind}>
+            <Badge tone={first.kind === 'setup' ? 'accent' : 'neutral'}>{runKindWord(first)}</Badge>
           </span>
         </td>
         {chat && (
