@@ -1,7 +1,7 @@
 import type { CSSProperties, KeyboardEvent, ReactElement } from 'react'
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { formatDuration } from '../../lib/cost'
-import { barHeight, dayAriaLabel, dayLedger, dayReadout, ledgerTicks, ledgerTotals, maxDayCost, shortDate, weekdayInitial, type DayBucket } from '../../lib/activityStrip'
+import { barHeight, dayAriaLabel, dayLedger, dayReadout, ledgerTicks, ledgerTotals, maxDayCost, shortDate, waitedShown, weekdayInitial, type DayBucket } from '../../lib/activityStrip'
 import { Cost } from '../ui/Cost'
 import { useRovingFocus } from '../connectors/useRovingFocus'
 import { useAllSummaries, useNow } from './useDashboardData'
@@ -138,7 +138,7 @@ export function ActivityStrip({ size }: { size: 'compact' | 'tall' }): ReactElem
               <Cost value={cost} compact className="dash-num" />
             </dd>
           </div>
-          {totals.waitingMs > 0 && (
+          {waitedShown(totals.waitingMs) && (
             <div data-testid="dash-strip-waiting">
               <dt>Waited on you</dt>
               <dd className="dash-num">{formatDuration(totals.waitingMs)}</dd>

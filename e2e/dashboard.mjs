@@ -124,7 +124,15 @@ try {
   // 17.4 The waiting run appears once in the band, never as a second list row.
   const runIds = await page.locator('[data-testid=dash-running-row]').evaluateAll((els) => els.map((e) => e.getAttribute('data-run')))
   check(new Set(runIds).size === runIds.length, 'each run appears once in the band', JSON.stringify(runIds))
-  check((await page.locator('[data-testid=dash-now] [data-testid=dash-running-row][data-needs]', { hasText: WAIT }).count()) === 1, 'the waiting run is one band row marked data-needs', '')
+  // The project name is the group's h3, not part of the run row, so scope through the group. The band recomputes at
+  // most every 250 ms (spec 6.8), so wait for the mark rather than read it once.
+  const waitGroup = page.locator('[data-testid=dash-now] [data-testid=dash-now-project]', { has: page.locator('h3', { hasText: WAIT }) })
+  const needsMarked = await waitGroup
+    .locator('[data-testid=dash-running-row][data-needs]')
+    .first()
+    .waitFor({ timeout: 5000 })
+    .then(() => true, () => false)
+  check(needsMarked && (await waitGroup.locator('[data-testid=dash-running-row]').count()) === 1, 'the waiting run is one band row marked data-needs', String(await waitGroup.count()))
   check((await page.locator('[data-testid=dash-running]').count()) === 0, 'there is no separate Running list any more')
   const firstTile = await page.locator('[data-testid=project-tile]').first().getAttribute('data-name')
   check(firstTile === WAIT, 'the project with a decision is the first tile', String(firstTile))

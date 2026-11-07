@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CostSource, RunStatus } from '@shared/types'
-import { barHeight, dayAriaLabel, dayKey, dayLedger, dayReadout, ledgerTicks, ledgerTotals, maxDayCost, outcomeOf, type LedgerRun } from './activityStrip'
+import { barHeight, dayAriaLabel, dayKey, dayLedger, dayReadout, ledgerTicks, ledgerTotals, maxDayCost, outcomeOf, waitedShown, type LedgerRun } from './activityStrip'
 
 const at = (y: number, m: number, d: number, h = 12): number => new Date(y, m - 1, d, h, 0, 0).getTime()
 const NOW = at(2026, 11, 7, 15)
@@ -174,5 +174,13 @@ describe('words', () => {
   it('maps run statuses to outcomes', () => {
     expect(outcomeOf(run('a', 1, { status: 'idle' }))).toBe('open')
     expect(outcomeOf(run('a', 1, { status: 'stopping' }))).toBe('open')
+  })
+
+  it('never reads "waited on you 0s" for a wait under a second', () => {
+    expect(waitedShown(999)).toBe(false)
+    expect(waitedShown(1000)).toBe(true)
+    const day = dayLedger([run('a', at(2026, 11, 7, 9), { waiting: 400 })], NOW).find((d) => d.today)!
+    expect(dayReadout(day)).not.toMatch(/waited/)
+    expect(dayAriaLabel(day)).not.toMatch(/waited/)
   })
 })
