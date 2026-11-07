@@ -368,8 +368,8 @@ const lower = (s: unknown): string => (typeof s === 'string' ? s.trim().toLowerC
  *
  * Reporting lines: toRoles resolves manager and spawnable names only among the drafts, so a draft that names an
  * unmentioned kept role (by name or slug, case-insensitive) is pointed at it here. Root rule: exactly one role has
- * reportsTo null. A draft with no manager is the new root; when the old root was unmentioned and kept, the old root
- * then reports to the draft root (re-pointed, not an error). With no draft root, the kept old root stays root. A kept
+ * reportsTo null. While the old root is kept unmentioned it stays root and any draft with no manager reports to it;
+ * otherwise (the old root is listed or removed) the first draft with no manager is the root. A kept
  * role that reported to a removed role is re-pointed to the root, and removed ids leave every spawnable list. A chart
  * that still has no single root (for example the root was removed and no draft replaces it) is a REVISE.
  */
@@ -419,7 +419,10 @@ function reviseKeepingUnmentioned(
   const keptRoot = keptRoles.find((k) => k.reportsTo === null)
   // A draft that names no manager is the new root; one whose manager is unknown (or removed) is never promoted to root,
   // it goes under the root.
-  const explicitRoots = rootCandidates.filter((i) => !unresolved.has(i))
+  // While the current root is kept unmentioned it stays the root: a new draft that says reportsTo null goes under it
+  // (a model writing null for an ordinary new role must not take over the chart). Moving the root means listing the
+  // current root with its new manager, or removing it.
+  const explicitRoots = keptRoot ? [] : rootCandidates.filter((i) => !unresolved.has(i))
   const draftRoot = explicitRoots[0]
   const rootId: string | undefined = draftRoot !== undefined ? converted[draftRoot].id : keptRoot?.id
 

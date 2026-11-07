@@ -120,12 +120,23 @@ describe('propose_org_chart in a revision (setup complete)', () => {
     expect(sec.model).not.toBe('inherit')
   })
 
-  it('a draft root with an unmentioned old root: the old root reports to the new one', async () => {
+  it('a new draft with no manager while the old root is unmentioned goes under the old root (never takes over)', async () => {
     const p = revisionProject()
-    const { roles } = await propose(p, { roles: [draft('Director', null, { spawnable: ['Lead'] })] }, proxyConn)
+    const { roles } = await propose(p, { roles: [draft('Director', null)] }, proxyConn)
+    const dir = roles!.find((r) => r.name === 'Director')!
+    expect(dir.reportsTo).toBe('r-lead')
+    expect(roles!.find((r) => r.slug === 'lead')!.reportsTo).toBeNull()
+    expect(roles!.find((r) => r.slug === 'lead')!.spawnable).toContain(dir.id)
+    expect(roles!.filter((r) => r.reportsTo === null).map((r) => r.id)).toEqual(['r-lead'])
+    expect(roles).toHaveLength(5)
+  })
+
+  it('moving the root: the old root is listed under the new draft root', async () => {
+    const p = revisionProject()
+    const { roles } = await propose(p, { roles: [draft('Director', null, { spawnable: ['Lead'] }), draft('Lead', 'Director', { slug: 'lead' })] }, proxyConn)
     const dir = roles!.find((r) => r.name === 'Director')!
     expect(dir.reportsTo).toBeNull()
-    expect(roles!.find((r) => r.slug === 'lead')!.reportsTo).toBe(dir.id)
+    expect(roles!.find((r) => r.slug === 'lead')!).toMatchObject({ id: 'r-lead', reportsTo: dir.id })
     expect(dir.spawnable).toContain('r-lead')
     expect(roles!.filter((r) => r.reportsTo === null)).toHaveLength(1)
     expect(roles).toHaveLength(5)
