@@ -247,6 +247,7 @@ const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships
 
 function esc(s: string): string {
   return s
+    .replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '�')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]/g, '�')
     .replace(/\t/g, '    ')
     .replace(/&/g, '&amp;')

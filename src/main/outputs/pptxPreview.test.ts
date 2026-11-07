@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { OutputPreview, SlideDeckInput, SlidePreview } from '@shared/types'
 import { OUTPUT_PREVIEW_SLIDES_MAX, OUTPUT_PREVIEW_SLIDE_SHAPES_MAX } from '@shared/types'
 import { renderDeck } from './pptxWrite'
-import { previewPptxBuffer, resolveTarget } from './pptxPreview'
+import { DECK_CELLS_BUDGET, previewPptxBuffer, resolveTarget } from './pptxPreview'
 import { previewFile } from './preview'
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
@@ -287,5 +287,57 @@ describe('previewFile wiring', () => {
     expect((await previewFile(join(dir, 'missing.pptx'), 'pptx')).kind).toBe('none')
     writeFileSync(join(dir, 'junk.pptx'), 'junk')
     expect((await previewFile(join(dir, 'junk.pptx'), 'pptx')).kind).toBe('none')
+  })
+})
+
+describe('deck-wide budgets', () => {
+  const emptyTable = (id: number, rows: number, cols: number): string =>
+    `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="t"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>${xf(0, 0, 914400, 914400)}<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl>${`<a:tr>${'<a:tc/>'.repeat(cols)}</a:tr>`.repeat(rows)}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>`
+
+  it('many sldId entries for one part walk it once', async () => {
+    const z = await JSZip.loadAsync(await mini({ slide: slideXml(textSp(2, '<a:p><a:r><a:t>x</a:t></a:r></a:p>')) }))
+    const ids = Array.from({ length: 200 }, (_, i) => `<p:sldId id="${256 + i}" r:id="rId2"/>`).join('')
+    z.file('ppt/presentation.xml', `<p:presentation ${NS}><p:sldIdLst>${ids}</p:sldIdLst><p:sldSz cx="9144000" cy="6858000"/></p:presentation>`)
+    const p = await previewPptxBuffer(await gen(z))
+    expect(slides(p).length).toBe(1)
+  })
+
+  it('a table-heavy deck stays within the cell budget, empty cells included', async () => {
+    const frames = Array.from({ length: 40 }, (_, i) => emptyTable(i + 2, 100, 64)).join('')
+    const p = await previewPptxBuffer(await mini({ slide: slideXml(frames) }))
+    const s = slides(p)[0]
+    let cells = 0
+    for (const sh of s.shapes) if (sh.type === 'table') for (const r of sh.rows) cells += r.length
+    expect(cells).toBeLessThanOrEqual(DECK_CELLS_BUDGET)
+    expect(s.truncatedShapes ?? 0).toBeGreaterThan(0)
+  })
+
+  it('one image used by many shapes is charged per use', async () => {
+    const img = Buffer.concat([PNG, randomBytes(1_000_000)])
+    const pic = (id: number): string => `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="p"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId5"/></p:blipFill><p:spPr>${xf(0, 0, 914400, 914400)}</p:spPr></p:pic>`
+    const s = slides(await previewPptxBuffer(await mini({ slide: slideXml(Array.from({ length: 60 }, (_, i) => pic(i + 2)).join('')), slideRels: [['rId5', 'image', '../media/a.png']], extra: { 'ppt/media/a.png': img } })))[0]
+    const images = s.shapes.filter((x) => x.type === 'image').length
+    expect(images).toBeLessThanOrEqual(20)
+    expect(images).toBeGreaterThan(0)
+    expect(s.shapes.filter((x) => x.type === 'placeholder').length).toBe(60 - images)
+  })
+
+  it('a non-xml name carrying xml is charged against the xml budget', async () => {
+    const buf = await mini({ slide: slideXml(''), extra: { 'ppt/other.dat': `<a:x>${'a'.repeat(300)}</a:x>` } })
+    expect((await previewPptxBuffer(buf, 200)).kind).toBe('none')
+  })
+
+  it('prst names from Object.prototype are plain "other" geometry and the preview clones', async () => {
+    const sp = (prst: string): string => `<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xf(0, 0, 914400, 914400)}<a:prstGeom prst="${prst}"/><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></p:spPr></p:sp>`
+    for (const prst of ['constructor', '__proto__', 'toString']) {
+      const s = slides(await previewPptxBuffer(await mini({ slide: slideXml(sp(prst)) })))[0]
+      expect(s.shapes[0]).toMatchObject({ type: 'shape', geometry: 'other' })
+      expect(() => structuredClone(s)).not.toThrow()
+    }
+  })
+
+  it('a title with control characters is cleaned', async () => {
+    const t = `<p:sp><p:nvSpPr><p:cNvPr id="2" name="t"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr>${xf(0, 0, 914400, 914400)}</p:spPr><p:txBody><a:bodyPr/><a:p><a:r><a:t>Hi\u0007\u0085 there</a:t></a:r></a:p></p:txBody></p:sp>`
+    expect(slides(await previewPptxBuffer(await mini({ slide: slideXml(t) })))[0].title).toBe('Hi there')
   })
 })

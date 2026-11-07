@@ -27,7 +27,7 @@ import {
 } from '@shared/types'
 import { sniffImage } from './imageInfo'
 import { child, childrenNamed, descend, parseXml, XmlLiteError, type XmlEl } from './xmlLite'
-import { zipEntryNames, zipInfo, zipMaxSize, zipSumSizes, zipVerifyEntries } from './zipGuard'
+import { zipEntryNames, zipEntrySize, zipInfo, zipMaxSize, zipSumSizes, zipVerifyEntries } from './zipGuard'
 
 const none = (reason: string): OutputPreview => ({ kind: 'none', reason })
 
@@ -38,7 +38,10 @@ const NOTES_MAX = 20_000
 const CELL_TEXT_MAX = 2000
 const GROUP_DEPTH_MAX = 8
 const PARAS_MAX = 1000
-const TOO_LARGE = 'This deck is too large to preview here. Open it instead.'
+const ELEMENTS_BUDGET = 1_500_000
+export const DECK_SHAPES_BUDGET = 20_000
+export const DECK_CELLS_BUDGET = 200_000
+const TOO_LARGE ='This deck is too large to preview here. Open it instead.'
 
 function readCapped(path: string, cap: number): Buffer {
   const fd = openSync(path, 'r')
@@ -94,21 +97,27 @@ class Pkg {
   private xml = new Map<string, XmlEl | null>()
   private rels = new Map<string, Map<string, Rel>>()
   private xmlRead = 0
+  private readonly elements = { left: ELEMENTS_BUDGET }
   imageReads = 0
+  /** Bytes charged per USE of an image (each shape or background), not per distinct part. */
   imageBytes = 0
-  private images = new Map<string, { dataUrl: string } | null>()
+  private images = new Map<string, { dataUrl: string; len: number } | null>()
   constructor(
     readonly zip: JSZip,
-    readonly names: Set<string>
+    readonly names: Set<string>,
+    readonly buf: Buffer,
+    readonly maxXmlBytes: number = OUTPUT_PPTX_PREVIEW_XML_MAX_BYTES
   ) {}
 
   async text(name: string): Promise<string | null> {
     if (!this.names.has(name)) return null
     const f = this.zip.file(name)
     if (!f) return null
+    // charge the declared size at 1x BEFORE reading, whatever the part is called
+    this.xmlRead += zipEntrySize(this.buf, name) ?? 0
+    if (this.xmlRead > this.maxXmlBytes) throw new XmlLiteError(TOO_LARGE)
     const s = await f.async('string')
-    this.xmlRead += s.length
-    if (this.xmlRead > OUTPUT_PPTX_PREVIEW_XML_MAX_BYTES * 2) throw new XmlLiteError(TOO_LARGE)
+    if (this.xmlRead + s.length > this.maxXmlBytes * 2) throw new XmlLiteError(TOO_LARGE)
     return s
   }
 
@@ -117,13 +126,21 @@ class Pkg {
     let el: XmlEl | null = null
     try {
       const s = await this.text(name)
-      el = s === null ? null : parseXml(s)
+      el = s === null ? null : parseXml(s, {}, this.elements)
     } catch (e) {
       if (!(e instanceof XmlLiteError)) throw e
       if (e.message === TOO_LARGE) throw e
+      if (this.elements.left < 0) throw new XmlLiteError(TOO_LARGE)
     }
     this.xml.set(name, el)
     return el
+  }
+
+  /** Forget a parsed tree (and its rels) once its slide is done; layouts, masters and themes stay cached. */
+  drop(part: string): void {
+    this.xml.delete(part)
+    this.xml.delete(relsPart(part))
+    this.rels.delete(part)
   }
 
   async relsOf(part: string): Promise<Map<string, Rel>> {
@@ -146,22 +163,25 @@ class Pkg {
   /** A listed image part as a data URL, within the caps; null for anything else (never read when over budget). */
   async image(target: string | null): Promise<{ dataUrl: string } | null> {
     if (!target || !this.names.has(target)) return null
-    if (this.images.has(target)) return this.images.get(target) ?? null
-    let out: { dataUrl: string } | null = null
-    if (this.imageReads + 0 < OUTPUT_PREVIEW_DECK_IMAGES_TOTAL_BYTES * 2 && this.imageBytes < OUTPUT_PREVIEW_DECK_IMAGES_TOTAL_BYTES) {
-      const f = this.zip.file(target)
-      if (f) {
-        const data = await f.async('nodebuffer')
-        this.imageReads += data.length
-        const t = sniffImage(data)
-        if (t && data.length <= OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES && this.imageBytes + data.length <= OUTPUT_PREVIEW_DECK_IMAGES_TOTAL_BYTES) {
-          this.imageBytes += data.length
-          out = { dataUrl: `data:image/${t};base64,${data.toString('base64')}` }
+    let hit = this.images.get(target)
+    if (hit === undefined) {
+      hit = null
+      if (this.imageReads < OUTPUT_PREVIEW_DECK_IMAGES_TOTAL_BYTES * 2 && this.imageBytes < OUTPUT_PREVIEW_DECK_IMAGES_TOTAL_BYTES) {
+        const f = this.zip.file(target)
+        if (f) {
+          const data = await f.async('nodebuffer')
+          this.imageReads += data.length
+          const t = sniffImage(data)
+          if (t && data.length <= OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES) hit = { dataUrl: `data:image/${t};base64,${data.toString('base64')}`, len: data.length }
         }
       }
+      this.images.set(target, hit)
     }
-    this.images.set(target, out)
-    return out
+    if (!hit) return null
+    // every use is charged: the data URL is copied into each shape or background that shows it
+    if (this.imageBytes + hit.len > OUTPUT_PREVIEW_DECK_IMAGES_TOTAL_BYTES) return null
+    this.imageBytes += hit.len
+    return { dataUrl: hit.dataUrl }
   }
 }
 
@@ -328,6 +348,8 @@ interface Scope {
   masterStyles: XmlEl | undefined
   defaultText: XmlEl | undefined
   textBudget: { left: number }
+  /** Deck-wide object budget shared by every slide: shapes built and table cells built (empty ones count). */
+  deck: { shapes: number; cells: number }
   shapes: SlideShape[]
   truncated: number
   title?: string
@@ -481,7 +503,11 @@ function fillOf(spPr: XmlEl | undefined, th: Theme | undefined): { fill?: string
   return out
 }
 
-const GEOMETRY: Record<string, 'rect' | 'roundRect' | 'ellipse'> = { rect: 'rect', roundRect: 'roundRect', ellipse: 'ellipse' }
+const GEOMETRY = new Map<string, 'rect' | 'roundRect' | 'ellipse'>([
+  ['rect', 'rect'],
+  ['roundRect', 'roundRect'],
+  ['ellipse', 'ellipse']
+])
 
 function altOf(nv: XmlEl | undefined): string | undefined {
   const d = child(nv, 'cNvPr')?.attrs.descr
@@ -491,8 +517,11 @@ function altOf(nv: XmlEl | undefined): string | undefined {
 }
 
 function push(s: Scope, shape: SlideShape): void {
-  if (s.shapes.length >= OUTPUT_PREVIEW_SLIDE_SHAPES_MAX) s.truncated++
-  else s.shapes.push(shape)
+  if (s.shapes.length >= OUTPUT_PREVIEW_SLIDE_SHAPES_MAX || s.deck.shapes <= 0) s.truncated++
+  else {
+    s.deck.shapes--
+    s.shapes.push(shape)
+  }
 }
 
 function cellRuns(s: Scope, tc: XmlEl): DocumentRun[] {
@@ -519,7 +548,7 @@ async function processSp(s: Scope, sp: XmlEl, tf: Tf): Promise<void> {
   const txBody = child(sp, 'txBody')
   const isTitle = ph !== undefined && (ph.type === 'title' || ph.type === 'ctrTitle')
   if (isTitle && s.title === undefined) {
-    const t = textOfParas(txBody)
+    const t = safeText(textOfParas(txBody)).trim()
     if (t) s.title = t.slice(0, 500)
   }
   if (ph && (ph.type === 'sldNum' || ph.type === 'dt' || ph.type === 'ftr') && !hasTextBody(txBody)) return
@@ -551,7 +580,7 @@ async function processSp(s: Scope, sp: XmlEl, tf: Tf): Promise<void> {
     return
   }
   if (!ph && (style.fill || style.line)) {
-    push(s, { type: 'shape', ...box, geometry: (prst && GEOMETRY[prst]) || (prst ? 'other' : 'rect'), ...style })
+    push(s, { type: 'shape', ...box, geometry: (prst && GEOMETRY.get(prst)) || (prst ? 'other' : 'rect'), ...style })
   }
 }
 
@@ -589,7 +618,14 @@ async function processFrame(s: Scope, gf: XmlEl, tf: Tf): Promise<void> {
     const rows: DocumentRun[][][] = []
     for (const tr of childrenNamed(tbl, 'tr')) {
       if (rows.length >= OUTPUT_PREVIEW_ROWS_MAX) break
-      rows.push(childrenNamed(tr, 'tc').slice(0, OUTPUT_PREVIEW_COLUMNS_MAX).map((tc) => cellRuns(s, tc)))
+      const tcs = childrenNamed(tr, 'tc').slice(0, OUTPUT_PREVIEW_COLUMNS_MAX)
+      if (s.deck.cells < tcs.length) {
+        s.deck.cells = 0
+        s.truncated++
+        break
+      }
+      s.deck.cells -= tcs.length
+      rows.push(tcs.map((tc) => cellRuns(s, tc)))
     }
     push(s, { type: 'table', ...box, rows })
     return
@@ -600,7 +636,7 @@ async function processFrame(s: Scope, gf: XmlEl, tf: Tf): Promise<void> {
 
 async function walk(s: Scope, parent: XmlEl, tf: Tf, depth: number): Promise<void> {
   for (const el of parent.children) {
-    if (s.shapes.length >= OUTPUT_PREVIEW_SLIDE_SHAPES_MAX) {
+    if (s.shapes.length >= OUTPUT_PREVIEW_SLIDE_SHAPES_MAX || s.deck.shapes <= 0) {
       if (['sp', 'pic', 'graphicFrame'].includes(el.name)) s.truncated++
       else if (el.name === 'grpSp') s.truncated += countLeaves(el)
       continue
@@ -695,7 +731,7 @@ export async function previewPptxBuffer(buf: Buffer, maxXmlBytes: number = OUTPU
   if (zv) return none(`OrgAI did not preview this deck: ${zv}`)
   try {
     const zip = await JSZip.loadAsync(buf)
-    const pkg = new Pkg(zip, new Set(names))
+    const pkg = new Pkg(zip, new Set(names), buf, maxXmlBytes)
     const ct = await pkg.text('[Content_Types].xml')
     if (ct === null) return none('OrgAI did not preview this deck: it has no content types part.')
     if (/macroEnabled/i.test(ct)) return none(MACRO)
@@ -710,13 +746,19 @@ export async function previewPptxBuffer(buf: Buffer, maxXmlBytes: number = OUTPU
     if (!(cx > 0 && cy > 0 && cx <= 1e9 && cy <= 1e9)) return none('OrgAI did not preview this deck: its slide size is not valid.')
     const presRels = await pkg.relsOf(main)
     const order: string[] = []
+    const seen = new Set<string>()
     for (const sid of childrenNamed(child(pres, 'sldIdLst'), 'sldId')) {
       const rel = presRels.get(sid.attrs['r:id'] ?? '')
-      if (rel && rel.type === 'slide' && rel.target) order.push(rel.target)
+      // a part referenced again is never walked again
+      if (rel && rel.type === 'slide' && rel.target && !seen.has(rel.target)) {
+        seen.add(rel.target)
+        order.push(rel.target)
+      }
     }
     if (!order.length) return none('This deck has no slides to show.')
     const defaultText = child(pres, 'defaultTextStyle')
     const textBudget = { left: TEXT_BUDGET }
+    const deck = { shapes: DECK_SHAPES_BUDGET, cells: DECK_CELLS_BUDGET }
     const slides: SlidePreview[] = []
     const themes = new Map<string, Theme>()
     for (const slidePart of order.slice(0, Math.min(maxSlides, OUTPUT_PREVIEW_SLIDES_MAX))) {
@@ -724,6 +766,7 @@ export async function previewPptxBuffer(buf: Buffer, maxXmlBytes: number = OUTPU
       const n = slides.length + 1
       if (!slideEl) {
         slides.push({ n, shapes: [] })
+        pkg.drop(slidePart)
         continue
       }
       const rels = await pkg.relsOf(slidePart)
@@ -754,6 +797,7 @@ export async function previewPptxBuffer(buf: Buffer, maxXmlBytes: number = OUTPU
         masterStyles: child(master ?? undefined, 'txStyles'),
         defaultText,
         textBudget,
+        deck,
         shapes: [],
         truncated: 0
       }
@@ -780,6 +824,8 @@ export async function previewPptxBuffer(buf: Buffer, maxXmlBytes: number = OUTPU
         }
       }
       slides.push(slide)
+      pkg.drop(slidePart)
+      if (notesRel?.target) pkg.drop(notesRel.target)
     }
     const truncatedSlides = order.length - slides.length
     return { kind: 'slides', size: { w: cx / 12700, h: cy / 12700 }, slides, ...(truncatedSlides > 0 ? { truncatedSlides } : {}) }

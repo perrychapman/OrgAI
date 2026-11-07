@@ -75,7 +75,12 @@ export function decodeXmlText(s: string): string {
 }
 
 /** Parse one XML document into an element tree. */
-export function parseXml(input: string, limits: Partial<XmlLimits> = {}): XmlEl {
+/** A counter shared by every parse of one package: elements left for the whole deck. */
+export interface XmlBudget {
+  left: number
+}
+
+export function parseXml(input: string, limits: Partial<XmlLimits> = {}, budget?: XmlBudget): XmlEl {
   const L = { ...XML_DEFAULT_LIMITS, ...limits }
   const text = input.charCodeAt(0) === 0xfeff ? input.slice(1) : input
   const n = text.length
@@ -154,6 +159,7 @@ export function parseXml(input: string, limits: Partial<XmlLimits> = {}): XmlEl 
     const colon = full.indexOf(':')
     const el: XmlEl = { name: colon < 0 ? full : full.slice(colon + 1), prefix: colon < 0 ? '' : full.slice(0, colon), attrs: Object.create(null) as Record<string, string>, children: [], text: '' }
     if (++elements > L.maxElements) fail('The XML has too many elements.')
+    if (budget && --budget.left < 0) fail('The XML has too many elements.')
     let selfClose = false
     let nAttrs = 0
     for (;;) {
