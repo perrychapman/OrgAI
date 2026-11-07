@@ -843,3 +843,52 @@ Order inside C: (1) versions list, version select, old-version banner, restore, 
 - OQ2: should agents be able to write notes (for example a reviewer agent annotating a deck)? Proposed: no in this phase.
 - OQ3: a "package for the client" export (zip of the set, PDF of a deck or document) is not in this spec. Proposed next step after Phase C.
 - OQ4: pptxgenjs licence and maintenance status must be confirmed at implementation time (fallback in 16.3); the preview parser's fidelity (theme fonts, grouped shapes, rotated shapes) is best effort and is shown as such.
+
+## Phase A implementation notes (2026-11-07)
+
+Built renderer-only on top of `5d0c2a53`; no change to `src/shared`, `src/main`, `src/preload` or types.
+
+What landed:
+- Diagram viewer `components/outputs/diagram/` (`DiagramViewer`, `PanZoomSurface` + `ShadowSvg`, `usePanZoom`, `DiagramToolbar` + `SurfaceToolbar`,
+  `DiagramOverview`, `DiagramSourcePane`, `DiagramExport`, `DiagramError`, `useDiagramDraw`, `useSurfaceNotes`); pure maths in `lib/diagramView.ts` and
+  export helpers in `lib/diagramExport.ts` (both unit-tested); `lib/outputZoom.ts` is reduced to `svgNaturalSize`; styles in the new `styles/outputs-diagram.css`.
+  `MermaidView` is a thin wrapper; `SvgPreview` and `ImagePreview` use the same surface and zoom bar (image: the old Fit/Actual control is gone).
+  `OutputPreview` passes the surface context (`detail` / `dialog`, Open large, Full window) through `OutputViewContext` (`previewStatus.ts`).
+- Testids differ from section 15 in these ways: the zoom group keeps `output-mermaid-zoom[data-value]` (class `diagram-zoom`) and the viewport is
+  `diagram-viewport[data-mode][data-k][data-x][data-y][data-natural-w][data-natural-h][data-shapes]` (one element cannot carry two testids). The
+  export panel is `diagram-export-panel`, the narrow More menu `diagram-more-menu`, visible notices `diagram-notice` (`output-notice` stays the
+  surfaces'), the guard line `diagram-guard`. The viewer root `output-mermaid[data-state=drawing|ok|error|refused|guard|truncated][data-view]`.
+  Gone: `output-mermaid-view`, `output-mermaid-copy`, `output-mermaid-error`, `output-mermaid-refused`, `output-mermaid-stage`, `output-image-size`,
+  `output-zoom-status`, and `output-source` for diagrams (the source is the `diagram-source` textarea).
+- The embedded viewport is `clamp(240px, 42vh, 480px)` high (269 px at 1024x640, 420 px at 1600x1000). The large-diagram note has no second
+  "Open large" button: the toolbar's primary one sits right above it. The Larger view moves focus to the viewport once it is drawn (unless the
+  user moved focus first). Esc leaves Full window first unless a confirm opened from the viewer has focus.
+- Toolbar roving: a radio group is one stop (its checked radio); Up/Down change the mode natively, Left/Right move between controls, modifiers
+  are ignored (Alt+Left/Right steps outputs).
+- Cheap findings: M1 tab count (`side-tab-outputs-count`; accessible name "Outputs, 12 outputs" through the shared Tabs count) and row copy
+  ("Produced diagram: Architecture diagram", "Registered image: Logo"; `kindWord` in `lib/outputsRun.ts`); M2 default selection of the first
+  filtered row without focus or announcement; M3 `OutputStepper` (`output-stepper`, `output-prev`, `output-next`, `output-position`, sr-only
+  `output-step-status` that speaks "<title>, 3 of 12" after a button step) in the run side tab and the project pane, Alt+Left/Right focusing
+  the new heading; V1 `output-sheet-formula-note`; V3 kind chips as one toolbar `outputs-kinds`.
+- e2e `e2e/outputs.mjs`: the existing checks on the new testids plus a second project driven by an `ORGAI_MOCK_SCRIPT` set in main for that run
+  (80-shape flowchart, two-node flowchart, broken flowchart), at 1024x640 and 1600x1000 in both themes: Fit fills and contains the large drawing,
+  the shape note, plain wheel passes through in the panel, Ctrl+wheel zooms, drag pans, arrow / Shift+arrow / 0 / 1 / + / - keys, double-click
+  Fit/100%, a small diagram between 100% and 150% centred, the broken diagram's error pane with its source, the toolbar's Tab stop, and in the
+  Larger view: focus on the viewport, plain wheel zoom, O overview, F Full window and the first Esc, Split live redraw, a broken edit keeping
+  the last drawing with the stale badge, Copy SVG's notice, no running keyframe animation, no page scroll. `E2E_DIAGRAMS_ONLY=1` runs only that part.
+
+Not built in Phase A: "Ask the team to fix it" (needs the revise contract, Phase C); Export / Copy image from the More actions menu (the viewer
+toolbar has them; the menu has Copy source); new keys in the shared SHORTCUTS table / Keyboard shortcuts dialog (the viewer keys are local and
+listed in its hint; Alt+Left/Right is not listed yet); "3 of 12" inside the Larger view.
+
+Unverified: PNG and SVG files actually saved (Blob download; Electron may show its own save dialog), Copy as image on the real clipboard, the
+light-theme export redraw and "As shown", pinch and two-pointer gestures, middle-button pan, the overview's drag, screen reader output of
+`output-live` and `output-step-status`, contrast of the stale (60%) drawing and the "Light drawing" paper, a source over 64 KB (Draw it anyway)
+or truncated at 256 KB, SVG and image surfaces beyond the existing load checks, macOS and Linux. Light drawing paints with the literal white
+keyword (no paper token exists). Alt+Left in Electron might also trigger history back (not seen).
+
+Reviewer (two passes): the SVG / PNG path is safe; H1 (toolbar could leave the Tab order) and H2 (stale e2e) fixed, M1, L1-L4, L6, L8, L9
+fixed. Open Lows: `output-step-status` is a second polite region on the surface (spec 14.2 wants one; route it through `outputs-status` /
+`tray-announce`); the Larger view waits about 3 s for the drawing before focusing the viewport, a slower draw leaves focus on the dialog's first
+control; Space on the viewport only stops page scroll (plain drag already pans); Alt+Left/Right and the viewer keys are not in the shared
+SHORTCUTS table (a `src/shared/view` edit).

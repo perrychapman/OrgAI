@@ -56,6 +56,9 @@ to the run's chain (every member, every agent); the project tab shows all of it.
 
 ## 4. Detail and previews (`components/outputs/OutputDetail.tsx`, `OutputPreview.tsx` and the views)
 
+> Superseded for diagrams, SVG and images by `docs/design/outputs-2.md` section 8 (the pan/zoom diagram viewer, built in
+> Phase A; see its "Phase A implementation notes").
+
 `OutputDetail` (`output-detail[data-id][data-kind]`): `h3#output-detail-heading` (`output-detail-heading`,
 `tabIndex=-1`, the title through `showHidden`), meta line, provenance line where the run tag is a link to the run
 (`output-run-link`, lands like the Knowledge history link: opens the run, focus on the composer, else the selected run

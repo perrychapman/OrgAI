@@ -1,26 +1,35 @@
 import type { ReactElement } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OutputPreview as OutputPreviewData, RunOutput } from '@shared/types'
 import { previewCacheFor, previewKey } from '../../lib/outputs'
 import { Button } from '../ui/Button'
-import { PreviewStatusContext } from './previewStatus'
+import { OutputViewContext, PreviewStatusContext, type OutputViewValue } from './previewStatus'
 import DocumentView from './DocumentView'
 import SheetView from './SheetView'
 import TextPreview from './TextPreview'
 import ImagePreview from './ImagePreview'
 import SvgPreview from './SvgPreview'
 import '../../styles/outputs-preview.css'
+import '../../styles/outputs-diagram.css'
 
 export interface OutputPreviewProps {
   output: RunOutput
   /** The detail's heading id, for naming scroll regions. */
   labelledBy?: string
+  /** Where it is shown: the detail column (default) or the Larger view dialog. */
+  context?: 'detail' | 'dialog'
+  /** The detail's way into the Larger view, for the diagram's Open large button. */
+  onOpenLarge?: () => void
+  /** The Larger view covers the whole window (dialog only). */
+  full?: boolean
+  onToggleFull?: () => void
 }
 
 type State = { status: 'loading' } | { status: 'error' } | { status: 'ready'; preview: OutputPreviewData }
 
 /** The in-window preview of one output, fetched on demand and cached per project. Renders nothing for a missing file. */
-export default function OutputPreview({ output }: OutputPreviewProps): ReactElement | null {
+export default function OutputPreview({ output, context = 'detail', onOpenLarge, full, onToggleFull }: OutputPreviewProps): ReactElement | null {
+  const view = useMemo<OutputViewValue>(() => ({ context, onOpenLarge, full, onToggleFull }), [context, onOpenLarge, full, onToggleFull])
   const { projectId, id } = output
   const key = previewKey(output)
   const [state, setState] = useState<State>(() => {
@@ -77,16 +86,19 @@ export default function OutputPreview({ output }: OutputPreviewProps): ReactElem
   if (state.status === 'loading') {
     return (
       <PreviewStatusContext.Provider value={setBodyStatus}>
-        {statusRegion}
-        <div className="output-preview" data-testid="output-preview" data-state="loading">
-          <p className="output-preview-note">Loading preview…</p>
-        </div>
+        <OutputViewContext.Provider value={view}>
+          {statusRegion}
+          <div className="output-preview" data-testid="output-preview" data-state="loading">
+            <p className="output-preview-note">Loading preview…</p>
+          </div>
+        </OutputViewContext.Provider>
       </PreviewStatusContext.Provider>
     )
   }
   if (state.status === 'error') {
     return (
       <PreviewStatusContext.Provider value={setBodyStatus}>
+        <OutputViewContext.Provider value={view}>
         {statusRegion}
         <div className="output-preview" data-testid="output-preview" data-state="error">
           <p className="output-preview-note output-preview-problem" data-testid="output-preview-error">
@@ -98,6 +110,7 @@ export default function OutputPreview({ output }: OutputPreviewProps): ReactElem
             </Button>
           </div>
         </div>
+        </OutputViewContext.Provider>
       </PreviewStatusContext.Provider>
     )
   }
@@ -131,10 +144,12 @@ export default function OutputPreview({ output }: OutputPreviewProps): ReactElem
   }
   return (
     <PreviewStatusContext.Provider value={setBodyStatus}>
-      {statusRegion}
-      <div className="output-preview" data-testid="output-preview" data-state="ready" data-kind={p.kind}>
-        {body}
-      </div>
+      <OutputViewContext.Provider value={view}>
+        {statusRegion}
+        <div className="output-preview" data-testid="output-preview" data-state="ready" data-kind={p.kind} data-context={context}>
+          {body}
+        </div>
+      </OutputViewContext.Provider>
     </PreviewStatusContext.Provider>
   )
 }

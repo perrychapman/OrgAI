@@ -11,6 +11,7 @@ import { EmptyState } from '../components/ui/EmptyState'
 import OutputDetail from '../components/outputs/OutputDetail'
 import { OutputsFilters } from '../components/outputs/OutputsFilters'
 import { OutputsList, type OutputsListHandle } from '../components/outputs/OutputsList'
+import { OutputStepper, stepKeyHandler } from '../components/outputs/OutputStepper'
 import '../styles/outputs-view.css'
 
 const HEADING_ID = 'output-detail-heading'
@@ -169,6 +170,14 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     if (target) focusRow(target)
     else focusLater(() => document.querySelector<HTMLElement>('[data-testid=outputs-search]'))
   }, [all, rows, selectedId, loaded, focusRow])
+  // ---- default selection: entering the tab shows the newest output (no focus move, no announcement) ----
+  const defaulted = useRef(false)
+  useEffect(() => {
+    if (defaulted.current || !loaded || rows.length === 0 || selectedId) return
+    if (outputsFocus && outputsFocus.projectId === projectId) return
+    defaulted.current = true
+    setSelectedId(rows[0].id)
+  }, [loaded, rows, selectedId, outputsFocus, projectId])
   // ---- a deep link (store.openOutputItem) ----
   useEffect(() => {
     if (!outputsFocus || outputsFocus.projectId !== projectId || !loaded) return
@@ -180,8 +189,19 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     openItem(target.id)
   }, [outputsFocus, projectId, loaded, all, filter, clearOutputsFocus, openItem])
 
+  // Previous / next: a click keeps focus on the button, the keys put it on the new heading.
+  const step = useCallback(
+    (to: string, viaKeyboard: boolean): void => {
+      selectItem(to)
+      if (viaKeyboard) focusHeading()
+    },
+    [focusHeading, selectItem]
+  )
+  const onStepKey = stepKeyHandler(rows, selectedId, step)
+
   // Esc in the pane returns to the row (a popover that is open takes its own Esc first).
   const onPaneKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    onStepKey(e)
     if (e.key !== 'Escape' || e.defaultPrevented || !selectedId) return
     const t = e.target as HTMLElement
     try {
@@ -223,14 +243,19 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
       <SidePanel label="output preview" persistKey="outputs" autoCollapseBelow={1100} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">
         <div className="outputs-detail-body" data-testid="outputs-detail-body" tabIndex={-1} onKeyDown={onPaneKeyDown}>
           {selected ? (
-            <OutputDetail
-              key={selected.id}
-              output={selected}
-              autoFocus={false}
-              // The list update drives the next selection (the effect above); refetch so it cannot be missed.
-              onRemoved={() => void loadOutputs(projectId)}
-              onNotice={(text) => setNotice(text)}
-            />
+            <>
+              <div className="outputs-stepbar">
+                <OutputStepper rows={rows} id={selected.id} onStep={step} />
+              </div>
+              <OutputDetail
+                key={selected.id}
+                output={selected}
+                autoFocus={false}
+                // The list update drives the next selection (the effect above); refetch so it cannot be missed.
+                onRemoved={() => void loadOutputs(projectId)}
+                onNotice={(text) => setNotice(text)}
+              />
+            </>
           ) : (
             <p className="panel-note outputs-pick">Select an output to see its preview here.</p>
           )}

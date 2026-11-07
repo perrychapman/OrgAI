@@ -140,6 +140,19 @@ export function resolveOutputFocus(list: readonly RunOutput[], outputId: string 
   return list.find((o) => o.id === outputId) ?? null
 }
 
+/** The id one step from `id` in list order (-1 previous, 1 next); null at an end or when `id` is not in the list. */
+export function stepId(rows: readonly Pick<RunOutput, 'id'>[], id: string | null, dir: -1 | 1): string | null {
+  const at = id ? rows.findIndex((o) => o.id === id) : -1
+  if (at < 0) return null
+  return rows[at + dir]?.id ?? null
+}
+
+/** "3 of 12" for the shown output; '' when it is not in the list. */
+export function positionText(rows: readonly Pick<RunOutput, 'id'>[], id: string | null): string {
+  const at = id ? rows.findIndex((o) => o.id === id) : -1
+  return at < 0 ? '' : `${at + 1} of ${rows.length}`
+}
+
 /** Ids in `next` that are not in `prev` (live arrivals; an in-place update is not new). */
 export function newOutputIds(prev: readonly Pick<RunOutput, 'id'>[], next: readonly Pick<RunOutput, 'id'>[]): string[] {
   const had = new Set(prev.map((o) => o.id))

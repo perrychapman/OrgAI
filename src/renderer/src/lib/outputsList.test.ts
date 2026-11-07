@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { RunOutput } from '@shared/types'
-import { countLine, dayGroups, dayLabel, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, matchesQuery, newOutputIds, producedText, resolveOutputFocus, runOptions, titleTypeAhead, EMPTY_OUTPUTS_FILTER } from './outputsList'
+import { countLine, dayGroups, dayLabel, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, matchesQuery, newOutputIds, producedText, resolveOutputFocus, runOptions, titleTypeAhead, stepId, positionText, EMPTY_OUTPUTS_FILTER } from './outputsList'
+
+describe('stepId / positionText', () => {
+  const rows = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+  it('steps in list order and stops at the ends', () => {
+    expect(stepId(rows, 'b', 1)).toBe('c')
+    expect(stepId(rows, 'b', -1)).toBe('a')
+    expect(stepId(rows, 'a', -1)).toBeNull()
+    expect(stepId(rows, 'c', 1)).toBeNull()
+    expect(stepId(rows, 'x', 1)).toBeNull()
+    expect(stepId(rows, null, 1)).toBeNull()
+  })
+  it('words the position', () => {
+    expect(positionText(rows, 'b')).toBe('2 of 3')
+    expect(positionText(rows, 'x')).toBe('')
+  })
+})
 
 const NOW = new Date(2026, 10, 7, 12, 0, 0).getTime()
 const day = (d: number, h = 10): number => new Date(2026, 10, d, h, 0, 0).getTime()

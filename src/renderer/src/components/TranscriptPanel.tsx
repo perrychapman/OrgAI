@@ -31,7 +31,9 @@ import { projectKindOf } from '@shared/defaults'
 import RunKnowledge from './knowledge/RunKnowledge'
 import { isRunWindow } from '../lib/runKnowledge'
 import '../styles/knowledge-run.css'
-import { selectedProject, useAppStore, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
+import { selectedProject, useAppStore, useProjectSummaries, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
+import { chainOf } from '../lib/runChains'
+import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
 import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
@@ -381,6 +383,10 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     const run = s.runs[runId]?.summary
     return !!run && run.kind === 'work' && !run.quick && !isVirtualProjectId(run.projectId)
   })
+  // The Outputs tab's count: the same list RunOutputs shows (every member run of the chain).
+  const outputsAll = useAppStore((s) => (projectId ? s.outputsByProject[projectId] : undefined))
+  const chainSummaries = useProjectSummaries()
+  const outputsCount = useMemo(() => outputsOfRuns(outputsAll, chainOf(chainSummaries, runId).map((m) => m.id)).length, [outputsAll, chainSummaries, runId])
   const tab: SideTab = (planTab === 'knowledge' && !showKnowledgeTab) || (planTab === 'outputs' && !showOutputsTab) ? 'transcript' : planTab
 
   // One list for both shapes: the merged feed, or this run's entries as feed items.
@@ -583,7 +589,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     { id: 'transcript', label: 'Transcript', testId: 'side-tab-transcript' },
     ...(showPlanTab ? [{ id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' }] : []),
     { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
-    ...(showOutputsTab ? [{ id: 'outputs', label: 'Outputs', testId: 'side-tab-outputs' }] : []),
+    ...(showOutputsTab ? [{ id: 'outputs', label: 'Outputs', count: outputsCount, countLabel: outputsCountLabel(outputsCount), countTestId: 'side-tab-outputs-count', testId: 'side-tab-outputs' }] : []),
     ...(showKnowledgeTab ? [{ id: 'knowledge', label: 'Knowledge', testId: 'side-tab-knowledge' }] : []),
     { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
   ]
