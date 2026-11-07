@@ -322,9 +322,20 @@ function userLabel(user: WinUser): string {
   return /^[\x20-\x7e]+$/.test(user.name) ? `${user.name} (${user.sid})` : user.sid
 }
 
+/** SYSTEM and Administrators: a new file made by an elevated process carries them as its own entries (the token's default DACL), so they are removed as well (never the user's own SID). */
+const SYSTEM_SID = 'S-1-5-18'
+const ADMINS_SID = 'S-1-5-32-544'
+
+/** The icacls arguments that leave this user as the only principal on a key file. */
+export function keyFileAclArgs(path: string, sid: string): string[] {
+  const drop = [SYSTEM_SID, ADMINS_SID].filter((x) => x !== sid.toUpperCase())
+  return [path, '/inheritance:r', '/grant:r', `*${sid}:F`, ...(drop.length ? ['/remove:g', ...drop.map((x) => `*${x}`)] : [])]
+}
+
 /** The exact command that restricts a key file to this user (shown with every refusal of its access list). */
 export function icaclsRemedy(path: string, sid: string): string {
-  return `icacls "${path}" /inheritance:r /grant:r "*${sid}:F"`
+  const [, ...rest] = keyFileAclArgs(path, sid)
+  return `icacls "${path}" ${rest.map((x) => (x.startsWith('/') ? x : `"${x}"`)).join(' ')}`
 }
 
 /** `icacls <path> /save <temp file> /q`, read back as SDDL; a temp folder of its own, removed again. */
@@ -394,7 +405,7 @@ export async function createKeyFileWindows(path: string, content: Buffer, deps: 
   }
   closeSync(fd)
   try {
-    await winRun(deps, 'icacls.exe', [path, '/inheritance:r', '/grant:r', `*${user.sid}:F`])
+    await winRun(deps, 'icacls.exe', keyFileAclArgs(path, user.sid))
     await winVerifyDacl(deps, path, user, 'create')
     const w = openSync(path, 'r+')
     try {

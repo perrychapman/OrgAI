@@ -41,7 +41,7 @@ function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Prom
     hostKind: kind,
     cipher: isApp(kind) ? fakeCipher() : noCipher,
     custodian: custody.factory,
-    platform: process.platform,
+    platform: 'darwin',
     env: {},
     log: () => undefined,
     retryMs: 0,

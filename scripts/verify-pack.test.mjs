@@ -436,7 +436,7 @@ test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_EL
     const npmExec = r.calls.filter((c) => c.env?.ORGAI_ELECTRON_PATH)
     assert.equal(npmExec.length, 3, 'exec, daemon status and daemon stop')
     assert.equal(npmExec[0].env.ORGAI_ELECTRON_PATH, fake.paths.appBinary)
-    assert.ok(npmExec[0].args.includes('auto') && npmExec[0].args.includes('exec'))
+    assert.ok(hasArg(npmExec[0], 'auto') && hasArg(npmExec[0], 'exec'))
     assert.ok(npmExec[0].env.ORGAI_DATA_DIR.includes('orgai-verify-npmcli-'), 'its own data folder')
     assert.deepEqual(r.leftovers, [], 'temp dirs removed')
 

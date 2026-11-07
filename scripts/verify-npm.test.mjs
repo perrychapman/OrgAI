@@ -382,7 +382,8 @@ test('main: a missing tarball or an unknown argument exits 2', async () => {
  */
 function fakeVault({ leak = false, staleAfterClear = false } = {}) {
   const st = { key: undefined, keyFile: undefined, cmds: [] }
-  const wrap = (inner) => async (cmd) => {
+  const wrap = (inner) => async (rawCmd) => {
+    const cmd = unwrapCmdShim(rawCmd)
     const a = cmd.args
     const has = (...w) => w.every((x) => a.includes(x))
     if (has('secrets')) st.cmds.push(a.slice(a.indexOf('secrets')).join(' '))

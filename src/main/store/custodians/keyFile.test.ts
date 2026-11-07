@@ -392,7 +392,7 @@ describe('Windows key file DACL steps (5.3.1; fake whoami / icacls)', () => {
     expect(calls).toEqual([
       ['C:\\Windows\\System32\\whoami.exe', ['/user', '/fo', 'csv', '/nh']],
       ['C:\\Windows\\System32\\icacls.exe', [outside, '/save', '<tmp>', '/q']],
-      ['C:\\Windows\\System32\\icacls.exe', [path, '/inheritance:r', '/grant:r', `*${SID}:F`]],
+      ['C:\\Windows\\System32\\icacls.exe', [path, '/inheritance:r', '/grant:r', `*${SID}:F`, '/remove:g', '*S-1-5-18', '*S-1-5-32-544']],
       ['C:\\Windows\\System32\\icacls.exe', [path, '/save', '<tmp>', '/q']]
     ])
     for (const c of f.calls) expect(c.options.env).toEqual({ SystemRoot: 'C:\\Windows', TEMP: 'C:\\t' })
@@ -463,8 +463,8 @@ describe('Windows key file DACL steps (5.3.1; fake whoami / icacls)', () => {
     const editorMade = fakeWin(path, `D:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;${SID})`)
     const e = await failure(readKeyFileWindows(path, { env, spawner: editorMade.spawner }))
     expect(e.kind).toBe('denied')
-    expect(e.reason).toContain(`icacls "${path}" /inheritance:r /grant:r "*${SID}:F"`)
-    expect(icaclsRemedy(path, SID)).toBe(`icacls "${path}" /inheritance:r /grant:r "*${SID}:F"`)
+    expect(e.reason).toContain(`icacls "${path}" /inheritance:r /grant:r "*${SID}:F" /remove:g "*S-1-5-18" "*S-1-5-32-544"`)
+    expect(icaclsRemedy(path, SID)).toBe(`icacls "${path}" /inheritance:r /grant:r "*${SID}:F" /remove:g "*S-1-5-18" "*S-1-5-32-544"`)
     expect((await failure(readKeyFileWindows(join(outside, 'none'), { env, spawner: ok.spawner }))).kind).toBe('missing')
   })
 

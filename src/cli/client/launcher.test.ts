@@ -245,7 +245,10 @@ describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
     }
     const userDataDir = join(base, 'ud')
     // Host-platform absolute paths (a POSIX literal is not absolute on Windows, where the spawn cwd is the exe's folder).
-    const nodeExe = resolve('/usr/local/bin/node')
+    // A real folder: the host's cwd is the binary's own folder only when that folder exists (else the home folder).
+    const nodeExe = join(base, 'nodebin', 'node')
+    mkdirSync(dirname(nodeExe), { recursive: true })
+    writeFileSync(nodeExe, '')
     const entry = resolve('/pkg/out/cli/orgai.mjs')
     const env = { PATH: '/bin', ORGAI_SECRET_X: 'nope', ELECTRON_RUN_AS_NODE: '1', ORGAI_DAEMON_IDLE_MINUTES: '5' }
     const l = createLauncher({ dataDir, userDataDir, userChoseDataDir: true, env, spawn, runtime: { execPath: nodeExe }, cliEntry: entry })

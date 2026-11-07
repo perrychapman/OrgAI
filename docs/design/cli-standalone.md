@@ -441,7 +441,7 @@ Choice of scheme: a vault opens only with its recorded scheme. A new vault uses 
   - POSIX: created with mode 0o600; open uses `O_NOFOLLOW` then `fstat`: regular file, owner = current uid, no group
     or other bits.
   - Windows: create an empty file exclusively, set a protected DACL granting only the current user's SID (from `whoami
-    /user /fo csv`, never from environment variables) through `icacls <file> /inheritance:r /grant:r *<SID>:F`,
+    /user /fo csv`, never from environment variables) through `icacls <file> /inheritance:r /grant:r *<SID>:F /remove:g *S-1-5-18 *S-1-5-32-544` (an elevated process's new file carries SYSTEM and Administrators as its own entries; found on the windows-latest runner),
     verify with `icacls` output that no other principal remains, and only then write and flush the key; any failure
     deletes the empty file and fails closed. Open checks the same DACL (unverified: `icacls` output parsing across
     locales; a native check is the fallback under D3).
