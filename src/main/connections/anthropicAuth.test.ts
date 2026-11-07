@@ -1,23 +1,91 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { anthropicStatus, candidateLaunch, claudeAuthStatus, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
+import { anthropicStatus, claudeAuthStatus, privateAuthCwd, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
 import { claudeRuntimeMissingMessage, type ClaudeExecutableResolution } from '../runtime/claudeBinary'
 
 const found = (path = '/opt/orgai/claude'): (() => ClaudeExecutableResolution) => () => ({ ok: true, path, source: 'sdk' })
 const missing = (pathCandidate?: string): (() => ClaudeExecutableResolution) => () => ({ ok: false, reason: claudeRuntimeMissingMessage('linux', 'x64'), ...(pathCandidate ? { pathCandidate } : {}) })
 
-describe('candidateLaunch', () => {
-  it('runs every non-shim candidate without a shell, metacharacters included', () => {
-    expect(candidateLaunch('/usr/local/bin/claude', 'darwin')).toEqual({ bin: '/usr/local/bin/claude', shell: false })
-    expect(candidateLaunch('/tmp/a;rm -rf x/claude', 'linux')).toEqual({ bin: '/tmp/a;rm -rf x/claude', shell: false })
-    expect(candidateLaunch('C:\\Users\\me\\.local\\bin\\claude.exe', 'win32')).toEqual({ bin: 'C:\\Users\\me\\.local\\bin\\claude.exe', shell: false })
+describe('privateAuthCwd (review 3)', () => {
+  it('uses an empty private folder under the data folder (not inside run/), not the shared temp dir', async () => {
+    const data = mkdtempSync(join(tmpdir(), 'orgai-authcwd-'))
+    try {
+      const dir = await privateAuthCwd({ dataDir: data })
+      expect(dir).toBe(join(data, 'auth-cwd'))
+      expect(readdirSync(dir)).toEqual([])
+    } finally {
+      rmSync(data, { recursive: true, force: true })
+    }
   })
-  it('uses a shell only for Windows .cmd/.bat shims and drops shims with shell metacharacters', () => {
-    expect(candidateLaunch('C:\\Program Files (x86)\\nodejs\\claude.cmd', 'win32')).toEqual({ bin: 'C:\\Program Files (x86)\\nodejs\\claude.cmd', shell: true })
-    for (const bad of ['C:\\a&calc\\claude.cmd', 'C:\\%PATH%\\claude.bat', 'C:\\a"b\\claude.cmd', 'C:\\a|b\\claude.cmd']) {
-      expect(candidateLaunch(bad, 'win32')).toBeNull()
+  it('wipes a folder that already holds anything (a planted .claude/settings.json)', async () => {
+    const data = mkdtempSync(join(tmpdir(), 'orgai-authcwd-'))
+    try {
+      const dir = await privateAuthCwd({ dataDir: data })
+      mkdirSync(join(dir, '.claude'))
+      writeFileSync(join(dir, '.claude', 'settings.json'), '{}')
+      const again = await privateAuthCwd({ dataDir: data })
+      expect(again).toBe(dir)
+      expect(readdirSync(again)).toEqual([])
+    } finally {
+      rmSync(data, { recursive: true, force: true })
+    }
+  })
+  it('without a data folder makes a fresh mkdtemp under the given temp dir and reuses it while empty', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'orgai-authcwd-tmp-'))
+    const winRun = async (): Promise<string> => '"d\\u","S-1-5-21-1-2-3-1001"\r\n'
+    try {
+      const a = await privateAuthCwd({ tmp, winRun })
+      expect(a).not.toBe(tmp)
+      expect(a.startsWith(tmp)).toBe(true)
+      expect(await privateAuthCwd({ tmp, winRun })).toBe(a)
+      writeFileSync(join(a, 'planted'), 'x')
+      expect(await privateAuthCwd({ tmp, winRun })).not.toBe(a)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+  it.skipIf(process.platform === 'win32')('refuses a folder owned by someone else', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'orgai-authcwd-tmp-'))
+    try {
+      await expect(privateAuthCwd({ tmp, uid: (process.getuid?.() ?? 0) + 1 })).rejects.toThrow(/not owned/)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+  it('win32 fallback restricts the folder to this SID with icacls (absolute paths) before using it', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'orgai-authcwd-win-'))
+    const calls: { bin: string; args: string[] }[] = []
+    const winRun = async (bin: string, args: string[]): Promise<string> => {
+      calls.push({ bin, args })
+      return bin.toLowerCase().endsWith('whoami.exe') ? '"pc\\me","S-1-5-21-1-2-3-1001"\r\n' : ''
+    }
+    try {
+      const dir = await privateAuthCwd({ tmp, platform: 'win32', winRun })
+      expect(calls).toHaveLength(2)
+      expect(calls[0]!.bin).toMatch(/system32[\\/]whoami\.exe$/i)
+      expect(calls[1]!.bin).toMatch(/system32[\\/]icacls\.exe$/i)
+      expect(calls[1]!.args).toEqual([dir, '/inheritance:r', '/grant:r', '*S-1-5-21-1-2-3-1001:(OI)(CI)F'])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+  it('win32 fallback fails closed: no whoami user or a failing icacls rejects and removes the folder', async () => {
+    for (const winRun of [
+      async () => 'nonsense',
+      async (bin: string): Promise<string> => {
+        if (bin.toLowerCase().endsWith('icacls.exe')) throw new Error('denied')
+        return '"pc\\me","S-1-5-21-1-2-3-1001"\r\n'
+      }
+    ]) {
+      const tmp = mkdtempSync(join(tmpdir(), 'orgai-authcwd-win-'))
+      try {
+        await expect(privateAuthCwd({ tmp, platform: 'win32', winRun })).rejects.toThrow()
+        expect(readdirSync(tmp)).toEqual([])
+      } finally {
+        rmSync(tmp, { recursive: true, force: true })
+      }
     }
   })
 })
@@ -31,17 +99,6 @@ describe('claudeAuthStatus with the resolver (cli-standalone 6.1)', () => {
     }
     expect(await claudeAuthStatus({ run, executable: found('/opt/orgai/claude'), env: {} })).toMatchObject({ loggedIn: true })
     expect(seen).toEqual(['/opt/orgai/claude'])
-  })
-
-  it('runs the resolved binary as the SDK does, never through a shell (review round 1)', async () => {
-    const shells: boolean[] = []
-    const run: RunCli = async (_bin, _args, opts) => {
-      shells.push(opts.shell)
-      return { stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }), stderr: '', code: 0 }
-    }
-    // Even a path that looks like a Windows shim (the resolver refuses one; this is the second line of defence).
-    await claudeAuthStatus({ run, executable: found('C:\\npm\\claude.cmd'), env: {} })
-    expect(shells).toEqual([false])
   })
 
   it('an ORGAI_CLAUDE_PATH shim is refused before anything runs (review round 1)', async () => {
@@ -99,9 +156,9 @@ describe('anthropicStatus (API key)', () => {
 describe('runAuthStatus', () => {
   const json = (o: object, code = 0): CliResult => ({ stdout: JSON.stringify(o), stderr: '', code })
   const recorder = (answer: (args: string[]) => CliResult) => {
-    const calls: { bin: string; args: string[]; env: Record<string, string>; cwd: string; shell: boolean }[] = []
+    const calls: { bin: string; args: string[]; env: Record<string, string>; cwd: string }[] = []
     const run: RunCli = async (bin, args, opts) => {
-      calls.push({ bin, args, env: opts.env, cwd: opts.cwd, shell: opts.shell })
+      calls.push({ bin, args, env: opts.env, cwd: opts.cwd })
       return answer(args)
     }
     return { calls, run }
@@ -110,11 +167,10 @@ describe('runAuthStatus', () => {
 
   it('puts --setting-sources project before auth status, in a temp cwd with an isolated env', async () => {
     const { calls, run } = recorder(() => json({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }))
-    const res = await runAuthStatus('claude', { run, env: leaky, cwd: '/tmp/x', shell: false })
+    const res = await runAuthStatus('claude', { run, env: leaky, cwd: '/tmp/x' })
     expect(calls).toHaveLength(1)
     expect(calls[0].args).toEqual(['--setting-sources', 'project', 'auth', 'status'])
     expect(calls[0].cwd).toBe('/tmp/x')
-    expect(calls[0].shell).toBe(false)
     expect(calls[0].env.PATH).toBe('/bin')
     expect(calls[0].env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
     expect(calls[0].env.ANTHROPIC_BASE_URL).toBeUndefined()
@@ -158,7 +214,7 @@ describe('claudeAuthStatus', () => {
       seen.push(bin)
       return bin === 'b' ? { stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }), stderr: '', code: 0 } : { stdout: '', stderr: 'nope', code: 1 }
     }
-    const candidates = async () => [{ bin: 'a', shell: false }, { bin: 'b', shell: true }]
+    const candidates = async () => [{ bin: 'a' }, { bin: 'b' }]
     expect(await claudeAuthStatus({ run, candidates, env: {} })).toMatchObject({ loggedIn: true })
     expect(seen).toEqual(['a', 'b'])
     const none = await claudeAuthStatus({ run: async () => ({ stdout: '', stderr: '', code: 1 }), candidates, env: {} })
@@ -169,7 +225,7 @@ describe('claudeAuthStatus', () => {
 
   it('anthropicStatus uses the truthful detail', async () => {
     const run: RunCli = async () => ({ stdout: JSON.stringify({ loggedIn: false, authMethod: 'none' }), stderr: '', code: 1 })
-    const st = await anthropicStatus({ kind: 'subscription' }, {}, { run, candidates: async () => [{ bin: 'x', shell: false }], env: {} })
+    const st = await anthropicStatus({ kind: 'subscription' }, {}, { run, candidates: async () => [{ bin: 'x' }], env: {} })
     expect(st.state).toBe('disconnected')
     expect(st.detail).toMatch(/choose another default connection/)
   })
@@ -180,7 +236,7 @@ describe('claudeAuthStatus', () => {
     expect(none.detail).toMatch(/No Claude runtime was found/)
     // A timeout surfaces as a failed run with no JSON on stdout.
     const timedOut: RunCli = async () => ({ stdout: '', stderr: 'ETIMEDOUT', code: 1 })
-    const st = await anthropicStatus({ kind: 'subscription' }, {}, { run: timedOut, candidates: async () => [{ bin: 'x', shell: false }], env: {} })
+    const st = await anthropicStatus({ kind: 'subscription' }, {}, { run: timedOut, candidates: async () => [{ bin: 'x' }], env: {} })
     expect(st.state).toBe('error')
   })
 })

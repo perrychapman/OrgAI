@@ -11,12 +11,14 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Test isolation: no app, CLI or helper an e2e script starts may touch the real OS keychain. Every child inherits
-// process.env, so setting it here (an import side effect, before any launch) covers launch(), startCli() and the pty
-// driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE) keeps it; the flag is harmless beside it.
+// Test isolation: ORGAI_VAULT_NO_OS_KEYSTORE keeps the vault off the OS keystore for every app, CLI or helper an e2e
+// script starts. Every child inherits process.env, so setting it here (an import side effect, before any launch) covers
+// launch(), startCli() and the pty driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE) keeps it; the
+// flag is harmless beside it.
 process.env.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
 // Electron's own safeStorage (the app's older secrets.json) would otherwise create a "... Safe Storage" keychain item on
-// macOS; Chromium's --use-mock-keychain keeps the key in memory, so no e2e launch touches the real keychain.
+// macOS. Only launch() passes Chromium's --use-mock-keychain (key kept in memory); apps started elsewhere (cli-host.mjs,
+// cli-readonly's daemon start, verify-pack) do not, so they can still reach the real keychain through safeStorage.
 
 export const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
 export const APP_DIR = path.resolve(E2E_DIR, '..')

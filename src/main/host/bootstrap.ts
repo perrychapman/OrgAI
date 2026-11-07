@@ -19,6 +19,7 @@ import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
 import { CommunityPrices } from '../connections/communityPrices'
 import { ConnectionService } from '../connections/service'
+import { authChildrenInFlight } from '../connections/anthropicAuth'
 import { KitService } from '../kit/service'
 import { log } from '../log'
 import { MaintenanceService } from '../maintenance'
@@ -598,6 +599,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       caps.dispose()
       mcp.dispose()
       skillEvaluation.dispose()
+      // `claude auth status` children have their cwd in the data folder: end them; the drain waits for their exit
+      // (backgroundTasks source below) before ownership is released and the folder can be removed.
+      connections.abortProbes()
       // An org chart draft's model call (no timeout of its own) would hold its mutation lease until the hard limit.
       dispatcherRef?.quiesce()
       if (opts.quiesce) {
@@ -624,7 +628,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   activity.addSource('liveRuns', () => rm.busyRunCount())
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
   activity.addSource('activeWorktreeOps', () => repoLockActivity())
-  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())
+  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + caps.inFlightCount() + skillEvaluation.inFlightCount() + authChildrenInFlight())
   activity.addSource('activeOAuthFlows', () => mcp.activeAuthorizationCount() + connections.pendingLoginCount())
 
   const hostControl: HostControl = {

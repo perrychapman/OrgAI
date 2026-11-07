@@ -262,6 +262,13 @@ describe('buildLaunchConfig project docs', () => {
 describe('buildLaunchConfig', () => {
   const secretValue = 'sk-super-secret-1234'
   const userConfig = (c: string): boolean => !NATIVE_SKILL_CONFIG.includes(c)
+  /** The generated env name carrying `value`; it must look like ORGAI_MCP_<16 hex>_... */
+  const envNameOf = (l: { env: Record<string, string> }, value: string): string => {
+    const names = Object.keys(l.env).filter((k) => l.env[k] === value)
+    expect(names).toHaveLength(1)
+    expect(names[0]).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_\d+_H\d+$/)
+    return names[0]
+  }
   const conn = (over: Partial<RunConnection> = {}): RunConnection => ({ connection: 'chatgpt' as never, adapter: 'codex', env: { CODEX_HOME: '/data/codex' }, ...over })
 
   it('ChatGPT login adds no provider and keeps CODEX_HOME', () => {
@@ -308,11 +315,23 @@ describe('buildLaunchConfig', () => {
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Team': 'a', Authorization: `Bearer ${secretValue}`, 'X-Key': 'kkk-secret' })])
     expect(l.config).toContain('mcp_servers.remote.url="https://x.test/mcp"')
     expect(l.config).toContain('mcp_servers.remote.http_headers={ X-Team = "a" }')
-    expect(l.config).toContain('mcp_servers.remote.bearer_token_env_var="ORGAI_MCP_0_H0"')
-    expect(l.config).toContain('mcp_servers.remote.env_http_headers={ X-Key = "ORGAI_MCP_0_H1" }')
-    expect(l.env.ORGAI_MCP_0_H0).toBe(secretValue)
-    expect(l.env.ORGAI_MCP_0_H1).toBe('kkk-secret')
+    const bearer = envNameOf(l, secretValue)
+    const key = envNameOf(l, 'kkk-secret')
+    expect(bearer).toMatch(/_0_H0$/)
+    expect(key).toMatch(/_0_H1$/)
+    expect(bearer.slice(0, 26)).toBe(key.slice(0, 26)) // one random prefix per launch config
+    expect(l.config).toContain(`mcp_servers.remote.bearer_token_env_var="${bearer}"`)
+    expect(l.config).toContain(`mcp_servers.remote.env_http_headers={ X-Key = "${key}" }`)
     expect(l.config.join('\n')).not.toMatch(/sk-super|kkk-secret/)
+  })
+
+  it('draws a fresh random env name prefix on every launch config build', () => {
+    const s = spec({ name: 'remote', transport: 'http', url: 'https://x.test/mcp', headers: {}, secretHeaders: ['X-Key'] })
+    const one = envNameOf(buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'v' })]), 'v')
+    const two = envNameOf(buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'v' })]), 'v')
+    expect(one).not.toBe(two)
+    const fixed = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'v' })], { random: (n) => new Uint8Array(n).fill(0xab) })
+    expect(fixed.env.ORGAI_MCP_abababababababab_0_H0).toBe('v')
   })
 
   it('never prints a header value in the summary, config or argv', () => {
@@ -320,15 +339,15 @@ describe('buildLaunchConfig', () => {
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { Authorization: 'Bearer secret123' })])
     expect(l.summary.join('\n')).not.toContain('secret123')
     expect(l.config.join('\n')).not.toContain('secret123')
-    expect(l.env.ORGAI_MCP_0_H0).toBe('secret123')
+    expect(envNameOf(l, 'secret123')).toMatch(/_0_H0$/)
   })
 
   it('hands an OAuth access token to Codex through the environment only', () => {
     const s = spec({ name: 'oauthy', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Team': 'a' }, oauth: { resource: 'https://x.test/mcp' } as McpServerSpec['oauth'] })
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Team': 'a', Authorization: 'Bearer tok-oauth-123' })])
-    expect(l.config).toContain('mcp_servers.oauthy.bearer_token_env_var="ORGAI_MCP_0_H0"')
+    const bearer = envNameOf(l, 'tok-oauth-123')
+    expect(l.config).toContain(`mcp_servers.oauthy.bearer_token_env_var="${bearer}"`)
     expect(l.config).toContain('mcp_servers.oauthy.http_headers={ X-Team = "a" }')
-    expect(l.env.ORGAI_MCP_0_H0).toBe('tok-oauth-123')
     expect(l.config.join(' ')).not.toContain('tok-oauth-123')
     expect(l.summary.join(' ')).not.toContain('tok-oauth-123')
     expect(Object.values(l.env)).not.toContain('Bearer tok-oauth-123')
@@ -338,7 +357,7 @@ describe('buildLaunchConfig', () => {
     const s = spec({ name: 'r', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Key': 'public' } })
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'overridden-secret' })])
     expect(l.config.join(' ')).not.toContain('overridden-secret')
-    expect(l.config).toContain('mcp_servers.r.env_http_headers={ X-Key = "ORGAI_MCP_0_H0" }')
+    expect(l.config).toContain(`mcp_servers.r.env_http_headers={ X-Key = "${envNameOf(l, 'overridden-secret')}" }`)
   })
 
   it('refuses a stdio server whose secret name clashes with another server at a different value', () => {

@@ -90,8 +90,14 @@
  * Honest limits as above, plus: the data folder named as a whole (`cp -r <data> x`, `grep -r k <data>`, `find <data>
  * -exec cat {} +`) is a parent and passes, as before; a moved APPDATA / XDG folder is not followed; a script file or a
  * program that calls the keychain, the Secret Service or DPAPI itself (Python's keyring from a .py file, a compiled
- * helper) is not seen; a bare environment dump (`env`, `printenv`, `env | grep ORGAI_`) is not a reference to
- * ORGAI_VAULT_* and passes (the 6.3 environment scrub is the defence there); an awk or other program text that names a
+ * helper) is not seen; whole-environment listings are denied as a best effort (dumpsEnvironment: `env`, `printenv`
+ * with no name, `set`, `export` / `export -p`, `declare` / `typeset` -x / -p with no names, `compgen -v` / `-e`,
+ * PowerShell `Get-ChildItem` / `gci` / `dir` / `ls` / `Get-Item` / `gi` on `env:`, `[Environment]::GetEnvironmentVariables`,
+ * `/proc/<x>/environ`) because ORGAI_MCP_<hex>_<n>_<k> variables hold MCP secret values the 6.3 scrub cannot remove
+ * (the CLI must expand them); ORGAI_MCP_* words are denied like ORGAI_VAULT_* and a shortened prefix that may stand for
+ * either (`ORGAI_`, `ORGAI_*`, `ORGAI_M*`, `${!ORGAI@}`) is denied. NOT stopped: a code runner printing its
+ * environment (`python -c 'import os; print(os.environ)'`, `node -p process.env`), a script file, and stdio MCP servers
+ * (they inherit the CLI's environment); a bar against casual or injected dumps, not a boundary. An awk or other program text that names a
  * custodian (`awk '/secret-tool/'`) is read as code and denied, as is interpreter code that only prints the word
  * (`print('security')`); a program word that is all wildcards (`/usr/bin/????????`) or a class of several letters is
  * not read as a custodian name; a UNC path to this computer under its own host name (`\\MYPC\c$`) is not mapped; the
@@ -674,7 +680,68 @@ function segmentProgramWord(segment: string): string | undefined {
  * and also a plain mention (`grep -rn ORGAI_VAULT_KEY_FILE src`; agents search with the Grep tool instead). A shortened
  * prefix that can only stand for it (`ORGAI_V*`, `${!ORGAI_VA@}`) counts too; `ORGAI_VERSION` does not.
  */
-const VAULT_ENV_WORD = /ORGAI_VAULT|ORGAI_V(?:A(?:UL?)?)?(?![A-Za-z0-9_])/i
+const VAULT_ENV_WORD = /ORGAI_(?:VAULT|MCP)|ORGAI_(?:V(?:A(?:UL?)?)?|M(?:C)?)?(?![A-Za-z0-9_])/i
+/**
+ * Wave 7 follow-up: `ORGAI_MCP_<hex>_<n>_<k>` names carry MCP secret values in the agent CLI's environment (never
+ * scrubbed, the CLI expands them), so they are protected like ORGAI_VAULT_*, and VAULT_ENV_WORD above reads both. A
+ * shortened prefix that could stand for either name (`ORGAI_`, `ORGAI_*`, `ORGAI_M*`, `ORGAI_V*`) is denied; a
+ * capitalised `ORGAI*` / `${!ORGAI@}` glob (no underscore, case-sensitive so `orgai*.md` file globs still pass) too.
+ */
+const ORGAI_PREFIX_GLOB = /ORGAI(?![A-Za-z0-9_])[*?@]/
+
+/**
+ * The common whole-environment listings, denied in every segment (best effort; MCP secret values sit in the
+ * environment unscrubbed). Not a boundary: a code runner printing its environment, a script file or a stdio MCP
+ * server (which inherits the CLI's environment) is not stopped.
+ */
+const WRAPPERS_FOR_DUMP: ReadonlySet<string> = new Set(['command', 'exec', 'nohup', 'time', 'builtin', 'sudo', 'doas', 'call'])
+const PS_ENV_DRIVE = /^(?:-(?:literal)?path:?)?env:[\\/]?\*?$/i
+const PS_DIR_CMDS: ReadonlySet<string> = new Set(['get-childitem', 'gci', 'dir', 'ls', 'get-item', 'gi'])
+const ENV_METHOD_DUMP = /\bEnvironment\s*\]\s*::\s*GetEnvironmentVariables\b/i
+
+function dumpsEnvironmentSegment(segment: string): boolean {
+  const words = segmentWords(segment).map((w) => w.replace(/["'`]/g, ''))
+  let at = 0
+  while (at < words.length && (ASSIGNMENT.test(words[at]) || WRAPPERS_FOR_DUMP.has(stripExe(binName(words[at]))))) at++
+  const prog = words[at]
+  if (prog === undefined) return false
+  const name = stripExe(binName(prog))
+  const args = words.slice(at + 1)
+  const isOpt = (w: string): boolean => /^-/.test(w)
+  switch (name) {
+    case 'env': {
+      let k = 0
+      while (k < args.length && (isOpt(args[k]) || ASSIGNMENT.test(args[k]))) {
+        if (/^(?:-S.*|--split-string.*)$/.test(args[k])) return false
+        if (/^-[uC]$/.test(args[k]) || /^--(?:unset|chdir)$/.test(args[k])) k++
+        k++
+      }
+      return k >= args.length
+    }
+    case 'printenv':
+      return !args.some((w) => !isOpt(w))
+    case 'set':
+      return args.length === 0
+    case 'export':
+      return args.every((w) => w === '-p' || w === '--')
+    case 'declare':
+    case 'typeset': {
+      if (args.some((w) => !isOpt(w))) return false
+      return args.length === 0 || args.some((w) => /^-[a-zA-Z]*[xp]/.test(w))
+    }
+    case 'compgen':
+      return args.some((w) => /^-[a-zA-Z]*[ve]/.test(w))
+    default:
+      if (PS_DIR_CMDS.has(name)) return args.some((w) => PS_ENV_DRIVE.test(w))
+      return false
+  }
+}
+
+export function dumpsEnvironment(text: string): boolean {
+  if (ENV_METHOD_DUMP.test(text.replace(/`/g, ''))) return true
+  for (const segment of cliSegments(text)) if (dumpsEnvironmentSegment(segment.text)) return true
+  return false
+}
 
 /**
  * Review fix: the host process (and every ancestor of an agent's shell) still holds ORGAI_SECRET_* and ORGAI_VAULT_* in
@@ -699,7 +766,8 @@ export function readsProcessEnvironment(text: string): boolean {
 }
 
 function referencesVaultEnv(text: string): boolean {
-  return VAULT_ENV_WORD.test(text.replace(/["'\\`[\]]/g, ''))
+  const plain = text.replace(/["'\\`[\]]/g, '')
+  return VAULT_ENV_WORD.test(plain) || ORGAI_PREFIX_GLOB.test(plain)
 }
 
 /** Segments read so far; `limited` once MAX_SEGMENTS or MAX_NEST cut the scan short. */
@@ -1343,6 +1411,7 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
   // Wave 7: any word referencing ORGAI_VAULT_*, quoted or not (it may be handed to a shell).
   if (referencesVaultEnv(text)) return true
   if (readsProcessEnvironment(text)) return true
+  if (dumpsEnvironment(text)) return true
   const plain = unquoted(text)
   if (/\bsetx\s+ELECTRON_RUN_AS_NODE\b/i.test(plain)) return true
   for (const segment of cliSegments(plain)) if (assignsElectronAsNode(segment.text)) return true

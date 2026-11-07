@@ -1,7 +1,11 @@
-import { exec, execFile } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ConnectionStatus, ProviderAuth } from '@shared/types'
 import { isolateClaudeEnv } from '../runtime/childEnv'
+import { system32Path } from '../host/systemBinaries'
+import { parseWhoamiUser } from '../store/custodians/keyFile'
 import { claudeExecutable, claudeResolutionMessage, type ClaudeExecutableResolution } from '../runtime/claudeBinary'
 
 export type ClaudeAuthStatus = {
@@ -28,70 +32,156 @@ export interface CliResult {
   code: number | null
 }
 
-/** Runs a CLI. `shell` is for PATH candidates that may be .cmd shims on Windows; the bundled binary runs directly. */
-export type RunCli = (bin: string, args: string[], opts: { shell: boolean; env: Record<string, string>; cwd: string; timeout: number }) => Promise<CliResult>
+/** Runs a CLI directly (execFile, never a shell: the SDK runs the same binary the same way). */
+export type RunCli = (bin: string, args: string[], opts: { env: Record<string, string>; cwd: string; timeout: number; signal?: AbortSignal }) => Promise<CliResult>
 
 export interface AuthStatusDeps {
   run?: RunCli
   /** Candidate list override (tests). Default: the one binary claudeExecutable resolves (the one runs use). */
-  candidates?: () => Promise<{ bin: string; shell: boolean }[]>
+  candidates?: () => Promise<{ bin: string }[]>
   /** The resolver (tests). Default: claudeBinary.ts claudeExecutable over `env`. */
   executable?: () => ClaudeExecutableResolution
   env?: NodeJS.ProcessEnv
   cwd?: string
+  /** OrgAI's data folder: the CLI then runs in a private empty folder under it (privateAuthCwd). */
+  dataDir?: string
+  /** Aborts the CLI child (the connection service's dispose, at host stop): a child must not outlive the host. */
+  signal?: AbortSignal
+  /** win32 fallback folder: runs whoami.exe / icacls.exe (tests). */
+  winRun?: WinRun
 }
 
 const NOT_LOGGED_IN = 'Not logged in for OrgAI runs. Run claude and /login, set an API key, or choose another default connection.'
 
+let inFlight = 0
+/**
+ * `claude auth status` children still running (counted until their exit). The host counts them as background work, so
+ * a drain waits for them before it releases the data folder: a running child's cwd lives in it.
+ */
+export function authChildrenInFlight(): number {
+  return inFlight
+}
+
 export const defaultRunCli: RunCli = (bin, args, opts) =>
   new Promise((resolve) => {
-    const done = (err: (Error & { code?: number | string | null }) | null, stdout: string, stderr: string): void =>
-      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), code: err ? (typeof err.code === 'number' ? err.code : 1) : 0 })
-    const base = { timeout: opts.timeout, windowsHide: true, env: opts.env, cwd: opts.cwd }
-    if (opts.shell) {
-      // Only Windows .cmd/.bat shims get here (candidateLaunch), already checked for shell metacharacters; the
-      // args are constants. Always quoted.
-      if (SHELL_UNSAFE.test(bin)) {
-        resolve({ stdout: '', stderr: 'unsafe path', code: 1 })
-        return
-      }
-      exec(`"${bin}" ${args.join(' ')}`, base, (err, stdout, stderr) => done(err, stdout, stderr))
-    } else {
-      execFile(bin, args, base, (err, stdout, stderr) => done(err, stdout, stderr))
+    // The CLI may start helper processes that inherit the cwd (on Windows a held cwd cannot be removed), so a timeout or
+    // an abort kills the whole tree (taskkill /T on win32), not just the direct child execFile would kill.
+    let timer: NodeJS.Timeout | undefined
+    const stop = (): void => {
+      const pid = child.pid
+      if (process.platform === 'win32' && pid) {
+        execFile(system32Path('taskkill.exe'), ['/pid', String(pid), '/T', '/F'], { windowsHide: true, cwd: tmpdir() }, () => child.kill())
+      } else child.kill()
     }
+    // Never start a child once the host is stopping: nothing would be left to end it before the folder is removed.
+    if (opts.signal?.aborted) return resolve({ stdout: '', stderr: '', code: 1 })
+    inFlight++
+    const child = execFile(bin, args, { windowsHide: true, env: opts.env, cwd: opts.cwd }, (err, stdout, stderr) => {
+      inFlight--
+      if (timer) clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', stop)
+      const e = err as (Error & { code?: number | string | null }) | null
+      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), code: e ? (typeof e.code === 'number' ? e.code : 1) : 0 })
+    })
+    timer = setTimeout(stop, opts.timeout)
+    opts.signal?.addEventListener('abort', stop, { once: true })
   })
 
-/** Characters cmd.exe would still interpret inside double quotes, plus other metacharacters. Parentheses stay allowed ("Program Files (x86)"). */
-const SHELL_UNSAFE = /["%!&|<>^`$;\r\n]/
+/** Runs a Windows system program by absolute path (execFile, no shell, cwd the temp dir) and returns stdout. */
+export type WinRun = (bin: string, args: string[]) => Promise<string>
+
+const defaultWinRun: WinRun = (bin, args) =>
+  new Promise((resolve, reject) => {
+    execFile(bin, args, { windowsHide: true, cwd: tmpdir(), timeout: 15000 }, (err, stdout) => (err ? reject(err) : resolve(String(stdout ?? ''))))
+  })
+
+export interface PrivateCwdOptions {
+  dataDir?: string
+  tmp?: string
+  platform?: NodeJS.Platform
+  winRun?: WinRun
+  /** Owner id to require on POSIX (tests). Default process.getuid(). */
+  uid?: number
+}
+
+const cwdCache = new Map<string, string>()
+
+function ownedByUs(st: { uid: number }, o: PrivateCwdOptions): boolean {
+  if ((o.platform ?? process.platform) === 'win32') return true
+  const uid = o.uid ?? process.getuid?.()
+  return uid === undefined || st.uid === uid
+}
+
+function usableEmptyDir(dir: string, o: PrivateCwdOptions): boolean {
+  try {
+    const st = lstatSync(dir)
+    return st.isDirectory() && !st.isSymbolicLink() && ownedByUs(st, o) && readdirSync(dir).length === 0
+  } catch {
+    return false
+  }
+}
 
 /**
- * How to launch a PATH candidate: directly (execFile) everywhere except Windows .cmd / .bat shims, which need a
- * shell. A shim whose path holds shell metacharacters is dropped (null) rather than risk command injection.
+ * The folder `claude auth status` runs in. `--setting-sources project` reads <cwd>/.claude/settings.json, so it must be
+ * a folder nobody else can plant files in: `<data>/auth-cwd` (0o700; outside `<data>/run`, the host-ownership folder; it
+ * must be an empty real directory of ours, else it is removed and recreated), or without a data folder a 0o700 mkdtemp
+ * in the temp dir whose owner is checked on POSIX. On win32 the temp dir can grant other accounts inheritable write, so
+ * that fallback gets a protected DACL for this user's SID only (icacls, SID from whoami). Never the shared temp dir
+ * itself. Rejects when no safe folder can be made (the probe then answers 'error').
  */
-export function candidateLaunch(bin: string, platform: NodeJS.Platform = process.platform): { bin: string; shell: boolean } | null {
-  const shim = platform === 'win32' && /\.(cmd|bat)$/i.test(bin)
-  if (!shim) return { bin, shell: false }
-  return SHELL_UNSAFE.test(bin) ? null : { bin, shell: true }
+export async function privateAuthCwd(o: PrivateCwdOptions = {}): Promise<string> {
+  if (o.dataDir) {
+    const dir = join(o.dataDir, 'auth-cwd')
+    mkdirSync(o.dataDir, { recursive: true })
+    if (!usableEmptyDir(dir, o)) {
+      rmSync(dir, { recursive: true, force: true })
+      mkdirSync(dir, { mode: 0o700 })
+    }
+    return dir
+  }
+  const base = o.tmp ?? tmpdir()
+  const cached = cwdCache.get(base)
+  if (cached && usableEmptyDir(cached, o)) return cached
+  const made = mkdtempSync(join(base, 'orgai-auth-'))
+  try {
+    chmodSync(made, 0o700)
+    if (!ownedByUs(lstatSync(made), o)) throw new Error('The temporary folder for the Claude check is not owned by this user.')
+    if ((o.platform ?? process.platform) === 'win32') await restrictToUser(made, o.winRun ?? defaultWinRun)
+    // Another account could plant files between mkdtemp and the ACL change (they keep their own ACL): fail closed.
+    if (readdirSync(made).length > 0) throw new Error('The temporary folder for the Claude check was not empty.')
+  } catch (e) {
+    rmSync(made, { recursive: true, force: true })
+    throw e
+  }
+  cwdCache.set(base, made)
+  return made
+}
+
+/** Protected DACL: this user's SID only, inherited by children. Throws when it cannot be set. */
+async function restrictToUser(dir: string, run: WinRun): Promise<void> {
+  const user = parseWhoamiUser(await run(system32Path('whoami.exe'), ['/user', '/fo', 'csv', '/nh']))
+  if (!user) throw new Error('whoami named no user, so the folder for the Claude check cannot be restricted.')
+  await run(system32Path('icacls.exe'), [dir, '/inheritance:r', '/grant:r', `*${user.sid}:(OI)(CI)F`])
 }
 
 /**
  * Whether OrgAI runs can authenticate with the Anthropic connection. Token-free (`claude auth status`), with the one
  * binary claudeBinary.ts resolves, so the probe and runs never disagree (cli-standalone 6.1). A claude on PATH is only
- * named in the error, never run. The CLI runs with user settings excluded and an isolated env, in a temp dir (never
- * the home dir: its .claude/settings.json would load as project settings), so a login or gateway that only lives in
+ * named in the error, never run. The CLI runs with user settings excluded and an isolated env, in a private empty folder
+ * (privateAuthCwd; never the home dir or the shared temp dir: a .claude/settings.json there would load as project settings), so a login or gateway that only lives in
  * ~/.claude/settings.json does not count.
  */
 export async function claudeAuthStatus(deps: AuthStatusDeps = {}): Promise<ClaudeAuthStatus> {
-  let candidates: { bin: string; shell: boolean }[]
+  let candidates: { bin: string }[]
   if (deps.candidates) candidates = await deps.candidates()
   else {
     const resolved = deps.executable ? deps.executable() : claudeExecutable(deps.env ?? process.env)
     if (!resolved.ok) return { loggedIn: false, unavailable: true, detail: claudeResolutionMessage(resolved) }
     // Run exactly as the SDK runs it: execFile, never a shell (a shim that needs one would fail every run).
-    candidates = [{ bin: resolved.path, shell: false }]
+    candidates = [{ bin: resolved.path }]
   }
   for (const c of candidates) {
-    const result = await runAuthStatus(c.bin, { ...deps, shell: c.shell })
+    const result = await runAuthStatus(c.bin, deps)
     if (result) return result
   }
   return {
@@ -174,13 +264,19 @@ const UNKNOWN_OPTION = /unknown option/i
  * One CLI's answer, or null when it gave none. Parses the JSON even when the exit code is non-zero (`auth status`
  * exits 1 when logged out). A CLI that rejects `--setting-sources` is retried without it, marked restricted: false.
  */
-export async function runAuthStatus(bin: string, deps: AuthStatusDeps & { shell?: boolean } = {}): Promise<ClaudeAuthStatus | null> {
+export async function runAuthStatus(bin: string, deps: AuthStatusDeps = {}): Promise<ClaudeAuthStatus | null> {
   const run = deps.run ?? defaultRunCli
+  let cwd: string
+  try {
+    cwd = deps.cwd ?? (await privateAuthCwd({ dataDir: deps.dataDir, winRun: deps.winRun }))
+  } catch {
+    return null
+  }
   const opts = {
-    shell: deps.shell ?? false,
     env: isolateClaudeEnv(deps.env ?? process.env, { keepApiKey: false }),
-    cwd: deps.cwd ?? tmpdir(),
-    timeout: 15000
+    cwd,
+    timeout: 15000,
+    signal: deps.signal
   }
   const first = await run(bin, ['--setting-sources', 'project', 'auth', 'status'], opts)
   if (UNKNOWN_OPTION.test(first.stderr) || UNKNOWN_OPTION.test(first.stdout)) {

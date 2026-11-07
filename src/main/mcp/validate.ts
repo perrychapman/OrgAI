@@ -225,6 +225,7 @@ export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSp
     if (!HEADER_NAME.test(k)) errors.push(`Header "${k}" is not a valid name.`)
     if (typeof v !== 'string' || /[\r\n]/.test(v) || tooLong(v)) errors.push(`Header "${k}" must have a single-line string value.`)
   }
+  errors.push(...variableReferenceProblems(spec))
   const seenEnv = new Set<string>()
   for (const n of spec.secretEnv ?? []) {
     if (typeof n !== 'string' || !ENV_NAME.test(n)) errors.push(`Secret environment variable "${String(n)}" is not a valid name.`)
@@ -244,6 +245,26 @@ export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSp
     errors.push(...pinErrors(spec.command.trim(), spec.args ?? []))
   }
   return errors
+}
+
+/**
+ * Claude Code expands ${VAR} in a server's command, args, env values, url and header values from its own environment,
+ * which holds other servers' secrets under ORGAI_MCP_* names. A plain (non-secret) field may therefore never contain
+ * "${". Secret slots have no value in the spec, so only plain fields are looked at. Values are never echoed.
+ */
+export const VARIABLE_REFERENCE = '${'
+export function variableReferenceProblems(spec: Partial<McpServerSpec>): string[] {
+  const out: string[] = []
+  const bad = (v: unknown): boolean => typeof v === 'string' && v.includes(VARIABLE_REFERENCE)
+  const say = (field: string): void => {
+    out.push(`${field} contains "${VARIABLE_REFERENCE}"; OrgAI does not pass variable references to servers.`)
+  }
+  if (bad(spec.command)) say('The command')
+  if (bad(spec.url)) say('The URL')
+  if (Array.isArray(spec.args)) spec.args.forEach((a, i) => bad(a) && say(`Argument ${i + 1}`))
+  for (const [k, v] of Object.entries(spec.env && typeof spec.env === 'object' ? spec.env : {})) if (bad(v)) say(`Environment variable ${safeLabel(k)}`)
+  for (const [k, v] of Object.entries(spec.headers && typeof spec.headers === 'object' ? spec.headers : {})) if (bad(v)) say(`Header ${safeLabel(k)}`)
+  return out
 }
 
 /**
@@ -374,6 +395,7 @@ export function cleanOverrides(raw: unknown, allowed: readonly string[], kind: '
     if (typeof v !== 'string') throw new Error(`${what} ${label} must have a text value.`)
     if (v.length > MCP_OVERRIDE_VALUE_MAX) throw new Error(`${what} ${label} is too long (at most ${MCP_OVERRIDE_VALUE_MAX} characters).`)
     if (kind === 'header' && /[\r\n]/.test(v)) throw new Error(`Header ${label} must be a single line.`)
+    if (v.includes(VARIABLE_REFERENCE)) throw new Error(`${what} ${label} contains "${VARIABLE_REFERENCE}"; OrgAI does not pass variable references to servers.`)
     if (hiddenCharIn(v, { multiline: kind === 'header' })) throw new Error(`${what} ${label} contains a control or hidden character; remove it.`)
     out[name] = v
   }

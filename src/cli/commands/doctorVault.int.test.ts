@@ -5,6 +5,7 @@
  */
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { privateTempDir } from '../../main/testSupport/privateTempDir'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openSecretStore } from '../../main/store/secrets'
@@ -23,7 +24,7 @@ let dataDir: string
 
 beforeEach(() => {
   root = realpathSync.native(mkdtempSync(join(tmpdir(), 'doctor-vault-')))
-  keyDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'doctor-vault-key-')))
+  keyDir = privateTempDir('doctor-vault-key-')
   chmodSync(keyDir, 0o700)
   dataDir = join(root, 'data')
   mkdirSync(dataDir, { recursive: true })

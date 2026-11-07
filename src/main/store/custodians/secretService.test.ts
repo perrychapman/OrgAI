@@ -42,6 +42,15 @@ describe('SecretServiceCustodian (cli-standalone.md 5.3, Linux)', () => {
     expect(f.calls[0]!.options.env).toEqual({ HOME: '/home/me', PATH: '/usr/local/bin:/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' })
   })
 
+  it('prefers /usr/bin and /bin over a PATH entry, and falls back to PATH only when neither has it (review 5)', () => {
+    const pathEnv = { ...env, PATH: '/opt/evil:/usr/local/bin' }
+    const mk = (files: string[]) => new SecretServiceCustodian({ env: pathEnv, platform: 'linux', isFile: (p) => files.includes(p) })
+    expect(mk(['/opt/evil/secret-tool', '/usr/bin/secret-tool']).executable()).toBe('/usr/bin/secret-tool')
+    expect(mk(['/opt/evil/secret-tool', '/bin/secret-tool']).executable()).toBe('/bin/secret-tool')
+    expect(mk(['/usr/local/bin/secret-tool']).executable()).toBe('/usr/local/bin/secret-tool')
+    expect(mk([]).executable()).toBeUndefined()
+  })
+
   it('is unavailable without secret-tool or without a session bus, before any child runs', async () => {
     const f = fakeTool()
     await expect(custodian(f, { isFile: () => false }).probe()).resolves.toEqual({ ok: false, kind: 'unavailable', reason: SECRET_TOOL_MISSING_REASON })

@@ -12,6 +12,7 @@
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { privateTempDir } from '../testSupport/privateTempDir'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DaemonInfo, HostScope, Project } from '../../shared/types'
@@ -43,7 +44,7 @@ const vaultExists = (): boolean => existsSync(join(dataDir, 'vault.json'))
 
 beforeEach(async () => {
   root = realpathSync.native(mkdtempSync(join(tmpdir(), 'secret-real-')))
-  keyDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'secret-real-key-')))
+  keyDir = privateTempDir('secret-real-key-')
   chmodSync(keyDir, 0o700)
   keyFile = join(keyDir, 'vault.key')
   dataDir = join(root, 'data')

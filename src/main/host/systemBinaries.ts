@@ -89,6 +89,31 @@ function windowsGitFallbacks(env: Env): string[] {
   return out
 }
 
+export interface FixedBinaryOptions {
+  platform?: NodeJS.Platform
+  /** statSync(p).isFile() stand-in (tests). */
+  isFile?: (p: string) => boolean
+}
+
+function fixedBinary(candidates: string[], opts: FixedBinaryOptions): string | undefined {
+  if ((opts.platform ?? process.platform) === 'win32') return undefined
+  const isFile = opts.isFile ?? defaultIsFile
+  return candidates.find((c) => isFile(c))
+}
+
+/**
+ * The POSIX `ps`: `/bin/ps`, else `/usr/bin/ps`. Never PATH. Undefined when neither exists (or on win32); callers then
+ * report the process table / start time as unavailable, never fall back to a bare name.
+ */
+export function psExecutable(opts: FixedBinaryOptions = {}): string | undefined {
+  return fixedBinary(['/bin/ps', '/usr/bin/ps'], opts)
+}
+
+/** The POSIX `lsof`: `/usr/sbin/lsof`, else `/usr/bin/lsof`. Never PATH; undefined when neither exists. */
+export function lsofExecutable(opts: FixedBinaryOptions = {}): string | undefined {
+  return fixedBinary(['/usr/sbin/lsof', '/usr/bin/lsof'], opts)
+}
+
 const gitCache = new Map<string, string | undefined>()
 
 /**

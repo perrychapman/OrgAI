@@ -180,6 +180,8 @@ export class ConnectionService {
   /** Activity (activeOAuthFlows): provider logins (ChatGPT browser / device code) still waiting for the user. */
   pendingLoginCount(): number { return this.pendingLogins.size }
   private disposed = false
+  /** Aborts in-flight `claude auth status` children at dispose (they hold a cwd under the data folder). */
+  private stopSignal = new AbortController()
   /**
    * Connections whose current 'disconnected' status is tentative (a LiteLLM base URL change or a saved key waiting
    * for Test and connect): effectiveDefault reads them as 'unknown', so they never move the default. Cleared by the
@@ -596,7 +598,7 @@ export class ConnectionService {
     try {
       if (id === 'anthropic') {
         const probe = this.deps.anthropicProbe ?? anthropicStatus
-        return { ...(await probe(s.connections.anthropic.auth)), checkedAt: this.now() }
+        return { ...(await probe(s.connections.anthropic.auth, process.env, { dataDir: this.deps.dataDir, signal: this.stopSignal.signal })), checkedAt: this.now() }
       }
       if (id === 'openai') return await this.probeOpenAI()
       const proxy = proxyOf(s, id)
@@ -1331,8 +1333,14 @@ export class ConnectionService {
     return this.deps.projects.migrateAll()
   }
 
+  /** Host drain: stop the `claude auth status` children and start no more (the drain then waits for their exit). */
+  abortProbes(): void {
+    this.stopSignal.abort()
+  }
+
   dispose(): void {
     this.disposed = true
+    this.stopSignal.abort()
     for (const t of this.discoveryTimers.splice(0)) {
       clearTimeout(t)
       clearInterval(t)

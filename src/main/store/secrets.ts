@@ -949,6 +949,22 @@ export class SecretStore implements SecretStoreApi {
     this.removeKeys([key])
   }
 
+  /**
+   * delete() for a value that must leave no trace: a rollback of a write that never took effect (a failed proposal
+   * apply). Same rules and never throws, but the value is not kept as a soft delete, so nothing waits for Undo or sits
+   * for 30 days. Not for removals the user could want back: use delete().
+   */
+  purge(key: string): void {
+    this.overlay.delete(key)
+    if (this.readOnly || typeof key !== 'string') return
+    this.retryRead()
+    if (this.hasReadError()) {
+      this.leaveInPlace([key], this.readErrorReason())
+      return
+    }
+    this.removeKeys([key], true)
+  }
+
   /** A removal of every key starting with a prefix; returns how many were removed (overlay included). Never throws. */
   deletePrefix(prefix: string): number {
     const before = this.keys(prefix)
@@ -1017,9 +1033,9 @@ export class SecretStore implements SecretStoreApi {
   }
 
   /** The delete rules for every state (never throws). */
-  private removeKeys(keys: string[]): void {
+  private removeKeys(keys: string[], purge = false): void {
     try {
-      this.removeKeysOrThrow(keys)
+      this.removeKeysOrThrow(keys, purge)
     } catch (e) {
       // Left in place: keys that still read as present. A tombstoned key whose legacy copy waits for rows 1 and 2 is
       // deleted already (the recovery finishes it).
@@ -1028,7 +1044,7 @@ export class SecretStore implements SecretStoreApi {
     }
   }
 
-  private removeKeysOrThrow(keys: string[]): void {
+  private removeKeysOrThrow(keys: string[], purge = false): void {
     const onDisk = (k: string): boolean => this.L(k) !== undefined || (this.vault !== undefined && Object.hasOwn(this.vault.entries, k))
     if (!keys.some(onDisk)) return // deleting a key that exists nowhere is a no-op in every state
     this.ensureRecovered()
@@ -1083,6 +1099,9 @@ export class SecretStore implements SecretStoreApi {
       setBaseline(step3, k, undefined)
       const t3 = Object.hasOwn(step3.tombstones, k) ? step3.tombstones[k] : undefined
       if (t3) delete t3.legacyHash
+      // A purge keeps no undelete copy; step 1 still wrote its tombstone first so a crash before the legacy copy is gone
+      // never lets that copy come back. Kept when the legacy copy cannot be removed here.
+      if (purge && (!legacyTargets.includes(k) || this.legacy.state === 'ok')) delete step3.tombstones[k]
     }
     if (!legacyTargets.length || this.legacy.state !== 'ok') {
       // No legacy copy to remove: steps 1 and 3 in one write.

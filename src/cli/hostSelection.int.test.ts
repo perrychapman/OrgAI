@@ -22,6 +22,7 @@ let userDataDir: string
 beforeEach(() => {
   userDataDir = realpathSync(mkdtempSync(join(tmpdir(), 'hsel-')))
 })
+// A plain removal: the host's drain waits for its `claude auth status` children before stop() returns.
 afterEach(() => rmSync(userDataDir, { recursive: true, force: true }))
 
 function context(): { ctx: CliContext; err: () => string } {

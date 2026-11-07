@@ -36,6 +36,7 @@
  *   proof).
  */
 import { execFile } from 'node:child_process'
+import { lsofExecutable, neutralCwd, psExecutable } from './systemBinaries'
 
 export type PeerCheckResult = 'ok' | 'descendant' | 'unavailable'
 
@@ -66,8 +67,10 @@ export function parsePsTable(text: string): Map<number, number> {
 }
 
 function psTableOf(timeoutMs: number): Promise<Map<number, number>> {
+  const ps = psExecutable()
+  if (!ps) return Promise.reject(new Error('ps not found'))
   return new Promise((resolve, reject) => {
-    execFile('ps', ['-A', '-o', 'pid=,ppid='], { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+    execFile(ps, ['-A', '-o', 'pid=,ppid='], { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true, cwd: neutralCwd() }, (err, stdout) => {
       if (err) reject(err)
       else resolve(parsePsTable(String(stdout)))
     })
@@ -75,8 +78,10 @@ function psTableOf(timeoutMs: number): Promise<Map<number, number>> {
 }
 
 function lsofTextOf(timeoutMs: number): Promise<string> {
+  const lsof = lsofExecutable()
+  if (!lsof) return Promise.reject(new Error('lsof not found'))
   return new Promise((resolve, reject) => {
-    execFile('lsof', ['-nP', '-U', '-F', 'pfdn'], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+    execFile(lsof, ['-nP', '-U', '-F', 'pfdn'], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true, cwd: neutralCwd() }, (err, stdout) => {
       // lsof exits 1 when some process could not be read but still prints the rest.
       const text = String(stdout ?? '')
       if (err && !text) reject(err)

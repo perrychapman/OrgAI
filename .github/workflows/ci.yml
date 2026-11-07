@@ -125,7 +125,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-latest, ubuntu-latest]
+        os: [macos-15, windows-latest, ubuntu-latest]
     env:
       GIT_AUTHOR_NAME: OrgAI CI
       GIT_AUTHOR_EMAIL: ci@orgai.local

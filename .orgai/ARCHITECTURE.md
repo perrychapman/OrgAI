@@ -748,4 +748,6 @@ components/layout:
 
 _Maintained by OrgAI. Approved by the project owner during setup._
 
+- repoClone cancel uses `taskkill /pid <pid> /T /F`. Windows keeps stale parent pids, so after pid reuse the tree walk can reach an unrelated process (the reason host/shutdown.ts avoids /T). A helper that detached from the tree is not reached. Pre-existing, found in the PR #24 review.
+- Wave 7 PR #24 review (2026-11-07): the `${VAR}` MCP placeholders in a live Claude run, Windows and Linux end to end, real OS key stores (`scripts/probe-custodian.mjs` not run), a packaged build and the real npm registry are unverified; see CLAUDE.md CLI & host, Wave 7.
 - TUI org chart (2026-11-06): Agents pane folds finished subtrees (`src/shared/view/foldFinished.ts`, `agentTree.ts`), inspector, subtree focus, run chips, `/usage`, `/retro`; `src/cli/tui/keymap.ts` is the single key table. See CLAUDE.md and docs/design/ux-review-tui-org.md.

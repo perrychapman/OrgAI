@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
-import { findOnPath, gitExecutable, neutralCwd, system32Path, windowsPowerShellPath, windowsSystemRoot } from './systemBinaries'
+import { findOnPath, gitExecutable, lsofExecutable, neutralCwd, psExecutable, system32Path, windowsPowerShellPath, windowsSystemRoot } from './systemBinaries'
 
 // Review H1: system programs by absolute path, git never from a cwd. The win32 cases run with platform injection only
 // (UNVERIFIED on Windows).
@@ -56,6 +56,19 @@ describe('gitExecutable', () => {
   it('posix: the absolute PATH hit, else the bare name', () => {
     expect(gitExecutable({ platform: 'darwin', env: { PATH: '/opt/homebrew/bin:/usr/bin' }, isFile: (p) => p === '/usr/bin/git' })).toBe('/usr/bin/git')
     expect(gitExecutable({ platform: 'linux', env: { PATH: '' }, isFile: () => false })).toBe('git')
+  })
+
+  it('ps and lsof use fixed absolute paths in order, never PATH', () => {
+    expect(psExecutable({ platform: 'linux', isFile: () => true })).toBe('/bin/ps')
+    expect(psExecutable({ platform: 'darwin', isFile: (p) => p === '/usr/bin/ps' })).toBe('/usr/bin/ps')
+    expect(lsofExecutable({ platform: 'darwin', isFile: () => true })).toBe('/usr/sbin/lsof')
+    expect(lsofExecutable({ platform: 'linux', isFile: (p) => p === '/usr/bin/lsof' })).toBe('/usr/bin/lsof')
+  })
+
+  it('ps and lsof are undefined when none exists or on win32', () => {
+    expect(psExecutable({ platform: 'linux', isFile: () => false })).toBeUndefined()
+    expect(lsofExecutable({ platform: 'darwin', isFile: () => false })).toBeUndefined()
+    expect(psExecutable({ platform: 'win32', isFile: () => true })).toBeUndefined()
   })
 
   it.skipIf(process.platform === 'win32')('finds the real git here', () => {

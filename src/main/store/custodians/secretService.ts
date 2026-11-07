@@ -1,7 +1,7 @@
 /**
  * Linux Secret Service custodian (cli-standalone.md 5.3, scheme 'secret-service'): the data key (base64) is a secret
  * with attributes `service orgai vault <vaultId>` and label "OrgAI vault", read and written by `secret-tool`
- * (libsecret) found on the absolute PATH entries.
+ * (libsecret) found at /usr/bin or /bin first, else on the absolute PATH entries.
  *
  * - probe: secret-tool on PATH (else 'unavailable'), a session bus (DBUS_SESSION_BUS_ADDRESS, or the systemd default
  *   `$XDG_RUNTIME_DIR/bus`; else 'unavailable'), and `secret-tool search service orgai-vault-probe` answering within
@@ -14,7 +14,7 @@
  * prompt during create, the exit codes and stderr wording classified below, and whether `lookup` adds a newline when
  * stdout is a pipe (trimmed either way).
  */
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { posix } from 'node:path'
 import { findOnPath } from '../../host/systemBinaries'
 import { CustodyError, SECRET_SERVICE_ATTRIBUTE, SECRET_SERVICE_LABEL, VAULT_DEK_BYTES, type CustodianCreated, type CustodianProbe, type CustodyFailureKind, type VaultCustody } from '../vaultTypes'
@@ -22,6 +22,9 @@ import { randomBytes } from 'node:crypto'
 import { BAD_ITEM_REASON, BAD_VAULT_ID_REASON, EXISTS_REASON, KEY_FILE_HINT, sameKey, wrongPlatform, type HelperCustodianOptions, type RemovableKeyCustodian } from './common'
 import { custodianEnvFor } from './env'
 import { decodeKeyBase64, defaultSpawner, isVaultId, runHelper, stdoutText, type HelperResult } from './run'
+
+/** Absolute folders searched for secret-tool before PATH. */
+const WELL_KNOWN_DIRS = ['/usr/bin', '/bin'] as const
 
 /** The probe's search attribute value (never matches a real vault item). */
 export const SECRET_SERVICE_PROBE_VALUE = 'orgai-vault-probe'
@@ -69,8 +72,19 @@ export class SecretServiceCustodian implements RemovableKeyCustodian {
     this.env = custodianEnvFor('secret-service', this.hostEnv, this.platform)
   }
 
-  /** secret-tool on the absolute PATH entries (never the cwd), or undefined. */
+  /** secret-tool from the system folders first (a PATH entry someone else controls cannot shadow it), then the absolute PATH entries (never the cwd), or undefined. */
   executable(): string | undefined {
+    const isFile = this.opts.isFile ?? ((p: string): boolean => {
+      try {
+        return statSync(p).isFile()
+      } catch {
+        return false
+      }
+    })
+    for (const dir of WELL_KNOWN_DIRS) {
+      const p = posix.join(dir, 'secret-tool')
+      if (isFile(p)) return p
+    }
     return findOnPath('secret-tool', { platform: this.platform, env: this.hostEnv, ...(this.opts.isFile ? { isFile: this.opts.isFile } : {}) })
   }
 

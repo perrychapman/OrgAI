@@ -640,12 +640,19 @@ describe('a rollback never deletes a value this host could not read (5.5 Deletes
     })
     runAuthorization.mockResolvedValue(flow())
     secrets.opLog.length = 0
+    // A rollback of a slot that held nothing is a purge (no tombstone); the fixture does not log it, so watch it here.
+    const purged: string[] = []
+    const realPurge = secrets.purge.bind(secrets)
+    vi.spyOn(secrets, 'purge').mockImplementation((k: string) => {
+      purged.push(k)
+      realPurge(k)
+    })
     expect(await svc.authorize({ libraryId: 'mcpl_1' })).toMatchObject({ state: 'error', error: expect.stringContaining('disk full') })
     vi.restoreAllMocks()
     expect(secrets.get(at)).toBe('AT-1')
     expect(secrets.get(rt)).toBe('RT-1')
     expect(secrets.has(cs)).toBe(false)
     const dropped = secrets.opLog.filter((e) => e.op === 'delete' || (e.op === 'set' && !e.value)).map((e) => ('key' in e ? e.key : ''))
-    expect(dropped).toEqual([cs])
+    expect([...dropped, ...purged]).toEqual([cs])
   })
 })

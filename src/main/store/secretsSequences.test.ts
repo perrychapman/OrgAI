@@ -119,6 +119,20 @@ describe('required sequences (cli-standalone.md 5.5)', () => {
     expect(a.softDeletes()).toEqual([expect.objectContaining({ key: 'k', by: 'vault' })])
   })
 
+  it('purge (a rolled-back proposal) removes the value and leaves no tombstone; delete still tombstones (review 6)', async () => {
+    const a = await app()
+    a.set('rolled', 'from-a-failed-proposal')
+    a.set('gone', 'user-removed')
+    a.purge('rolled')
+    a.delete('gone')
+    expect(a.has('rolled')).toBe(false)
+    expect(older.get('rolled')).toBeUndefined()
+    expect(vaultJson().tombstones.rolled).toBeUndefined()
+    expect(a.softDeletes().map((s) => s.key)).toEqual(['gone'])
+    expect((await app()).softDeletes().map((s) => s.key)).toEqual(['gone'])
+    expect(a.undelete({ key: 'rolled' })).toMatchObject({ restored: false })
+  })
+
   it('Node delete of a pending-legacy key, then undelete in the app (only the app can restore it)', async () => {
     await app()
     older.set('k', 'saved-by-app') // pending-legacy for background hosts

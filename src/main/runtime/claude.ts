@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -438,13 +439,21 @@ export function toClaudeMcpServers(resolved: ResolvedMcpServer[]): Record<string
 /**
  * toClaudeMcpServers for the query's start options (cli-standalone R3). SDK options.mcpServers travel in the claude
  * child's argv (`--mcp-config {...}`), so a secret env value, a secret header and the OAuth bearer become
- * `${ORGAI_MCP_<n>_<k>}` placeholders (Claude Code expands `${VAR}` in env, args, url and headers from its own
- * environment) and the real values go to `env`, which the caller merges into options.env. Plain values stay inline.
+ * `${ORGAI_MCP_<hex>_<n>_<k>}` placeholders (Claude Code expands `${VAR}` in env, args, url and headers from its own
+ * environment; read from docs, not checked live) and the real values go to `env`, which the caller merges into
+ * options.env. Plain values stay inline. `<hex>` is 16 random lowercase hex characters drawn once per call (one per
+ * query build), so an agent's Bash or another MCP server inheriting that environment cannot target a name it can
+ * predict; the self-control gate also refuses words that reference `ORGAI_MCP_`. This does not hide the values from
+ * a process that dumps its whole environment. `random` is injectable for tests and must return 8 bytes.
  * Servers attached later through setMcpServers (a control message, not argv) use toClaudeMcpServers.
  */
-export function toClaudeMcpServersForArgv(resolved: ResolvedMcpServer[]): { servers: Record<string, McpServerConfig>; env: Record<string, string> } {
+export function toClaudeMcpServersForArgv(
+  resolved: ResolvedMcpServer[],
+  random: (size: number) => Uint8Array = randomBytes
+): { servers: Record<string, McpServerConfig>; env: Record<string, string> } {
   const env: Record<string, string> = {}
   const servers = toClaudeMcpServers(resolved)
+  const prefix = `ORGAI_MCP_${Buffer.from(random(8)).toString('hex')}`
   let n = 0
   for (const r of resolved) {
     const cfg = servers[r.spec.name] as { env?: Record<string, string>; headers?: Record<string, string> } | undefined
@@ -452,7 +461,7 @@ export function toClaudeMcpServersForArgv(resolved: ResolvedMcpServer[]): { serv
     n++
     let k = 0
     const place = (value: string): string => {
-      const name = `ORGAI_MCP_${n}_${k++}`
+      const name = `${prefix}_${n}_${k++}`
       env[name] = value
       return '${' + name + '}'
     }

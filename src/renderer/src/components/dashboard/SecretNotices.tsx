@@ -139,11 +139,21 @@ export function SecretNotices(): ReactElement | null {
       return `${failed} could not be restored${reason ? `: ${reason.replace(/[.\s]+$/, '')}` : ''}.`
     })
 
-  const keep = (n: SecretNotice): Promise<void> =>
-    run(n, async () => {
+  const keep = async (n: SecretNotice): Promise<void> => {
+    const count = n.keys?.length ?? 0
+    const ok = await confirm({
+      title: 'Keep these secrets removed?',
+      body: `${count === 1 ? 'The saved secret' : `The ${count} saved secrets`} will be deleted for good. You cannot restore ${count === 1 ? 'it' : 'them'} afterwards, and you would have to enter ${count === 1 ? 'it' : 'them'} again.`,
+      confirmLabel: 'Keep removed',
+      danger: true,
+      confirmTestId: 'secret-keep-removed-confirm'
+    })
+    if (!ok) return
+    await run(n, async () => {
       await window.orgai.secrets.confirmDelete({ keys: n.keys ?? [] })
       return null
     })
+  }
 
   const retry = (n: SecretNotice): Promise<void> =>
     run(n, async () => {

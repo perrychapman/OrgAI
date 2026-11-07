@@ -704,7 +704,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       }
     }
     // Only the AuthStatusResult fields cross IPC.
-    const s = await claudeAuthStatus()
+    const s = await claudeAuthStatus({ dataDir: settings.dataDir, signal: quiesced })
     return { loggedIn: s.loggedIn, method: s.method, detail: s.detail, mode: 'subscription' }
   })
 

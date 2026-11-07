@@ -1053,12 +1053,23 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
 
     it('follows a link to a vault file from outside the data folder', () => {
       const s = setup()
-      const link = join(s.base, 'innocent.txt')
-      symlinkSync(join(s.real, 'vault.json'), link)
+      let link: string
+      let rel: string
+      if (process.platform === 'win32') {
+        // File symlinks need the Windows symlink privilege; a directory junction needs none and exercises the same
+        // canonical-path resolution (the vault file is reached through a folder link outside the data folder).
+        symlinkSync(s.real, join(s.base, 'innocent'), 'junction')
+        link = join(s.base, 'innocent', 'vault.json')
+        rel = 'innocent/vault.json'
+      } else {
+        link = join(s.base, 'innocent.txt')
+        symlinkSync(join(s.real, 'vault.json'), link)
+        rel = 'innocent.txt'
+      }
       const ctx: SelfControlContext = { protectedPaths: s.refs, home: s.home, cwd: s.base }
       expect(checkSelfControlDenial('Read', { file_path: link }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
       expect(bash(`cat ${link}`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
-      expect(bash('cat innocent.txt', ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(bash(`cat ${rel}`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     })
 
     it('denies Glob / Grep searches that may match such a name in the data folder', () => {
@@ -1285,10 +1296,127 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
         expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
       }
       // Other ORGAI_ names stay usable; the Grep tool is the way to search the name.
-      for (const command of ['echo $ORGAI_DATA_DIR', 'ORGAI_MOCK=1 npm run dev', 'grep -rn ORGAI_VERSION src', 'env | grep ORGAI_VERBOSE']) {
+      for (const command of ['echo $ORGAI_DATA_DIR', 'ORGAI_MOCK=1 npm run dev', 'grep -rn ORGAI_VERSION src', 'printenv PATH | grep ORGAI_VERBOSE']) {
         expect(bash(command, ctx), command).toBeNull()
       }
       expect(checkSelfControlDenial('Grep', { pattern: 'ORGAI_VAULT_KEY_FILE', path: '/work/proj/src' }, ctx)).toBeNull()
+    })
+
+    it('treats ORGAI_MCP_* exactly like ORGAI_VAULT_*, shortened prefixes that may stand for either included', () => {
+      for (const command of [
+        'echo $ORGAI_MCP_0123456789abcdef_1_0',
+        'echo "${ORGAI_MCP_0123456789abcdef_1_0}"',
+        'ORGAI_MCP_0123456789abcdef_1_0=x node x.js',
+        'grep -rn ORGAI_MCP src',
+        'printenv | grep ORGAI_MCP',
+        'env | grep ORGAI_M',
+        'env | grep ORGAI_MC',
+        'env | grep -i orgai_mcp',
+        'env | grep ORGAI_"MCP"',
+        'env | grep ORGAI_M\\CP',
+        'env | grep ORGAI_[M]CP',
+        'printenv ORGAI_MCP_0123456789abcdef_1_0',
+        'echo ${!ORGAI_MCP@}',
+        'echo ${!ORGAI_M@}',
+        'echo ${!ORGAI@}',
+        'echo ${!ORGAI_@}',
+        'printenv | grep ^ORGAI_',
+        'compgen -v ORGAI_',
+        'compgen -v ORGAI*',
+        "sh -c 'echo $ORGAI_MCP_0123456789abcdef_1_0'",
+        'node -p "process.env.ORGAI_MCP_0123456789abcdef_1_0"',
+        'echo %ORGAI_MCP_0123456789abcdef_1_0%'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        '$env:ORGAI_MCP_0123456789abcdef_1_0',
+        "Get-ChildItem Env: | ? Name -like 'ORGAI_MCP*'",
+        'Get-Item Env:ORGAI_MCP_0123456789abcdef_1_0',
+        'gci env:ORGAI*',
+        "${env:ORGAI_MCP_0123456789abcdef_1_0}"
+      ]) {
+        expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of ['ls orgai*.md', 'echo $ORGAI_DATA_DIR', 'grep -rn ORGAI_MOCK src', 'grep -rn ORGAI_MESSAGE src']) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
+    it('denies whole-environment listings in every segment (best effort), not named reads or assignments', () => {
+      for (const command of [
+        'env',
+        'env -0',
+        'env | sort',
+        'env -u FOO',
+        'echo hi && env',
+        'ls; printenv',
+        'printenv -0',
+        'printenv | sort',
+        'set',
+        'set | sort',
+        'export',
+        'export -p',
+        'declare -x',
+        'declare -p',
+        'declare -xp',
+        'typeset -x',
+        'typeset -p',
+        'compgen -v',
+        'compgen -e',
+        'command env',
+        'sudo printenv',
+        "bash -c 'env'",
+        "sh -c 'ls; printenv | head'",
+        'cat /proc/self/environ',
+        'cat /proc/$$/environ',
+        'cat /proc/*/environ',
+        'cat /proc/1234/environ'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        'Get-ChildItem Env:',
+        'Get-ChildItem env:*',
+        'gci Env:\\',
+        'dir env:',
+        'ls Env:\\*',
+        'Get-Item env:',
+        'gi env:*',
+        'Get-ChildItem -Path env:',
+        'Get-ChildItem env: | Sort-Object Name',
+        '(Get-ChildItem env:).Count',
+        '[Environment]::GetEnvironmentVariables()',
+        '[System.Environment]::GetEnvironmentVariables()',
+        '$e = [System.Environment]::GetEnvironmentVariables(); $e',
+        'cmd /c set',
+        "pwsh -c 'gci env:'"
+      ]) {
+        expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        'env FOO=1 node x.js',
+        'env -u X node x.js',
+        'env -S "node x.js"',
+        'printenv PATH',
+        'printenv HOME USER',
+        'echo $PATH',
+        'export FOO=1',
+        'set -e',
+        'set -euo pipefail',
+        'declare -x FOO=1',
+        'declare -p FOO',
+        'declare -f',
+        'compgen -c',
+        'FOO=1 node x.js',
+        'ls',
+        'cat /proc/cpuinfo'
+      ]) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+      for (const command of ['Get-ChildItem env:PATH', '$env:PATH', 'Get-Item env:HOME', 'Get-ChildItem src', 'ls .', 'dir C:\\work']) {
+        expect(ps(command, ctx), command).toBeNull()
+      }
     })
 
     it('denies reading another process\'s environment (the host keeps ORGAI_SECRET_* in its own)', () => {

@@ -504,7 +504,7 @@ export class McpService {
    */
   private putBack(key: string, prior: SecretPrior, what: string): void {
     try {
-      if (prior === 'unset') this.secrets.delete(key)
+      if (prior === 'unset') this.secrets.purge(key)
       else if ('value' in prior) this.secrets.set(key, prior.value)
       else log.warn(`Kept the new value of a secret after a failed ${what}: the earlier one cannot be read on this host, so it could not be put back.`)
     } catch (e) {

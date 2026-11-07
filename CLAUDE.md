@@ -631,7 +631,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   self-control gate, the read-only `orgai` CLI, headless exec, the terminal UI and the management commands; see the
   spec's "Implementation status" for deviations and what is unverified):
   - Wave 7 (standalone `orgai`; docs/design/cli-standalone.md, its section 13 Round 6 is binding; cli-spec.md "Implementation
-    status, Wave 7"; landed on branch `wave7/standalone-cli`, NOT merged to dev). Verified on macOS by unit tests, real
+    status, Wave 7"; merged to dev via PR #24, 2026-11-07). Verified on macOS by unit tests, real
     in-process / Node host integration tests and a few e2e scripts; nothing ran on Windows or Linux, against a real OS key
     store, the real npm registry or a packaged build (see Unverified at the end of this bullet).
   - Package and channel: npm package `orgai-cli` (bin `orgai`; owner decision D1 2026-11-06, npm refused `orgai`), built by
@@ -645,13 +645,13 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     lists the install scripts verify-npm tolerates in the tree. Owner decision D10 (2026-11-06, to revisit):
     `NPM_SHRINKWRAP=none` in release.yml and ci.yml (no `npm-shrinkwrap.json`); with npm 11.12.1 a honoured shrinkwrap
     installed every platform's Claude runtime (about 2 GB, which makes verify-npm step 1 fail), `none` installs about 300 MB. `full` stays behind that one setting
-    and CI always dry-runs the full derivation. release.yml: `npm-package` -> `verify-npm` (macos-14, windows-latest,
+    and CI always dry-runs the full derivation. release.yml: `npm-package` -> `verify-npm` (macos-15, windows-latest,
     ubuntu-latest x Node at the engines floor and 24; `scripts/verify-npm.mjs` implements spec 3.4 steps 1-7: step 1b
     `--ignore-scripts` is skipped after a failed step 1; step 6 is the vault flow with a key file and a local fake LiteLLM
     proxy, run on the built bundle by `cli/vaultCli.int.test.ts`) -> `publish-npm` (needs meta, build, npm-package and
     verify-npm; environment `npm-publish`, OIDC with `--provenance`, `--tag next` for prereleases, sha256-compares the
     verified tarball, refuses unless the environment variable `NPM_PUBLISH_ENABLED` is 'true'). Release checklist: in
-    Settings > Environments > npm-publish add required reviewers, limit deployment branches to main, set
+    Settings > Environments > npm-publish add required reviewers, limit deployment branches and tags to the tag pattern `v*` (publish runs on a tag ref; the meta job already checks the commit is on main), set
     `NPM_PUBLISH_ENABLED=true` there (never at repository or organisation level); add the `NPM_TOKEN` secret for the first
     publish (D2 fallback). release.yml has three desktop build jobs on two OSes (Windows x64, macOS arm64, macOS x64) and
     no Linux leg: Linux is covered only by verify-npm. `pack:verify` checks (f) and (g) now also require `daemon status` to
@@ -784,6 +784,21 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     without a host and never decrypts). `shimInstaller` `otherCli` prefers an npm or archive `orgai` anywhere on PATH; the shim path
     counts as this install's own only while an OrgAI shim sits there, so npm's link in `~/.local/bin` is named "The orgai command from
     npm (<v>) is on your PATH at <path>. OrgAI leaves it alone." and Install is refused (`CliShimRow`, `lib/cliShim.ts`).
+  - PR #24 review fixes (2026-11-07, unit-tested only, nothing live): MCP secrets that leave argv (cli-standalone R3) go into the
+    agent CLI's environment under random per-query names `ORGAI_MCP_<16 hex>_<n>_<k>` (Codex: per launch, `..._H<k>`). The
+    self-control gate denies any word referencing ORGAI_MCP_ or ORGAI_VAULT_ (and shortened prefixes such as `ORGAI_` or `ORGAI*`)
+    and, best effort, bare whole-environment dumps (env / printenv with no name, bare set / export -p / declare -x, compgen -v,
+    gci env:, [Environment]::GetEnvironmentVariables). This is not a boundary: code runners, script files and stdio MCP servers can
+    still read the environment (open Lows: compgen -A variable, `${!O@}`, wrappers, Read of /proc/self/environ). `validateSpec`
+    refuses `${` in plain command, args, env values, URL, header values and per-project overrides; specs stored earlier are not
+    re-checked. `claude auth status` never runs in os.tmpdir(), where a planted `<tmp>/.claude/settings.json` was loaded as project
+    settings. Its probe children are tree-killed on timeout, abort and ConnectionService.dispose. `ps` / `lsof` / `secret-tool` come
+    from fixed absolute paths (`systemBinaries.ts` psExecutable / lsofExecutable). `SecretStore.purge` removes a rolled-back MCP
+    proposal secret without a tombstone. "Keep removed" on the Dashboard secret notice asks first (`secret-keep-removed-confirm`).
+    `orgai secrets reset` moves the old vault aside (`vault.json.reset-*`) and does not delete it: those copies stay in the data
+    folder, still encrypted with the old key, until removed by hand, and the gate keeps agents away from them. Tests and e2e that
+    create vault key files use `src/main/testSupport/privateTempDir.ts` / `e2e/privateDir.mjs`: on win32 a %TEMP% that grants other
+    accounts inheritable write makes keyFile.ts refuse the folder.
   - Unverified (Wave 7): Windows and Linux entirely (Node host spawn / log rotation, named pipes, the `withStartupMutex` win32 tests
     run only with an injected platform, DACL, DPAPI latency, taskkill / CIM paths); any real OS key store (keychain, DPAPI, Secret
     Service: only fakes, a key file and the macOS `ls -le` against temp dirs); the real `security` stderr shape; the real npm
@@ -1176,7 +1191,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     custom round trip (skipped when the mock catalog has no id outside the tiers). Unit tests: scrollWithin,
     settingsCopy, roleModels, assistantModels, settingsTarget, permissionCopy. Non-Anthropic connections are not
     driven. Open: N7, N9, N13 and the Lows in ARCHITECTURE.md Risks.
-- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
+- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
   `ImportNotice.source: 'template'`), New project "Start from a template" (`setup-choice-template`,

@@ -9,8 +9,8 @@ export function UnreadableSecretsNote({ slots }: { slots: UnreadableSecretSlot[]
   if (!slots?.length) return null
   return (
     <>
-      {slots.map((s) => (
-        <p key={s.name} className="mcp-row-note warn" role="status" data-testid="mcp-unreadable-secret" data-name={s.name}>
+      {slots.map((s, i) => (
+        <p key={`${i}:${s.name}`} className="mcp-row-note warn" data-testid="mcp-unreadable-secret" data-name={s.name}>
           <Icon icon={TriangleAlert} size="sm" />
           <span>
             <span className="mono">{s.name}</span> cannot be read: {appSecretReason(s.reason)}

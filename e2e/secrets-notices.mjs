@@ -7,11 +7,12 @@
 // element after every action.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { privateTempDir } from './privateDir.mjs'
 import { DATA_DIR, TMP, check, finish, launch, log, screenshot, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 // E2E_KEY_DIR (optional) is the folder the key file's own folder is made in; default os.tmpdir(), a sibling of the data dir.
-const keyDir = fs.mkdtempSync(path.join(process.env.E2E_KEY_DIR?.trim() || TMP, 'orgai-e2e-vaultkey-'))
+const keyDir = privateTempDir('orgai-e2e-vaultkey-', process.env.E2E_KEY_DIR?.trim() || TMP)
 const KEY_FILE = path.join(keyDir, 'vault.key')
 process.env.ORGAI_VAULT_KEY_FILE = KEY_FILE
 const LEGACY = path.join(DATA_DIR, 'data', 'secrets.json')
@@ -103,7 +104,15 @@ try {
   }
   await setSize(1600, 1000)
 
+  const keepConfirm = page.locator('[data-testid=secret-keep-removed-confirm]')
   await page.locator('[data-testid=secret-keep-removed]').click()
+  await keepConfirm.waitFor({ timeout: 5_000 })
+  await page.keyboard.press('Escape')
+  await keepConfirm.waitFor({ state: 'detached', timeout: 5_000 })
+  check(await removed.isVisible(), 'cancelling Keep removed keeps the notice')
+  check((await status()).softDeletes.length > 0, 'cancelling Keep removed deletes nothing')
+  await page.locator('[data-testid=secret-keep-removed]').click()
+  await keepConfirm.click()
   await removed.waitFor({ state: 'detached', timeout: 10_000 })
   check(true, 'Keep removed takes the notice away')
   await sleep(400)

@@ -32,7 +32,7 @@ import type {
   HostStopResult
 } from '../../shared/types'
 import { ACTIVITY_LEASE_KINDS, HOST_HANDOFF_BLOCKERS } from '../../shared/types'
-import { neutralCwd, windowsPowerShellPath, system32Path } from './systemBinaries'
+import { neutralCwd, psExecutable, windowsPowerShellPath, system32Path } from './systemBinaries'
 
 /** After this long a shutdown kills the tracked children and exits; the exit hooks then release ownership. */
 export const SHUTDOWN_HARD_LIMIT_MS = 60_000
@@ -334,10 +334,12 @@ export const WIN32_PROCESS_TABLE_SCRIPT =
 export function readProcessTable(opts: { platform?: NodeJS.Platform; timeoutMs?: number } = {}): Promise<Map<number, ProcessRow> | null> {
   const platform = opts.platform ?? process.platform
   const timeout = opts.timeoutMs ?? PROCESS_TABLE_TIMEOUT_MS
-  const [file, args] =
+  const file = platform === 'win32' ? windowsPowerShellPath() : psExecutable()
+  if (!file) return Promise.resolve(null)
+  const args =
     platform === 'win32'
-      ? [windowsPowerShellPath(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WIN32_PROCESS_TABLE_SCRIPT]]
-      : ['ps', ['-A', '-o', 'pid=,ppid=,stat=,lstart=']]
+      ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WIN32_PROCESS_TABLE_SCRIPT]
+      : ['-A', '-o', 'pid=,ppid=,stat=,lstart=']
   return new Promise((resolve) => {
     try {
       let readerPid: number | undefined

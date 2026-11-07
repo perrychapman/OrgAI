@@ -184,7 +184,24 @@ describe('toClaudeMcpServers', () => {
     expect(JSON.stringify(servers)).not.toContain('Bearer abc')
     expect(Object.values(env).sort()).toEqual(['Bearer abc', 'sekrit-token'])
     const name = Object.keys(env).find((k) => env[k] === 'sekrit-token')!
+    const header = Object.keys(env).find((k) => env[k] === 'Bearer abc')!
+    expect(name).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_1_0$/)
+    expect(header).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_2_0$/)
+    expect(name.slice(0, 26)).toBe(header.slice(0, 26)) // one random prefix per query build
     expect((servers.fs as { env: Record<string, string> }).env.TOKEN).toBe('${' + name + '}')
+    expect((servers.web as { headers: Record<string, string> }).headers.Authorization).toBe('${' + header + '}')
+  })
+
+  it('draws an unguessable placeholder prefix per call', () => {
+    const resolved: ResolvedMcpServer[] = [{ spec: { ...fs, secretEnv: ['TOKEN'] }, env: { TOKEN: 'sekrit-token' }, headers: {} }]
+    const a = Object.keys(toClaudeMcpServersForArgv(resolved).env)
+    const b = Object.keys(toClaudeMcpServersForArgv(resolved).env)
+    expect(a[0]).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_/)
+    expect(b[0]).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_/)
+    expect(a[0]).not.toBe(b[0])
+    const fixed = toClaudeMcpServersForArgv(resolved, (n) => new Uint8Array(n).fill(0x0f))
+    expect(fixed.env).toEqual({ ORGAI_MCP_0f0f0f0f0f0f0f0f_1_0: 'sekrit-token' })
+    expect((fixed.servers.fs as { env: Record<string, string> }).env.TOKEN).toBe('${ORGAI_MCP_0f0f0f0f0f0f0f0f_1_0}')
   })
 
   it('skips entries without a command or url', () => {
