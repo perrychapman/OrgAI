@@ -123,6 +123,8 @@ export function cancelPending(cards: PendingCardMaps, runId: string, broadcast: 
  * quick run, changes only later runs.
  */
 export function proposalEffect(kind: ProposalKind, summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick'>, adapter: ProviderId | undefined): ProposalEffect {
+  // App settings are saved at once and every surface reads them live (Chat only).
+  if (kind === 'appSettings') return 'now'
   if (summary.kind !== 'work' || summary.quick || isVirtualProjectId(summary.projectId)) return 'next-run'
   if (kind !== 'mcpServers' && kind !== 'skills') return 'next-run'
   return adapter === 'mock' ? 'now' : 'after-turn'

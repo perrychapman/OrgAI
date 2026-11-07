@@ -87,6 +87,15 @@ describe('proposalEffect', () => {
   })
 })
 
+describe('proposalEffect (self-knowledge)', () => {
+  it('appSettings takes effect now; a targeted settings proposal from Chat stays next-run', () => {
+    const chat = { kind: 'work' as const, projectId: 'quick', quick: {} as never }
+    expect(proposalEffect('appSettings', chat, 'claude')).toBe('now')
+    expect(proposalEffect('appSettings', chat, undefined)).toBe('now')
+    expect(proposalEffect('settings', chat, 'claude')).toBe('next-run')
+  })
+})
+
 describe('cleanProposalDecision / proposalOutcome', () => {
   it('keeps only known fields and string secrets', () => {
     expect(cleanProposalDecision({ behavior: 'approve', extra: 1 })).toEqual({ behavior: 'approve' })

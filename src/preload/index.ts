@@ -12,6 +12,7 @@ import type {
   MenuActionEvent,
   MenuState,
   OrgAIApi,
+  OutputsChangedEvent,
   SkillLibraryInfo,
   PermissionDecision,
   Project,
@@ -23,7 +24,9 @@ import type {
   TeamReviewSummary
 } from '../shared/types'
 import { IPC, isMenuAction } from '../shared/types'
-import { KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../shared/types'
+import { SELF_KNOWLEDGE_IPC, type AppNavigateEvent, type AppReferenceQuery } from '../shared/types'
+import { isAtlasSurfaceId } from '../shared/view/atlas'
+import { KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -221,7 +224,8 @@ const api: OrgAIApi = {
     info: () => ipcRenderer.invoke(IPC.appInfo),
     cliShimStatus: () => ipcRenderer.invoke(IPC.appCliShimStatus),
     installCliShim: () => ipcRenderer.invoke(IPC.appInstallCliShim),
-    uninstallCliShim: () => ipcRenderer.invoke(IPC.appUninstallCliShim)
+    uninstallCliShim: () => ipcRenderer.invoke(IPC.appUninstallCliShim),
+    reference: (query: AppReferenceQuery) => ipcRenderer.invoke(SELF_KNOWLEDGE_IPC.appReference, query)
   },
   onFocusRun: (cb) => {
     const listener = (_e: IpcRendererEvent, target: FocusRunTarget): void => cb(target)
@@ -343,6 +347,32 @@ const api: OrgAIApi = {
     confirmDelete: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsConfirmDelete, input),
     init: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsInit, input ?? {}),
     reset: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsReset, input)
+  },
+  onAppNavigate: (cb) => {
+    // Main validated the event; the renderer still gets only a known surface id and plain strings.
+    const listener = (_e: IpcRendererEvent, event: AppNavigateEvent): void => {
+      if (!event || typeof event !== 'object' || !isAtlasSurfaceId(event.surfaceId)) return
+      if (typeof event.runId !== 'string' || typeof event.agentLabel !== 'string') return
+      if (event.projectId !== undefined && typeof event.projectId !== 'string') return
+      cb({ surfaceId: event.surfaceId, runId: event.runId, agentLabel: event.agentLabel, ...(event.projectId !== undefined ? { projectId: event.projectId } : {}) })
+    }
+    ipcRenderer.on(SELF_KNOWLEDGE_IPC.appNavigate, listener)
+    return () => ipcRenderer.removeListener(SELF_KNOWLEDGE_IPC.appNavigate, listener)
+  },
+  // ---- Run outputs ----
+  outputs: {
+    list: (projectId) => ipcRenderer.invoke(OUTPUTS_IPC.outputsList, projectId),
+    preview: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsPreview, input),
+    open: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsOpen, ref),
+    reveal: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsReveal, ref),
+    saveAs: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsSaveAs, ref),
+    forget: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsForget, ref),
+    delete: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsDelete, ref)
+  },
+  onOutputsChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: OutputsChangedEvent): void => cb(event)
+    ipcRenderer.on(OUTPUTS_IPC.outputsChanged, listener)
+    return () => ipcRenderer.removeListener(OUTPUTS_IPC.outputsChanged, listener)
   }
 }
 

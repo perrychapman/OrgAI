@@ -1,7 +1,7 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
-import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
@@ -21,6 +21,7 @@ import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { quickEditCard, quickEditFree } from './quickEditCard'
 import { composeFirstMessage, peerMessageText } from './prompts'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { resolveParent } from './agentTree'
@@ -28,6 +29,7 @@ import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from 
 import { SHELL_TOOLS, isFreeCdTarget, matchOptionsFor, matchingRule, type MatchOptions } from './ruleMatch'
 import { countUsage, setModelTokens, usageOf } from './runUsage'
 import { cliProjectSettings, projectSettingsLoad } from './claude'
+import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -59,6 +61,25 @@ import { cliProjectSettings, projectSettingsLoad } from './claude'
  * "Acme billing" twice (the second shows the dedupe path), says MOCK_KNOWLEDGE_RECALLED, and plays the default script
  * with the first report's brief naming Jane Doe so knowledgeContext fires with purpose 'spawn'; MOCK_KNOWLEDGE_NONE
  * without a knowledge graph.
+ * [mock:outputs] (outputsSteps, work runs of a stored project): the root says MOCK_OUTPUTS_START, calls produce_output
+ * for a docx "Project plan" (Markdown with bold, italic, bullets, a table, a numbered list, a rule and fenced code), an
+ * xlsx "Budget" (two sheets; the cell '=SUM(B2:B4)' is passed through for main to store as text), a mermaid
+ * "Architecture diagram" and a markdown "Summary", writes a real 1x1 PNG to `<project>/outputs/logo.png` itself and
+ * register_output's it as "Logo", then register_output's '../outside.txt' (main refuses it; the script goes on), says
+ * MOCK_OUTPUTS_DONE and plays the default script. Without ctx.outputs it says MOCK_OUTPUTS_NONE instead.
+ *
+ *
+ * Chat (quick) markers (quick runs, default script): [mock:chat-edit] (chatEditSteps): list_projects, then an Edit of
+ * `<folder>/notes.md` that asks through ctx.requestPermission (the card carries the quick session edit suggestion);
+ * allowed, the file is really written (MOCK_CHAT_NOTES) and the assistant says "I wrote notes.md.", then Bash `npm test`
+ * asks (allowed: "npm test passed.", nothing runs; denied: "I did not run npm test."); a denied edit says "I did not
+ * change anything." and the turn ends (no Bash). After a session allow of a covered edit, RunManager's
+ * ctx.quickSessionEdits() makes later covered edits free (quickEditFree), like the Claude and Codex adapters.
+ * [mock:chat-mcp] (CHAT_MCP_STEPS): request_mcp_install for the [mock:mcp-midrun] server through the real harness tool,
+ * then "The server was added for this chat." or "You declined the server."; the mock attaches 'now'.
+ * [mock:self-config] (selfConfigSteps) and [mock:self-config-project] (selfConfigProjectSteps): the self-configuration
+ * tools through the real harness tools (app_reference, open_in_app, propose_app_settings; list_projects then
+ * propose_project_settings for the first project), answered by the result's first word (harnessAnswer / firstProject).
  *
  * Every user message and spawn brief goes through ctx.knowledgeContext like the other adapters (knowledgeDelivery.ts);
  * the mock has no model, so what a model would receive is kept in `deliveredMessages` and scripted replies echo only
@@ -110,6 +131,12 @@ export type MockStep =
       background?: boolean
       /** Provider-style permission suggestions passed to chooseSuggestions as `provided` (like the CLI's canUseTool). */
       suggestions?: PermissionSuggestion[]
+      /** After the call ran (allowed or pre-approved): write this text to `input.file_path` for real (Edit / Write steps). */
+      writeContent?: string
+      /** After the call ran: the root says this. */
+      onAllow?: string
+      /** After a deny: the root says this and the turn ends (the rest of the steps are skipped). */
+      onDeny?: string
     }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
   | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
@@ -126,6 +153,8 @@ export type MockStep =
       retryOnRevise?: boolean
       /** After the call, the root says this text with "{result}" replaced by the tool's answer. */
       echo?: string
+      /** After the call, the root says `then` when the answer contains `contains`, else `else`. */
+      echoIf?: { contains: string; then: string; else: string }
     }
   /**
    * engagement_knowledge from the root: `get` the entity `node` (a name), find the id of its live fact whose text is
@@ -133,6 +162,11 @@ export type MockStep =
    * read back, the retire is skipped with a log line; the run never fails on it.
    */
   | { type: 'retireFact'; node: string; fact: string; reason?: string }
+  /**
+   * The root writes a file itself (no tool card, no transcript row; like an agent's own Write): `base64` decoded to
+   * `<project folder>/<path>`, parent folders created. A failure is logged at warn and the script goes on.
+   */
+  | { type: 'writeFile'; path: string; base64: string }
   /**
    * The plan's usage limit rejects the next request: reports ctx.rateLimited (with `until` ms from now,
    * when given) and ends the session, like the Claude adapter does at the next result.
@@ -153,6 +187,31 @@ export type MockStep =
    * the rest of the turn is skipped, the root goes to 'error' and run.status 'idle' follows; the session stays open.
    */
   | { type: 'fail'; subtype?: string }
+  | MockHarnessAnswerStep
+  | MockFirstProjectStep
+
+/**
+ * A harness tool call from the root, never retried on REVISE; then the root says the `text` of the first answer whose
+ * `prefix` starts the tool's result, else `otherwise` (also when the tool is not bound for the run or the session
+ * stopped mid-call). Used by the self-configuration markers (selfConfigSteps).
+ */
+export interface MockHarnessAnswerStep {
+  type: 'harnessAnswer'
+  name: string
+  args?: Record<string, unknown>
+  answers: { prefix: string; text: string }[]
+  otherwise: string
+}
+
+/**
+ * list_projects from the root, then `then` with `projectId` set to the first project's id in the result
+ * (firstProjectId); without one the root says `none` and the step ends.
+ */
+export interface MockFirstProjectStep {
+  type: 'firstProject'
+  then: MockHarnessAnswerStep
+  none: string
+}
 
 export interface MockScript {
   /** Pause before each step, in milliseconds. Default 400. */
@@ -349,6 +408,55 @@ const MCP_MIDRUN_STEPS: MockStep[] = [
   { type: 'tool', agent: MOCK_MIDRUN_REPORT, name: MOCK_MIDRUN_TOOL, ask: true, result: 'PONG' },
   { type: 'finish', id: MOCK_MIDRUN_REPORT, result: 'Pinged the new MCP server.' },
   { type: 'text', text: 'Mock: the new MCP server was used.' }
+]
+
+/** Trigger token (Chat / quick runs, default script): an edit and a command that ask (chatEditSteps). */
+export const CHAT_EDIT_TOKEN = '[mock:chat-edit]'
+/** Trigger token (Chat / quick runs, default script): request_mcp_install for the mock-midrun server (CHAT_MCP_STEPS). */
+export const CHAT_MCP_TOKEN = '[mock:chat-mcp]'
+/** The text [mock:chat-edit] writes into `<folder>/notes.md` once the edit is allowed. */
+export const MOCK_CHAT_NOTES = '# Notes\n\nWritten by the mock Chat assistant.\n'
+export const MOCK_CHAT_EDIT_DONE = 'I wrote notes.md.'
+export const MOCK_CHAT_EDIT_DENIED = 'I did not change anything.'
+export const MOCK_CHAT_TEST_DONE = 'npm test passed.'
+export const MOCK_CHAT_TEST_DENIED = 'I did not run npm test.'
+export const MOCK_CHAT_MCP_ADDED = 'The server was added for this chat.'
+export const MOCK_CHAT_MCP_DECLINED = 'You declined the server.'
+
+/**
+ * The [mock:chat-edit] turn in a Chat folder: list_projects, then an Edit of `<folder>/notes.md` that asks like a real
+ * call (a covered edit's card offers the quick session edit grant). Allowed: the file is written for real and the
+ * assistant says MOCK_CHAT_EDIT_DONE, then Bash `npm test` asks (allowed: MOCK_CHAT_TEST_DONE, nothing really runs;
+ * denied: MOCK_CHAT_TEST_DENIED). Denied: MOCK_CHAT_EDIT_DENIED and the turn ends there.
+ */
+export function chatEditSteps(folder: string): MockStep[] {
+  return [
+    { type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} },
+    {
+      type: 'tool',
+      name: 'Edit',
+      input: { file_path: join(folder, 'notes.md'), old_string: '', new_string: MOCK_CHAT_NOTES },
+      ask: true,
+      writeContent: MOCK_CHAT_NOTES,
+      onAllow: MOCK_CHAT_EDIT_DONE,
+      onDeny: MOCK_CHAT_EDIT_DENIED
+    },
+    { type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'Tests passed.', onAllow: MOCK_CHAT_TEST_DONE, onDeny: MOCK_CHAT_TEST_DENIED }
+  ]
+}
+
+/** The [mock:chat-mcp] turn: request_mcp_install (the [mock:mcp-midrun] server) through the real harness tool, then the answer. */
+const CHAT_MCP_STEPS: MockStep[] = [
+  {
+    type: 'harness',
+    name: MCP_HARNESS_TOOLS.requestInstall,
+    retryOnRevise: false,
+    args: {
+      reason: 'Mock: this chat needs a server it does not have.',
+      manual: { name: MOCK_MIDRUN_SERVER, transport: 'stdio', command: 'npx', args: ['-y', 'mock-midrun-server@1.0.0'] }
+    },
+    echoIf: { contains: 'The user approved', then: MOCK_CHAT_MCP_ADDED, else: MOCK_CHAT_MCP_DECLINED }
+  }
 ]
 
 /** Trigger token (work runs, default script): the permission-fatigue script (fatigueSteps). */
@@ -644,6 +752,81 @@ export function knowledgeRecallSteps(): MockStep[] {
   ]
 }
 
+/** Trigger token (work runs of a stored project, default script): the root produces and registers outputs first (outputsSteps). */
+export const OUTPUTS_TOKEN = '[mock:outputs]'
+/** The root's first sentence on a [mock:outputs] run. */
+export const MOCK_OUTPUTS_START = 'I will produce the deliverables first.'
+/** The root's sentence after the [mock:outputs] steps (4 produced + 1 registered; the refused register does not count). */
+export const MOCK_OUTPUTS_DONE = 'I produced 5 outputs.'
+/** The root's sentence when [mock:outputs] is set but the run has no outputs (ctx.outputs missing). */
+export const MOCK_OUTPUTS_NONE = 'No outputs are available in this run.'
+/** A real 1x1 PNG the [mock:outputs] root writes itself before register_output. */
+export const MOCK_OUTPUT_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+/** Where that PNG lands, relative to the project folder (also the register_output path). */
+export const MOCK_OUTPUT_PNG_PATH = 'outputs/logo.png'
+/** The docx Markdown: heading, bold / italic, bullets, a GFM table, a numbered list, a rule and fenced code. */
+export const MOCK_OUTPUT_DOCX_MARKDOWN = [
+  '# Project plan',
+  '',
+  'This plan covers the **scope**, the *phases* and who owns each one.',
+  '',
+  '- Agree the scope with the sponsor',
+  '- Build in two phases',
+  '- Launch after the review',
+  '',
+  '| Phase | Owner | Weeks |',
+  '| --- | --- | --- |',
+  '| Design | Ana | 2 |',
+  '| Build | Ben | 6 |',
+  '| Launch | Cleo | 1 |',
+  '',
+  '1. Sign off the plan',
+  '2. Start the design phase',
+  '',
+  '---',
+  '',
+  '```',
+  'npm run build',
+  '```'
+].join('\n')
+/** The xlsx workbook. The '=SUM' string is deliberate: main must store it as text, never a formula. */
+export const MOCK_OUTPUT_WORKBOOK = {
+  sheets: [
+    {
+      name: 'Budget',
+      columns: [{ header: 'Item' }, { header: 'Cost', width: 14 }],
+      rows: [['Design', 1200], ['Build', 3400], ['Launch', 800], ['=SUM(B2:B4)', 'see note']],
+      numberFormat: [null, '#,##0.00']
+    },
+    { name: 'Notes', rows: [['Prepared by the mock team'], ['Costs are illustrative']] }
+  ]
+}
+export const MOCK_OUTPUT_MERMAID = 'flowchart LR\n  A[Client] --> B[API]\n  B --> C[(Database)]\n  B --> D[Queue]'
+export const MOCK_OUTPUT_SUMMARY = '# Summary\n\nThe plan, budget and diagram are in the outputs folder.\n\n- Project plan\n- Budget\n- Architecture diagram\n\n| Item | State |\n| --- | --- |\n| Plan | done |'
+
+/**
+ * The [mock:outputs] steps, each output call a real harness tool call through the mock's tool path (RunManager writes
+ * the index, emits output.created and writes the harness rows): the start sentence; produce_output docx "Project plan"
+ * (fileName project-plan), xlsx "Budget" (the tool's `workbook` field), mermaid "Architecture diagram", markdown
+ * "Summary"; the root writes MOCK_OUTPUT_PNG_PATH itself (writeFile) and calls register_output "Logo" on it; then
+ * register_output '../outside.txt' "Outside", which main refuses (the script goes on); then the done sentence.
+ */
+export function outputsSteps(): MockStep[] {
+  const produce = (args: Record<string, unknown>): MockStep => ({ type: 'harness', name: OUTPUT_TOOLS.produce, args, retryOnRevise: false })
+  const register = (args: Record<string, unknown>): MockStep => ({ type: 'harness', name: OUTPUT_TOOLS.register, args, retryOnRevise: false })
+  return [
+    { type: 'text', text: MOCK_OUTPUTS_START },
+    produce({ kind: 'docx', title: 'Project plan', fileName: 'project-plan', description: 'Scope, phases and owners', content: MOCK_OUTPUT_DOCX_MARKDOWN }),
+    produce({ kind: 'xlsx', title: 'Budget', workbook: MOCK_OUTPUT_WORKBOOK }),
+    produce({ kind: 'mermaid', title: 'Architecture diagram', content: MOCK_OUTPUT_MERMAID }),
+    produce({ kind: 'markdown', title: 'Summary', content: MOCK_OUTPUT_SUMMARY }),
+    { type: 'writeFile', path: MOCK_OUTPUT_PNG_PATH, base64: MOCK_OUTPUT_PNG_BASE64 },
+    register({ path: MOCK_OUTPUT_PNG_PATH, title: 'Logo', description: 'Written by the mock with its own tools' }),
+    register({ path: '../outside.txt', title: 'Outside' }),
+    { type: 'text', text: MOCK_OUTPUTS_DONE }
+  ]
+}
+
 /**
  * The id of the live fact whose text is `text` in an engagement_knowledge `get` result: its fact lines read
  * `  kf_<id> | <text>` with ` | retired` appended on a retired one. The text is compared as datum() renders it
@@ -754,6 +937,8 @@ export class MockSession implements RuntimeSession {
   private inTurn = false
   /** Set by a 'fail' step: the SDK-style subtype the current root turn failed with. */
   private turnFailure: string | null = null
+  /** Set by a tool step's `onDeny`: the rest of this turn's steps are skipped (the turn ends normally). */
+  private turnHalt = false
   /** Set by a 'rateLimit' step: the turn ended on a usage limit. */
   private limited = false
   private stopSignal: Promise<typeof STOPPED>
@@ -1156,6 +1341,10 @@ export class MockSession implements RuntimeSession {
       return this.defaultSkillAssistSteps()
     }
     if (this.ctx.run.kind === 'work' && this.ctx.run.quick && this.script.work === DEFAULT_WORK) {
+      if (this.ctx.prompt.includes(CHAT_EDIT_TOKEN)) return chatEditSteps(this.ctx.run.quick.folder)
+      if (this.ctx.prompt.includes(CHAT_MCP_TOKEN)) return CHAT_MCP_STEPS
+      const selfConfig = selfConfigMarkerSteps(this.ctx.prompt)
+      if (selfConfig) return selfConfig
       const n = this.ctx.listProjects?.().length ?? 0
       return [
         { type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} },
@@ -1204,6 +1393,13 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
       const lead = this.firstSpawnableSlug(this.root)
       return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
+    }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(OUTPUTS_TOKEN)) {
+      // The tools are bound on every work run and answer "Outputs are not available" themselves without ctx.outputs.
+      const available = !!this.ctx.outputs && this.tools.some((t) => t.name === OUTPUT_TOOLS.produce)
+      if (!available) this.log('info', 'Mock [mock:outputs]: this run has no outputs (not a work run of a stored project), so the output steps are skipped.')
+      const first: MockStep[] = available ? outputsSteps() : [{ type: 'text', text: MOCK_OUTPUTS_NONE }]
+      return [...first, ...DEFAULT_WORK]
     }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(KNOWLEDGE_RECALL_TOKEN)) {
       const available = !!this.ctx.knowledge && !!this.ctx.knowledgeRecall && this.tools.some((t) => t.name === KNOWLEDGE_RECALL_TOOL)
@@ -1257,6 +1453,7 @@ export class MockSession implements RuntimeSession {
   private async turn(steps: MockStep[]): Promise<void> {
     this.interrupted = false
     this.turnFailure = null
+    this.turnHalt = false
     this.inTurn = true
     try {
       this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
@@ -1264,7 +1461,7 @@ export class MockSession implements RuntimeSession {
         await this.pause(this.script.delayMs)
         if (this.stopped || this.interrupted) break
         await this.step(step)
-        if (this.turnFailure) break
+        if (this.turnFailure || this.turnHalt) break
       }
       if (this.stopped) {
         // A usage limit ends the session mid-turn: the turn end is still reported (limited), then the session ends.
@@ -1295,6 +1492,7 @@ export class MockSession implements RuntimeSession {
     } finally {
       this.inTurn = false
       this.turnFailure = null
+      this.turnHalt = false
     }
   }
 
@@ -1349,10 +1547,28 @@ export class MockSession implements RuntimeSession {
         if (step.echo !== undefined && result !== undefined && !this.stopped && !this.interrupted) {
           await this.step({ type: 'text', text: step.echo.replace('{result}', result) })
         }
+        if (step.echoIf && result !== undefined && !this.stopped && !this.interrupted) {
+          await this.step({ type: 'text', text: result.includes(step.echoIf.contains) ? step.echoIf.then : step.echoIf.else })
+        }
         return
       }
       case 'retireFact':
         return this.retireFactStep(step)
+      case 'writeFile': {
+        const target = join(this.ctx.project.path, step.path)
+        try {
+          mkdirSync(dirname(target), { recursive: true })
+          writeFileSync(target, Buffer.from(step.base64, 'base64'))
+          this.log('info', `Mock: wrote ${step.path} in the project folder.`)
+        } catch (e) {
+          this.log('warn', `Mock: could not write ${step.path}: ${(e as Error).message}`)
+        }
+        return
+      }
+      case 'harnessAnswer':
+        return this.harnessAnswerStep(step)
+      case 'firstProject':
+        return this.firstProjectStep(step)
       case 'wait':
         await this.pause(step.ms)
         return
@@ -1486,6 +1702,7 @@ export class MockSession implements RuntimeSession {
     if (step.ask || ref?.forced) {
       const restricted = isTrustRestrictedRun(this.ctx.run)
       let suggestions: PermissionSuggestion[] = []
+      let cardSuggestions: PermissionSuggestion[] = []
       let preApproved = false
       let opts: MatchOptions | undefined
       // A touching shell command skips every allow path (and never reads matchOptionsFor, which an unreadable list breaks).
@@ -1502,6 +1719,7 @@ export class MockSession implements RuntimeSession {
         // A read under a reference folder gets no suggestions (M2).
         const chosen = ref ? [] : chooseSuggestions(step.name, input, step.suggestions, false, { ...opts, userMcpServers })
         suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
+        cardSuggestions = suggestions
         const rules = allowRuleStrings(suggestions)
         // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
         // Saved rules come from ctx.savedRules() (OrgAI's data folder for engagements), else the folder's file.
@@ -1519,7 +1737,13 @@ export class MockSession implements RuntimeSession {
           matchingRule(step.name, input, usable, opts) !== undefined ||
           this.editPreApproved(step.name, input, restricted)
       }
+      // Chat (quick) session edit grant (same as the Claude and Codex adapters): after every deny gate above, an edit
+      // whose every file is inside the chat's folder needs no card once the user allowed a covered edit for the session.
+      if (!preApproved && !ref && quickEditFree(this.ctx, step.name, input, this.ctx.project.path)) preApproved = true
       if (!preApproved) {
+        // A covered quick edit also offers "Allow for session"; that suggestion is on the card only (applyAllowScope
+        // below gets `suggestions` without it), so it never turns on sessionAcceptEdits.
+        const card = ref ? { suggestions: cardSuggestions, ruleLabels: suggestionLabels(cardSuggestions) } : quickEditCard(this.ctx.run, step.name, input, this.ctx.project.path, cardSuggestions)
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
         const decision = await this.untilStopped(
           this.ctx.requestPermission({
@@ -1527,7 +1751,7 @@ export class MockSession implements RuntimeSession {
             toolName: step.name,
             input,
             summary: describeTool(step.name, input),
-            ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+            ...(card.suggestions.length ? { suggestions: card.suggestions, ruleLabels: card.ruleLabels } : {}),
             ...refField
           })
         )
@@ -1537,14 +1761,14 @@ export class MockSession implements RuntimeSession {
         if (decision.behavior === 'deny') {
           this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: decision.message, isError: true })
           this.setState(agentId, 'thinking', 'Thinking…')
+          if (step.onDeny !== undefined) {
+            await this.step({ type: 'text', text: step.onDeny })
+            this.turnHalt = true
+          }
           return
         }
         // A reference-folder card grants this call only: no rule, folder or mode is kept.
-        if (ref || !opts) {
-          this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: step.result ?? 'ok', isError: false })
-          this.setState(agentId, 'thinking', 'Thinking…')
-          return
-        }
+        if (ref || !opts) return this.toolRan(agentId, id, step, input)
         // Same as the Claude adapter: a trust-restricted run never persists anything (project scope becomes session).
         const granted = applyAllowScope(
           this.ctx.project.path,
@@ -1563,8 +1787,26 @@ export class MockSession implements RuntimeSession {
         }
       }
     }
-    this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: step.result ?? 'ok', isError: false })
+    return this.toolRan(agentId, id, step, input)
+  }
+
+  /** A tool call that ran: its result, then the step's `writeContent` (written for real) and `onAllow` text. */
+  private async toolRan(agentId: string, id: string, step: Extract<MockStep, { type: 'tool' }>, input: Record<string, unknown>): Promise<void> {
+    let content = step.result ?? 'ok'
+    let isError = false
+    if (step.writeContent !== undefined) {
+      const target = typeof input.file_path === 'string' ? input.file_path : ''
+      try {
+        if (!target) throw new Error('no file_path')
+        writeFileSync(target, step.writeContent)
+      } catch (e) {
+        content = `Could not write ${target || 'the file'}: ${(e as Error).message}`
+        isError = true
+      }
+    }
+    this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content, isError })
     this.setState(agentId, 'thinking', 'Thinking…')
+    if (step.onAllow !== undefined && !isError) await this.step({ type: 'text', text: step.onAllow })
   }
 
   /**
@@ -1804,6 +2046,105 @@ export class MockSession implements RuntimeSession {
     }
     await this.harnessStep({ type: 'harness', name: KNOWLEDGE_TOOL, args: { action: 'retire', factId, ...(step.reason ? { reason: step.reason } : {}) } })
   }
+
+  /** The harnessAnswer step: one call through the real harness tool (no REVISE retry), then the matching sentence. */
+  private async harnessAnswerStep(step: MockHarnessAnswerStep): Promise<void> {
+    const result = await this.harnessStep({ type: 'harness', name: step.name, args: step.args ?? {}, retryOnRevise: false })
+    if (this.stopped || this.interrupted) return
+    const answer = result === undefined ? undefined : step.answers.find((a) => result.startsWith(a.prefix))
+    await this.step({ type: 'text', text: answer?.text ?? step.otherwise })
+  }
+
+  /** The firstProject step: list_projects, then `then` for the first project's id, or the `none` sentence. */
+  private async firstProjectStep(step: MockFirstProjectStep): Promise<void> {
+    const listed = await this.harnessStep({ type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} })
+    if (this.stopped || this.interrupted) return
+    const projectId = listed === undefined ? undefined : firstProjectId(listed)
+    if (!projectId) {
+      this.log('info', 'Mock: list_projects named no project, so the project settings proposal is skipped.')
+      await this.step({ type: 'text', text: step.none })
+      return
+    }
+    await this.harnessAnswerStep({ ...step.then, args: { ...step.then.args, projectId } })
+  }
+}
+
+/** Trigger token (Chat / quick runs, default script): look up the theme, open Appearance, propose the light theme (selfConfigSteps). */
+export const SELF_CONFIG_TOKEN = '[mock:self-config]'
+/** Trigger token (Chat / quick runs, default script): propose a $5 spend cap for the first listed project (selfConfigProjectSteps). */
+export const SELF_CONFIG_PROJECT_TOKEN = '[mock:self-config-project]'
+export const MOCK_SELF_CONFIG_LOOKUP = "Let me look that up in OrgAI's reference."
+export const MOCK_SELF_CONFIG_DONE = 'Done: the theme is now light.'
+export const MOCK_SELF_CONFIG_SAME = 'The theme is already light.'
+export const MOCK_SELF_CONFIG_LEFT = 'Understood; I left the settings alone.'
+export const MOCK_SELF_CONFIG_PROJECT_DONE = 'Done: that project now has a $5 cap from its next run.'
+export const MOCK_SELF_CONFIG_PROJECT_LEFT = 'Understood; I left the project alone.'
+export const MOCK_SELF_CONFIG_NO_PROJECT = 'You have no OrgAI projects yet.'
+
+/**
+ * The [mock:self-config] turn: app_reference locate "theme" (the text result is not read), open_in_app on
+ * app-settings-general-appearance, then propose_app_settings appearance.theme = light. A result starting APPROVED says
+ * MOCK_SELF_CONFIG_DONE, "Nothing to change" MOCK_SELF_CONFIG_SAME, anything else (REVISE, DECLINED, a refusal, the
+ * tool's own unavailable text, an unbound tool) MOCK_SELF_CONFIG_LEFT. Every call goes through the real harness tool.
+ */
+export function selfConfigSteps(): MockStep[] {
+  return [
+    { type: 'text', text: MOCK_SELF_CONFIG_LOOKUP },
+    { type: 'harness', name: APP_REFERENCE_TOOL, args: { action: 'locate', query: 'theme' } },
+    { type: 'harness', name: OPEN_IN_APP_TOOL, args: { surfaceId: 'app-settings-general-appearance' } },
+    {
+      type: 'harnessAnswer',
+      name: PROPOSE_APP_SETTINGS_TOOL,
+      args: { title: 'Switch to the light theme', rationale: 'You asked for a lighter look.', changes: [{ field: 'appearance.theme', value: 'light' }] },
+      answers: [
+        { prefix: 'APPROVED', text: MOCK_SELF_CONFIG_DONE },
+        { prefix: 'Nothing to change', text: MOCK_SELF_CONFIG_SAME }
+      ],
+      otherwise: MOCK_SELF_CONFIG_LEFT
+    }
+  ]
+}
+
+/**
+ * The [mock:self-config-project] turn: list_projects, then propose_project_settings maxBudgetUsd 5 for the first
+ * project's id (MOCK_SELF_CONFIG_PROJECT_DONE on APPROVED, else MOCK_SELF_CONFIG_PROJECT_LEFT), or
+ * MOCK_SELF_CONFIG_NO_PROJECT when the list names none.
+ */
+export function selfConfigProjectSteps(): MockStep[] {
+  return [
+    {
+      type: 'firstProject',
+      none: MOCK_SELF_CONFIG_NO_PROJECT,
+      then: {
+        type: 'harnessAnswer',
+        name: PROPOSE_PROJECT_SETTINGS_TOOL,
+        args: { title: 'Cap the spend', rationale: 'A small cap for a test project.', maxBudgetUsd: 5 },
+        answers: [{ prefix: 'APPROVED', text: MOCK_SELF_CONFIG_PROJECT_DONE }],
+        otherwise: MOCK_SELF_CONFIG_PROJECT_LEFT
+      }
+    }
+  ]
+}
+
+/** The self-configuration marker's first turn for a quick run's prompt, or null when neither marker is set. */
+export function selfConfigMarkerSteps(prompt: string): MockStep[] | null {
+  if (prompt.includes(SELF_CONFIG_PROJECT_TOKEN)) return selfConfigProjectSteps()
+  if (prompt.includes(SELF_CONFIG_TOKEN)) return selfConfigSteps()
+  return null
+}
+
+/**
+ * The id of the first project in a list_projects result: the `id=<id>` field of the first line inside `<projects>`
+ * (fields are joined by " | "). undefined when the block is missing or empty (no projects, the tool unavailable).
+ */
+export function firstProjectId(result: string): string | undefined {
+  const lines = result.split('\n')
+  const open = lines.indexOf('<projects>')
+  if (open < 0) return undefined
+  const line = lines[open + 1]
+  if (line === undefined || line === '</projects>') return undefined
+  const m = /(?:^| \| )id=([A-Za-z0-9_-]+)(?: \||$)/.exec(line)
+  return m?.[1]
 }
 
 export interface MockAdapterOptions {

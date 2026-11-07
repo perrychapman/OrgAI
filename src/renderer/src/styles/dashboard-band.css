@@ -1,0 +1,386 @@
+/* ---------- Dashboard: Right now band (docs/design/dashboard-2.md sections 3, 6) ----------
+   Owned by components/dashboard/RightNowBand.tsx and BandRun.tsx. Tokens only. */
+
+.dash-now {
+  container: band / inline-size;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-1);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+}
+.dash-now .dash-section-head {
+  justify-content: space-between;
+}
+.dash-now-counts {
+  margin: 0;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  text-align: right;
+}
+.dash-now-project {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.dash-now-project > h3 {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-now-client {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular, 400);
+  color: var(--text-tertiary);
+}
+.dash-runs,
+.dash-agents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dash-runs {
+  gap: var(--space-2);
+}
+.dash-run {
+  min-width: 0;
+}
+
+/* ---- Marks (3.1) ---- */
+.dash-mark {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--state-idle);
+  background: color-mix(in oklab, var(--role, var(--text-tertiary)) 70%, var(--surface-1));
+}
+.dash-mark[data-state='working'] {
+  border-color: var(--state-working);
+  box-shadow: var(--halo-working);
+}
+.dash-mark[data-state='waiting'] {
+  border-color: var(--state-waiting);
+  box-shadow: var(--halo-dot-warning);
+}
+.dash-mark[data-state='idle'] {
+  border-color: var(--state-idle);
+}
+.dash-mark[data-state='done'] {
+  border-color: var(--state-done);
+  background: var(--state-done);
+  color: var(--text-on-success);
+}
+.dash-mark[data-state='failed'] {
+  border-color: var(--state-error);
+  background: var(--state-error);
+  color: var(--text-on-success);
+}
+.dash-mark[data-state='folded'] {
+  width: 8px;
+  height: 8px;
+  margin: 2px;
+  border: 1px dashed var(--canvas-edge-group);
+  background: transparent;
+}
+/* The interchange: a ring in the root's role colour around a 6 px dot. */
+.dash-mark[data-root] {
+  width: 14px;
+  height: 14px;
+  border-color: var(--role);
+  background: radial-gradient(circle, var(--role) 0 3px, transparent 3.5px);
+}
+.dash-mark[data-root][data-group='waiting'] {
+  border-color: var(--state-waiting);
+}
+.dash-mark[data-root][data-group='idle'] {
+  border-color: var(--state-idle);
+}
+
+/* Working marks breathe (3.4): transform and opacity only, staggered by --i. */
+.dash-mark[data-state='working'][data-breathe]::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 2px solid var(--state-working);
+  opacity: 0;
+  pointer-events: none;
+  animation: dash-breathe var(--dur-pulse) var(--ease-out) infinite;
+  animation-delay: calc(var(--i, 0) * -240ms);
+}
+@keyframes dash-breathe {
+  from {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  to {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+/* ---- Run header (6.3) ---- */
+.dash-run-head {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: var(--text-primary);
+}
+.dash-run-head:hover {
+  background: var(--surface-2);
+}
+.dash-run-head:focus-visible,
+.dash-agent-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.dash-run-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.dash-run-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.dash-run-head .dash-status {
+  font-size: var(--text-small);
+}
+.dash-chip {
+  flex: none;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  font-size: var(--text-caption);
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+.dash-run-nums {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+  color: var(--text-tertiary);
+}
+.dash-run-cap {
+  display: block;
+  /* Align under the status word: interchange 14 + dot 8 + two gaps. */
+  padding-left: calc(14px + var(--space-2));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.dash-run-cap[data-warn='true'] {
+  color: var(--warning-text);
+}
+.dash-run[data-group='waiting'] > .dash-run-head {
+  background: var(--warning-soft);
+}
+
+/* ---- Agent rows (6.4), reporting lines (3.2) ---- */
+.dash-agents {
+  /* The interchange's centre (header padding + 7 px) minus the line's 6 px. */
+  margin-left: calc(var(--space-2) + 1px);
+}
+.dash-agent-row {
+  all: unset;
+  box-sizing: border-box;
+  position: relative;
+  display: grid;
+  grid-template-columns: calc(var(--depth, 1) * 16px) 12px max-content max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  width: 100%;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: var(--text-body);
+}
+.dash-agent-row:hover {
+  background: var(--surface-2);
+}
+.dash-agent-row > * {
+  min-width: 0;
+}
+/* Lines: the row's own parent line (half height on the parent's last row) plus the ancestors' lines passing through. */
+.dash-agent-row::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-image: linear-gradient(var(--dash-line), var(--dash-line)), linear-gradient(var(--dash-line), var(--dash-line)), linear-gradient(var(--dash-line), var(--dash-line));
+  background-position:
+    calc((var(--depth, 1) - 1) * 16px + 5px) 0,
+    5px 0,
+    21px 0;
+  background-size:
+    2px 100%,
+    var(--w1, 0) 100%,
+    var(--w2, 0) 100%;
+}
+.dash-agent-row[data-last='true']::before {
+  background-size:
+    2px 50%,
+    var(--w1, 0) 100%,
+    var(--w2, 0) 100%;
+}
+.dash-agent-row[data-through~='1'] {
+  --w1: 2px;
+}
+.dash-agent-row[data-through~='2'] {
+  --w2: 2px;
+}
+.dash-agent-row::after {
+  content: '';
+  position: absolute;
+  top: calc(50% - 1px);
+  left: calc((var(--depth, 1) - 1) * 16px + 5px);
+  width: 11px;
+  height: 2px;
+  background: var(--dash-line);
+  pointer-events: none;
+}
+.dash-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 160px;
+  height: 20px;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+.dash-pill-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-pill-tail {
+  flex: none;
+}
+.dash-role {
+  margin-left: var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.dash-activity {
+  margin-left: var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.dash-wt {
+  margin-left: var(--space-2);
+  padding-right: var(--space-2);
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  color: var(--warning-text);
+}
+.dash-agent-summary .dash-summary-text {
+  grid-column: 3 / -1;
+  margin-left: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.dash-failed {
+  color: var(--danger-text);
+}
+.dash-agent-row[data-state='waiting'] .dash-activity {
+  color: var(--warning-text);
+}
+.dash-agent-row[data-state='failed'] .dash-activity {
+  color: var(--danger-text);
+}
+
+/* A new row fades and rises in; rows never animate out. */
+.dash-agents > li {
+  animation: dash-row-in var(--dur-base) var(--ease-out);
+}
+@keyframes dash-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes dash-row-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The role caption goes first when the band is narrow; it stays in the accessible name. */
+@container band (max-width: 559px) {
+  .dash-role {
+    display: none;
+  }
+  .dash-wt {
+    max-width: 30cqi;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Reduced motion: no breathing (the static halo stays), rows only fade. */
+@media (prefers-reduced-motion: reduce) {
+  .dash-mark[data-state='working'][data-breathe]::after {
+    animation: none;
+    display: none;
+  }
+  .dash-agents > li {
+    animation: dash-row-fade var(--dur-fast) linear;
+  }
+}
+:root[data-reduce-motion='on'] .dash-mark[data-state='working'][data-breathe]::after {
+  animation: none;
+  display: none;
+}
+:root[data-reduce-motion='on'] .dash-agents > li {
+  animation: dash-row-fade var(--dur-fast) linear;
+}

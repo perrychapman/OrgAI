@@ -7,6 +7,10 @@ import type {
   HostHandoffFacts,
   EngagementNoteWriter,
   FolderConfigState,
+  OutputProduceInput,
+  OutputRegisterInput,
+  OutputsChangedEvent,
+  RunOutput,
   RunUsage,
   UsageStats,
   UsageStatsQuery,
@@ -75,12 +79,18 @@ import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, isBuiltinConnectionId, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, isBuiltinConnectionId, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
+import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
+import type { SelfKnowledgeHooks } from './types'
+import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
+import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
+import { clampText } from '../capabilities/sanitize'
 import { datum } from './harnessTools'
+import type { OutputScope, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -137,6 +147,31 @@ export interface ResolvedAllowedDirectories {
   dropped: string[]
   /** The subset of `dropped` left out as too broad or sensitive (home, a folder holding the project, ~/.ssh ...). */
   unsafe: string[]
+}
+
+/**
+ * The folders an outputs call may touch, from the stored project (types.ts "Run outputs"; api.ts OutputScope): the
+ * project folder, the existing allowed folders (resolveAllowedDirectories: real paths, never the data folder or a
+ * folder inside the project) and the reference folders (never accepted). Used by RunManager at call time and by the
+ * outputs:* handlers.
+ */
+export function outputScopeOf(project: Project, dataDir: string | undefined): OutputScope {
+  const allowed = resolveAllowedDirectories(project.allowedDirectories, { projectPath: project.path, dataDir }).dirs
+  // References are refused by the service, so none is dropped here (one inside the project folder must still count):
+  // both the given and the canonical spelling go in.
+  const references = [
+    ...new Set(
+      (project.referenceDirectories ?? [])
+        .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+        .flatMap((r) => [resolvePath(r.trim()), canonicalPath(resolvePath(r.trim()))])
+    )
+  ]
+  return { projectId: project.id, projectPath: project.path, allowedDirectories: allowed, referenceDirectories: references }
+}
+
+/** The noun of the transcript row "Produced <word> <title>". */
+function producedWord(kind: string): string {
+  return kind === 'docx' ? 'document' : kind === 'xlsx' ? 'workbook' : kind === 'mermaid' || kind === 'svg' ? 'diagram' : 'file'
 }
 
 /** OrgAI's data folder in both spellings (deduped); empty without a data dir. */
@@ -319,6 +354,8 @@ interface ActiveRun {
   pendingRules: PendingCardMaps['pendingRules']
   /** Rules granted for this run only (scope 'run'); project grants go to the settings file. */
   runRules: string[]
+  /** Quick runs: the user chose Allow for session on a covered edit; dies with the run (RuntimeContext.quickSessionEdits). */
+  quickSessionEdits?: boolean
   /** The project's (canonical) path, for saving project-scoped grants. */
   projectPath: string
   /** Set for engagements: their saved rules live in OrgAI's data folder, never in the project folder. */
@@ -370,6 +407,12 @@ interface ActiveRun {
   knowledgeWrites: number
   /** The writes cap was reached and logged once. */
   knowledgeCapWarned?: boolean
+  /** open_in_app places shown this run and when the last one went out (OPEN_IN_APP_PER_RUN_MAX / OPEN_IN_APP_MIN_INTERVAL_MS). */
+  appOpens?: number
+  appOpenedAt?: number
+  /** produce_output / register_output successes this run made (OUTPUTS_RUN_MAX); the cap warning is logged once. */
+  outputsMade: number
+  outputsCapWarned?: boolean
   /** Per named receiving agent: node id -> the signature last served in full (knowledge_recall and auto context). In memory only. */
   knowledgeShown: Map<string, Map<string, string>>
   /** Per named receiving agent: node id -> the signature last put in an automatic context block, full or not. In memory only. */
@@ -697,10 +740,20 @@ export interface RunManagerOptions {
    */
   engagementChanged?: (event: EngagementChangedEvent) => void
   /**
+   * The run outputs service (outputs/service.ts `createOutputsService(dataDir)`), for RuntimeContext.outputs on work
+   * runs of stored projects (never quick, setup-like, build or virtual-project runs). Missing = the tools say outputs
+   * are not available.
+   */
+  outputs?: OutputsServiceApi
+  /** Push outputs:changed after an agent produced or registered an output (bootstrap.ts emits it on the HostEventBus). Missing = no push. */
+  outputsChanged?: (event: OutputsChangedEvent) => void
+  /**
    * A saved team template's roles converted for `project` (setup/templates.ts, the agent-import convert path),
    * for RuntimeContext.orgTemplate on setup runs. null for an unknown id. Missing = templates unavailable.
    */
   orgTemplate?: (templateId: string, project: Project) => { name: string; roles: Role[] } | null
+  /** Self-knowledge and self-configuration (app_reference, open_in_app, appSettings apply). See SelfKnowledgeHooks. */
+  selfKnowledge?: SelfKnowledgeHooks
 }
 
 /** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
@@ -1326,6 +1379,7 @@ export class RunManager {
       skillCounts: new Map(),
       skillLoads: 0,
       knowledgeWrites: 0,
+      outputsMade: 0,
       knowledgeShown: new Map(),
       knowledgeContextShown: new Map(),
       knowledgeUsage: { recalls: 0, autoContexts: 0, itemsServed: 0, charsServed: 0 },
@@ -1814,7 +1868,7 @@ export class RunManager {
             }
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
-        ...(bare
+        ...(bare && !isQuick
           ? {}
           : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => setLive(saved, 'mcpServers', { ids: [req.spec.id], names: [req.spec.name] })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
@@ -1883,6 +1937,11 @@ export class RunManager {
               ...this.bindKnowledgeReads(active, this.options.knowledge, project.id, () => this.options.resolveProject?.(project.id) ?? live)
             }
           : {}),
+        // Run outputs: work runs of a stored project (code or engagement, team default or single); never Chat, setup-like,
+        // build-session or trust-restricted runs.
+        ...(this.options.outputs && kind === 'work' && !bare && !restricted
+          ? { outputs: this.bindOutputs(active, this.options.outputs, project.id, () => ctx.roles, () => this.options.resolveProject?.(project.id) ?? live) }
+          : {}),
         // Saved team templates: Architect setup runs only.
         ...(this.options.orgTemplate && kind === 'setup' && !isVirtualProjectId(project.id)
           ? { orgTemplate: (templateId: string) => this.options.orgTemplate!(templateId, live) }
@@ -1926,12 +1985,31 @@ export class RunManager {
             }
           : {}),
         ...(isQuick && this.options.listProjects ? { listProjects: () => this.options.listProjects!() } : {}),
+        ...(this.options.selfKnowledge
+          ? {
+              appReference: (q: AppReferenceQuery) => this.options.selfKnowledge!.reference(q, { status: isQuick || kind === 'mcp-assist' || kind === 'skill-assist' }),
+              ...(isQuick || setupLike ? { navigate: (target: { surfaceId: AtlasSurfaceId; projectId?: string }, caller: { agentId?: string }) => this.navigateFor(active, target, caller) } : {}),
+              ...(isQuick
+                ? {
+                    appSettings: () => this.options.selfKnowledge!.settings(),
+                    storedProject: (projectId: string) => this.storedProjectFor(projectId)
+                  }
+                : {})
+            }
+          : {}),
         ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(project.id),
               readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(project.id, ref)
             }
           : {}),
+        ...(isQuick && this.options.skillAssist
+          ? {
+              skillCatalog: () => this.options.skillAssist!.catalog(null),
+              readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(null, ref)
+            }
+          : {}),
+        ...(isQuick ? { quickSessionEdits: () => active.quickSessionEdits === true } : {}),
         ...(kind === 'skill-assist' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(skillScope()),
@@ -2485,6 +2563,58 @@ export class RunManager {
     a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: shown, at: Date.now(), source: 'harness', block: { kind: 'system', text } } })
   }
 
+  /** A stored, non-virtual project (Chat's propose_project_settings target, open_in_app project checks). */
+  private storedProjectFor(projectId: string): Project | undefined {
+    if (typeof projectId !== 'string' || isVirtualProjectId(projectId)) return undefined
+    let p: Project | null | undefined
+    try {
+      p = this.options.resolveProject?.(projectId)
+    } catch {
+      p = undefined
+    }
+    return p && !isVirtualProjectId(p.id) ? p : undefined
+  }
+
+  /**
+   * ctx.navigate (open_in_app): limits, surface and project checks, then one AppNavigateEvent through
+   * options.selfKnowledge.navigate and one harness row on the calling agent.
+   */
+  private navigateFor(a: ActiveRun, target: { surfaceId: AtlasSurfaceId; projectId?: string }, caller: { agentId?: string }): AppNavigateOutcome {
+    const sk = this.options.selfKnowledge
+    if (!sk) return { ok: false, refusal: 'This run cannot open places in the app.' }
+    if (!isAtlasSurfaceId(target?.surfaceId)) return { ok: false, refusal: 'That is not a place OrgAI knows; use app_reference locate to find the surface id.' }
+    if ((a.appOpens ?? 0) >= OPEN_IN_APP_PER_RUN_MAX) return { ok: false, refusal: `Already opened ${OPEN_IN_APP_PER_RUN_MAX} places in this run.` }
+    const now = Date.now()
+    if (a.appOpenedAt !== undefined && now - a.appOpenedAt < OPEN_IN_APP_MIN_INTERVAL_MS) return { ok: false, refusal: 'Wait a moment before opening another place.' }
+    const scope = atlasSurface(target.surfaceId)?.scope ?? 'app'
+    let projectId: string | undefined
+    if (scope === 'project' || scope === 'engagement' || scope === 'run') {
+      if (target.projectId === undefined) {
+        if (scope !== 'run') return { ok: false, refusal: 'That place belongs to a project; give projectId (call list_projects for ids).' }
+      } else {
+        const project = this.storedProjectFor(target.projectId)
+        if (!project) return { ok: false, refusal: 'No such project; call list_projects for ids.' }
+        if (scope === 'engagement' && projectKindOf(project) !== 'engagement') return { ok: false, refusal: 'That place only exists in engagement projects.' }
+        projectId = project.id
+      }
+    }
+    const agent = caller.agentId && caller.agentId !== ROOT_AGENT_ID ? a.record.agents[caller.agentId] : a.record.agents[ROOT_AGENT_ID]
+    const agentLabel = clampText(agent?.name || a.rootRole, 80) || 'Assistant'
+    const event: AppNavigateEvent = { surfaceId: target.surfaceId, ...(projectId ? { projectId } : {}), runId: a.summary.id, agentLabel }
+    let shown = false
+    try {
+      shown = sk.navigate(event)
+    } catch (e) {
+      log.warn(`open_in_app could not be delivered: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    if (!shown) return { ok: false, refusal: 'No OrgAI window is open to show it in.' }
+    a.appOpens = (a.appOpens ?? 0) + 1
+    a.appOpenedAt = now
+    const path = atlasPath(target.surfaceId)
+    this.knowledgeRow(a, caller.agentId ?? ROOT_AGENT_ID, `Opened ${path} for you`)
+    return { ok: true, path }
+  }
+
   /** Push projects:engagementChanged for an agent write (index.ts passes the broadcaster); never throws into the tool. */
   private engagementChanged(projectId: string, what: 'notes' | 'knowledge', ids: string[]): void {
     const event: EngagementChangedEvent = { projectId, what, ids }
@@ -2492,6 +2622,68 @@ export class RunManager {
       this.options.engagementChanged?.(event)
     } catch (e) {
       log.warn(`engagementChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /**
+   * RuntimeContext.outputs over the outputs service: the folder scope read from the stored project at call time (so an
+   * allowed folder added mid-run counts at once), the source from the run's agent record, the per-run cap, `output.created`,
+   * one quiet transcript row on the calling agent and the outputs:changed push (never throws into the tool).
+   */
+  private bindOutputs(
+    a: ActiveRun,
+    service: OutputsServiceApi,
+    projectId: string,
+    roles: () => Role[],
+    project: () => Project
+  ): NonNullable<RuntimeContext['outputs']> {
+    const done = async (
+      caller: KnowledgeCaller,
+      call: (scope: OutputScope, source: { runId: string; agentId?: string; role?: string }) => Promise<{ output: RunOutput; created: boolean }>,
+      row: (o: RunOutput) => string
+    ): Promise<RunOutput> => {
+      if (a.outputsMade >= OUTPUTS_RUN_MAX) {
+        if (!a.outputsCapWarned) {
+          a.outputsCapWarned = true
+          log.warn(`Run ${a.summary.id}: output limit (${OUTPUTS_RUN_MAX}) reached; later outputs are refused`)
+        }
+        throw new Error(`The output limit for this run (${OUTPUTS_RUN_MAX}) is reached; nothing was saved.`)
+      }
+      // Reserve the slot before the await so parallel calls cannot pass the check together; release it on failure.
+      let known: ReturnType<RunManager['knowledgeSource']>
+      let output: RunOutput
+      let created: boolean
+      a.outputsMade++
+      try {
+        known = this.knowledgeSource(a, caller, roles())
+        const scope = outputScopeOf(project(), this.options.dataDir)
+        ;({ output, created } = await call(scope, { runId: a.summary.id, agentId: known.agentId, ...(known.role ? { role: known.role } : {}) }))
+      } catch (e) {
+        a.outputsMade--
+        throw e
+      }
+      a.emit({ type: 'output.created', runId: a.summary.id, output })
+      this.knowledgeRow(a, known.agentId, row(output))
+      try {
+        this.options.outputsChanged?.({ projectId, ids: [output.id], what: created ? 'added' : 'updated' })
+      } catch (e) {
+        log.warn(`outputsChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      return output
+    }
+    return {
+      produce: (input: OutputProduceInput, caller) =>
+        done(
+          caller,
+          (scope, source) => service.produce(scope, input, source),
+          (o) => `Produced ${producedWord(o.kind)} ${datum(o.title, 120)}`
+        ),
+      register: (input: OutputRegisterInput, caller) =>
+        done(
+          caller,
+          (scope, source) => service.register(scope, input, source),
+          (o) => `Registered output ${datum(o.title, 120)}`
+        )
     }
   }
 
@@ -3182,6 +3374,19 @@ export class RunManager {
       delete request.suggestions
       delete request.ruleLabels
     } else if ('referenceFolder' in request) delete request.referenceFolder
+    // Fields only RunManager may set: drop whatever an adapter sent.
+    delete request.quickReadOnly
+    delete request.maxScope
+    delete request.workingFolder
+    delete request.workingFolderScratch
+    const quick = active.summary.quick
+    if (quick && !quick.allowEdits && isQuickWriteTool(request.toolName)) request.quickReadOnly = true
+    if (request.referenceFolder) request.maxScope = 'once'
+    else if (this.isRestricted(active.summary)) request.maxScope = 'session'
+    if (quick) {
+      request.workingFolder = quick.folder
+      if (quick.scratch) request.workingFolderScratch = true
+    }
     request.revision = 1
     logPermission(active.summary, request)
     return new Promise((resolve) => {
@@ -3218,11 +3423,25 @@ export class RunManager {
       log.info(`Narrowed a ${narrowed.scope} grant to once: the call touches a reference folder`)
       narrowed = { ...narrowed, scope: 'once' }
     }
+    if (isQuickSessionEditGrant(active.summary, pending.request, narrowed) && !active.quickSessionEdits) {
+      active.quickSessionEdits = true
+      log.info('Quick run: edits allowed for the session in its folder')
+    }
     const effective = narrowed?.behavior === 'allow' ? 'allow' : 'deny'
     this.cardResolved(active, 'permission', requestId, 'applied', effective, opts.decidedBy)
     pending.resolve(narrowed)
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
-    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
+    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(narrowed?.behavior === 'allow' && narrowed.scope ? { scope: narrowed.scope } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
+    if (active.summary.quick && narrowed?.behavior === 'allow' && narrowed.scope === 'session') {
+      // Adapter labels are built from the agent's own command text: strip hidden characters before they reach a row.
+      const labels = (pending.request.ruleLabels ?? []).map((l) => excerpt(clampText(String(l), 80), 80)).filter(Boolean).join(', ')
+      const what = isQuickSessionEditGrant(active.summary, pending.request, narrowed)
+        ? "edits in this chat's folder"
+        : labels
+          ? excerpt(labels, 200)
+          : excerpt(clampText(String(pending.request.toolName), 80), 80)
+      systemBlock(active, Date.now(), `You allowed ${what} for this chat.`)
+    }
     this.cardSettled(active)
     return applied(runId, requestId, effective, opts)
   }
@@ -3252,7 +3471,19 @@ export class RunManager {
         const secrets = proposal.kind === 'mcpServers' && decision.secrets ? { secrets: decision.secrets } : {}
         {
           try {
-            if (active.summary.projectId === HARNESS_PROJECT_ID) {
+            if (proposal.kind === 'appSettings') {
+              // App-wide settings: Chat only, applied through the settings path (RunManagerOptions.selfKnowledge).
+              if (!active.summary.quick || !this.options.selfKnowledge) throw new Error('App settings can only be changed from Chat.')
+              this.options.selfKnowledge.applyAppSettings(proposal.payload)
+            } else if (proposal.target) {
+              // A stored project's settings changed from Chat: re-resolve the target, settings only, setup untouched.
+              if (!active.summary.quick) throw new Error('Only Chat can change another project\'s settings.')
+              if (proposal.kind !== 'settings') throw new Error('Only settings proposals can target a project.')
+              const target = this.storedProjectFor(proposal.target.projectId)
+              if (!target) throw new Error('That project no longer exists.')
+              const updated = this.setup.applyProposal(target.id, proposal, { targeted: true })
+              this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
+            } else if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
               this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, { ...(active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {}), ...secrets })
@@ -3483,6 +3714,14 @@ export class RunManager {
     setProject: (saved: Project) => void
   ): Promise<McpInstallDecision> {
     const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
+    delete request.runOnly
+    if (active.summary.quick) {
+      // Chat: the server lives in this run only and only the calling agent's role may use it.
+      request.runOnly = true
+      // An unknown caller (no agent record, no slug) gets nobody rather than the root role.
+      const slug = active.record.agents[req.agentId]?.roleSlug
+      request.spec = { ...request.spec, roles: slug ? [slug] : [] }
+    }
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
         request,
@@ -3514,11 +3753,13 @@ export class RunManager {
 
   /** Validate an install answer and apply it (save the server or keep it for this run). Never throws. */
   private settleInstall(active: ActiveRun, request: McpInstallRequest, raw: McpInstallDecision, project: Project, setProject: (saved: Project) => void): McpInstallDecision {
-    const scope = raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
+    // Any quick run: scope 'run' and never persisted, whatever project the run sits on.
+    const quickRun = !!active.summary.quick
+    const scope = quickRun ? 'run' : raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
     const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
     if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
     const refuse = (why: string): McpInstallDecision => ({ approved: false, scope, note: `The harness did not install it: ${why}` })
-    if (isVirtualProjectId(project.id)) return refuse('installs are not available in this session; propose library entries instead.')
+    if (isVirtualProjectId(project.id) && !quickRun) return refuse('installs are not available in this session; propose library entries instead.')
     if (raw.spec !== undefined && (!raw.spec || typeof raw.spec !== 'object' || raw.spec.id !== request.spec.id)) return refuse('the edited server must keep the requested id.')
     const id = request.spec.id
     const taken =
@@ -3527,6 +3768,7 @@ export class RunManager {
       !!this.options.mcp?.libraryEntries?.().some((e) => e.id === id)
     if (taken) return refuse('a server with that id already exists.')
     const spec = mergeInstallEdit(request.spec, raw.spec)
+    if (quickRun) spec.roles = [...(request.spec.roles ?? [])]
     const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)]
     const errors = validateSpec(spec, others)
     if (errors.length) return { approved: false, scope, note: `The harness did not install it: ${errors.join(' ')}` }

@@ -172,3 +172,44 @@ describe('StatusBar', () => {
     expect(textWidth(frame({ width: 1 }))).toBeLessThanOrEqual(1)
   })
 })
+
+describe('StatusBar project name (issue #34)', () => {
+  const name = 'Acme Billing Migration 2' // 24 characters
+  const hints = statusHint('composer', { readOnly: false, stopOnQuit: false })
+  const chips: RunChip[] = [
+    { tag: 'R1', runId: 'a', followed: true, needsYou: false },
+    { tag: 'R2', runId: 'b', followed: false, needsYou: true },
+    { tag: 'R3', runId: 'c', followed: false, needsYou: false }
+  ]
+  const summary: StatusSummary = { ...SUMMARY, projectName: name, runChips: chips, liveRuns: 3, runTitle: 'Fix the checkout flow for guests' }
+  const at = (width: number): string => frame({ width, summary, hints })
+  const wholeItems = (f: string): void => {
+    const tail = f.slice(f.indexOf('Enter sends'))
+    for (const item of tail.split(' · ')) expect(hints.split(' · ')).toContain(item.trim())
+  }
+
+  it('keeps the whole project name and a whole-item hint at 120, 100 and 80 columns', () => {
+    expect(name).toHaveLength(24)
+    for (const width of [120, 100, 80]) {
+      const f = at(width)
+      expect(textWidth(f), `width ${width}`).toBeLessThanOrEqual(width)
+      expect(f, `width ${width}`).toContain(name)
+      expect(f, `width ${width}`).toContain('Enter sends')
+      wholeItems(f)
+    }
+  })
+
+  it('at 70 columns nothing else fits beside the hint, so the name is the last thing cut', () => {
+    const f = at(70)
+    expect(textWidth(f)).toBeLessThanOrEqual(70)
+    expect(f).not.toContain(name)
+    expect(f).toContain('Enter sends')
+    expect(f).toContain('3 live')
+    wholeItems(f)
+  })
+
+  it('gives up later hint items before the name', () => {
+    const count = (f: string): number => f.slice(f.indexOf('Enter sends')).split(' · ').length
+    expect(count(at(70))).toBeLessThan(count(at(120)))
+  })
+})

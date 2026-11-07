@@ -199,15 +199,42 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   'harness' (MCP assistant; `McpAssistInput.allowBuild === true`, library scope only, adds a per-run scratch dir
   `RunSummary.buildWorkspace`, Edit/Write/Bash and permission mode 'default') and 'skills' (Skill assistant,
   RunKind 'skill-assist', setup-like, skills:startAssist; propose_skills -> `SkillService.applyProposal`). Quick runs:
-  permission mode always 'default', read-only unless allowEdits, no project MCP/plugins/skills/installs/messaging,
-  grants never written to the folder, Claude `settingSources: []` with no saved-rules allowedTools, tools from
-  `QUICK_TOOL_DEFS` incl. `list_projects` (secret-free ProjectPeek data block). Scratch dirs only under
+  permission mode always 'default', every edit and command asks (see "Chat asks" below), no project
+  MCP/plugins/skills/messaging, installs run-scoped only, grants never written to the folder, Claude
+  `settingSources: []` with no saved-rules allowedTools, tools from `QUICK_TOOL_DEFS` incl. `list_projects`
+  (secret-free ProjectPeek data block), `request_mcp_install`, `list_skill_library`, `read_library_skill`. Scratch dirs only under
   `<data>/quick` (0o700, boot sweep keeps referenced ones). Promote moves the session chain and drops `quick`.
   Mock scripts: a quick run calls `list_projects` once, says "I can see N OrgAI project(s). Tell me what you would
   like to do." and goes idle; follow-ups get "Mock reply to: <text>". A skill-assist run says "I will look at the
   skill library first, then propose a skill.", calls `list_skill_library`, then `propose_skills` (title "Mock skill",
   one create of `mock-skill`, scope 'library' on 'skills', 'project' with the first role's slug on a project), and
-  after APPROVED says "The skill is set up." and goes idle. Verified by unit tests and the mock only; no live run.
+  after APPROVED says "The skill is set up." and goes idle. Quick-run markers `[mock:self-config]` (says "Let me look that up in OrgAI's reference.", app_reference locate "theme", open_in_app `app-settings-general-appearance`, propose_app_settings appearance.theme light; "Done: the theme is now light." on APPROVED, "The theme is already light." on "Nothing to change", else "Understood; I left the settings alone.") and `[mock:self-config-project]` (list_projects, propose_project_settings maxBudgetUsd 5 for the first id; "Done: that project now has a $5 cap from its next run." on APPROVED, else "Understood; I left the project alone.", "You have no OrgAI projects yet." without one) call the real bound tools, never retry on REVISE, and are ignored on work runs (mockSelfConfig.test.ts). Verified by unit tests and the mock only; no live run.
+  - Chat asks (2026-11-06; ARCHITECTURE.md Assistants "Chat asks instead of being unable"): quick roles always keep
+    Edit / Write / Bash / NotebookEdit (team 'single') or each default role's own tools; `allowEdits` is the user's
+    declaration only (false "read-only start: an edit or command asks", true "edits allowed: each still asks" plus
+    isolateWriters in a git folder) and changes the prompt (`quickChatText`: make the call, OrgAI asks, the user may
+    decline, never work around a refusal). RunManager sets on permission cards (adapter values dropped):
+    `quickReadOnly: true` (read-only start, QUICK_WRITE_TOOLS), `maxScope: 'session'` on trust-restricted runs
+    ('once' with a referenceFolder), `workingFolder` / `workingFolderScratch` on quick runs; `permission.resolved`
+    carries `scope` (narrowed; 'project' on a quick run reads 'session'); a session allow on a quick run writes one
+    harness row ("You allowed <rule> for this chat."). Session edits: `src/main/quick/sessionEdits.ts`
+    (`quickSessionEditSuggestion` on covered edit cards, never sent to a provider; `isQuickSessionEditGrant` in
+    decide(); `RuntimeContext.quickSessionEdits`; `quickEditPreApproved` in every adapter after its deny gates; only
+    inside the folder by lexical and real path with no symlink or junction component below it (lstat, dangling links
+    included), never a Codex change with a move destination, never a raw path with a `.` or `..` segment (refused before any resolution, since a POSIX writer follows `link/..` through the link first; NH1), never under .git/.claude/.codex/.agents/.orgai/.vscode/.idea/.github
+    or config files incl. agents.override.md). MCP: `McpInstallRequest.runOnly: true`, approvals narrowed to 'run' and
+    never persisted on any `summary.quick` run, `spec.roles` = the caller's role, `[]` (nobody) for an unknown caller;
+    per-role MCP grants are not enforced on Codex (open review M6). Rule labels in the "You allowed ..." row are stripped
+    of hidden characters. Check-then-write gap and in-folder package.json/Makefile edits: ARCHITECTURE.md Risks.
+    Mock markers (quick runs, default script): `[mock:chat-edit]` (list_projects, Edit `<folder>/notes.md` asks;
+    allow writes it and says "I wrote notes.md.", deny says "I did not change anything." and stops; then Bash
+    `npm test` asks, then idle) and `[mock:chat-mcp]` (request_mcp_install of a pinned stdio server, says the answer,
+    idle). Codex (source-read at rust-v0.166.0, not run live): under approval policy `untrusted`, `safety.rs`
+    `assess_patch_safety` returns AskUser before the writable-path check, so every apply_patch (in-workspace too)
+    raises a file-change approval, and `exec_policy.rs` prompts for every command no execpolicy allow rule matches
+    (no bundled "known safe" list found); an ApprovedForSession apply_patch approval is keyed per exact file path
+    (`ApplyPatchApprovalKey`). The shell approval key, the first-attempt orchestrator branch and Windows
+    restricted-token enforcement were not confirmed. Verified by unit tests, fake query() / fake Codex app-server and the mock only; nothing live.
   - Plan nudges (UX M5): `continuation.ts` `planNudgesApply(run)` is false for a quick run with team 'single' (a
     conversation), and RunManager folds it into `RuntimeContext.autoContinue`, so no adapter's ContinuationDriver
     sends set-plan or continue nudges there; interrupt holds and auto-resume are unchanged, team 'default' keeps nudges.
@@ -268,6 +295,29 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     project's concurrent edits. Unverified live: settingSources [] on resume, PreToolUse deny precedence,
     `project_doc_max_bytes=0`, the Codex decline text reaching the agent, workspace-write enforcement on Windows.
 
+- Self-knowledge and self-configuration, phase A (2026-11-07; ARCHITECTURE.md Shared contracts, Runtime core
+  "Self-knowledge", Conventions): the atlas `src/shared/view/atlas.ts` (77 surfaces, deep-link id tables, total
+  `APP_SETTING_DOCS` / `PROJECT_SETTING_DOCS` / `MENU_ACTION_DOCS`) and `shortcuts.ts`; the reference service
+  `src/main/reference/appReference.ts` (search / read / locate / status over atlas, docs, `harnessToolCatalog()`,
+  HOST_CHANNEL_REGISTRY, CLI COMMANDS, CONNECTORS and bundled docs); IPC `app:reference` (read) and the desktop-only
+  push `app:navigate`; tools `app_reference` (every run kind; status only on Chat, MCP and Skill assistant runs),
+  `open_in_app` (Chat, setup, assistants; atlas ids only, 20 per run, one per 2 s, a harness row "Opened <path> for
+  you"; the main window only, never reopened, focused only while OrgAI is the foreground app, else flashed),
+  `propose_app_settings` / `propose_project_settings` (Chat only, cards; never main-owned, connection, proxy,
+  auth, terminal, model-price or permission-rule fields, never bypassPermissions); Help > "Ask OrgAI about itself…"
+  (`ask-about-orgai`). New fields, screens and menu actions need their atlas entries (typecheck and atlas.test.ts).
+  How checked: unit tests (atlas.test.ts, appReference.test.ts incl. a fake secret that never reaches status,
+  argsReference / selfKnowledgeHost / registry / jsonRoundTrip / appMenu tests, harnessToolsSelfKnowledge.test.ts,
+  runManagerSelfKnowledge.test.ts, service and prompts tests); `npm run build` was checked to carry the docs in
+  `out/main/index.js` and `out/cli/inprocHost.mjs` (about 0.7 MB each); search measured about 2 ms per query. Not
+  built yet: the renderer (no handler for `app:navigate` or `ask-about-orgai`, so the Help item does nothing; the
+  appSettings card is a one-line APPLY_NOTE placeholder in ProposalCard.tsx; until the real card lands the card title
+  is main-written and names every change and the target project, review H1) and a mock script. Until the renderer
+  handles `app:navigate`, open_in_app answers "Opened <path>" while nothing visible happens (review L6). Unverified: a real
+  window receiving `app:navigate` (fake windows only), any live model using the tools, Codex accepting the four
+  names as dynamic tools, atlas summaries that rest on CLAUDE.md rather than the components. Six proposable app
+  fields (defaultMaxBudgetUsd, defaultKeepRuns, defaultIsolateWriters, opusGuardThreshold, defaultAutoContinue,
+  defaultMaxAutoContinues) have no screen (atlas surface 'none'). `propose_org_change` from Chat was left out.
 - Work-run configuration changes (2026-11-02; see ARCHITECTURE.md Conventions): the work-run root has propose_mcp_servers
   (project-only, enforced in main), list_skill_library, read_library_skill and propose_skills (create / update / link /
   grant / remove, project scope). Approved changes reach the live run through RunManager `setLive` and
@@ -603,6 +653,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   PreToolUse 'ask' prompts under 'auto' / 'bypassPermissions', and that Claude's hook `input.cwd` follows the Bash
   tool's cd.
 
+- Run outputs (`src/main/outputs/`, `createOutputsService(dataDir)`, `outputs:*` IPC, `OUTPUTS_IPC`, `window.orgai.outputs`, `onOutputsChanged`, RunEvent `output.created`; ARCHITECTURE.md "Run outputs"): harness tools `produce_output` (docx from a Markdown subset, xlsx with strings never formulas, mermaid / markdown / text / csv / json / svg; written to `<project>/outputs/`) and `register_output` (a file the agent wrote, inside the project or an allowed folder, regular file, no link, kind must match the extension), every role, work runs of stored projects only (never quick, build sessions, setup-like or virtual), 200 per run, no permission card (owner decision, ARCHITECTURE.md Conventions). Index `<data>/projects/<id>/outputs.json`. Previews in main never ship HTML (`OutputPreview`); mammoth always `externalFileAccess: false`; zip guard plus per-entry inflate verification before mammoth / exceljs; docx stops at `DOCX_PREVIEW_MAX_XML_BYTES` (3 MB). `outputs:open` opens only allowlisted extensions of the real file; reveal and saveAs re-check the path. Verified by unit tests only (junction on Windows, hostile svg / HTML / zips, xlsx read back); no live run, no renderer, no mock script yet, macOS and Linux paths unverified.
 - Team files (`src/main/teamFiles/`, `TeamFilesService`, `teamFiles:*` IPC, `TEAM_FILES_IPC`, `window.orgai.teamFiles`, `onTeamFilesChanged`; ARCHITECTURE.md "Team files"): a code project's team as files in its folder (`.orgai/team.json`, `agents/<slug>.md`, `skills/<name>/`, `mcp.json`) so git carries it. Project stays the cache that every reader uses; files win through a gate because the repo is untrusted. Pure parse, serialize, digest, gate, delta and project mapping are apart from disk, store and service. Digests cover parsed content, never bytes.
   - Every main-process save goes through `ProjectStore.save`'s hook and counts as approved: ingest first, then apply the delta to approved and to the disk doc (never the cache), so a pending change in a file survives. A hook failure never fails a save (`dirtyBefore`, retried at a check). `saveInternal` bypasses it. Folder checks happen at open (`teamFiles:status`, which also does the one first write), focus and run start.
   - `gate.ts` is the one place that decides what needs approval (rules in ARCHITECTURE.md), and `TRIVIAL_TOOLS` / `isElevatedTool` the one tool list. Unknown tools are elevated. Never list a change the digest does not bind (`omittedChanges` refuses approve and create).
@@ -1138,7 +1189,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   ("3 decisions · 1 run") and the topbar all come from `lib/needsYou.ts` `waitingItems` / `decisionCount`. A run row's dot
   is the run's status. A Needs-you item names the kind and the ask first, then the location, and opens that card.
   A question card shows its options inline at every size (`DecisionCard` `inline`); the tray shows the first open decision.
-- Proposal cards (`docs/design/proposal-cards.md`): an org chart card shows a changed role's new prompt ("Show new prompt") and an added role's prompt ("Show prompt") in an `org-diff-prompt` disclosure through `ClampText`/`showHidden` with the hidden-characters badge (review M3; e2e/proposals.mjs); card read errors speak through the frame's one `tray-announce` (`useFrameAnnounce` in `CanvasFrame`).
+- Proposal cards (`docs/design/proposal-cards.md`): an org chart card shows a changed role's new prompt ("Show new prompt") and an added role's prompt ("Show prompt") in an `org-diff-prompt` disclosure through `ClampText`/`showHidden` with the hidden-characters badge (review M3; e2e/proposals.mjs); card read errors speak through the frame's one `tray-announce` (`useFrameAnnounce` in `CanvasFrame`). Long proposals (fix 2026-11-07, proposal-cards.md section 12): a proposal body is always its own scroller (`overflow: auto` beside its cap in cards.css; the Team tab's Architect tray set `overflow: visible`, so a capped body ran on under the footer and never scrolled), and while it overflows `DecisionCard` gives it one Tab stop (`data-scrolls`, `role=group`, inset focus ring). e2e/proposals.mjs scenario 4 drives a 29-change org chart in the Live tray and the Architect tray at both sizes and themes; open: the 1024x640 Architect tray is shorter than the card, so the tray scrolls to the footer (needs team.css).
 - Project tabs are Live, History, Team and Settings. The org chart editor is `views/TeamView.tsx`, and project
   settings are sectioned through `components/settings/*`.
 - Settings pages (2026-11-03, `docs/design/config-review.md` + Implementation notes; ARCHITECTURE.md "Settings
@@ -1342,6 +1393,10 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   window at `#/run/<projectId>/<runId>`; `runs:listLive` lists live runs across projects.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the
   project's roles. Proposals go through `RuntimeContext.requestProposal`; applying them is `src/main/setup/service.ts`.
+  - Revisions and retrospectives (2026-11-07, ARCHITECTURE.md "Architect revisions"): roles a revision does not
+    mention are kept (removal only through propose_org_chart `remove`), and an edited role keeps its model and tier
+    unless the draft names a different resolving tier or listed id; a new role's unmapped tier never silently becomes
+    'inherit' while a listed model or the root's model exists. Unit-tested only; no live Architect run.
   - A `PreToolUse` hook answering `permissionDecision: 'allow'` bypasses the permission system in every mode
     (verified in `scripts/smoke-permission-hook.mjs` on haiku under `dontAsk`: the first Bash call was denied, the
     in-process MCP tool got through on the hook alone, and the retried Bash call ran with zero `canUseTool` calls).

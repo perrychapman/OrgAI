@@ -2,6 +2,7 @@
  * Shared domain types used by the main process, preload bridge and renderer.
  * Everything that crosses IPC is defined here.
  */
+import type { AtlasSurfaceId } from './view/atlas'
 
 // ---------- Providers ----------
 
@@ -1657,6 +1658,12 @@ export interface McpInstallRequest {
   /** Secret names (from spec.secretEnv and spec.secretHeaders) the user must fill to approve. */
   requiredSecrets: string[]
   createdAt: number
+  /**
+   * Set by RunManager on a Chat (quick) run: the server can only be added for this run. An approval with scope
+   * 'project' or 'library' is narrowed to 'run' (nothing is saved to any project or the library), so the card should
+   * offer only "For this chat only" and Deny.
+   */
+  runOnly?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
 }
@@ -2117,7 +2124,7 @@ export interface SkillsProposalPayload {
   rationale: string
 }
 
-export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills'
+export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills' | 'appSettings'
 
 interface ProposalBase {
   id: string
@@ -2134,6 +2141,12 @@ interface ProposalBase {
   effect?: ProposalEffect
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
+  /**
+   * The stored project a Chat proposal changes (section "Self-knowledge and self-configuration"): set on a 'settings'
+   * proposal from propose_project_settings, whose run (a quick run) has no project of its own. Main fills it from the
+   * stored project (never from agent text); the card names `projectName`. Absent = the run's own project.
+   */
+  target?: ProposalTarget
 }
 
 /** When an approved proposal takes effect (Proposal.effect). */
@@ -2145,6 +2158,7 @@ export type Proposal =
   | (ProposalBase & { kind: 'settings'; payload: SettingsProposalPayload })
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
   | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
+  | (ProposalBase & { kind: 'appSettings'; payload: AppSettingsProposalPayload })
 
 /**
  * The user's answer to a proposal card (setup:decide). 'approve' applies it; 'revise' sends feedback and the agent may
@@ -2724,7 +2738,7 @@ export const VIRTUAL_PROJECT_LABELS: Record<VirtualProjectId, string> = {
 
 /**
  * Who works on a quick run: 'single' = one built-in assistant (default, model AppSettings.quickRunModel);
- * 'default' = the app's default org chart (defaultRoles), tools filtered through quickRoleTools.
+ * 'default' = the app's default org chart (defaultRoles), each role with its own tools (see quickRunTools).
  */
 export type QuickRunTeam = 'single' | 'default'
 export const QUICK_RUN_TEAMS: readonly QuickRunTeam[] = ['single', 'default']
@@ -2733,8 +2747,9 @@ export const QUICK_RUN_MAX_PROMPT_CHARS = 100_000
 
 /**
  * runs:startQuick input. A project-less work run on the virtual project QUICK_PROJECT_ID (RunSummary.kind 'work',
- * RunSummary.quick set). Never permission mode 'auto' (see quickRunPermissionMode); read-only unless allowEdits;
- * no project MCP servers, plugins or skills; run messaging off.
+ * RunSummary.quick set). Permission mode always 'default' (see quickRunPermissionMode), so every edit and command
+ * asks; the roles keep their edit and command tools whatever allowEdits says. No project MCP servers, plugins or
+ * skills (run-scoped installs through request_mcp_install only, McpInstallRequest.runOnly); run messaging off.
  */
 export interface QuickRunInput {
   prompt: string
@@ -2745,7 +2760,13 @@ export interface QuickRunInput {
   folder?: string
   /** Default 'single'. */
   team?: QuickRunTeam
-  /** Allow Edit, Write and Bash in the folder (each still asks). Default false. A git folder with edits on isolates writers. */
+  /**
+   * The user's up-front declaration. false (default, "read-only start"): the assistant is told the chat is read-only
+   * by default, but an edit or command may still be needed; it makes the call, OrgAI asks the user (the card carries
+   * PermissionRequest.quickReadOnly) and the user may decline. true ("edits allowed"): the assistant is told it may
+   * change files and run commands here; each edit or command still asks, and a git folder isolates writers.
+   * Either way the tools are the same and nothing runs without a card or a grant the user gave in this run.
+   */
   allowEdits?: boolean
   images?: ImageAttachment[]
   /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
@@ -3004,9 +3025,36 @@ export interface PermissionRequest {
    * the card offers Allow once and Deny only ("Touches a reference folder (read only)").
    */
   referenceFolder?: string
+  /**
+   * Set by RunManager (never by an adapter; an adapter's value is dropped) on a Chat (quick) run started read-only
+   * (`QuickRunInfo.allowEdits` false) when the call is an edit or a command (QUICK_WRITE_TOOLS: Edit, Write,
+   * MultiEdit, NotebookEdit, Bash, PowerShell), so the card can say the chat started read-only. Nothing else about the
+   * card changes: the same Allow once / Allow for session / Deny answers apply.
+   */
+  quickReadOnly?: true
+  /**
+   * The widest scope an allow can have, set by RunManager (an adapter's value is dropped): 'session' on
+   * trust-restricted runs (Chat runs and MCP build sessions: a 'project' answer is narrowed to 'session', nothing is
+   * saved), 'once' when `referenceFolder` is set. Absent = 'project' is possible. The card must not offer a scope
+   * wider than this or claim a saved rule.
+   */
+  maxScope?: 'once' | 'session'
+  /**
+   * Chat (quick) runs only, set by RunManager: the chat's working folder (QuickRunInfo.folder, the scratch dir
+   * included; `workingFolderScratch: true` when it is a scratch dir OrgAI made), so the card can say where the call
+   * runs. Agents in a worktree still work under this folder.
+   */
+  workingFolder?: string
+  workingFolderScratch?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
 }
+
+/**
+ * Tools whose calls count as "an edit or a command" on a Chat (quick) run: PermissionRequest.quickReadOnly is set only
+ * for these.
+ */
+export const QUICK_WRITE_TOOLS: readonly string[] = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell']
 
 /** How long an allow decision lasts: this call only, the rest of this run, or every future run of the project. */
 export type PermissionScope = 'once' | 'session' | 'project'
@@ -3246,6 +3294,11 @@ export type RunEvent =
        * rules, allowed folders or permission mode may have changed. Absent on deny, once, session and cancelled.
        */
       savedToProject?: true
+      /**
+       * The allow's scope after RunManager's narrowing ('once', 'session' or 'project'); absent on deny and cancelled.
+       * A Chat card answered "Allow for project" reads 'session' here.
+       */
+      scope?: PermissionScope
       /** Who decided (cli-spec 3.4(4)); absent on cancelled cards and older events. */
       decidedBy?: DecidedBy
     }
@@ -3304,6 +3357,8 @@ export type RunEvent =
    * knowledge_recall, 'auto' = knowledgeContext; a merged event carries the newest call's `via`. `at` is epoch ms.
    */
   | { type: 'knowledge.recalled'; runId: string; agentId: string; nodeIds: string[]; at: number; via: 'recall' | 'auto' }
+  /** An agent produced or registered a deliverable (types.ts "Run outputs"); RunManager emits it after the index write. */
+  | { type: 'output.created'; runId: string; output: RunOutput }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
@@ -3354,7 +3409,9 @@ export const MENU_ACTIONS = [
   'save-chat-as-project',
   'open-run-window',
   'canvas-zoom-in',
-  'canvas-zoom-out'
+  'canvas-zoom-out',
+  /** Help > "Ask OrgAI about itself…": opens Chat ready for a question about the app (section "Self-knowledge"). */
+  'ask-about-orgai'
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
@@ -4532,6 +4589,12 @@ export interface OrgAIApi {
     installCliShim(): Promise<CliShimResult>
     /** Remove the orgai command shim (only OrgAI's own). Never rejects; failures come back as ok: false. */
     uninstallCliShim(): Promise<CliShimResult>
+    /**
+     * app:reference: search or read OrgAI's own reference (the atlas of screens and settings, menus, shortcuts,
+     * harness tools, host channels, CLI commands, connectors and bundled docs), locate a setting or feature, or a
+     * secret-free status snapshot. Everything in `text` is fenced data.
+     */
+    reference(query: AppReferenceQuery): Promise<AppReferenceResult>
   }
 }
 
@@ -5368,7 +5431,16 @@ export const FOLDER_CONFIG_IPC = {
   projectsSetFolderConfigTrust: 'projects:setFolderConfigTrust'
 } as const
 
+/** Channels of "Self-knowledge and self-configuration" (section at the end of this file). Declared here for the same reason. */
+export const SELF_KNOWLEDGE_IPC = {
+  /** AppReferenceQuery -> AppReferenceResult (host scope 'read'). Rejects only for a malformed query. */
+  appReference: 'app:reference',
+  /** main -> renderer push of AppNavigateEvent (desktop only): an agent's open_in_app, sent to the live main window. */
+  appNavigate: 'app:navigate'
+} as const
+
 export const IPC = {
+  ...SELF_KNOWLEDGE_IPC,
   ...TEMPLATE_ENGAGEMENT_IPC,
   ...KNOWLEDGE_IPC,
   ...REPO_CLONE_IPC,
@@ -7423,4 +7495,486 @@ export interface OrgAIApi {
     /** Move a damaged vault (and a damaged secrets.json) aside. The caller confirms first. */
     reset(input: SecretsResetInput): Promise<SecretsResetResult>
   }
+}
+
+// ---- Self-knowledge and self-configuration ----
+//
+// OrgAI answers questions about itself and configures itself from its own registries, so the answers stay true as the
+// app grows. The atlas (src/shared/view/atlas.ts: every screen with its path and how to reach it, a doc per AppSettings
+// and Project field, a doc per MenuAction) is typed against these contracts, so a new field, screen or menu action
+// without a doc fails typecheck or atlas.test.ts. The main-process reference service (src/main/reference/) builds a
+// fenced corpus from the atlas and the code's registries (harness tool defs, HOST_CHANNEL_REGISTRY, CLI COMMANDS,
+// CONNECTORS) plus bundled docs. Channels: SELF_KNOWLEDGE_IPC (declared before IPC and spread into it).
+
+/** The atlas surface id union (the literal ids of ATLAS_SURFACE_IDS in src/shared/view/atlas.ts). */
+export type { AtlasSurfaceId } from './view/atlas'
+
+/** Harness tool: read OrgAI's own reference. Audience 'all', read-only, non-blocking, every run kind. */
+export const APP_REFERENCE_TOOL = 'app_reference'
+/** Harness tool: show the user a place in the app (an atlas surface). Chat, setup, MCP and Skill assistant roots only. */
+export const OPEN_IN_APP_TOOL = 'open_in_app'
+/** Harness tool: propose app-wide settings changes (Proposal kind 'appSettings'). Chat only. */
+export const PROPOSE_APP_SETTINGS_TOOL = 'propose_app_settings'
+/** Harness tool: propose a stored project's settings (Proposal kind 'settings' with `target`). Chat only. */
+export const PROPOSE_PROJECT_SETTINGS_TOOL = 'propose_project_settings'
+/** The self-knowledge and self-configuration tools Chat (quick runs) gets, in addition to list_projects. */
+export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL] as const
+
+/** app_reference / app:reference actions. 'status' is answered only on Chat, MCP and Skill assistant runs and over IPC. */
+export const APP_REFERENCE_ACTIONS = ['search', 'read', 'locate', 'status'] as const
+export type AppReferenceAction = (typeof APP_REFERENCE_ACTIONS)[number]
+
+/** Default and largest character budget of a search or locate answer (`AppReferenceResult.text.length <= budget`). */
+export const APP_REFERENCE_BUDGET_DEFAULT = 2000
+export const APP_REFERENCE_BUDGET_MIN = 400
+export const APP_REFERENCE_BUDGET_MAX = 8000
+/** Longest `query`; longer is refused (never cut). */
+export const APP_REFERENCE_QUERY_MAX_CHARS = 500
+/** Longest `id` (a section id, e.g. 'surface:app-settings-general-appearance', 'doc:how-it-works#asking-orgai'). */
+export const APP_REFERENCE_ID_MAX_CHARS = 200
+/** Most characters one `read` returns; a longer section is cut and says so. */
+export const APP_REFERENCE_READ_MAX_CHARS = 8000
+
+/**
+ * A request to the reference. search: `query` required, ranked sections within `budget` (default
+ * APP_REFERENCE_BUDGET_DEFAULT, clamped to APP_REFERENCE_BUDGET_MIN..APP_REFERENCE_BUDGET_MAX). read: `id` required (a
+ * section id from a hit). locate: `query` required, answered with atlas paths ("App settings › General › Appearance")
+ * and how to reach them plus the setting fields there. status: no other field. Hidden characters in `query` or `id`
+ * are refused. Inputs are rebuilt in main (host/args.ts appReferenceArgs); unknown fields are dropped.
+ */
+export interface AppReferenceQuery {
+  action: AppReferenceAction
+  query?: string
+  id?: string
+  budget?: number
+}
+
+/** What a reference section is built from. */
+export type AppReferenceSectionKind = 'surface' | 'setting' | 'menu' | 'shortcut' | 'tool' | 'channel' | 'command' | 'connector' | 'doc' | 'status'
+
+/** One ranked section of a search or locate answer. `id` is what `read` takes. */
+export interface AppReferenceHit {
+  id: string
+  kind: AppReferenceSectionKind
+  title: string
+  /** Relative score, 0 < score <= 1 (1 = the best hit of this answer). */
+  score: number
+}
+
+/**
+ * The answer. `text` is the whole answer for a model or a reader: ids, counts and the service's own sentences outside
+ * fences, every value from a registry or doc inside a fence (`<<<` `>>>`, look-alike substitution, like harnessTools
+ * `datum` / `fencedBlock`). Never secrets, keys, tokens or URLs with credentials. `hits` (search, locate) in rank order.
+ */
+export interface AppReferenceResult {
+  text: string
+  hits?: AppReferenceHit[]
+}
+
+/**
+ * main -> renderer push on SELF_KNOWLEDGE_IPC.appNavigate (desktop only): an agent asked to show the user a place.
+ * index.ts sends it to the live unscoped main window (restored and focused, created when closed), like menu actions.
+ * The renderer opens `surfaceId` (for project / engagement / run surfaces, in `projectId`) and announces "<agentLabel>
+ * opened <path>". `runId` is the run that asked (the renderer may link back to it). Main validated every field.
+ */
+export interface AppNavigateEvent {
+  surfaceId: AtlasSurfaceId
+  /** A stored (never virtual) project; present for project, engagement and (optionally) run surfaces, else absent. */
+  projectId?: string
+  runId: string
+  /** Who asked, for the announcement: the calling role's name ("Assistant", "Architect"), plain text, at most 80 chars. */
+  agentLabel: string
+}
+
+/** open_in_app limits per run (RunManager): at most this many navigations, and at most one per interval. */
+export const OPEN_IN_APP_PER_RUN_MAX = 20
+export const OPEN_IN_APP_MIN_INTERVAL_MS = 2000
+
+/** open_in_app's answer from RuntimeContext.navigate. `path` is atlasPath(surfaceId). */
+export type AppNavigateOutcome = { ok: true; path: string } | { ok: false; refusal: string }
+
+/**
+ * AppSettings fields an agent may propose (propose_app_settings), as dotted paths into AppSettings. Never main-owned
+ * fields, connections, proxies, auth, terminal access, model prices or the default connection (change those in App
+ * settings). Each path's top-level key has `proposable: true` in APP_SETTING_DOCS (atlas.test.ts checks).
+ */
+export const APP_SETTINGS_PROPOSABLE_FIELDS = [
+  'appearance.theme',
+  'appearance.accent',
+  'appearance.reduceMotion',
+  'appearance.canvas.pattern',
+  'appearance.canvas.tint',
+  'appearance.canvas.edges',
+  'appearance.canvas.layout',
+  'appearance.canvas.nodeStyle',
+  'appearance.canvas.minimap',
+  'notifications',
+  'defaultPermissionMode',
+  'defaultMaxBudgetUsd',
+  'defaultKeepRuns',
+  'defaultIsolateWriters',
+  'defaultRootModel',
+  'defaultReportModel',
+  'setupModel',
+  'mcpAssistModel',
+  'skillAssistModel',
+  'quickRunModel',
+  'opusGuardThreshold',
+  'communityPrices',
+  'defaultAutoContinue',
+  'defaultMaxAutoContinues'
+] as const
+export type AppSettingsProposableField = (typeof APP_SETTINGS_PROPOSABLE_FIELDS)[number]
+
+export function isAppSettingsProposableField(value: unknown): value is AppSettingsProposableField {
+  return typeof value === 'string' && (APP_SETTINGS_PROPOSABLE_FIELDS as readonly string[]).includes(value)
+}
+
+/** A proposable setting's value: null only clears an optional number (defaultMaxBudgetUsd = no cap). */
+export type AppSettingValue = string | number | boolean | null
+
+/** At most this many changes in one appSettings proposal. */
+export const APP_SETTINGS_PROPOSAL_MAX_CHANGES = 20
+
+/**
+ * One change of an appSettings proposal. `from` is the stored value when the card was created (main reads it; never
+ * the agent's), `to` the proposed value (validated per field by src/shared/appSettingsProposal.ts
+ * `appSettingValueProblem`), `label` the field's human name (from the atlas doc, never agent text).
+ */
+export interface AppSettingChange {
+  field: AppSettingsProposableField
+  from: AppSettingValue
+  to: AppSettingValue
+  label: string
+}
+
+/**
+ * Proposal kind 'appSettings' (propose_app_settings, Chat only): app-wide settings changes, each field at most once.
+ * Approval applies them through the settings:set path (args.ts settingsSetArgs, SettingsStore normalization, theme,
+ * settings:changed broadcast); Proposal.effect 'now'.
+ */
+export interface AppSettingsProposalPayload {
+  changes: AppSettingChange[]
+  rationale: string
+}
+
+/** ProposalBase.target: the stored project a Chat proposal changes, filled by main from the stored project. */
+export interface ProposalTarget {
+  projectId: string
+  /** The stored project's name when the card was created (display only). */
+  projectName: string
+}
+
+/**
+ * SettingsProposalPayload fields propose_project_settings may set (Chat). Not allowRules (saved permission rules are
+ * granted on permission cards and in Settings only), and permissionMode never 'bypassPermissions'.
+ */
+export const PROJECT_SETTINGS_PROPOSABLE_FIELDS = [
+  'brief',
+  'permissionMode',
+  'maxBudgetUsd',
+  'maxSubagentDepth',
+  'maxConcurrentSubagents',
+  'isolateWriters',
+  'reviewMerges',
+  'autoContinue',
+  'maxAutoContinues',
+  'client'
+] as const satisfies readonly (keyof SettingsProposalPayload & keyof Project)[]
+export type ProjectSettingsProposableField = (typeof PROJECT_SETTINGS_PROPOSABLE_FIELDS)[number]
+
+export interface OrgAIApi {
+  /** An agent's open_in_app asked to show a place (SELF_KNOWLEDGE_IPC.appNavigate). Returns an unsubscribe function. */
+  onAppNavigate(cb: (event: AppNavigateEvent) => void): () => void
+}
+
+// ---- Run outputs ----
+//
+// Deliverables agents make for the user (documents, workbooks, diagrams, text files, images, any file they wrote) and
+// that OrgAI shows inside its window. Produced files are written by main into `<project folder>/outputs/`; registered
+// files stay where the agent wrote them. The index lives in OrgAI's data folder (`<data>/projects/<id>/outputs.json`),
+// so an engagement's working folder holds only the deliverables. Agents reach this through the produce_output and
+// register_output harness tools (work runs of stored projects, team 'default' and 'single'; never quick, setup-like or
+// trust-restricted runs); the user through the outputs:* channels. Everything here is structured-clone safe.
+
+/** What an output is. docx, xlsx, mermaid, markdown, text, csv, json, svg and image preview inline; pdf and other are open-only. */
+export type OutputKind = 'docx' | 'xlsx' | 'mermaid' | 'markdown' | 'text' | 'csv' | 'json' | 'svg' | 'image' | 'pdf' | 'other'
+
+export const OUTPUT_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image', 'pdf', 'other']
+
+/** Kinds the renderer previews inline (outputs:preview answers kind 'none' for the rest). */
+export const OUTPUT_PREVIEW_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image']
+
+/** Kinds produce_output writes (main renders docx / xlsx; the rest are the text written as the file). */
+export const OUTPUT_PRODUCE_KINDS = ['docx', 'xlsx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg'] as const
+export type OutputProduceKind = (typeof OUTPUT_PRODUCE_KINDS)[number]
+
+/** File extension main forces per produced kind (without the dot). */
+export const OUTPUT_PRODUCE_EXTENSIONS: Readonly<Record<OutputProduceKind, string>> = {
+  docx: 'docx',
+  xlsx: 'xlsx',
+  mermaid: 'mmd',
+  markdown: 'md',
+  text: 'txt',
+  csv: 'csv',
+  json: 'json',
+  svg: 'svg'
+}
+
+/** Folder (inside the project folder) produced files land in. */
+export const OUTPUTS_DIR_NAME = 'outputs'
+/** Index entries per project; past it the oldest entry is forgotten (its file stays) with a log line. */
+export const OUTPUTS_MAX = 2000
+/** produce_output + register_output successes per run; past it both answer REFUSED. */
+export const OUTPUTS_RUN_MAX = 200
+/** Largest file register_output accepts. */
+export const OUTPUT_FILE_MAX_BYTES = 50 * 1024 * 1024
+/** RunOutput.title length (1..this), one line, no hidden characters. */
+export const OUTPUT_TITLE_MAX_CHARS = 120
+/** RunOutput.description length, no hidden characters (prose: line breaks allowed). */
+export const OUTPUT_DESCRIPTION_MAX_CHARS = 500
+/** Path length cap for a registered path and for the produced `fileName`. */
+export const OUTPUT_PATH_MAX_CHARS = 1024
+/** produce_output text content cap (mermaid, markdown, text, csv, json, svg and the docx Markdown source), UTF-8 bytes. */
+export const OUTPUT_TEXT_MAX_BYTES = 1024 * 1024
+/** produce_output xlsx caps. A string cell starting with '=' is written as text (never a formula). */
+export const OUTPUT_XLSX_MAX_SHEETS = 20
+export const OUTPUT_XLSX_MAX_ROWS = 10_000
+export const OUTPUT_XLSX_MAX_COLUMNS = 256
+export const OUTPUT_XLSX_CELL_MAX_CHARS = 32 * 1024
+/** Excel's own sheet name limit; forbidden characters (: \ / ? * [ ]) are replaced. */
+export const OUTPUT_XLSX_SHEET_NAME_MAX_CHARS = 31
+/** Preview caps. */
+export const OUTPUT_PREVIEW_TEXT_MAX_BYTES = 256 * 1024
+export const OUTPUT_PREVIEW_SHEETS_MAX = 20
+export const OUTPUT_PREVIEW_ROWS_MAX = 500
+export const OUTPUT_PREVIEW_COLUMNS_MAX = 64
+/** One embedded image in a document preview, and all of them together. */
+export const OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+export const OUTPUT_PREVIEW_DOC_IMAGES_TOTAL_BYTES = 10 * 1024 * 1024
+/** An image (or svg) file previewed whole. */
+export const OUTPUT_PREVIEW_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+/** RunOutput.id shape. */
+export const OUTPUT_ID_RE = /^out_[0-9a-f]{16}$/
+
+/**
+ * One deliverable in the project's index. `path` is absolute (inside the project folder or one of
+ * Project.allowedDirectories; produced ones under `<project>/outputs/`); `relPath` is what the user sees (relative to
+ * the project folder, or the absolute path for an allowed folder outside it), forward slashes. `agentId` / `role` come
+ * from RunManager (the run's agent record), never from the agent. `missing` is set by outputs:list when the file is
+ * gone; the entry is kept until the user forgets it.
+ */
+export interface RunOutput {
+  id: string
+  projectId: string
+  runId: string
+  agentId?: string
+  role?: string
+  kind: OutputKind
+  title: string
+  description?: string
+  /** Base name of the file (for a produced file with a sub-path: the last segment only). */
+  fileName: string
+  path: string
+  relPath: string
+  bytes: number
+  /** Epoch ms of the first index write (a re-register or overwrite keeps it and sets updatedAt). */
+  createdAt: number
+  updatedAt?: number
+  source: 'produced' | 'registered'
+  missing?: true
+}
+
+/** produce_output xlsx content: one entry per sheet. */
+export interface OutputSheetInput {
+  name: string
+  columns?: { header: string; width?: number }[]
+  rows: (string | number | boolean | null)[][]
+  /** Excel number formats by column index (e.g. '#,##0.00', '0%', 'yyyy-mm-dd'); a missing entry = General. */
+  numberFormat?: (string | null)[]
+}
+
+export interface OutputWorkbookInput {
+  sheets: OutputSheetInput[]
+}
+
+/**
+ * produce_output input (what the tool hands RuntimeContext.outputs.produce after its own shape checks). `content` is
+ * Markdown (docx; a subset: headings, paragraphs, bold, italic, code, lists one level deep, GFM tables, fenced code,
+ * rules), an OutputWorkbookInput (xlsx), or the file's text (the rest). `fileName` is relative to
+ * `<project>/outputs/` (sub-folders allowed, never `..`, absolute, device or UNC; the kind's extension is forced);
+ * missing = a safe name from the title. An existing file gets a " (2)" style suffix unless `overwrite` is true and
+ * that file's index entry was produced by this run.
+ */
+export interface OutputProduceInput {
+  kind: OutputProduceKind
+  title: string
+  fileName?: string
+  description?: string
+  overwrite?: boolean
+  content: string | OutputWorkbookInput
+}
+
+/**
+ * register_output input: a file the agent wrote itself. `path` absolute or relative to the project folder; it must
+ * be a regular file (no link or junction) whose real path is inside the project folder or an allowed folder, never a
+ * reference folder, OrgAI's data folder or under `.git`, at most OUTPUT_FILE_MAX_BYTES. `kind` missing = from the
+ * extension (outputKindForPath). A path already in the index updates that entry's title / description / kind.
+ */
+export interface OutputRegisterInput {
+  path: string
+  title: string
+  kind?: OutputKind
+  description?: string
+}
+
+/** outputs:preview input. */
+export interface OutputPreviewInput {
+  projectId: string
+  outputId: string
+}
+
+/** outputs:open / reveal / saveAs / forget / delete input. */
+export interface OutputRef {
+  projectId: string
+  outputId: string
+}
+
+/** A run of text in a document preview. `href` only http:, https: or mailto:. */
+export interface DocumentRun {
+  text: string
+  bold?: true
+  italic?: true
+  underline?: true
+  strike?: true
+  code?: true
+  href?: string
+}
+
+/** A block of a document preview. Never HTML: the renderer builds elements from these. */
+export type DocumentBlock =
+  | { type: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6; runs: DocumentRun[] }
+  | { type: 'paragraph'; runs: DocumentRun[] }
+  | { type: 'list'; ordered: boolean; items: DocumentRun[][] }
+  /** rows -> cells -> runs. `headerRows` = how many leading rows are header rows. */
+  | { type: 'table'; rows: DocumentRun[][][]; headerRows?: number }
+  /** dataUrl only data:image/(png|jpeg|gif|webp);base64, within the image caps. */
+  | { type: 'image'; dataUrl: string; alt: string }
+  | { type: 'code'; text: string }
+  | { type: 'rule' }
+  | { type: 'pageBreak' }
+
+/** A cell of a sheet preview: the value (a formula cell's cached result), its formula text and number format. Dates are ISO strings. */
+export interface SheetCell {
+  v: string | number | boolean | null
+  f?: string
+  fmt?: string
+}
+
+export interface SheetPreview {
+  name: string
+  rows: SheetCell[][]
+  /** Rows / columns beyond the preview caps that are not shown (counts). */
+  truncatedRows?: number
+  truncatedCols?: number
+}
+
+/**
+ * outputs:preview result. Never raw HTML, never a throw for a bad file: a corrupt, oversized, missing or open-only
+ * file answers kind 'none' with a plain sentence. 'text' covers markdown, text, csv, json and mermaid source (the
+ * renderer renders markdown and mermaid itself); 'svg' is the SVG source as text (the renderer decides how to show it
+ * safely); 'image' is a data URL of a png / jpeg / gif / webp file.
+ */
+export type OutputPreview =
+  | { kind: 'document'; blocks: DocumentBlock[]; truncated?: true }
+  | { kind: 'sheets'; sheets: SheetPreview[]; truncatedSheets?: number }
+  | { kind: 'text'; text: string; truncated?: true }
+  | { kind: 'svg'; text: string }
+  | { kind: 'image'; dataUrl: string }
+  | { kind: 'none'; reason: string }
+
+/** outputs:saveAs result. */
+export type OutputSaveAsResult = { path: string } | { cancelled: true }
+
+/** outputs:changed push: an agent or the user changed a project's index. */
+export interface OutputsChangedEvent {
+  projectId: string
+  ids: string[]
+  what: 'added' | 'removed' | 'updated'
+}
+
+/** The kind a file's extension implies (register_output without a kind). */
+export function outputKindForPath(path: string): OutputKind {
+  const m = /\.([A-Za-z0-9]+)$/.exec(path)
+  switch (m ? m[1].toLowerCase() : '') {
+    case 'docx':
+      return 'docx'
+    case 'xlsx':
+      return 'xlsx'
+    case 'md':
+    case 'markdown':
+      return 'markdown'
+    case 'txt':
+      return 'text'
+    case 'csv':
+      return 'csv'
+    case 'json':
+      return 'json'
+    case 'svg':
+      return 'svg'
+    case 'mmd':
+    case 'mermaid':
+      return 'mermaid'
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'webp':
+      return 'image'
+    case 'pdf':
+      return 'pdf'
+    default:
+      return 'other'
+  }
+}
+
+/** Harness tool names. */
+export const OUTPUT_TOOLS = { produce: 'produce_output', register: 'register_output' } as const
+
+/** Channels of this section. Not spread into IPC (declared after it); host lists name OUTPUTS_IPC like TEAM_FILES_IPC. */
+export const OUTPUTS_IPC = {
+  /** (projectId) -> RunOutput[] newest first; entries whose file is gone carry missing: true. Scope read. */
+  outputsList: 'outputs:list',
+  /** (OutputPreviewInput) -> OutputPreview. Never rejects for a bad file. Scope read. */
+  outputsPreview: 'outputs:preview',
+  /** (OutputRef) -> '' or an error sentence (shell.openPath). Path re-checked every call. Desktop only. */
+  outputsOpen: 'outputs:open',
+  /** (OutputRef) -> '' or an error sentence (shell.showItemInFolder). Desktop only. */
+  outputsReveal: 'outputs:reveal',
+  /** (OutputRef) -> OutputSaveAsResult (main save dialog, copies the file). Desktop only. */
+  outputsSaveAs: 'outputs:saveAs',
+  /** (OutputRef) -> RunOutput[] afterwards; removes the index entry only. Scope configure. */
+  outputsForget: 'outputs:forget',
+  /** (OutputRef) -> RunOutput[] afterwards; removes the entry and a regular file under the project's outputs folder. Scope configure. */
+  outputsDelete: 'outputs:delete',
+  /** main -> renderer push carrying OutputsChangedEvent. */
+  outputsChanged: 'outputs:changed'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  outputs: {
+    list(projectId: string): Promise<RunOutput[]>
+    preview(input: OutputPreviewInput): Promise<OutputPreview>
+    /** '' when opened, else a plain sentence. */
+    open(ref: OutputRef): Promise<string>
+    /** '' when shown, else a plain sentence. */
+    reveal(ref: OutputRef): Promise<string>
+    saveAs(ref: OutputRef): Promise<OutputSaveAsResult>
+    /** Removes the index entry; the file stays. Resolves to the list afterwards. */
+    forget(ref: OutputRef): Promise<RunOutput[]>
+    /** Removes the entry and its file (only a regular file under `<project>/outputs/`). The renderer confirms first. */
+    delete(ref: OutputRef): Promise<RunOutput[]>
+  }
+  onOutputsChanged(cb: (event: OutputsChangedEvent) => void): () => void
 }

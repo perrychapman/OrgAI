@@ -9,7 +9,7 @@
  *
  * Electron-free; relative imports only. Only registry.ts (and its tests) read these.
  */
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 import type { ParamSpec } from './registry'
 
 /** Ids from the renderer (newId() output, virtual project ids, older hand-made ids): windowScope.ts ID_PATTERN. */
@@ -111,6 +111,8 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.appOpenLogs]: NONE,
   [IPC.appLogPath]: NONE,
   [IPC.appInfo]: NONE,
+  // appReferenceArgs rebuilds the query.
+  [IPC.appReference]: OBJECT,
   // Desktop only (cli-spec 7(3), shimInstaller.ts); the socket refuses them before params.
   [IPC.appCliShimStatus]: NONE,
   [IPC.appInstallCliShim]: NONE,
@@ -134,6 +136,15 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [TEAM_FILES_IPC.teamFilesUndo]: OBJECT,
   [TEAM_FILES_IPC.teamFilesCommit]: OBJECT,
   [TEAM_FILES_IPC.teamFilesEnable]: OBJECT,
+
+  // ---- OUTPUTS_IPC ---- (outputArgs rebuilds each input: safe project id, OUTPUT_ID_RE output id)
+  [OUTPUTS_IPC.outputsList]: ID,
+  [OUTPUTS_IPC.outputsPreview]: OBJECT,
+  [OUTPUTS_IPC.outputsOpen]: OBJECT,
+  [OUTPUTS_IPC.outputsReveal]: OBJECT,
+  [OUTPUTS_IPC.outputsSaveAs]: OBJECT,
+  [OUTPUTS_IPC.outputsForget]: OBJECT,
+  [OUTPUTS_IPC.outputsDelete]: OBJECT,
 
   // ---- permissions ----
   [IPC.permissionsList]: ID,

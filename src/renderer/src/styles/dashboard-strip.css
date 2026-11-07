@@ -1,0 +1,264 @@
+/* ---------- Dashboard: status bar, Last 14 days strip, To set up (docs/design/dashboard-2.md sections 4, 7, 8) ----------
+   Owned by components/dashboard/HeroBand.tsx, ActivityStrip.tsx and SetupGaps.tsx. Tokens only. */
+
+/* ---------- Status bar (section 4) ---------- */
+
+.dash-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  min-height: 40px;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+@container dashboard (max-height: 600px) {
+  .dash-hero {
+    min-height: 36px;
+  }
+}
+.dash-status-line {
+  margin: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: var(--text-body);
+  color: var(--text-primary);
+}
+.dash-limits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.dash-limit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  white-space: nowrap;
+}
+.dash-limit-name {
+  color: var(--text-secondary);
+}
+.dash-limit-main {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.dash-limit-resets {
+  color: var(--text-secondary);
+}
+.dash-limit[data-level='danger'] .dash-limit-main {
+  color: var(--danger-text);
+}
+.dash-limit[data-level='warn'] .dash-limit-main {
+  color: var(--warning-text);
+}
+/* The 40 x 4 px bar after the text; the text carries the meaning. */
+.dash-limit .usage-mini {
+  flex: none;
+  width: 40px;
+  min-width: 0;
+  max-width: none;
+}
+.dash-limit-more {
+  color: var(--text-tertiary);
+}
+.dash-hero-facts {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+
+/* ---------- Last 14 days (section 7) ---------- */
+
+.dash-strip {
+  container: dash-strip / inline-size;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+}
+.dash-strip-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-4);
+}
+.dash-strip-title {
+  margin: 0;
+  font-size: var(--text-title);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.dash-strip-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+}
+.dash-strip-totals > div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.dash-strip-totals dt {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.dash-strip-totals dd {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.dash-strip-days {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+}
+.dash-strip-day {
+  all: unset;
+  box-sizing: border-box;
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.dash-strip-day:hover,
+.dash-strip-day:focus-visible {
+  background: var(--surface-2);
+}
+.dash-strip-day[aria-pressed='true'] {
+  background: var(--surface-3);
+}
+.dash-strip-day:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.dash-strip-svg {
+  display: block;
+  overflow: visible;
+}
+.dash-strip-baseline {
+  stroke: var(--border-default);
+  stroke-width: 1;
+}
+.dash-strip-bar {
+  fill: var(--dash-strip-bar);
+  transform-box: fill-box;
+  transform-origin: bottom;
+  animation: dash-strip-grow var(--dur-slow) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 12ms);
+}
+.dash-strip-bar[data-today='true'] {
+  fill: var(--dash-strip-today);
+}
+.dash-strip-hollow {
+  fill: none;
+  stroke: var(--dash-strip-bar);
+  stroke-width: 1.5;
+}
+.dash-strip-tick[data-outcome='finished'] {
+  fill: var(--state-done);
+}
+.dash-strip-tick[data-outcome='failed'] {
+  fill: var(--state-error);
+}
+.dash-strip-tick[data-outcome='stopped'] {
+  fill: var(--state-idle);
+}
+.dash-strip-tick[data-outcome='open'] {
+  fill: var(--state-working);
+}
+.dash-strip-tick[data-outcome='paused'] {
+  fill: var(--state-waiting);
+}
+.dash-strip-tick[data-outcome='more'] {
+  fill: var(--text-tertiary);
+}
+@keyframes dash-strip-grow {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-strip-bar {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .dash-strip-bar {
+  animation: none;
+}
+
+/* The oldest day's date and "Today" sit under the ends and may overhang their narrow columns. */
+.dash-strip-labels {
+  position: relative;
+  display: block;
+  height: 16px;
+  font-size: var(--text-caption);
+  line-height: 16px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.dash-strip-end {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.dash-strip-end.is-last {
+  left: auto;
+  right: 0;
+}
+.dash-strip-initial {
+  display: block;
+  height: 14px;
+  font-size: var(--text-caption);
+  line-height: 14px;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+@container dash-strip (max-width: 360px) {
+  .dash-strip-initial {
+    display: none;
+  }
+}
+
+.dash-strip-readout {
+  margin: 0;
+  min-height: 1.4em;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- To set up (section 8) ---------- */
+
+.dash-setup-row {
+  border-left: 2px solid var(--warning-border);
+}
+.dash-setup-text {
+  justify-content: center;
+  padding: var(--space-2) var(--space-3);
+}

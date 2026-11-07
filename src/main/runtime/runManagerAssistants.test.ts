@@ -120,8 +120,9 @@ describe('quick runs', () => {
     expect(ctx.plugins?.()).toEqual([])
     expect(ctx.skills?.()).toEqual([])
     expect(skills.forRun).not.toHaveBeenCalled()
-    expect(ctx.requestMcpInstall).toBeUndefined()
-    // Quick runs never get the library or the skill catalog (work runs of a real project do).
+    // Chat may ask for a run-only server (see "Chat asks instead of being unable"); it never gets the MCP library.
+    expect(ctx.requestMcpInstall).toBeTypeOf('function')
+    // Quick runs never get the library (skill reads need the skillAssist option, tested below).
     expect(ctx.mcpLibrary).toBeUndefined()
     expect(ctx.skillCatalog).toBeUndefined()
     expect(ctx.readSkill).toBeUndefined()
@@ -370,7 +371,8 @@ describe('trust-restricted runs (quick runs and build sessions)', () => {
       m.decide(run.id, req.request.id, { behavior: 'allow', scope: 'project' })
       expect(await pending).toEqual({ behavior: 'allow', scope: 'session' })
       const resolved = events.filter((e) => e.type === 'permission.resolved' && e.runId === run.id).at(-1)
-      expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id })
+      expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id, scope: 'session' })
+      expect(req.request.maxScope).toBe('session')
       expect(existsSync(join(path, '.claude', 'settings.local.json'))).toBe(false)
     }
   })
@@ -415,6 +417,192 @@ describe('trust-restricted runs (quick runs and build sessions)', () => {
     store.upsert({ ...(store.get(run.id) as RunSummary), status: 'paused' })
     await expect(m.resumeNow(run.id)).rejects.toThrow(/workspace is gone/)
     expect(buildProject).toHaveBeenCalled()
+  })
+})
+
+describe('Chat asks instead of being unable', () => {
+  const SESSION_EDIT = { type: 'setMode', mode: 'acceptEdits', destination: 'session' } as const
+  type PermReq = Extract<RunEvent, { type: 'permission.request' }>
+  const lastReq = (runId: string): PermReq => events.filter((e) => e.type === 'permission.request' && e.runId === runId).at(-1) as PermReq
+  const harnessRows = (runId: string): string[] =>
+    events.flatMap((e) => (e.type === 'transcript' && e.runId === runId && e.entry.source === 'harness' && e.entry.block.kind === 'system' ? [e.entry.block.text] : []))
+
+  async function quickRun(opts: { allowEdits?: boolean; rigOptions?: RunManagerOptions } = {}) {
+    const r = rig(opts.rigOptions ?? {}, { live: true })
+    const qf = folder()
+    const run = await r.m.start({ project: quickProj({ path: qf }), prompt: 'q', quick: quickInfo({ folder: qf, allowEdits: opts.allowEdits === true }) })
+    return { ...r, run, qf, ctx: r.ctxs[0] }
+  }
+
+  describe('quickReadOnly, maxScope and workingFolder on permission requests', () => {
+    it('flags an edit or command on a read-only-start quick run, not a read', async () => {
+      const { ctx, run, qf } = await quickRun()
+      void ctx.requestPermission({ agentId: 'root', toolName: 'Edit', input: {}, summary: 'e' })
+      expect(lastReq(run.id).request).toMatchObject({ quickReadOnly: true, maxScope: 'session', workingFolder: qf })
+      expect(lastReq(run.id).request.workingFolderScratch).toBeUndefined()
+      void ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'b' })
+      expect(lastReq(run.id).request.quickReadOnly).toBe(true)
+      void ctx.requestPermission({ agentId: 'root', toolName: 'Read', input: {}, summary: 'r' })
+      expect(lastReq(run.id).request.quickReadOnly).toBeUndefined()
+    })
+
+    it('does not flag with allowEdits true, and marks a scratch folder', async () => {
+      const r = rig({}, { live: true })
+      const qf = folder()
+      const run = await r.m.start({ project: quickProj({ path: qf }), prompt: 'q', quick: quickInfo({ folder: qf, allowEdits: true, scratch: true }) })
+      void r.ctxs[0].requestPermission({ agentId: 'root', toolName: 'Edit', input: {}, summary: 'e' })
+      const req = lastReq(run.id).request
+      expect(req.quickReadOnly).toBeUndefined()
+      expect(req.workingFolderScratch).toBe(true)
+    })
+
+    it('drops adapter-sent values on a normal run and sets maxScope once for a reference folder', async () => {
+      const r = rig({}, { live: true })
+      const run = await r.m.start({ project: makeProject({ path: folder() }), prompt: 'x' })
+      void r.ctxs[0].requestPermission({ agentId: 'root', toolName: 'Edit', input: {}, summary: 'e', quickReadOnly: true, maxScope: 'once', workingFolder: '/x', workingFolderScratch: true })
+      const req = lastReq(run.id).request
+      expect(req.quickReadOnly).toBeUndefined()
+      expect(req.maxScope).toBeUndefined()
+      expect(req.workingFolder).toBeUndefined()
+      expect(req.workingFolderScratch).toBeUndefined()
+      void r.ctxs[0].requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'b', referenceFolder: '/ref' })
+      expect(lastReq(run.id).request.maxScope).toBe('once')
+    })
+  })
+
+  describe('session edit grant', () => {
+    const editReq = (qf: string, over: Record<string, unknown> = {}) => ({ agentId: 'root', toolName: 'Edit', input: { file_path: join(qf, 'a.txt') }, summary: 'e', suggestions: [SESSION_EDIT], ...over })
+
+    it('sets quickSessionEdits after a session allow of a covered edit, with one harness row', async () => {
+      const { m, ctx, run, qf } = await quickRun()
+      expect(ctx.quickSessionEdits?.()).toBe(false)
+      const p = ctx.requestPermission(editReq(qf) as never)
+      m.decide(run.id, lastReq(run.id).request.id, { behavior: 'allow', scope: 'session' })
+      await p
+      expect(ctx.quickSessionEdits?.()).toBe(true)
+      expect(harnessRows(run.id)).toEqual(["You allowed edits in this chat's folder for this chat."])
+    })
+
+    it('a project answer is resolved as session and saves nothing', async () => {
+      const { m, ctx, run, qf } = await quickRun()
+      const p = ctx.requestPermission(editReq(qf) as never)
+      const id = lastReq(run.id).request.id
+      m.decide(run.id, id, { behavior: 'allow', scope: 'project' })
+      expect(await p).toEqual({ behavior: 'allow', scope: 'session' })
+      expect(events.filter((e) => e.type === 'permission.resolved').at(-1)).toEqual({ type: 'permission.resolved', runId: run.id, requestId: id, scope: 'session' })
+      expect(existsSync(join(qf, '.claude', 'settings.local.json'))).toBe(false)
+      expect(ctx.quickSessionEdits?.()).toBe(true)
+    })
+
+    it('stays off after once, deny, an outside path or a card without the suggestion', async () => {
+      const { m, ctx, run, qf } = await quickRun()
+      const answer = async (req: ReturnType<typeof editReq>, d: Parameters<typeof m.decide>[2]) => {
+        const p = ctx.requestPermission(req as never)
+        m.decide(run.id, lastReq(run.id).request.id, d)
+        await p
+      }
+      await answer(editReq(qf), { behavior: 'allow', scope: 'once' })
+      await answer(editReq(qf), { behavior: 'deny', message: 'no' })
+      await answer(editReq(qf, { input: { file_path: join(dir, 'elsewhere.txt') } }), { behavior: 'allow', scope: 'session' })
+      await answer(editReq(qf, { suggestions: undefined }), { behavior: 'allow', scope: 'session' })
+      expect(ctx.quickSessionEdits?.()).toBe(false)
+    })
+
+    it('writes a harness row naming the rule labels, else the tool, for another session allow', async () => {
+      const { m, ctx, run } = await quickRun()
+      const p1 = ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'b', ruleLabels: ['npm test', 'npm run lint'] })
+      m.decide(run.id, lastReq(run.id).request.id, { behavior: 'allow', scope: 'session' })
+      await p1
+      const p2 = ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'b' })
+      m.decide(run.id, lastReq(run.id).request.id, { behavior: 'allow', scope: 'session' })
+      await p2
+      expect(harnessRows(run.id)).toEqual(['You allowed npm test, npm run lint for this chat.', 'You allowed Bash for this chat.'])
+      expect(ctx.quickSessionEdits?.()).toBe(false)
+    })
+
+    it('strips hidden characters from adapter rule labels in the harness row', async () => {
+      const { m, ctx, run } = await quickRun()
+      const p = ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'b', ruleLabels: ['npm‮ test​'] })
+      m.decide(run.id, lastReq(run.id).request.id, { behavior: 'allow', scope: 'session' })
+      await p
+      const rows = harnessRows(run.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).not.toMatch(/[‮​]/)
+      expect(rows[0]).toContain('npm')
+    })
+
+    it('has no flag on a normal run and the flag does not carry to a continuation', async () => {
+      const r = rig({}, { live: true })
+      await r.m.start({ project: makeProject({ path: folder() }), prompt: 'x' })
+      expect(r.ctxs[0].quickSessionEdits).toBeUndefined()
+    })
+  })
+
+  describe('MCP installs on a quick run', () => {
+    const spec = () => ({ id: 'mcp-q', name: 'docs', transport: 'stdio' as const, command: 'npx', args: ['-y', 'pkg@1.2.3'], enabled: true, source: 'agent' as const, addedAt: '2026-01-01T00:00:00.000Z' })
+    const mcpOptions = () => {
+      const persistInstall = vi.fn()
+      return { persistInstall, mcp: { enabledServers: vi.fn(() => []), resolve: vi.fn(), persistInstall, searchRegistry: vi.fn() } as never }
+    }
+    type InstallReq = Extract<RunEvent, { type: 'mcpInstall.request' }>
+    const lastInstall = (runId: string): InstallReq => events.filter((e) => e.type === 'mcpInstall.request' && e.runId === runId).at(-1) as InstallReq
+
+    it.each(['project', 'library'] as const)('marks the card runOnly with the caller role and lands a %s approval as run', async (scope) => {
+      const { persistInstall, mcp } = mcpOptions()
+      const { m, ctx, run } = await quickRun({ rigOptions: { mcp } })
+      expect(ctx.requestMcpInstall).toBeTypeOf('function')
+      const rootSlug = ctx.roles.find((r) => r.reportsTo === null)!.slug
+      ctx.emit({ type: 'agent.upsert', runId: run.id, agent: { id: 'root', roleId: null, roleSlug: rootSlug, name: 'Root', parentId: null, spawnToolUseId: null, state: 'working', activity: '', inputTokens: 0, outputTokens: 0, costUsd: 0 } as never })
+      const pending = ctx.requestMcpInstall!({ agentId: 'root', reason: 'need docs', spec: { ...spec(), roles: ['everything'] }, requiredSecrets: [] })
+      const card = lastInstall(run.id).request
+      expect(card.runOnly).toBe(true)
+      expect(card.spec.roles).toEqual([rootSlug])
+      m.answerMcpInstall(run.id, card.id, { approved: true, scope, spec: { ...card.spec, roles: ['someone-else'] } })
+      expect(await pending).toMatchObject({ approved: true, scope: 'run' })
+      expect(persistInstall).not.toHaveBeenCalled()
+      expect(ctx.mcpServers?.().map((s) => s.name)).toEqual(['docs'])
+      expect(ctx.mcpServers?.()[0].roles).toEqual([rootSlug])
+    })
+
+    it('an unknown caller gets nobody, never the root role', async () => {
+      const { mcp } = mcpOptions()
+      const { m, ctx, run } = await quickRun({ rigOptions: { mcp } })
+      const pending = ctx.requestMcpInstall!({ agentId: 'ghost-agent', reason: 'r', spec: { ...spec(), roles: ['everything'] }, requiredSecrets: [] })
+      const card = lastInstall(run.id).request
+      expect(card.spec.roles).toEqual([])
+      m.answerMcpInstall(run.id, card.id, { approved: true, scope: 'run', spec: { ...card.spec, roles: ['someone-else'] } })
+      await pending
+      expect(ctx.mcpServers?.()[0].roles).toEqual([])
+    })
+
+    it('an adapter-sent runOnly is dropped on a normal run', async () => {
+      const { mcp } = mcpOptions()
+      const r = rig({ mcp }, { live: true })
+      const run = await r.m.start({ project: makeProject({ path: folder() }), prompt: 'x' })
+      void r.ctxs[0].requestMcpInstall!({ agentId: 'root', reason: 'r', spec: spec(), requiredSecrets: [], runOnly: true })
+      expect(lastInstall(run.id).request.runOnly).toBeUndefined()
+    })
+
+    it('harness and skills sessions still have no install hook', async () => {
+      const { mcp } = mcpOptions()
+      const r = rig({ mcp, skillAssist: { catalog: () => ({ library: [], project: [] }), read: () => null } }, { live: true })
+      await r.m.start({ project: makeProject({ id: 'skills', roles: [], path: folder() }), prompt: 'x', kind: 'skill-assist' })
+      const ws = join(dir, 'data', 'quick', 'quick_build2')
+      mkdirSync(ws, { recursive: true })
+      await r.m.start({ project: makeProject({ id: 'harness', roles: [], path: ws }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
+      expect(r.ctxs[0].requestMcpInstall).toBeUndefined()
+      expect(r.ctxs[1].requestMcpInstall).toBeUndefined()
+    })
+  })
+
+  it('gives quick runs library-only skill reads and others none', async () => {
+    const cat = vi.fn(() => ({ library: [], project: [] }))
+    const read = vi.fn(() => null)
+    const { ctx } = await quickRun({ rigOptions: { skillAssist: { catalog: cat, read } } })
+    ctx.skillCatalog?.()
+    expect(cat).toHaveBeenCalledWith(null)
+    ctx.readSkill?.({ libraryId: 'lib1' })
+    expect(read).toHaveBeenCalledWith(null, { libraryId: 'lib1' })
   })
 })
 

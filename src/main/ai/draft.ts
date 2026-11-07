@@ -1,6 +1,6 @@
 import type { ConnectionId, DraftRequest, DraftResult, ModelRef, ModelTier, Project, Role, ToolName } from '@shared/types'
 import { TOOL_CATALOG } from '@shared/types'
-import { ROLE_COLORS, modelForTier, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
+import { ROLE_COLORS, modelForTier, nearestTiers, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
 import type { RuntimeAdapter } from '../runtime/types'
 
 export interface DraftRole {
@@ -9,7 +9,7 @@ export interface DraftRole {
   responsibilities: string[]
   prompt: string
   tools: string[]
-  model: string
+  model?: string
   canSpawn: boolean
   spawnable: string[]
   reportsTo: string | null
@@ -94,24 +94,79 @@ export interface DraftModelContext {
   tierModels: Partial<Record<ModelTier, ModelRef>>
   /** Exact model ids the connection lists as available; a proposed id in this list is kept. */
   models?: string[]
+  /** The current chart root's concrete model: the last choice before 'inherit' for a NEW role whose tier maps nothing. */
+  fallback?: { model: ModelRef; tier?: ModelTier }
 }
 
+export type ResolvedModel = { model: ModelRef; tier?: ModelTier }
+
+const tierContextOf = (ctx: DraftModelContext | undefined): TierContext =>
+  ctx ? { connection: ctx.connection, tierModels: ctx.tierModels } : { connection: 'anthropic', tierModels: {} }
+
 /**
- * A proposed role model onto a connection: a tier name or legacy Claude alias maps through modelForTier (nearest
- * mapped tier; nothing mapped = 'inherit'); a listed id is kept; anything else becomes the everyday tier.
+ * Strict resolution of a proposed model: 'inherit' stays; a tier name or legacy alias maps through modelForTier
+ * (nearest mapped tier); a concrete id the connection lists is kept with its tier. Anything else (empty, omitted, an
+ * unlisted id, a tier nothing maps) is undefined, so the caller decides (keep the current model, or fall back).
  */
-function mapModel(raw: unknown, ctx: DraftModelContext | undefined): { model: ModelRef; tier?: ModelTier } {
+export function resolveDraftModel(raw: unknown, ctx: DraftModelContext | undefined): ResolvedModel | undefined {
   const value = typeof raw === 'string' ? raw.trim() : ''
+  if (!value) return undefined
   if (value === 'inherit') return { model: 'inherit' }
-  const tc: TierContext = ctx ? { connection: ctx.connection, tierModels: ctx.tierModels } : { connection: 'anthropic', tierModels: {} }
-  const viaTier = (tier: ModelTier): { model: ModelRef; tier?: ModelTier } => modelForTier(tier, tc) ?? { model: 'inherit' }
   const asTier = settingTier(value)
-  if (asTier) return viaTier(asTier)
+  if (asTier) {
+    const hit = modelForTier(asTier, tierContextOf(ctx))
+    return hit ? { model: hit.model, tier: hit.tier } : undefined
+  }
   if (ctx?.models?.includes(value)) {
     const tier = tierForModel(value)
     return { model: value, ...(tier ? { tier } : {}) }
   }
-  return viaTier('everyday')
+  return undefined
+}
+
+/**
+ * A proposed model for a NEW role. Strict resolution first (resolveDraftModel). Otherwise, for an unmapped tier or an
+ * omitted / unlisted value (an unlisted value is first tried as the everyday tier; wanted tier: the named one, else
+ * 'everyday'): (a) a listed model whose tier matches,
+ * trying the nearest tiers in order; (b) ctx.fallback (the chart root's concrete model); (c) 'inherit'. Inherit is
+ * the last resort because a subagent that inherits runs its parent's model, which silently changes the role's cost
+ * and ability; an arbitrary unrelated listed model is never picked. An explicit 'inherit' stays 'inherit'.
+ */
+function mapModel(raw: unknown, ctx: DraftModelContext | undefined): ResolvedModel {
+  const hit = resolveDraftModel(raw, ctx)
+  if (hit) return hit
+  const named = settingTier(typeof raw === 'string' ? raw : undefined)
+  const wanted = named ?? 'everyday'
+  // An omitted or unlisted value is the everyday tier, when the connection maps it (or a tier near it).
+  if (!named) {
+    const everyday = resolveDraftModel('everyday', ctx)
+    if (everyday) return everyday
+  }
+  for (const t of nearestTiers(wanted)) {
+    const id = ctx?.models?.find((m) => tierForModel(m) === t)
+    if (id) return { model: id, tier: t }
+  }
+  if (ctx?.fallback && ctx.fallback.model && ctx.fallback.model !== 'inherit') return { ...ctx.fallback }
+  return { model: 'inherit' }
+}
+
+/**
+ * The model of a draft that matches an existing role. KEEP the current model (and tier, only if it has one) when the
+ * draft omits it, says inherit, names the current id or tier, does not resolve, or resolves to the current tier (a
+ * role already deep keeps its pinned model when 'top' falls back to deep). CHANGE only for a different tier that
+ * resolves, or a listed id that differs.
+ */
+export function revisedRoleModel(raw: unknown, current: Pick<Role, 'model' | 'tier'>, ctx: DraftModelContext | undefined): ResolvedModel {
+  const keep: ResolvedModel = { model: current.model, ...(current.tier ? { tier: current.tier } : {}) }
+  const value = typeof raw === 'string' ? raw.trim() : ''
+  if (!value || value === 'inherit' || value === current.model) return keep
+  const asTier = settingTier(value)
+  if (asTier && current.tier && asTier === current.tier) return keep
+  const hit = resolveDraftModel(value, ctx)
+  if (!hit || hit.model === 'inherit') return keep
+  if (hit.model === current.model) return keep
+  if (hit.tier && current.tier && hit.tier === current.tier && asTier) return keep
+  return hit
 }
 
 export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role[] {

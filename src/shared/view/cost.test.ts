@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentCostInput, costView, formatDuration, formatUsd, runCostInput, sumCosts, unpricedModels } from './cost'
+import { agentCostInput, costView, formatDuration, formatUsd, formatUsdCompact, runCostInput, sumCosts, unpricedModels } from './cost'
 
 describe('cost', () => {
   it('formats amounts', () => {
@@ -71,5 +71,21 @@ describe('cost', () => {
     expect(formatDuration(45_000)).toBe('45s')
     expect(formatDuration(80_000)).toBe('1m 20s')
     expect(formatDuration(3_900_000)).toBe('1h 05m')
+  })
+})
+
+describe('compact cost', () => {
+  it('rounds to cents and keeps the full figure in the title', () => {
+    expect(formatUsdCompact(0.02571)).toBe('$0.03')
+    expect(formatUsdCompact(0.004)).toBe('<$0.01')
+    expect(formatUsdCompact(12.4)).toBe('$12.40')
+    const v = costView({ costUsd: 0.02571, costSource: 'provider' }, { compact: true })
+    expect(v.text).toBe('$0.03')
+    expect(v.title).toContain('$0.02571')
+  })
+  it('keeps the partial mark and leaves unknown and none alone', () => {
+    expect(costView({ costUsd: 0.004, costSource: 'computed', costPartial: true }, { compact: true }).text).toBe('<$0.01+')
+    expect(costView({ costUsd: null, costSource: 'unknown' }, { compact: true }).text).toBe('unknown')
+    expect(costView({ costUsd: 0, costSource: 'none' }, { compact: true }).text).toBe('—')
   })
 })

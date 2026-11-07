@@ -31,6 +31,7 @@ import { KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId } from '@share
 import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { quickEditCard, quickEditFree } from './quickEditCard'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels, type AllowScopePersist, type SuggestOptions } from './permissionRules'
 import { isGitRepo } from './worktrees'
@@ -1964,6 +1965,11 @@ export class ClaudeSession implements RuntimeSession {
       // scripts/smoke-permission-hook.mjs). The harness's own tools carry their approval inside their round-trip,
       // and rules granted while the run is live (request_permission_rules, the rules panel) apply without a restart.
       if (harness) return hookAllow('OrgAI harness tool')
+      // Chat (quick) session edit grant: after every deny gate above (self-control, build config, reference folders, MCP
+      // grants), an edit whose every file is inside the chat's folder (quick/sessionEdits.ts; never .git, .claude, other
+      // protected folders or config files, judged lexically and by real path) needs no card once the user answered
+      // "Allow for session" on a covered edit (RunManager owns the flag). Relative paths resolve against the agent's cwd.
+      if (quickEditFree(this.ctx, input.tool_name, toolInput, hookCwd)) return hookAllow("OrgAI: file edits in this chat's folder are allowed for this session")
       // Reference folders (H1): a shell command that runs inside one or names a path at, under or above one never takes
       // an allow path (saved, run or session rules, the CLI's settings rules, acceptEdits / auto pre-approval): it is
       // asked, and canUseTool's card names the folder with no suggestions. The cwd is the hook's (the CLI's current
@@ -2927,6 +2933,8 @@ export class ClaudeSession implements RuntimeSession {
           else this.referenceRefusalRow(agentId, edit.entry)
           return { behavior: 'deny', message: edit.reason }
         }
+        // Backstop for the hook's quick session edit pre-approval (a covered edit after "Allow for session").
+        if (quickEditFree(this.ctx, toolName, input, cwd)) return { behavior: 'allow', updatedInput: input }
         // A shell, Read, Glob or Grep call touching a reference folder: the card names the folder, offers no rule
         // (RunManager narrows any allow to 'once'), and an allow grants this call only.
         // The hook's finding for this exact call: keyed by tool_use id (permOptions.toolUseID, 0.3.312 typings), else
@@ -2952,12 +2960,15 @@ export class ClaudeSession implements RuntimeSession {
                 suggestOpts
               )
             )
+        // A Chat (quick) run's covered edit also offers "Allow for session" (quick/sessionEdits.ts). That suggestion is on
+        // the card only: allowWithScope gets `suggestions` without it, so it never becomes updatedPermissions or a mode.
+        const card = ref ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : quickEditCard(this.ctx.run, toolName, input, cwd, suggestions)
         const decision = await this.ctx.requestPermission({
           agentId,
           toolName,
           input,
           summary: describe(toolName, input),
-          ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+          ...(card.suggestions.length ? { suggestions: card.suggestions, ruleLabels: card.ruleLabels } : {}),
           ...(ref?.folder ? { referenceFolder: ref.folder } : {})
         })
         const a = this.agents.get(agentId)

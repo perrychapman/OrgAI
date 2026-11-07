@@ -13,7 +13,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
-import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
+import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -43,6 +43,7 @@ import { skillsProject } from '../skills/assist'
 import { SkillEvaluationService } from '../skills/evaluation'
 import { SkillService } from '../skills/service'
 import { knowledgeStore } from '../store/knowledge'
+import { createOutputsService } from '../outputs/service'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from '../store/projectData'
 import { ProjectStore } from '../store/projects'
@@ -51,7 +52,10 @@ import { SecretStore, type SecretCipher, type SecretStoreOptions } from '../stor
 import { SettingsStore } from '../store/settings'
 import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
-import { harnessProjectFor, withEffectiveDefault } from './args'
+import { createAppReference, type ShortcutRow } from '../reference/appReference'
+import { withAppSettingChanges } from '../../shared/appSettingsProposal'
+import type { AppSettingsProposalPayload, CliShimStatus } from '../../shared/types'
+import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
 import { HostEventBus } from './events'
 import type { HostOwnership } from './ownership'
@@ -128,6 +132,10 @@ export interface BootOrgAIHostOptions {
   secretStore?: SecretStore
   openExternal(url: string): Promise<void> | void
   desktop?: DesktopHooks
+  /** Shortcut rows for the reference corpus (the shell maps shared/view SHORTCUTS to this; main never imports renderer code). */
+  referenceShortcuts?: readonly ShortcutRow[]
+  /** The command line shim state for the reference status snapshot (desktop shell only). */
+  cliShimStatus?: () => CliShimStatus | Promise<CliShimStatus>
   /** ORGAI_MOCK === '1': registers the scripted mock adapter and keeps discovery off the real home. */
   mock: boolean
   platform?: NodeJS.Platform
@@ -201,6 +209,16 @@ export interface OrgAIHost {
 export interface HostTerminalAccess {
   enabled: boolean
   level: TerminalAccessLevel
+}
+
+/**
+ * An approved appSettings proposal, applied exactly like settings:set (dispatcher): the changes merge onto the stored
+ * settings, settingsSetArgs keeps every main-owned field, SettingsStore.set normalizes and notifies its listeners
+ * (theme, settings:changed). Throws a readable sentence on a refused value; nothing is saved then. Exported for tests.
+ */
+export function applyAppSettingsPayload(settings: Pick<SettingsStore, 'get' | 'set'>, payload: AppSettingsProposalPayload): void {
+  const stored = settings.get()
+  settings.set(settingsSetArgs(withAppSettingChanges(stored, payload.changes), stored))
 }
 
 export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
@@ -401,8 +419,34 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   let activityRef: HostActivityTracker | undefined
   /** Set once the dispatcher exists (below); the drain's quiesce aborts its model calls (draft:orgChart). */
   let dispatcherRef: HostDispatcher | undefined
+  // Self-knowledge: OrgAI answers about itself (reference service, built lazily on first query) and can configure itself.
+  const reference = createAppReference({
+    shortcuts: opts.referenceShortcuts,
+    status: {
+      appVersion: env.appVersion,
+      platform,
+      dataDir,
+      mock: mockAdapter,
+      settings: () => settings.get(),
+      connections: () => connections.list(),
+      projectCount: () => projects.list().length,
+      mcpLibraryCount: () => mcp.libraryEntries().length,
+      skillLibraryCount: () => skills.libraryList().length,
+      ...(opts.cliShimStatus ? { cliShim: opts.cliShimStatus } : {})
+    }
+  })
+  // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
+  const outputs = createOutputsService(dataDir)
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    selfKnowledge: {
+      reference: (q, o) => reference.query(q, o),
+      navigate: (e) => opts.desktop?.navigate?.(e) ?? false,
+      settings: () => settings.get(),
+      // As settings:set (dispatcher): merge onto the stored settings through settingsSetArgs; SettingsStore.set
+      // normalizes and notifies its listeners (theme, settings:changed with the effective default).
+      applyAppSettings: (payload) => applyAppSettingsPayload(settings, payload)
+    },
     teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     // Wave 7: plus the vault's key file, re-read per call (the vault may change; cli-standalone.md 8.4).
@@ -429,6 +473,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     knowledge: knowledgeStore(dataDir),
     engagementChanged: (event) => events.emit(IPC.projectsEngagementChanged, event),
+    outputs,
+    outputsChanged: (event) => events.emit(OUTPUTS_IPC.outputsChanged, event),
     orgTemplate: (templateId, project) => templates.forRun(templateId, project),
     // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
     buildProject: (summary) => harnessProjectFor(summary, connections.effectiveSettings(), dataDir, mockAdapter),
@@ -671,9 +717,11 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     templates,
     kit,
     teamFiles,
+    outputs,
     events,
     activity,
     usage: { refresh: () => monitor.refresh() },
+    reference,
     env: {
       app: { getVersion: () => env.appVersion, getPath: () => env.userDataDir, isPackaged: env.isPackaged },
       platform,

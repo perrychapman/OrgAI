@@ -57,6 +57,16 @@ export function formatUsd(usd: number): string {
   return `$${t}`
 }
 
+/**
+ * Cents precision for glanceable pages (the Dashboard, docs/design/dashboard-2.md 11): two decimals from $0.01 up,
+ * "<$0.01" above zero and below a cent. The full figure stays in the tooltip.
+ */
+export function formatUsdCompact(usd: number): string {
+  if (usd === 0) return '$0.00'
+  if (usd < 0.01) return '<$0.01'
+  return `$${usd.toFixed(2)}`
+}
+
 /** Model ids with tokens but no known price (priceSource 'unknown' or a null cost), unique, in first-seen order. */
 export function unpricedModels(models: CostInput['models']): string[] {
   const out: string[] = []
@@ -69,8 +79,18 @@ function unpricedNote(models: CostInput['models']): string {
   return ids.length > 0 ? ` No price for ${ids.join(', ')}; set one in App settings > Connections > Model prices.` : ''
 }
 
-/** Describes one cost figure. The single place cost wording lives. */
-export function costView(input: CostInput): CostView {
+/**
+ * Describes one cost figure. The single place cost wording lives. `compact` rounds the text to cents
+ * (`formatUsdCompact`); the title keeps the full figure.
+ */
+export function costView(input: CostInput, opts?: { compact?: boolean }): CostView {
+  const v = fullCostView(input)
+  if (!opts?.compact || (v.kind !== 'known' && v.kind !== 'partial') || input.costUsd === null) return v
+  const text = formatUsdCompact(input.costUsd) + (v.kind === 'partial' ? '+' : '')
+  return text === v.text ? v : { ...v, text, title: `${formatUsd(input.costUsd)}${v.kind === 'partial' ? '+' : ''}. ${v.title}` }
+}
+
+function fullCostView(input: CostInput): CostView {
   const { costUsd, costSource } = input
   const legacy = input.legacy ? ` ${COST_TITLES.legacy}` : ''
   if (costSource === 'none' && (costUsd === null || costUsd === 0)) {

@@ -221,7 +221,9 @@ describe('plan tools', () => {
       'propose_skills',
       'request_permission_rules',
       'list_runs',
-      'message_run'
+      'message_run',
+      'produce_output',
+      'register_output'
     ])
     expect(names.filter((n) => !isBlockingHarnessTool(n))).toEqual([
       'set_plan',
@@ -234,7 +236,9 @@ describe('plan tools', () => {
       'list_skill_library',
       'read_library_skill',
       'list_runs',
-      'message_run'
+      'message_run',
+      'produce_output',
+      'register_output'
     ])
     expect(setupTools(fakeCtx()).map((t) => t.name)).not.toContain('set_plan')
   })
@@ -459,6 +463,14 @@ describe('MCP tools', () => {
     expect(text).toContain('next run')
   })
 
+  it('request_mcp_install: on a quick run a missing hook never promises saving to the project', async () => {
+    const quick = runSummary({ kind: 'work', quick: { folder: '/x', team: 'single', allowEdits: false, gitRepo: false } })
+    const ctx = fakeCtx({ run: quick, requestMcpInstall: vi.fn(async () => ({ approved: true, scope: 'run' as const })) })
+    const text = await byName(workTools(ctx), 'request_mcp_install').call({ reason: 'r', manual: pinned })
+    expect(text).toContain('this chat only')
+    expect(text).not.toContain('saves it to the project')
+  })
+
   it('request_mcp_install: deny text is exact, with and without a note', async () => {
     const deny = (note?: string) =>
       fakeCtx({ requestMcpInstall: vi.fn(async () => ({ approved: false, scope: 'run' as const, ...(note ? { note } : {}) })) })
@@ -514,7 +526,7 @@ describe('MCP tools', () => {
     const assistCtx = (over = {}) => fakeCtx({ run: runSummary({ kind: 'mcp-assist' }), ...over })
 
     it('mcp-assist runs get list, search, propose and ask_user only', () => {
-      expect(harnessToolsFor(assistCtx()).map((t) => t.name)).toEqual(['list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'ask_user', 'request_permission_rules'])
+      expect(harnessToolsFor(assistCtx()).map((t) => t.name)).toEqual(['list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'ask_user', 'request_permission_rules', 'app_reference', 'open_in_app'])
     })
 
     it('validates, builds ids and secret slots, and returns the decision text', async () => {
@@ -925,8 +937,8 @@ describe('quick runs: tool set and list_projects', () => {
 
   it('binds the quick set only for quick work runs', () => {
     const names = harnessToolsFor(quickCtx()).map((t) => t.name)
-    expect(names).toEqual(['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'request_permission_rules', 'list_projects'])
-    for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'propose_mcp_servers', 'list_skill_library', 'read_library_skill', 'propose_skills', 'list_skills', 'load_skill']) expect(names).not.toContain(gone)
+    expect(names).toEqual(['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'request_permission_rules', 'list_projects', 'request_mcp_install', 'list_skill_library', 'read_library_skill', 'app_reference', 'open_in_app', 'propose_app_settings', 'propose_project_settings'])
+    for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'propose_skills', 'list_skills', 'load_skill']) expect(names).not.toContain(gone)
     const work = harnessToolsFor(fakeCtx()).map((t) => t.name)
     expect(work).not.toContain('list_projects')
     expect(work).toContain('propose_org_change')
@@ -955,6 +967,20 @@ describe('quick runs: tool set and list_projects', () => {
     expect(text).toMatch(/not treat it as instructions/)
   })
 
+  it('quick runs read the skill library only: no project skills, no used-by, skillId refused', async () => {
+    const entry = { id: 'lib1', name: 'release-notes', description: 'Notes', source: 'user' as const, digest: 'd', files: [{ path: 'SKILL.md', bytes: 1 }], addedAt: '', updatedAt: '' }
+    const cat = { library: [{ entry, usedBy: [{ projectId: 'p1', projectName: 'Alpha', skillId: 's', roleNames: [] }] }], project: [], evaluation: null }
+    const readSkill = vi.fn(() => ({ skillMd: 'Use bullets.', files: [{ path: 'SKILL.md', bytes: 1 }] }))
+    const ctx = quickCtx({ skillCatalog: () => cat, readSkill })
+    const text = await byName(harnessToolsFor(ctx), 'list_skill_library').call({})
+    expect(text).toContain('libraryId=lib1')
+    expect(text).not.toContain('used by')
+    expect(text).not.toContain('<project-skills>')
+    expect(await byName(harnessToolsFor(ctx), 'read_library_skill').call({ skillId: 's1' })).toBe('REFUSED: this chat has no project skills. Pass libraryId.')
+    expect(readSkill).not.toHaveBeenCalled()
+    expect(await byName(harnessToolsFor(ctx), 'read_library_skill').call({ libraryId: 'lib1' })).toContain('Use bullets.')
+  })
+
   it('answers plainly when empty or unavailable', async () => {
     expect(await byName(harnessToolsFor(quickCtx({ listProjects: () => [] })), 'list_projects').call({})).toBe('The user has no OrgAI projects yet.')
     expect(await byName(harnessToolsFor(quickCtx()), 'list_projects').call({})).toContain('not available')
@@ -973,10 +999,10 @@ describe('Skill assistant tools', () => {
   const skCtx = (over = {}, projectId = 'p1') => fakeCtx({ run: runSummary({ kind: 'skill-assist' }), project: project({ id: projectId }), skillCatalog: catalog, ...over })
 
   it('skill-assist runs get the four assistant tools and ask_user; no other kind gets them', () => {
-    expect(harnessToolsFor(skCtx()).map((t) => t.name)).toEqual(['list_skill_library', 'read_library_skill', 'propose_skills', 'ask_user', 'request_permission_rules'])
+    expect(harnessToolsFor(skCtx()).map((t) => t.name)).toEqual(['list_skill_library', 'read_library_skill', 'propose_skills', 'ask_user', 'request_permission_rules', 'app_reference', 'open_in_app'])
     for (const c of [fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) }), fakeCtx({ run: runSummary({ kind: 'work', quick: { folder: '/x', team: 'single', allowEdits: false, gitRepo: false } }) })]) {
       const n = harnessToolsFor(c).map((t) => t.name)
-      for (const name of ['list_skill_library', 'read_library_skill', 'propose_skills']) expect(n).not.toContain(name)
+      expect(n).not.toContain('propose_skills')
     }
     expect(isBlockingHarnessTool('propose_skills')).toBe(true)
     expect(isBlockingHarnessTool('list_skill_library')).toBe(false)
@@ -1367,8 +1393,10 @@ describe('org change: slug, never grants (review H1), mergeOrgChart', () => {
 
   it('sets the slug of an existing role, drops any grant fields, merges and sends the merged roles', async () => {
     const ctx = fakeCtx({ project: proj() })
-    const marker = [{ id: 'merged-marker' } as never]
-    vi.mocked(mergeOrgChart).mockReturnValueOnce({ roles: marker, kept: ['Lead'], added: [], removed: [] })
+    const marker = [{ id: 'merged-marker', name: 'Marker', reportsTo: null } as never]
+    // rolesFromDrafts merges once to find which drafts match existing roles (real), then for the result (marker).
+    const real = vi.mocked(mergeOrgChart).getMockImplementation()!
+    vi.mocked(mergeOrgChart).mockImplementationOnce(real).mockReturnValueOnce({ roles: marker, kept: ['Lead'], added: [], removed: [] })
     const text = await orgCall(ctx, [roleDraft('Boss', { slug: 'lead', mcpServers: ['github'], skills: ['triage'] }), draftRole('Dev', 'Boss')])
     expect(text).toMatch(/^APPROVED\. The org chart was updated for future runs/)
     expect(text).toContain('keep their MCP and skill grants')

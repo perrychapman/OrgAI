@@ -202,6 +202,7 @@ import {
   quickArgs,
   removalFacts,
   settingsSetArgs,
+  appReferenceArgs,
   skillAssistArgs,
   templateEngagementArgs,
   withEffectiveDefault
@@ -210,6 +211,7 @@ import { HostEventBus } from './events'
 import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased } from './mutationLease'
 import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
 import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
+import { registerOutputsHandlers } from './outputsHandlers'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
 /** One request handler: the call context, then the positional arguments (what ipcRenderer.invoke passed). */
@@ -453,6 +455,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   const mock = adapterIds.includes('mock')
   // Always served: without a usage monitor the answer is null (nothing to refresh).
   handle(IPC.usageRefresh, () => usage?.refresh() ?? Promise.resolve(null))
+  // app:reference (read scope): the user and terminal clients may see the secret-free status snapshot.
+  handle(IPC.appReference, (_e, raw: unknown) => {
+    const q = appReferenceArgs(raw)
+    return services.reference ? services.reference.query(q, { status: true }) : Promise.resolve({ text: 'The reference is not available in this host.' })
+  })
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
    * projects:list. The Chat's display project has no roles and creates no directory.
@@ -590,7 +597,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       project,
       kind: 'setup',
       prompt: setup.retroPrompt(record),
-      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record)}`
+      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record, project)}`
     })
   })
   handle(
@@ -759,6 +766,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
   registerSecretsIpc(handle, services.secrets, mcp, state)
+  registerOutputsHandlers(handle, { outputs: services.outputs, projects, events, dataDir: settings.dataDir })
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {

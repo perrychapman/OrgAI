@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useState } from 'react'
-import { ArrowRight, FolderOpen, MoreHorizontal, Trash2 } from 'lucide-react'
+import { ArrowRight, FolderOpen, GitBranch, MoreHorizontal, Play, RotateCcw, ShieldAlert, Sparkles, Trash2, type LucideIcon } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { projectKindOf } from '@shared/defaults'
@@ -8,26 +8,44 @@ import { clientOf } from '../../lib/clientGroups'
 import { costView, type CostInput } from '../../lib/cost'
 import { tileRemoveLabel } from '../../lib/dashboard'
 import { folderName } from '../../lib/paths'
+import type { StatusWord } from '../../lib/runStatus'
 import { Badge } from '../ui/Badge'
 import { Cost } from '../ui/Cost'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
-import { plural } from './dashboardProjects'
+import { continueLabel, type TileChip, type TileChipKind } from './dashboardProjects'
+
+/** The newest run of a project, as the tile shows it. */
+export interface TileRun {
+  id: string
+  name: string
+  /** The status word (Running, Idle, Finished ...), for `data-status`. */
+  word: StatusWord
+  /** "Idle · Waiting for your reply" or "Finished · 2 h ago". */
+  caption: string
+}
 
 /** What one tile shows. Built by ProjectsGrid from the store; the tile itself reads nothing. */
 export interface TileModel {
   project: Project
   /** Open decisions across the project's runs. */
   decisions: number
-  /** Live runs. */
+  /** Runs that are open (starting, running, idle, stopping). */
   live: number
+  /** A run is working now (not merely open): the tile gets its working edge. */
+  working: boolean
   /** projectStatus subtitle, or "No runs yet". */
   statusLine: string
-  /** The newest run's name, or null without runs. */
-  newestRun: string | null
+  /** The newest run, or null without runs. */
+  newest: TileRun | null
+  /** The chain's newest member when it can be continued. */
+  continuable: { id: string; name: string } | null
+  chips: TileChip[]
   /** Cost of runs started in the last 7 days. */
   weekCost: CostInput
 }
+
+const CHIP_ICON: Record<TileChipKind, LucideIcon> = { branches: GitBranch, suggestions: Sparkles, 'folder-trust': ShieldAlert }
 
 /** Arrow keys, Home and End move between the menu's items (the Popover focuses the first one on open). */
 function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
@@ -42,27 +60,32 @@ function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
 }
 
 /**
- * One project on the Dashboard. The name is a native button whose ::after covers the whole tile (the tile is one
- * click target); the More button sits in the tile's own grid above that cover, never over the text.
+ * One project on the Dashboard (docs/design/dashboard-2.md 10.1). The name is a native button whose ::after covers the
+ * whole tile (the tile is one click target); More and the chips sit above that cover, never over the text.
  */
 export function ProjectTile({
   model,
   onOpen,
   onDelete,
+  onNewRun,
+  onContinue,
+  onChip,
   onAnnounce
 }: {
   model: TileModel
   onOpen: () => void
   onDelete: () => void
+  onNewRun: () => void
+  onContinue: (runId: string) => void
+  onChip: (kind: TileChipKind) => void
   onAnnounce?: (text: string) => void
 }): ReactElement {
-  const { project, decisions, live, statusLine, newestRun, weekCost } = model
+  const { project, decisions, working, statusLine, newest, continuable, chips, weekCost } = model
   const [error, setError] = useState<string | null>(null)
   const folder = folderName(project.path)
   const client = projectKindOf(project) === 'engagement' ? clientOf(project) : ''
   const pending = setupPending(project)
-  const state = decisions > 0 ? 'decisions' : live > 0 ? 'live' : 'quiet'
-  const roles = project.roles.length
+  const state = decisions > 0 ? 'decisions' : working ? 'live' : 'quiet'
   const costShown = !costView(weekCost).empty
 
   const openFolder = (): void => {
@@ -94,7 +117,7 @@ export function ProjectTile({
             type="button"
             className="project-tile-main"
             data-testid="project-tile-main"
-            aria-label={`Open ${project.name}, ${folder}, ${statusLine}${pending ? ', setup pending' : ''}`}
+            aria-label={`Open ${project.name}, ${statusLine}${newest ? `, ${newest.name}` : ''}${pending ? ', setup pending' : ''}`}
             title={project.path}
             onClick={onOpen}
           >
@@ -130,6 +153,35 @@ export function ProjectTile({
                   type="button"
                   role="menuitem"
                   className="project-tile-menuitem"
+                  data-testid="project-tile-new-run"
+                  onClick={() => {
+                    close()
+                    onNewRun()
+                  }}
+                >
+                  <Icon icon={Play} size="sm" />
+                  New run
+                </button>
+                {continuable && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="project-tile-menuitem"
+                    data-testid="project-tile-continue"
+                    title={continuable.name}
+                    onClick={() => {
+                      close()
+                      onContinue(continuable.id)
+                    }}
+                  >
+                    <Icon icon={RotateCcw} size="sm" />
+                    {continueLabel(continuable.name)}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="project-tile-menuitem"
                   data-testid="project-tile-open-folder"
                   onClick={() => {
                     close()
@@ -160,18 +212,34 @@ export function ProjectTile({
       </div>
       <p className="project-tile-status">
         <span className={`project-tile-dot ${state}`} aria-hidden="true" />
-        <span>{statusLine}</span>
+        <span className="project-tile-status-text">{statusLine}</span>
         {pending && <Badge tone="warning">Setup pending</Badge>}
       </p>
-      <p className="project-tile-folder" title={project.path}>
-        {folder}
-      </p>
-      {newestRun && <p className="project-tile-run">{newestRun}</p>}
+      {newest && (
+        <div className="project-tile-run" data-testid="tile-run" data-status={newest.word}>
+          <span className="project-tile-run-name" title={newest.name}>
+            {newest.name}
+          </span>
+          <span className="project-tile-run-cap">{newest.caption}</span>
+        </div>
+      )}
+      {chips.length > 0 && (
+        <div className="tile-chips" data-testid="tile-chips">
+          {chips.map((c) => (
+            <button key={c.kind} type="button" className="tile-chip" data-testid="tile-chip" data-kind={c.kind} aria-label={c.name} onClick={() => onChip(c.kind)}>
+              <Icon icon={CHIP_ICON[c.kind]} size="sm" />
+              {c.text}
+            </button>
+          ))}
+        </div>
+      )}
       <p className="project-tile-foot">
-        <span>{plural(roles, 'role', 'roles')}</span>
+        <span className="project-tile-folder" data-testid="tile-folder" title={project.path}>
+          {folder}
+        </span>
         {costShown && (
-          <span className="project-tile-cost">
-            <Cost value={weekCost} /> <span className="project-tile-cost-unit">7 d</span>
+          <span className="project-tile-cost" data-testid="tile-cost">
+            <Cost value={weekCost} compact /> <span className="project-tile-cost-unit">last 7 days</span>
           </span>
         )}
       </p>

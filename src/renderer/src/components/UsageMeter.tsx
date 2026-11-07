@@ -85,14 +85,20 @@ export type UsageLevel = '' | 'warn' | 'danger'
 
 /** The window closest to its limit (the one the footer bar shows), or null when no plan window is reported. */
 export function tightestWindow(usage: UsageStatus | null | undefined): { label: string; pct: number; level: UsageLevel } | null {
+  const t = tightestWindowRow(usage)
+  return t ? { label: t.label, pct: t.pct, level: t.level } : null
+}
+
+/** The same choice as `tightestWindow`, with the plan row itself (its `window.resetsAt` and `limited` flag) for the Dashboard's status bar. */
+export function tightestWindowRow(usage: UsageStatus | null | undefined): { label: string; pct: number; level: UsageLevel; row: Row } | null {
   if (!usage || usage.authMode === 'apiKey' || !usage.available) return null
-  let best: { label: string; pct: number; level: UsageLevel } | null = null
+  let best: { label: string; pct: number; level: UsageLevel; row: Row } | null = null
   for (const r of usageRows(usage)) {
     const pct = r.window.utilization
     if (pct === null) continue
     const level: UsageLevel = r.limited ? 'danger' : pct >= WARN_AT || usage.status === 'allowed_warning' ? 'warn' : ''
     // A limited window always wins; otherwise the highest utilization.
-    if (!best || (level === 'danger' && best.level !== 'danger') || (best.level !== 'danger' && pct > best.pct)) best = { label: r.label, pct, level }
+    if (!best || (level === 'danger' && best.level !== 'danger') || (best.level !== 'danger' && pct > best.pct)) best = { label: r.label, pct, level, row: r }
   }
   return best
 }

@@ -259,6 +259,8 @@ const COVERED_ELSEWHERE: Record<string, string> = {
 const NEVER_WRITES_SECRETS: Record<string, string> = {
   'connections:removeProxy': "removes the proxy and deletes its key (a removal's delete never prepares)",
   'teamFiles:status': 'writes the project folder\'s team files only, no secrets',
+  'outputs:forget': 'removes an output index entry in the project data folder only, no secrets',
+  'outputs:delete': 'deletes an output file the run produced and its index entry, no secrets',
   // Runs: setup-like and virtual-project runs carry no project MCP servers (bare); run-scoped installs carry no OAuth.
   'runs:startQuick': 'quick runs are bare (no project servers to refresh)',
   'setup:start': 'setup runs are bare',
