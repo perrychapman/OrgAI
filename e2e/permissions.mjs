@@ -317,9 +317,16 @@ try {
 
   // Rules panel: refuse Edit, accept both prefix forms.
   const ruleInput = page.locator('[data-testid=rule-input]')
-  await ruleInput.fill('Edit')
-  await page.locator('[data-testid=rule-add]').click()
-  const refusal = await page.locator('[data-testid=rule-draft-error]').innerText().catch(() => '')
+  // The panel can re-render (a rules refresh) between the fill and the click and clear the draft: "Enter a rule first".
+  let refusal = ''
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await ruleInput.fill('Edit')
+    await page.waitForFunction(() => document.querySelector('[data-testid=rule-input]')?.value === 'Edit', null, { timeout: 3000 }).catch(() => {})
+    await page.locator('[data-testid=rule-add]').click()
+    refusal = await page.locator('[data-testid=rule-draft-error]').innerText().catch(() => '')
+    if (!/Enter a rule first/.test(refusal)) break
+    await page.waitForTimeout(500)
+  }
   check(/whole-tool Edit rule/.test(refusal), 'the rules panel refuses a whole-tool Edit rule with a reason', refusal)
   await ruleInput.fill('Edit(/Users/me/docs/**)')
   await page.locator('[data-testid=rule-add]').click()

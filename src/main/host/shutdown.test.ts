@@ -486,11 +486,13 @@ describe("the coordinator's own helper processes (review round 2: taskkill / tab
   it('readProcessTable registers its reader as a helper while it runs', async () => {
     resetHelperProcessesForTests()
     const before = Date.now()
-    const t = await readProcessTable()
+    // A loaded runner can run past the reader's own timeout once (Windows CI: null after 5 s); try again before judging.
+    let t = await readProcessTable()
+    for (let i = 0; i < 2 && t === null; i++) t = await readProcessTable()
     expect(t).not.toBeNull()
     // The reader ran and exited during this read: it is still known for reads that started before it exited.
     expect(shutdownHelperPids(before).length).toBeGreaterThanOrEqual(1)
-  })
+  }, 30_000)
 })
 
 describe.skipIf(process.platform === 'win32')('killHostDescendants (real processes)', () => {
