@@ -195,6 +195,8 @@ beforeAll(async () => {
 
   // Seed: a project with project-only servers (stdio with and without secrets, http with an expiring sign-in, plain
   // http), library entries linked to it (one with a sign-in), and connectors.
+  // The one proxy the connection channels store a key for (a migrated 'litellm' proxy keeps the key name LITELLM_KEY).
+  host.settings.setProxies([{ id: 'litellm', name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: 'http://localhost:4000/', enabled: true, hasApiKey: false, tierModels: {} }])
   project = await rpc<Project>('projects:create', { name: 'Secrets', path: join(root, 'project'), brief: '', mock: true })
   const server = (id: string, name: string, secretEnv?: string[]) => ({ id, name, transport: 'stdio', command: 'npx', args: ['-y', `${name}@1.0.0`], ...(secretEnv ? { secretEnv } : {}), enabled: true, source: 'user', addedAt: '' })
   const remote = (id: string, name: string, url: string) => ({ id, name, transport: 'http', url, enabled: true, source: 'user', addedAt: '' })
@@ -255,6 +257,7 @@ const COVERED_ELSEWHERE: Record<string, string> = {
 
 /** Mutation channels that never store, delete or prepare a secret (reading has / get / status does not count). */
 const NEVER_WRITES_SECRETS: Record<string, string> = {
+  'connections:removeProxy': "removes the proxy and deletes its key (a removal's delete never prepares)",
   'teamFiles:status': 'writes the project folder\'s team files only, no secrets',
   // Runs: setup-like and virtual-project runs carry no project MCP servers (bare); run-scoped installs carry no OAuth.
   'runs:startQuick': 'quick runs are bare (no project servers to refresh)',
@@ -323,6 +326,9 @@ describe('every channel that reaches SecretStore prepares before a value and nev
     await measure('value', 'connections:setSecret', { id: 'litellm', apiKey: 'sk-cov-2' })
     expect((await measure('none', 'connections:logout', 'litellm')).deleted).toBeGreaterThan(0)
     expect(secrets.has(LITELLM_KEY)).toBe(false)
+    // A new proxy with a key stores it (prepared first); without one it stores nothing and never prepares.
+    expect((await measure('value', 'connections:createProxy', { name: 'Second', anthropicBaseUrl: 'http://localhost:5000/', apiKey: 'sk-new' })).origins).toEqual(['dispatcher'])
+    await measure('none', 'connections:createProxy', { name: 'Third', anthropicBaseUrl: 'http://localhost:6000/' })
   })
 
   it('connectors:setToken, and connectors:add switching the access of an entry not yet connected', async () => {

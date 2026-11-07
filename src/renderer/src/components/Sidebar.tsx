@@ -22,7 +22,8 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/setting
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
-import { CONNECTION_LABEL, currentConnection, SPEND_ROW_PREFIX, spendLevel, spendRowFigure, spendRowLabel, spendSentence } from '../lib/usage'
+import { connectionLabel, isProxyId } from '../lib/connectionLabel'
+import { currentConnection, reportsSpend, spendLevel, spendRowFigure, spendRowLabel, spendRowPrefix, spendSentence } from '../lib/usage'
 import { BrandLockup } from './layout/BrandLockup'
 import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
@@ -78,25 +79,27 @@ function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | un
   return auth.loggedIn ? { tone: 'ok', label: `Claude · ${auth.method ?? 'logged in'}`, title: auth.detail } : { tone: 'danger', label: 'Claude not logged in', title: auth.detail }
 }
 
-/** `figure` is the label's part after "LiteLLM · "; the row renders the name visually hidden under a narrow footer so the figure and "today" always show. */
+/** `figure` is the label's part after "<name> · "; the row renders the name visually hidden under a narrow footer so the figure and "today" always show. */
 type Pill = { tone: string; label: string; title?: string; figure?: string }
 
 /**
- * Account row for a non-Anthropic connection: Codex follows its status, LiteLLM shows the key's spend: one figure
- * (today's spend when the proxy reports periods, else the budget text; `spendRowLabel`), the whole sentence as the
- * tooltip (`spendSentence`). The dot tone is the budget level only; a period figure never colours it.
+ * Account row for a non-Anthropic connection: OpenAI follows its status; a proxy that reports spend shows the key's
+ * spend: one figure (today's spend when the proxy reports periods, else the budget text; `spendRowLabel`), the whole
+ * sentence as the tooltip (`spendSentence`). A proxy that reports none shows its name and status, no spend text.
+ * The dot tone is the budget level only; a period figure never colours it.
  */
-function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | undefined, usage: UsageStatus | undefined): Pill {
-  const name = CONNECTION_LABEL[id]
+function connectionPill(id: ConnectionId, status: ConnectionStatus | undefined, usage: UsageStatus | undefined, spends: boolean): Pill {
+  const name = connectionLabel(id)
   const detail = status?.detail
   if (status?.state === 'error') return { tone: 'danger', label: `${name} · error`, title: detail }
   if (status?.state === 'connecting') return { tone: 'warn', label: `${name} · connecting…`, title: detail }
   if (!status || status.state === 'disconnected') return { tone: 'warn', label: `${name} · not connected`, title: detail }
-  if (id === 'litellm') {
+  if (id !== 'openai' && !spends) return { tone: 'ok', label: `${name} · connected`, title: detail }
+  if (id !== 'openai') {
     const spend = usage?.spend
-    if (!spend) return { tone: 'warn', label: 'LiteLLM · spend unavailable', title: detail }
+    if (!spend) return { tone: 'warn', label: `${name} · spend unavailable`, title: detail }
     const level = spendLevel(spend)
-    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend), title: spendSentence(spend), figure: spendRowFigure(spend) }
+    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend, id), title: spendSentence(spend, id), figure: spendRowFigure(spend) }
   }
   return { tone: 'ok', label: `${name} · ${status.account ?? 'connected'}`, title: detail }
 }
@@ -131,10 +134,14 @@ export default function Sidebar({
   }, [loadDefaultConnection])
   const openProjectRecord = projects.find((p) => p.id === selectedId)
   const current: ConnectionId = currentConnection(openProjectRecord && view !== 'projects' && view !== 'appSettings' ? projectConnection(openProjectRecord) : null, defaultConnection)
-  const litellmOn = connections?.find((c) => c.connection.id === 'litellm')?.connection.enabled ?? false
-  const currentUsage = current === 'litellm' && !litellmOn ? undefined : usageByConnection[current]
-  const currentStatus = connections?.find((c) => c.connection.id === current)?.status
-  const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage)
+  const currentRecord = connections?.find((c) => c.connection.id === current)?.connection
+  const proxyOn = current !== 'anthropic' && current !== 'openai' ? (currentRecord?.enabled ?? false) : true
+  const currentUsage = !proxyOn ? undefined : usageByConnection[current]
+  const currentInfo = connections?.find((c) => c.connection.id === current)
+  const currentStatus = currentInfo?.status
+  const onProxy = isProxyId(current)
+  const currentSpends = onProxy && (currentInfo ? reportsSpend(currentInfo) : true)
+  const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage, currentSpends)
   const appVersion = useAppStore((s) => s.appInfo?.version)
   const devBuild = isDevBuild(appVersion)
   const devLabel = devBuild && appVersion ? devBuildLabel(appVersion) : ''
@@ -174,11 +181,11 @@ export default function Sidebar({
   const names = projects.map((p) => p.name)
 
   const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
-  /** The rail's accessible name and tooltip: LiteLLM's whole spend sentence (the rail shows no figure), else the label. */
-  const railName = current === 'litellm' && account.title ? account.title : account.label
-  /** The full row's tooltip: the LiteLLM spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
-  const rowTitle = rail ? railName : current === 'litellm' && !mockAdapter ? account.title : undefined
-  const tight = mockAdapter || current === 'litellm' ? null : tightestWindow(currentUsage)
+  /** The rail's accessible name and tooltip: a proxy's whole spend sentence (the rail shows no figure), else the label. */
+  const railName = currentSpends && account.title ? account.title : account.label
+  /** The full row's tooltip: the proxy's spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
+  const rowTitle = rail ? railName : currentSpends && !mockAdapter ? account.title : undefined
+  const tight = mockAdapter || onProxy ? null : tightestWindow(currentUsage)
   const needsLabel = `Needs you · ${needsCount}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
 
@@ -510,7 +517,7 @@ export default function Sidebar({
               <span className="account-label">
                 {account.figure ? (
                   <>
-                    <span className="account-name">{SPEND_ROW_PREFIX}</span>
+                    <span className="account-name">{spendRowPrefix(current)}</span>
                     {account.figure}
                   </>
                 ) : (
@@ -518,7 +525,7 @@ export default function Sidebar({
                 )}
               </span>
               {tight && !rail && <span className="account-pct">{Math.round(tight.pct)}%</span>}
-              {!rail && !mockAdapter && (current === 'litellm' ? <SpendBar spend={currentUsage?.spend} /> : <UsageBar usage={currentUsage} />)}
+              {!rail && !mockAdapter && (onProxy ? currentSpends ? <SpendBar spend={currentUsage?.spend} id={current} /> : null : <UsageBar usage={currentUsage} />)}
             </>
           }
           triggerLabel={rail ? railName : undefined}

@@ -109,7 +109,6 @@ describe('catalog', () => {
   it('defaults connections with the legacy auth and no secrets', () => {
     const c = defaultConnections({ kind: 'apiKey', envVar: 'KEY' })
     expect(c.anthropic.auth).toEqual({ kind: 'apiKey', envVar: 'KEY' })
-    expect(c.litellm).toEqual({ id: 'litellm', enabled: false, baseUrl: '', hasApiKey: false, tierModels: {} })
     expect(Object.keys(c)).toEqual([...CONNECTION_IDS])
     expect(structuredClone(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
   })
@@ -165,6 +164,22 @@ describe('projectConnection and adapterForProject', () => {
     expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: ['r1'] })).toBe('single-family-connection')
     expect(mixedFamilyRefusal({ connection: 'openai', family: 'openai', mismatched: ['r1'] })).toBe('single-family-connection')
     expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: [] })).toBeNull()
+  })
+
+  it('treats every non-built-in id (proxy-0a1b2c3d) as a proxy, exactly like litellm', () => {
+    const p = project()
+    const [root, a] = p.roles
+    const catalog = [
+      { ...litellmModel('team-claude', 'claude'), connection: 'proxy-0a1b2c3d' },
+      { ...litellmModel('team-gpt', 'openai'), connection: 'proxy-0a1b2c3d' }
+    ]
+    const on = (rootModel: string, reportModel: string) =>
+      adapterForProject({ provider: { ...p.provider, connection: 'proxy-0a1b2c3d' }, roles: [{ ...root, model: rootModel }, { ...a, model: reportModel }] }, catalog)
+    expect(on('team-gpt', 'team-claude')).toMatchObject({ adapter: 'codex', connection: 'proxy-0a1b2c3d', family: 'openai', mismatched: [a.id] })
+    expect(on('team-claude', 'team-gpt').adapter).toBe('claude')
+    expect(mixedFamilyRefusal(on('team-claude', 'team-gpt'))).toBeNull()
+    expect(mixedFamilyRefusal(on('inherit', 'team-gpt'))).toBe('no-root-family')
+    expect(mixedFamilyRefusal({ connection: 'proxy-0a1b2c3d', family: 'claude', mismatched: ['r1'] })).toBeNull()
   })
 
   it('keeps the anthropic and openai catalogs single-family, so a chart picked from them never mixes', () => {

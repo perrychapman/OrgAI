@@ -10,7 +10,7 @@
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { isVirtualProjectId, RUN_KIND_LABELS, USAGE_STATS_MAX_LIMIT, type Project, type RateLimitWindow, type RunKind, type RunUsage, type TokenUsage, type UsageStats, type UsageStatsQuery, type UsageStatus } from '../../shared/types'
+import { isProxyConnection, isVirtualProjectId, RUN_KIND_LABELS, USAGE_STATS_MAX_LIMIT, type ConnectionInfo, type Project, type RateLimitWindow, type RunKind, type RunUsage, type TokenUsage, type UsageStats, type UsageStatsQuery, type UsageStatus } from '../../shared/types'
 import { totalTokens } from '../../shared/defaults'
 import { formatDateTime } from '../../shared/view/dates'
 import { costView, formatTokens, sumCosts, type CostInput } from '../../shared/view/cost'
@@ -259,10 +259,10 @@ function windowLine(name: string, w: RateLimitWindow): string {
   return `  ${name}: ${used}${w.resetsAt ? `, resets ${formatDateTime(w.resetsAt)}` : ''}`
 }
 
-/** Text lines of a usage report: plan windows, then LiteLLM spend periods. */
-export function usageStatusLines(u: UsageStatus): string[] {
+/** Text lines of a usage report: plan windows, then a proxy's spend periods. `names` maps proxy ids to display names. */
+export function usageStatusLines(u: UsageStatus, names?: Readonly<Record<string, string>>): string[] {
   const conn = u.connection ?? 'anthropic'
-  const lines = [`${conn === 'openai' ? 'OpenAI' : conn === 'litellm' ? 'LiteLLM' : 'Anthropic'}${u.subscriptionType ? ` (${safeLine(u.subscriptionType)})` : ''}, updated ${formatDateTime(u.updatedAt)}`]
+  const lines = [`${conn === 'openai' ? 'OpenAI' : conn === 'anthropic' ? 'Anthropic' : safeLine(names?.[conn] ?? (conn === 'litellm' ? 'LiteLLM' : conn))}${u.subscriptionType ? ` (${safeLine(u.subscriptionType)})` : ''}, updated ${formatDateTime(u.updatedAt)}`]
   const w = u.windows ?? {}
   if (w.fiveHour) lines.push(windowLine('Five-hour window', w.fiveHour))
   if (w.sevenDay) lines.push(windowLine('Seven-day window', w.sevenDay))
@@ -284,12 +284,25 @@ export function usageStatusLines(u: UsageStatus): string[] {
   return lines
 }
 
+/** id -> name of the listed proxies; best effort. */
+async function proxyNameMap(client: HostClient): Promise<Record<string, string>> {
+  const out: Record<string, string> = {}
+  try {
+    const list = await client.call<ConnectionInfo[]>('connections:list', [])
+    for (const i of Array.isArray(list) ? list : []) if (isProxyConnection(i.connection)) out[i.connection.id] = i.connection.name
+  } catch {
+    // Names are cosmetic.
+  }
+  return out
+}
+
 const runRefresh = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { positionals } = parseFlags(args, {})
   if (positionals.length) throw new CliError(`Unexpected argument "${safeLine(positionals[0]).slice(0, 40)}".`, EXIT.usage)
   return withHost(ctx, OPERATE, async (client) => {
     const status = await hostCall<UsageStatus | null>(client, 'usage:refresh', [], { timeoutMs: 60_000 })
-    emit(ctx, { usage: status ?? null }, () => (status ? usageStatusLines(status) : 'No plan usage reported.'))
+    const names = status?.connection && status.connection !== 'anthropic' && status.connection !== 'openai' ? await proxyNameMap(client) : undefined
+    emit(ctx, { usage: status ?? null }, () => (status ? usageStatusLines(status, names) : 'No plan usage reported.'))
     return EXIT.ok
   })
 }

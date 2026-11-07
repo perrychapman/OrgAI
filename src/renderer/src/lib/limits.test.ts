@@ -10,7 +10,7 @@ const openai = (kind: 'chatgpt' | 'apiKey'): ConnectionInfo =>
 const proj = (provider: Partial<Project['provider']>): Pick<Project, 'provider'> => ({ provider: { id: 'claude', label: 'x', auth: { kind: 'subscription' }, ...provider } })
 
 describe('projectMetering', () => {
-  it('treats LiteLLM as metered even before connections load', () => {
+  it('treats any proxy as metered even before connections load', () => {
     expect(projectMetering(proj({ connection: 'litellm' }), null)).toBe('metered')
   })
   it('is unknown until the connection list is loaded', () => {

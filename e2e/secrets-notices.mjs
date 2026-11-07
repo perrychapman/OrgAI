@@ -45,7 +45,11 @@ const focusInfo = () =>
   })
 const saveSecrets = async () => {
   await page.evaluate(async () => {
-    await window.orgai.connections.setSecret({ id: 'litellm', apiKey: 'sk-e2e-notice' })
+    // A proxy connection holds the key (the first save creates the proxy; the second finds it again).
+    const conns = await window.orgai.connections.list()
+    let proxyId = conns.map((c) => c.connection.id).find((i) => i !== 'anthropic' && i !== 'openai')
+    if (!proxyId) proxyId = (await window.orgai.connections.createProxy({ name: 'Notice proxy', anthropicBaseUrl: 'http://127.0.0.1:9/' })).connection.id
+    await window.orgai.connections.setSecret({ id: proxyId, apiKey: 'sk-e2e-notice' })
     const list = await window.orgai.mcpLibrary.upsert({ id: 'lib-notice', name: 'acme-crm', transport: 'stdio', command: 'npx', args: ['-y', '@acme/crm-mcp@1.0.0'], secretEnv: ['API_TOKEN'], source: 'user', addedAt: new Date().toISOString() })
     const id = list.find((i) => i.entry.name === 'acme-crm').entry.id
     await window.orgai.mcpLibrary.setSecret({ libraryId: id, kind: 'env', name: 'API_TOKEN', value: 'tok-e2e-notice' })
@@ -73,7 +77,7 @@ try {
   // ---- Removed by an older OrgAI: Keep removed ----
   await saveSecrets()
   await app.close()
-  removeFromLegacy(/^(connection:litellm|mcplib:)/)
+  removeFromLegacy(/^(connection:[^:]+:apiKey|mcplib:)/)
   ;({ app, page } = await launch({ shotPrefix: 'secrets-notices', clearPrefs: false }))
   await page.waitForSelector('[data-testid=dashboard]', { timeout: 30_000 })
   s = await status()
@@ -82,7 +86,7 @@ try {
   await removed.waitFor({ timeout: 10_000 })
   const text = (await removed.innerText()).replace(/\s+/g, ' ')
   check(text.includes('2 saved secrets were removed by an older version of OrgAI.'), 'the notice counts the removed secrets', text)
-  check(text.includes('LiteLLM') && text.includes('acme-crm'), 'the notice names the services', text)
+  check(text.includes('Notice proxy') && text.includes('acme-crm'), 'the notice names the services', text)
   check((await removed.getByRole('button').allInnerTexts()).join('|') === 'Restore|Keep removed', 'Restore and Keep removed are offered')
   check((await page.locator('[data-testid=secret-notices]').count()) === 1, 'one notice region')
 
@@ -113,7 +117,7 @@ try {
   // ---- Removed by an older OrgAI: Restore ----
   await saveSecrets()
   await app.close()
-  removeFromLegacy(/^connection:litellm/)
+  removeFromLegacy(/^connection:[^:]+:apiKey/)
   ;({ app, page } = await launch({ shotPrefix: 'secrets-notices', clearPrefs: false }))
   await page.waitForSelector('[data-testid=dashboard]', { timeout: 30_000 })
   const one = page.locator('[data-testid=secret-notice-removed]')

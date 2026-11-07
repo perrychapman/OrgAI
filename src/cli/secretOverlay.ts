@@ -21,6 +21,14 @@ import { CliError, EXIT, type HostMode, type SecretEnvUse } from './types'
 export const SECRET_ENV_PREFIX = 'ORGAI_SECRET_'
 export const LITELLM_SECRET_ENV = 'ORGAI_SECRET_LITELLM_API_KEY'
 
+/** Env names that carry a non-original proxy's key (the migrated 'litellm' proxy keeps LITELLM_SECRET_ENV). */
+export const PROXY_SECRET_ENV_RE = /^ORGAI_SECRET_PROXY_([0-9A-Fa-f]{8})_API_KEY$/
+
+/** SecretStore key of a proxy's API key: `connection:<proxy id>:apiKey` (litellm's is LITELLM_KEY). */
+export function proxyKeyName(proxyId: string): string {
+  return proxyId === 'litellm' ? LITELLM_KEY : `connection:${proxyId}:apiKey`
+}
+
 export const SECRET_ENV_REFUSAL =
   "Environment secret overrides (--secret-env / ORGAI_SECRET_*) work only when this command runs its own host (--host inproc). To store a secret in the running host, use 'orgai connections set-secret' or 'orgai mcp set-secret'."
 
@@ -73,6 +81,13 @@ export function collectSecretOverlay(env: NodeJS.ProcessEnv, secretEnvFlags: rea
   if (typeof litellm === 'string' && litellm !== '') {
     overlay.set(LITELLM_KEY, litellm)
     consumed.add(LITELLM_SECRET_ENV)
+  }
+  // ORGAI_SECRET_PROXY_<8 hex, any case>_API_KEY is the key of proxy `proxy-<hex lowercase>`.
+  for (const [name, value] of Object.entries(env)) {
+    const m = PROXY_SECRET_ENV_RE.exec(name)
+    if (!m || typeof value !== 'string' || value === '') continue
+    overlay.set(proxyKeyName(`proxy-${m[1].toLowerCase()}`), value)
+    consumed.add(name)
   }
   for (const spec of secretEnvFlags) {
     const { key, envVar } = parseSecretEnvSpec(spec)

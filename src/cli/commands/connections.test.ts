@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { defaultConnections } from '../../shared/defaults'
-import type { ConnectionInfo, ConnectionStatus, HostScope, ProviderConnection } from '../../shared/types'
+import type { ConnectionInfo, ConnectionStatus, HostScope, ProviderConnection, ProxyConnection } from '../../shared/types'
 import { manageDeps } from '../manage'
 import { fakeContext, FakeHostClient, flush, rpcError, type Answer, type FakeContextOptions } from '../testing/fakeContext'
 import { CliError, EXIT } from '../types'
@@ -14,10 +14,17 @@ afterEach(() => {
   loginDeps.timeoutMs = realTimeout
 })
 
-function infos(over: Partial<Record<'anthropic' | 'openai' | 'litellm', Partial<ConnectionInfo>>> = {}, defaultId = 'anthropic'): ConnectionInfo[] {
+const PROXY2 = 'proxy-0a1b2c3d'
+
+function proxy(id: string, name: string, over: Partial<ProxyConnection> = {}): ProxyConnection {
+  return { id, name, kind: 'litellm', enabled: false, anthropicBaseUrl: '', hasApiKey: false, tierModels: {}, autoTiers: true, ...over } as ProxyConnection
+}
+
+function infos(over: Partial<Record<'anthropic' | 'openai' | 'litellm' | 'proxy-0a1b2c3d', Partial<ConnectionInfo>>> = {}, defaultId = 'anthropic'): ConnectionInfo[] {
   const conns = defaultConnections()
-  return (['anthropic', 'openai', 'litellm'] as const).map((id) => ({
-    connection: conns[id] as ProviderConnection,
+  const records: Record<string, ProviderConnection> = { anthropic: conns.anthropic, openai: conns.openai, litellm: proxy('litellm', 'LiteLLM'), [PROXY2]: proxy(PROXY2, 'Team gateway', { kind: 'openai-compatible', anthropicBaseUrl: 'https://gateway.example.com', openaiBaseUrl: 'https://gateway.example.com/v1', hasApiKey: true, enabled: true }) }
+  return (['anthropic', 'openai', 'litellm', PROXY2] as const).map((id) => ({
+    connection: records[id],
     status: { state: id === 'anthropic' ? 'connected' : 'disconnected', ...(id === 'anthropic' ? { account: 'me@example.com' } : {}) } as ConnectionStatus,
     modelCount: 3,
     isDefault: id === defaultId,
@@ -58,15 +65,20 @@ describe('connections list / show', () => {
     const g = setup({ 'connections:list': () => infos({}, 'openai'), 'settings:get': () => ({ defaultConnectionChosen: false }) }, { globals: { outputFormat: 'json' } })
     expect(await run(g.f, ['list'])).toBe(0)
     const j = JSON.parse(g.f.out())
-    expect(j.connections.map((c: { id: string; isDefault: boolean }) => [c.id, c.isDefault])).toEqual([['anthropic', false], ['openai', true], ['litellm', false]])
+    expect(j.connections.map((c: { id: string; isDefault: boolean }) => [c.id, c.isDefault])).toEqual([['anthropic', false], ['openai', true], ['litellm', false], [PROXY2, false]])
     expect(j.connections[1].defaultMode).toBe('automatic')
-    expect(j.connections[2]).toMatchObject({ baseUrl: '', hasApiKey: false })
+    expect(j.connections[2]).toMatchObject({ label: 'LiteLLM', anthropicBaseUrl: '', hasApiKey: false })
+    expect(j.connections[3]).toMatchObject({ label: 'Team gateway', kind: 'openai-compatible', anthropicBaseUrl: 'https://gateway.example.com', openaiBaseUrl: 'https://gateway.example.com/v1', hasApiKey: true })
+    expect(f.out()).toMatch(/proxy-0a1b2c3d \(Team gateway\)\s+yes/)
   })
 
   it('show <id>; an unknown id is exit 2', async () => {
     const { f } = setup({ 'connections:list': () => infos(), 'settings:get': () => ({}) })
     expect(await run(f, ['show', 'litellm'])).toBe(0)
-    expect(f.out()).toContain('Base URL: (not set)')
+    expect(f.out()).toContain('Anthropic URL: (not set)')
+    expect(await run(f, ['show', PROXY2])).toBe(0)
+    expect(f.out()).toContain('Team gateway (proxy-0a1b2c3d)')
+    expect(f.out()).toContain('OpenAI URL: https://gateway.example.com/v1')
     const g = setup({})
     expect(await run(g.f, ['show', 'gemini'])).toBe(EXIT.usage)
     expect(g.f.err()).toContain('Unknown connection')
@@ -256,6 +268,8 @@ describe('connections set-secret', () => {
     expect(client.callsOf('connections:setSecret')).toEqual([[{ id: 'litellm', apiKey: null }]])
     expect(f.out()).toContain('Key removed.')
     expect(await run(f, ['set-secret', 'openai', '--stdin'])).toBe(EXIT.usage)
+    expect(await run(f, ['set-secret', PROXY2, '--clear'])).toBe(0)
+    expect(client.callsOf('connections:setSecret')[1]).toEqual([{ id: PROXY2, apiKey: null }])
     expect(await run(f, ['set-secret', 'litellm', '--clear', '--stdin'])).toBe(EXIT.usage)
     expect(await run(f, ['set-secret', 'litellm'])).toBe(EXIT.usage)
     expect(await run(f, ['set-secret', 'litellm', SECRET])).toBe(EXIT.usage)
@@ -266,7 +280,7 @@ describe('connections set-secret', () => {
 describe('connections update', () => {
   it('base-url none clears it; enable / disable map onto the record', async () => {
     const lite = infos()[2].connection
-    expect(updatedConnection(lite, { baseUrl: '' })).toMatchObject({ id: 'litellm', baseUrl: '' })
+    expect(updatedConnection(lite, { baseUrl: '' })).toMatchObject({ id: 'litellm', anthropicBaseUrl: '' })
     expect(updatedConnection(lite, { enabled: false })).toMatchObject({ enabled: false })
     expect(() => updatedConnection(infos()[0].connection, { baseUrl: 'http://x' })).toThrow(CliError)
     expect(baseUrlArg('none')).toBe('')
@@ -274,10 +288,10 @@ describe('connections update', () => {
     expect(() => baseUrlArg('ftp://x')).toThrow(CliError)
     expect(() => baseUrlArg('http://u:p@x')).toThrow(CliError)
 
-    const withUrl = infos({ litellm: { connection: { ...lite, baseUrl: 'http://old:4000' } as ProviderConnection } })
+    const withUrl = infos({ litellm: { connection: { ...lite, anthropicBaseUrl: 'http://old.example.com:4000' } as ProviderConnection } })
     const { f, client } = setup({ 'connections:list': () => withUrl, 'connections:update': (p) => ({ ...withUrl[2], connection: (p as [ProviderConnection])[0] }), 'settings:get': () => ({}) })
     expect(await run(f, ['update', 'litellm', '--base-url', 'none', '--disable'])).toBe(0)
-    expect(client.callsOf('connections:update')).toEqual([[{ ...lite, baseUrl: '', enabled: false }]])
+    expect(client.callsOf('connections:update')).toEqual([[{ ...lite, anthropicBaseUrl: '', enabled: false }]])
     expect(await run(f, ['update', 'openai', '--enable'])).toBe(0)
     expect((client.callsOf('connections:update')[1] as [ProviderConnection])[0]).toMatchObject({ id: 'openai', enabled: true })
   })

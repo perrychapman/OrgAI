@@ -8,10 +8,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels: ["dependencies", "npm"]
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
     ignore:
+      # Must match the Node engine and CI (node 22); bump it by hand together with them.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
       - dependency-name: electron
         update-types: [version-update:semver-major]
       - dependency-name: electron-builder
@@ -23,6 +27,7 @@ updates:
     target-branch: dev
     schedule:
       interval: weekly
+    labels: ["dependencies", "github_actions"]
     groups:
       actions:
         patterns: ['*']

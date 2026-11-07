@@ -191,6 +191,12 @@ describe('usage refresh', () => {
     expect(f.connectCalls[0].scopes).toEqual(['read', 'operate'])
   })
 
+  it('names a proxy by its display name, else its id', () => {
+    const base = { authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, updatedAt: 1 } as const
+    expect(usageStatusLines({ ...base, connection: 'proxy-0a1b2c3d' }, { 'proxy-0a1b2c3d': 'Team gateway' })[0]).toMatch(/^Team gateway,/)
+    expect(usageStatusLines({ ...base, connection: 'proxy-0a1b2c3d' })[0]).toMatch(/^proxy-0a1b2c3d,/)
+  })
+
   it('LiteLLM spend periods and a null report', async () => {
     const lines = usageStatusLines({ connection: 'litellm', authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, updatedAt: 1, spend: { usd: 3.2, budgetUsd: null, resetsAt: null, budgetDuration: null, keyAlias: null, totalUsd: 31, periods: { day: { usd: 3.2, since: 0 }, week: { usd: 12.4, since: 0 }, month: { usd: 31, since: 0 } } } })
     expect(lines.join('\n')).toContain('$3.20 today, $12.40 this week, $31.00 this month')

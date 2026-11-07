@@ -29,6 +29,8 @@ const MOVED = [
   'checkQuickContinue',
   'connectionIdArg',
   'connectionSecretArgs',
+  'proxyCreateArgs',
+  'proxyIdArg',
   'connectorArgs',
   'effectiveRemoveRuns',
   'harnessProjectFor',

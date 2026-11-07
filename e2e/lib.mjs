@@ -342,9 +342,21 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
   // The mock checkbox only exists under ORGAI_MOCK=1 and is on by default; useMock: false saves the project with the real adapter.
   const mock = form.locator('[data-testid=use-mock]')
   if ((await mock.count()) && (await mock.isChecked()) !== useMock) await form.locator('label.checkbox', { hasText: 'Use the mock adapter' }).click()
-  await form.getByRole('button', { name: skipSetup ? 'Create project' : 'Create and start setup' }).click()
+  const submit = form.getByRole('button', { name: skipSetup ? 'Create project' : 'Create and start setup' })
   // The dashboard (and its dialog or form) goes away once the project exists and the app navigates to it.
-  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 120_000 })
+  // A click can be lost when the first-launch inline form re-renders as the app finishes loading (CI run 42181924350:
+  // the filled form was still showing after 120 s with no project made), so re-click, but only while no project of
+  // this name exists yet.
+  for (let attempt = 0; ; attempt++) {
+    await submit.click()
+    try {
+      await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: attempt < 3 ? 20_000 : 120_000 })
+      break
+    } catch (e) {
+      if (attempt >= 3 || (await findProject(page, name)) || !(await submit.count())) throw e
+      log('create project: submit did not leave the Dashboard, clicking again')
+    }
+  }
   return await findProject(page, name)
 }
 

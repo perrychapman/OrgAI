@@ -83,10 +83,17 @@ function carriesReadable(keys: readonly string[], host: StoresSecretHostView): b
   return readable
 }
 
-/** connections:setSecret: the LiteLLM key, trimmed, non-empty (the service trims; '' or null clears). */
+/** connections:setSecret: a proxy connection's key, trimmed, non-empty (the service trims; '' or null clears). Only proxies store one: a built-in id (or an unknown one) is refused by the service. */
 const connectionSecret: StoresSecretFn = (args) => {
   const i = first(args)
-  return !!i && own(i, 'id') === 'litellm' && nonBlank(own(i, 'apiKey'))
+  const id = i ? own(i, 'id') : undefined
+  return !!i && typeof id === 'string' && id !== 'anthropic' && id !== 'openai' && nonBlank(own(i, 'apiKey'))
+}
+
+/** connections:createProxy: stores the optional key right after the record is made (the service trims; blank stores nothing). */
+const proxyCreateKey: StoresSecretFn = (args) => {
+  const i = first(args)
+  return !!i && nonBlank(own(i, 'apiKey'))
 }
 
 /** connectors:setToken: a token string with something left after trimming (null clears; '' is refused by the service). */
@@ -232,7 +239,7 @@ function safe(fn: StoresSecretFn): StoresSecretFn {
  * The channels the spec names (5.6). An audit of every `secrets.set(` caller (McpService, ConnectionService) found no
  * other channel that stores a value: removals, revokes and kit replaces only delete, and the Team assistant saves a
  * server with a missing secret as disabled without a value.
- * - connections:setSecret, connectors:setToken: a non-empty value.
+ * - connections:setSecret, connections:createProxy (its optional key), connectors:setToken: a non-empty value.
  * - mcp:setSecret, mcpLibrary:setSecret: a non-empty value.
  * - setup:decide: approving a pending MCP proposal with a non-empty value for one of its slots.
  * - mcp:answerInstall: approving a pending install (id still free) with a non-empty value for one of its secret names
@@ -243,6 +250,7 @@ function safe(fn: StoresSecretFn): StoresSecretFn {
  */
 export const STORES_SECRET: Readonly<Record<string, StoresSecretFn>> = {
   'connections:setSecret': safe(connectionSecret),
+  'connections:createProxy': safe(proxyCreateKey),
   'connectors:setToken': safe(connectorToken),
   'mcp:setSecret': safe(slotValue),
   'mcpLibrary:setSecret': safe(slotValue),

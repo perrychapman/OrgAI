@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Project, ProviderModel, Role } from '@shared/types'
 import { builtinModels, mixedFamilyRefusal, newProject } from '@shared/defaults'
-import { describeRemap, otherFamilyRoles, proxyFamilyNotice, previewRemap, roleTier, startRefusal } from './remap'
+import { describeRemap, otherFamilyRoles, proxyFamilyNotice, previewRemap, roleTier, routeLines, startRefusal, tierMappingLines } from './remap'
 
 function project(models: Record<string, string>): Project {
   const p = newProject({ name: 'Demo', path: '/tmp/demo', brief: '' })
@@ -67,6 +67,37 @@ describe('remap preview', () => {
     expect(proxyFamilyNotice('claude', 2)).toBe('Claude orchestrator; 2 roles on other model families run through the proxy.')
     expect(proxyFamilyNotice('openai', 1)).toBe('OpenAI orchestrator; 1 role on another model family runs through the proxy.')
     expect(proxyFamilyNotice('claude', 0)).toBeNull()
+  })
+})
+
+describe('tier mapping lines', () => {
+  const roles = [
+    { model: 'opus', tier: 'deep' as const },
+    { model: 'sonnet', tier: 'everyday' as const },
+    { model: 'haiku', tier: 'everyday' as const }
+  ]
+  it('lists every tier and says what a missing one does to its roles', () => {
+    const lines = tierMappingLines({ everyday: 'model-e', deep: 'model-d' }, roles, 'Team gateway')
+    expect(lines.map((l) => l.text)).toEqual([
+      'Top has no model on Team gateway.',
+      'Deep: model-d',
+      'Everyday: model-e',
+      'Fast has no model on Team gateway.'
+    ])
+    const none = tierMappingLines({ everyday: 'model-e' }, roles, 'Team gateway')
+    expect(none[1].text).toBe('Deep has no model on Team gateway; the role on Deep keeps its current model.')
+  })
+  it('names the route per family from the catalog', () => {
+    const catalog = [
+      { id: 'c-1', family: 'claude', baseUrl: 'https://a.example' },
+      { id: 'g-1', family: 'openai', baseUrl: 'https://b.example/v1' }
+    ] as ProviderModel[]
+    expect(routeLines({ deep: 'c-1', everyday: 'g-1' }, catalog)).toEqual([
+      { route: 'claude', text: 'Claude models use the Anthropic URL.', url: 'https://a.example' },
+      { route: 'other', text: 'GPT and other models use the OpenAI URL.', url: 'https://b.example/v1' }
+    ])
+    expect(routeLines({ deep: 'c-1' }, catalog).map((l) => l.route)).toEqual(['claude'])
+    expect(routeLines({}, catalog)).toEqual([])
   })
 })
 

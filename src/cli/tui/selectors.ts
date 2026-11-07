@@ -109,7 +109,10 @@ const CARD_KINDS = Object.keys(CARD_BUCKETS) as CardKind[]
 function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
   const out: TrayCard[] = []
   const projectKind = s.project && run.summary.projectId === s.project.id ? (s.project.kind === 'engagement' ? 'engagement' : 'code') : undefined
-  const tag = runTagOf(s, run.summary.id)
+  // A card of a run the user is not following names that run ("R3 Build the report"), so it is not mistaken for the followed one (R2-L2).
+  const foreign = !s.activeChain.includes(run.summary.id)
+  const name = foreign ? clipLine(safeLine(runName(run.summary)), 24) : ''
+  const tag = `${runTagOf(s, run.summary.id)}${name ? ` ${name}` : ''}`
   for (const kind of CARD_KINDS) {
     const list = run.cards[CARD_BUCKETS[kind]] as { id: string; revision?: number }[]
     for (const card of list ?? []) {
@@ -120,7 +123,9 @@ function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
         key: cardKey(ref),
         ref,
         runTag: tag,
-        ...(agentId ? { agentId, agentLabel: agentLabel(run.agents[agentId]) } : {}),
+        // An agent of another run is not loaded here, so it has no name to give: no label rather than "An agent" (the card's
+        // run is named instead). In the followed run an unknown agent keeps the generic label.
+        ...(agentId ? { agentId, ...(foreign && !run.agents[agentId] ? {} : { agentLabel: agentLabel(run.agents[agentId]) }) } : {}),
         runKind: run.summary.kind,
         ...(projectKind ? { projectKind } : {}),
         arrivedSeq: cardArrivalSeq(card) ?? 0,
@@ -367,7 +372,7 @@ function treeOf(
       role,
       state: a.state,
       stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
-      activity: clipLine(safeLine(a.activity), ACTIVITY_MAX),
+      activity: clipLine(failedTurnSentence(safeLine(a.activity)), ACTIVITY_MAX),
       costText: cost.empty ? '' : cost.text,
       isRoot: a.parentId === null,
       kind: 'agent',
@@ -460,6 +465,15 @@ export { treeCounts } from './treeRows'
 
 // ---------- Transcript ----------
 
+/** SDK failure subtypes as the adapters word them in a row ("error_during_execution" -> "during execution"). */
+const FAILED_TURN_REASONS = new Set(['during execution', 'max turns', 'max budget usd', 'max structured output retries'])
+
+/** The sentence for a bare failure reason; any other text is returned unchanged. */
+export function failedTurnSentence(text: string): string {
+  const t = text.trim().toLowerCase().replace(/^error[_ ]/, '').replace(/_/g, ' ')
+  return FAILED_TURN_REASONS.has(t) ? `The last turn failed (error ${t}). Send a message to try again.` : text
+}
+
 function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id: string) => string | undefined): TranscriptRow | null {
   const key = `${runId}|${e.id}`
   const harness = e.source === 'harness'
@@ -467,7 +481,7 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
   const b = e.block
   switch (b.kind) {
     case 'text': {
-      const text = safe(b.text).trim()
+      const text = failedTurnSentence(safe(b.text).trim())
       return text ? { ...base, kind: harness ? 'harness' : 'text', text, ...(harness ? { tone: 'dim' as const } : {}) } : null
     }
     case 'thinking': {
@@ -490,7 +504,7 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
       return { ...base, kind: 'user', text: body || '(empty message)' }
     }
     case 'system': {
-      const text = safe(b.text).trim()
+      const text = failedTurnSentence(safe(b.text).trim())
       return text ? { ...base, kind: harness ? 'harness' : 'system', text, tone: 'dim' } : null
     }
     default:
@@ -569,7 +583,7 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
     ...(cost.empty ? {} : { cost: cost.text }),
     ...(u && u.turns > 0 ? { turns: u.turns } : {}),
     ...(u && u.toolCalls > 0 ? { toolCalls: u.toolCalls } : {}),
-    ...(a.activity ? { activity: clipLine(safeLine(a.activity), ACTIVITY_MAX) } : {}),
+    ...(a.activity ? { activity: clipLine(failedTurnSentence(safeLine(a.activity)), ACTIVITY_MAX) } : {}),
     ...(wt
       ? { worktree: { branch: safeLine(wt.branch), status: wt.status, files: Array.isArray(wt.changedFiles) ? wt.changedFiles.length : 0, mergeTarget: wt.mergeTarget === 'parent' ? ('parent' as const) : ('main' as const) } }
       : {}),
@@ -667,12 +681,15 @@ export function statusSummary(s: TuiState): StatusSummary {
   const view = statusViewOf({ summary: run.summary, plan: run.plan, agents: run.agents }, openDecisions(run) > 0, s.project)
   const chain = chainRuns(s)
   const cost = costView(chain.length > 1 ? sumCosts(chain.map((r) => runCostInput(r.summary))) : runCostInput(run.summary))
+  // A failed root turn leaves the run idle (it takes another message): say so instead of a plain Idle (issue #29 M5).
+  const root = Object.values(run.agents).find((a) => a.parentId === null)
+  const failedTurn = run.summary.status === 'idle' && root?.state === 'error'
   return {
     ...out,
     runTag: runTagOf(s, run.summary.id),
     runTitle: safeLine(runName(run.summary)),
-    statusWord: statusText(view),
-    tone: RUN_TONE[view.tone] ?? 'dim',
+    statusWord: failedTurn ? `${statusText(view)} · last turn failed` : statusText(view),
+    tone: failedTurn ? 'danger' : (RUN_TONE[view.tone] ?? 'dim'),
     costText: cost.text
   }
 }

@@ -13,7 +13,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
-import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId } from '../../shared/types'
+import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -58,7 +58,7 @@ import type { HostRuntimeEnv } from './runtimeEnv'
 import { ShutdownCoordinator, type ShutdownReleaseInfo } from './shutdown'
 import type { DesktopHooks, HostControl, HostServices } from './types'
 
-/** How long after a LiteLLM run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
+/** How long after a proxy run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
 export const LITELLM_SPEND_DELAY_MS = 15_000
 
 /** What a housekeeping step sees. */
@@ -355,8 +355,10 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
   const codexCompletion = (): RunConnection | undefined => {
-    const c = settings.get().connections
-    const connection = c.openai.enabled ? 'openai' : c.litellm.enabled ? 'litellm' : undefined
+    const s = settings.get()
+    // OpenAI first, then the first enabled proxy that has a base URL and a stored key.
+    const proxy = (s.proxies ?? []).find((p) => p.enabled && p.hasApiKey && (p.openaiBaseUrl?.trim() || p.anthropicBaseUrl?.trim()))
+    const connection: ConnectionId | undefined = s.connections.openai.enabled ? 'openai' : proxy?.id
     if (!connection) return undefined
     try {
       return connections.runConnection(undefined, { adapter: 'codex', connection, mismatched: [] })
@@ -371,9 +373,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     codex: new CodexAdapter({ completionConnection: codexCompletion }),
     ...(mockAdapter ? { mock: new MockAdapter() } : {})
   }
-  // A LiteLLM run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend
+  // A proxy run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend
   // writes); each end restarts the one timer, so the last run's spend is read. Set once the usage monitor exists.
-  let refreshLiteLLMSpend: (() => void) | undefined
+  let refreshProxySpend: (() => void) | undefined
   let spendTimer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
   // Set once RunManager exists; work-run ends feed the proactive Team review (never setup-like or harness runs).
@@ -386,12 +388,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       const summary = runManager?.summaryOf(event.runId)
       if (summary?.kind === 'work' && !isVirtualProjectId(summary.projectId)) capabilities?.runEnded(summary.projectId, event.runId)
     }
-    if (runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
+    const endedOn = runManager?.summaryOf(event.runId)?.connection
+    if (endedOn === undefined || isBuiltinConnectionId(endedOn)) return
     if (disposed) return
     clearTimeout(spendTimer)
     spendTimer = setTimeout(() => {
       spendTimer = undefined
-      refreshLiteLLMSpend?.()
+      refreshProxySpend?.()
     }, LITELLM_SPEND_DELAY_MS)
   }
   let activityRef: HostActivityTracker | undefined
@@ -543,13 +546,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     auth: () => settings.get().providerAuth,
     broadcast: emitRun,
     liveRuns: () => rm.liveRunCount(),
-    extraProbes: [() => connections.probeCodexUsage(), { key: 'litellm', probe: () => connections.probeLiteLLMUsage() }]
+    extraProbes: [() => connections.probeCodexUsage(), { key: 'proxies', probe: () => connections.probeProxyUsages() }]
   })
   // Every usage.status a run or probe sends is merged onto the monitor's newest Claude status.
   const unobserve = events.on((channel, payload) => {
     if (channel === IPC.runEvent) monitor.observe(payload as RunEvent)
   })
-  refreshLiteLLMSpend = () => void monitor.refreshProbe('litellm')
+  refreshProxySpend = () => void monitor.refreshProbe('proxies')
   if (background.usageMonitor) monitor.start()
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.

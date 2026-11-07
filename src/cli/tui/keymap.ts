@@ -3,8 +3,8 @@
  * line), the generated /help text and the `?` which-key overlay all read KEYMAP, so a key is described in one place and
  * the three cannot drift (keymap.test.ts checks that every entry shows up in HELP_TEXT and the overlay). Pure; no Ink.
  */
-import type { FocusTarget, TuiEnv } from './types'
-import { asciiOnly } from './theme'
+import type { BufferMode, FocusTarget, TuiEnv } from './types'
+import { asciiOnly, separatorFor } from './theme'
 import { textWidth } from './panes/text'
 
 export type KeyScope = 'global' | 'composer' | 'tree' | 'transcript' | 'plan' | 'worktrees' | 'inspector' | 'tray'
@@ -21,6 +21,8 @@ export interface KeyDef {
   label: string
   /** In the one-line hint: its place (lower first) and short wording. Absent = help and overlay only. */
   hint?: { order: number; text: string }
+  /** The hint in inline mode, where there is no pane to go to (replaces `hint.text`). */
+  inlineHint?: string
   /** The hint (not the help) applies only to these tree row kinds. */
   rows?: readonly RowKind[]
 }
@@ -29,17 +31,19 @@ export const KEYMAP: readonly KeyDef[] = [
   // ---- Anywhere ----
   { scope: 'global', keys: 'Alt+D, F2, Ctrl+.', label: 'Focus the Decision Tray (Shift+Tab from the composer too)' },
   { scope: 'global', keys: 'Tab, Shift+Tab', label: 'Cycle the panes' },
-  { scope: 'global', keys: 'Esc', label: 'From a pane: back to the composer. On the composer: interrupt the running turn' },
+  { scope: 'global', keys: 'Esc', label: 'From a pane: back to the composer. On the composer: press Esc twice to interrupt the running turn' },
   { scope: 'global', keys: 'Ctrl+C', label: 'Clear the composer; twice on an empty composer quits (runs keep going)' },
   { scope: 'global', keys: 'Ctrl+Z', label: 'Suspend (fg to come back)' },
-  { scope: 'global', keys: '?', label: 'In a pane: the keys of that pane (the Composer types it: use /help)', hint: { order: 90, text: '? all keys' } },
+  { scope: 'global', keys: '?', label: 'The keys of the focused pane, the tray, or an empty composer', hint: { order: 90, text: '? all keys' } },
   { scope: 'global', keys: '[ , ]', label: 'In a pane: follow the previous / next live run (the status bar lists them)' },
   { scope: 'global', keys: 'm', label: 'In the tree, transcript, plan or worktrees: maximise the transcript, again to bring the panes back (/focus)' },
   // ---- Composer ----
   { scope: 'composer', keys: 'Enter', label: 'Send; Alt+Enter adds a new line', hint: { order: 1, text: 'Enter sends' } },
   { scope: 'composer', keys: '/', label: 'Open the command palette (on an empty composer)', hint: { order: 2, text: '/ commands' } },
-  { scope: 'composer', keys: 'Tab', label: 'Go to the panes', hint: { order: 4, text: 'Tab panes' } },
-  { scope: 'composer', keys: 'Esc', label: 'Interrupt the running turn', hint: { order: 5, text: 'Esc interrupts' } },
+  { scope: 'composer', keys: 'Alt+D', label: 'Focus the Decision Tray (also F2)', hint: { order: 3, text: 'Alt+D decisions' } },
+  { scope: 'composer', keys: 'Tab', label: 'Go to the panes', hint: { order: 4, text: 'Tab panes' }, inlineHint: '/agent <name> shows an agent' },
+  { scope: 'composer', keys: 'Esc', label: 'Interrupt the running turn (press twice)', hint: { order: 5, text: 'Esc Esc interrupts' } },
+  { scope: 'composer', keys: '? (empty composer)', label: "The composer's keys" },
   // ---- Org tree ----
   { scope: 'tree', keys: 'Up, Down', label: 'Move between agents', hint: { order: 1, text: 'Up/Down move' } },
   { scope: 'tree', keys: 'Enter', label: 'Open the agent inspector (on a group: unfold it; on an agent that needs you: its decision)', hint: { order: 2, text: 'Enter details' }, rows: ['agent'] },
@@ -67,7 +71,11 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'inspector', keys: 'u', label: 'The usage tables in the pager (/usage)', hint: { order: 3, text: 'u usage' } },
   { scope: 'inspector', keys: 'Esc', label: 'Close; the tree keeps the same row', hint: { order: 4, text: 'Esc back' } },
   // ---- Decision Tray ----
-  { scope: 'tray', keys: 'Permission', label: 'y allow once, s allow for the session, a always allow for the project (asks to confirm), n deny' },
+  { scope: 'tray', keys: 'Card keys', label: 'Each card shows its own keys on its hint line; the kinds are listed below', hint: { order: 1, text: 'Keys on the card' } },
+  { scope: 'tray', keys: '?', label: "The tray's keys", hint: { order: 2, text: '? keys' } },
+  { scope: 'tray', keys: 'Up, Down, PgUp, PgDn', label: 'Scroll a long card (every kind)' },
+  { scope: 'tray', keys: 'Esc', label: 'Back to the composer (every kind); inside a note, confirm or secret field it cancels that first', hint: { order: 3, text: 'Esc back' } },
+  { scope: 'tray', keys: 'Permission', label: 'y allow once, s allow for the session, a always allow for the project (asks to confirm), n deny (opens an optional note), v full view; y/s/a work once the end of the command was shown (a cut command needs v)' },
   { scope: 'tray', keys: 'Rule request', label: 'r grant for the run, a always grant for the project (asks to confirm), n deny' },
   { scope: 'tray', keys: 'Proposal', label: 'y approve, e revise with a note, d decline, s enter secrets, v view in the pager' },
   { scope: 'tray', keys: 'Question', label: '1-9 pick an option, Space toggle (multiple choice), c custom answer, Enter submit' },
@@ -120,15 +128,22 @@ export function paneHint(scope: KeyScope, row: RowKind = 'agent', max = 5, width
 }
 
 /** The status line's hint for a focus (panes: the short global one, the pane's own line carries its keys). */
-export function statusHint(focus: FocusTarget, opts: { readOnly: boolean; stopOnQuit: boolean; row?: RowKind; env?: Pick<TuiEnv, 'unicode' | 'screenReader' | 'dumbTerminal'> }): string {
-  const sep = opts.env && asciiOnly(opts.env as TuiEnv) ? ' | ' : ' · '
+export function statusHint(focus: FocusTarget, opts: { readOnly: boolean; stopOnQuit: boolean; row?: RowKind; env?: Pick<TuiEnv, 'unicode' | 'screenReader' | 'dumbTerminal'> & { bufferMode?: BufferMode } }): string {
+  // One separator rule (theme.ts separatorFor): ', ' for a screen reader, ' | ' in ASCII, else ' · '.
+  const sep = opts.env ? separatorFor(opts.env) : ' · '
   const quit = opts.stopOnQuit ? 'Ctrl+C twice stops and quits' : 'Ctrl+C twice quits'
+  // Inline mode has no panes to Tab to: say how to see an agent instead. The words come from KEYMAP.
+  const inline = opts.env?.bufferMode === 'inline'
+  const ownHints = (scope: KeyScope, only?: readonly string[]): string[] =>
+    KEYMAP.filter((k) => k.scope === scope && k.hint && (!only || only.includes(k.keys)))
+      .sort((a, b) => a.hint!.order - b.hint!.order)
+      .map((k) => (inline && k.inlineHint ? k.inlineHint : k.hint!.text))
   const text = ((): string => {
     switch (focus) {
       case 'composer':
-        return opts.readOnly ? `Alt+D decisions · Tab panes · ${quit}` : `Enter sends · / commands · Alt+D decisions · Tab panes · Esc interrupts · ${quit}`
+        return [...ownHints('composer', opts.readOnly ? ['Alt+D', 'Tab'] : undefined), quit].join(' · ')
       case 'tray':
-        return 'Keys on the card · Esc back'
+        return ownHints('tray').join(' · ')
       case 'palette':
         return 'Enter runs · Esc closes'
       case 'onboarding':
@@ -138,6 +153,11 @@ export function statusHint(focus: FocusTarget, opts: { readOnly: boolean; stopOn
     }
   })()
   return sep === ' · ' ? text : text.split(' · ').join(sep)
+}
+
+/** Splits a hint at its separators into its items (a status line drops the least important from the end). */
+export function hintItems(hint: string, sep: string): string[] {
+  return hint.split(sep).filter((s) => s.length > 0)
 }
 
 /** The /help key lines, generated from KEYMAP. */

@@ -1,16 +1,22 @@
-import type { AppSettings, ConnectionId, ProviderConnections } from '@shared/types'
+import { connectionName, proxyOf, type ConnectionsView } from '@shared/defaults'
+import type { AppSettings, ConnectionId } from '@shared/types'
 
-export const CONNECTION_LABELS: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+/** Label of a connection in messages: Anthropic, OpenAI or the proxy's own name. */
+export function connectionLabel(id: ConnectionId, v?: ConnectionsView): string {
+  return connectionName(id, v)
+}
 
-/** Why a connection cannot be the default right now (not usable). Pure. */
-export function defaultRefusal(id: ConnectionId, connections: Partial<ProviderConnections> | undefined): string {
-  if (id === 'litellm') {
-    const l = connections?.litellm
-    if (l?.enabled === true && !l.baseUrl?.trim()) return 'LiteLLM has no base URL yet. Add it and connect, then make it the default.'
-    if (l?.enabled === true && l.hasApiKey !== true) return 'LiteLLM has no API key yet. Add it and connect, then make it the default.'
+/** Why a connection cannot be the default right now (not usable). Names a proxy by its name. Pure. */
+export function defaultRefusal(id: ConnectionId, v: ConnectionsView | undefined): string {
+  const label = connectionName(id, v)
+  if (id !== 'anthropic' && id !== 'openai') {
+    const p = proxyOf(v, id)
+    if (!p) return `${label} no longer exists. Pick another connection.`
+    if (p.enabled === true && !p.anthropicBaseUrl?.trim()) return `${label} has no base URL yet. Add it and connect, then make it the default.`
+    if (p.enabled === true && p.hasApiKey !== true) return `${label} has no API key yet. Add it and connect, then make it the default.`
   }
-  if (id === 'anthropic' && connections?.anthropic?.enabled === false) return 'Anthropic is turned off. Connect it first, then make it the default.'
-  return `${CONNECTION_LABELS[id]} is not connected. Connect it first, then make it the default.`
+  if (id === 'anthropic' && v?.connections?.anthropic?.enabled === false) return 'Anthropic is turned off. Connect it first, then make it the default.'
+  return `${label} is not connected. Connect it first, then make it the default.`
 }
 
 /** The settings without AppSettings.defaultConnectionReplaced. Pure. */

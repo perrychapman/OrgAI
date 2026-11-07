@@ -149,11 +149,13 @@ const PROJECT_CLEARABLE: readonly FieldPath[] = [
 
 /**
  * ProviderConnection fields connections:update clears (ConnectionService.update saves the sent record whole through
- * SettingsStore.set -> normalizeConnections). LiteLLM `baseUrl` is a required string ('' = unset): undefined
+ * SettingsStore.set -> normalizeConnections). A proxy's `anthropicBaseUrl` is a required string ('' = unset): undefined
  * normalizes to the default ''. A tierModels entry left undefined means "no model for this tier".
  */
 const CONNECTION_CLEARABLE: readonly FieldPath[] = [
-  'baseUrl',
+  'anthropicBaseUrl',
+  'openaiBaseUrl',
+  'modelsUrl',
   'autoTiers',
   'tierModels.top',
   'tierModels.deep',
@@ -282,6 +284,8 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'connections:list': {}, // connections.list()
   'connections:update': { clearable: CONNECTION_CLEARABLE }, // connectionIdArg + ConnectionService.update
   'connections:setSecret': { nullable: ['apiKey'] }, // connectionSecretArgs: null clears the stored key
+  'connections:createProxy': {}, // proxyCreateArgs: optional fields are left out, never null
+  'connections:removeProxy': {}, // proxyIdArg
   'connections:test': {}, // connectionIdArg
   'connections:connect': {}, // connectionIdArg
   'connections:login': { note: 'Two arguments: (id, method?).' }, // connections.login(id, method)

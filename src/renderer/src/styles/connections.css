@@ -61,6 +61,79 @@
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+/* Proxies group */
+.conn-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+.conn-group-head h3 {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.conn-field-wide {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.proxy-card .conn-title h4 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.conn-summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+.proxy-checks {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+}
+.proxy-check::before {
+  display: inline-block;
+  width: 1.2em;
+  font-weight: var(--weight-semibold);
+}
+.proxy-check[data-ok='true']::before {
+  content: '\2713';
+  color: var(--success-text);
+}
+.proxy-check[data-ok='false']::before {
+  content: '\2717';
+}
+.proxy-check[data-ok='null']::before {
+  content: '\2013';
+}
+.proxy-check[data-ok='false'] {
+  color: var(--danger-text, var(--danger));
+}
+.proxy-form {
+  min-width: 0;
+}
+.proxy-form-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.conn-default-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
 .conn-fields {
   display: grid;
   grid-template-columns: 1fr;

@@ -1,11 +1,15 @@
 /**
- * Pure pane layout (W4-T3, cli-spec 5.1). Full-screen: a 1-row status bar on top, the body, then the Decision Tray and
- * the Composer at the bottom; the body is a two-column split from SPLIT_MIN_COLS columns and one stacked column below
- * (re-run on every resize; the buffer mode itself never changes). Inline: the transcript goes to scrollback through
- * Ink's <Static> (a height-0 box) under a pinned 3-line footer: status, tray and composer lines.
+ * Pure pane layout (W4-T3, cli-spec 5.1). Full-screen: a 1-row status bar on top, the body, then the Decision Tray,
+ * the open slash palette (`paletteRows`, between the tray and the composer) and the Composer at the bottom; the body is
+ * a two-column split from SPLIT_MIN_COLS columns and one stacked column below (re-run on every resize; the buffer mode
+ * itself never changes). Rows are handed out in the order status, composer (the real count the shell passes, 1..7),
+ * palette, tray; the body gets the rest. The split leaves a 1-column gutter between its two columns (`plan.gutter`;
+ * 0 when stacked or when only one column is shown). Inline: the transcript goes to scrollback through Ink's <Static>
+ * (a height-0 box) under a pinned footer: status, tray and composer lines (one row each), plus the palette's rows.
  *
- * Guarantees for any input: integer sizes >= 0, column widths sum to at most `cols`, each column's heights plus the
- * status, tray and composer rows sum to at most `rows`, hidden panes get no box, and the same input gives the same plan.
+ * Guarantees for any input: integer sizes >= 0, column widths plus the gutter sum to at most `cols`, each column's
+ * heights plus the status, tray, palette and composer rows sum to at most `rows`, hidden panes get no box, and the
+ * same input gives the same plan.
  */
 import { SPLIT_MIN_COLS, type LayoutInput, type LayoutPlan, type PaneBox, type PaneId } from './types'
 
@@ -19,6 +23,8 @@ const SPLIT_PLAN_MIN = 4
 /** Split: worktrees take at most this share of the left column, and are left out below this many rows. */
 const SPLIT_WORKTREES_SHARE = 0.4
 const PANE_MIN = 3
+/** Inline footer: the tray's most rows (a title line and three rows of keys). */
+export const INLINE_TRAY_MAX = 4
 /** Stacked shares of the body rows. */
 const STACKED_SHARE: Record<'tree' | 'plan' | 'worktrees', number> = { tree: 0.3, plan: 0.25, worktrees: 0.2 }
 /** Stacked: the transcript keeps at least this many rows; panes are dropped in this order until it does. */
@@ -39,43 +45,58 @@ export function computeLayout(input: LayoutInput): LayoutPlan {
   const visible = input.visible
 
   if (input.bufferMode === 'inline') {
-    // Pinned footer: one status line, one tray line, one composer line.
+    // Pinned footer: one status line, one composer line (the shell passes the real count, but the footer keeps one),
+    // the tray's rows (its title line, and the key row wrapped at separators while it has focus, at most INLINE_TRAY_MAX);
+    // an open palette takes its rows above the composer (bounded by rows).
     const statusRows = Math.min(1, rows)
     const composerH = Math.min(nat(input.composerRows) > 0 ? 1 : 0, rows - statusRows)
-    const trayH = Math.min(nat(input.trayRows) > 0 ? 1 : 0, rows - statusRows - composerH)
+    const paletteH = Math.min(nat(input.paletteRows ?? 0), rows - statusRows - composerH)
+    const trayH = Math.min(nat(input.trayRows), INLINE_TRAY_MAX, rows - statusRows - composerH - paletteH)
     return {
       mode: 'stacked',
       statusRows,
       panes: visible.transcript ? [{ pane: 'transcript', column: 0, width: cols, height: 0 }] : [],
       tray: { width: cols, height: trayH },
-      composer: { width: cols, height: composerH }
+      composer: { width: cols, height: composerH },
+      palette: { width: cols, height: paletteH },
+      gutter: 0
     }
   }
 
+  // Priority for rows: status, composer (the real count the shell passes, 1..7), the open palette, then the tray;
+  // the body gets what is left.
   const statusRows = Math.min(1, rows)
   const composerH = Math.min(nat(input.composerRows), rows - statusRows)
-  const trayH = Math.min(nat(input.trayRows), rows - statusRows - composerH)
-  const body = rows - statusRows - composerH - trayH
+  const paletteH = Math.min(nat(input.paletteRows ?? 0), rows - statusRows - composerH)
+  const trayH = Math.min(nat(input.trayRows), rows - statusRows - composerH - paletteH)
+  const body = rows - statusRows - composerH - paletteH - trayH
   const tray = { width: cols, height: trayH }
   const composer = { width: cols, height: composerH }
+  const palette = { width: cols, height: paletteH }
 
   if (cols >= SPLIT_MIN_COLS) {
-    return { mode: 'split', statusRows, panes: splitPanes(cols, body, visible, nat(input.worktreeRows ?? 0)), tray, composer }
+    const { panes, gutter } = splitPanes(cols, body, visible, nat(input.worktreeRows ?? 0))
+    return { mode: 'split', statusRows, panes, tray, composer, palette, gutter }
   }
-  return { mode: 'stacked', statusRows, panes: stackedPanes(cols, body, visible, nat(input.treeRows ?? 0)), tray, composer }
+  return { mode: 'stacked', statusRows, panes: stackedPanes(cols, body, visible, nat(input.treeRows ?? 0)), tray, composer, palette, gutter: 0 }
 }
 
-function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>, worktreeWanted: number): PaneBox[] {
+/** Blank columns between the split's two columns. */
+const SPLIT_GUTTER = 1
+
+function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>, worktreeWanted: number): { panes: PaneBox[]; gutter: number } {
   const left = visible.tree || visible.worktrees
   const right = visible.transcript || visible.plan
   let leftW = 0
+  // The gutter exists only where two columns do: left + gutter + right = cols.
+  const gutter = left && right ? SPLIT_GUTTER : 0
   if (left && right) {
     leftW = Math.max(TREE_COL_MIN, Math.min(TREE_COL_MAX, Math.round(cols * TREE_COL_SHARE)))
-    leftW = Math.min(leftW, cols)
+    leftW = Math.min(leftW, cols - gutter)
   } else if (left) {
     leftW = cols
   }
-  const rightW = right ? cols - leftW : 0
+  const rightW = right ? cols - leftW - gutter : 0
   const out: PaneBox[] = []
 
   if (left) {
@@ -106,7 +127,7 @@ function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>
   }
   // A lone column is column 0.
   if (!left) for (const p of out) p.column = 0
-  return out
+  return { panes: out, gutter }
 }
 
 function stackedPanes(cols: number, body: number, visible: Record<PaneId, boolean>, treeWanted: number): PaneBox[] {

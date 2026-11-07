@@ -22,7 +22,7 @@ export interface RunTitleInput {
   cwd?: string
   /** The connection's fast model; undefined = the adapter's default model. */
   model?: string
-  /** The run's resolved connection (LiteLLM env, Codex home). Never logged. */
+  /** The run's resolved connection (proxy env, Codex home). Never logged. */
   connection?: RunConnection
   /** Continuations: the run being continued, as its title or else a prompt excerpt. Context only. */
   continues?: string

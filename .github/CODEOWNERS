@@ -1,0 +1,18 @@
+# Owner review is requested for the paths that decide what agents may do, how secrets are held and how the build runs.
+/.orgai/ @perrychapman
+/.github/ @perrychapman
+/.claude/ @perrychapman
+/CLAUDE.md @perrychapman
+/package.json @perrychapman
+/package-lock.json @perrychapman
+/scripts/ @perrychapman
+/src/shared/types.ts @perrychapman
+/src/main/ipc.ts @perrychapman
+/src/main/runtime/permissionRules.ts @perrychapman
+/src/main/runtime/ruleMatch.ts @perrychapman
+/src/main/mcp/ @perrychapman
+/src/main/runtime/childEnv.ts @perrychapman
+/src/main/runtime/selfControlGate.ts @perrychapman
+/src/main/host/ownership.ts @perrychapman
+/src/main/systemCerts.ts @perrychapman
+/src/main/store/secrets.ts @perrychapman

@@ -40,7 +40,7 @@ async function setup() {
     logInfo: () => {},
     now: () => 1000
   })
-  await service.update({ ...settings.get().connections.litellm, baseUrl: 'http://localhost:4000/' })
+  settings.setProxies([{ id: 'litellm', name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: 'http://localhost:4000/', enabled: true, hasApiKey: false, tierModels: {} }])
   await service.setSecret({ id: 'litellm', apiKey: 'sk-test-key' })
   return { settings, secrets, service }
 }
@@ -63,7 +63,7 @@ describe('LiteLLM key and the vault', () => {
     await expect(service.setSecret({ id: 'litellm', apiKey: '   ' })).rejects.toThrow(VAULT_MESSAGES.clearRefusedCorrupt)
     await expect(service.logout('litellm')).rejects.toThrow(VAULT_MESSAGES.clearRefusedCorrupt)
     expect(secrets.get(LITELLM_KEY)).toBe('sk-test-key')
-    expect(settings.get().connections.litellm).toMatchObject({ hasApiKey: true })
+    expect(settings.get().proxies.find((p) => p.id === 'litellm')).toMatchObject({ hasApiKey: true })
     // A new value is never a clear.
     await service.setSecret({ id: 'litellm', apiKey: 'sk-new' })
     expect(secrets.get(LITELLM_KEY)).toBe('sk-new')
@@ -79,7 +79,7 @@ describe('LiteLLM key and the vault', () => {
     })
     await expect(service.logout('litellm')).rejects.toThrow('disk full')
     expect(secrets.get(LITELLM_KEY)).toBe('sk-test-key')
-    expect(settings.get().connections.litellm).toMatchObject({ hasApiKey: true })
+    expect(settings.get().proxies.find((p) => p.id === 'litellm')).toMatchObject({ hasApiKey: true })
   })
 
   it('a run and a model refresh say why the key cannot be read, never "has no API key" (5.4)', async () => {

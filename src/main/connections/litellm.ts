@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto'
 import { SPEND_PERIOD_DAYS, SPEND_PERIOD_NOTES, type ModelPrice, type ProviderModel, type SpendPeriod, type SpendPeriodsNote, type UsageSpend } from '@shared/types'
-import { makeDiscoveredModel } from './catalog'
+import { proxyModelFamily } from '@shared/defaults'
+import type { ProxyKind } from '@shared/types'
+import { classifyFamily, cleanOwnedBy, makeDiscoveredModel } from './catalog'
 import { validModelId } from './codexAccount'
+import { hiddenCharIn } from '../capabilities/sanitize'
+import { MOCK_BAD_KEY, isMockProxyUrl, mockProxyModels, normalizeProxyUrl } from './proxy'
 import { sanitizeModelPrice } from '../runtime/pricing'
 
 /**
@@ -38,21 +42,15 @@ type FetchLike = typeof fetch
 
 /** Validate and normalize a proxy base URL (no trailing slash). Throws a short human error. */
 export function normalizeBaseUrl(raw: string): string {
-  const text = raw.trim()
-  if (!text) throw new Error('LiteLLM base URL is empty')
-  let url: URL
-  try {
-    url = new URL(text)
-  } catch {
-    throw new Error(`"${text}" is not a valid URL`)
-  }
-  const local = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)
-  if (url.protocol === 'http:') {
-    if (!local) throw new Error('LiteLLM over http is only allowed for localhost. Use https.')
-  } else if (url.protocol !== 'https:') {
-    throw new Error(`Unsupported URL scheme ${url.protocol} (use https)`)
-  }
-  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+  return normalizeProxyUrl(raw, 'Base URL')
+}
+
+/** Remote text for a status line: whitespace collapsed, control / zero-width / bidi characters dropped. */
+function printableText(s: string): string {
+  return Array.from(s.replace(/\s+/g, ' '))
+    .filter((c) => !hiddenCharIn(c))
+    .join('')
+    .trim()
 }
 
 function hostOf(base: string): string {
@@ -68,9 +66,14 @@ function headers(key: string): Record<string, string> {
 }
 
 async function getJson(path: string, base: string, key: string, fetchImpl: FetchLike): Promise<unknown> {
+  return getJsonUrl(`${base}${path}`, path, base, key, fetchImpl)
+}
+
+/** GET a full URL; `path` is what error messages call it, `base` only names the host. */
+async function getJsonUrl(url: string, path: string, base: string, key: string, fetchImpl: FetchLike): Promise<unknown> {
   let res: Response
   try {
-    res = await fetchImpl(`${base}${path}`, {
+    res = await fetchImpl(url, {
       method: 'GET',
       headers: headers(key),
       redirect: 'error',
@@ -89,7 +92,7 @@ async function getJson(path: string, base: string, key: string, fetchImpl: Fetch
       try {
         const body = (await res.json()) as { error?: { message?: unknown } | string; detail?: unknown }
         const msg = typeof body.error === 'string' ? body.error : body.error?.message ?? body.detail
-        if (typeof msg === 'string' && msg) reason = msg.split(key).join('***').slice(0, 120)
+        if (typeof msg === 'string' && msg) reason = printableText(msg.split(key).join('***')).slice(0, 120)
       } catch {
         // keep statusText
       }
@@ -266,6 +269,81 @@ export async function fetchLiteLLMModels(baseUrl: string, key: string, fetchImpl
     // best effort: /model/info is often admin-only
   }
   return buildLiteLLMModels(ids, info)
+}
+
+/** The entries of an OpenAI-style models body with their sanitized `owned_by`. Tolerates a bare array and string entries. */
+export function parseProxyModelList(body: unknown): { id: string; ownedBy?: string }[] {
+  const list = Array.isArray(body) ? body : Array.isArray(obj(body).data) ? (obj(body).data as unknown[]) : []
+  const out = new Map<string, { id: string; ownedBy?: string }>()
+  for (const item of list) {
+    if (out.size >= LITELLM_MAX_MODELS) break
+    const id = typeof item === 'string' ? item.trim() : str(obj(item).id) ?? str(obj(item).model_name)
+    if (!id || id.length > LITELLM_MAX_ID_CHARS || out.has(id)) continue
+    const ownedBy = typeof item === 'string' ? undefined : cleanOwnedBy(obj(item).owned_by)
+    out.set(id, { id, ...(ownedBy ? { ownedBy } : {}) })
+  }
+  return [...out.values()]
+}
+
+export interface FetchProxyModelsOptions {
+  /** 'litellm' also reads /model/info (prices, provider, context window); 'openai-compatible' reads only the models URL. */
+  kind: ProxyKind
+  /** The proxy's connection id, stamped on every catalog entry. */
+  connection: string
+  /** The Anthropic base URL (root) the LiteLLM-only /model/info route hangs off. Ignored for 'openai-compatible'. */
+  baseUrl?: string
+  /** Only the models URL (no /model/info), for a status probe. */
+  listOnly?: boolean
+}
+
+/**
+ * Discover a proxy's models: GET <modelsUrl> with the key as Bearer (redirects refused, 10 s, 5 MB, at most
+ * LITELLM_MAX_MODELS ids that pass validModelId). Each entry gets `family = proxyModelFamily(id, ownedBy)`, its
+ * adapter and `ownedBy`. For kind 'litellm' /model/info adds prices, upstream and context window (best effort: any
+ * failure, a 404 included, only means no prices); 'openai-compatible' never calls /model/info or /key/info. With
+ * ORGAI_MOCK=1 the mock proxy host answers without network (proxy.ts). Throws a short readable Error; the key is
+ * never in the message.
+ */
+export async function fetchProxyModels(modelsUrl: string, key: string, fetchImpl: FetchLike = fetch, opts: FetchProxyModelsOptions): Promise<ProviderModel[]> {
+  if (isMockProxyUrl(modelsUrl)) {
+    if (key === MOCK_BAD_KEY) throw new Error('The key was refused (401).')
+    return mockProxyModels(opts.connection)
+  }
+  const url = normalizeProxyUrlForFetch(modelsUrl)
+  const entries = parseProxyModelList(await getJsonUrl(url, new URL(url).pathname, new URL(url).origin, key, fetchImpl))
+  let info = new Map<string, ModelInfoEntry>()
+  if (opts.kind === 'litellm' && opts.baseUrl && !opts.listOnly) {
+    try {
+      info = parseModelInfo(await getJson('/model/info', normalizeBaseUrl(opts.baseUrl), key, fetchImpl))
+    } catch {
+      // best effort: /model/info is often admin-only or absent
+    }
+  }
+  const models: ProviderModel[] = []
+  for (const { id, ownedBy } of entries) {
+    if (models.length >= LITELLM_MAX_MODELS) break
+    if (!validModelId(id)) continue
+    const e = info.get(id)
+    if (e?.mode && !CHAT_MODES.has(e.mode)) continue
+    let family = proxyModelFamily(id, ownedBy)
+    if (family === 'other' && e?.litellmProvider) family = classifyFamily(id, e.litellmProvider)
+    models.push(
+      makeDiscoveredModel(opts.connection, {
+        id,
+        family,
+        ownedBy,
+        litellmProvider: e?.litellmProvider,
+        contextWindow: e?.contextWindow,
+        price: e?.price,
+        upstream: e?.upstream
+      })
+    )
+  }
+  return models
+}
+
+function normalizeProxyUrlForFetch(url: string): string {
+  return normalizeProxyUrl(url, 'Models URL')
 }
 
 /** Epoch ms from an ISO string or an epoch number (seconds or ms); null otherwise. */

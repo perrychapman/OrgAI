@@ -72,6 +72,8 @@ beforeEach(async () => {
     processEnv: {},
     homeDir: join(root, 'home')
   })
+  // The one proxy the connection channels store a key for (a migrated 'litellm' proxy keeps the key name LITELLM_KEY).
+  host.settings.setProxies([{ id: 'litellm', name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: 'http://localhost:4000/', enabled: true, hasApiKey: false, tierModels: {} }])
   project = await rpc<Project>('projects:create', { name: 'Real', path: join(root, 'project'), brief: '', mock: true })
   const server = { id: 'mcp-a', name: 'srv-a', transport: 'stdio', command: 'npx', args: ['-y', 'srv-a@1.0.0'], secretEnv: ['A_TOKEN'], enabled: true, source: 'user', addedAt: '' }
   await rpc('mcp:upsert', { projectId: project.id, spec: server })

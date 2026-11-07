@@ -260,7 +260,8 @@ describe('agent inspector (F4)', () => {
     expect(f).toContain('transcript (this agent')
     expect(f).toContain('LEAD-SAYS-HELLO')
     const tail = lines(f).slice(-3).join('\n')
-    expect(tail).toContain('Demo')
+    // The 80-column status line keeps the status and the hint; the project name gives way first (issue #26).
+    expect(tail).toContain('needs you')
   })
 
   it('ASCII and screen-reader modes use no glyphs in the inspector', async () => {
@@ -334,7 +335,9 @@ describe('run chips and switching (F8)', () => {
     return setActiveRun(s, 'run1')
   }
 
-  it('the status bar lists the live runs as chips at the sizes', async () => {
+  it('the status bar lists the live runs as chips when there is room, else a count, and keeps the hint (issue #26)', async () => {
+    const wide = mount({ cols: 180, rows: 40, state: liveRuns() })
+    expect(lines(wide.frame())[0]).toMatch(/R1\*!? R2/)
     for (const [cols, rows] of [
       [120, 40],
       [90, 30],
@@ -342,18 +345,19 @@ describe('run chips and switching (F8)', () => {
     ]) {
       const m = mount({ cols, rows, state: liveRuns() })
       const top = lines(m.frame())[0]
-      expect(top, `${cols}x${rows}`).toMatch(/R1\*!? R2/)
+      expect(top, `${cols}x${rows}`).toMatch(/R1\*!? R2|2 live/)
+      expect(top, `${cols}x${rows}`).toContain('Enter sends')
     }
   })
 
-  it('inline footer carries the chips too and stays three lines', async () => {
+  it('inline footer carries the live runs too and stays three lines', async () => {
     const m = mount({ cols: 80, rows: 24, inline: true, state: liveRuns() })
     const f = m.frame()
-    expect(f).toMatch(/R1\*!? R2/)
+    expect(f).toMatch(/R1\*!? R2|2 live/)
   })
 
   it('screen reader reads words, not marks', async () => {
-    const m = mount({ cols: 120, rows: 40, env: { screenReader: true, unicode: false }, state: liveRuns() })
+    const m = mount({ cols: 200, rows: 40, env: { screenReader: true, unicode: false }, state: liveRuns() })
     expect(lines(m.frame())[0]).toContain('R1 followed')
   })
 
@@ -457,6 +461,20 @@ describe('which-key overlay and hints (F9)', () => {
     expect(m.frame()).toContain('Keys: Agent inspector')
   })
 
+  it('? in the inspector at 120x40 renders its keys and the glyph legend in one frame', async () => {
+    for (const env of [{}, { unicode: false }, { screenReader: true }]) {
+      const m = mount({ cols: 120, rows: 40, env })
+      await m.onLeadRow()
+      await m.send(named('escape'))
+      await m.send(named('tab'), named('up'), named('enter'), key('?'))
+      const f = m.frame()
+      expect(f).toContain('Keys: Agent inspector')
+      expect(f).toContain('Glyphs')
+      expect(f).toMatch(/idle/i)
+      expect(f).toMatch(/finished/i)
+    }
+  })
+
   it('the focused tree has its own hint line, swapped by the row; the composer shows none', async () => {
     const m = mount({ cols: 120, rows: 40 })
     expect(m.frame()).not.toContain('Enter details')
@@ -555,7 +573,7 @@ describe('overlays in ASCII and screen-reader mode (review M1, L1)', () => {
     const f = region((await openRuns({ unicode: false, screenReader: true })).frame(), 'Runs', 'Esc closes')
     expect(f).not.toContain('+--')
     expect(f).not.toMatch(/[┌┐└┘│─·]/)
-    expect(f).toContain('Enter opens | c continues')
+    expect(f).toContain('Enter opens, c continues')
     expect(f).toContain('First run')
   })
 

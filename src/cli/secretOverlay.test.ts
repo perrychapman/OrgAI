@@ -7,6 +7,7 @@ import {
   liveHostSecretAnswer,
   parseSecretEnvSpec,
   planSecretEnv,
+  proxyKeyName,
   scrubSecretEnv,
   secretEnvCommandClass,
   secretEnvRefusal
@@ -30,6 +31,15 @@ describe('secret overlay', () => {
     expect(overlay.get(mcpSecretKey('p1', 'gh', 'env', 'GITHUB_TOKEN'))).toBe('ghp')
     expect(overlay.get(mcpLibrarySecretKey('lib_1', 'header', 'X-Api-Key'))).toBe('k')
     expect(consumedVars.sort()).toEqual(['API', 'GH', 'ORGAI_SECRET_LITELLM_API_KEY'])
+  })
+
+  it('maps ORGAI_SECRET_PROXY_<hex>_API_KEY to that proxy\'s key and consumes the variable', () => {
+    const env = { ORGAI_SECRET_PROXY_0A1B2C3D_API_KEY: 'sk-2', ORGAI_SECRET_PROXY_ZZ_API_KEY: 'nope' }
+    const { overlay, consumedVars } = collectSecretOverlay(env, [])
+    expect(overlay.get('connection:proxy-0a1b2c3d:apiKey')).toBe('sk-2')
+    expect(overlay.size).toBe(1)
+    expect(consumedVars).toEqual(['ORGAI_SECRET_PROXY_0A1B2C3D_API_KEY'])
+    expect(proxyKeyName('litellm')).toBe(LITELLM_KEY)
   })
 
   it('a bad owner, kind or name is a usage error', () => {

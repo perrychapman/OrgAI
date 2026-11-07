@@ -155,7 +155,7 @@ describe('DecisionTray: two-step confirmations', () => {
     h.clock.t += 1000
     await h.press('a')
     expect(h.calls).toHaveLength(0)
-    expect(h.frame()).toContain('Always allow for project (saved to permission rules)? a/y to confirm, Esc to cancel')
+    expect(h.frame()).toContain('Always allow for project (saved to permission rules)? a/y to confirm | Esc cancels')
     await h.press('a')
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0].call).toEqual({ channel: 'runs:decide', payload: { runId: RUN, requestId: 'a', expectedRevision: 1, decision: { behavior: 'allow', scope: 'project' } } })
@@ -385,12 +385,24 @@ describe('DecisionTray: outcomes and variants', () => {
     h.unmount()
   })
 
-  it('footer variant is one line with the title and hints', async () => {
-    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer' })
+  it('footer variant with one row is one line with the title and hints', async () => {
+    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer', height: 1 })
     const lines = h.frame().split('\n')
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain('R1 Run npm test a')
     expect(lines[0]).toContain('y Allow once')
+    h.unmount()
+  })
+
+  it('R2-M2: footer variant with more rows keeps the title on one line and wraps the keys below it at separators', async () => {
+    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer', height: 4, width: 60 })
+    const lines = h.frame().split('\n')
+    expect(lines.length).toBeGreaterThanOrEqual(2)
+    expect(lines[0]).toContain('R1 Run npm test a')
+    expect(lines[0]).not.toContain('y Allow once')
+    const keys = lines.slice(1).join(' ')
+    for (const k of ['y Allow once', 'v Full view', 'Esc Back', '? Keys']) expect(keys).toContain(k)
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
     h.unmount()
   })
 
@@ -399,7 +411,7 @@ describe('DecisionTray: outcomes and variants', () => {
     const f = h.frame()
     expect(f).toContain('Needs you (2)')
     expect(f).toContain('Command: npm test a')
-    expect(f).toContain('y Allow once · s Allow for session · a Always allow for project · n Deny')
+    expect(f).toContain('y Allow once | s Allow for session | a Always allow for project | n Deny (note)')
     expect(f).toContain('R1 Run npm test b')
     h.unmount()
   })
@@ -425,13 +437,13 @@ describe('DecisionTray: the agent and the focused card (ux-review-tui-org.md F5)
   it('names the asking agent in the header and the footer line', async () => {
     const a = withAgent(tray('permission', 'a', permission('a')), 'r2', 'mock-lead-report-2')
     const full = await mount({ cards: [a] })
-    expect(full.frame().split('\n')[0]).toBe('Needs you (1) * R1 * mock-lead-report-2 * permission: Run npm test a')
+    expect(full.frame().split('\n')[0]).toBe('> Needs you (1) | R1 | mock-lead-report-2 | permission: Run npm test a')
     full.unmount()
     const footer = await mount({ cards: [a], variant: 'footer', height: 1 })
     expect(footer.frame()).toContain('R1 mock-lead-report-2: ')
     footer.unmount()
     const none = await mount({ cards: [tray('permission', 'b', permission('b'))] })
-    expect(none.frame().split('\n')[0]).toBe('Needs you (1) * R1 * permission: Run npm test b')
+    expect(none.frame().split('\n')[0]).toBe('> Needs you (1) | R1 | permission: Run npm test b')
     none.unmount()
   })
 

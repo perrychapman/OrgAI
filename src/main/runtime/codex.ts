@@ -1,5 +1,5 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
-import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
+import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
@@ -478,7 +478,7 @@ class CodexSession implements RuntimeSession {
    */
   private estimateCost(agent: AgentInstance, u: { input: number; output: number; cachedInput: number }): number | undefined {
     const conn = this.ctx.connection
-    if (conn?.connection !== 'litellm' || !conn.pricing) return undefined
+    if (!conn || isBuiltinConnectionId(conn.connection) || !conn.pricing) return undefined
     const price = priceFor(conn.pricing, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model)
     return price ? costFromPrice(openAiMix(u.input, u.cachedInput, u.output), price) : undefined
   }

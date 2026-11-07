@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunSummary } from '../../shared/types'
-import { findSlash, matchSlash, parseSlash, resolveDiffTarget, runsTable, SLASH_COMMANDS } from './slashCommands'
+import { findSlash, HELP_TEXT, matchSlash, parseSlash, resolveDiffTarget, runsTable, SLASH_COMMANDS, unavailableFor, unavailableMessage } from './slashCommands'
 import type { SlashContext, TuiSessionApi, TuiState } from './types'
 
 const summary = (id: string, over: Partial<RunSummary> = {}): RunSummary =>
@@ -93,6 +93,36 @@ describe('matchSlash', () => {
     expect(matchSlash('/new', ro)).toEqual([])
     expect(matchSlash('/ask', stateWith({ project: undefined }))).toEqual([])
     expect(findSlash('exit', ro)?.name).toBe('quit')
+  })
+})
+
+describe('unavailable commands (#29 M6) and the empty-query order (#30 L6)', () => {
+  it('every command with available() gives a reason, and /retro names why', () => {
+    const s = stateWith({}, 'running')
+    for (const c of SLASH_COMMANDS.filter((x) => x.available)) expect(c.unavailableReason, c.name).toBeTypeOf('function')
+    expect(unavailableMessage('retro', s)).toMatch(/^\/retro: .*not ended/)
+    expect(unavailableMessage('retrospective', s)).toMatch(/^\/retro: /)
+    expect(unavailableMessage('retro', stateWith({}, 'finished'))).toBeUndefined()
+    expect(unavailableMessage('run', s)).toBeUndefined()
+    expect(unavailableMessage('zzz', s)).toBeUndefined()
+    expect(unavailableMessage('new', stateWith({ readOnlyReason: 'read only' }))).toBe('/new: Read-only: read only')
+    expect(unavailableMessage('new', stateWith({ project: undefined }))).toBe('/new: Open a project folder first.')
+    expect(unavailableFor(SLASH_COMMANDS, '/ret', s)?.cmd.name).toBe('retro')
+  })
+
+  it('an empty query lists help and new first, then alphabetical', () => {
+    const names = matchSlash('/', stateWith()).map((c) => c.name)
+    expect(names.slice(0, 2)).toEqual(['help', 'new'])
+    const rest = names.slice(2)
+    expect(rest).toEqual([...rest].sort())
+    // A typed query keeps the old ranking.
+    expect(matchSlash('/r', stateWith()).map((c) => c.name)).toEqual(['run', 'runs'])
+  })
+
+  it('/help leads with the commands, then the keys, and every command is listed', () => {
+    expect(HELP_TEXT.indexOf('Commands')).toBe(0)
+    expect(HELP_TEXT.indexOf('/help')).toBeLessThan(HELP_TEXT.indexOf('\nKeys\n'))
+    for (const c of SLASH_COMMANDS) expect(HELP_TEXT).toContain(`/${c.name}`)
   })
 })
 

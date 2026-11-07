@@ -6,7 +6,7 @@ import { adapterForProject, projectConnection } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { Button } from './ui/Button'
 import { ModelSelect, type ModelGroup } from './ui/ModelSelect'
-import { CONNECTION_NAME } from '../lib/settingsCopy'
+import { connectionLabel, isProxyId } from '../lib/connectionLabel'
 import { roleTier } from '../lib/remap'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { TIER_LABEL, applyExactModel, applyModelChoice, effortView, exactModelGroups, exactModelValue, roleModelChoice, tierOptionLabel } from '../lib/roleModels'
@@ -32,6 +32,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   const updateRoles = useAppStore((s) => s.updateRoles)
   const setView = useAppStore((s) => s.setView)
   const connection = projectConnection(project)
+  const proxy = isProxyId(connection)
   const info = useAppStore((s) => s.connections?.find((c) => c.connection.id === connection))
   const connectionsLoaded = useAppStore((s) => s.connections !== null)
   const catalog = useAppStore((s) => s.models[connection])
@@ -55,9 +56,9 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   const groups: ModelGroup[] = useMemo(() => {
     const tierOptions = MODEL_TIER_OPTIONS.filter((o) => tierModels[o.value]).map((o) => ({ value: o.value as string, label: tierOptionLabel(o.value, tierModels) }))
     const rows = [{ value: 'inherit', label: isRoot ? 'Use the connection default' : 'Inherit from parent' }, ...tierOptions]
-    if (choice === 'custom') rows.push({ value: 'custom', label: 'Custom (set under Advanced)' })
+    if (choice === 'custom') rows.push({ value: 'custom', label: proxy ? 'Exact model (set below)' : 'Custom (set under Advanced)' })
     return [{ options: rows }]
-  }, [tierModels, isRoot, choice])
+  }, [tierModels, isRoot, choice, proxy])
 
   const resolved = resolveTier(project, role)
   const description =
@@ -82,7 +83,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
         <select id="role-model-disabled" className="select" disabled value={role.model} data-testid="role-model">
           <option value={role.model}>{role.model === 'inherit' ? 'Inherit' : 'Custom'}</option>
         </select>
-        <span className="hint">Connect {CONNECTION_NAME[connection]} to choose a model.</span>
+        <span className="hint">Connect {connectionLabel(connection)} to choose a model.</span>
         <Button
           size="sm"
           onClick={() => {
@@ -101,6 +102,20 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   const exact = exactModelValue(role, tierModels)
   const stale = exact !== '' && !!catalog && !catalog.some((m) => m.id === exact)
 
+  const name = connectionLabel(connection)
+  const exactSelect = catalog ? (
+    <ModelSelect
+      label="Exact model"
+      value={exact}
+      groups={exactModelGroups(catalog, proxy, exact)}
+      invalid={stale}
+      message={stale ? `Not available on ${name}. Choose another model or Not set.` : undefined}
+      description={proxy ? `Any model ${name} serves.` : 'Pins this role to one model.'}
+      onChange={(v) => write(applyExactModel(v, tierModels, role))}
+      testId="role-exact-model"
+    />
+  ) : null
+
   return (
     <div className="role-model-field stack-2">
       {error ? (
@@ -116,21 +131,11 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
         <ModelSelect label="Model" hideLabel value={choice} groups={groups} description={description} onChange={pick} testId="role-model" />
       )}
 
+      {proxy && exactSelect}
       <details className="setting-row-more role-model-advanced" data-testid="role-model-advanced">
         <summary>Advanced</summary>
         <div className="setting-row-more-body stack-2">
-          {catalog && (
-            <ModelSelect
-              label="Exact model"
-              value={exact}
-              groups={exactModelGroups(catalog, connection === 'litellm', exact)}
-              invalid={stale}
-              message={stale ? `Not available on ${CONNECTION_NAME[connection]}. Choose another model or Not set.` : undefined}
-              description={connection === 'litellm' ? 'Any model the proxy serves.' : 'Pins this role to one model.'}
-              onChange={(v) => write(applyExactModel(v, tierModels, role))}
-              testId="role-exact-model"
-            />
-          )}
+          {!proxy && exactSelect}
           <div className="field">
             <label htmlFor={`role-effort-${role.id}`}>Effort</label>
             <select

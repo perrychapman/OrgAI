@@ -49,15 +49,15 @@ describe('(a) completeness', () => {
   // HOST_IPC (socket only) and SECRETS_IPC (Wave 7, every surface): channels added for the host.
   const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 
-  it('matches the spec counts: 177 existing channels (165 request + 12 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
+  it('matches the spec counts: 179 existing channels (167 request + 12 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
-    expect(existing.length).toBe(177)
+    expect(existing.length).toBe(179)
     expect(existing.filter((c) => push.has(c)).length).toBe(12)
-    expect(existing.filter((c) => !push.has(c)).length).toBe(165)
+    expect(existing.filter((c) => !push.has(c)).length).toBe(167)
     expect(Object.values(HOST_IPC).length).toBe(6)
     expect(Object.values(SECRETS_IPC).length).toBe(5)
-    expect(requestChannels().length).toBe(176)
+    expect(requestChannels().length).toBe(178)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {
@@ -169,12 +169,21 @@ describe('(c) representative round trips', () => {
     expect(roles.find((r) => r.reportsTo === null)).toBeTruthy()
   })
 
-  it('connections:update clearing baseUrl and a tier model', () => {
-    const conn = { ...DEFAULT_APP_SETTINGS.connections.litellm, baseUrl: undefined as unknown as string, tierModels: { deep: 'm', top: undefined } }
-    const args = [conn satisfies ProviderConnection]
+  it('connections:update clearing a proxy openaiBaseUrl and a tier model', () => {
+    const conn: ProviderConnection = {
+      id: 'proxy-0a1b2c3d',
+      name: 'Gateway',
+      kind: 'litellm',
+      enabled: true,
+      anthropicBaseUrl: 'https://example.com',
+      openaiBaseUrl: undefined,
+      hasApiKey: false,
+      tierModels: { deep: 'm', top: undefined }
+    } as ProviderConnection
+    const args = [conn]
     const back = overWire(IPC.connectionsUpdate, args)
     expect(back).toEqual(args)
-    expect(Object.hasOwn(back[0] as object, 'baseUrl')).toBe(true)
+    expect(Object.hasOwn(back[0] as object, 'openaiBaseUrl')).toBe(true)
     expect(Object.hasOwn((back[0] as { tierModels: object }).tierModels, 'top')).toBe(true)
   })
 

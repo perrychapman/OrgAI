@@ -26,6 +26,8 @@ describe('secret notices', () => {
   it('names the services of removed secrets where it can and counts the rest', () => {
     const names = { server: (p: string, s: string) => (p === 'p1' && s === 's1' ? 'GitHub' : undefined), library: (id: string) => (id === 'e1' ? 'Notion' : undefined) }
     expect(serviceOfKey('connection:litellm:apiKey')).toBe('LiteLLM')
+    expect(serviceOfKey('connection:proxy-ab12:apiKey', { proxy: (id) => (id === 'proxy-ab12' ? 'Team proxy' : undefined) })).toBe('Team proxy')
+    expect(serviceOfKey('connection:proxy-zz:apiKey')).toBeUndefined()
     expect(serviceOfKey('mcp:p1:s1:env:TOKEN', names)).toBe('GitHub')
     expect(serviceOfKey('mcplib:e1:header:X', names)).toBe('Notion')
     expect(serviceOfKey('mcp:p9:s9:env:T', names)).toBeUndefined()

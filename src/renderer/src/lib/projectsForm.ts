@@ -1,6 +1,6 @@
-import type { ConnectionInfo, ProjectKind, ProjectPathCheck, SetupKind } from '@shared/types'
-import { PROJECT_REFERENCE_DIRECTORIES_MAX, isProjectKind } from '@shared/types'
-import { connectionWithAuth, defaultConnectionInfo } from './connectionLabel'
+import type { ConnectionId, ConnectionInfo, ProjectKind, ProjectPathCheck, SetupKind } from '@shared/types'
+import { PROJECT_REFERENCE_DIRECTORIES_MAX, isProjectKind, isProxyConnection } from '@shared/types'
+import { connectionKindLabel, connectionWithAuth, defaultConnectionInfo, isProxyId } from './connectionLabel'
 import { workingFolderProblem } from './folderLists'
 
 export type PathTone = 'error' | 'warn' | 'ok' | 'info'
@@ -69,8 +69,8 @@ export function submitBlocker(input: { kind: SetupKind; name: string; path: stri
 
 export interface NewProjectConnectionView {
   text: string
-  /** The link button after the text ("Change" or "Connect"); null when there is nothing to open (mock). */
-  link: 'Change' | 'Connect' | null
+  /** The link button after the text ("Manage connections" or "Connect"); null when there is nothing to open (mock). */
+  link: 'Manage connections' | 'Connect' | null
 }
 
 /**
@@ -84,9 +84,47 @@ export function newProjectConnectionView(connections: readonly ConnectionInfo[] 
   // "Nothing is connected" only when nothing is: a chosen default that dropped, or one still checking, is named instead.
   if (!connections.some((c) => c.status.state === 'connected')) return { text: 'Nothing is connected yet.', link: 'Connect' }
   if (!def) return { text: '', link: null }
-  if (def.status.state !== 'connected') return { text: `Runs on ${connectionWithAuth(def)}, which is not connected.`, link: 'Change' }
-  return { text: `Runs on ${connectionWithAuth(def)}.`, link: 'Change' }
+  if (def.status.state !== 'connected') return { text: `Runs on ${connectionWithAuth(def)}, which is not connected.`, link: 'Manage connections' }
+  return { text: `Runs on ${connectionWithAuth(def)}.`, link: 'Manage connections' }
 }
+
+export interface ConnectionChoice {
+  id: ConnectionId
+  /** "Anthropic", "OpenAI", or "Name (LiteLLM proxy)"; "· default" marks the app default. */
+  label: string
+  proxy: boolean
+  isDefault: boolean
+}
+
+/**
+ * The connections a new project can start on: the connected ones, Anthropic, OpenAI, then proxies by name. The
+ * New project form shows a Select only when there are two or more.
+ */
+export function connectionChoices(connections: readonly ConnectionInfo[] | null | undefined): ConnectionChoice[] {
+  const connected = (connections ?? []).filter((c) => c.status.state === 'connected')
+  const proxy = (c: ConnectionInfo): boolean => isProxyId(c.connection.id)
+  const rank = (c: ConnectionInfo): number => (c.connection.id === 'anthropic' ? 0 : c.connection.id === 'openai' ? 1 : 2)
+  const name = (c: ConnectionInfo): string => (isProxyConnection(c.connection) ? c.connection.name : '')
+  return [...connected]
+    .sort((a, b) => rank(a) - rank(b) || (proxy(a) ? name(a).localeCompare(name(b)) : 0))
+    .map((c) => {
+      const label = proxy(c) ? `${connectionLabelOf(c)} (${connectionKindLabel(c.connection)})` : connectionLabelOf(c)
+      return { id: c.connection.id, label: c.isDefault ? `${label} · default` : label, proxy: proxy(c), isDefault: c.isDefault }
+    })
+}
+
+function connectionLabelOf(c: ConnectionInfo): string {
+  return isProxyConnection(c.connection) ? c.connection.name : connectionKindLabel(c.connection)
+}
+
+/** The id the Select shows: the user's pick while it is still connected, else the default, else the first. */
+export function chosenConnection(choices: readonly ConnectionChoice[], picked: ConnectionId | null): ConnectionId | null {
+  if (picked && choices.some((c) => c.id === picked)) return picked
+  return choices.find((c) => c.isDefault)?.id ?? choices[0]?.id ?? null
+}
+
+/** One line under the Select when the chosen connection is a proxy. */
+export const PROXY_TIER_NOTE = "Roles start on this connection's tier models. You can change each role's model afterwards."
 
 export const LAST_PROJECT_KIND_KEY = 'orgai.lastProjectKind'
 

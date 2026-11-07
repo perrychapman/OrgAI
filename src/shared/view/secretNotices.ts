@@ -30,12 +30,15 @@ export interface KeyNames {
   server?: (projectId: string, serverId: string) => string | undefined
   /** A library entry by id. */
   library?: (entryId: string) => string | undefined
+  /** A proxy connection's display name by id, or undefined when unknown. */
+  proxy?: (proxyId: string) => string | undefined
 }
 
-/** A service name for a secret key (`connection:litellm:apiKey`, `mcp:<project>:<server>:...`, `mcplib:<entry>:...`), or undefined. */
+/** A service name for a secret key (`connection:litellm:apiKey`, `connection:<proxy id>:apiKey`, `mcp:<project>:<server>:...`, `mcplib:<entry>:...`), or undefined. */
 export function serviceOfKey(key: string, names: KeyNames = {}): string | undefined {
   if (key === 'connection:litellm:apiKey') return 'LiteLLM'
   const parts = key.split(':')
+  if (parts[0] === 'connection' && parts.length === 3 && parts[2] === 'apiKey') return names.proxy?.(parts[1])
   if (parts[0] === 'mcp' && parts.length >= 3) return names.server?.(parts[1], parts[2])
   if (parts[0] === 'mcplib' && parts.length >= 2) return names.library?.(parts[1])
   return undefined

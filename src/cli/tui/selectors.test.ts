@@ -3,7 +3,9 @@ import type { AgentInstance, MergeReview, PermissionRequest, RunEvent, RunRecord
 import type { SnapshotResult } from '../client/runStream'
 import { project, record, summary } from '../testing/fakeContext'
 import {
+  agentDetail,
   composerMode,
+  failedTurnSentence,
   orgTreeRows,
   partialRows,
   planView,
@@ -61,7 +63,8 @@ describe('trayCards', () => {
     s = applyEvent(s, ev({ type: 'permission.request', runId: 'r1', request: perm('c', 'r1') }))
     const cards = trayCards(s)
     expect(cards.map((c) => c.ref.requestId)).toEqual(['q', 'b', 'a', 'c'])
-    expect(cards.map((c) => c.runTag)).toEqual(['R2', 'R2', 'R1', 'R1'])
+    // The followed run's cards carry its bare tag; another run's also name it (R2-L2).
+    expect(cards.map((c) => c.runTag)).toEqual(['R2', 'R2', 'R1 prompt r1', 'R1 prompt r1'])
     expect(cards[0]).toMatchObject({ kind: 'question', runKind: 'setup', projectKind: 'code', ref: { hostInstanceId: HOST, runId: 'r2', revision: 1 } })
     expect(cards[1].ref.revision).toBe(3)
     expect(cards[1].key).toBe(`${HOST}|r2|permission|b|3`)
@@ -216,6 +219,50 @@ describe('statusSummary', () => {
     expect(statusSummary(s).statusWord).toBe('Stopped at its budget limit')
     s = applyEvent(s, ev({ type: 'run.status', runId: 'r1', status: 'error' }))
     expect(statusSummary(s).statusWord).toBe('Failed')
+  })
+
+  it('a failed root turn on an idle run reads "Idle · last turn failed" in the danger tone (#29 M5); a plain idle run does not', () => {
+    const run = (state: AgentInstance['state']): RunRecord => record(summary('r1', { status: 'idle' }), { agents: { root: agent('root', null, { state }) } })
+    let s = applySnapshot(base(), snap([summary('r1', { status: 'idle' })], [], run('error')), { activeRunId: 'r1' })
+    expect(statusSummary(s)).toMatchObject({ statusWord: 'Idle · last turn failed', tone: 'danger' })
+    s = applySnapshot(base(), snap([summary('r1', { status: 'idle' })], [], run('idle')), { activeRunId: 'r1' })
+    expect(statusSummary(s)).toMatchObject({ statusWord: 'Idle', tone: 'dim' })
+  })
+
+  it('the bare failure reason becomes a readable sentence in the transcript (#29 M5)', () => {
+    expect(failedTurnSentence('during execution')).toBe('The last turn failed (error during execution). Send a message to try again.')
+    expect(failedTurnSentence('error_max_turns')).toContain('error max turns')
+    expect(failedTurnSentence('Hello there')).toBe('Hello there')
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'idle' })], [], record(summary('r1', { status: 'idle' }), { transcript: [entry('t1', { kind: 'text', text: 'during execution' })], agents: { root: agent('root', null) } })), { activeRunId: 'r1' })
+    expect(transcriptRows(s).rows[0].text).toMatch(/^The last turn failed/)
+  })
+
+  it('#29 leftover: the mock [mock:turn-fail] agent (state error, activity "during execution") reads as a sentence in the tree footer and the inspector', () => {
+    // mock.ts sets root.activity = 'error_during_execution'.replace(/^error_/, '').replace(/_/g, ' '); the text never enters the transcript.
+    const failed = agent('root', null, { state: 'error', activity: 'during execution' })
+    let s = applySnapshot(base(), snap([summary('r1', { status: 'idle' })], [], record(summary('r1', { status: 'idle' }), { agents: { root: failed } })), { activeRunId: 'r1' })
+    s = applyEvent(s, ev({ type: 'agent.upsert', runId: 'r1', agent: failed }))
+    const sentence = 'The last turn failed (error during execution). Send a message to try again.'
+    expect(orgTreeRows(s).find((r) => r.kind === 'agent' && r.isRoot)?.activity).toBe(sentence)
+    expect(agentDetail(s, 'root')?.activity).toBe(sentence)
+    // A normal activity is untouched.
+    const ok = applyEvent(s, ev({ type: 'agent.upsert', runId: 'r1', agent: agent('root', null, { activity: 'Reading files' }) }))
+    expect(orgTreeRows(ok).find((r) => r.kind === 'agent' && r.isRoot)?.activity).toBe('Reading files')
+  })
+
+  it('R2-L2: a card of a run that is not followed names that run; an agent this client has not loaded gets no "An agent" label', () => {
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'running', startedAt: 1, prompt: 'Build the report' }), summary('r2', { status: 'running', startedAt: 2 })]), { activeRunId: 'r2' })
+    s = applyEvent(s, ev({ type: 'permission.request', runId: 'r1', request: perm('a', 'r1', { agentId: 'impl-1' }) }))
+    s = applyEvent(s, ev({ type: 'permission.request', runId: 'r2', request: perm('b', 'r2') }))
+    const cards = trayCards(s)
+    const own = cards.find((c) => c.ref.runId === 'r2')!
+    const other = cards.find((c) => c.ref.runId === 'r1')!
+    expect(own.runTag).toBe('R2')
+    expect(other.runTag).toMatch(/^R1 .*Build the report/)
+    expect(other.agentLabel).toBeUndefined()
+    expect(JSON.stringify(other)).not.toContain('An agent')
   })
 
   it('without an active run: no run fields; readOnlyReason and host kind pass through', () => {

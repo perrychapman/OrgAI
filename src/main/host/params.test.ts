@@ -111,6 +111,8 @@ const PAYLOADS: Record<string, unknown[]> = {
   'connections:list': [],
   'connections:update': [{ id: 'litellm', enabled: true, baseUrl: 'http://localhost:4000', tierModels: { top: undefined } }],
   'connections:setSecret': [{ id: 'litellm', apiKey: null }],
+  'connections:createProxy': [{ name: 'Gateway', anthropicBaseUrl: 'https://example.com', kind: 'litellm' }],
+  'connections:removeProxy': ['proxy-0a1b2c3d'],
   'connections:test': ['anthropic'],
   'connections:connect': ['openai'],
   'connections:login': ['openai', undefined],

@@ -8,9 +8,9 @@ import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthrop
 describe('tier model validation', () => {
   it('drops renderer or file tier models that are not valid model ids', () => {
     const tierModels = { top: '--help', deep: ' opus ', everyday: 'has space', fast: 'bell\u0007' }
-    const s = normalizeSettings({ connections: { anthropic: { tierModels }, litellm: { tierModels: { deep: 'x'.repeat(201), fast: 'openai/gpt-ok' } } } } as never)
+    const s = normalizeSettings({ connections: { anthropic: { tierModels } }, proxies: [{ id: 'litellm', name: 'P', tierModels: { deep: 'x'.repeat(201), fast: 'openai/gpt-ok' } }] } as never)
     expect(s.connections.anthropic.tierModels).toEqual({ deep: 'opus' })
-    expect(s.connections.litellm.tierModels).toEqual({ fast: 'openai/gpt-ok' })
+    expect(s.proxies[0].tierModels).toEqual({ fast: 'openai/gpt-ok' })
   })
 
   it('SettingsStore.set drops them too', () => {
@@ -189,8 +189,8 @@ describe('near-limit everyday steering', () => {
 
 describe('connection autoTiers', () => {
   it('keeps known tiers once and leaves a missing list undefined', () => {
-    const s = normalizeSettings({ connections: { litellm: { autoTiers: ['fast', 'fast', 'bogus', 'deep'] } } } as never)
-    expect(s.connections.litellm.autoTiers).toEqual(['fast', 'deep'])
+    const s = normalizeSettings({ proxies: [{ id: 'litellm', name: 'P', autoTiers: ['fast', 'fast', 'bogus', 'deep'] }] } as never)
+    expect(s.proxies[0].autoTiers).toEqual(['fast', 'deep'])
     expect(normalizeSettings({}).connections.anthropic.autoTiers).toBeUndefined()
   })
 })
@@ -202,7 +202,8 @@ describe('connections', () => {
     expect(s.providerAuth).toEqual({ kind: 'apiKey', envVar: 'MY_KEY' })
     expect(s.connections.anthropic.tierModels).toEqual({ top: 'fable', deep: 'opus', everyday: 'sonnet', fast: 'haiku' })
     expect(s.connections.openai).toMatchObject({ enabled: false, auth: { kind: 'chatgpt' } })
-    expect(s.connections.litellm).toMatchObject({ enabled: false, baseUrl: '', hasApiKey: false })
+    expect(s.proxies).toEqual([])
+    expect(s.connections).not.toHaveProperty('litellm')
     expect(s.defaultConnection).toBe('anthropic')
   })
 
@@ -214,13 +215,13 @@ describe('connections', () => {
       connections: {
         ...base.connections,
         anthropic: { ...base.connections.anthropic, auth: { kind: 'apiKey', envVar: 'K' } },
-        litellm: { ...base.connections.litellm, baseUrl: ' http://x:4000 ', tierModels: { deep: 'a', bogus: 'b', fast: 3 } as never }
       },
+      proxies: [{ id: 'litellm', name: 'P', kind: 'litellm', anthropicBaseUrl: ' http://localhost:4000/ ', enabled: false, hasApiKey: false, tierModels: { deep: 'a', bogus: 'b', fast: 3 } as never }],
       defaultConnection: 'nope' as never
     })
     expect(s.providerAuth).toEqual({ kind: 'apiKey', envVar: 'K' })
-    expect(s.connections.litellm.baseUrl).toBe('http://x:4000')
-    expect(s.connections.litellm.tierModels).toEqual({ deep: 'a' })
+    expect(s.proxies[0].anthropicBaseUrl).toBe('http://localhost:4000')
+    expect(s.proxies[0].tierModels).toEqual({ deep: 'a' })
     expect(s.defaultConnection).toBe('anthropic')
   })
 
@@ -331,7 +332,11 @@ describe('defaultConnectionChosen', () => {
 
   it('migrates a pre-merge file: a non-anthropic default was the user pick, anthropic is automatic', () => {
     expect(normalizeSettings({ defaultConnection: 'openai' }).defaultConnectionChosen).toBe(true)
-    expect(normalizeSettings({ defaultConnection: 'litellm' }).defaultConnectionChosen).toBe(true)
+    expect(normalizeSettings({ defaultConnection: 'litellm', proxies: [{ id: 'litellm', name: 'P' }] } as never).defaultConnectionChosen).toBe(true)
+    // A default naming a proxy that does not exist falls back to automatic anthropic.
+    const gone = normalizeSettings({ defaultConnection: 'proxy-0a1b2c3d', defaultConnectionChosen: true } as never)
+    expect(gone.defaultConnection).toBe('anthropic')
+    expect(gone.defaultConnectionChosen).toBe(false)
     expect(normalizeSettings({ defaultConnection: 'anthropic' }).defaultConnectionChosen).toBe(false)
     expect(normalizeSettings(null).defaultConnectionChosen).toBe(false)
     for (const v of ['true', 1, null, {}]) expect(normalizeSettings({ defaultConnection: 'anthropic', defaultConnectionChosen: v } as never).defaultConnectionChosen).toBe(false)

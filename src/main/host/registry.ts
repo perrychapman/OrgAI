@@ -138,7 +138,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'host.stop', 'settings:set', 'projects:create', 'projects:save', 'projects:remove', 'projects:remapModels',
     'projects:applyImport', 'projects:exportOrg', 'projects:updateEngagementDocument', 'projects:saveNote',
     'projects:removeNote', 'runs:promoteQuick', 'permissions:add', 'permissions:remove', 'connections:connect',
-    'connections:update', 'connections:setSecret', 'connections:login', 'connections:cancelLogin', 'connections:logout',
+    'connections:update', 'connections:setSecret', 'connections:createProxy', 'connections:removeProxy', 'connections:login', 'connections:cancelLogin', 'connections:logout',
     'connections:setDefault', 'mcp:upsert', 'mcp:remove', 'mcp:setSecret', 'mcp:linkLibrary', 'mcp:promote', 'mcp:authorize',
     'mcp:cancelAuthorize', 'mcp:revokeAuth', 'mcp:copyFromLibrary', 'mcp:setProjectOverrides', 'mcpLibrary:upsert',
     'mcpLibrary:remove', 'mcpLibrary:setSecret', 'connectors:add', 'connectors:setToken', 'connectorPresets:upsert',
@@ -205,7 +205,7 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     IPC.capabilitiesReview, IPC.capabilitiesLastReview, IPC.capabilitiesDismiss, IPC.capabilitiesRestore
   ],
   'ipc.ts registerConnectionIpc': [
-    IPC.projectsRemapModels, IPC.projectsPreviewRemap, IPC.connectionsList, IPC.connectionsUpdate, IPC.connectionsSetSecret,
+    IPC.projectsRemapModels, IPC.projectsPreviewRemap, IPC.connectionsList, IPC.connectionsUpdate, IPC.connectionsSetSecret, IPC.connectionsCreateProxy, IPC.connectionsRemoveProxy,
     IPC.connectionsTest, IPC.connectionsConnect, IPC.connectionsLogin, IPC.connectionsCancelLogin, IPC.connectionsLogout,
     IPC.connectionsSetDefault, IPC.modelsList, IPC.modelsRefresh, IPC.modelsPrices
   ],

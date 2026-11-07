@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { McpLibraryInfo, SecretsStatusResult } from '@shared/types'
+import { isProxyConnection } from '@shared/types'
 import { START_OVER_WARNING, secretNotices, type KeyNames, type SecretNotice } from '@shared/view/secretNotices'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -31,6 +32,7 @@ const TESTID: Record<SecretNotice['kind'], string> = {
  */
 export function SecretNotices(): ReactElement | null {
   const projects = useAppStore((s) => s.projects)
+  const connections = useAppStore((s) => s.connections)
   const [status, setStatus] = useState<SecretsStatusResult | null>(null)
   const [library, setLibrary] = useState<McpLibraryInfo[]>([])
   const [busy, setBusy] = useState<SecretNotice['kind'] | null>(null)
@@ -72,8 +74,10 @@ export function SecretNotices(): ReactElement | null {
     const servers = new Map<string, string>()
     for (const p of projects) for (const m of p.mcpServers ?? []) servers.set(`${p.id}:${m.id}`, m.name)
     const lib = new Map(library.map((l) => [l.entry.id, l.entry.name]))
-    return { server: (p, s) => servers.get(`${p}:${s}`), library: (id) => lib.get(id) }
-  }, [projects, library])
+    const proxies = new Map<string, string>()
+    for (const c of connections ?? []) if (isProxyConnection(c.connection)) proxies.set(c.connection.id, c.connection.name)
+    return { server: (p, s) => servers.get(`${p}:${s}`), library: (id) => lib.get(id), proxy: (id) => proxies.get(id) }
+  }, [projects, library, connections])
 
   const notices = useMemo(() => (status ? secretNotices(status, names) : []), [status, names])
 

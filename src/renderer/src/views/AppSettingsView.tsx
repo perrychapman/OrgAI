@@ -21,7 +21,8 @@ import { SettingsAdvanced, openSettingsAdvanced } from '../components/settings/S
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
-import { CONNECTION_NAME, PERMISSION_MODE_SHORT, SETTINGS_COPY } from '../lib/settingsCopy'
+import { PERMISSION_MODE_SHORT, SETTINGS_COPY } from '../lib/settingsCopy'
+import { connectionLabel } from '../lib/connectionLabel'
 import { PERMISSION_MODE_TRADEOFF } from '../lib/permissionCopy'
 import { modelSettingGroups, modelSources } from '../lib/assistantModels'
 import { ModelSelect } from '../components/ui/ModelSelect'
@@ -45,6 +46,8 @@ import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
+const MAKER_NAME = 'Cybrid Software LLC'
+const MAKER_URL = 'https://cybridsoftware.com'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'dark', label: 'Dark' },
@@ -490,7 +493,7 @@ export default function AppSettingsView(): ReactElement {
                   />
                 </SettingsCard>
                 <p className="muted" data-testid="assistant-models-note">
-                  Chat and the MCP and Skill assistants run on {CONNECTION_NAME[defaultConn]}, the default connection. Setup uses each project's connection.
+                  Chat and the MCP and Skill assistants run on {connectionLabel(defaultConn)}, the default connection. Setup uses each project's connection.
                 </p>
               </SettingsGroup>
               <SettingsGroup title="New projects (advanced)">
@@ -612,6 +615,12 @@ export default function AppSettingsView(): ReactElement {
                       <Badge tone="accent">Mock adapter</Badge>
                     </span>
                   )}
+                </dd>
+                <dt>Made by</dt>
+                <dd>
+                  <a className="connector-link" href={MAKER_URL} target="_blank" rel="noreferrer noopener" data-testid="about-maker">
+                    {MAKER_NAME}
+                  </a>
                 </dd>
                 <dt>Platform</dt>
                 <dd>

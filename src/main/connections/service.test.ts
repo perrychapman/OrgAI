@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { adapterForProject, newProject } from '@shared/defaults'
-import type { ConnectionEvent, LiteLLMConnection, Project } from '@shared/types'
+import type { ConnectionEvent, Project, ProxyConnection } from '@shared/types'
 import { project, role } from '../runtime/testHelpers'
 import { ProjectStore } from '../store/projects'
 import { SecretStore } from '../store/secrets'
@@ -28,6 +28,7 @@ function setup(over: Partial<ConnectionServiceDeps> = {}, dir?: string) {
   const dataDir = dir ?? mkdtempSync(join(tmpdir(), 'orgai-conn-'))
   if (!dir) dirs.push(dataDir)
   const settings = new SettingsStore(dataDir)
+  if (!settings.get().proxies.length) settings.setProxies([{ id: 'litellm', name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: '', enabled: false, hasApiKey: false, tierModels: {} }])
   const projects = new ProjectStore(dataDir)
   const secrets = new SecretStore(dataDir, {
     isEncryptionAvailable: () => true,
@@ -61,8 +62,8 @@ function litellmProject(models: [string, 'top' | 'deep' | 'everyday' | 'fast' | 
 }
 
 async function configureLiteLLM(ctx: ReturnType<typeof setup>): Promise<void> {
-  const conn = ctx.settings.get().connections.litellm
-  await ctx.service.update({ ...conn, baseUrl: 'http://localhost:4000/' })
+  const conn = ctx.settings.get().proxies[0]
+  await ctx.service.update({ ...conn, anthropicBaseUrl: 'http://localhost:4000/' })
   await ctx.service.setSecret({ id: 'litellm', apiKey: KEY })
 }
 
@@ -127,7 +128,7 @@ describe('ConnectionService litellm', () => {
     await ctx.service.connect('litellm')
     ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday'], ['claude-haiku-4-5', 'everyday'], ['claude-opus-4-5', 'deep']]))
     ctx.events.length = 0
-    const conn = ctx.settings.get().connections.litellm as LiteLLMConnection
+    const conn = ctx.settings.get().proxies[0]
     await ctx.service.update({ ...conn, tierModels: { ...conn.tierModels, everyday: 'claude-haiku-4-5' } })
     // r0 was on the old everyday default -> follows; r1 already is the new value; r2 is deep -> untouched.
     expect(ctx.projects.get('p1')!.roles.map((r) => r.model)).toEqual(['claude-haiku-4-5', 'claude-haiku-4-5', 'claude-opus-4-5'])
@@ -139,10 +140,10 @@ describe('ConnectionService litellm', () => {
     const ctx = setup()
     await configureLiteLLM(ctx)
     await ctx.service.connect('litellm')
-    const conn = ctx.settings.get().connections.litellm
-    const info = await ctx.service.update({ ...conn, baseUrl: 'http://localhost:5000', hasApiKey: false })
+    const conn = ctx.settings.get().proxies[0]
+    const info = await ctx.service.update({ ...conn, anthropicBaseUrl: `${conn.anthropicBaseUrl}/v2`, hasApiKey: false })
     expect(info.status).toMatchObject({ state: 'disconnected', detail: 'Changed. Test and connect to apply.' })
-    expect((info.connection as LiteLLMConnection).hasApiKey).toBe(true)
+    expect((info.connection as ProxyConnection).hasApiKey).toBe(true)
   })
 
   it('test() probes without enabling or changing the catalog', async () => {
@@ -150,7 +151,7 @@ describe('ConnectionService litellm', () => {
     await configureLiteLLM(ctx)
     const status = await ctx.service.test('litellm')
     expect(status.state).toBe('connected')
-    expect(ctx.settings.get().connections.litellm.enabled).toBe(false)
+    expect(ctx.settings.get().proxies[0].enabled).toBe(false)
     expect(ctx.service.models({ connection: 'litellm' })).toEqual([])
   })
 
@@ -167,9 +168,9 @@ describe('ConnectionService litellm', () => {
     const infos = [await ctx.service.connect('litellm'), ...(await ctx.service.list())]
     await ctx.service.test('litellm')
     expect(JSON.stringify([infos, ctx.events])).not.toContain(KEY)
-    expect(ctx.settings.get().connections.litellm.hasApiKey).toBe(true)
+    expect(ctx.settings.get().proxies[0].hasApiKey).toBe(true)
     const out = await ctx.service.logout('litellm')
-    expect((out.connection as LiteLLMConnection).hasApiKey).toBe(false)
+    expect((out.connection as ProxyConnection).hasApiKey).toBe(false)
     expect(ctx.secrets.get('connection:litellm:apiKey')).toBeUndefined()
   })
 })
@@ -183,8 +184,7 @@ describe('fastModel', () => {
     // LiteLLM without any catalog or mapping: the adapter's default model.
     expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBeUndefined()
     expect(ctx.service.fastModel({ adapter: 'codex', connection: 'litellm' })).toBeUndefined()
-    const s = ctx.settings.get()
-    ctx.settings.set({ ...s, connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: { fast: 'claude-haiku-4-5' } } } })
+    ctx.settings.setProxies(ctx.settings.get().proxies.map((p) => ({ ...p, tierModels: { fast: 'claude-haiku-4-5' } })))
     expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBe('claude-haiku-4-5')
     expect(ctx.service.fastModel({ adapter: 'codex', connection: 'litellm' })).toBe('claude-haiku-4-5')
   })
@@ -214,7 +214,7 @@ describe('runConnection', () => {
   it('throws clear errors for a missing key, and returns empty env for anthropic', () => {
     const ctx = setup()
     const p = litellmProject([['gpt-5', 'deep']])
-    ctx.settings.set({ ...ctx.settings.get(), connections: { ...ctx.settings.get().connections, litellm: { ...ctx.settings.get().connections.litellm, baseUrl: 'http://localhost:4000' } } })
+    ctx.settings.setProxies(ctx.settings.get().proxies.map((p) => ({ ...p, anthropicBaseUrl: 'http://localhost:4000' })))
     expect(() => ctx.service.runConnection(p, { adapter: 'codex', connection: 'litellm', mismatched: [] })).toThrow('LiteLLM has no API key. Set it in Settings > Connections.')
     expect(ctx.service.runConnection(p, { adapter: 'claude', connection: 'anthropic', mismatched: [] })).toMatchObject({ connection: 'anthropic', adapter: 'claude', env: {}, tierModels: { fast: 'haiku' }, models: ['fable', 'opus', 'sonnet', 'haiku'] })
   })
@@ -251,12 +251,8 @@ describe('prepareNewProject', () => {
     const ctx = setup()
     await configureLiteLLM(ctx)
     await ctx.service.connect('litellm')
-    const s = ctx.settings.get()
-    ctx.settings.set({
-      ...s,
-      defaultConnection: 'litellm',
-      connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: { top: 'gpt-5', deep: 'gpt-5', everyday: 'gpt-5-mini', fast: 'gpt-5-mini' } } }
-    })
+    ctx.settings.setProxies(ctx.settings.get().proxies.map((p) => ({ ...p, tierModels: { top: 'gpt-5', deep: 'gpt-5', everyday: 'gpt-5-mini', fast: 'gpt-5-mini' } })))
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })
     const out = ctx.service.prepareNewProject(fresh(ctx.settings))
     expect(out.provider).toMatchObject({ id: 'codex', connection: 'litellm' })
   })
@@ -265,10 +261,10 @@ describe('prepareNewProject', () => {
     const ctx = setup()
     await configureLiteLLM(ctx)
     await ctx.service.connect('litellm')
-    const s = ctx.settings.get()
-    const { everyday: _everyday, ...partial } = s.connections.litellm.tierModels
+    const { everyday: _everyday, ...partial } = ctx.settings.get().proxies[0].tierModels
     void _everyday
-    ctx.settings.set({ ...s, defaultConnection: 'litellm', connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: partial } } })
+    ctx.settings.setProxies(ctx.settings.get().proxies.map((p) => ({ ...p, tierModels: partial })))
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })
     const p = fresh(ctx.settings)
     expect(ctx.service.prepareNewProject(p)).toEqual(p)
   })
@@ -505,22 +501,24 @@ describe('LiteLLM spend and pricing', () => {
       return json({}, 404)
     }) as unknown as typeof fetch
 
-  it('probeLiteLLMUsage is gated on enabled, base URL and key, and maps /key/info plus the daily periods', async () => {
+  it('probeProxyUsages is gated on enabled, base URL and key, and maps /key/info plus the daily periods', async () => {
     const fetchImpl = vi.fn(pricedFetch(() => json({ key: 'hashed', info: { spend: 1.25, max_budget: 10, budget_duration: '30d', budget_reset_at: '2026-11-01T00:00:00Z', key_alias: 'team-a', total_spend: 42 } })))
     const ctx = setup({ fetch: fetchImpl, now: () => SPEND_NOW })
-    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // nothing configured
+    expect(await ctx.service.probeProxyUsages()).toEqual([]) // nothing configured
     await configureLiteLLM(ctx)
-    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // not enabled
+    expect(await ctx.service.probeProxyUsages()).toEqual([]) // not enabled
     expect(fetchImpl).not.toHaveBeenCalled()
     await ctx.service.connect('litellm')
     const keyInfoCalls = (): number => fetchImpl.mock.calls.filter(([u]) => String(u).endsWith('/key/info')).length
-    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // not in use: no default, no project
-    expect(keyInfoCalls()).toBe(0)
+    const afterConnect = keyInfoCalls() // connect's own probe asks /key/info once (status checks.reportsSpend)
+    expect(afterConnect).toBe(1)
+    expect(await ctx.service.probeProxyUsages()).toEqual([]) // not in use: no default, no project
+    expect(keyInfoCalls()).toBe(afterConnect)
     ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })
-    expect(await ctx.service.probeLiteLLMUsage()).not.toBeNull() // in use as the default connection
+    expect(await ctx.service.probeProxyUsages()).toHaveLength(1) // in use as the default connection
     ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'anthropic' })
     ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday']]))
-    const usage = await ctx.service.probeLiteLLMUsage() // in use by a project
+    const [usage] = await ctx.service.probeProxyUsages() // in use by a project
     expect(usage).toEqual({
       connection: 'litellm',
       authMode: 'apiKey',
@@ -550,20 +548,20 @@ describe('LiteLLM spend and pricing', () => {
     for (const [u] of fetchImpl.mock.calls) expect(String(u)).not.toContain(KEY) // only the hash travels in a URL
   })
 
-  it('probeLiteLLMUsage keeps the /key/info spend with a note when the daily route refuses (403)', async () => {
+  it('probeProxyUsages keeps the /key/info spend with a note when the daily route refuses (403)', async () => {
     const fetchImpl = vi.fn(pricedFetch(() => json({ info: { spend: 2 } }), () => json({ detail: 'User not found' }, 403)))
     const ctx = setup({ fetch: fetchImpl, now: () => SPEND_NOW })
     await configureLiteLLM(ctx)
     await ctx.service.connect('litellm')
     ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday']]))
-    const usage = await ctx.service.probeLiteLLMUsage()
+    const [usage] = await ctx.service.probeProxyUsages()
     expect(usage?.spend).toEqual({ usd: 2, budgetUsd: null, resetsAt: null, budgetDuration: null, keyAlias: null, totalUsd: null, periodsNote: SPEND_PERIOD_NOTES.noUser })
     expect(usage?.updatedAt).toBe(SPEND_NOW)
     expect(structuredClone(usage)).toEqual(usage)
     for (const [u] of fetchImpl.mock.calls) expect(String(u)).not.toContain(KEY)
   })
 
-  it('probeLiteLLMUsage returns null on 500 (no DB), 403, junk and network errors', async () => {
+  it('probeProxyUsages returns null on 500 (no DB), 403, junk and network errors', async () => {
     const answers: (() => Response)[] = [
       () => json({ error: 'no db' }, 500),
       () => json({}, 403),
@@ -577,7 +575,7 @@ describe('LiteLLM spend and pricing', () => {
       await configureLiteLLM(ctx)
       await ctx.service.connect('litellm')
       ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday']]))
-      expect(await ctx.service.probeLiteLLMUsage()).toBeNull()
+      expect(await ctx.service.probeProxyUsages()).toEqual([])
     }
   })
 

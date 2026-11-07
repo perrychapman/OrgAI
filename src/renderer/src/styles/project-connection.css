@@ -1,0 +1,89 @@
+/* Project settings > Connection: one radio list over every connection. Rows are native radios in labels. */
+.pconn-list {
+  --pconn-row-h: 3.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+/* Past five entries the list scrolls inside its own region instead of pushing the page. */
+.pconn-list[data-scroll='true'] {
+  max-height: calc(var(--pconn-row-h) * 5.5);
+  overflow-y: auto;
+  padding-right: var(--space-1);
+}
+.pconn-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--pconn-row-h);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  cursor: pointer;
+  flex: none;
+}
+.pconn-row.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.pconn-row.current:not(.on) {
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+.pconn-row.unavailable {
+  cursor: default;
+  background: transparent;
+}
+.pconn-row input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: inherit;
+}
+.pconn-row:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.pconn-row .pconn-name {
+  min-width: 0;
+}
+.pconn-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pconn-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-2);
+}
+.pconn-why {
+  grid-column: 1 / -1;
+  font-size: var(--text-small);
+}
+.pconn-list:disabled {
+  opacity: 0.8;
+}
+
+/* "Apply this mapping?" per-tier lines */
+.remap-mapping {
+  margin-top: var(--space-3);
+}
+.remap-mapping-title {
+  margin: 0 0 var(--space-1);
+  font-weight: var(--weight-semibold);
+}
+.remap-mapping-list {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-4);
+}

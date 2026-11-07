@@ -69,10 +69,17 @@ export type { AgentImportSource }
 
 // ---------- Constants ----------
 
-/** Full-screen (alternate buffer) needs at least this many columns at launch (cli-spec 5.1). */
-export const FULLSCREEN_MIN_COLS = 100
+/**
+ * Full-screen (alternate buffer) needs at least this many columns at launch (cli-spec 5.1). Below SPLIT_MIN_COLS the
+ * body is the stacked layout; 70 keeps the common 80x24 window full-screen (ux-review-tui.md H3, issue #27).
+ */
+export const FULLSCREEN_MIN_COLS = 70
 /** ... and this many rows. */
 export const FULLSCREEN_MIN_ROWS = 24
+/** A status-line notice shows this long, then the key hint comes back (issue #26). */
+export const TUI_NOTICE_TTL_MS = 5000
+/** Esc on the composer interrupts a working run only when pressed twice within this window (issue #31). */
+export const ESC_INTERRUPT_MS = 1500
 /** Two-column split layout from this width; stacked below. */
 export const SPLIT_MIN_COLS = 110
 /** Action keys are ignored this long after the top tray card changed (cli-spec 5.3(2)). */
@@ -476,6 +483,8 @@ export interface LayoutInput {
   treeRows?: number
   /** Rows the worktrees pane would like (split layout: it takes no more than that). */
   worktreeRows?: number
+  /** Rows the open slash palette takes (0 or absent = closed); reserved above the composer (issue #28). */
+  paletteRows?: number
 }
 
 export interface PaneBox {
@@ -491,6 +500,10 @@ export interface LayoutPlan {
   panes: PaneBox[]
   tray: { width: number; height: number }
   composer: { width: number; height: number }
+  /** The slash palette's box (height 0 when closed). Optional until layout.ts fills it (issue #28). */
+  palette?: { width: number; height: number }
+  /** Blank columns between the split's two columns (1 in split mode, 0 stacked; issue #28 M2). */
+  gutter?: number
 }
 
 // ---------- Terminal ----------
@@ -566,6 +579,8 @@ export interface StatusBarProps {
   summary: StatusSummary
   notice?: TuiNotice
   hints: string
+  /** Clock for notice expiry (TUI_NOTICE_TTL_MS); Date.now when absent. */
+  now?: () => number
 }
 
 export interface DecisionTrayProps {
@@ -581,6 +596,12 @@ export interface DecisionTrayProps {
   now?: () => number
   /** Card key to show first (Enter on an agent row): the tray shows that card on top while it is open. */
   focusKey?: string
+  /** `?` on the focused tray (not while a text field is open): the shell opens the tray's which-key overlay. */
+  onHelp?(): void
+  /** A one-line status notice (a rejected key, a gated decision key; issue #25 / #31 L2). */
+  onNotice?(text: string, tone?: Tone): void
+  /** Footer variant: the keys of the cards whose body was printed into scrollback (absent = every card counts as printed). */
+  printed?: ReadonlySet<string>
 }
 
 export type ComposerMode = 'start' | 'send' | 'continue' | 'quick' | 'readOnly'
@@ -591,9 +612,15 @@ export interface ComposerProps {
   mode: ComposerMode
   placeholder: string
   disabledReason?: string
+  /** The slash palette is open and shows the one input line: keep the rows, draw nothing. */
+  hidden?: boolean
   onSubmit(text: string): void
   onOpenPalette(initial: string): void
   onLeave(): void
+  /** A lone `?` on an empty composer: the shell opens the composer's which-key overlay (issue #30 L5). */
+  onHelp?(): void
+  /** The rows the composer draws now (text rows plus the reason line), so the layout can reserve them (issue #28). */
+  onRows?(rows: number): void
 }
 
 export interface SlashContext {
@@ -625,6 +652,8 @@ export interface SlashCommand {
   args?: string
   summary: string
   available?(s: TuiState): boolean
+  /** Why the command is unavailable right now (shown instead of "No matching command"; issue #29 M6). */
+  unavailableReason?(s: TuiState): string | undefined
   run(ctx: SlashContext, args: string): void | Promise<void>
 }
 

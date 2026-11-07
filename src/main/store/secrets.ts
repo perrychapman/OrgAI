@@ -86,8 +86,13 @@ export interface SecretCipher {
   decryptString(encrypted: Buffer): string
 }
 
-/** Key of the LiteLLM proxy key. */
+/** Key of the migrated 'litellm' proxy's key. Equal to proxySecretKey('litellm'), so keys stored before proxies existed still resolve. */
 export const LITELLM_KEY = 'connection:litellm:apiKey'
+
+/** Key of one proxy connection's API key (`connection:<proxy id>:apiKey`). The id must be a proxy id (the caller checks). */
+export function proxySecretKey(proxyId: string): string {
+  return `connection:${proxyId}:apiKey`
+}
 
 /** Prefix of every secret of one MCP server (remove them all when the server is removed). */
 export function mcpSecretPrefix(projectId: string, serverId: string): string {

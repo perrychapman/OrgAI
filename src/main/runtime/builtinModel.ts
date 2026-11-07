@@ -9,7 +9,7 @@ import type { ConnectionId, ModelRef, ModelTier, ProviderId, ProviderModel, Role
  * - A tier name (top, deep, everyday, fast) or a legacy Claude alias (fable, opus, sonnet, haiku) stands for its tier:
  *   the connection's tierModels entry (anthropic included), else the catalog's suggestion for it (the builtin aliases
  *   on anthropic when nothing is discovered), nearest tier first; it must run on the run's adapter.
- * - A full model id is used when the connection can serve it (anthropic: any Claude id; openai and litellm: it is
+ * - A full model id is used when the connection can serve it (anthropic: any Claude id; openai and proxies: it is
  *   in that connection's catalog or tier mapping) and its family runs on the run's adapter.
  * - Otherwise the deep tier of the connection, then the project's root role model (same adapter by construction),
  *   then the adapter's default ('inherit'). A non-default setting that falls back gets a one-line `warning` naming
@@ -18,11 +18,13 @@ import type { ConnectionId, ModelRef, ModelTier, ProviderId, ProviderModel, Role
  */
 export interface BuiltinModelContext {
   connection: ConnectionId
+  /** The connection's display name (a proxy's own name); default: the built-in label or 'proxy'. */
+  connectionName?: string
   /** The adapter the run uses. */
   adapter: ProviderId
   /** Every connection's models; entries of other connections are ignored. */
   catalog: readonly ProviderModel[]
-  /** The connection's tier mapping (AppSettings.connections[connection].tierModels). */
+  /** The connection's tier mapping (connectionRecord(settings, connection).tierModels). */
   tierModels: Partial<Record<ModelTier, ModelRef>>
   /** The project's root role, the last-resort fallback. */
   root?: Pick<Role, 'model' | 'tier'>
@@ -43,7 +45,7 @@ export const SETUP_MODEL_LABEL = 'Setup model'
 export const MCP_ASSIST_MODEL_LABEL = 'MCP assistant model'
 export const SKILL_ASSIST_MODEL_LABEL = 'Skill assistant model'
 export const QUICK_RUN_MODEL_LABEL = 'Chat model'
-const CONNECTION_LABEL: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+const BUILTIN_LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI' }
 
 export function resolveBuiltinModel(setting: ModelRef | undefined, settingLabel: string, ctx: BuiltinModelContext): ResolvedBuiltinModel {
   const fallbackTier: ModelTier = ctx.fallbackTier ?? 'deep'
@@ -91,6 +93,6 @@ export function resolveBuiltinModel(setting: ModelRef | undefined, settingLabel:
   const adapter = ctx.adapter === 'claude' ? 'Claude' : 'Codex'
   return {
     ...fallback,
-    warning: `App setting "${settingLabel}" is ${value}, which this run cannot use on the ${CONNECTION_LABEL[ctx.connection]} connection (${adapter} adapter); using ${used}.`
+    warning: `App setting "${settingLabel}" is ${value}, which this run cannot use on the ${ctx.connectionName ?? BUILTIN_LABEL[ctx.connection] ?? 'proxy'} connection (${adapter} adapter); using ${used}.`
   }
 }

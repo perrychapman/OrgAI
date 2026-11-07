@@ -84,23 +84,63 @@ export function codePointWidth(cp: number): number {
   return 1
 }
 
-/** Columns a string takes (no line breaks expected; a tab counts as 1, the sanitizer expands tabs). */
-export function textWidth(s: string): number {
+const PLAIN_ASCII = /^[\x20-\x7e]*$/
+const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+/** The grapheme clusters of `s` (a cut must never fall inside one). */
+export function graphemes(s: string): string[] {
+  if (PLAIN_ASCII.test(s)) return s.split('')
+  return Array.from(segmenter.segment(s), (x) => x.segment)
+}
+
+/**
+ * Columns one grapheme cluster takes: the first visible code point's width (so marks after a wide character add 0 and
+ * a ZWJ sequence such as a family emoji stays 2), 2 for an emoji with VS16 (U+FE0F) or a keycap, 2 for a regional
+ * indicator pair (flag), 0 for a cluster of zero-width code points only.
+ */
+export function graphemeWidth(g: string): number {
+  let first: number | undefined
   let w = 0
-  for (const ch of s) w += codePointWidth(ch.codePointAt(0) ?? 0)
+  let ri = 0
+  let vs16 = false
+  let keycap = false
+  for (const ch of g) {
+    const cp = ch.codePointAt(0) ?? 0
+    if (cp === 0xfe0f) vs16 = true
+    if (cp === 0x20e3) keycap = true
+    if (cp >= 0x1f1e6 && cp <= 0x1f1ff) ri++
+    if (first === undefined) {
+      const cw = codePointWidth(cp)
+      if (cw > 0) {
+        first = cp
+        w = cw
+      }
+    }
+  }
+  if (first === undefined) return 0
+  if (ri >= 2) return 2
+  if (vs16 && (first >= 0x80 || keycap)) return 2
   return w
 }
 
-/** The longest prefix of `s` that fits in `width` columns. */
+/** Columns a string takes (no line breaks expected; a tab counts as 1, the sanitizer expands tabs). */
+export function textWidth(s: string): number {
+  if (PLAIN_ASCII.test(s)) return s.length
+  let w = 0
+  for (const g of graphemes(s)) w += graphemeWidth(g)
+  return w
+}
+
+/** The longest prefix of `s` that fits in `width` columns; never splits a grapheme cluster. */
 export function sliceToWidth(s: string, width: number): string {
   if (width <= 0) return ''
   let w = 0
   let out = ''
-  for (const ch of s) {
-    const cw = codePointWidth(ch.codePointAt(0) ?? 0)
+  for (const g of graphemes(s)) {
+    const cw = graphemeWidth(g)
     if (w + cw > width) break
     w += cw
-    out += ch
+    out += g
   }
   return out
 }
@@ -152,7 +192,7 @@ export function wrapText(text: string, width: number): string[] {
       const head = sliceToWidth(rest, w)
       // A character wider than the whole line cannot be shown: drop it.
       if (head.length === 0) {
-        const first = String.fromCodePoint(rest.codePointAt(0) ?? 32)
+        const first = graphemes(rest)[0] ?? ' '
         rest = rest.slice(first.length)
         continue
       }

@@ -15,6 +15,8 @@ import type {
   CapabilityUndoInput,
   ConnectionId,
   ConnectionSecretInput,
+  ProxyCreateInput,
+  ProxyKind,
   ConnectorAddInput,
   ConnectorPresetRemoveInput,
   ConnectorTokenInput,
@@ -58,6 +60,9 @@ import type {
 } from '../../shared/types'
 import {
   HARNESS_PROJECT_ID,
+  PROXY_KINDS,
+  isBuiltinConnectionId,
+  isProxyConnectionId,
   KNOWLEDGE_FACT_MAX_CHARS,
   KNOWLEDGE_LINK_ID_RE,
   KNOWLEDGE_NODE_FACTS_MAX,
@@ -65,7 +70,7 @@ import {
   QUICK_RUN_MAX_PROMPT_CHARS,
   isVirtualProjectId
 } from '../../shared/types'
-import { isConnectionId, isSafeId, projectKindOf } from '../../shared/defaults'
+import { isSafeId, projectKindOf } from '../../shared/defaults'
 import { stripSettingsInfo } from '../appInfo'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { harnessProject as buildHarnessProject } from '../mcp/assist'
@@ -553,28 +558,82 @@ export const capabilityArgs = {
  * prototype key), else "Unknown connection". Exported for tests.
  */
 export function connectionIdArg(raw: unknown): ConnectionId {
-  if (!isConnectionId(raw)) throw new Error('Unknown connection')
+  // Shape only (a built-in or a proxy id); ConnectionService says "Unknown connection" for a proxy that does not exist.
+  if (!isBuiltinConnectionId(raw) && !isProxyConnectionId(raw)) throw new Error('Unknown connection')
   return raw
 }
 
-/** Longest LiteLLM key accepted over IPC (connections:setSecret). */
+/** connections:removeProxy input: a proxy id string (PROXY_ID_RE), else "Unknown connection". Exported for tests. */
+export function proxyIdArg(raw: unknown): string {
+  if (!isProxyConnectionId(raw)) throw new Error('Unknown connection')
+  return raw
+}
+
+/** Longest proxy key accepted over IPC (connections:setSecret, connections:createProxy). */
 export const CONNECTION_SECRET_MAX_CHARS = 4000
 
+const KEY_HIDDEN_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
+
+function checkedKey(key: string): string {
+  if (key.length > CONNECTION_SECRET_MAX_CHARS) throw new Error(`The API key is too long (at most ${CONNECTION_SECRET_MAX_CHARS} characters).`)
+  if (KEY_HIDDEN_RE.test(key.trim())) throw new Error('The API key contains line breaks or hidden characters.')
+  return key
+}
+
 /**
- * connections:setSecret input rebuilt as `{ id: 'litellm', apiKey: string | null }`: the key is printable text
+ * connections:setSecret input rebuilt as `{ id: <proxy id>, apiKey: string | null }`: the key is printable text
  * without line breaks or control characters (it becomes an env var and an Authorization header), at most
  * CONNECTION_SECRET_MAX_CHARS; '' or null clears it. Anything else is refused; extra fields are dropped. The error
  * never echoes the value. Exported for tests.
  */
 export function connectionSecretArgs(raw: unknown): ConnectionSecretInput {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Only the LiteLLM connection has a stored secret')
+  const refusal = 'Only a proxy connection has a stored secret'
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(refusal)
   const i = raw as Record<string, unknown>
-  if (i.id !== 'litellm') throw new Error('Only the LiteLLM connection has a stored secret')
-  if (i.apiKey === null || i.apiKey === undefined) return { id: 'litellm', apiKey: null }
+  if (!isProxyConnectionId(i.id)) throw new Error(refusal)
+  if (i.apiKey === null || i.apiKey === undefined) return { id: i.id, apiKey: null }
   if (typeof i.apiKey !== 'string') throw new Error('The API key must be text.')
-  if (i.apiKey.length > CONNECTION_SECRET_MAX_CHARS) throw new Error(`The API key is too long (at most ${CONNECTION_SECRET_MAX_CHARS} characters).`)
-  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(i.apiKey.trim())) throw new Error('The API key contains line breaks or hidden characters.')
-  return { id: 'litellm', apiKey: i.apiKey }
+  return { id: i.id, apiKey: checkedKey(i.apiKey) }
+}
+
+/** Longest name / URL string accepted raw over IPC for connections:createProxy; main validates the real rules. */
+const PROXY_RAW_NAME_MAX = 200
+const PROXY_RAW_URL_MAX = 2048
+
+/**
+ * connections:createProxy input rebuilt: a plain object; `name` and `anthropicBaseUrl` are required strings (name at
+ * most 200 raw characters, main applies PROXY_NAME_MAX and the duplicate rule), `kind` one of PROXY_KINDS,
+ * `openaiBaseUrl` / `modelsUrl` optional strings of at most 2,048 characters, `apiKey` an optional key under the
+ * setSecret rules. Extra fields are dropped; arrays, null and prototype keys are refused. Errors never echo the key.
+ * Exported for tests.
+ */
+export function proxyCreateArgs(raw: unknown): ProxyCreateInput {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('The proxy settings must be an object.')
+  const proto = Object.getPrototypeOf(raw)
+  if (proto !== Object.prototype && proto !== null) throw new Error('The proxy settings must be an object.')
+  for (const k of ['__proto__', 'constructor', 'prototype']) if (Object.hasOwn(raw, k)) throw new Error('The proxy settings must be an object.')
+  const i = raw as Record<string, unknown>
+  if (typeof i.name !== 'string') throw new Error('The proxy needs a name.')
+  if (i.name.length > PROXY_RAW_NAME_MAX) throw new Error(`The proxy name is too long (at most ${PROXY_RAW_NAME_MAX} characters).`)
+  if (typeof i.anthropicBaseUrl !== 'string') throw new Error('The proxy needs an address.')
+  const out: ProxyCreateInput = { name: i.name, anthropicBaseUrl: urlField(i.anthropicBaseUrl, 'address') }
+  if (i.kind !== undefined) {
+    if (typeof i.kind !== 'string' || !(PROXY_KINDS as readonly string[]).includes(i.kind)) throw new Error('Unknown proxy kind.')
+    out.kind = i.kind as ProxyKind
+  }
+  if (i.openaiBaseUrl !== undefined) out.openaiBaseUrl = urlField(i.openaiBaseUrl, 'OpenAI address')
+  if (i.modelsUrl !== undefined) out.modelsUrl = urlField(i.modelsUrl, 'models address')
+  if (i.apiKey !== undefined) {
+    if (typeof i.apiKey !== 'string') throw new Error('The API key must be text.')
+    out.apiKey = checkedKey(i.apiKey)
+  }
+  return out
+}
+
+function urlField(v: unknown, what: string): string {
+  if (typeof v !== 'string') throw new Error(`The proxy ${what} must be text.`)
+  if (v.length > PROXY_RAW_URL_MAX) throw new Error(`The proxy ${what} is too long (at most ${PROXY_RAW_URL_MAX} characters).`)
+  return v
 }
 
 /**
@@ -606,6 +665,7 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
     defaultConnectionChosen: _chosen,
     defaultConnectionReplaced: _replaced,
     connections: _connections,
+    proxies: _proxies,
     providerAuth: _auth,
     terminalServerChosen: _terminalChosen,
     terminalAccessLevelChosen: _levelChosen,
@@ -623,6 +683,7 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
   const out: AppSettings = { ...stored, ...rest }
   out.defaultConnection = stored.defaultConnection
   out.connections = stored.connections
+  out.proxies = stored.proxies
   out.providerAuth = stored.providerAuth
   delete out.defaultConnectionChosen
   delete out.defaultConnectionReplaced

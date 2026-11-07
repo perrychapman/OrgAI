@@ -4,6 +4,7 @@ import { Plus, Puzzle, Trash2 } from 'lucide-react'
 import type { PluginSpec, Project } from '@shared/types'
 import { adapterForProject, newId, projectConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
+import { isProxyId } from '../../lib/connectionLabel'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { ConfirmDialog } from '../ui/Dialog'
@@ -17,9 +18,9 @@ const NOT_CLAUDE = 'Plugins work with Claude only. They are ignored on this conn
 
 /** Team > Catalog > Plugins: add a plugin folder, switch a plugin on or off, remove it. Plugins run on Anthropic projects only. */
 export default function PluginsSection({ project }: { project: Project }): ReactElement {
-  const catalog = useAppStore((s) => s.models['litellm'])
   const connection = projectConnection(project)
-  const claude = connection === 'anthropic' || (connection === 'litellm' && adapterForProject(project, catalog ?? []).adapter === 'claude')
+  const catalog = useAppStore((s) => s.models[connection])
+  const claude = connection === 'anthropic' || (isProxyId(connection) && adapterForProject(project, catalog ?? []).adapter === 'claude')
   const plugins = project.plugins ?? []
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
