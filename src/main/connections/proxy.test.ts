@@ -64,7 +64,14 @@ describe('normalizeProxyUrl', () => {
 
   it('isLocalOrPrivateHost', () => {
     expect(isLocalOrPrivateHost('fd12:3456::1')).toBe(true)
-    expect(isLocalOrPrivateHost('169.254.1.1')).toBe(true)
+    expect(isLocalOrPrivateHost('169.254.1.1')).toBe(false)
+    expect(isLocalOrPrivateHost('169.254.169.254')).toBe(false)
+    expect(isLocalOrPrivateHost('fe80::1')).toBe(false)
+    expect(isLocalOrPrivateHost('[febf::1]')).toBe(false)
+    expect(isLocalOrPrivateHost('10.1.2.3')).toBe(true)
+    expect(() => normalizeProxyUrl('http://169.254.169.254/v1', 'Base URL')).toThrow(/only allowed for localhost/)
+    expect(() => normalizeProxyUrl('http://[fe80::1]/v1', 'Base URL')).toThrow(/only allowed for localhost/)
+    expect(normalizeProxyUrl('https://169.254.1.1/v1')).toBe('https://169.254.1.1/v1')
     expect(isLocalOrPrivateHost('999.1.1.1')).toBe(false)
     expect(isLocalOrPrivateHost('example.com')).toBe(false)
     expect(isLocalOrPrivateHost('')).toBe(false)

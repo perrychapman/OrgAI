@@ -162,6 +162,22 @@ describe('fetchLiteLLMModels', () => {
     expect((e2 as Error).message).toBe('Could not reach localhost:4000')
   })
 
+  it('drops hidden and control characters from remote error text before the cut', async () => {
+    const msg = `bad‮evil​\nline\u0007${'x'.repeat(200)}`
+    const f = (async () => json({ error: { message: msg } }, 500)) as unknown as typeof fetch
+    const err = (await fetchLiteLLMModels('http://localhost:4000', 'k', f).catch((e: Error) => e)) as Error
+    const reason = err.message.replace('500 from /v1/models: ', '')
+    expect(reason.startsWith('badevil line')).toBe(true)
+    expect(reason).not.toMatch(/[‮​\u0007\n]/)
+    expect(reason.length).toBe(120)
+  })
+
+  it('rejects credentials, query and link-local http in the base URL', () => {
+    expect(() => normalizeBaseUrl('https://u:p@x.com')).toThrow(/user name or password/)
+    expect(() => normalizeBaseUrl('https://x.com/?k=1')).toThrow(/query/)
+    expect(() => normalizeBaseUrl('http://169.254.169.254')).toThrow(/localhost/)
+  })
+
   it('rejects bad URLs before fetching', async () => {
     const fetchImpl = vi.fn()
     await expect(fetchLiteLLMModels('http://evil.example.com', 'k', fetchImpl as unknown as typeof fetch)).rejects.toThrow()

@@ -291,6 +291,38 @@ describe('update of a proxy', () => {
     await expect(ctx.service.update({ ...c, id: 'proxy-ffffffff' })).rejects.toThrow('Unknown connection') // the id picks the record; it must exist
   })
 
+  it('removes the saved key when an address moves to a host the proxy did not use; same-origin edits keep it', async () => {
+    const calls: string[] = []
+    const ctx = setup({ fetch: hostFetch({ 'gw.example.com': ['m1'], 'evil.example.com': ['m2'] }, calls) })
+    const c = (await ctx.service.createProxy({ name: 'Gateway', anthropicBaseUrl: 'https://gw.example.com', apiKey: KEY_A })).connection as ProxyConnection
+    const sk = proxySecretKey(c.id)
+    // Path edit on the same origin keeps the key.
+    const kept = await ctx.service.update({ ...c, anthropicBaseUrl: 'https://gw.example.com/v2' })
+    expect(kept.connection).toMatchObject({ hasApiKey: true })
+    expect(ctx.secrets.get(sk)).toBe(KEY_A)
+    // A models URL on another host than the base counts as moved.
+    const before = ctx.events.length
+    const moved = await ctx.service.update({ ...(kept.connection as ProxyConnection), modelsUrl: 'https://evil.example.com/v1/models' })
+    expect(moved.connection).toMatchObject({ hasApiKey: false })
+    expect(ctx.secrets.get(sk)).toBeUndefined()
+    expect(moved.status).toMatchObject({ state: 'disconnected', detail: 'The address moved to another host, so the saved key was removed. Enter the key again.' })
+    expect(ctx.events.slice(before).some((e) => e.type === 'connections.changed')).toBe(true)
+    // Testing now sends the key nowhere.
+    await ctx.service.test(c.id)
+    expect(calls).toEqual([])
+  })
+
+  it('a moved base URL and a moved OpenAI base URL also remove the key', async () => {
+    const ctx = setup()
+    const a = (await ctx.service.createProxy({ name: 'A', anthropicBaseUrl: 'https://a.example.com', apiKey: KEY_A })).connection as ProxyConnection
+    const outA = await ctx.service.update({ ...a, anthropicBaseUrl: 'https://b.example.com' })
+    expect(outA.connection).toMatchObject({ hasApiKey: false })
+    const b = (await ctx.service.createProxy({ name: 'B', anthropicBaseUrl: 'https://c.example.com', apiKey: KEY_B })).connection as ProxyConnection
+    const outB = await ctx.service.update({ ...b, openaiBaseUrl: 'https://d.example.com/v1' })
+    expect(outB.connection).toMatchObject({ hasApiKey: false })
+    expect(ctx.secrets.get(proxySecretKey(b.id))).toBeUndefined()
+  })
+
   it('clearing the base URL is allowed and leaves the proxy unconfigured', async () => {
     const ctx = setup()
     const c = (await ctx.service.createProxy({ name: 'Gateway', anthropicBaseUrl: 'https://gw.example.com', apiKey: KEY_A })).connection as ProxyConnection
