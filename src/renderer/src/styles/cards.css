@@ -528,9 +528,17 @@
     radial-gradient(farthest-side at 50% 0, color-mix(in srgb, var(--text-primary) 22%, transparent), transparent) 0 0 / 100% 10px no-repeat scroll,
     radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--text-primary) 22%, transparent), transparent) 0 100% / 100% 10px no-repeat scroll;
 }
-/* A proposal lists what changes: a taller body in a roomy frame. */
+/* A proposal lists what changes: a taller body in a roomy frame. Its body is always the scroller: a capped body that
+   overflowed visibly (the Team tab's Architect tray sets overflow: visible on card bodies) ran its list on under the
+   footer and could not be scrolled to the end. The overflow sits beside the cap so the two never disagree. */
 .decision-card.kind-proposal .decision-body {
   max-height: min(55cqh, 480px);
+  overflow: auto;
+}
+/* The body takes a Tab stop only while it overflows (DecisionCard sets tabIndex), so the keyboard can scroll it. */
+.decision-body:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 .decision-body > .decision-helper {
   margin-top: var(--space-2);
@@ -598,6 +606,7 @@
   flex: 1 1 0;
   min-height: 200px;
   max-height: none;
+  overflow: auto;
 }
 /* Compact: a tighter head and footer, so the body (the question's options) keeps the room. */
 .frame-tray[data-compact='true'] .decision-head {
