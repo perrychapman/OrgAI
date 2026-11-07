@@ -3,7 +3,7 @@ import { projectConnection } from '@shared/defaults'
 import { runCostInput, sumCosts, type CostInput } from '../../lib/cost'
 import { WEEK_MS } from '../../lib/dashboard'
 import { folderName } from '../../lib/paths'
-import { CONNECTION_LABEL } from '../../lib/usage'
+import { connectionLabel } from '../../lib/connectionLabel'
 
 /** Pure helpers for the Dashboard's project tiles and fact cards. Plain data in, plain data out; no store, no IPC. */
 
@@ -108,7 +108,7 @@ export function connectionProblems(
     const state = c.status.state
     if (state !== 'error' && state !== 'disconnected') continue
     const users = projects.filter((p) => projectConnection(p) === id).length
-    const head = state === 'error' ? `${CONNECTION_LABEL[id]} has a problem.` : `${CONNECTION_LABEL[id]} is not connected.`
+    const head = state === 'error' ? `${connectionLabel(id)} has a problem.` : `${connectionLabel(id)} is not connected.`
     out.push({ id, text: users > 0 ? `${head} ${plural(users, 'project uses', 'projects use')} it.` : head })
   }
   return out
