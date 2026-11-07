@@ -121,3 +121,49 @@ export function connectionTag(on: ConnectionId | undefined, base: ConnectionId |
 export function connectionTagTitle(on: ConnectionId, base: ConnectionId, whose: 'project' | 'run' = 'project'): string {
   return `Runs on ${connectionLabel(on)}, not this ${whose}'s default (${connectionLabel(base)})`
 }
+
+/** True when the role can change files: Edit, Write or Bash (the tools RoleCapabilities treats as elevated). */
+export function isWriterRole(role: Pick<Role, 'tools'>): boolean {
+  return role.tools.some((t) => t === 'Edit' || t === 'Write' || t === 'Bash')
+}
+
+/**
+ * The bridged limits of a role pinned to another connection (docs/design/multi-provider.md "Phase 1 limits"): two short
+ * sentences, plus one for a role that writes. Plain words.
+ */
+export function bridgedLimits(connection: ConnectionId, writer: boolean): string {
+  const base = `It runs as its own session on ${connectionLabel(connection)}, answers its lead once and cannot be messaged. Roles it would create on other connections are not bridged.`
+  return writer ? `${base} It works in the project folder with no worktree.` : base
+}
+
+/** The one-line limit note beside the project's "N run on their own connections" line. */
+export const BRIDGED_NOTE =
+  'Roles on their own connection run as their own session, answer their lead once, cannot be messaged and cannot start roles on a third connection.'
+
+/** The text under the Runs on select for a pinned role (also what the polite status says when the value changes to it). */
+export function runsOnHintText(connection: ConnectionId, writer: boolean): string {
+  return `Bills and routes through ${connectionLabel(connection)}, not the project default. ${bridgedLimits(connection, writer)}`
+}
+
+/** What is said when Runs on goes back to the project default. */
+export function runsOnDefaultText(base: ConnectionId): string {
+  return `Runs on the project default, ${connectionLabel(base)}.`
+}
+
+/** The closed Model fold's summary: "Everyday", or "Everyday · Runs on <name>" when the role is pinned. */
+export function modelFoldSummary(word: string, on: ConnectionId | undefined, base: ConnectionId | undefined): string {
+  const tag = connectionTag(on, base)
+  return tag ? `${word} · Runs on ${tag}` : word
+}
+
+/** The root's Model section line: it never has its own connection. */
+export function rootRunsOnLine(base: ConnectionId): string {
+  return `The orchestrator runs on the project's connection (${connectionLabel(base)}); change it in Project settings > Connection.`
+}
+
+/** Tooltip text for a folded group: " · ran on OpenAI" for members on another connection than the run's, else ''. Names only. */
+export function groupConnectionNote(members: readonly { connection?: ConnectionId }[], runConnection: ConnectionId | undefined): string {
+  if (!runConnection) return ''
+  const names = [...new Set(members.map((m) => m.connection).filter((c): c is ConnectionId => !!c && c !== runConnection))].map(connectionLabel)
+  return names.length ? ` · ran on ${names.join(', ')}` : ''
+}

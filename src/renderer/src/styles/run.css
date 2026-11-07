@@ -660,18 +660,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Shrink order: the model first, then the tag, the handle last (it is how other agents address this one). */
+/* Shrink order: the model first (it can vanish), the handle next (it is how other agents address this one, never under 10ch), the tag last. */
 .agent-node .sub:has(.agent-connection) > span:first-child {
   flex: 0 1 auto;
-  min-width: 6ch;
+  min-width: 10ch;
 }
 .agent-node .sub:has(.agent-connection) > span:not(:first-child):not(.agent-connection) {
   flex: 0 100 auto;
+  min-width: 0;
 }
 .agent-node .sub > .agent-connection {
-  flex: 0 4 auto;
+  flex: 0 0 auto;
   min-width: 5ch;
-  max-width: 50%;
+  max-width: 45%;
   color: var(--canvas-node-text-muted);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

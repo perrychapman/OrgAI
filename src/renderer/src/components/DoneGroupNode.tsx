@@ -9,6 +9,8 @@ import { IconButton } from './ui/IconButton'
 import { Cost } from './ui/Cost'
 import { agentCostInput, sumCosts } from '../lib/cost'
 import { agentLabel } from '../lib/agentTree'
+import { groupConnectionNote } from '../lib/roleConnection'
+import { activeRun, useAppStore } from '../store/useAppStore'
 
 /**
  * One compact node standing in for every finished agent folded under a visible parent (its whole settled subtree,
@@ -52,7 +54,8 @@ function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>)
     const half = side === 'top' || side === 'bottom' ? 5 : 14
     return { style: stationHandleStyle({ ...geo, r: half }, side as `${Position}`) }
   }
-  const tip = names + (agents.length > 4 ? ', …' : '') + (compact && conflicts > 0 ? ` · ${conflicts} unmerged` : '')
+  const runConnection = useAppStore((s) => activeRun(s)?.summary.connection)
+  const tip = names + (agents.length > 4 ? ', …' : '') + groupConnectionNote(agents, runConnection) + (compact && conflicts > 0 ? ` · ${conflicts} unmerged` : '')
   const expand = (
     // Enter and Space on the chevron expand the group; React Flow's node handler must not also select it.
     <span className="done-expand" onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation() }}>

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import type { ConnectionInfo, Project, Role } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import { setConnectionRegistry } from './connectionLabel'
-import { connectionTag, connectionTagTitle, connectionsViewOf, isPinned, pinnedRoles, roleProblemText, roleProblems, runsOnOptions, showRunsOn } from './roleConnection'
+import { BRIDGED_NOTE, bridgedLimits, connectionTag, connectionTagTitle, connectionsViewOf, groupConnectionNote, isPinned, isWriterRole, modelFoldSummary, pinnedRoles, rootRunsOnLine, roleProblemText, roleProblems, runsOnDefaultText, runsOnHintText, runsOnOptions, showRunsOn } from './roleConnection'
 
 const anthropic: ConnectionInfo = {
   connection: { id: 'anthropic', enabled: true, auth: { kind: 'subscription' }, tierModels: {} },
@@ -37,6 +37,29 @@ describe('roleConnection', () => {
     expect(v?.connections?.anthropic.id).toBe('anthropic')
     expect(v?.proxies?.map((p) => p.id)).toEqual(['proxy-1234abcd'])
     expect(connectionsViewOf(null)).toBeUndefined()
+  })
+
+  it('words the bridged limits, the writer line only for writers', () => {
+    const quiet = bridgedLimits('proxy-1234abcd', false)
+    expect(quiet).toContain('its own session on Gateway')
+    expect(quiet).toContain('answers its lead once and cannot be messaged')
+    expect(quiet).toContain('not bridged')
+    expect(quiet).not.toContain('no worktree')
+    expect(bridgedLimits('proxy-1234abcd', true)).toContain('project folder with no worktree')
+    expect(runsOnHintText('proxy-1234abcd', false)).toContain('Bills and routes through Gateway')
+    expect(runsOnDefaultText('anthropic')).toBe('Runs on the project default, Anthropic.')
+    expect(BRIDGED_NOTE).toContain('cannot be messaged')
+    expect(isWriterRole({ tools: ['Read', 'Bash'] })).toBe(true)
+    expect(isWriterRole({ tools: ['Read', 'Grep'] })).toBe(false)
+  })
+
+  it('words the fold summary, the root line and the group tooltip', () => {
+    expect(modelFoldSummary('Everyday', 'proxy-1234abcd', 'anthropic')).toBe('Everyday · Runs on Gateway')
+    expect(modelFoldSummary('Everyday', 'anthropic', 'anthropic')).toBe('Everyday')
+    expect(rootRunsOnLine('anthropic')).toBe("The orchestrator runs on the project's connection (Anthropic); change it in Project settings > Connection.")
+    expect(groupConnectionNote([{ connection: 'anthropic' }, { connection: 'proxy-1234abcd' }, {}], 'anthropic')).toBe(' · ran on Gateway')
+    expect(groupConnectionNote([{ connection: 'anthropic' }], 'anthropic')).toBe('')
+    expect(groupConnectionNote([{ connection: 'proxy-1234abcd' }], undefined)).toBe('')
   })
 
   it('knows pinned roles and never pins the root', () => {
