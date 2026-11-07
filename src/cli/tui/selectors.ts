@@ -460,6 +460,15 @@ export { treeCounts } from './treeRows'
 
 // ---------- Transcript ----------
 
+/** SDK failure subtypes as the adapters word them in a row ("error_during_execution" -> "during execution"). */
+const FAILED_TURN_REASONS = new Set(['during execution', 'max turns', 'max budget usd', 'max structured output retries'])
+
+/** The sentence for a bare failure reason; any other text is returned unchanged. */
+export function failedTurnSentence(text: string): string {
+  const t = text.trim().toLowerCase().replace(/^error[_ ]/, '').replace(/_/g, ' ')
+  return FAILED_TURN_REASONS.has(t) ? `The last turn failed (error ${t}). Send a message to try again.` : text
+}
+
 function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id: string) => string | undefined): TranscriptRow | null {
   const key = `${runId}|${e.id}`
   const harness = e.source === 'harness'
@@ -467,7 +476,7 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
   const b = e.block
   switch (b.kind) {
     case 'text': {
-      const text = safe(b.text).trim()
+      const text = failedTurnSentence(safe(b.text).trim())
       return text ? { ...base, kind: harness ? 'harness' : 'text', text, ...(harness ? { tone: 'dim' as const } : {}) } : null
     }
     case 'thinking': {
@@ -490,7 +499,7 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
       return { ...base, kind: 'user', text: body || '(empty message)' }
     }
     case 'system': {
-      const text = safe(b.text).trim()
+      const text = failedTurnSentence(safe(b.text).trim())
       return text ? { ...base, kind: harness ? 'harness' : 'system', text, tone: 'dim' } : null
     }
     default:
@@ -667,12 +676,15 @@ export function statusSummary(s: TuiState): StatusSummary {
   const view = statusViewOf({ summary: run.summary, plan: run.plan, agents: run.agents }, openDecisions(run) > 0, s.project)
   const chain = chainRuns(s)
   const cost = costView(chain.length > 1 ? sumCosts(chain.map((r) => runCostInput(r.summary))) : runCostInput(run.summary))
+  // A failed root turn leaves the run idle (it takes another message): say so instead of a plain Idle (issue #29 M5).
+  const root = Object.values(run.agents).find((a) => a.parentId === null)
+  const failedTurn = run.summary.status === 'idle' && root?.state === 'error'
   return {
     ...out,
     runTag: runTagOf(s, run.summary.id),
     runTitle: safeLine(runName(run.summary)),
-    statusWord: statusText(view),
-    tone: RUN_TONE[view.tone] ?? 'dim',
+    statusWord: failedTurn ? `${statusText(view)} · last turn failed` : statusText(view),
+    tone: failedTurn ? 'danger' : (RUN_TONE[view.tone] ?? 'dim'),
     costText: cost.text
   }
 }
