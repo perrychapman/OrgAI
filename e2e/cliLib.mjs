@@ -3,7 +3,7 @@
 // (a pure-Node host in a CLI process); `startDaemon()` keeps one alive for the script. `hostRpc` is a raw
 // authenticated JSON-RPC client in plain JS, so a script can seed state (e.g. engagement projects) without depending
 // on another task's commands.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
@@ -12,6 +12,17 @@ import * as path from 'node:path'
 import { APP_DIR, DATA_DIR, allowFullTerminalAccess, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
+
+/** A key file only its owner can read. Windows gives a new file inherited entries (SYSTEM, Administrators) that the key-file custodian refuses, so restrict the DACL to this user as its error message says. */
+export function writeRestrictedKeyFile(file, bytes) {
+  fs.writeFileSync(file, bytes, { mode: 0o600 })
+  if (process.platform !== 'win32') return
+  const who = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+  const sid = /"(S-1-[0-9-]+)"\s*$/m.exec(who.stdout ?? '')?.[1]
+  if (!sid) throw new Error(`could not read the user SID: ${who.stdout} ${who.stderr}`)
+  const r = spawnSync('icacls.exe', [file, '/inheritance:r', '/grant:r', `*${sid}:F`], { encoding: 'utf8' })
+  if (r.status !== 0) throw new Error(`icacls failed: ${r.stdout} ${r.stderr}`)
+}
 
 export const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
 /** `<userDataDir>/data`: where the host keeps run/daemon.json and run/daemon.secret. */
@@ -24,7 +35,7 @@ delete ENV.ELECTRON_RUN_AS_NODE
 // A mock inproc host never touches an OS key store (a throwaway data folder must not leave keychain items); the
 // vault key comes from a throwaway key file instead.
 const KEY_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-e2e-key-'))
-fs.writeFileSync(path.join(KEY_DIR, 'vault.key'), randomBytes(32), { mode: 0o600 })
+writeRestrictedKeyFile(path.join(KEY_DIR, 'vault.key'), randomBytes(32))
 ENV.ORGAI_VAULT_KEY_FILE = path.join(KEY_DIR, 'vault.key')
 process.on('exit', () => fs.rmSync(KEY_DIR, { recursive: true, force: true }))
 

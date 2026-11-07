@@ -37,7 +37,7 @@
 // dependencies from the registry (the user's npm config and cache apply). A host left behind is stopped by the pid in
 // the temp data folder's daemon.json only. Windows: orgai.cmd runs through `cmd.exe /d /s /c` with fixed arguments.
 import { createHash, randomBytes } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
@@ -55,6 +55,17 @@ import {
   unlistedInstallScripts
 } from './lib/npmPackage.mjs'
 import { npmInvocation } from './build-npm-package.mjs'
+
+/** A key file only its owner can read (Windows: restrict the DACL to this user, as the key-file custodian demands). */
+function writeRestrictedKeyFile(file, bytes) {
+  fs.writeFileSync(file, bytes, { mode: 0o600 })
+  if (process.platform !== 'win32') return
+  const who = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+  const sid = /"(S-1-[0-9-]+)"\s*$/m.exec(who.stdout ?? '')?.[1]
+  if (!sid) throw new Error('could not read the user SID')
+  const r = spawnSync('icacls.exe', [file, '/inheritance:r', '/grant:r', `*${sid}:F`], { encoding: 'utf8' })
+  if (r.status !== 0) throw new Error(`icacls failed: ${r.stdout} ${r.stderr}`)
+}
 import { cleanupDaemon, execOutcome, launchCommand, makeFixtureRepo, spawnRunner, verifyEnv, versionMatches } from './verify-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -702,7 +713,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const connected = await testState()
       if (connected !== 'connected') problems6.push(`a fresh process reads the stored key: expected connected, got ${connected ?? 'no answer'}`)
       const otherKey = path.join(keyDir, 'other.key')
-      fs.writeFileSync(otherKey, randomBytes(32), { mode: 0o600 })
+      writeRestrictedKeyFile(otherKey, randomBytes(32))
       const mm = await orgai(['--host', 'inproc', '--output-format', 'json', 'secrets', 'status'], userDataDir, { env: { ORGAI_VAULT_KEY_FILE: otherKey } })
       outputs.push(mm)
       const mmState = vaultState(mm.stdout)
