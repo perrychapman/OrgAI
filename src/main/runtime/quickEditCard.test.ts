@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { PermissionSuggestion } from '@shared/types'
-import { QUICK_SESSION_EDIT_LABEL, editHasMove, editInputAt, quickEditCard, quickEditFree } from './quickEditCard'
+import { QUICK_SESSION_EDIT_LABEL, editHasDotSegment, editHasMove, editInputAt, hasDotSegment, quickEditCard, quickEditFree } from './quickEditCard'
 import { runSummary } from './testHelpers'
 
 const folder = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-quick-card-')))
@@ -80,5 +80,70 @@ describe('quickEditCard', () => {
     expect(editHasMove({ file_path: src })).toBe(false)
     // editInputAt resolves a relative destination like a path.
     expect(editInputAt({ changes: [{ path: 'a.md', movePath: 'b.md' }] }, folder)).toEqual({ changes: [{ path: join(folder, 'a.md'), movePath: join(folder, 'b.md') }] })
+  })
+
+  describe('raw `.` / `..` segments (review NH1)', () => {
+    const on = { run: quickRun, quickSessionEdits: () => true }
+    const refused = (input: unknown, cwd = folder): void => {
+      expect(editHasDotSegment(input), JSON.stringify(input)).toBe(true)
+      expect(quickEditFree(on, 'Edit', input, cwd), JSON.stringify(input)).toBe(false)
+      const card = quickEditCard(quickRun, 'Edit', input, cwd, [])
+      expect(card.quick, JSON.stringify(input)).toBe(false)
+      expect(card.ruleLabels).not.toContain(QUICK_SESSION_EDIT_LABEL)
+    }
+    // Raw string concatenation, never join (join would collapse the segment before the check sees it).
+    const raw = (...parts: string[]): string => [folder, ...parts].join('/')
+
+    it('refuses a dot segment in file_path or notebook_path, absolute or relative, either separator', () => {
+      // Each of these resolves lexically to a file inside the folder, so only the raw check refuses it.
+      refused({ file_path: raw('sub', '..', 'b.md') })
+      refused({ file_path: raw('.', 'x.md') })
+      refused({ file_path: `${folder}\\sub\\..\\b.md` })
+      refused({ notebook_path: raw('sub', '..', 'n.ipynb') })
+      refused({ file_path: 'a/../b.md' })
+      refused({ file_path: './x.md' })
+      refused({ file_path: 'sub\\..\\b.md' })
+      // A relative `..` against a cwd inside the folder (lands back in the folder lexically).
+      refused({ file_path: '../b.md' }, join(folder, 'sub'))
+      // Every-dot segments too (Win32 strips trailing dots).
+      refused({ file_path: raw('...', 'b.md') })
+    })
+
+    it('refuses a dot segment in any Codex change path or move destination', () => {
+      refused({ changes: [{ path: raw('ok.md') }, { path: raw('sub', '..', 'b.md'), kind: 'update' }] })
+      refused({ changes: [{ path: 'sub/../b.md', kind: 'add' }] })
+      // Move destinations (already refused as moves; the dot check covers each spelling as well).
+      refused({ changes: [{ path: raw('a.md'), movePath: raw('sub', '..', 'b.md') }] })
+      refused({ changes: [{ path: raw('a.md'), kind: { type: 'update', move_path: 'sub/../b.md' } }] })
+      refused({ changes: [{ path: raw('a.md'), move_path: './b.md' }] })
+    })
+
+    it('keeps names that merely contain dots, and an ordinary nested relative path still resolves and is covered', () => {
+      for (const p of ['a..b.md', '.hidden.md', 'x/..y/z.md', 'v1.2/notes.md', '..md']) expect(hasDotSegment(p), p).toBe(false)
+      expect(editHasDotSegment({ file_path: raw('sub', 'b.md') })).toBe(false)
+      expect(editHasDotSegment({ command: '../x' })).toBe(false)
+      expect(editInputAt({ file_path: 'sub/b.md' }, folder)).toEqual({ file_path: join(folder, 'sub/b.md') })
+      expect(quickEditFree(on, 'Edit', { file_path: 'sub/b.md' }, folder)).toBe(true)
+      expect(quickEditFree(on, 'Edit', { changes: [{ path: 'sub/b.md', kind: 'add' }] }, folder)).toBe(true)
+      expect(quickEditCard(quickRun, 'Edit', { file_path: 'sub/b.md' }, folder, []).quick).toBe(true)
+    })
+
+    it('refuses `<folder>/vendor/../x` where vendor is a link out of the folder', () => {
+      const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-quick-card-out-')))
+      mkdirSync(join(outside, 'sub'))
+      try {
+        try {
+          symlinkSync(join(outside, 'sub'), join(folder, 'vendor'), 'junction')
+        } catch {
+          return
+        }
+        // Lexically this is <folder>/x.md; the kernel follows vendor first and lands in <outside>/x.md.
+        refused({ file_path: raw('vendor', '..', 'x.md') })
+      } finally {
+        // rm never follows a link (lstat), so this removes the link only.
+        rmSync(join(folder, 'vendor'), { force: true, recursive: true })
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
   })
 })

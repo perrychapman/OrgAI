@@ -133,6 +133,21 @@ describe('parsing', () => {
     expect(fileChanges(m.item('it-f1')!)).toEqual([{ path: '/repo/src/a.ts', kind: 'update' }])
   })
 
+  it('keeps a raw change with no usable path as path "" so every check fails closed (review NL2)', () => {
+    const item = (changes: unknown[]) => ({ type: 'fileChange', id: 'f', changes }) as never
+    expect(fileChanges(item([{ path: '/r/a.md', kind: 'add' }, { kind: 'update' }, { path: 7, kind: 'delete' }, { path: '' }, null, 'x']))).toEqual([
+      { path: '/r/a.md', kind: 'add' },
+      { path: '', kind: 'update' },
+      { path: '', kind: 'delete' },
+      { path: '', kind: 'update' },
+      { path: '', kind: 'update' },
+      { path: '', kind: 'update' }
+    ])
+    expect(fileChangeTargets(fileChanges(item([{ path: '/r/a.md' }, {}])))).toEqual(['/r/a.md', ''])
+    // A missing or non-array list is still no changes.
+    expect(fileChanges({ type: 'fileChange', id: 'f' } as never)).toEqual([])
+  })
+
   it('carries a move destination on each change and lists it as a write target (review H1)', () => {
     const item = (changes: unknown[]) => ({ type: 'fileChange', id: 'f', changes }) as never
     const changes = fileChanges(
