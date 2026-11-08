@@ -97,6 +97,8 @@ export function cleanRunOverrides(v: unknown): RunOverrides | undefined {
  */
 export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date.now()): RunSummary {
   const r: RunSummary = { ...input }
+  if (typeof r.conversationBudgetUsd !== 'number' || !Number.isFinite(r.conversationBudgetUsd) || r.conversationBudgetUsd <= 0) delete r.conversationBudgetUsd
+  if (r.modelAdapter !== 'claude' && r.modelAdapter !== 'codex' && r.modelAdapter !== 'mock') delete r.modelAdapter
   if (r.endedBy !== undefined && !ENDED_BY.includes(r.endedBy)) delete r.endedBy
   // endedWithApp is exactly true or absent. A record saved before endedBy existed has endedWithApp alone: the
   // app cut it, so it gets endedBy 'app' (the renderer trusts endedWithApp). Next to any other endedBy it is dropped.

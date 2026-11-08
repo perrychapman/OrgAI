@@ -3193,7 +3193,28 @@ export interface SetupStartInput {
   surface?: RunSurface
 }
 
+/** Explicit root-model selection for a running or recoverable conversation. */
+export interface SwitchRunModelInput {
+  runId: string
+  model: string
+  connection?: ConnectionId
+}
+
+export interface SwitchRunModelResult {
+  /** May be a successor run after an explicit provider handoff; callers must follow its id. */
+  run: RunSummary
+  /** True only when the returned run is using the selection. False may also mean saved for continuation (reason explains). */
+  applied: boolean
+  reason?: string
+}
+
 export interface RunSummary {
+  /** Runtime actually used by this run, retained when selecting a different adapter for continuation. */
+  modelAdapter?: ProviderId
+  /** Main-owned original desktop conversation cap for model handoff accounting (positive USD only). */
+  conversationBudgetUsd?: number
+  /** Root selection; on an ended/paused run applies to its next continuation. Never alters project defaults. */
+  modelSelection?: { model: string; connection: ConnectionId }
   id: string
   projectId: string
   kind: RunKind
@@ -3564,6 +3585,7 @@ export interface UsageStatus {
 // ---------- Run events (main -> renderer) ----------
 
 export type RunEvent =
+  | { type: 'run.model'; runId: string; selection: { model: string; connection: ConnectionId } }
   | {
       type: 'run.status'
       runId: string
@@ -4823,6 +4845,7 @@ export interface OrgAIApi {
     decideMerge(input: { runId: string; reviewId: string; decision: MergeDecision }): Promise<void>
     /** A paused run: continue it now instead of waiting for the usage window to reset. */
     resumeNow(runId: string): Promise<RunSummary>
+    switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult>
     /** A paused run: keep it paused; the user continues it by hand. */
     cancelAutoResume(runId: string): Promise<void>
     /**
@@ -5817,6 +5840,7 @@ export const IPC = {
   runsDecide: 'runs:decide',
   runsContinue: 'runs:continue',
   runsResumeNow: 'runs:resumeNow',
+  runsSwitchModel: 'runs:switchModel',
   runsCancelAutoResume: 'runs:cancelAutoResume',
   runEvent: 'runs:event',
   setupStart: 'setup:start',

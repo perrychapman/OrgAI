@@ -277,6 +277,7 @@ const NEVER_WRITES_SECRETS: Record<string, string> = {
   'mcp:startAssist': 'harness project, bare',
   'skills:startAssist': 'setup-like, bare',
   'runs:send': 'delivers a message; no server preparation',
+  'runs:switchModel': 'selects a root model without changing permissions; runtime resolves routing without exposing secrets',
   'runs:interrupt': 'stops a turn',
   'runs:stop': 'ends a run',
   'runs:cancelAutoResume': 'clears a timer',

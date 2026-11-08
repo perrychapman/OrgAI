@@ -274,6 +274,9 @@ class CodexSession implements RuntimeSession {
   private harness: HarnessTool[] = []
   private harnessByCodexName = new Map<string, HarnessTool>()
   private rootThreadId = ''
+  private rootModelOverride?: string
+  /** App-server usage totals are cumulative for the thread, including turns on earlier models. */
+  private rootTokenTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
   /** Messages the user sent before the root thread existed. */
   private earlySends: { text: string; images?: ImageAttachment[] }[] = []
   /** Rules granted with "allow for this run". */
@@ -402,6 +405,26 @@ class CodexSession implements RuntimeSession {
   async receive(message: PeerMessage): Promise<void> {
     if (this.ending) return
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
+  /** Switch only the root at an idle boundary, preserving the existing conversation and grants. */
+  async switchModel(input: { model: string; connection?: RunConnection }): Promise<void> {
+    if (this.ctx.bridgedChild) throw new Error('Only the run root can switch models.')
+    if (!validModelId(input.model)) throw new Error('Invalid model id.')
+    if (input.connection && (input.connection.adapter !== this.ctx.connection?.adapter || input.connection.connection !== this.ctx.connection?.connection)) {
+      throw new Error('Switching connections requires transporting the conversation and is not supported by this session.')
+    }
+    if (this.ending || this.ended || !this.rootThreadId) throw new Error('This session is not live; continue the run before switching models.')
+    const state = this.settlement()
+    if (!state.rootIdle || !state.quiescent || this.ctx.pendingInteractions() > 0) {
+      throw new Error('Switch models when the root is idle and all decision cards are answered.')
+    }
+    this.rootModelOverride = input.model
+    const root = this.agents.get(ROOT_AGENT_ID)
+    if (root) {
+      root.model = input.model
+      this.upsert(root)
+    }
   }
 
   /** Headless exec settlement view (cli-spec 6.2(2)). */
@@ -557,7 +580,7 @@ class CodexSession implements RuntimeSession {
           this.log('info', `Could not steer the running turn (${(e as Error).message}); starting a new one.`)
         }
       }
-      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...extra })
+      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...extra, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
       const id = parseTurnId(res)
       if (id && !this.completedTurns.has(id)) this.activeTurn.set(threadId, id)
     })
@@ -872,13 +895,32 @@ class CodexSession implements RuntimeSession {
         if (agent) {
           agent.inputTokens = u.input
           agent.outputTokens = u.output
-          setModelTokens(agent, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model ?? 'unknown', {
+          const model = agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model ?? 'unknown'
+          let tokens = {
             input: Math.max(0, u.input - u.cachedInput),
             output: u.output,
             cacheRead: Math.min(u.cachedInput, u.input),
             cacheWrite: 0
-          })
-          const cost = this.estimateCost(agent, u)
+          }
+          if (agentId === ROOT_AGENT_ID) {
+            const previous = agent.usage?.models.find((m) => m.model === model)?.tokens
+            const total = tokens
+            tokens = {
+              input: (previous?.input ?? 0) + Math.max(0, total.input - this.rootTokenTotals.input),
+              output: (previous?.output ?? 0) + Math.max(0, total.output - this.rootTokenTotals.output),
+              cacheRead: (previous?.cacheRead ?? 0) + Math.max(0, total.cacheRead - this.rootTokenTotals.cacheRead),
+              cacheWrite: 0
+            }
+            this.rootTokenTotals = total
+          }
+          setModelTokens(agent, model, tokens)
+          const conn = this.ctx.connection
+          const cost = agentId === ROOT_AGENT_ID && this.rootModelOverride && conn?.pricing && !isBuiltinConnectionId(conn.connection)
+            ? agent.usage?.models.reduce((sum, m) => {
+              const price = priceFor(conn.pricing!, m.model)
+              return sum + (price ? costFromPrice({ input: m.tokens.input, output: m.tokens.output, cacheRead: m.tokens.cacheRead, cacheCreation: m.tokens.cacheWrite }, price) : 0)
+            }, 0)
+            : this.estimateCost(agent, u)
           const moved = cost !== undefined && Math.abs(cost - agent.costUsd) > 1e-12
           if (moved) agent.costUsd = cost
           this.upsert(agent)

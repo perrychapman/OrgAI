@@ -635,6 +635,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     })
   })
   handle(IPC.runsResumeNow, (_e, runId: string) => runs.resumeNow(runId))
+  handle(IPC.runsSwitchModel, (_e, raw: unknown) => runs.switchModel(raw as import('@shared/types').SwitchRunModelInput))
   handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
   handle(
     IPC.setupAnswer,
