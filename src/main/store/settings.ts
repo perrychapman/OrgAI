@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path'
 import type {
   AppearanceSettings,
+  NormalizedAppearanceSettings,
   AppSettings,
   ConnectionId,
   ModelPriceOverride,
@@ -12,7 +13,7 @@ import type {
   ProviderConnections,
   ProxyConnection
 } from '@shared/types'
-import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, PROXIES_MAX, PROXY_KINDS, THEME_MODES, isModelTier, isPermissionMode, isProxyConnectionId } from '@shared/types'
+import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CANVAS_PRESENTATIONS, CANVAS_SCENE_PALETTES, PROXIES_MAX, PROXY_KINDS, THEME_MODES, isModelTier, isPermissionMode, isProxyConnectionId } from '@shared/types'
 import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections, isConnectionId, isKnownConnection } from '@shared/defaults'
 import { normalizeProxyUrl, readableProxyName } from '../connections/proxy'
 import { normalizeModelId, sanitizeModelPrice } from '../runtime/pricing'
@@ -25,7 +26,7 @@ const oneOf = <T extends string>(options: readonly T[], v: unknown, fallback: T)
  * Appearance from disk or the renderer over DEFAULT_APPEARANCE. Settings saved before it existed get the
  * defaults; unknown enum values fall back field by field; an accent that is not '#rrggbb' (or '#rgb') falls back.
  */
-export function normalizeAppearance(raw: unknown): AppearanceSettings {
+export function normalizeAppearance(raw: unknown): NormalizedAppearanceSettings {
   const d = DEFAULT_APPEARANCE
   const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<Record<keyof AppearanceSettings, unknown>>
   const c = (r.canvas && typeof r.canvas === 'object' ? r.canvas : {}) as Partial<Record<keyof AppearanceSettings['canvas'], unknown>>
@@ -40,6 +41,8 @@ export function normalizeAppearance(raw: unknown): AppearanceSettings {
     theme: oneOf(THEME_MODES, r.theme, d.theme),
     accent: accent(),
     canvas: {
+      presentation: oneOf(CANVAS_PRESENTATIONS, c.presentation, d.canvas.presentation),
+      scenePalette: oneOf(CANVAS_SCENE_PALETTES, c.scenePalette, d.canvas.scenePalette),
       pattern: oneOf(CANVAS_PATTERNS, c.pattern, d.canvas.pattern),
       tint: typeof c.tint === 'boolean' ? c.tint : d.canvas.tint,
       edges: oneOf(CANVAS_EDGE_STYLES, c.edges, d.canvas.edges),
