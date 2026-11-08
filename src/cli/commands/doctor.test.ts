@@ -4,9 +4,16 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fakeContext } from '../testing/fakeContext'
 import { EXIT } from '../types'
-import { renderCliShim } from '../../main/host/packagedLayout'
 import { DAEMON_JSON_MAX_BYTES, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
 import { runtimeCheckProbes } from '../doctor/runtimeChecks'
+
+/** An old OrgAI app shim, written out here (the app no longer renders one). */
+function renderCliShim(input: { platform: string; launcher: string; env?: Record<string, string> }): string {
+  const note = 'orgai-shim v1: written by OrgAI (App settings > General > Advanced settings > Terminal). OrgAI updates or removes this file.'
+  return input.platform === 'win32'
+    ? ['@echo off', `rem ${note}`, 'setlocal', `"${input.launcher}" %*`, ''].join('\r\n')
+    : `#!/bin/sh\n# ${note}\nexec '${input.launcher}' "$@"\n`
+}
 
 const realProbes = { ...doctorProbes }
 const realRuntimeProbes = { ...runtimeCheckProbes }

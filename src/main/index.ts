@@ -87,6 +87,8 @@ let ownership: HostOwnership | undefined
 let booted = false
 /** Set on the first before-quit that goes ahead: a second launch during a quit must not open a window in the quitting app. */
 let quitting = false
+/** The orgai command installer, set once the app booted (the quit handlers cancel a running install). */
+let cliInstallForStatus: CliInstallService | undefined
 /** Clones started from a window (desktop only); cancelled when the quit goes ahead. */
 let repoClone: RepoCloneService | undefined
 
@@ -371,7 +373,6 @@ app.whenReady().then(async () => {
   }
   // Stores, services, adapters, background probes and housekeeping (cli-spec 3.2(2) step 4). The boot's markReady is
   // held back: the record turns 'ready' below, once the boot returned.
-  let cliInstallForStatus: CliInstallService | undefined
   const bootOwnership = {
     get info() {
       return owned.info
@@ -427,7 +428,11 @@ app.whenReady().then(async () => {
     // Wave 7 (cli-standalone.md 4.3): the shutdown sequence releases ownership, then calls onDrained; a quit started
     // anywhere (Quit, a last window on Windows / Linux, idle exit, a signal) only leaves once it got here.
     // Repository clones the windows started are cancelled as soon as the drain starts (round 6 item 9).
-    quiesce: () => repoClone?.dispose(),
+    quiesce: () => {
+      repoClone?.dispose()
+      // A running install holds a mutation lease; cancel it now so the drain does not wait for npm.
+      cliInstallForStatus?.cancel()
+    },
     // At the hard limit (writers still in flight after 60 s, descendants killed): leave now; the exit hook releases.
     exitAtHardLimit: () => process.exit(0),
     // Chromium's own helpers (GPU, renderers, network and utility services) are not the host's work: killing them
@@ -558,6 +563,7 @@ app.on(
     },
     reason: () => quitReason,
     stopCertRead: () => stopSystemCertRead(),
+    stopCliInstall: () => cliInstallForStatus?.cancel(),
     // Never strand the app: the exit hook releases ownership.
     exit: (code) => app.exit(code),
     warn: (m) => log.warn(m)

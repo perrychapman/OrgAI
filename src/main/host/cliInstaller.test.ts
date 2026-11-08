@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   OUTPUT_MAX_BYTES,
@@ -13,6 +13,7 @@ import {
   installCommandText,
   installTag,
   prefixHint,
+  systemExe,
   resolveNpm,
   scrubEnv,
   type CliInstallDeps,
@@ -151,7 +152,11 @@ describe('buildNpmCommand', () => {
     expect(c.verbatim).toBe(true)
     expect(c.args).toEqual(['/d', '/s', '/c', '""C:\\Program Files\\nodejs\\npm.cmd" install -g orgai-cli@next --ignore-scripts"'])
     // A ComSpec that is not absolute is ignored.
-    expect(buildNpmCommand('win32', 'C:\\n\\npm.cmd', 'latest', 'cmd.exe & calc').file).toBe('cmd.exe')
+    expect(buildNpmCommand('win32', 'C:\\n\\npm.cmd', 'latest', 'cmd.exe & calc', { SystemRoot: 'D:\\Win' }).file).toBe('D:\\Win\\System32\\cmd.exe')
+    // No usable SystemRoot (missing, relative, network): the fixed C:\\Windows.
+    expect(buildNpmCommand('win32', 'C:\\n\\npm.cmd', 'latest', undefined, {}).file).toBe('C:\\Windows\\System32\\cmd.exe')
+    expect(systemExe({ SystemRoot: '\\\\evil\\share' }, 'taskkill.exe')).toBe('C:\\Windows\\System32\\taskkill.exe')
+    expect(systemExe({ SystemRoot: 'win' }, 'taskkill.exe')).toBe('C:\\Windows\\System32\\taskkill.exe')
   })
 })
 
@@ -248,6 +253,34 @@ describe('install', () => {
     expect(calls[0].file).not.toMatch(/sudo|osascript|pkexec/)
   })
 
+  it('the --prefix hint says to remove the old command first when it is there', async () => {
+    const shim = oldShim('ours')
+    const { svc, children } = make({ oldShim: shim })
+    const p = svc.install()
+    children[0].stderr.emit('data', 'npm error code EACCES\n')
+    children[0].emit('close', 243)
+    expect((await p).hint).toContain('Remove the old orgai command first')
+  })
+
+  it('a taskkill that fails to start is logged, not thrown', async () => {
+    const warn = vi.fn()
+    const { svc, children } = make({
+      platform: 'win32',
+      home: 'C:\\Users\\me',
+      env: { PATH: 'C:\\Program Files\\nodejs', SystemRoot: 'C:\\Windows' },
+      loginPath: 'C:\\Program Files\\nodejs',
+      fs: { stat: (p) => ({ isFile: () => p === 'C:\\Program Files\\nodejs\\npm.cmd' }) },
+      log: { info: () => {}, warn }
+    })
+    const p = svc.install()
+    svc.cancel()
+    // children[1] is the taskkill child: an error event must have a listener.
+    expect(() => children[1].emit('error', new Error('spawn ENOENT'))).not.toThrow()
+    expect(warn).toHaveBeenCalled()
+    children[0].emit('close', 1)
+    await p
+  })
+
   it('another failure shows npm last line', async () => {
     const { svc, children } = make()
     const p = svc.install()
@@ -301,7 +334,8 @@ describe('install', () => {
     expect(calls[0].args[3]).toBe('""C:\\Program Files\\nodejs\\npm.cmd" install -g orgai-cli@latest --ignore-scripts"')
     expect(calls[0].opts.windowsVerbatimArguments).toBe(true)
     expect(svc.cancel()).toBe(true)
-    expect(calls[1].file).toBe('taskkill')
+    expect(calls[1].file).toBe('C:\\Windows\\System32\\taskkill.exe')
+    expect(win32.isAbsolute(calls[0].file) && win32.isAbsolute(calls[1].file)).toBe(true)
     expect(calls[1].args).toEqual(['/pid', '4242', '/T', '/F'])
     children[0].emit('close', 1)
     expect((await p).cancelled).toBe(true)
@@ -315,7 +349,7 @@ describe('install', () => {
       await vi.advanceTimersByTimeAsync(1001)
       expect(children[0].killed).toContain('SIGTERM')
       await vi.advanceTimersByTimeAsync(10)
-      expect((await p).ok).toBe(false)
+      expect(await p).toMatchObject({ ok: false, message: 'npm did not finish within 1 seconds; OrgAI stopped it.' })
     } finally {
       vi.useRealTimers()
     }

@@ -7,6 +7,9 @@ import * as path from 'node:path'
 import { TMP, check, finish, launch, log, openAppSettings, sleep } from './lib.mjs'
 
 const win = process.platform === 'win32'
+// The tag follows the app version like installTag() in cliInstaller.ts: stable X.Y.Z is latest, anything else next.
+const appVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const tag = /^\d+\.\d+\.\d+$/.test(String(appVersion).trim().replace(/^v/, '').replace(/\+.*$/, '')) ? 'latest' : 'next'
 const root = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-install-row-'))
 const home = path.join(root, 'home')
 const localAppData = path.join(root, 'localappdata')
@@ -87,7 +90,15 @@ process.env.PATH = [otherBin, shimBin, prefixBin, npmBin, ...systemDirs].join(de
 process.env.HOME = home
 process.env.USERPROFILE = home
 process.env.LOCALAPPDATA = localAppData
-delete process.env.SHELL
+// A stub login shell (named like a POSIX shell so the app accepts it) that prints exactly this PATH: a real
+// /etc/zprofile (path_helper on macOS) would put /usr/local/bin ahead of the folders above.
+if (!win) {
+  const shellDir = path.join(root, 'shell')
+  fs.mkdirSync(shellDir, { recursive: true })
+  const stub = path.join(shellDir, 'bash')
+  fs.writeFileSync(stub, '#!/bin/sh\nexec /bin/sh -c "$2"\n', { mode: 0o755 })
+  process.env.SHELL = stub
+} else delete process.env.SHELL
 process.env.ANTHROPIC_API_KEY = 'e2e-not-a-key'
 process.env.CODEX_HOME = path.join(root, 'codex')
 process.env.npm_config_registry = 'https://registry.invalid.example/'
@@ -122,7 +133,7 @@ try {
   await waitText(/Not installed/, 'status starts at Not installed')
   check((await text()) === 'Not installed', 'Not installed is the whole status line', await text())
   const cmdText = (await page.locator('[data-testid=cli-command-text]').innerText()).trim()
-  check(cmdText === 'npm install -g orgai-cli@next', 'the command shown is the prerelease tag for this app version', cmdText)
+  check(cmdText === `npm install -g orgai-cli@${tag}`, `the command shown uses the tag for this app version (${tag})`, cmdText)
   check(await page.locator('[data-testid=cli-command-install]').isVisible(), 'Install is offered')
   check((await page.locator('[data-testid=cli-command-remove-old]').count()) === 0, 'no old-shim removal when there is no old shim')
   check((await page.getByRole('button', { name: 'Copy command' }).count()) === 1, 'Copy command is offered')
@@ -151,7 +162,7 @@ try {
   const calls1 = readLog()
   check(calls1.length === 1, 'npm ran once', String(calls1.length))
   const c = calls1[0]
-  check(JSON.stringify(c?.args) === JSON.stringify(['install', '-g', 'orgai-cli@next', '--ignore-scripts']), 'npm got the fixed arguments', JSON.stringify(c?.args))
+  check(JSON.stringify(c?.args) === JSON.stringify(['install', '-g', `orgai-cli@${tag}`, '--ignore-scripts']), 'npm got the fixed arguments', JSON.stringify(c?.args))
   check(c && fs.realpathSync(c.cwd) === fs.realpathSync(home), 'npm ran with the home folder as cwd', c?.cwd)
   check(c && c.env.ORGAI_DATA_DIR === false && c.env.ANTHROPIC_API_KEY === false && c.env.CODEX_HOME === false, 'ORGAI_*, ANTHROPIC_* and CODEX_* were scrubbed from npm env', JSON.stringify(c?.env))
   check(c?.env.npm_config_registry === 'https://registry.invalid.example/', "the user's npm registry setting stays", String(c?.env.npm_config_registry))
@@ -186,7 +197,7 @@ try {
   await cancel.waitFor({ timeout: 15_000 })
   const t0 = Date.now()
   while (!fs.existsSync(pidFile) && Date.now() - t0 < 10_000) await sleep(100)
-  const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+  let pid = Number(fs.readFileSync(pidFile, 'utf8'))
   check((await page.locator('[data-testid=cli-command-install]').count()) === 0, 'while installing, Install is replaced by Cancel (one at a time)')
   await cancel.click()
   await page.locator('[data-testid=cli-command-notice]:has-text("cancelled")').waitFor({ timeout: 15_000 })
@@ -199,6 +210,29 @@ try {
   }
   check(!alive, 'cancel stopped the npm process', `pid ${pid}`)
   check(await page.locator('[data-testid=cli-command-install]').isVisible(), 'Install is back after cancel')
+
+  // 8. A reload remounts the row while npm runs: main still reports the install, so Cancel stays, Install is not offered.
+  await page.locator('[data-testid=cli-command-install]').click()
+  await cancel.waitFor({ timeout: 15_000 })
+  await sleep(500)
+  pid = Number(fs.readFileSync(pidFile, 'utf8'))
+  await page.reload()
+  await openAppSettings(page)
+  await page.getByRole('tab', { name: 'General', exact: true }).click().catch(() => {})
+  const adv2 = page.locator('[data-testid=settings-advanced][data-pane=app-general]')
+  if ((await adv2.count()) && !(await adv2.evaluate((d) => d.open).catch(() => false))) await adv2.locator('summary').click().catch(() => {})
+  await cancel.waitFor({ timeout: 15_000 })
+  check((await page.locator('[data-testid=cli-command-install]').count()) === 0, 'after a remount a running install still shows Cancel, not Install')
+  await cancel.click()
+  await page.locator('[data-testid=cli-command-install]').waitFor({ timeout: 15_000 })
+  await sleep(500)
+  alive = true
+  try {
+    process.kill(pid, 0)
+  } catch {
+    alive = false
+  }
+  check(!alive, 'cancel after a remount stopped the npm process', `pid ${pid}`)
 } catch (e) {
   check(false, 'install-row script ran to the end', e.stack ?? String(e))
 } finally {

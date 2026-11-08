@@ -11,6 +11,8 @@ export interface CliCommandView {
   installBlockedReason?: string
   /** Offer "Remove the old orgai command". */
   removeOld: boolean
+  /** The old command is on PATH somewhere the app cannot remove it from: say where. */
+  removeByHand?: string
   /** Which orgai a terminal runs now, when known. */
   runs?: string
 }
@@ -65,6 +67,7 @@ export function cliCommandView(status: CliCommandStatus): CliCommandView {
     installLabel: status.state === 'npm' ? 'Update' : 'Install',
     ...(status.npmFound ? {} : { installBlockedReason: CLI_NO_NPM }),
     removeOld: status.oldShim,
+    ...(status.state === 'old-shim' && !status.oldShim && runs ? { removeByHand: `The old command is at ${runs}. Remove it, or its folder, from your PATH by hand.` } : {}),
     ...(runs && status.state !== 'not-installed' ? { runs } : {})
   }
 }

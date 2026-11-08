@@ -55,6 +55,16 @@ export function CliCommandRow(): ReactElement | null {
     return () => window.removeEventListener('focus', onFocus)
   }, [available, refresh])
 
+  // An install started before this row mounted (or in another window) keeps running: poll until main says it ended.
+  const mainInstalling = status?.installing === true
+  useEffect(() => {
+    if (!available || !mainInstalling) return
+    const t = setInterval(() => {
+      if (!flight.current.busy()) void refresh()
+    }, 2000)
+    return () => clearInterval(t)
+  }, [available, mainInstalling, refresh])
+
   const act = (kind: 'install' | 'remove'): void => {
     if (!api) return
     const p = flight.current.run(() => (kind === 'install' ? api.installCliCommand() : api.removeOldCliShim()))
@@ -78,8 +88,9 @@ export function CliCommandRow(): ReactElement | null {
   const view = status ? cliCommandView(status) : null
   const state = status?.state ?? (loadFailed ? 'error' : 'loading')
   const line = view ? view.line : loadFailed ? CLI_COMMAND_LOAD_FAILED : CLI_COMMAND_CHECKING
-  const command = status?.command ?? 'npm install -g orgai-cli@latest'
-  const installing = busy === 'install'
+  // The command comes from main (the tag follows the app version); nothing is shown or copied before it arrives.
+  const command = status?.command
+  const installing = busy === 'install' || mainInstalling
   const output = cleanBlock(result?.output)
   const hint = cleanShown(result?.hint)
   // After a successful install the old shim cleanup is offered again, with the new winner shown by the status line.
@@ -96,6 +107,11 @@ export function CliCommandRow(): ReactElement | null {
             <span className="cli-shim-status" data-testid="cli-command-status" data-state={state} role="status">
               {line}
             </span>
+            {view?.removeByHand && (
+              <span className="cli-shim-notice" data-testid="cli-command-old-by-hand">
+                {view.removeByHand}
+              </span>
+            )}
             {view?.runs && (
               <span className="cli-shim-notice" data-testid="cli-command-runs">
                 A terminal runs {view.runs}
@@ -115,7 +131,7 @@ export function CliCommandRow(): ReactElement | null {
                   variant="primary"
                   size="sm"
                   testId="cli-command-install"
-                  inert={busy !== null || !!view.installBlockedReason}
+                  inert={busy !== null || installing || !!view.installBlockedReason}
                   ariaDescribedBy={settingDescId(ROW_ID)}
                   onClick={() => act('install')}
                 >
@@ -131,12 +147,14 @@ export function CliCommandRow(): ReactElement | null {
           ) : null
         }
       />
-      <div className="cli-command-copy">
-        <code className="cli-shim-path-hint" data-testid="cli-command-text">
-          {command}
-        </code>
-        <CopyButton text={command} label="Copy command" />
-      </div>
+      {command && (
+        <div className="cli-command-copy">
+          <code className="cli-shim-path-hint" data-testid="cli-command-text">
+            {command}
+          </code>
+          <CopyButton text={command} label="Copy command" />
+        </div>
+      )}
       {view?.installBlockedReason && (
         <span className="cli-shim-notice" data-testid="cli-command-no-npm">
           {view.installBlockedReason}

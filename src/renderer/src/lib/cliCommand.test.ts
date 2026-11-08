@@ -15,6 +15,13 @@ describe('cliCommandView', () => {
     expect(cliCommandView({ ...base, state: 'npm', oldShim: true }).removeOld).toBe(true)
     expect(cliCommandView(base).removeOld).toBe(false)
   })
+  it('says where an old command is when the app cannot remove it', () => {
+    const v = cliCommandView({ ...base, state: 'old-shim', oldShim: false, path: '/old/bin/orgai' })
+    expect(v.removeOld).toBe(false)
+    expect(v.removeByHand).toContain('/old/bin/orgai')
+    expect(cliCommandView({ ...base, state: 'old-shim', oldShim: true, path: '/old/bin/orgai' }).removeByHand).toBeUndefined()
+    expect(cliCommandView({ ...base, state: 'npm', path: '/x/orgai' }).removeByHand).toBeUndefined()
+  })
   it('blocks Install without npm and hides a hostile version', () => {
     expect(cliCommandView({ ...base, npmFound: false }).installBlockedReason).toMatch(/npm was not found/)
     expect(cliCommandView({ ...base, state: 'npm', version: 'x y‮' }).line).toBe('Installed (npm)')

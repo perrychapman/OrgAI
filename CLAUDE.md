@@ -919,7 +919,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     older-format shim of this install or a vanished launcher); Linux AppImage cannot install the shim;
     `npm run pack:verify` (`scripts/verify-pack.mjs`, CI pack job) checks a local unpacked pack token-free: the
     packaged app holds no `out/cli` (asar or unpacked) and no `bin/orgai` launcher, keeps its own unpacked runtime packages (the app no longer contains the CLI), and (check (e)) boots hidden on the mock adapter with a temp `ORGAI_DATA_DIR` (vault, CLI, secret and daemon variables removed, `--use-mock-keychain` on macOS), writes a ready `daemon.json` and `logs/main.log`, and quits cleanly (the CI step is `continue-on-error` until (e) has passed once on both runners). Desktop-only IPC `app:cliShimStatus` / `installCliShim` / `uninstallCliShim`
-    (`CliShimStatus` / `CliShimResult`, never reject, refused over the socket); App settings > General > Advanced >
+    (`CliShimStatus` / `CliShimResult`; SUPERSEDED, removed; replaced by `app:cliCommandStatus|installCliCommand|cancelCliInstall|removeOldCliShim`
+    with `CliCommandStatus` / `CliCommandResult`, never reject, refused over the socket); App settings > General > Advanced >
     Terminal `CliShimRow` (SUPERSEDED, removed; replaced by `CliCommandRow`; `cli-shim-row`, `-status[data-state]` (a live region), `-path-hint` (named by the buttons'
     aria-describedby), `-notice`; `lib/cliShim.ts`); an install never turns Terminal access on by itself (review H2):
     while it is off the row asks (`cli-shim-terminal-confirm`). The Terminal access text names the same-user trust

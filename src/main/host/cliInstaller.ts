@@ -78,12 +78,19 @@ export interface NpmCommand {
   verbatim: boolean
 }
 
+/** %SystemRoot%\System32\<name> as an absolute path; SystemRoot must be a local absolute folder, else C:\Windows. */
+export function systemExe(env: Readonly<Record<string, string | undefined>>, name: string): string {
+  const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? ''
+  const ok = win32.isAbsolute(root) && !isNetworkPathFor('win32', root) && !/["%\r\n\0]/.test(root)
+  return win32.join(ok ? root : 'C:\\Windows', 'System32', name)
+}
+
 /** The fixed command. Nothing but the npm path (checked by resolveNpm) and the tag (latest or next) is in it. */
-export function buildNpmCommand(platform: NodeJS.Platform | string, npmPath: string, tag: 'latest' | 'next', comspec?: string): NpmCommand {
+export function buildNpmCommand(platform: NodeJS.Platform | string, npmPath: string, tag: 'latest' | 'next', comspec?: string, systemRoot?: Readonly<Record<string, string | undefined>>): NpmCommand {
   const fixed = ['install', '-g', `orgai-cli@${tag}`, '--ignore-scripts']
   if (platform !== 'win32') return { file: npmPath, args: fixed, verbatim: false }
   // cmd /s /c strips the outer quote pair, so the whole line is wrapped once more.
-  return { file: comspec && win32.isAbsolute(comspec) ? comspec : 'cmd.exe', args: ['/d', '/s', '/c', `""${npmPath}" ${fixed.join(' ')}"`], verbatim: true }
+  return { file: comspec && win32.isAbsolute(comspec) && !isNetworkPathFor('win32', comspec) ? comspec : systemExe(systemRoot ?? {}, 'cmd.exe'), args: ['/d', '/s', '/c', `""${npmPath}" ${fixed.join(' ')}"`], verbatim: true }
 }
 
 /** Removes control characters (ANSI escapes included); a carriage return ends a line; tabs become a space. */
@@ -121,10 +128,11 @@ export class OutputTail {
 }
 
 /** The `--prefix` advice for a permission failure. */
-export function prefixHint(platform: NodeJS.Platform | string, tag: string): string {
+export function prefixHint(platform: NodeJS.Platform | string, tag: string, oldShim = false): string {
+  const removeFirst = oldShim ? ' Remove the old orgai command first (the button in this row), or npm will refuse to write over it.' : ''
   return platform === 'win32'
-    ? `npm could not write to its global folder. Run \`npm install -g orgai-cli@${tag} --prefix "%USERPROFILE%\\.npm-global"\` in a terminal, then add that folder to your Path.`
-    : `npm could not write to its global folder. Run \`npm install -g orgai-cli@${tag} --prefix ~/.local\` in a terminal (and put ~/.local/bin on your PATH), or fix the permissions of npm's global folder. OrgAI never asks for administrator rights.`
+    ? `npm could not write to its global folder. Run \`npm install -g orgai-cli@${tag} --prefix "%USERPROFILE%\\.npm-global"\` in a terminal, then add that folder to your Path.${removeFirst}`
+    : `npm could not write to its global folder. Run \`npm install -g orgai-cli@${tag} --prefix ~/.local\` in a terminal (and put ~/.local/bin on your PATH), or fix the permissions of npm's global folder. OrgAI never asks for administrator rights.${removeFirst}`
 }
 
 export interface SpawnOptionsLike {
@@ -177,6 +185,14 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
   const npmPath = (): string | undefined => resolveNpm(platform, envPath(), deps.fs)
   let running: { child: ChildProcess; cancelled: boolean } | undefined
 
+  function oldShimNow(): boolean {
+    try {
+      return deps.oldShim.inspect() === 'ours'
+    } catch {
+      return false
+    }
+  }
+
   function status(): CliCommandStatus {
     let first: OrgaiOnPathEntry | undefined
     const list = loginPath()
@@ -187,12 +203,7 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
         log.warn(`orgai command: reading PATH failed: ${errorText(e)}`)
       }
     }
-    let oldShim = false
-    try {
-      oldShim = deps.oldShim.inspect() === 'ours'
-    } catch {
-      oldShim = false
-    }
+    const oldShim = oldShimNow()
     let state: CliCommandStatus['state'] = 'not-installed'
     if (first) state = first.kind === 'npm' ? 'npm' : first.kind === 'app-shim' || first.kind === 'app-launcher' ? 'old-shim' : 'other'
     else if (oldShim) state = 'old-shim'
@@ -211,7 +222,9 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
   function killTree(child: ChildProcess): void {
     try {
       if (platform === 'win32' && child.pid) {
-        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { cwd: deps.home, env: scrubEnv(deps.env), windowsHide: true, windowsVerbatimArguments: false, stdio: ['ignore', 'pipe', 'pipe'] })
+        const killer = spawn(systemExe(deps.env, 'taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { cwd: deps.home, env: scrubEnv(deps.env), windowsHide: true, windowsVerbatimArguments: false, stdio: ['ignore', 'pipe', 'pipe'] })
+        // A spawn failure must not become an uncaught exception.
+        killer.on?.('error', (e) => log.warn(`orgai command: taskkill failed: ${errorText(e)}`))
       } else {
         child.kill('SIGTERM')
         const t = setTimeout(() => {
@@ -238,13 +251,14 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
         status: status()
       }
     }
-    const cmd = buildNpmCommand(platform, npm, tag, deps.env.ComSpec ?? deps.env.COMSPEC)
+    const cmd = buildNpmCommand(platform, npm, tag, deps.env.ComSpec ?? deps.env.COMSPEC, deps.env)
     const out = new OutputTail()
     log.info(`orgai command: running ${command} with ${npm}`)
     return await new Promise<CliCommandResult>((resolve) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
       let cancelled = false
+      let timedOut = false
       const finish = (r: { ok: boolean; message: string; hint?: string }): void => {
         if (settled) return
         settled = true
@@ -264,11 +278,16 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
       running = mine
       child.stdout?.on('data', (d: Buffer | string) => out.push(String(d)))
       child.stderr?.on('data', (d: Buffer | string) => out.push(String(d)))
-      timer = setTimeout(() => killTree(child), deps.timeoutMs ?? INSTALL_TIMEOUT_MS)
+      const limit = deps.timeoutMs ?? INSTALL_TIMEOUT_MS
+      timer = setTimeout(() => {
+        timedOut = true
+        killTree(child)
+      }, limit)
       child.on('error', (e) => finish({ ok: false, message: `OrgAI could not start npm: ${errorText(e)}` }))
       child.on('close', (code) => {
         cancelled = mine.cancelled
         if (cancelled) return finish({ ok: false, message: 'Install cancelled.' })
+        if (timedOut) return finish({ ok: false, message: `npm did not finish within ${limit % 60000 === 0 ? `${limit / 60000} minutes` : `${Math.round(limit / 1000)} seconds`}; OrgAI stopped it.` })
         if (code === 0) return finish({ ok: true, message: 'Installed orgai-cli. Open a new terminal and run orgai.' })
         const text = out.value()
         const denied = /EACCES|EPERM|permission denied/i.test(text)
@@ -276,7 +295,7 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
         finish({
           ok: false,
           message: denied ? `npm was not allowed to write to its global folder${last ? `: ${last}` : '.'}` : `npm failed${typeof code === 'number' ? ` (exit ${code})` : ''}${last ? `: ${last}` : '.'}`,
-          ...(denied ? { hint: prefixHint(platform, tag) } : {})
+          ...(denied ? { hint: prefixHint(platform, tag, oldShimNow()) } : {})
         })
       })
     })

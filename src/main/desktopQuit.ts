@@ -29,6 +29,8 @@ export interface BeforeQuitDeps {
   reason(): ShutdownReason
   /** Stop a macOS certificate read still running (systemCerts.ts). */
   stopCertRead(): void
+  /** Cancel an orgai command install still running (its mutation lease would hold the drain). */
+  stopCliInstall(): void
   /** app.exit: never strand the app when the shutdown failed (the process exit hook releases ownership). */
   exit(code: number): void
   warn(message: string): void
@@ -49,6 +51,7 @@ export function beforeQuitHandler(deps: BeforeQuitDeps): (event: QuitEventLike) 
     event.preventDefault()
     if (deps.quitting() && h.shutdown.phase() !== 'running') return
     deps.markQuitting()
+    deps.stopCliInstall()
     // A macOS certificate read still running is killed once the quit goes ahead (a kept quit leaves it alone).
     deps.stopCertRead()
     void h.shutdown.shutdown(deps.reason(), { force: true }).catch((e: unknown) => {

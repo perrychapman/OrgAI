@@ -28,7 +28,7 @@ import { noopActivity } from './host/activity'
 import { HostDispatcher } from './host/dispatcher'
 import { runLeased } from './host/mutationLease'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices } from './host/types'
-import type { CliInstallService } from './host/cliInstaller'
+import { installCommandText, installTag, type CliInstallService } from './host/cliInstaller'
 
 /**
  * What registerIpc serves: the host services (host/types.ts HostServices; the shared field docs live there) plus the
@@ -404,27 +404,24 @@ function registerRepoIpc(activity: HostActivityTrackerApi, repoClone: RepoCloneS
 
 // ---- Install the orgai command (5.3); desktop only, never throws to the renderer ----
 
-const CLI_INSTALL_UNAVAILABLE: CliCommandStatus = {
-  state: 'not-installed',
-  oldShim: false,
-  npmFound: false,
-  tag: 'latest',
-  command: 'npm install -g orgai-cli@latest',
-  installing: false
+// The tag and command follow the app version, so Copy and Install never disagree.
+function cliInstallUnavailable(): CliCommandStatus {
+  const tag = installTag(app.getVersion())
+  return { state: 'not-installed', oldShim: false, npmFound: false, tag, command: installCommandText(tag), installing: false }
 }
 
 function cliCommandStatusOf(svc: CliInstallService | undefined): CliCommandStatus {
   try {
-    return svc?.status() ?? CLI_INSTALL_UNAVAILABLE
+    return svc?.status() ?? cliInstallUnavailable()
   } catch (err) {
     log.warn('app:cliCommandStatus failed:', err instanceof Error ? err.message : String(err))
-    return CLI_INSTALL_UNAVAILABLE
+    return cliInstallUnavailable()
   }
 }
 
 function registerCliInstallIpc(activity: HostActivityTrackerApi, svc: CliInstallService | undefined): void {
   const change = (what: 'install' | 'removeOldShim') => async (): Promise<CliCommandResult> => {
-    if (!svc) return { ok: false, message: 'The orgai command cannot be installed from here.', status: CLI_INSTALL_UNAVAILABLE }
+    if (!svc) return { ok: false, message: 'The orgai command cannot be installed from here.', status: cliInstallUnavailable() }
     try {
       return await svc[what]()
     } catch (err) {

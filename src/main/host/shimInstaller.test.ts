@@ -3,7 +3,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createOldShimService } from './shimInstaller'
-import { renderCliShim } from './packagedLayout'
+
+/** An old OrgAI app shim, written out here (the app no longer renders one). */
+function renderCliShim(input: { platform: string; launcher: string; env?: Record<string, string> }): string {
+  const note = 'orgai-shim v1: written by OrgAI (App settings > General > Advanced settings > Terminal). OrgAI updates or removes this file.'
+  return input.platform === 'win32'
+    ? ['@echo off', `rem ${note}`, 'setlocal', `"${input.launcher}" %*`, ''].join('\r\n')
+    : `#!/bin/sh\n# ${note}\nexec '${input.launcher}' "$@"\n`
+}
 
 const quiet = { info: () => {}, warn: () => {} }
 let root: string

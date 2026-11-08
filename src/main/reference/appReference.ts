@@ -509,7 +509,7 @@ export function createAppReference(deps: AppReferenceDeps = {}): AppReferenceSer
     }
     if (d.cliShim) {
       try {
-        lines.push(`command line shim: ${(await d.cliShim()).state}`)
+        lines.push(`orgai command: ${(await d.cliShim()).state}`)
       } catch {
         /* optional */
       }

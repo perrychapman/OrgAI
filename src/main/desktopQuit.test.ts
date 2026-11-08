@@ -57,6 +57,7 @@ function desktop(opts: { host?: boolean; shutdownFails?: boolean } = {}) {
   })
   const activity = new HostActivityTracker({ forceStop, settlePollMs: 5, ...shutdown.activityHooks() })
   shutdown.attachActivity(activity)
+  const installStops: string[] = []
   const dispose = vi.fn(() => app.order.push('host disposed'))
   const host: QuitHost = {
     shutdown: opts.shutdownFails ? { phase: () => 'running', shutdown: () => Promise.reject(new Error('stuck')) } : shutdown,
@@ -70,11 +71,12 @@ function desktop(opts: { host?: boolean; shutdownFails?: boolean } = {}) {
       markQuitting: () => void (state.quitting = true),
       reason: () => state.reason,
       stopCertRead: () => app.order.push('cert read stopped'),
+      stopCliInstall: () => void installStops.push('cancel'),
       exit: (code) => void exits.push(code),
       warn: (m) => void warnings.push(m)
     })
   )
-  return { app, state, shutdown, activity, releases, exits, warnings, forceStop, dispose }
+  return { app, state, shutdown, activity, releases, exits, warnings, forceStop, dispose, installStops }
 }
 
 const waitFor = async (fn: () => boolean, ms = 2_000): Promise<void> => {
@@ -117,6 +119,15 @@ describe('desktop Quit through the real before-quit / will-quit handlers (cli-st
     ])
     expect(d.releases).toEqual(['release'])
     expect(d.shutdown.phase()).toBe('released')
+  })
+
+  it('cancels a running orgai command install as the quit starts, before the drain', async () => {
+    const d = desktop()
+    const endInstall = d.activity.acquire('inFlightRpcMutations', 'app:installCliCommand')
+    d.app.quit()
+    expect(d.installStops).toEqual(['cancel'])
+    endInstall()
+    await waitFor(() => d.app.exited)
   })
 
   it('a second Quit while the shutdown runs is held too and starts nothing new', async () => {

@@ -121,7 +121,9 @@ const NPM_CMD_BUNDLE_RE = /node_modules[\\/](orgai(?:-cli)?)[\\/]out[\\/]cli[\\/
 /** The version of an `orgai-cli` package.json (name checked, size bounded), else undefined. Reads one small file. */
 function npmPackageOf(fs: OrgaiPathFs, file: string): { version?: string } | undefined {
   try {
-    if (fs.lstat(file).size > SHIM_TEXT_MAX_BYTES) return undefined
+    // Regular file only: a link, a FIFO or a device could make the read unbounded or block.
+    const st = fs.lstat(file)
+    if (!st.isFile() || st.isSymbolicLink() || st.size > SHIM_TEXT_MAX_BYTES) return undefined
     const j = JSON.parse(fs.readText(file)) as { name?: unknown; version?: unknown }
     if (j.name !== 'orgai-cli') return undefined
     return typeof j.version === 'string' && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(j.version) ? { version: j.version } : {}

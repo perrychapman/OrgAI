@@ -885,10 +885,10 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: [APP, 'General', 'Advanced', 'Terminal'],
     kind: 'section',
     scope: 'app',
-    summary: 'Remove the orgai command an older OrgAI app put on your PATH (the command now comes from npm).',
+    summary: 'Install or update the orgai command with npm (orgai-cli, tag latest or next to match this app), copy the install command, cancel a running install, or remove the old command an older OrgAI app put on your PATH. The orgai command is a separate app with its own projects and settings.',
     reach: [{ via: 'button', label: 'Advanced settings', on: 'app-settings-general' }],
     settings: [],
-    testIds: ['cli-shim-row']
+    testIds: ['cli-command-row']
   },
   {
     id: 'app-settings-connections',
