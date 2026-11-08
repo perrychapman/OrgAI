@@ -416,7 +416,7 @@ class CodexSession implements RuntimeSession {
     }
     if (this.ending || this.ended || !this.rootThreadId) throw new Error('This session is not live; continue the run before switching models.')
     const state = this.settlement()
-    if (!state.rootIdle || !state.quiescent || this.ctx.pendingInteractions() > 0) {
+    if (!state.rootIdle || !state.quiescent || this.ctx.pendingInteractions() > 0 || this.bridgedLive.size > 0 || [...this.agents.values()].some((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error')) {
       throw new Error('Switch models when the root is idle and all decision cards are answered.')
     }
     this.rootModelOverride = input.model

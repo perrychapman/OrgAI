@@ -1372,6 +1372,7 @@ export class RunManager {
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
+    let continuationBudget = conversationBudgetUsd !== undefined ? projectBudgetUsd(project) : undefined
     // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
     const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
     if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
@@ -1390,14 +1391,26 @@ export class RunManager {
     if (this.options.teamFiles && (kind === 'work' || kind === 'setup') && !isVirtualProjectId(project.id) && !quick && !buildWorkspace) {
       try {
         const fresh = this.options.teamFiles.beforeRun(project)
-        if (fresh.project?.id === project.id) project = fresh.project
+        if (fresh.project?.id === project.id) {
+          if (continuationBudget !== undefined && fresh.project !== project && conversationBudgetUsd !== undefined) {
+            const totalCap = Math.min(conversationBudgetUsd, projectBudgetUsd(fresh.project) ?? Infinity)
+            const prior = resumedFrom ? this.summary(resumedFrom) : null
+            const spent = prior ? this.chainOf(prior).reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0) : 0
+            continuationBudget = Math.min(continuationBudget, totalCap - spent)
+            conversationBudgetUsd = totalCap
+          }
+          project = fresh.project
+        }
         teamWarning = fresh.warning
       } catch (e) {
         log.warn(`Team files could not be checked before the run: ${(e as Error).message}`)
       }
     }
     // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
+    if (continuationBudget !== undefined && continuationBudget <= 0) throw new Error('The conversation budget is spent; switching models does not reset it.')
     project = this.options.mcp?.withLibrary?.(project) ?? project
+    // Team/library refreshes return stored projects, whose cap has not had conversation spend deducted.
+    if (continuationBudget !== undefined) project = { ...project, maxBudgetUsd: Math.min(continuationBudget, projectBudgetUsd(project) ?? Infinity) }
     // The Chat's single assistant settles its model before the adapter is chosen.
     let quickWarning: string | undefined
     if (team === 'single') project = singleRunProject(project, this.options.appSettings?.().quickRunModel)
@@ -1639,6 +1652,7 @@ export class RunManager {
         }
       }
       if (exec) this.execEventSeen(active, e)
+      else if (summary.conversationBudgetUsd !== undefined && (e.type === 'agent.upsert' || e.type === 'run.cost')) this.checkExecBudget(active, e.type === 'agent.upsert' ? e.agent : undefined)
     }
 
     active.emit = emit
@@ -2185,7 +2199,7 @@ export class RunManager {
         this.store.upsert(summary)
       }
       active.ctx = ctx
-      if (exec) {
+      if (exec || summary.conversationBudgetUsd !== undefined) {
         // Budget before launch (cli-spec 6.2(3)): a spent chain (maxBudgetUsd 0 included) or an unpriced role model
         // ends the run as 'budget-exceeded' without ever starting the adapter.
         this.applyExecBudget(active, ctx)
@@ -2238,8 +2252,8 @@ export class RunManager {
   /** The exec budget of the run's effective project and what is left of it for the adapter (ctx.budgetUsd). */
   private applyExecBudget(a: ActiveRun, ctx: RuntimeContext): void {
     const o = a.summary.overrides
-    if (!o?.execMode) return
-    a.execBudget = execBudgetUsd(ctx.project, o)
+    if (!o?.execMode && a.summary.conversationBudgetUsd === undefined) return
+    a.execBudget = o?.execMode ? execBudgetUsd(ctx.project, o) : projectBudgetUsd(ctx.project)
     if (a.execBudget !== undefined) ctx.budgetUsd = Math.max(0, a.execBudget - a.chainPriorCostUsd)
     else delete ctx.budgetUsd
   }
@@ -2262,11 +2276,11 @@ export class RunManager {
   }
 
   /** Synchronous budget check on every agent.upsert of an exec run (after pricing). */
-  private checkExecBudget(a: ActiveRun, agent: AgentInstance): void {
+  private checkExecBudget(a: ActiveRun, agent?: AgentInstance): void {
     const budget = a.execBudget
     if (budget === undefined || a.finalizing) return
     const runId = a.summary.id
-    if (!a.summary.overrides?.allowUnpricedBudget) {
+    if (agent && !a.summary.overrides?.allowUnpricedBudget) {
       const unpriced = agent.usage?.models.find((m) => m.costUsd === null)
       let model = unpriced?.model
       if (!model && !a.priceChecked.has(agent.id)) {
@@ -2282,7 +2296,7 @@ export class RunManager {
         return
       }
     }
-    const cost = a.summary.usage?.costUsd ?? 0
+    const cost = Math.max(a.summary.usage?.costUsd ?? 0, a.summary.usage?.providerCostUsd ?? 0)
     if (a.chainPriorCostUsd + cost >= budget) {
       a.emit({ type: 'log', runId, level: 'warn', message: `The budget of $${budget.toFixed(2)} is reached ($${(a.chainPriorCostUsd + cost).toFixed(2)} estimated); the run ends.` })
       void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
@@ -2497,7 +2511,7 @@ export class RunManager {
     }
     this.closeTimers(a)
     this.refreshUsage(a, true)
-    s.execOutcome = outcome
+    if (s.overrides?.execMode) s.execOutcome = outcome
     if (endedBy) s.endedBy = endedBy
     else if (s.endedBy !== 'app') delete s.endedBy
     try {
@@ -2509,7 +2523,7 @@ export class RunManager {
     a.finalizeDone = true
     // The run leaves the live set here once its final status is written (session.finished's teardown waited for it).
     if (this.runs.get(s.id) === a) this.teardown(a)
-    if (!a.finalizedSent) {
+    if (s.overrides?.execMode && !a.finalizedSent) {
       a.finalizedSent = true
       this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
     }
@@ -4319,9 +4333,14 @@ export class RunManager {
     // A new provider session must not regain the conversation's already spent desktop budget.
     let carriedBudget = target.conversationBudgetUsd
     if ((switching || carriedBudget !== undefined) && !overrides?.execMode) {
-      const cap = carriedBudget ?? Math.min(projectBudgetUsd(project) ?? Infinity, overrides?.maxBudgetUsd ?? Infinity)
+      // A carried override is already the remaining allowance, whereas the stored conversation cap and the
+      // current project cap describe total spend. Never subtract the chain from a remaining allowance twice.
+      const spent = chain.reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0)
+      // An explicit continuation override is a new remaining allowance, unlike a carried original total.
+      const requestedCap = carriedBudget !== undefined && opts.overrides?.maxBudgetUsd !== undefined
+        ? spent + opts.overrides.maxBudgetUsd : Infinity
+      const cap = Math.min(carriedBudget ?? overrides?.maxBudgetUsd ?? Infinity, projectBudgetUsd(project) ?? Infinity, requestedCap)
       if (Number.isFinite(cap)) {
-        const spent = chain.reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0)
         if (spent >= cap) throw new Error('The conversation budget is spent; switching models does not reset it.')
         project = { ...project, maxBudgetUsd: cap - spent }
         if (overrides?.maxBudgetUsd !== undefined) overrides.maxBudgetUsd = cap - spent

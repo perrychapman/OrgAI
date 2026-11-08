@@ -11,7 +11,7 @@ import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
-import { project as makeProject, runSummary } from './testHelpers'
+import { project as makeProject, mcpSpec, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
 import { defaultConnections } from '@shared/defaults'
 import { log } from '../log'
@@ -143,6 +143,63 @@ describe('RunManager stored records', () => {
     const next = await m.continueRun(p, 'unlimited', 'Continue')
     expect(next.conversationBudgetUsd).toBeUndefined()
     await m.stopAll()
+  })
+
+  it.each(['work', 'setup', 'mcp-assist', 'skill-assist'] as const)('preserves exact budgets through repeated %s handoffs and native recovery', async (kind) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10, permissionMode: 'dontAsk', mcpServers: [mcpSpec()] })
+    p.roles[0].skills = ['granted-skill']
+    p.roles[0].mcpServers = ['mcp-1']
+    const { m, store } = manager(p, {}, { catalog: () => [
+      { id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' },
+      { id: 'original', label: 'Original', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }
+    ] })
+    // Start failures can occur before native init. Recovery must work without any session id.
+    const first = runSummary({ id: 'exact-first', projectId: p.id, kind, startedAt: 1, status: 'error', connection: 'anthropic', totalCostUsd: 3,
+      overrides: { permissionMode: 'plan', maxBudgetUsd: 10 }, modelSelection: { model: 'alternate', connection: 'openai' } })
+    store.upsert(first)
+    let sequence = 1
+    const start = vi.spyOn(m, 'start').mockImplementation(async (input) => {
+      const summary = runSummary({ id: `exact-${++sequence}`, projectId: p.id, kind: input.kind, startedAt: sequence,
+        status: 'error', connection: input.modelSelection!.connection,
+        modelAdapter: input.modelSelection!.connection === 'openai' ? 'codex' : 'claude',
+        resumedFrom: input.resumedFrom, modelSelection: input.modelSelection, conversationBudgetUsd: input.conversationBudgetUsd,
+        overrides: input.overrides, totalCostUsd: sequence === 2 ? 2 : sequence === 3 ? 1 : 0 })
+      store.upsert(summary)
+      return summary
+    })
+    const second = await m.continueRun(p, first.id, 'Retry after API error')
+    expect(start.mock.calls[0][0]).toMatchObject({ project: { maxBudgetUsd: 7, permissionMode: 'dontAsk', mcpServers: p.mcpServers },
+      overrides: { maxBudgetUsd: 7, permissionMode: 'plan' }, conversationBudgetUsd: 10 })
+    expect(start.mock.calls[0][0].resumeSessionId).toBeUndefined()
+    await m.switchModel({ runId: second.id, model: 'original', connection: 'anthropic' })
+    const third = await m.continueRun(p, second.id, 'Switch back')
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBe(5)
+    expect(start.mock.calls[1][0].overrides?.maxBudgetUsd).toBe(5)
+    expect(third.conversationBudgetUsd).toBe(10)
+    // Once the new provider supplies a native session, the next continuation keeps it.
+    store.upsert({ ...third, sessionId: 'new-native-session', status: 'finished' })
+    const fourth = await m.continueRun(p, third.id, 'Continue natively')
+    expect(start.mock.calls[2][0].resumeSessionId).toBe('new-native-session')
+    expect(start.mock.calls[2][0].project.maxBudgetUsd).toBe(4)
+    expect(start.mock.calls[2][0].overrides?.maxBudgetUsd).toBe(4)
+    expect(fourth.conversationBudgetUsd).toBe(10)
+    const tightened = await m.continueRun({ ...p, maxBudgetUsd: 8 }, fourth.id, 'Use lower project limit')
+    expect(start.mock.calls[3][0].project.maxBudgetUsd).toBe(2)
+    expect(start.mock.calls[3][0].overrides?.maxBudgetUsd).toBe(2)
+    expect(tightened.conversationBudgetUsd).toBe(8)
+    const narrowed = await m.continueRun(p, tightened.id, 'Use explicit remaining allowance', undefined, { overrides: { maxBudgetUsd: 1 } })
+    expect(start.mock.calls[4][0].project.maxBudgetUsd).toBe(1)
+    expect(start.mock.calls[4][0].overrides?.maxBudgetUsd).toBe(1)
+    expect(narrowed.conversationBudgetUsd).toBe(7)
+    await expect(m.continueRun({ ...p, maxBudgetUsd: 6 }, tightened.id, 'No allowance left')).rejects.toThrow('budget is spent')
+    expect(start).toHaveBeenCalledTimes(5)
+    for (const [input] of start.mock.calls) {
+      expect(input.project.roles).toEqual(p.roles)
+      expect(input.project.mcpServers).toEqual(p.mcpServers)
+      expect(input.project.permissionMode).toBe('dontAsk')
+      expect(input.overrides?.permissionMode).toBe('plan')
+    }
+    expect(p.maxBudgetUsd).toBe(10)
   })
 
   it('subtracts chain spend once on a repeated handoff and subsequent native continuation', async () => {
@@ -1365,6 +1422,52 @@ describe('RunManager adapter selection, connections and MCP', () => {
   }
 
   describe('adapter selection', () => {
+    it.each((['work', 'setup', 'mcp-assist', 'skill-assist'] as const).flatMap((kind) => (['priced', 'unknown', 'provider-total'] as const).map((usage) => [kind, usage] as const)))('enforces a desktop %s handoff budget after refresh on %s usage', async (kind, usage) => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'gpt-5', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const refresh = vi.fn(() => ({ project: { ...p, maxBudgetUsd: 8 } }))
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { teamFiles: { beforeRun: refresh }, catalog: () => [{ id: 'gpt-5', label: 'GPT', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'budget-source', projectId: p.id, kind, status: 'error', connection: 'anthropic', totalCostUsd: 3, modelSelection: { model: 'gpt-5', connection: 'openai' } }))
+      const run = await m.continueRun(p, 'budget-source', 'Recover')
+      expect(codex.ctxs).toHaveLength(1)
+      const ctx = codex.ctxs[0]
+      const remaining = kind === 'work' || kind === 'setup' ? 5 : 7
+      expect(ctx.project.maxBudgetUsd).toBe(remaining)
+      expect(ctx.budgetUsd).toBe(remaining)
+      expect(ctx.resumeSessionId).toBeUndefined()
+      if (kind === 'work' || kind === 'setup') expect(refresh).toHaveBeenCalledOnce()
+      const agent: AgentInstance = { id: ROOT_AGENT_ID, roleId: p.roles[0].id, roleSlug: p.roles[0].slug, name: 'Root', parentId: null, spawnToolUseId: null, state: 'idle', activity: '', model: 'gpt-5', inputTokens: 1, outputTokens: 1, costUsd: 0, startedAt: 1 }
+      setModelTokens(agent, usage === 'unknown' ? 'unexpected-unpriced-model' : 'gpt-5', { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, usage === 'unknown' ? undefined : usage === 'provider-total' ? 0 : 7)
+      ctx.emit({ type: 'agent.upsert', runId: run.id, agent })
+      if (usage === 'provider-total') ctx.emit({ type: 'run.cost', runId: run.id, totalCostUsd: 7 })
+      await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+      expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+      expect(events.some((e) => e.type === 'run.finalized' && e.runId === run.id)).toBe(false)
+    })
+
+    it('propagates a newly spent stored-project cap without starting the adapter', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'gpt-5', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { teamFiles: { beforeRun: () => ({ project: { ...p, maxBudgetUsd: 5 } }) }, catalog: () => [{ id: 'gpt-5', label: 'GPT', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'spent-source', projectId: p.id, status: 'error', connection: 'anthropic', totalCostUsd: 6, modelSelection: { model: 'gpt-5', connection: 'openai' } }))
+      await expect(m.continueRun(p, 'spent-source', 'Recover')).rejects.toThrow('budget is spent')
+      expect(codex.ctxs).toHaveLength(0)
+    })
+
+    it('refuses unpriced desktop recovery before starting Codex', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'unpriced-model', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { catalog: () => [{ id: 'unpriced-model', label: 'Unknown', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'unpriced-source', projectId: p.id, status: 'error', connection: 'anthropic', totalCostUsd: 3, modelSelection: { model: 'unpriced-model', connection: 'openai' } }))
+      const run = await m.continueRun(p, 'unpriced-source', 'Recover')
+      expect(codex.ctxs).toHaveLength(0)
+      expect(run).toMatchObject({ status: 'finished', endedBy: 'budget' })
+      expect(events.some((e) => e.type === 'log' && e.message.includes('no known price'))).toBe(true)
+    })
+
     it('picks the adapter by the root role family on LiteLLM', async () => {
       const claude = recorder('claude')
       const codex = recorder('codex')

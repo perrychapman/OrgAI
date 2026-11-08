@@ -268,6 +268,8 @@ describe('CodexAdapter session', () => {
     // Root's turn ends while the report is still running: no nudge (reports are running).
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
     expect(lastAgent(ctx, 'root')).toMatchObject({ state: 'idle', activity: 'Waiting on reports…' })
+    await expect(session.switchModel!({ model: 'gpt-new' })).rejects.toThrow('idle')
+    expect(lastAgent(ctx, 'root').model).toBe('gpt-test')
     await new Promise((r) => setTimeout(r, 30))
     expect(s.turnStarts('th-1')).toHaveLength(1)
 

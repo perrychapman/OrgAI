@@ -370,6 +370,39 @@ describe('RunStore usage', () => {
 describe('RunStore exec fields (cli-spec Wave 0)', () => {
   const writeIndex = (runs: unknown[]): void => writeFileSync(join(dataDir, 'runs.json'), JSON.stringify({ version: 1, runs }), 'utf8')
 
+  it('normalizes stored conversation budgets and model adapters', () => {
+    const invalidBudgets: unknown[] = [0, -1, '5', null, {}, []]
+    const invalidAdapters: unknown[] = ['other', 'Claude', '', 1, null, {}]
+    writeIndex([
+      ...[0.01, 100].map((budget, i) => run(`budget-${i}`, { conversationBudgetUsd: budget })),
+      ...invalidBudgets.map((budget, i) => run(`bad-budget-${i}`, { conversationBudgetUsd: budget as number })),
+      ...(['claude', 'codex', 'mock'] as const).map((adapter) => run(adapter, { modelAdapter: adapter })),
+      ...invalidAdapters.map((adapter, i) => run(`bad-adapter-${i}`, { modelAdapter: adapter as never }))
+    ])
+    const s = new RunStore(dataDir)
+    expect(s.get('budget-0')!.conversationBudgetUsd).toBe(0.01)
+    expect(s.get('budget-1')!.conversationBudgetUsd).toBe(100)
+    invalidBudgets.forEach((_, i) => expect('conversationBudgetUsd' in s.get(`bad-budget-${i}`)!).toBe(false))
+    for (const adapter of ['claude', 'codex', 'mock']) expect(s.get(adapter)!.modelAdapter).toBe(adapter)
+    invalidAdapters.forEach((_, i) => expect('modelAdapter' in s.get(`bad-adapter-${i}`)!).toBe(false))
+    for (const budget of [NaN, Infinity, -Infinity]) {
+      expect('conversationBudgetUsd' in normalizeCrashedRunSummary(run('nonfinite', { conversationBudgetUsd: budget }))).toBe(false)
+    }
+  })
+
+  it('recovers a staged model selection for every supported run kind after reload', () => {
+    const store = new RunStore(dataDir)
+    const selection = { model: 'next-model', connection: 'custom-connection' }
+    for (const kind of ['work', 'setup', 'mcp-assist', 'skill-assist'] as const) {
+      store.upsert(run(kind, { kind, status: 'error', modelSelection: selection, modelAdapter: 'codex', conversationBudgetUsd: 2.5 }))
+    }
+    const reloaded = new RunStore(dataDir)
+    for (const kind of ['work', 'setup', 'mcp-assist', 'skill-assist'] as const) {
+      expect(reloaded.get(kind)).toMatchObject({ kind, status: 'error', modelSelection: selection, modelAdapter: 'codex', conversationBudgetUsd: 2.5 })
+      expect(reloaded.get(kind)!.sessionId).toBeUndefined()
+    }
+  })
+
   it("keeps endedBy 'policy' and 'budget' across a reload, and a live one still finishes with it", () => {
     const s = new RunStore(dataDir)
     s.upsert(run('policy', { status: 'finished', endedBy: 'policy' }))
