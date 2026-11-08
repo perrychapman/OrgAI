@@ -492,7 +492,8 @@
 .run-body:has(.frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) .composer-hint {
   display: none;
 }
-.run-body:has(.frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) .composer-row textarea {
+/* Keep the label and mode control while giving compact decisions more room. */
+.run-body:has(.frame-tray[data-compact='true']) .composer-row textarea {
   min-height: 32px;
   max-height: 32px;
 }

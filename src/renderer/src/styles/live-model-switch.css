@@ -17,6 +17,10 @@
   color: var(--text-secondary);
 }
 
+.run-body:has(.frame-tray[data-compact='true']) .live-model-switch {
+  padding-block: 0;
+}
+
 .live-model-switch__summary, .live-model-switch__actions {
   display: flex;
   align-items: center;
