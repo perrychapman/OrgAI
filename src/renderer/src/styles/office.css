@@ -3,6 +3,9 @@
 .office-scene[data-palette='green'], .office-inspector[data-office-palette='green'] { --office-surface: var(--office-green-surface); --office-ink: var(--office-green-ink); --office-border: var(--office-green-border); }
 .office-scene { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; color: var(--text-primary); background: var(--surface-1); }
 .office-scene > p { margin: var(--space-2); }
+.office-scene[data-mode='live'] .office-message-strip { flex: 0 0 48px; height: 48px; overflow: auto; border-top: 1px solid var(--office-border); }
+.office-message-strip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.office-delivery-empty { margin: var(--space-2); color: var(--text-secondary); font-size: var(--text-caption); }
 .office-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
 .office-stage { flex: 1 1 auto; min-height: 100px; overflow: auto; display: flex; background: var(--surface-0); }
 .office-stage:focus-visible, .office-roster button:focus-visible, .office-person:focus-visible, .office-directory summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }

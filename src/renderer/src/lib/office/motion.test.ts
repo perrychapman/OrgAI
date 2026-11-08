@@ -24,6 +24,7 @@ describe('Office message journeys', () => {
   })
   it('reserves intersecting and adjacent target corridors while allowing disjoint walks', () => {
     expect(routesConflict(path, [{ x: 2, y: 3 }])).toBe(true)
+    expect(routesConflict([{ x: 1, y: 1 }], [{ x: 1, y: 3 }])).toBe(true)
     expect(routesConflict(path, [{ x: 5, y: 5 }])).toBe(false)
   })
 })

@@ -99,6 +99,9 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const attempted = useRef(new WeakSet<AgentMessage>())
   const pinned = useRef(new Map<string, { x: number; y: number; direction: Direction }>())
   const rendered = useRef(new Map<string, { x: number; y: number; direction: Direction }>())
+  const presentIds = new Set(agents.map(agent => agent.id))
+  for (const id of pinned.current.keys()) if (!presentIds.has(id)) pinned.current.delete(id)
+  for (const id of rendered.current.keys()) if (!presentIds.has(id)) rendered.current.delete(id)
   const timing = useMemo(() => ({ stepMs: tokenMs('--office-step-duration') || DEFAULT_JOURNEY_TIMING.stepMs, settleMs: tokenMs('--office-arrival-duration') || DEFAULT_JOURNEY_TIMING.settleMs, maxMs: tokenMs('--office-delivery-max-duration') || DEFAULT_JOURNEY_TIMING.maxMs }), [])
   const admitJourneys = (now: number): void => {
     const active = new Set(scheduler.current.active.map(d => d.message))
@@ -130,7 +133,13 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   useEffect(() => {
     const incoming = consumeSceneMessages(crossSeen.current, runId, messages)
     crossSeen.current = incoming.cursor
-    if (schedulerGeometryReset.current || incoming.reset) { scheduler.current = baseline(messages); journeys.current.clear(); setCrossFloor([]); schedulerGeometryReset.current = false; redraw(n => n + 1); return }
+    if (schedulerGeometryReset.current || incoming.reset) {
+      scheduler.current = baseline(messages); journeys.current.clear(); pinned.current.clear(); rendered.current.clear()
+      const focusedId = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-office-worker-id]')?.dataset.officeWorkerId
+      const focused = visibleAgents.find(agent => agent.id === focusedId)
+      if (focused) { const anchor = deskOf(focused).anchor; pinned.current.set(focused.id, { x: anchor.x * OFFICE_TILE, y: anchor.y * OFFICE_TILE, direction: 'down' }) }
+      setCrossFloor([]); schedulerGeometryReset.current = false; redraw(n => n + 1); return
+    }
     const fresh = incoming.fresh.filter(message => {
       const from = layout.rooms.find(r => r.agents.includes(message.from)); const to = layout.rooms.find(r => r.agents.includes(message.to ?? ''))
       return from && to && from.floor !== to.floor
@@ -238,8 +247,11 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
         {workersOnFloor.map(({ agent, frame, x, y, depth, phase }) => <i className="office-sprite office-person-art" data-office-sprite-id={agent.id} data-office-motion-phase={phase} data-office-x={x} data-office-y={y} key={agent.id} style={frameStyle(frame, workers, x, y, depth)} />)}
       </div>{rooms.map(room => <div className="office-room-label" key={room.id} data-office-department-id={JSON.parse(room.id)[0]} style={{ left: (room.x + 1) * OFFICE_TILE * zoom, top: room.y * OFFICE_TILE * zoom, maxWidth: (room.width - 2) * OFFICE_TILE * zoom }}>{room.label} · {room.agents.length}</div>)}{workersOnFloor.map(({ agent: a, x, y }) => <button type="button" className="office-person" key={a.id} data-office-worker-id={a.id} data-testid="pocket-office-agent" data-agent-id={a.id} aria-label={`${a.name}, ${a.statusLabel ?? a.status}${a.context ? `, ${a.context}` : ''}`} aria-pressed={a.id === selectedId} title={`${a.name} · ${a.statusLabel ?? a.status}${a.context ? ` · ${a.context}` : ''}`} style={{ left: x * zoom - Math.max(0, 24 - 16 * zoom) / 2, top: y * zoom, width: Math.max(24, 16 * zoom), height: 24 * zoom }} onClick={() => selectAgent(a)} onKeyDown={e => removeOnDelete(e, a)}><span className="office-person-label"><span>{a.name}</span><span>{a.statusLabel ?? a.status}</span></span></button>)}</div>
     </div>
+    <div className="office-message-strip" role="region" aria-label="Office message deliveries" tabIndex={deliveries.length || crossFloor.length ? 0 : undefined}>
+    {mode === 'live' && !deliveries.length && !crossFloor.length && <p className="office-delivery-empty">Messages appear here as agents communicate.</p>}
     <div data-testid="office-deliveries" data-active={mode === 'live' && !reduced ? scheduler.current.active.length : 0} data-queued={mode === 'live' && !reduced ? scheduler.current.queued.length : 0}>{deliveries.slice(0, Math.max(0, 3 - crossFloor.length)).map((d, i) => { const from = layout.rooms.find(r => r.agents.includes(d.message.from)); const to = layout.rooms.find(r => r.agents.includes(d.message.to ?? '')); return <p key={i} data-testid="office-caption" title={d.message.text}>{agents.find(a => a.id === d.message.from)?.name ?? d.message.from} to {d.message.to ? agents.find(a => a.id === d.message.to)?.name ?? d.message.to : 'team'} · {from && to && from.floor !== to.floor && <span>Floor {from.floor + 1} to floor {to.floor + 1}: </span>}{d.message.text.length > 80 ? `${d.message.text.slice(0, 80)}…` : d.message.text}{d.count > 1 ? ` (${d.count} messages)` : ''}<span className="office-full-message"> Full available message: {d.message.text}</span></p> })}</div>
     {crossFloor.map((message, i) => { const from = layout.rooms.find(r => r.agents.includes(message.from)); const to = layout.rooms.find(r => r.agents.includes(message.to ?? '')); return from && to && <p key={i} data-testid="office-caption" title={message.text}>{agents.find(a => a.id === message.from)?.name ?? message.from} to {message.to ? agents.find(a => a.id === message.to)?.name ?? message.to : 'team'} · Floor {from.floor + 1} to floor {to.floor + 1}: {message.text.length > 80 ? `${message.text.slice(0, 80)}…` : message.text}<span className="office-full-message"> Full available message: {message.text}</span></p> })}
+    </div>
     {!agents.length && <p className="office-empty">The office is ready. People appear here when your team starts work.</p>}
     <details className="office-directory"><summary>Find a person · {agents.length} across {layout.floorCount} {layout.floorCount === 1 ? 'floor' : 'floors'}</summary><div className="office-roster" aria-label="All people, including earlier sessions" role="region">{agents.map(a => <button type="button" key={a.id} data-office-agent-id={a.id} data-office-agent-context={a.context} data-office-floor={(layout.rooms.find(room => room.agents.includes(a.id))?.floor ?? 0) + 1} aria-pressed={a.id === selectedId} onClick={() => selectAgent(a)} onKeyDown={e => removeOnDelete(e, a)}><span>{a.name}</span> <span>{a.statusLabel ?? a.status}</span>{a.context && <span> · {a.context}</span>}{a.activity && <span> · {a.activity}</span>}</button>)}</div></details>
   </section>

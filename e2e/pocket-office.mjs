@@ -201,7 +201,8 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
     if (!delivery) return false
     const active = Number(delivery.getAttribute('data-active'))
     const queued = Number(delivery.getAttribute('data-queued'))
-    return active > 0 && { active, queued }
+    const walking = document.querySelector('[data-office-motion-phase="outbound"]')
+    return active > 0 && !!walking && { active, queued }
   }, undefined, { timeout: 15_000 })).jsonValue()
   check(observedDelivery.active > 0, 'genuinely new messages after responsive reflow animate on the shared floor')
   const movingTargetsMatch = await scene().evaluate(async el => {
@@ -217,6 +218,13 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   check(movingTargetsMatch, 'person hit targets track rendered sprite coordinates throughout live delivery frames')
   check(observedDelivery.active <= 3 && observedDelivery.queued <= 12, 'real message burst respects active and queued visual limits')
   check(await scene().locator('[data-testid=office-caption] script').count() === 0, 'agent-authored message markup renders as text')
+  const walkingId = await scene().locator('[data-office-motion-phase="outbound"]').first().getAttribute('data-office-sprite-id')
+  const focusedWalker = scene().locator(`button[data-office-worker-id="${walkingId}"]`)
+  await focusedWalker.focus()
+  const pinnedBefore = await focusedWalker.boundingBox()
+  await sleep(550)
+  const pinnedAfter = await focusedWalker.boundingBox()
+  check(!!pinnedBefore && !!pinnedAfter && pinnedBefore.x === pinnedAfter.x && pinnedBefore.y === pinnedAfter.y, 'keyboard focus pins a moving person while later real messages arrive')
   await shot('office-real-message')
   await setAppearance({ reduceMotion: 'on' })
   check(await delivery.getAttribute('data-active') === '0', 'turning on reduced motion stops traversal during a real burst')

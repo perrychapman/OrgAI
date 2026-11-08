@@ -32,5 +32,5 @@ export function sampleJourney(path: readonly Point[], elapsed: number, timing = 
 
 /** Reserve a full target-width corridor for the whole decorative round trip. */
 export function routesConflict(a: readonly Point[], b: readonly Point[]): boolean {
-  return a.some(p => b.some(q => Math.abs(p.x - q.x) < 2 && Math.abs(p.y - q.y) < 2))
+  return a.some(p => b.some(q => Math.abs(p.x - q.x) < 2 && Math.abs(p.y - q.y) < 3))
 }
