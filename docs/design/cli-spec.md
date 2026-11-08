@@ -1030,8 +1030,8 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   removes and refreshes the PATH shim (`~/.local/bin/orgai`, `%LOCALAPPDATA%\OrgAI\bin\orgai.cmd`), only from a
   packaged app without ORGAI_DATA_DIR, never over a file without the `orgai-shim v1` marker, a symlink or a non-regular
   file. An install never turns Terminal access on by itself (review H2): the row asks ("Turn on Terminal access?") and
-  names the same-user trust model. App settings > General > Advanced settings > Terminal has the
-  `CliShimRow` (`lib/cliShim.ts`). The preload is CommonJS (`out/preload/index.cjs`) and every window runs with
+  names the same-user trust model (SUPERSEDED: no Terminal access setting remains). App settings > General > Advanced settings > Terminal has the
+  `CliShimRow` (`lib/cliShim.ts`; SUPERSEDED, replaced by `CliCommandRow`, standalone default spec 5.3). The preload is CommonJS (`out/preload/index.cjs`) and every window runs with
   `sandbox: true` (7(1)). `orgai doctor` gained the install and shim checks; the launcher finds a packaged app.
   `npm run pack` builds the CLI bundle too; `npm run pack:verify` (`scripts/verify-pack.mjs`) checks a local unpacked
   pack token-free: (a) files, (b) unpacked imports, (c) `--version`, (d) doctor, (e) a mock exec on `--host inproc`,
@@ -1212,7 +1212,7 @@ Each item is unit-tested on macOS unless it says otherwise; nothing here was run
   bodies live in `src/shared/view`; reexports.test.ts compares export names and values of every stub.
 - **Lows.** Conservative question policy never follows an agent's "(Recommended)" option; `execStallTimeoutMs` <= 0 is
   dropped on read; 'policy' / 'budget' endings read Stopped; kit `targetDigest` covers secret and sign-in presence;
-  CliShimRow live region, announced load failure and aria-describedby hint; `build/bin/orgai` stops after 40 link
+  CliShimRow (since removed) live region, announced load failure and aria-describedby hint; `build/bin/orgai` stops after 40 link
   hops and `.gitattributes` pins LF / CRLF; doctor caps daemon.json at 64 KB; the rest are in group B above.
 - **Owner decisions kept.** The RunAsNode fuse stays on; no PATH shim on Linux (AppImage).
 

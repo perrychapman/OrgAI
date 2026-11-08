@@ -845,7 +845,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     state 'absent' is ok on Node and inproc hosts, a warning on the app where creation failed; reads `vault.json` metadata only
     without a host and never decrypts). `shimInstaller` `otherCli` prefers an npm or archive `orgai` anywhere on PATH; the shim path
     counts as this install's own only while an OrgAI shim sits there, so npm's link in `~/.local/bin` is named "The orgai command from
-    npm (<v>) is on your PATH at <path>. OrgAI leaves it alone." and Install is refused (`CliShimRow`, `lib/cliShim.ts`).
+    npm (<v>) is on your PATH at <path>. OrgAI leaves it alone." and Install is refused (`CliShimRow`, `lib/cliShim.ts`; SUPERSEDED, removed).
   - Install row (standalone spec 5.3, replaces `CliShimRow` and the shim install half; the lines above are history): App settings >
     Terminal `CliCommandRow` (`cli-command-row`, `-status[data-state]`, `-install`, `-cancel`, `-remove-old`, `-text`, `-hint`,
     `-output`; `lib/cliCommand.ts`) over `src/main/host/cliInstaller.ts`. Status is metadata only (`orgaiOnPath.ts` also reads an
@@ -920,7 +920,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     `npm run pack:verify` (`scripts/verify-pack.mjs`, CI pack job) checks a local unpacked pack token-free: the
     packaged app holds no `out/cli` (asar or unpacked) and no `bin/orgai` launcher, keeps its own unpacked runtime packages (the app no longer contains the CLI), and (check (e)) boots hidden on the mock adapter with a temp `ORGAI_DATA_DIR` (vault, CLI, secret and daemon variables removed, `--use-mock-keychain` on macOS), writes a ready `daemon.json` and `logs/main.log`, and quits cleanly (the CI step is `continue-on-error` until (e) has passed once on both runners). Desktop-only IPC `app:cliShimStatus` / `installCliShim` / `uninstallCliShim`
     (`CliShimStatus` / `CliShimResult`, never reject, refused over the socket); App settings > General > Advanced >
-    Terminal `CliShimRow` (`cli-shim-row`, `-status[data-state]` (a live region), `-path-hint` (named by the buttons'
+    Terminal `CliShimRow` (SUPERSEDED, removed; replaced by `CliCommandRow`; `cli-shim-row`, `-status[data-state]` (a live region), `-path-hint` (named by the buttons'
     aria-describedby), `-notice`; `lib/cliShim.ts`); an install never turns Terminal access on by itself (review H2):
     while it is off the row asks (`cli-shim-terminal-confirm`). The Terminal access text names the same-user trust
     model and `terminal-access-level` picks `AppSettings.terminalAccessLevel` (`lib/terminalAccess.ts`).

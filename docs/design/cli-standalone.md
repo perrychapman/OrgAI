@@ -801,7 +801,7 @@ Each with tests in `selfControlGate.test.ts`; all are text checks (cli-spec Wave
    module top level today, so the call moves). Until it answers, the state is 'pending' as now. `systemCerts.ts` keeps
    an injected launcher so it stays Electron-free; Node and inproc hosts keep `node -e`. `index.ts`'s early exit on
    `ELECTRON_RUN_AS_NODE` stays.
-2. **Retire the app-bundled CLI** (**D5** timing). Release N (after phase A): the Terminal row (`CliShimRow`) points
+2. **Retire the app-bundled CLI** (**D5** timing; SUPERSEDED: the row is now `CliCommandRow`, an npm install button, standalone default spec 5.3). Release N (after phase A): the Terminal row (`CliShimRow`) points
    to `npm i -g orgai`, Install stays, the bundled CLI prints a one-line deprecation note on stderr. Release N+1:
    - `build/bin/orgai` / `orgai.cmd` become stubs that run no JavaScript and print "The orgai command now installs
      separately: npm i -g orgai" (exit 1); `out/cli` and its asarUnpack go (the runtime packages stay unpacked for

@@ -284,7 +284,8 @@ its area, review) before the next.
 
 ## 10. Unverified
 
-- Windows: `npm.cmd` through `cmd.exe` with the fixed list; `orgaiOnPath` recognising an npm global bin; DPAPI label
+- Not run: a real `npm install -g orgai-cli` against the registry (no network by design; the fake-npm e2e and unit tests cover the fixed argv and env). First check is the first published release.
+- Windows: the install row and `e2e/install-row.mjs` have not run locally; `npm.cmd` through `cmd.exe` with the fixed list; `orgaiOnPath` recognising an npm global bin; DPAPI label
   change. CI on windows-latest is the first check.
 - Linux Secret Service attribute change on a real keyring.
 - That every connection kind works on a fresh CLI folder (Claude via the user's login expected; Codex needs its own
