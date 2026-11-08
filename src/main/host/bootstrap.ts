@@ -429,6 +429,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       platform,
       dataDir,
       mock: mockAdapter,
+      hostKind,
       settings: () => settings.get(),
       connections: () => connections.list(),
       projectCount: () => projects.list().length,

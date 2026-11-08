@@ -32,9 +32,10 @@
  * sequence on Windows leaves a small window in which the path could be swapped; the DACL check runs on the same path.
  */
 import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join, posix, win32 } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { platformUserDataDir } from '../../../cli/client/locate'
 import { system32Path } from '../../host/systemBinaries'
 import { CustodyError, VAULT_DEK_BYTES, vaultNames, type CustodianCreated, type CustodianProbe, type VaultCustody, type VaultProduct } from '../vaultTypes'
 import type { RemovableKeyCustodian } from './common'
@@ -136,7 +137,16 @@ export function insideOnAnySpelling(parent: string, child: string, platform: Nod
  * Why `path` cannot be a key file, else undefined (5.3.1): not absolute, a network path on Windows, control
  * characters, or inside the user data folder or the data folder.
  */
-export function keyFilePathProblem(path: string, opts: { userDataDir: string; dataDir: string; platform?: NodeJS.Platform }): string | undefined {
+export function keyFilePathProblem(
+  path: string,
+  opts: {
+    userDataDir: string
+    dataDir: string
+    platform?: NodeJS.Platform
+    /** The CLI also refuses the desktop app's default folder and the file the desktop's own key-file variable names (spec 7). */
+    cliAvoids?: { desktopDefault: string; desktopKeyFile?: string }
+  }
+): string | undefined {
   const platform = opts.platform ?? process.platform
   // eslint-disable-next-line no-control-regex
   if (!path || /[\u0000-\u001f\u007f]/.test(path)) return 'The key file path is empty or holds control characters.'
@@ -149,6 +159,15 @@ export function keyFilePathProblem(path: string, opts: { userDataDir: string; da
   for (const folder of [opts.userDataDir, opts.dataDir]) {
     if (folder && insideOnAnySpelling(folder, path, platform)) {
       return `The key file must not be inside OrgAI's data folder (${folder}): a backup or sync of that folder would then hold both the vault and its key.`
+    }
+  }
+  const avoid = opts.cliAvoids
+  if (avoid) {
+    if (insideOnAnySpelling(avoid.desktopDefault, path, platform)) {
+      return `The key file must not be inside the OrgAI app's data folder (${avoid.desktopDefault}): orgai never writes the app's data.`
+    }
+    if (avoid.desktopKeyFile && insideOnAnySpelling(avoid.desktopKeyFile, path, platform) && insideOnAnySpelling(path, avoid.desktopKeyFile, platform)) {
+      return `The key file must not be the file the OrgAI app uses as its key (${vaultNames('desktop').keyFileEnv}): the two vaults would share one key.`
     }
   }
   return undefined
@@ -676,7 +695,17 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
   private checkedPath(unconfigured: 'unavailable' | 'missing', custody?: VaultCustody): string {
     const p = this.configuredPath(custody)
     if (p === undefined) throw new CustodyError(unconfigured, keyFileNotConfigured(this.opts.product))
-    const problem = keyFilePathProblem(p, { userDataDir: this.opts.userDataDir, dataDir: this.opts.dataDir, platform: this.platform })
+    const cliAvoids =
+      this.opts.product === 'cli'
+        ? (() => {
+            const desktopKeyFile = this.env[vaultNames('desktop').keyFileEnv]?.trim()
+            return {
+              desktopDefault: platformUserDataDir(this.platform, this.env as NodeJS.ProcessEnv, this.env.HOME ?? homedir()),
+              ...(desktopKeyFile ? { desktopKeyFile } : {})
+            }
+          })()
+        : undefined
+    const problem = keyFilePathProblem(p, { userDataDir: this.opts.userDataDir, dataDir: this.opts.dataDir, platform: this.platform, ...(cliAvoids ? { cliAvoids } : {}) })
     if (problem) throw new CustodyError('denied', problem)
     return p
   }

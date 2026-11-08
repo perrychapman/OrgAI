@@ -28,7 +28,7 @@
  *   except host.stop for a client that asked for 'configure'. The one exception to the cap is the owner of a
  *   `--host inproc` host: a hello whose ownerProof verifies against the server's in-memory `ownerKey` (only the CLI
  *   process that started the host holds it; it is never written to disk) gets every requested scope. Every other
- *   client of an in-process host, one holding daemon.secret included, is capped like on any host (review H2).
+ *   client of an in-process host, one holding daemon.secret included, is refused not_owner before any method runs.
  *   Lowering the level closes sockets holding scopes it no longer allows (never the owner's). It answers an RpcHelloResult with hostProof (and
  *   versionSkewWarning when clientVersion !== appVersion) and raises the line cap to RPC_BULK_FRAME_MAX_BYTES. A
  *   refused hello closes the socket once the error frame is flushed.
@@ -156,7 +156,7 @@ export interface HostSocketServerOptions {
   /**
    * `--host inproc` only: a 32-byte hex key kept in memory by the CLI process that started this host (never on disk,
    * never logged). A hello carrying a matching ownerProof (protocol.ts ownerProof) is that process and gets every
-   * requested scope; everyone else is capped by Terminal access (review H2).
+   * requested scope; everyone else is refused not_owner.
    */
   ownerKey?: string
 }
@@ -271,7 +271,7 @@ interface Conn {
   scopes: HostScope[]
   /** Requested scopes host.hello withheld (AppSettings.terminalAccessLevel); their channels answer the level message. */
   withheld: HostScope[]
-  /** The in-process host's own CLI (ownerProof verified): not capped by Terminal access, never closed when it narrows. */
+  /** The in-process host's own CLI (ownerProof verified): not capped by Terminal access (the only client an in-process host serves), never closed when it narrows. */
   owner?: boolean
   inflight: number
   /**

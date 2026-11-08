@@ -620,8 +620,7 @@ export function App(props: AppProps) {
         // Only claim "stopped" (130) when the run left its open status or the host accepted runs:stop; a refused or
         // failed stop leaves the run live, so say so (exit 1) instead of hiding the detached-live hint.
         if (ended() || failure === undefined) return doExit(EXIT_SIGINT, `${name} stopped.`)
-        const keepsGoing = conn.inproc === undefined ? ' The run keeps going.' : ''
-        doExit(EXIT_FAILURE, `Could not stop ${name}: ${failure.replace(/[.\s]+$/, '')}.${keepsGoing}`)
+        doExit(EXIT_FAILURE, `Could not stop ${name}: ${failure.replace(/[.\s]+$/, '')}.`)
       })
   }, [session, notify, doExit, label, conn])
 
@@ -656,13 +655,11 @@ export function App(props: AppProps) {
         return
       }
     }
-    const inproc = conn.inproc !== undefined
     const shown = statusSummary(session.getState()).liveRuns
     // This orgai's host also runs other projects' runs (it serves only this process, cli-standalone-default.md 4.1):
     // count every live run on it, not only the ones this view lists.
-    const onHost = inproc ? hostLiveRuns(conn.inproc) : undefined
-    const live = Math.max(shown, onHost ?? 0)
-    if (inproc && live > 0) {
+    const live = Math.max(shown, hostLiveRuns(conn.inproc) ?? 0)
+    if (live > 0) {
       const elsewhere = live - shown
       const more = elsewhere > 0 ? `, ${elsewhere} of them from other projects` : ''
       void confirm(`Quitting stops ${live} live run${live === 1 ? '' : 's'} in this orgai${more}. Quit?`).then((yes) => {

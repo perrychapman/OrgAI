@@ -126,6 +126,10 @@ export const markerUnreadableRefusal = (userDataDir: string): string =>
 /** The refusal text of 3.1. */
 export const folderRefusal = (userDataDir: string): string => `${userDataDir} belongs to the OrgAI app. orgai keeps its own data; choose another folder.`
 
+/** The refusal for a folder that holds the app's data folder: the folder itself is not the app's, but using it would put the CLI's files around the app's. */
+export const containsAppRefusal = (userDataDir: string): string =>
+  `${userDataDir} contains the OrgAI app's data folder. orgai keeps its own data; choose another folder.`
+
 /**
  * Decides whether the CLI may use the folder, before any other read or write there. Returns the refusal text, or
  * undefined when it may (an empty or missing folder gets the CLI marker; a CLI-marked one is left as it is; an unreadable marker refuses).
@@ -135,7 +139,8 @@ export function checkCliFolder(c: CliFolderCheck): string | undefined {
   const marker = readProductMarker(c.userDataDir)
   if (marker.state === 'marked' && marker.product === 'orgai-desktop') return folderRefusal(c.userDataDir)
   // The app's own folder, anything inside it and anything that contains it (G1: never write the app's data).
-  if (isInside(c.userDataDir, c.desktopDefault, platform) || isInside(c.desktopDefault, c.userDataDir, platform)) return folderRefusal(c.userDataDir)
+  if (isInside(c.userDataDir, c.desktopDefault, platform)) return folderRefusal(c.userDataDir)
+  if (isInside(c.desktopDefault, c.userDataDir, platform)) return containsAppRefusal(c.userDataDir)
   if (insideDesktopMarkedFolder(c.userDataDir)) return folderRefusal(c.userDataDir)
   // The data subfolder is `<userDataDir>/data` by its real path, never a link into another place (the app's data included).
   if (existsSync(c.dataDir)) {

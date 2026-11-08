@@ -20,6 +20,7 @@ import {
   APP_REFERENCE_READ_MAX_CHARS
 } from '../../shared/types'
 import type {
+  HostKind,
   AppReferenceHit,
   AppReferenceQuery,
   AppReferenceResult,
@@ -348,6 +349,8 @@ export interface ReferenceStatusDeps {
   platform: string
   dataDir: string
   mock: boolean
+  /** Terminal access means nothing on an in-process host (its only client is its own process): the status line leaves it out. */
+  hostKind?: HostKind
   settings(): AppSettings
   connections(): ConnectionInfo[] | Promise<ConnectionInfo[]>
   projectCount(): number
@@ -498,7 +501,7 @@ export function createAppReference(deps: AppReferenceDeps = {}): AppReferenceSer
     }
     if (settings) {
       lines.push(`proxies: ${Array.isArray(settings.proxies) ? settings.proxies.length : 0}`)
-      lines.push(`terminal access: ${settings.terminalServer === true ? 'on' : 'off'}, level ${fenceDatum(String(settings.terminalAccessLevel ?? 'operate'), 20)}`)
+      if (d.hostKind !== 'inproc') lines.push(`terminal access: ${settings.terminalServer === true ? 'on' : 'off'}, level ${fenceDatum(String(settings.terminalAccessLevel ?? 'operate'), 20)}`)
     }
     try {
       lines.push(`projects: ${d.projectCount()}`, `library MCP servers: ${d.mcpLibraryCount()}`, `skill library entries: ${d.skillLibraryCount()}`)

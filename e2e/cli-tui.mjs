@@ -23,7 +23,9 @@
 //    once (exit 6, naming the first orgai's folder and pid), `runs list` answers from the files with the snapshot note and
 //    `status` has no live cards (spec 4.2, 4.3).
 // g. Cards in the TUI that owns the folder: `y` from the tray allows card 1 (its tool result is shown); card 2 is denied
-//    with `n` + Enter (its tool never runs); /quit asks to stop the live runs and exits 0.
+//    with `n` + Enter (its tool never runs); then the question (F2, `2`, Enter), the rules request (`r`), the MCP install
+//    (`n`, Enter), the proposal (`d`, Enter) and card three (`a` only opens a confirmation, Esc cancels, `y` allows it); the
+//    saved run holds each answer; `status` beside the TUI has liveInboxAvailable false and no cards; /quit asks to stop the live runs and exits 0.
 // i. The org tree (ux-review-tui-org.md, `[mock:deep-tree]` on the mock's default script, full screen 120x40): the root, mock-lead
 //    and its two reports; once they finish and the 6 s grace passes they fold (reports first, "2 done", then mock-lead with
 //    them, "3 done" under the root; the run is still open); Right on the "3 done" row unfolds it and selects mock-lead; `n`
@@ -55,7 +57,8 @@ const DAEMON_JSON = path.join(DATA_DIR, 'data', 'run', 'daemon.json')
 const UI = {
   fullscreenArgs: ['tui'],
   inlineArgs: ['tui'], // at 90x20 the TUI picks inline by size; `--inline` forces it at any size
-  resolvedElsewhere: /Resolved by (the |something)/i,
+  /** The notice the TUI showed when another window answered a card: no longer possible, checked to stay absent. */
+  resolvedElsewhere: /Resolved (by (the |something)|in another window)/i,
   /** The agents pane's heading (soft check: the layout is judged by where the transcript text starts). */
   treeHeading: /\b(Agents|Org|Team)\b/,
   /**
@@ -408,6 +411,52 @@ try {
       check(gone, 'g: card 2 left the tray after `n` + Enter', esc(t.screen()))
       check(!t.screen().includes('card two ran'), 'g: `n` + Enter denies card 2 (its tool never ran)', esc(t.screen()))
 
+      // Each next card is drawn at once; wait for its words, let the 750 ms swap guard pass, then open the tray (F2).
+      const focusCard = async (what, words) => {
+        await t.waitFor(words, 25_000)
+        await sleep(900)
+        t.key('f2')
+        await sleep(250)
+        log(`answering ${what}`)
+      }
+      // Question: option 2.
+      await focusCard('the question', 'which option')
+      t.write('2')
+      await sleep(300)
+      t.key('enter')
+      // Rules request: grant for the run.
+      await focusCard('the rules request', 'npm run lint')
+      t.write('r')
+      // MCP install: deny (a deny note prompt, if any, is closed by Enter).
+      await focusCard('the MCP install', 'e2e-mcp')
+      t.write('n')
+      await sleep(400)
+      t.key('enter')
+      // Skills proposal: decline.
+      await focusCard('the proposal', 'e2e-skill')
+      t.write('d')
+      await sleep(400)
+      t.key('enter')
+      // Card three, two steps: `a` (always allow) only asks; Esc cancels it and the card stays; then `y` allows it once.
+      await focusCard('card three', 'card-three')
+      t.write('a')
+      const asked = await t.waitFor(/Esc cancels/, 10_000).then(() => true, () => false)
+      check(asked, 'g: `a` (always allow) opens a confirmation instead of deciding', esc(t.screen()))
+      t.key('esc')
+      await sleep(800)
+      check(!t.screen().includes('card three ran') && CARD_ON_SCREEN.test(t.screen()), 'g: Esc cancels the confirmation and card three is still pending', esc(t.screen()))
+      t.write('y')
+      const threeGone = await t.waitFor((sc) => !CARD_ON_SCREEN.test(sc), 15_000).then(() => true, () => false)
+      check(threeGone, 'g: after the cancelled confirmation `y` answers card three (it leaves the tray)', esc(t.screen()))
+      await t.waitFor('E2E-CARDS-DONE', 30_000).catch(() => undefined)
+      // The words of a card another window resolved are gone from this build: the owning terminal answers everything.
+      check(!UI.resolvedElsewhere.test(t.screen()), 'g: no "resolved elsewhere" notice appears (nothing else can answer a card)', esc(t.screen()))
+
+      // Beside the TUI, status has no live inbox and no cards (spec 4.3).
+      const statusMid = json((await cli(['status', '--output-format', 'json'], { cwd: repo })).out)
+      const withoutInbox = Object.keys(statusMid ?? {}).filter((k) => k !== 'liveInboxAvailable')
+      check(statusMid?.liveInboxAvailable === false && !withoutInbox.some((k) => /card|pending|inbox|decision/i.test(k)), 'g: status beside the TUI has liveInboxAvailable false and no card entries', JSON.stringify(statusMid)?.slice(0, 300))
+
       const e = await quit(t, { confirm: true })
       check(e?.code === 0, 'g: the TUI quits with 0 (runs end with it)', `${JSON.stringify(e)} ${esc(t.screen())}`)
     } finally {
@@ -423,6 +472,13 @@ try {
     const saved = await cli(['runs', 'show', cardsRun?.summary?.id ?? 'R1', '--transcript', '--output-format', 'json'], { cwd: repo })
     check(saved.code === 0 && saved.out.includes('card one ran'), 'g: the saved run shows card 1 ran', show(saved))
     check(saved.out.includes('Denied by user') && !saved.out.includes('card two ran'), 'g: the saved run shows card 2 "Denied by user" and no "card two ran"', show(saved))
+    check(saved.out.includes('card three ran'), 'g: the saved run shows card three ran after its confirmation was cancelled', show(saved))
+    // The other cards' answers, from the record (a tool result per card; the run record keeps no decidedBy surface).
+    const raw = saved.out
+    check(raw.includes(QUESTION_LABELS[1]) && !/"content":"(Alpha|Charlie) option"/.test(raw), 'g: the saved run holds the question answer (the second label)', raw.slice(0, 400))
+    check(/GRANTED \(this run only\): Bash\(npm run lint:\*\)/.test(raw), "g: the saved run shows the rules request granted for the run only", raw.slice(0, 400))
+    check(/user denied installing this server/.test(raw), 'g: the saved run shows the MCP install denied (not approved)', raw.slice(0, 400))
+    check(/DECLINED\. The user declined this proposal/.test(raw), 'g: the saved run shows the proposal declined', raw.slice(0, 400))
   }
 
   // ---------- i: the org tree, inspector and keys overlay ----------

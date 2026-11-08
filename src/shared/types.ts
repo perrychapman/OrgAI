@@ -6441,8 +6441,8 @@ export interface RpcHelloParams {
   /**
    * Only from the CLI process that started its in-process host: HMAC-SHA256(that host's in-memory owner key,
    * JSON.stringify(['owner:v1', hostInstanceId, hostNonce, clientNonce, clientProof])) (protocol.ts ownerProof). A
-   * matching one is granted every requested scope; any other client of that host is capped by Terminal access like
-   * on every other host. Never on disk, so a process that read daemon.secret still cannot make it.
+   * matching one is granted every requested scope; any other client of that host is refused not_owner before any
+   * method runs. Never on disk, so a process that read daemon.secret still cannot make it.
    */
   ownerProof?: string
 }

@@ -30,7 +30,7 @@ import { COMMANDS, DEFAULT_TUI_FLAGS, GLOBAL_FLAGS, findCommand, type CommandEnt
 import { buildContext } from './context'
 import { splitGlobalFlags } from './flags'
 import { safe } from './output'
-import { collectSecretOverlay, isHostlessCommand, planSecretEnv, scrubSecretEnv } from './secretOverlay'
+import { SECRET_ENV_REFUSAL, collectSecretOverlay, isHostlessCommand, planSecretEnv, scrubSecretEnv } from './secretOverlay'
 import { CliError, EXIT, type CliIo, type CommandFn } from './types'
 import { CLI_VERSION } from './version'
 import { readInstallInfo } from './installInfo'
@@ -173,10 +173,10 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
 
     /**
      * Environment secrets (secretOverlay.ts planSecretEnv): the refusal, the one warning, and the overlay taken out of
-     * the environment before anything can spawn. `command` undefined is bare `orgai`; null is completions.
+     * the environment before anything can spawn. `command` undefined is bare `orgai`.
      */
-    const prepareContext = (command: string | null | undefined, commandArgs: readonly string[]): ReturnType<typeof buildContext> => {
-      const plan = planSecretEnv(command === null ? true : isHostlessCommand(command, commandArgs), env, globals.secretEnv)
+    const prepareContext = (command: string | undefined, commandArgs: readonly string[]): ReturnType<typeof buildContext> => {
+      const plan = planSecretEnv(isHostlessCommand(command, commandArgs), env, globals.secretEnv)
       if (plan.refusal) throw new CliError(plan.refusal, EXIT.usage)
       let overlay: Map<string, string> | undefined
       if (plan.collect) {
@@ -230,7 +230,13 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     }
     if (!command.available || !ROUTES[command.name]) throw new CliError(`\`orgai ${command.name}\` is not available in this build yet.`, EXIT.usage)
 
-    return await ROUTES[command.name](prepareContext(command.name === 'completions' ? null : command.name, args), args)
+    // Completions needs no data folder and no host: no context (no marker write, no folder refusal, no ambient-secret
+    // warning). Only an explicit --secret-env is still refused, as for every read-only command.
+    if (command.name === 'completions') {
+      if (globals.secretEnv.length > 0) throw new CliError(SECRET_ENV_REFUSAL, EXIT.usage)
+      return await runCompletions({ io }, args)
+    }
+    return await ROUTES[command.name](prepareContext(command.name, args), args)
   } catch (e) {
     if (e instanceof CliError) {
       err(e.message)

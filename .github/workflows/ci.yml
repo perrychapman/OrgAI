@@ -58,13 +58,17 @@ jobs:
         run: npx vitest run src/cli/vaultCli.int.test.ts
         env:
           ORGAI_REQUIRE_NODE_HOST_INT: '1'
+          # The CLI ignores ORGAI_DATA_DIR; this keeps a stray CLI run off the runner's profile.
+          ORGAI_CLI_DATA_DIR: ${{ runner.temp }}/orgai-cli-data
       - name: e2e (free)
         run: npm run e2e:free
         env:
           # The e2e scripts ignore this and give each script its own temp data dir (E2E_DATA_DIR overrides); this only keeps
-          # any stray launch off the runner's profile.
+          # any stray launch off the runner's profile. The desktop app reads ORGAI_DATA_DIR, the CLI only
+          # ORGAI_CLI_DATA_DIR, so both are set.
           # (The runner context is only available at step level.)
           ORGAI_DATA_DIR: ${{ runner.temp }}/orgai-data
+          ORGAI_CLI_DATA_DIR: ${{ runner.temp }}/orgai-cli-data
           # macOS only: the runner's work area is 1024x684, which clamps the 1600x1000 / 2400x1000 e2e windows.
           ORGAI_WINDOW_LARGER_THAN_SCREEN: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: Upload e2e screenshots

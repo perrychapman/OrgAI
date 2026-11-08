@@ -153,7 +153,6 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   }
   const { userDataDir, dataDir } = opts
   const logsDir = join(userDataDir, 'logs')
-  if (opts.quiet) quietConsole()
   const hostInstanceId = currentHostInstanceId()
   const hostKind = 'inproc' as const
   // In memory only (never daemon.json, daemon.secret or a log): this process's proof that it started the host, so its
@@ -173,6 +172,10 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
 
   let ownershipRef: HostOwnership | undefined
   let ownership: HostOwnership
+  // Ownership warnings wait in memory: before installLogging the logger has no folder (it would fall back to the shared
+  // <tmpdir>/orgai-logs), and the console may be the terminal UI's screen. They go to main.log once it is open, or to
+  // stderr when ownership is refused.
+  const heldWarnings: string[] = []
   try {
     // wait: 'none' (spec 4.2): another orgai, starting or running, is refused at once; a provably stale record is reclaimed.
     ownership = await acquireHostOwnership({
@@ -181,12 +184,14 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       appVersion: CLI_VERSION,
       hostInstanceId,
       wait: 'none',
+      warn: (m) => void heldWarnings.push(m),
       ownerCwd: opts.cwd ?? process.cwd(),
       onConnection: (s) => server.accept(s)
     })
     ownershipRef = ownership
   } catch (e) {
     server.close()
+    for (const m of heldWarnings) process.stderr.write(`${m}\n`)
     if (e instanceof HostAlreadyRunningError) throw new CliError(ownedMessage(ownerWordsOf(e.info)), EXIT.hostBusy)
     if (e instanceof HostStartingOrBusyError) throw new CliError(ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {}), EXIT.hostBusy)
     // An unreadable record that is not provably stale is "owned" (spec 4.2); other ownership failures keep their message.
@@ -197,6 +202,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   // Logging only once ownership is held: a refused second orgai must not create logs/ or rotate main.log under the owner
   // (it reports on stderr only; spec 4.2).
   if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })
+  if (opts.quiet) quietConsole()
+  for (const m of heldWarnings) log.warn(m)
   // After ownership (the in-process twin of the desktop's single-instance lock), before anything can fetch.
   const certOpt = opts.systemCertificates ?? true
   const certs = certOpt === true ? SYSTEM_CERTS : certOpt === false ? undefined : certOpt

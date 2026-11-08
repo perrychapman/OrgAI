@@ -260,7 +260,7 @@ export function DecisionTray(props: DecisionTrayProps) {
       const full = cardFullView(card)
       if (full.cut && card.kind === 'permission') {
         // The full view itself is cut: the rest of the command cannot be read here, so v does not unlock y / s / a.
-        st.status = { text: 'The full view is cut at 64 KB: the rest cannot be read here. Deny it, or answer elsewhere.', tone: 'warn' }
+        st.status = { text: 'The full view is cut at 64 KB: the rest cannot be read here, so it can only be denied.', tone: 'warn' }
         bump()
       } else st.readAll = true
       void props.onViewText(title, full.text).catch((e: unknown) => {

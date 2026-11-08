@@ -2,7 +2,7 @@ import { readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { checkCliFolder, folderRefusal, markerUnreadableRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
+import { checkCliFolder, containsAppRefusal, folderRefusal, markerUnreadableRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
 
 const dirs: string[] = []
 const base = (): string => {
@@ -159,7 +159,8 @@ describe('product marker', () => {
     const root = base()
     const app = join(root, 'Support', 'OrgAI')
     mkdirSync(app, { recursive: true })
-    expect(check(join(root, 'Support'), app)).toBe(folderRefusal(join(root, 'Support')))
+    expect(check(join(root, 'Support'), app)).toBe(containsAppRefusal(join(root, 'Support')))
+    expect(containsAppRefusal(join(root, 'Support'))).not.toContain('belongs to')
     const other = join(root, 'Other')
     mkdirSync(join(other, 'deep'), { recursive: true })
     marker(other, 'orgai-desktop')

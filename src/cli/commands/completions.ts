@@ -5,7 +5,7 @@
  * "${fpath[1]}/_orgai"`, `orgai completions fish > ~/.config/fish/completions/orgai.fish`.
  */
 import { COMMANDS, GLOBAL_FLAGS, type CommandEntry, type CommandFlag } from '../commandTable'
-import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
+import { CliError, EXIT, type CliContext } from '../types'
 
 export const SHELLS = ['bash', 'zsh', 'fish'] as const
 export type Shell = (typeof SHELLS)[number]
@@ -164,7 +164,8 @@ export function completionScript(shell: Shell): string {
   return shell === 'bash' ? bashScript() : shell === 'zsh' ? zshScript() : fishScript()
 }
 
-export const runCompletions: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
+/** Needs no data folder, host or secrets: only the output stream. */
+export const runCompletions = async (ctx: Pick<CliContext, 'io'>, args: string[]): Promise<number> => {
   const shell = args[0]
   if (args.length !== 1 || !(SHELLS as readonly string[]).includes(shell)) {
     throw new CliError(`Use: orgai completions ${SHELLS.join(' | ')}${shell && args.length === 1 ? ` (unknown shell "${shell.slice(0, 32)}")` : ''}`, EXIT.usage)

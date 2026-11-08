@@ -199,14 +199,13 @@ export const VAULT_NOT_AVAILABLE_MESSAGE = 'Secure storage is not available in t
 export const SECURE_STORAGE_UNAVAILABLE_MESSAGE = 'Secure storage is not available on this system, so OrgAI cannot store secrets.'
 
 /** A value the app's safeStorage cannot decrypt (another user, a damaged string, a host without safeStorage). */
-export const UNDECRYPTABLE_REASON = 'Saved by the OrgAI app and cannot be read here'
+export const UNDECRYPTABLE_REASON = VAULT_MESSAGES.undecryptable
 
 /**
  * secrets.json does not parse: legacy-only writes refuse rather than overwrite it (5.5 Legacy file states). secrets:reset
  * moves it aside (review round 1), which also starts secure storage over.
  */
-export const LEGACY_CORRUPT_MESSAGE =
-  "The OrgAI app's secrets file (secrets.json) is damaged, so OrgAI does not change it; `orgai secrets reset` moves it aside (and starts secure storage over)."
+export const LEGACY_CORRUPT_MESSAGE = VAULT_MESSAGES.legacyCorrupt
 
 /** Mutations refused until the reconcile after a failed save succeeds (5.5 Durability and failures). */
 export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not check the saved secrets again yet; try again, or check with `orgai secrets status`.'
@@ -621,7 +620,7 @@ export class SecretStore implements SecretStoreApi {
       try {
         return { value: this.legacyDecrypt(r.value) }
       } catch {
-        return { unreadable: UNDECRYPTABLE_REASON }
+        return { unreadable: this.msg.undecryptable }
       }
     }
     const v = this.vault
@@ -926,7 +925,7 @@ export class SecretStore implements SecretStoreApi {
    * same bytes as the new one (H = B), so reads converge to the new value; a failure at the vault write changes nothing.
    */
   private writeLegacyOnly(key: string, value: string): void {
-    if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? LEGACY_CORRUPT_MESSAGE)
+    if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? this.msg.legacyCorrupt)
     if (!this.cipherAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE)
     const back = this.legacyEncrypt(value)
     const next = dict<string>()
@@ -1411,7 +1410,7 @@ export class SecretStore implements SecretStoreApi {
     if (this.legacyReadError) throw new Error(this.legacyReadError)
     if (this.vstate === 'open') return
     if (this.isApp) {
-      if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? LEGACY_CORRUPT_MESSAGE)
+      if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? this.msg.legacyCorrupt)
       if (!this.cipherAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE)
       return
     }
@@ -1788,7 +1787,7 @@ export class SecretStore implements SecretStoreApi {
       try {
         plain = this.legacyDecrypt(t.prevLegacy as string)
       } catch {
-        return { restored: false, reason: UNDECRYPTABLE_REASON }
+        return { restored: false, reason: this.msg.undecryptable }
       }
     }
     this.set(key, plain)

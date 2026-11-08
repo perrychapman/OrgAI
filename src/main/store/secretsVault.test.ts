@@ -418,6 +418,21 @@ describe('writes (5.5 Writes)', () => {
     expect((await node()).get('a')).toBe('a-value')
   })
 
+  it('the CLI product words a corrupt secrets.json without naming the app', async () => {
+    writeFileSync(join(dataDir, 'secrets.json'), 'garbage')
+    custody.fail(locked)
+    const l = await host('desktop', { product: 'cli' })
+    let message = ''
+    try {
+      l.set('k', 'v')
+    } catch (e) {
+      message = (e as Error).message
+    }
+    expect(message).toContain('secrets.json')
+    expect(message).not.toMatch(/OrgAI app/)
+    expect(message).not.toBe(LEGACY_CORRUPT_MESSAGE)
+  })
+
   it('a corrupt secrets.json is never rewritten: legacy-only writes refuse, an open vault stores vault-only', async () => {
     writeFileSync(join(dataDir, 'secrets.json'), 'garbage')
     custody.fail(locked)

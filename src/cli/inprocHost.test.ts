@@ -128,6 +128,26 @@ describe('startInprocHost', () => {
     await first.stop(true)
   })
 
+  it('holds ownership warnings until logging is open: nothing reaches console or the logger beforehand', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    const { log } = await import('../main/log')
+    mkdirSync(join(dataDir, 'run'), { recursive: true })
+    // Unusable (no host fields) but naming a pid that is gone: reclaimed with a warning.
+    writeFileSync(join(dataDir, 'run', 'daemon.json'), JSON.stringify({ pid: 2147483646 }))
+    const savedConsole = { log: console.log, info: console.info, debug: console.debug, error: console.error }
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const logWarn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      await start(new Map(), { quiet: true })
+      expect(consoleWarn).not.toHaveBeenCalled()
+      expect(logWarn).toHaveBeenCalledWith(expect.stringContaining('replacing an unusable daemon.json'))
+    } finally {
+      consoleWarn.mockRestore()
+      logWarn.mockRestore()
+      Object.assign(console, savedConsole)
+    }
+  })
+
   it('stop(true) drains and releases daemon.json', async () => {
     const h = await start()
     await h.stop(true)

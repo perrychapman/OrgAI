@@ -300,6 +300,9 @@ export const VAULT_MESSAGES = {
   missingKey: "The key for this secure storage is not available for this user on this computer. Sign in to the account that created it or restore its key file. `orgai secrets reset` starts over",
   keyMismatch: 'The key does not match this secure storage, or it is damaged. Restore the matching key file. `orgai secrets reset` starts over',
   corrupt: "Secure storage is damaged. Run `orgai secrets reset` to start over from the OrgAI app's older copies (App settings > General > Advanced > Terminal installs the orgai command)",
+  undecryptable: 'Saved by the OrgAI app and cannot be read here',
+  legacyCorrupt:
+    "The OrgAI app's secrets file (secrets.json) is damaged, so OrgAI does not change it; `orgai secrets reset` moves it aside (and starts secure storage over).",
   unreadableEntry: 'This saved secret is damaged and cannot be read',
   notDurable: 'The secret may or may not have been saved. Set it again to be sure (`orgai secrets status` shows the state)',
   clearRefusedCorrupt: 'Secure storage is damaged. Reset it first with `orgai secrets reset` (App settings > General > Advanced > Terminal installs the orgai command)',
@@ -325,6 +328,8 @@ export const CLI_VAULT_MESSAGES: VaultMessages = {
   clearRefusedCorrupt: 'Secure storage is damaged. Reset it first with `orgai secrets reset`',
   clearRefusedLegacyOnly: 'Run `orgai secrets init` first',
   undeleteAppOnly: 'This deleted secret cannot be restored here',
+  undecryptable: 'This saved secret cannot be read here',
+  legacyCorrupt: 'The secrets file (secrets.json) in this folder is damaged, so orgai does not change it; `orgai secrets reset` moves it aside (and starts secure storage over).',
   resetWarning: 'Every secret saved in orgai is lost.'
 }
 

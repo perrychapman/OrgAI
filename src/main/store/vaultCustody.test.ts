@@ -152,6 +152,18 @@ describe('key file variables stay separate', () => {
     expect(mk('desktop', { ORGAI_CLI_VAULT_KEY_FILE: '/keys/cli' }).configuredPath()).toBeUndefined()
   })
 
+  it('the CLI key file is refused inside the desktop default folder and when it is the desktop variable\'s file', async () => {
+    const mk = (env: Record<string, string>, keyFile: string) =>
+      new KeyFileCustodian({ dataDir: '/home/me/cli/data', userDataDir: '/home/me/cli', product: 'cli', env: { HOME: '/home/me', ...env }, platform: 'linux', keyFile })
+    const inApp = mk({}, '/home/me/.config/OrgAI/vault.key')
+    await expect(inApp.create(ID)).rejects.toMatchObject({ kind: 'denied', message: expect.stringContaining("app's data folder") })
+    const same = mk({ ORGAI_VAULT_KEY_FILE: '/keys/app.key' }, '/keys/app.key')
+    await expect(same.create(ID)).rejects.toMatchObject({ kind: 'denied', message: expect.stringContaining('share one key') })
+    // The desktop itself may use its own default folder, and a different file is fine for the CLI.
+    const ok = mk({ ORGAI_VAULT_KEY_FILE: '/keys/app.key' }, '/keys/cli.key')
+    await expect(ok.create(ID)).rejects.not.toMatchObject({ kind: 'denied' })
+  })
+
   it('the factory ignores a key file named by the other product', () => {
     const factory = createCustodianFactory({ dataDir: '/d/data', userDataDir: '/d', product: 'cli', env: { ORGAI_VAULT_KEY_FILE: '/keys/app' }, platform: 'linux' })
     const c = factory('key-file', {}) as KeyFileCustodian

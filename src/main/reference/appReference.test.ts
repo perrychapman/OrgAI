@@ -107,6 +107,12 @@ describe('query', () => {
     expect(r.text).not.toContain('proxy.example.com')
     expect(r.text).not.toContain('http')
   })
+  it('status leaves the terminal access line out on an in-process host', async () => {
+    const inproc = createAppReference({ status: { ...statusDeps(), hostKind: 'inproc' } })
+    const r = await inproc.query({ action: 'status' }, { status: true })
+    expect(r.text).toContain('1.2.3')
+    expect(r.text).not.toContain('terminal access')
+  })
   it('measures a search over the full corpus', async () => {
     const full = createAppReference()
     await full.query({ action: 'search', query: 'warm up' }, { status: false })

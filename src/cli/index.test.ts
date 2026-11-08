@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -267,9 +267,22 @@ describe('orgai routing', () => {
       expect(r.err).toBe('ORGAI_SECRET_* ignored: this command does not start a host\n')
       expect(env).toEqual({ PATH: '/bin' })
     }
-    // Completions leaves an ambient variable alone, as it always did.
+    // Completions builds no context: an ambient variable is left alone and nothing is warned about.
     const env: NodeJS.ProcessEnv = { ORGAI_SECRET_X: '1' }
-    expect((await run(['completions', 'bash'], env)).code).toBe(0)
+    const c = await run(['completions', 'bash'], env)
+    expect(c.code).toBe(0)
+    expect(c.err).toBe('')
+    expect(env).toEqual({ ORGAI_SECRET_X: '1' })
+  })
+
+  it('completions needs no data folder: a folder orgai refuses, or one it would create, is left alone', async () => {
+    const desktop = mkdtempSync(join(tmpdir(), 'orgai-index-app-'))
+    writeFileSync(join(desktop, 'product.json'), JSON.stringify({ product: 'orgai-desktop', version: 1 }))
+    const r = await run(['--data-dir', desktop, 'completions', 'bash'])
+    expect(r.code).toBe(0)
+    const fresh = join(mkdtempSync(join(tmpdir(), 'orgai-index-')), 'never-created')
+    expect((await run(['--data-dir', fresh, 'completions', 'zsh'])).code).toBe(0)
+    expect(existsSync(fresh)).toBe(false)
   })
 
   it('an ignored ambient secret never reaches a host: the overlay is dropped', async () => {

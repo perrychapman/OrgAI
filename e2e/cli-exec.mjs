@@ -150,8 +150,19 @@ try {
 } catch (e) {
   check(false, 'cli-exec ran to the end', e instanceof Error ? e.stack : String(e))
 } finally {
-  // Never leave a host behind.
-  if (fs.existsSync(DAEMON_JSON)) log('a host was left behind', fs.readFileSync(DAEMON_JSON, 'utf8'))
+  // An exec process must leave no host behind: a leftover daemon.json fails the script and its pid is killed, so a later
+  // script on the same folder is not refused with exit 6.
+  const left = fs.existsSync(DAEMON_JSON) ? fs.readFileSync(DAEMON_JSON, 'utf8') : undefined
+  check(left === undefined, 'no host is left behind', left)
+  if (left !== undefined) {
+    try {
+      const pid = Number(JSON.parse(left).pid)
+      if (Number.isInteger(pid) && pid > 1 && pid !== process.pid) process.kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone or unreadable */
+    }
+    fs.rmSync(DAEMON_JSON, { force: true })
+  }
   removeFixture(repo)
   log('done')
 }
