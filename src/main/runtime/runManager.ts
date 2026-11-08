@@ -4319,9 +4319,14 @@ export class RunManager {
     // A new provider session must not regain the conversation's already spent desktop budget.
     let carriedBudget = target.conversationBudgetUsd
     if ((switching || carriedBudget !== undefined) && !overrides?.execMode) {
-      const cap = carriedBudget ?? Math.min(projectBudgetUsd(project) ?? Infinity, overrides?.maxBudgetUsd ?? Infinity)
+      // A carried override is already the remaining allowance, whereas the stored conversation cap and the
+      // current project cap describe total spend. Never subtract the chain from a remaining allowance twice.
+      const spent = chain.reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0)
+      // An explicit continuation override is a new remaining allowance, unlike a carried original total.
+      const requestedCap = carriedBudget !== undefined && opts.overrides?.maxBudgetUsd !== undefined
+        ? spent + opts.overrides.maxBudgetUsd : Infinity
+      const cap = Math.min(carriedBudget ?? overrides?.maxBudgetUsd ?? Infinity, projectBudgetUsd(project) ?? Infinity, requestedCap)
       if (Number.isFinite(cap)) {
-        const spent = chain.reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0)
         if (spent >= cap) throw new Error('The conversation budget is spent; switching models does not reset it.')
         project = { ...project, maxBudgetUsd: cap - spent }
         if (overrides?.maxBudgetUsd !== undefined) overrides.maxBudgetUsd = cap - spent

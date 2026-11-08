@@ -64,6 +64,8 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 
 ### Runtime core (provider-neutral)
 
+- Model handoff budget recovery: `RunSummary.conversationBudgetUsd` retains the original desktop conversation cap. Continuations subtract chain spend once, including after a later native resume; a lower current project cap tightens the stored cap. Carried override budgets already represent remaining allowance. Store reads retain only positive finite conversation caps and known adapter ids. Dedicated runtime/store/shared tests cover all four run kinds, staged selections after errors without native session ids, repeated provider handoffs, native successor sessions and tightened/spent caps. Live provider continuation remains unverified.
+
 - Adapter interfaces and the run manager. RunManager picks the adapter, resolves the connection and MCP servers per run, and handles approvals, proposals, questions, merges and MCP install cards.
 - Harness tools, each with an audience: 'root', or 'spawners' for the MCP tools. Callers pass a HarnessToolCaller when they know the calling agent.
 - Role prompts, activity strings, permission scopes, agent handles and messages, the continuation driver, WorktreeIntegrator and git worktree commit/merge.

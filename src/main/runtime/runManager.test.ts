@@ -11,7 +11,7 @@ import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
-import { project as makeProject, runSummary } from './testHelpers'
+import { project as makeProject, mcpSpec, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
 import { defaultConnections } from '@shared/defaults'
 import { log } from '../log'
@@ -143,6 +143,63 @@ describe('RunManager stored records', () => {
     const next = await m.continueRun(p, 'unlimited', 'Continue')
     expect(next.conversationBudgetUsd).toBeUndefined()
     await m.stopAll()
+  })
+
+  it.each(['work', 'setup', 'mcp-assist', 'skill-assist'] as const)('preserves exact budgets through repeated %s handoffs and native recovery', async (kind) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10, permissionMode: 'dontAsk', mcpServers: [mcpSpec()] })
+    p.roles[0].skills = ['granted-skill']
+    p.roles[0].mcpServers = ['mcp-1']
+    const { m, store } = manager(p, {}, { catalog: () => [
+      { id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' },
+      { id: 'original', label: 'Original', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }
+    ] })
+    // Start failures can occur before native init. Recovery must work without any session id.
+    const first = runSummary({ id: 'exact-first', projectId: p.id, kind, startedAt: 1, status: 'error', connection: 'anthropic', totalCostUsd: 3,
+      overrides: { permissionMode: 'plan', maxBudgetUsd: 10 }, modelSelection: { model: 'alternate', connection: 'openai' } })
+    store.upsert(first)
+    let sequence = 1
+    const start = vi.spyOn(m, 'start').mockImplementation(async (input) => {
+      const summary = runSummary({ id: `exact-${++sequence}`, projectId: p.id, kind: input.kind, startedAt: sequence,
+        status: 'error', connection: input.modelSelection!.connection,
+        modelAdapter: input.modelSelection!.connection === 'openai' ? 'codex' : 'claude',
+        resumedFrom: input.resumedFrom, modelSelection: input.modelSelection, conversationBudgetUsd: input.conversationBudgetUsd,
+        overrides: input.overrides, totalCostUsd: sequence === 2 ? 2 : sequence === 3 ? 1 : 0 })
+      store.upsert(summary)
+      return summary
+    })
+    const second = await m.continueRun(p, first.id, 'Retry after API error')
+    expect(start.mock.calls[0][0]).toMatchObject({ project: { maxBudgetUsd: 7, permissionMode: 'dontAsk', mcpServers: p.mcpServers },
+      overrides: { maxBudgetUsd: 7, permissionMode: 'plan' }, conversationBudgetUsd: 10 })
+    expect(start.mock.calls[0][0].resumeSessionId).toBeUndefined()
+    await m.switchModel({ runId: second.id, model: 'original', connection: 'anthropic' })
+    const third = await m.continueRun(p, second.id, 'Switch back')
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBe(5)
+    expect(start.mock.calls[1][0].overrides?.maxBudgetUsd).toBe(5)
+    expect(third.conversationBudgetUsd).toBe(10)
+    // Once the new provider supplies a native session, the next continuation keeps it.
+    store.upsert({ ...third, sessionId: 'new-native-session', status: 'finished' })
+    const fourth = await m.continueRun(p, third.id, 'Continue natively')
+    expect(start.mock.calls[2][0].resumeSessionId).toBe('new-native-session')
+    expect(start.mock.calls[2][0].project.maxBudgetUsd).toBe(4)
+    expect(start.mock.calls[2][0].overrides?.maxBudgetUsd).toBe(4)
+    expect(fourth.conversationBudgetUsd).toBe(10)
+    const tightened = await m.continueRun({ ...p, maxBudgetUsd: 8 }, fourth.id, 'Use lower project limit')
+    expect(start.mock.calls[3][0].project.maxBudgetUsd).toBe(2)
+    expect(start.mock.calls[3][0].overrides?.maxBudgetUsd).toBe(2)
+    expect(tightened.conversationBudgetUsd).toBe(8)
+    const narrowed = await m.continueRun(p, tightened.id, 'Use explicit remaining allowance', undefined, { overrides: { maxBudgetUsd: 1 } })
+    expect(start.mock.calls[4][0].project.maxBudgetUsd).toBe(1)
+    expect(start.mock.calls[4][0].overrides?.maxBudgetUsd).toBe(1)
+    expect(narrowed.conversationBudgetUsd).toBe(7)
+    await expect(m.continueRun({ ...p, maxBudgetUsd: 6 }, tightened.id, 'No allowance left')).rejects.toThrow('budget is spent')
+    expect(start).toHaveBeenCalledTimes(5)
+    for (const [input] of start.mock.calls) {
+      expect(input.project.roles).toEqual(p.roles)
+      expect(input.project.mcpServers).toEqual(p.mcpServers)
+      expect(input.project.permissionMode).toBe('dontAsk')
+      expect(input.overrides?.permissionMode).toBe('plan')
+    }
+    expect(p.maxBudgetUsd).toBe(10)
   })
 
   it('subtracts chain spend once on a repeated handoff and subsequent native continuation', async () => {

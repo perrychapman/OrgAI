@@ -2012,5 +2012,7 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
 <!-- orgai:architecture -->
 ## Architecture and conventions
 
+- Live model switch recovery: exact-value unit regressions in `runtime/runManager.test.ts` exercise all four run kinds with no-session API errors, repeated handoffs, native continuation, a newly lowered project cap and an explicit remaining allowance. `conversationBudgetUsd` is a total cap; carried override budgets are remaining allowance and must not have prior chain spend subtracted twice. Store/chain tests check normalization and staged no-session recovery. Codex also refuses an idle-root switch while reports remain active (fake app-server regression). These are fake-runtime checks; live Claude/Codex/proxy behavior remains unverified.
+
 Read `.orgai/ARCHITECTURE.md` before changing code. It records the agreed stack, module layout, conventions and commands for this project. Keep it current when they change.
 - Self-help re-walk fix-up (renderer): the navigation banner adds "A change is waiting for you in the chat." and "Back to chat to decide" while the asking run has a card open, Tab from the landed heading enters the banner, Esc dismisses, section destinations focus the section heading; fold summaries read "1 app setting · App settings" / "1 setting · <project>"; `list_projects` folds to "Listed your OrgAI projects". Unit-tested; e2e/self-help.mjs checks the banner text, Tab and Esc.
