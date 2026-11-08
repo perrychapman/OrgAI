@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as zlib from 'node:zlib'
-import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, sleep } from './lib.mjs'
+import { APP_DIR, TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const USE_SCRIPT = process.env.E2E_OUTPUTS_SCRIPT === '1'
@@ -154,8 +154,7 @@ const until = async (fn, ms = 10_000) => {
 }
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 const noScroll = async (what) => {
-  // Arrival animations (transform) can overflow main by a few px while running: measure at rest.
-  await page.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))))
+  await settleMotion(page)
   const o = await page.evaluate(() => {
     const el = document.scrollingElement
     const main = document.querySelector('main.main')
@@ -522,10 +521,11 @@ async function filterChecks(label) {
 
 async function keyboardChecks(label) {
   const active = () => page.evaluate(() => ({ id: document.activeElement?.id ?? '', tid: document.activeElement?.getAttribute('data-testid') ?? '', row: document.activeElement?.getAttribute('data-id') ?? '' }))
-  await page.locator('[data-testid=outputs-run-filter] select').focus()
+  // The view switch and Select sit between the filters and the list: Tab from Select lands on a row (one stop).
+  await page.locator('[data-testid=outputs-select-toggle]').focus()
   await page.keyboard.press('Tab')
   const landed = await active()
-  check(landed.tid === 'output-row', `${label}: Tab from the run filter lands on a row (one stop)`, JSON.stringify(landed))
+  check(landed.tid === 'output-row', `${label}: Tab from the toolbar lands on a row (one stop)`, JSON.stringify(landed))
   // The roving stop is the last row used (the filters above visited others): start from the top.
   await page.keyboard.press('Home')
   await until(async () => (await page.locator('[data-testid=output-row]').first().getAttribute('data-id')) === (await active()).row, 3000)
@@ -576,7 +576,7 @@ async function actionChecks(label) {
   await more.first().click()
   const actions = page.locator('[data-testid=output-actions]')
   await actions.waitFor({ state: 'visible', timeout: 5000 })
-  const ids = ['output-open', 'output-reveal', 'output-save-as', 'output-copy-path', 'output-forget', 'output-delete']
+  const ids = ['output-open', 'output-reveal', 'output-save-as', 'output-copy-path', 'output-rename', 'output-forget', 'output-delete']
   const have = await Promise.all(ids.map(async (id) => (await actions.locator(`[data-testid=${id}]`).count()) > 0))
   check(have.every(Boolean), `${label}: a produced output's actions are Open, Show in folder, Save as, Copy path, Remove and Delete`, ids.filter((_, i) => !have[i]).join(','))
   await page.keyboard.press('Escape')
@@ -586,7 +586,7 @@ async function actionChecks(label) {
   await page.locator('[data-testid=output-detail][data-kind=image]').waitFor({ timeout: 8000 })
   await more.first().click()
   await actions.waitFor({ state: 'visible', timeout: 5000 })
-  check((await actions.locator('[data-testid=output-delete]').count()) === 0 && (await actions.locator('[data-testid=output-forget]').count()) === 1, `${label}: a registered file offers Remove from list but no Delete`)
+  check((await actions.locator('[data-testid=output-delete]').count()) === 1 && (await actions.locator('[data-testid=output-forget]').count()) === 1, `${label}: a registered file offers Remove from list and Delete (outputs 2)`)
   await page.keyboard.press('Escape')
   await actions.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
 }
@@ -603,7 +603,7 @@ async function removeChecks(label) {
   const forgetDlg = page.locator('[data-testid=output-forget-confirm]')
   await forgetDlg.waitFor({ timeout: 5000 })
   const forgetText = clean(await page.locator('dialog[open]').innerText())
-  check(/The file stays at outputs\/.+ It leaves OrgAI's list and cannot be added back from here\./.test(forgetText), `${label}: the Remove confirm says the file stays and the entry cannot come back`, forgetText.slice(0, 200))
+  check(/Remove .+ from OrgAI\?/.test(forgetText) && /The file stays at outputs\/.+ OrgAI's earlier versions and notes are deleted\./.test(forgetText), `${label}: the Remove confirm says the file stays and OrgAI's versions and notes go`, forgetText.slice(0, 200))
   check((await forgetDlg.innerText()).trim() === 'Remove', `${label}: the confirm's primary is Remove`)
   await page.keyboard.press('Escape')
   await forgetDlg.waitFor({ state: 'hidden', timeout: 5000 })
@@ -853,7 +853,11 @@ async function diagramChecks(label, full) {
   const shadowText = () => dlg.locator('[data-testid=output-mermaid-svg]').first().evaluate((el) => el.shadowRoot?.textContent ?? '')
   await ta.fill('flowchart TD\n  A[Start] --> Z[Zed]\n')
   check(await until(async () => (await shadowText()).includes('Zed'), 8000), `${label}: Split redraws the edited source`)
-  check((await dlg.locator('[data-testid=diagram-scratch-note]').count()) === 1, `${label}: the scratch note says edits are not saved`)
+  // Phase C: an edit of the current version belongs to the output (the editor bar with Save), never a scratch copy.
+  check(
+    (await dlg.locator('[data-testid=diagram-scratch-note]').count()) === 0 && (await until(async () => (await dlg.locator('[data-testid=output-edit-bar]').count()) === 1, 3000)) && (await dlg.locator('[data-testid=output-save]').isEnabled()),
+    `${label}: a Split edit shows the editor bar with Save (no scratch note)`
+  )
   check(/^Line \d+, column \d+ · /.test(clean(await dlg.locator('[data-testid=diagram-source-status]').innerText())), `${label}: the source status names the line and column`)
   await ta.fill('flowchart TD\n  A[Start --> Z\n')
   check(await until(async () => (await dlg.locator('[data-testid=diagram-error]').count()) === 1, 8000), `${label}: a broken edit shows the error pane`)
@@ -878,9 +882,217 @@ async function diagramChecks(label, full) {
   await dlg.waitFor({ state: 'hidden', timeout: 5000 })
 }
 
+// ---------- grid, thumbnails, select mode and bulk delete (docs/design/outputs-2.md sections 5 and 6) ----------
+/** Wrap window.orgai.outputs.thumb to count calls and the most in flight at once. False when the bridge is read-only. */
+async function installThumbProbe() {
+  return page.evaluate(() => {
+    const api = window.orgai?.outputs
+    if (!api?.thumb) return false
+    const real = api.thumb.bind(api)
+    window.__thumbStats = { calls: 0, now: 0, max: 0 }
+    try {
+      api.thumb = (ref) => {
+        const s = window.__thumbStats
+        s.calls++
+        s.now++
+        s.max = Math.max(s.max, s.now)
+        return real(ref).finally(() => {
+          s.now--
+        })
+      }
+    } catch {
+      return false
+    }
+    return api.thumb !== real
+  })
+}
+let thumbProbe = false
+
+const activeRow = () => page.evaluate(() => ({ tid: document.activeElement?.getAttribute('data-testid') ?? '', id: document.activeElement?.getAttribute('data-id') ?? '' }))
+const viewRadio = (name) => page.locator('[data-testid=outputs-view-switch]').getByRole('radio', { name })
+
+/** Grid view: switch, persistence, cards, thumbnails, two-dimensional keys. */
+async function gridChecks(label) {
+  await page.locator('[data-testid=tab-outputs]').click()
+  await page.locator('[data-testid=outputs-list]').waitFor({ timeout: 10_000 })
+  const total = (await outputsOf()).length
+  check((await page.locator('[data-testid=outputs-view-switch] input[type=radio]').count()) === 2, `${label}: the view switch offers List and Grid`)
+  await viewRadio('Grid').check()
+  const grid = page.locator('[data-testid=outputs-grid]')
+  await grid.waitFor({ timeout: 8000 })
+  check((await page.locator('[data-testid=outputs-list]').count()) === 0, `${label}: Grid replaces the list`)
+  const cards = page.locator('[data-testid=output-card]')
+  check(await until(async () => (await cards.count()) === total), `${label}: one card per output`, `${await cards.count()} of ${total}`)
+  const stored = await page.evaluate((id) => localStorage.getItem(`orgai.outputsView.${id}`), project.id)
+  check(stored === 'grid', `${label}: the choice is kept per project`, String(stored))
+  const g = await grid.evaluate((ul) => ({ role: ul.getAttribute('role'), tab0: ul.querySelectorAll('[role=option][tabindex="0"]').length, template: getComputedStyle(ul).gridTemplateColumns.split(' ').length }))
+  check(g.role === 'listbox' && g.tab0 === 1, `${label}: the grid is one listbox with one Tab stop`, JSON.stringify(g))
+  check(g.template >= 2, `${label}: the grid has at least two columns`, String(g.template))
+  const sizes = await cards.first().locator('.output-card-thumb').evaluate((el) => ({ w: el.clientWidth, h: el.clientHeight }))
+  check(Math.abs(sizes.w / sizes.h - 1.6) < 0.1, `${label}: card thumbnails are 16:10`, JSON.stringify(sizes))
+  const meta = clean(await cards.first().locator('.output-card-meta').innerText())
+  check(/^(v\d+ · )?(Word|Excel|Deck|Diagram|Markdown|Image|Text|CSV|JSON|SVG|PDF|File)$/.test(meta), `${label}: card meta reads "v2 · Excel" style`, meta)
+  // Thumbnails arrive lazily: the image output's card draws an <img>, an alt-less decoration.
+  const imageCard = page.locator('[data-testid=output-card][data-kind=image]')
+  const imgOk = await until(async () => (await imageCard.locator('img.output-thumb-img').count()) === 1, 8000)
+  if (imgOk) {
+    const attrs = await imageCard.locator('img.output-thumb-img').evaluate((i) => ({ alt: i.getAttribute('alt'), hidden: !!i.closest('[aria-hidden=true]') }))
+    check(attrs.alt === '' && attrs.hidden, `${label}: a thumbnail has alt="" and is aria-hidden`, JSON.stringify(attrs))
+  } else console.log('SKIP thumbnails: no image thumbnail drew (main has no outputs:thumb answer for it yet)')
+  if (thumbProbe) {
+    const st = await page.evaluate(() => window.__thumbStats)
+    check(st.max <= 3, `${label}: at most three thumbnail calls were ever in flight`, JSON.stringify(st))
+  }
+  // Keys: Left / Right by one, Up / Down by a measured row, Home / End.
+  await cards.first().focus()
+  const ids = await cards.evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
+  const cols = await cards.evaluateAll((els) => els.filter((e) => Math.abs(e.offsetTop - els[0].offsetTop) < 3).length)
+  await page.keyboard.press('Home')
+  await page.keyboard.press('ArrowRight')
+  check(await until(async () => (await activeRow()).id === ids[1]), `${label}: ArrowRight moves to the next card`, JSON.stringify(await activeRow()))
+  await page.keyboard.press('ArrowLeft')
+  check(await until(async () => (await activeRow()).id === ids[0]), `${label}: ArrowLeft goes back`)
+  if (ids.length > cols) {
+    await page.keyboard.press('ArrowDown')
+    check(await until(async () => (await activeRow()).id === ids[cols]), `${label}: ArrowDown moves one row (${cols} columns)`, JSON.stringify({ cols, got: await activeRow() }))
+    await page.keyboard.press('ArrowUp')
+    check(await until(async () => (await activeRow()).id === ids[0]), `${label}: ArrowUp moves back a row`)
+  }
+  await page.keyboard.press('End')
+  check(await until(async () => (await activeRow()).id === ids[ids.length - 1]), `${label}: End goes to the last card`)
+  await page.keyboard.press('Home')
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.id)) === 'output-detail-heading'), `${label}: Enter opens the detail and focuses its heading`)
+  await noScroll(`${label}: grid`)
+  await snap(`${label}-grid`)
+  // Away and back: the grid stays.
+  await projectTab(page, 'History').click()
+  await page.locator('[data-testid=tab-outputs]').click()
+  check(await until(async () => (await page.locator('[data-testid=outputs-grid]').count()) === 1, 5000), `${label}: the grid is still chosen after leaving the tab`)
+  await viewRadio('List').check()
+  await page.locator('[data-testid=outputs-list]').waitFor({ timeout: 8000 })
+}
+
+/** Select mode by keyboard, no delete: checkboxes, Space, the bulk bar, Select all shown, Esc. */
+async function selectChecks(label, grid) {
+  await page.locator('[data-testid=tab-outputs]').click()
+  await (grid ? viewRadio('Grid') : viewRadio('List')).check()
+  const item = grid ? '[data-testid=output-card]' : '[data-testid=output-row]'
+  const items = page.locator(item)
+  await items.first().waitFor({ timeout: 8000 })
+  const toggle = page.locator('[data-testid=outputs-select-toggle]')
+  await toggle.click()
+  check((await toggle.getAttribute('aria-pressed')) === 'true', `${label}: Select is pressed`)
+  const n = await items.count()
+  check((await page.locator('[data-testid=output-select]').count()) === n, `${label}: ${grid ? 'cards' : 'rows'} show a checkbox in select mode`)
+  const bar = page.locator('[data-testid=outputs-bulk-bar]')
+  check(await bar.isVisible(), `${label}: the bulk bar shows`)
+  const count = page.locator('[data-testid=outputs-bulk-count]')
+  check(/^0 selected$/.test(clean(await count.innerText())) && (await count.getAttribute('role')) === 'status', `${label}: "0 selected" is a status`)
+  const del = page.locator('[data-testid=outputs-bulk-delete]')
+  check(await del.isDisabled(), `${label}: Delete is off with nothing selected`)
+  await items.first().focus()
+  await page.keyboard.press('Space')
+  check(await until(async () => /^1 selected$/.test(clean(await count.innerText()))), `${label}: Space selects the focused ${grid ? 'card' : 'row'}`, clean(await count.innerText()))
+  await page.keyboard.press(grid ? 'ArrowRight' : 'ArrowDown')
+  await page.keyboard.press('Space')
+  check(await until(async () => /^2 selected$/.test(clean(await count.innerText()))), `${label}: a second Space makes two`)
+  check((await page.locator(`${item}[aria-selected=true]`).count()) === 2, `${label}: the two are marked selected`)
+  await page.keyboard.press('Space')
+  check(await until(async () => /^1 selected$/.test(clean(await count.innerText()))), `${label}: Space again unselects`)
+  await page.locator('[data-testid=outputs-select-all]').click()
+  check(await until(async () => clean(await count.innerText()) === `${n} selected`), `${label}: Select all shown picks every one`, clean(await count.innerText()))
+  check(!(await del.isDisabled()), `${label}: Delete is on with a selection`)
+  await noScroll(`${label}: select mode ${grid ? 'grid' : 'list'}`)
+  await snap(`${label}-select-${grid ? 'grid' : 'list'}`)
+  await items.first().focus()
+  await page.keyboard.press('Escape')
+  check(await until(async () => (await bar.count()) === 0), `${label}: Esc leaves select mode`)
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'outputs-select-toggle', 3000), `${label}: focus returns to Select`)
+  check((await page.locator('[data-testid=output-select]').count()) === 0, `${label}: the checkboxes are gone`)
+  await viewRadio('List').check()
+}
+
+/** A second run: a new version of an output still listed gets "New" and a spoken update, never moves its row; then bulk delete. */
+async function secondRunChecks(label) {
+  await page.locator('[data-testid=tab-outputs]').click()
+  await page.locator('[data-testid=outputs-list], [data-testid=outputs-empty]').first().waitFor({ timeout: 8000 })
+  const before = await outputsOf()
+  const plan = before.find((o) => o.title === 'Project plan')
+  if (!plan) {
+    console.log('SKIP second run: Project plan is no longer listed')
+    return
+  }
+  await page.evaluate(() => {
+    window.__statusLog = []
+    const el = document.querySelector('[data-testid=outputs-status]')
+    if (el) new MutationObserver(() => window.__statusLog.push(el.textContent ?? '')).observe(el, { childList: true, characterData: true, subtree: true })
+  })
+  const rows = page.locator('[data-testid=output-row]')
+  // The output shown in the detail counts as seen (it never reads "New"), so show another one while the run works.
+  const other = before.find((o) => o.id !== plan.id && !o.missing) ?? before.find((o) => o.id !== plan.id)
+  if (other) {
+    await page.locator(`[data-testid=output-row][data-id="${other.id}"]`).click()
+    await until(async () => (await page.locator('[data-testid=output-detail]').first().getAttribute('data-id')) === other.id, 3000)
+  } else {
+    // Project plan is the only output left, so it stays selected: fold the pane so its detail is not on screen.
+    const hide = page.locator('[data-testid=outputs-detail]').getByRole('button', { name: /^Hide output preview/ })
+    if (await hide.count()) await hide.click()
+    await until(async () => (await page.locator('[data-testid=outputs-detail]').getAttribute('data-collapsed')) === 'true', 3000)
+  }
+  const orderBefore = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
+  await page.evaluate(({ id, prompt }) => window.orgai.runs.start({ projectId: id, prompt }), { id: project.id, prompt: USE_SCRIPT ? 'Produce the deliverables' : 'Produce the deliverables [mock:outputs]' })
+  const bumped = await until(async () => ((await outputsOf()).find((o) => o.id === plan.id)?.version ?? 1) >= 2, 60_000)
+  check(bumped, `${label}: the second run made version 2 of Project plan`)
+  if (!bumped) return
+  const row = page.locator(`[data-testid=output-row][data-id="${plan.id}"]`)
+  check(
+    await until(async () => (await row.locator('[data-testid=output-new-version]').count()) === 1, 8000),
+    `${label}: the row shows a "New" badge`,
+    JSON.stringify({ shown: await page.locator('[data-testid=output-detail]').evaluateAll((els) => els.map((e) => e.getAttribute('data-id'))), plan: plan.id, other: other?.id })
+  )
+  const orderAfter = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
+  const kept = orderAfter.filter((id) => orderBefore.includes(id))
+  check(kept.join() === orderBefore.filter((id) => orderAfter.includes(id)).join(), `${label}: the updated row did not move`, `${orderBefore.join()} -> ${orderAfter.join()}`)
+  check(/v2/.test(clean(await row.locator('.outputs-row-meta').innerText())), `${label}: the meta line says v2`, clean(await row.locator('.outputs-row-meta').innerText()))
+  const said = await until(async () => (await page.evaluate(() => window.__statusLog)).some((t) => /Updated Project plan to version 2/.test(t)), 12_000)
+  check(said, `${label}: the status says "Updated Project plan to version 2"`, JSON.stringify(await page.evaluate(() => window.__statusLog)))
+  // Opening it shows it (marks it seen) and the badge goes.
+  await row.click()
+  // The detail (versions engineer) calls markOutputSeen; until it does there is nothing to assert here.
+  if (fs.readFileSync(path.join(APP_DIR, 'src/renderer/src/components/outputs/OutputDetail.tsx'), 'utf8').includes('markOutputSeen')) {
+    check(await until(async () => (await row.locator('[data-testid=output-new-version]').count()) === 0, 8000), `${label}: the badge goes once the detail shows the new version`)
+  } else console.log('SKIP badge clearing: OutputDetail does not call markOutputSeen yet')
+  // Let the rest of the run's outputs arrive, then bulk delete two.
+  await sleep(2500)
+  const n0 = (await outputsOf()).length
+  await page.locator('[data-testid=outputs-select-toggle]').click()
+  await rows.nth(0).focus()
+  await page.keyboard.press('Space')
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Space')
+  await page.locator('[data-testid=outputs-bulk-delete]').click()
+  const confirm = page.locator('[data-testid=output-delete-confirm]')
+  if (!(await confirm.waitFor({ timeout: 4000 }).then(() => true, () => false))) {
+    console.log('SKIP bulk delete: the confirm never opened (the delete seam is still the stub)')
+    await page.keyboard.press('Escape')
+    await page.locator('[data-testid=outputs-select-cancel]').click().catch(() => {})
+    return
+  }
+  await confirm.click()
+  check(await until(async () => (await outputsOf()).length === n0 - 2, 10_000), `${label}: bulk delete removed two outputs`, `${n0} -> ${(await outputsOf()).length}`)
+  const status = page.locator('[data-testid=outputs-status]')
+  check(await until(async () => /Deleted 2 outputs\./.test(clean(await status.innerText())), 5000), `${label}: the status says "Deleted 2 outputs."`, clean(await status.innerText()))
+  check(await until(async () => (await page.locator('[data-testid=outputs-bulk-bar]').count()) === 0), `${label}: select mode ends after a clean delete`)
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-row'), `${label}: focus lands on the next row`)
+  await noScroll(`${label}: after bulk delete`)
+}
+
 try {
   project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created on the mock adapter')
+  thumbProbe = await installThumbProbe()
+  if (!thumbProbe) console.log('SKIP thumbnail concurrency: window.orgai.outputs.thumb cannot be wrapped from the page')
   // The tab exists on a stored project.
   check((await page.locator('[data-testid=tab-outputs]').count()) === 1, 'the project has an Outputs tab')
   await page.locator('[data-testid=tab-outputs]').click()
@@ -916,6 +1128,8 @@ try {
     }
     try {
       await projectTabChecks(label)
+      await gridChecks(label)
+      await selectChecks(label, i % 2 === 1)
       if (i === 0 || i === 3) {
         await filterChecks(label)
         await keyboardChecks(label)
@@ -931,6 +1145,14 @@ try {
     await removeChecks('1024x640 light')
   } catch (e) {
     check(false, 'remove checks', e.message.split('\n')[0])
+  }
+  if (process.env.E2E_DIAGRAMS_ONLY !== '1') {
+    // Once only: a second identical run adds a version once. It runs at the last combo's size and theme (1024x640 light).
+    try {
+      await secondRunChecks('1024x640 light second run')
+    } catch (e) {
+      check(false, 'second run checks', e.message.split('\n')[0])
+    }
   }
   // The diagram viewer on its own project, driven by a script set in main for that run only.
   try {

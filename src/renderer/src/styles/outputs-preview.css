@@ -87,8 +87,13 @@
   line-height: var(--text-body-lh);
   overflow-wrap: anywhere;
 }
-.output-doc-body > :first-child {
+.output-doc-body > :first-child,
+.output-doc-body > .output-doc-block:first-child > :first-child {
   margin-top: 0;
+}
+/* A block wrapper carries data-block for notes and draws no box of its own. */
+.output-doc-block {
+  display: contents;
 }
 .output-doc-body p,
 .output-doc-body ul,

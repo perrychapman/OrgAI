@@ -42,9 +42,11 @@ export default function ImagePreview({ dataUrl, title }: { dataUrl: string; titl
           </PanZoomSurface>
         </div>
       </div>
-      <p className="sr-only" role="status" data-testid="output-live">
-        {notes.live}
-      </p>
+      {!notes.routed && (
+        <p className="sr-only" role="status" data-testid="output-live">
+          {notes.live}
+        </p>
+      )}
     </div>
   )
 }

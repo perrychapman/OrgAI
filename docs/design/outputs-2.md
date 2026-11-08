@@ -892,3 +892,57 @@ fixed. Open Lows: `output-step-status` is a second polite region on the surface 
 `tray-announce`); the Larger view waits about 3 s for the drawing before focusing the viewport, a slower draw leaves focus on the dialog's first
 control; Space on the viewport only stops page scroll (plain drag already pans); Alt+Left/Right and the viewer keys are not in the shared
 SHORTCUTS table (a `src/shared/view` edit).
+
+## Phase C implementation notes (2026-11-07)
+
+Built renderer-only on the Phase B contracts (dev 5cccee02, then dev merged in at 1a4afa6f with the mock markers and the motion system).
+Seven UI Engineers on disjoint files (versions shell, compare, editors, slides, notes, revise, project tab), integrated by the UI Lead.
+
+Structure:
+- One seam, `components/outputs/outputDetailContext.ts` (`OutputDetailValue`). `OutputDetail` (S3) provides it; `OutputViewer` (S4, the
+  Larger view, `output-dialog`) provides its own with surface 'viewer' and the notes drawer. Feature components read only the context:
+  `NoteTools` / `NotesPanel` / `RegionLayer`, `OutputEditor`, `ComparePanel`, `RevisionStatus`, `SlideViewer`. Reads go through
+  `useOutputData.ts` (`useOutputVersions`, `useOutputNotes`, `useOutputRevisions`), refetched when the store's `outputTick[id]` moves.
+- Store slice (`useAppStore.ts`): `outputTick` / `outputChange` per output id (every outputs:changed naming it, output.created,
+  output.versioned), `outputSeenVersion` + `markOutputSeen` (the "New" badge; first list load counts as seen; the detail marks seen only
+  while it is on screen, through an IntersectionObserver, so a pane folded to its rail keeps "New"), `outputDrafts` (session editor
+  drafts), `pendingRevisionsByRun` (RunMeta `run-meta-revision`; dropped when output.versioned arrives for the output or the run finishes or
+  errors).
+- Dirty guard: the detail's `guard` asks "Save your changes to <title> first?" in its own dialog (`output-guard-dialog`, `-cancel`,
+  `-discard`, `-save`) because `useConfirm` has two buttons; `confirmLeaveOutput()` (exported by OutputDetail) runs before every selection
+  change in `OutputsView` (select, open, prev / next) and `RunOutputs` (Show, Back, prev / next), and before mode changes.
+
+Deviations from sections 7-15:
+- S3 shows the preview and the Notes list on separate tabs (section 7), so "Show in output" from the Notes tab switches to Preview and
+  focus lands on the focusable region holding the mark (else the Preview tab); in S4 the Notes tab is the drawer instead.
+- A diagram on its current version is editable in place: Split / Source edits open the editor bar (`output-diagram-edit`, `output-edit-bar`,
+  Save makes a version); `diagram-scratch-note` remains only where no output is behind the drawing (compare panes), and an older version's
+  source is read-only (`diagram-locked-note`).
+- After a revise request that continued the run, the run view switches to the new chain member and remounts the detail; focus is then
+  returned to `output-revise` and "Sent to the team..." is said again in the new `output-live` (instead of landing on the heading).
+- Mermaid thumbnails are source lines only (no small drawings in the grid).
+- At under 480 px the detail toolbar wraps (one button per row in a 280-360 px panel) instead of moving secondary actions into More.
+- The Revise button is hidden (not inert with a reason) for image, pdf, other and missing outputs, as the section 7 table says;
+  `lib/outputRevise.ts` `canRevise` carries the reason for any surface that wants to show it.
+- Not in the shared tables (src/shared, outside the renderer): SHORTCUTS entries for Ctrl/Cmd+Shift+M, Alt+Left / Right, F3 /
+  Shift+F3, Ctrl/Cmd+S, and the atlas testIds for the new detail parts; handed to the Runtime side.
+
+e2e (all in e2e:free; mock, Windows, 1024x640 and 1600x1000, dark and light):
+- `outputs.mjs` (project tab grid / list, thumbnails at most 3 in flight, select mode, bulk delete, the "New" badge after a second run with
+  the pane folded, the diagram Split edit through the editor bar) plus the Phase A checks.
+- `outputs-versions.mjs`: two scripted runs make v1 and v2 of markdown, csv, json, docx, xlsx and mermaid outputs plus a registered text;
+  version select, Versions tab, old-version banner, restore, name, rename, delete (produced, registered), Remove from list. It hands a
+  second project of its own to `outputs-compare.part.mjs` (Compare per kind, always v1 against v2) and `outputs-edit.part.mjs` (markdown
+  save, CSV grid keyboard walk, invalid JSON, stale save, dirty guard, diagram edit), so its own counts stay exact.
+- `outputs-notes.mjs`: notes on text, sheet cells, csv, docx, a diagram region by keyboard and an SVG ellipse by drag; then the scripted
+  run is ended and `outputs-revise.part.mjs` sends a revise request whose continuation runs the mock's default script, which answers
+  with a new version (answered line, Compare, chip gone).
+- `outputs-slides.mjs`: a scripted 5-slide deck; strip, stage keys, speaker notes, paper, fidelity caption, narrow layout.
+- Every layout check waits for finite animations first (`e2e/lib.mjs` `settleMotion`; the view crossfade's rise read as a 2-4 px
+  scroll). The scripts make their data with ORGAI_MOCK_SCRIPT rather than `[mock:outputs-all]` / `[mock:outputs-v2]` so each controls its
+  exact content; the markers themselves are covered by main's tests.
+
+Unverified: a real Word / Excel / PowerPoint round trip (Edit in ... plus outputs:watch; only the external status wording is unit-tested; the
+line itself was not driven), `outputs:saveImage`'s native dialog, Copy image on the real clipboard, pinch gestures on the region tool, screen reader output of
+`output-live` and the composer, contrast of marks and compare glyphs measured (computed only), System theme, macOS and Linux. No UX walk of
+Phase C yet: `ux-review-outputs-3.md` (section 18) is the next step.

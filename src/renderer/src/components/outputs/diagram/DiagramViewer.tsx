@@ -3,7 +3,10 @@
 // document.importNode into a shadow root; no markup string is ever parsed or inserted here.
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import type { RunOutput } from '@shared/types'
 import { Button } from '../../ui/Button'
+import { EditorBar, useEditSession } from '../EditorBar'
+import { useOutputDetail } from '../outputDetailContext'
 import {
   COPY_FAILED,
   SOURCE_COPIED,
@@ -28,7 +31,7 @@ import { useOutputView, usePreviewStatus } from '../previewStatus'
 import { DiagramError } from './DiagramError'
 import { serializeStandalone, useDiagramExport, type ExportBuild } from './DiagramExport'
 import { DiagramOverview } from './DiagramOverview'
-import { DiagramSourcePane, type SourceHandle } from './DiagramSourcePane'
+import { DiagramSourcePane, type SourceEdit, type SourceHandle } from './DiagramSourcePane'
 import { DiagramToolbar, type DiagramMode } from './DiagramToolbar'
 import { PanZoomSurface, ShadowSvg } from './PanZoomSurface'
 import { drawDiagram, useDiagramDraw } from './useDiagramDraw'
@@ -88,20 +91,65 @@ export interface DiagramViewerProps {
   title: string
   /** The preview was cut at its size cap: the diagram is never drawn. */
   truncated?: boolean
+  /** The output editor (OutputEditor) drives the source and shows the editor bar itself: Split opens, the text is controlled. */
+  editing?: { value: string; onChange: (text: string) => void }
 }
 
-/** A Mermaid diagram drawn in the window with pan, zoom and its source one switch away. Never throws. */
-export default function DiagramViewer({ text, title, truncated }: DiagramViewerProps): ReactElement {
+/**
+ * A Mermaid diagram drawn in the window with pan, zoom and its source one switch away. Never throws.
+ * Source edits: in an output's detail on its current version they belong to the output's edit session (an editor bar appears
+ * with Save, which makes a version); on an older version the source is read-only; with no output behind it (a compare pane,
+ * the scratch case) edits stay a scratch copy.
+ */
+export default function DiagramViewer({ text, title, truncated, editing }: DiagramViewerProps): ReactElement {
+  const detail = useOutputDetail()
+  if (editing) return <DiagramBody text={text} title={title} truncated={truncated} edit={editing} editState="saved" startOpen />
+  if (detail && detail.mode === 'preview' && !truncated && !detail.output.missing) {
+    return detail.isCurrent ? <EmbeddedDiagram text={text} title={title} /> : <DiagramBody text={text} title={title} editState="locked" />
+  }
+  return <DiagramBody text={text} title={title} truncated={truncated} editState="scratch" />
+}
+
+/** The diagram of a current version with its own edit session and a bar that appears while something is unsaved. */
+function EmbeddedDiagram({ text, title }: { text: string; title: string }): ReactElement {
+  const detail = useOutputDetail()
+  if (!detail) return <DiagramBody text={text} title={title} editState="scratch" />
+  return <EmbeddedWithSession output={detail.output} text={text} title={title} />
+}
+
+function EmbeddedWithSession({ output, text, title }: { output: RunOutput; text: string; title: string }): ReactElement {
+  const session = useEditSession({ output, baseText: text })
+  const showBar = session.dirty || session.stale !== null || session.error !== ''
+  return (
+    <div className="diagram-embedded" data-testid="output-diagram-edit" onKeyDown={session.onKeyDown}>
+      <DiagramBody text={text} title={title} edit={{ value: session.text, onChange: session.setText }} editState="saved" />
+      {showBar && <EditorBar session={session} title={title} noClose />}
+      {session.dialog}
+    </div>
+  )
+}
+
+interface DiagramBodyProps extends DiagramViewerProps {
+  /** Controlled source (an edit session); absent = a local scratch copy. */
+  edit?: { value: string; onChange: (text: string) => void }
+  editState: SourceEdit
+  /** Opened by the output editor: Split from the start and the source takes focus. */
+  startOpen?: boolean
+}
+
+function DiagramBody({ text, title, truncated, edit, editState, startOpen }: DiagramBodyProps): ReactElement {
   const { context, onOpenLarge, full, onToggleFull } = useOutputView()
   const appTheme = useTheme()
   const [light, setLight] = useState(false)
   const mTheme = viewerTheme(appTheme, light)
 
-  // ---- source: a scratch copy that redraws 400 ms after typing stops ----
-  const [source, setSource] = useState(text)
-  const [applied, setApplied] = useState(text)
+  // ---- source: redraws 400 ms after typing stops. Scratch copies are local; an edit session owns its own text ----
+  const [localSource, setLocalSource] = useState(text)
+  const source = edit ? edit.value : localSource
+  const setSource = edit ? edit.onChange : setLocalSource
+  const [applied, setApplied] = useState(edit ? edit.value : text)
   useEffect(() => {
-    setSource(text)
+    setLocalSource(text)
     setApplied(text)
   }, [text])
   useEffect(() => {
@@ -122,12 +170,22 @@ export default function DiagramViewer({ text, title, truncated }: DiagramViewerP
   const [notice, setNotice] = useState('')
   const speakTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const speak = useCallback((t: string): void => {
-    // Clear first so the same sentence twice is heard twice.
-    setLive('')
-    if (speakTimer.current) clearTimeout(speakTimer.current)
-    speakTimer.current = setTimeout(() => setLive(t), 60)
-  }, [])
+  // Inside an output detail or viewer the detail's one output-live speaks (spec 14.2); a drawing with no detail (a
+  // compare pane) keeps its own region.
+  const announce = useOutputDetail()?.announce
+  const speak = useCallback(
+    (t: string): void => {
+      if (announce) {
+        announce(t)
+        return
+      }
+      // Clear first so the same sentence twice is heard twice.
+      setLive('')
+      if (speakTimer.current) clearTimeout(speakTimer.current)
+      speakTimer.current = setTimeout(() => setLive(t), 60)
+    },
+    [announce]
+  )
   const notify = useCallback(
     (t: string): void => {
       setNotice(t)
@@ -159,7 +217,7 @@ export default function DiagramViewer({ text, title, truncated }: DiagramViewerP
   const [widthRef, width] = useWidth()
   const narrow = width > 0 && width < NARROW_PX
   const sourceRef = useRef<SourceHandle>(null)
-  const [mode, setMode] = useState<DiagramMode>('diagram')
+  const [mode, setMode] = useState<DiagramMode>(startOpen ? 'split' : 'diagram')
   const first = useRef(true)
   useEffect(() => {
     if (state === 'drawing') return
@@ -176,6 +234,10 @@ export default function DiagramViewer({ text, title, truncated }: DiagramViewerP
   const focusSource = useCallback((): void => {
     requestAnimationFrame(() => sourceRef.current?.focus())
   }, [])
+  // The output editor puts focus in the source when it opens.
+  useEffect(() => {
+    if (startOpen) focusSource()
+  }, [startOpen, focusSource])
 
   // ---- pan and zoom ----
   const [overviewPref, setOverviewPref] = useState<boolean | null>(readOverviewPref)
@@ -323,13 +385,15 @@ export default function DiagramViewer({ text, title, truncated }: DiagramViewerP
         )}
         {showSource && (
           <div className="diagram-pane diagram-pane-source">
-            <DiagramSourcePane ref={sourceRef} value={source} original={text} onChange={setSource} />
+            <DiagramSourcePane ref={sourceRef} value={source} original={text} onChange={setSource} edit={editState} />
           </div>
         )}
       </div>
-      <p className="sr-only" role="status" data-testid="output-live">
-        {live}
-      </p>
+      {!announce && (
+        <p className="sr-only" role="status" data-testid="output-live">
+          {live}
+        </p>
+      )}
     </div>
   )
 }

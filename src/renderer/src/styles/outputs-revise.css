@@ -1,0 +1,100 @@
+/* Revise dialog, pending-revision line and the diagram "fix it" button (docs/design/outputs-2.md 7, 11.4). Tokens only. No animation. */
+
+.revise-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.revise-scope {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.revise-scope legend {
+  font-weight: 600;
+  padding: 0;
+  margin-block-end: var(--space-1);
+}
+.revise-radio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.revise-radio input:disabled + span {
+  color: var(--text-tertiary);
+}
+.revise-sub {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.revise-scope .revise-sub {
+  padding-inline-start: calc(var(--space-2) + 1rem);
+}
+.revise-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.revise-field > label {
+  font-weight: 600;
+}
+.revise-warn,
+.revise-save-first {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.revise-save-first {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.revise-save-first p {
+  margin: 0;
+}
+.revise-error {
+  margin: 0;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+/* The line under the detail head */
+.output-revision {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.output-revision-text {
+  overflow-wrap: anywhere;
+}
+
+/* RunMeta chip */
+.run-meta-revision {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagram-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

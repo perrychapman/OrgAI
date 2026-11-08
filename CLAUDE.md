@@ -1351,7 +1351,34 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     Word, Excel, full label as title); `output-ext` badge (".docx") beside titles; search also matches the kind name,
     "word", "excel" and the extension. History rows show `history-outputs` "N outputs", which opens the run on its
     Outputs tab. Driven by `e2e/outputs.mjs`; not seen: a real SVG output, the hint in a run window.
-- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `outputs.mjs`, `usage-app.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
+  - Outputs 2 Phase C (2026-11-07; spec `docs/design/outputs-2.md` "Phase C implementation notes", which lists the testids
+    and deviations): one seam, `components/outputs/outputDetailContext.ts` (`OutputDetailValue`: viewed version, versions,
+    notes, tab, mode preview | edit | compare, dirty / registerSave / guard, selection, region tool, shown note, `announce`
+    into the surface's one `output-live`, `openRevise`), provided by `OutputDetail` (S3) and `OutputViewer` (S4, the Larger
+    view with the notes drawer); reads through `useOutputData.ts` (versions, notes, revisions), refetched on the store's
+    `outputTick[id]` (every outputs:changed naming the output, output.created, output.versioned). Store slice:
+    `outputTick`, `outputChange`, `outputSeenVersion` / `markOutputSeen` ("New" badge; marked only while the detail is on
+    screen), `outputDrafts` (session editor drafts), `pendingRevisionsByRun` (RunMeta `run-meta-revision`; dropped on
+    output.versioned for that output or when the run finishes). Features: version select, Versions tab, old-version banner,
+    Restore (no confirm), Rename, Delete for every output (`DeleteOutputs.tsx` `useDeleteOutputs`, single and bulk, through
+    deletePreview and `expectedVersionCount`), Compare (`ComparePanel` + `CompareText` / `CompareBlocks` / `CompareCells` /
+    `CompareTwoUp` / `CompareSlides`, `lib/outputDiff.ts` with the docx blockText twin), editors (`OutputEditor`,
+    `EditorBar`, markdown / text / json / svg source / mermaid split / CSV cell grid `lib/csvGrid.ts`; Save through
+    outputs:saveEdit with the stale path, the leave guard `confirmLeaveOutput()` on every selection change in OutputsView and
+    RunOutputs), slide viewer (`SlideViewer` / `SlideStrip` / `SlideStage`, React elements only, `lib/slideStage.ts`), notes
+    (`NotesPanel`, `NoteTools`, `NoteComposer`, `NoteMarks`, `RegionLayer` + `useRegionKeys` in PanZoomSurface and the slide
+    stage, `lib/outputNotes.ts`), revise (`ReviseDialog`, `RevisionStatus`, diagram "Ask the team to fix it", transcript
+    Revise link, `lib/outputRevise.ts`), project tab List | Grid, thumbnails (`OutputThumb`, `useOutputThumb`, at most 3
+    in flight, `lib/outputThumbs.ts`), select mode and bulk delete, external edit status (`ExternalEditStatus`, outputs:watch).
+    Checked by unit tests and e2e `outputs.mjs`, `outputs-versions.mjs` (+ `outputs-compare.part.mjs`,
+    `outputs-edit.part.mjs` on a second project), `outputs-notes.mjs` (+ `outputs-revise.part.mjs`; the mock's default
+    script answers the revise request), `outputs-slides.mjs`, all at 1024x640 and 1600x1000 in both themes; the e2e
+    scripts make their data with ORGAI_MOCK_SCRIPT (not the `[mock:outputs-all]` / `-v2` markers) and wait for finite
+    animations (`lib.mjs` `settleMotion`) before layout checks. Not in the shared tables yet (src/shared, not renderer):
+    SHORTCUTS entries for Ctrl/Cmd+Shift+M, Alt+Left / Right, F3, Ctrl/Cmd+S and the atlas testIds. Unverified: a real
+    Word / Excel / PowerPoint round trip (outputs:watch only through main's tests), saveImage's native dialog, screen
+    readers, macOS, Linux; no UX walk yet (`ux-review-outputs-3.md` is the next step).
+- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `outputs.mjs`, `outputs-versions.mjs`, `outputs-notes.mjs`, `outputs-slides.mjs`, `usage-app.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
   `ImportNotice.source: 'template'`), New project "Start from a template" (`setup-choice-template`,

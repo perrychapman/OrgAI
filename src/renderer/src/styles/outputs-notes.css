@@ -1,0 +1,368 @@
+/* Output notes (docs/design/outputs-2.md 11): marks, cell corners, regions and pins, the composer, the Notes panel and the
+   toolbar pieces. Tokens only; status never rests on colour alone (underline style, fill vs outline, text badges). */
+
+/* ---------- marks over text ---------- */
+mark.output-note-mark {
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--accent);
+}
+mark.output-note-mark[data-status='open'] {
+  background: var(--accent-soft);
+  text-decoration-style: solid;
+}
+mark.output-note-mark[data-status='resolved'] {
+  text-decoration-style: dotted;
+}
+mark.output-note-mark[data-shown='true'] {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+::highlight(output-note-open) {
+  background-color: var(--accent-soft);
+  text-decoration: underline 2px;
+  text-decoration-color: var(--accent);
+}
+::highlight(output-note-resolved) {
+  text-decoration: underline dotted 2px;
+  text-decoration-color: var(--accent);
+}
+
+/* ---------- grid selection and corner marks ---------- */
+.output-sheet-table td[aria-selected='true'] {
+  background: var(--accent-soft);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.output-sheet-table td[data-note-state] {
+  position: relative;
+}
+.output-sheet-table td[data-note-state]::after,
+.output-sheet-table td[data-note-state='resolved']::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  pointer-events: none;
+}
+.output-sheet-table td[data-note-state]::after {
+  background: var(--accent);
+}
+/* Resolved: an outline triangle (a smaller one in the cell colour cuts the middle out). */
+.output-sheet-table td[data-note-state='resolved']::before {
+  z-index: 1;
+  top: 2px;
+  right: 0;
+  width: 3px;
+  height: 3px;
+  background: var(--bg-elev);
+}
+
+/* ---------- regions and pins ---------- */
+.output-region-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.output-region-layer[data-tool='box'],
+.output-region-layer[data-tool='ellipse'] {
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+.pz-viewport[data-space='true'] .output-region-layer {
+  pointer-events: none;
+  cursor: grab;
+}
+.output-region-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.output-region-shape {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.output-region-shape.shown {
+  stroke-width: 4;
+}
+.output-region-shape.pending,
+.output-region-shape.draft {
+  stroke-dasharray: 6 4;
+  fill-opacity: 0.6;
+}
+.output-region-pin {
+  position: absolute;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--space-1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  pointer-events: auto;
+  cursor: pointer;
+  /* Stays one size whatever the zoom; the corner of the region is its anchor. */
+  transform-origin: 0 100%;
+  transform: translate(-4px, -100%) scale(calc(1 / var(--pz-k, 1)));
+}
+.output-region-pin[data-status='resolved'] {
+  background: var(--bg-elev);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.output-region-pin[data-shown='true'] {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* ---------- toolbar pieces ---------- */
+.output-note-tools {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.output-note-hint {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.output-note-region {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.output-note-region-label {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.output-note-region-group {
+  display: inline-flex;
+  gap: 1px;
+}
+.output-note-region-group .btn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent-text);
+}
+
+/* ---------- composer ---------- */
+.output-note-composer {
+  width: min(360px, calc(100vw - 16px));
+  padding: var(--space-3);
+}
+.output-note-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.output-note-quote {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+.output-note-label {
+  font-size: var(--text-small);
+  font-weight: var(--weight-medium);
+}
+.output-note-help {
+  margin: 0;
+  min-height: 1.2em;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.output-note-problem {
+  color: var(--danger-text);
+}
+.output-note-whole-slide {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+}
+.output-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+@media (max-width: 560px) {
+  .output-note-composer {
+    width: 100vw;
+    max-width: 100vw;
+    margin: 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+}
+
+/* ---------- Notes panel ---------- */
+.output-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-3);
+}
+.output-notes[data-variant='drawer'] {
+  overflow: auto;
+}
+.output-notes-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.output-notes-heading {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  font-weight: var(--weight-semibold);
+}
+.output-notes-heading:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.output-notes-count {
+  margin: 0;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.output-notes-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.output-notes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.output-note {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+.output-note[aria-current='true'] {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.output-note[data-status='resolved'] .output-note-text {
+  color: var(--text-secondary);
+}
+.output-note-pin {
+  grid-row: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+.output-note[data-status='resolved'] .output-note-pin {
+  background: transparent;
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.output-note-where {
+  grid-row: 1;
+  grid-column: 2;
+  margin: 0;
+  font-size: var(--text-small);
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+.output-note-body {
+  grid-column: 1 / -1;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-small);
+}
+.output-note-meta {
+  grid-column: 1 / -1;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.output-note-select {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-caption);
+}
+.output-note-btns {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.output-note-edit {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.output-notes-earlier > summary {
+  cursor: pointer;
+  font-size: var(--text-small);
+  padding: var(--space-1) 0;
+}
+.output-notes-earlier > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.output-notes-empty {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.output-notes-foot {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  background: var(--bg-elev);
+}

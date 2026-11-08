@@ -1,24 +1,49 @@
-// The shown output (docs/design/outputs.md section 4): heading, meta, provenance with the run link, description,
-// toolbar (Open, More actions) and the preview. Shared by the run side tab and the project tab.
+// The shown output (docs/design/outputs.md section 4, outputs-2.md sections 7 and 9-12): head with the version select,
+// tabs Preview / Versions / Notes, the action toolbar and the body. It owns the shared state (version, mode, tab, dirty
+// guard, selection, live text) and provides it to everything below and to the Larger view (OutputViewer).
+// Shared by the run side tab and the project tab.
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Maximize2 } from 'lucide-react'
-import type { RunOutput } from '@shared/types'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Maximize2, MessageSquareQuote, Pencil, SquarePen } from 'lucide-react'
+import type { OutputReviseResult, RunOutput } from '@shared/types'
 import { useAppStore, useRunIndexes } from '../../store/useAppStore'
-import { canOpenOutput, outputMetaLine, provenanceLine } from '../../lib/outputs'
+import { canOpenOutput, canReviseFallback, currentProvenance, editBlockedReason, externalAppName, isEditableKind, outputMetaLine, provenanceLine } from '../../lib/outputs'
 import { cleanIpcError } from '../../lib/ipcError'
 import { hasHidden, showHidden } from '../../lib/hiddenChars'
 import { HIDDEN_SHOWN_TITLE } from '../../lib/teamFound'
 import { runTag } from '../../lib/runLabels'
+import { oldVersionText, versionOptionLabel } from '../../lib/outputVersions'
+import { SENT_ANNOUNCEMENT } from '../../lib/outputRevise'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
-import { IconButton } from '../ui/IconButton'
+import { Tabs, panelDomId, tabDomId, type TabItem } from '../ui/Tabs'
 import ExtBadge from './ExtBadge'
 import { ClampText } from '../proposals/ClampText'
 import OutputActions from './OutputActions'
 import OutputPreview from './OutputPreview'
+import OutputViewer from './OutputViewer'
+import OutputEditor from './OutputEditor'
+import ComparePanel from './ComparePanel'
+import VersionsPanel, { restoreVersion } from './VersionsPanel'
+import NotesPanel from './NotesPanel'
+import NoteTools from './NoteTools'
+import RevisionStatus from './RevisionStatus'
+import ReviseDialog from './ReviseDialog'
+import ExternalEditStatus, { useExternalEdit, type ExternalEdit } from './ExternalEditStatus'
+import { useOutputNotes, useOutputVersions } from './useOutputData'
+import {
+  OutputDetailContext,
+  useOutputDetail,
+  type OutputDetailMode,
+  type OutputDetailTab,
+  type OutputDetailValue,
+  type OutputSelection,
+  type RegionTool,
+  type ReviseInit
+} from './outputDetailContext'
 import '../../styles/outputs.css'
+import '../../styles/outputs-versions.css'
 
 export interface OutputDetailProps {
   output: RunOutput
@@ -71,17 +96,414 @@ export function settleRunFocus(): void {
   )
 }
 
+const REVISE_SENT_TEXT = SENT_ANNOUNCEMENT
+/** Set for a moment after a revise request was sent, so a detail remounted by the run switch returns focus to Revise. */
+let reviseReturn: { id: string; until: number } | null = null
+
+/** The shown output's unsaved-changes guard, for a surface that is about to move away (selection, prev / next). True = fine to leave. */
+let activeGuard: (() => Promise<boolean>) | null = null
+export function confirmLeaveOutput(): Promise<boolean> {
+  return activeGuard ? activeGuard() : Promise.resolve(true)
+}
+
+const OPEN_TITLE = 'Opens in the app your computer uses for this kind of file'
+
+/** "Save your changes to <title> first?" with Save / Don't save / Cancel. */
+function GuardDialog({ title, onChoose }: { title: string; onChoose(choice: 'save' | 'discard' | 'cancel'): void }): ReactElement {
+  return (
+    <Dialog
+      open
+      onClose={() => onChoose('cancel')}
+      title={`Save your changes to ${title} first?`}
+      size="sm"
+      testId="output-guard-dialog"
+      footer={
+        <>
+          <Button autoFocusDialog testId="output-guard-cancel" onClick={() => onChoose('cancel')}>
+            Cancel
+          </Button>
+          <Button variant="danger" testId="output-guard-discard" onClick={() => onChoose('discard')}>
+            Don't save
+          </Button>
+          <Button variant="primary" testId="output-guard-save" onClick={() => onChoose('save')}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <p>Your changes are not saved yet.</p>
+    </Dialog>
+  )
+}
+
+/** The version select beside the title (native select). */
+function VersionSelect(): ReactElement | null {
+  const ctx = useOutputDetail()
+  if (!ctx) return null
+  const list = ctx.versions
+  if (!list || list.length < 2) {
+    return (
+      <span className="output-version-solo" data-testid="output-version-solo">
+        v{ctx.version}
+      </span>
+    )
+  }
+  return (
+    <>
+      <label className="sr-only" htmlFor={`output-version-select-${ctx.surface}`}>
+        Version
+      </label>
+      <select
+        id={`output-version-select-${ctx.surface}`}
+        className="select output-version-select"
+        data-testid="output-version-select"
+        value={ctx.version}
+        onChange={(e) => ctx.setVersion(Number(e.target.value))}
+      >
+        {list.map((v) => (
+          <option key={v.n} value={v.n}>
+            {versionOptionLabel(v, ctx.currentVersion)}
+          </option>
+        ))}
+      </select>
+    </>
+  )
+}
+
+/** Banner for an older version: back to the current one, or restore it. */
+function OldVersionBanner(): ReactElement | null {
+  const ctx = useOutputDetail()
+  if (!ctx || ctx.isCurrent || ctx.mode === 'compare') return null
+  return (
+    <div className="output-old-version" data-testid="output-old-version" role="group" aria-label="Older version">
+      <p>{oldVersionText(ctx.version, ctx.currentVersion)}</p>
+      <div className="output-old-version-actions">
+        <Button size="sm" testId="output-back-current" onClick={() => ctx.setVersion(null)}>
+          Back to current
+        </Button>
+        <Button size="sm" variant="primary" testId="output-restore" onClick={() => void restoreVersion(ctx, ctx.version)}>
+          Restore this version
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/** The action toolbar (section 7). While the Larger view is open the panel keeps only its Larger view button (the focus return). */
+function Toolbar({ edit, onOpenLarger, collapsed, onNotice, onRemoved }: { edit: ExternalEdit; onOpenLarger(): void; collapsed: boolean; onNotice?: (t: string) => void; onRemoved?: (id: string) => void }): ReactElement | null {
+  const ctx = useOutputDetail()
+  if (!ctx) return null
+  const { output } = ctx
+  const missing = output.missing === true
+  const viewer = ctx.surface === 'viewer'
+  const external = externalAppName(output.kind)
+  const prefix = viewer ? 'output-dialog' : 'output-detail'
+  // One route per message. In the panel the surface's notice line (role=status, it outlives a removal) shows and speaks
+  // it; in the modal viewer the page behind is inert, so the viewer's output-live speaks it and the line only shows it.
+  const say = (t: string): void => {
+    onNotice?.(t)
+    if (viewer) ctx.announce(t)
+  }
+  const open = async (): Promise<void> => {
+    try {
+      const answer = await window.orgai.outputs.open({ projectId: output.projectId, outputId: output.id })
+      if (answer) say(answer)
+    } catch (e) {
+      say(cleanIpcError(e))
+    }
+  }
+  const expand = !viewer && !missing && (
+    <Button
+      key="expand"
+      variant={output.kind === 'mermaid' || output.kind === 'pptx' ? 'primary' : 'secondary'}
+      size="sm"
+      icon={Maximize2}
+      ariaLabel="Larger view"
+      testId="output-detail-expand"
+      onClick={onOpenLarger}
+    >
+      Larger view
+    </Button>
+  )
+  if (collapsed) {
+    return (
+      <>
+        <div className="output-detail-toolbar" role="group" aria-label="Output actions">
+          {expand}
+        </div>
+      </>
+    )
+  }
+  const blocked = editBlockedReason(output, ctx.isCurrent)
+  const canEdit = isEditableKind(output.kind) && blocked === null && ctx.mode !== 'edit'
+  const reviseLabel = ctx.isCurrent ? 'Ask the team to revise…' : 'Ask the team to revise the current version…'
+  return (
+    <>
+      <div className="output-detail-toolbar" role="group" aria-label="Output actions">
+        {canEdit && (
+          <Button variant="secondary" size="sm" icon={Pencil} testId="output-edit" onClick={() => void ctx.setMode('edit')}>
+            Edit
+          </Button>
+        )}
+        {external && !missing && ctx.isCurrent && (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={SquarePen}
+            testId="output-edit-external"
+            title={`Opens the file in the app your computer uses for ${external === 'Excel' ? 'spreadsheet' : external === 'PowerPoint' ? 'presentation' : 'document'} files. When you save there, OrgAI keeps the change as a new version.`}
+            onClick={() => {
+              void edit.start().then((refusal) => {
+                if (refusal) say(refusal)
+              })
+            }}
+          >
+            Edit in {external}
+          </Button>
+        )}
+        {canOpenOutput(output) && !external && (
+          <Button variant="secondary" size="sm" testId={`${prefix}-open`} title={OPEN_TITLE} onClick={() => void open()}>
+            Open
+          </Button>
+        )}
+        {canReviseFallback(output) && (
+          <Button variant="secondary" size="sm" icon={MessageSquareQuote} testId="output-revise" onClick={() => ctx.openRevise()}>
+            {reviseLabel}
+          </Button>
+        )}
+        <NoteTools />
+        {expand}
+        <OutputActions output={output} onRemoved={onRemoved} onNotice={say} />
+      </div>
+      {blocked && (
+        <p className="output-edit-reason" data-testid="output-edit-reason">
+          {blocked}
+        </p>
+      )}
+    </>
+  )
+}
+
+/** The body: compare, the editor, or the chosen tab. */
+function Body({ onCloseCompare, onCloseEditor, full, onToggleFull, onOpenLarge, context }: { onCloseCompare(): void; onCloseEditor(): void; full: boolean; onToggleFull(): void; onOpenLarge?: () => void; context: 'detail' | 'dialog' }): ReactElement | null {
+  const ctx = useOutputDetail()
+  if (!ctx) return null
+  const { output } = ctx
+  if (ctx.mode === 'compare') return <ComparePanel onClose={onCloseCompare} />
+  if (ctx.mode === 'edit') return <OutputEditor onClose={onCloseEditor} />
+  if (ctx.tab === 'versions') return <VersionsPanel />
+  if (ctx.tab === 'notes' && ctx.surface === 'detail') return <NotesPanel variant="tab" />
+  if (output.missing === true) return null
+  return (
+    <OutputPreview
+      output={output}
+      labelledBy="output-detail-heading"
+      context={context}
+      onOpenLarge={onOpenLarge}
+      full={full}
+      onToggleFull={onToggleFull}
+      version={ctx.isCurrent ? null : ctx.version}
+    />
+  )
+}
+
+function DetailTabs({ idPrefix }: { idPrefix: string }): ReactElement | null {
+  const ctx = useOutputDetail()
+  if (!ctx) return null
+  const versions = ctx.output.versionCount ?? ctx.versions?.length ?? 1
+  const open = ctx.output.openNoteCount ?? 0
+  const tabs: TabItem[] = [
+    { id: 'preview', label: 'Preview', testId: 'output-tab-preview' },
+    { id: 'versions', label: 'Versions', count: versions, countLabel: `${versions} ${versions === 1 ? 'version' : 'versions'}`, testId: 'output-tab-versions' }
+  ]
+  if (ctx.surface === 'detail') tabs.push({ id: 'notes', label: 'Notes', count: open, countLabel: `${open} open ${open === 1 ? 'note' : 'notes'}`, testId: 'output-tab-notes' })
+  return (
+    <div className="output-detail-tabs" data-testid="output-detail-tabs">
+      <Tabs tabs={tabs} value={ctx.tab === 'notes' && ctx.surface === 'viewer' ? 'preview' : ctx.tab} onChange={(id) => ctx.setTab(id as OutputDetailTab)} label="Output views" idPrefix={idPrefix} compact />
+    </div>
+  )
+}
+
 export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, narrowHint }: OutputDetailProps): ReactElement {
   const heading = useRef<HTMLHeadingElement>(null)
   const [larger, setLarger] = useState(false)
-  const [dialogNotice, setDialogNotice] = useState('')
   const [full, setFull] = useState(false)
-  const openLarge = useCallback(() => setLarger(true), [])
   const toggleFull = useCallback(() => setFull((f) => !f), [])
   const closeLarger = (): void => {
     setLarger(false)
     setFull(false)
   }
+  const [notice, setNotice] = useState('')
+
+  const current = output.version ?? 1
+  const ref = useMemo(() => ({ projectId: output.projectId, outputId: output.id }), [output.projectId, output.id])
+  const versionsRead = useOutputVersions(ref)
+  const notesRead = useOutputNotes(ref)
+
+  // ---- shared state ----
+  const [viewing, setViewing] = useState<number | null>(null)
+  const version = viewing !== null && viewing !== current ? viewing : current
+  const [tab, setTabState] = useState<OutputDetailTab>('preview')
+  const [mode, setModeState] = useState<OutputDetailMode>('preview')
+  const [compare, setCompare] = useState<{ a: number; b: number } | null>(null)
+  const [dirty, setDirtyState] = useState(false)
+  const [selection, setSelection] = useState<OutputSelection | null>(null)
+  const [regionTool, setRegionTool] = useState<RegionTool>('off')
+  const [shownNote, setShownNote] = useState<string | null>(null)
+  const [live, setLive] = useState('')
+  const [revise, setRevise] = useState<ReviseInit | null>(null)
+  const [guarding, setGuarding] = useState(false)
+  const dirtyRef = useRef(false)
+  const modeRef = useRef<OutputDetailMode>('preview')
+  const modeOpener = useRef<HTMLElement | null>(null)
+  const saveRef = useRef<(() => Promise<boolean>) | null>(null)
+  const guardResolve = useRef<((c: 'save' | 'discard' | 'cancel') => void) | null>(null)
+  modeRef.current = mode
+  const title = output.title.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤﻿]/g, '').trim() || 'this output'
+
+  const announce = useCallback((text: string): void => {
+    setLive((prev) => (prev === text ? `${text} ` : text))
+  }, [])
+  const setDirty = useCallback((d: boolean): void => {
+    dirtyRef.current = d
+    setDirtyState(d)
+  }, [])
+  const registerSave = useCallback((save: (() => Promise<boolean>) | null): void => {
+    saveRef.current = save
+  }, [])
+
+  const guard = useCallback(async (): Promise<boolean> => {
+    if (!dirtyRef.current) return true
+    const choice = await new Promise<'save' | 'discard' | 'cancel'>((resolve) => {
+      guardResolve.current?.('cancel')
+      guardResolve.current = resolve
+      setGuarding(true)
+    })
+    guardResolve.current = null
+    setGuarding(false)
+    if (choice === 'cancel') return false
+    if (choice === 'discard') {
+      useAppStore.getState().setOutputDraft(output.id, null)
+      dirtyRef.current = false
+      setDirtyState(false)
+      return true
+    }
+    const saved = (await saveRef.current?.()) ?? false
+    if (!saved) return false
+    dirtyRef.current = false
+    setDirtyState(false)
+    return true
+  }, [output.id])
+
+  useEffect(() => {
+    activeGuard = guard
+    return () => {
+      if (activeGuard === guard) activeGuard = null
+      guardResolve.current?.('cancel')
+    }
+  }, [guard])
+
+  const setMode = useCallback(
+    async (next: OutputDetailMode, cmp?: { a: number; b: number }): Promise<boolean> => {
+      const prev = modeRef.current
+      if (prev === 'edit' && next !== 'edit' && !(await guard())) return false
+      // Spec 14.3: leaving edit or compare gives focus back to what opened it (else Edit, else the heading), never the page.
+      if (prev === 'preview' && next !== 'preview') modeOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      if (next === 'compare') setCompare(cmp ?? null)
+      setModeState(next)
+      setSelection(null)
+      if (prev !== 'preview' && next === 'preview') {
+        const opener = modeOpener.current
+        modeOpener.current = null
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const active = document.activeElement
+            if (active && active !== document.body && active.isConnected) return
+            const section = heading.current?.closest('section')
+            const target =
+              (opener?.isConnected ? opener : null) ?? section?.querySelector<HTMLElement>('[data-testid=output-edit]') ?? heading.current
+            target?.focus({ preventScroll: true })
+          })
+        )
+      }
+      return true
+    },
+    [guard]
+  )
+  const setTab = useCallback(
+    (next: OutputDetailTab): void => {
+      void (async () => {
+        if (modeRef.current !== 'preview' && !(await setMode('preview'))) return
+        setTabState(next)
+      })()
+    },
+    [setMode]
+  )
+  const setVersion = useCallback(
+    (n: number | null): void => {
+      void (async () => {
+        if (modeRef.current !== 'preview' && !(await setMode('preview'))) return
+        setViewing(n)
+        setSelection(null)
+      })()
+    },
+    [setMode]
+  )
+
+  const openRevise = useCallback((init?: ReviseInit): void => setRevise(init ?? {}), [])
+  const showNote = useCallback((id: string | null): void => setShownNote(id), [])
+
+  const value = useMemo<OutputDetailValue>(
+    () => ({
+      output,
+      surface: 'detail',
+      version,
+      currentVersion: current,
+      isCurrent: version === current,
+      setVersion,
+      versions: versionsRead.data,
+      reloadVersions: versionsRead.reload,
+      notes: notesRead.data,
+      reloadNotes: notesRead.reload,
+      tab,
+      setTab,
+      mode,
+      compare,
+      setMode,
+      dirty,
+      setDirty,
+      registerSave,
+      guard,
+      selection,
+      setSelection,
+      regionTool,
+      setRegionTool,
+      shownNote,
+      showNote,
+      announce,
+      openRevise
+    }),
+    [output, version, current, setVersion, versionsRead.data, versionsRead.reload, notesRead.data, notesRead.reload, tab, setTab, mode, compare, setMode, dirty, setDirty, registerSave, guard, selection, regionTool, shownNote, showNote, announce, openRevise]
+  )
+
+  const external = useExternalEdit(output, versionsRead.data, announce)
+
+  // markOutputSeen: the user is looking at the current version. Only while the detail is really on screen: a pane folded
+  // to its rail (1024x640) keeps the detail mounted but hidden, and the "New" badge must stay until it is seen.
+  useEffect(() => {
+    const el = heading.current?.closest('section')
+    const mark = (): void => useAppStore.getState().markOutputSeen(output.id, current)
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      mark()
+      return undefined
+    }
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting && e.intersectionRect.width > 0)) mark()
+    })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [output.id, current])
+
   // Esc leaves Full window first (and the dialog stays open); a second Esc closes it as before. An open menu keeps its own Esc.
   // Opening the Larger view lands focus on the drawing's viewport (spec 14.3) once it is drawn, unless the user moved
   // focus first (the Dialog puts it on its first control; any other element means the user chose).
@@ -119,122 +541,183 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
   }, [larger, full])
+
   const [hint] = useState(() => narrowHint === true && takeWideHint())
-  const index = useRunIndexes().get(output.runId)
+  const index = useRunIndexes().get(output.current?.runId ?? output.runId)
   useEffect(() => {
+    // A revise request that continued the run switches the run view to the new chain member, which remounts this
+    // detail: focus then goes back to Revise (spec 14.3: dialogs return to their opener) and the sentence is said again
+    // in the new live region, instead of landing on the heading.
+    const back = reviseReturn && reviseReturn.id === output.id && Date.now() < reviseReturn.until ? reviseReturn : null
+    reviseReturn = null
+    if (back) {
+      const btn = heading.current?.closest('section')?.querySelector<HTMLElement>('[data-testid=output-revise]')
+      if (btn) {
+        btn.focus({ preventScroll: true })
+        announce(REVISE_SENT_TEXT)
+        return
+      }
+    }
     if (autoFocus !== false) heading.current?.focus({ preventScroll: true })
     // Focus once per shown output, never on a refresh of the same one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [output.id])
   const missing = output.missing === true
   const tag = index !== undefined ? runTag(index) : undefined
+  const agentCurrent = !output.current || output.current.source === 'agent'
   // provenanceLine puts the run tag between the role and the date; split around it so the tag can be the link.
   const marker = '\u0000'
-  const [before, after] = provenanceLine(output, marker).split(marker)
+  const [before, after] = (agentCurrent ? provenanceLine({ role: output.current?.role ?? output.role, createdAt: output.current?.at ?? output.updatedAt ?? output.createdAt }, marker) : '').split(marker)
   const openRun = (): void => {
     void useAppStore
       .getState()
-      .focusRun(output.projectId, output.runId)
+      .focusRun(output.projectId, output.current?.runId ?? output.runId)
       .then(settleRunFocus)
-      .catch((e) => onNotice?.(cleanIpcError(e)))
+      .catch((e) => say(cleanIpcError(e)))
   }
-  const open = async (): Promise<void> => {
-    try {
-      const answer = await window.orgai.outputs.open({ projectId: output.projectId, outputId: output.id })
-      if (answer) onNotice?.(answer)
-    } catch (e) {
-      onNotice?.(cleanIpcError(e))
+  const say = (text: string): void => {
+    setNotice(text)
+    onNotice?.(text)
+  }
+  const afterRemoved = (id: string): void => {
+    closeLarger()
+    onRemoved?.(id)
+  }
+  const openLarger = useCallback(() => setLarger(true), [])
+  const closeCompare = useCallback(() => void setMode('preview'), [setMode])
+  const closeEditor = useCallback(() => void setMode('preview'), [setMode])
+  const onReviseClose = (r: OutputReviseResult | null): void => {
+    setRevise(null)
+    if (r && !('refused' in r)) {
+      announce(REVISE_SENT_TEXT)
+      reviseReturn = { id: output.id, until: Date.now() + 3000 }
     }
   }
+
+  const meta = <p className="output-detail-meta" data-testid={larger ? 'output-dialog-meta' : 'output-detail-meta'}>{outputMetaLine(output)}</p>
+  const versionRow = (
+    <div className="output-version-row-head">
+      <VersionSelect />
+    </div>
+  )
+  const status = (
+    <>
+      <RevisionStatus />
+      <ExternalEditStatus edit={external} output={output} onCompare={(a, b) => void setMode('compare', { a, b })} />
+    </>
+  )
+  const tabsPrefix = `output-detail-${larger ? 'viewer' : 'detail'}`
+  const panelId = panelDomId(tabsPrefix, tab === 'notes' && larger ? 'preview' : tab)
+  const labelId = tabDomId(tabsPrefix, tab === 'notes' && larger ? 'preview' : tab)
+
   return (
-    <section className="output-detail" data-testid="output-detail" data-id={output.id} data-kind={output.kind} aria-labelledby="output-detail-heading">
-      <div className="output-detail-head">
-        <h3 id="output-detail-heading" ref={heading} data-testid="output-detail-heading" tabIndex={-1} className="output-detail-heading">
-          {showHidden(output.title)}
-          {hasHidden(output.title) && (
-            <Badge tone="attention" title={HIDDEN_SHOWN_TITLE}>
-              Hidden characters shown
-            </Badge>
-          )}
-          <ExtBadge fileName={output.fileName} />
-        </h3>
-        {!missing && <IconButton icon={Maximize2} size="sm" label="Larger view" testId="output-detail-expand" onClick={() => setLarger(true)} />}
-      </div>
-      {hint && (
-        <p className="output-detail-hint" data-testid="output-wide-hint">
-          {WIDE_HINT_TEXT}
-        </p>
-      )}
-      <p className="output-detail-meta" data-testid="output-detail-meta">
-        {outputMetaLine(output)}
-      </p>
-      <p className="output-detail-prov" data-testid="output-detail-prov">
-        {tag ? (
+    <OutputDetailContext.Provider value={value}>
+      <section className="output-detail" data-testid="output-detail" data-id={output.id} data-kind={output.kind} data-version={version} aria-labelledby="output-detail-heading">
+        <div className="output-detail-head">
+          <h3 id="output-detail-heading" ref={heading} data-testid="output-detail-heading" tabIndex={-1} className="output-detail-heading">
+            {showHidden(output.title)}
+            {hasHidden(output.title) && (
+              <Badge tone="attention" title={HIDDEN_SHOWN_TITLE}>
+                Hidden characters shown
+              </Badge>
+            )}
+            <ExtBadge fileName={output.fileName} />
+          </h3>
+          {!larger && !missing && versionRow}
+        </div>
+        {hint && !larger && (
+          <p className="output-detail-hint" data-testid="output-wide-hint">
+            {WIDE_HINT_TEXT}
+          </p>
+        )}
+        {!larger && meta}
+        {!larger && (
+          <p className="output-detail-prov" data-testid="output-detail-prov">
+            {agentCurrent && tag ? (
+              <>
+                {before}
+                <button type="button" className="link-btn" data-testid="output-run-link" aria-label={`Open run ${tag}`} onClick={openRun}>
+                  {tag}
+                </button>
+                {after}
+              </>
+            ) : (
+              currentProvenance(output)
+            )}
+          </p>
+        )}
+        {output.description && !larger && <ClampText text={output.description} label={output.title} />}
+        {missing && !larger && (
+          <p className="output-missing" data-testid="output-missing">
+            The file is gone from {output.relPath}. It was moved or deleted outside OrgAI.
+          </p>
+        )}
+        {!larger && (
           <>
-            {before}
-            <button type="button" className="link-btn" data-testid="output-run-link" aria-label={`Open run ${tag}`} onClick={openRun}>
-              {tag}
-            </button>
-            {after}
+            {status}
+            <OldVersionBanner />
           </>
-        ) : (
-          provenanceLine(output)
         )}
-      </p>
-      {output.description && <ClampText text={output.description} label={output.title} />}
-      {missing && (
-        <p className="output-missing" data-testid="output-missing">
-          The file is gone from {output.relPath}. It was moved or deleted outside OrgAI.
-        </p>
-      )}
-      <div className="output-detail-toolbar" role="group" aria-label="Output actions">
-        {canOpenOutput(output) && (
-          <Button variant="secondary" size="sm" testId="output-detail-open" title="Opens in the app your computer uses for this kind of file" onClick={() => void open()}>
-            Open
-          </Button>
-        )}
-        <OutputActions output={output} onRemoved={onRemoved} onNotice={onNotice} />
-      </div>
-      {!missing && <OutputPreview output={output} labelledBy="output-detail-heading" context="detail" onOpenLarge={openLarge} />}
-      {larger && (
-        <Dialog
-          open
-          onClose={closeLarger}
-          title={showHidden(output.title)}
-          description={hasHidden(output.title) ? 'The title has hidden characters, shown written out.' : undefined}
-          size="lg"
-          testId="output-dialog"
-        >
-          <div className="output-dialog-body" data-full={full ? 'true' : undefined}>
-            <p className="output-detail-meta" data-testid="output-dialog-meta">
-              {outputMetaLine(output)}
-            </p>
-            <div className="output-detail-toolbar" role="group" aria-label="Output actions">
-              {canOpenOutput(output) && (
-                <Button variant="secondary" size="sm" testId="output-dialog-open" title="Opens in the app your computer uses for this kind of file" onClick={() => void open()}>
-                  Open
-                </Button>
-              )}
-              <OutputActions
-                output={output}
-                onNotice={(text) => {
-                  // The dialog closes on a removal, so the surface's own region says it too.
-                  setDialogNotice(text)
-                  onNotice?.(text)
-                }}
-                onRemoved={(id) => {
-                  closeLarger()
-                  onRemoved?.(id)
-                }}
-              />
-            </div>
-            <p className="outputs-notice" role="status" data-testid="output-dialog-notice">
-              {dialogNotice}
-            </p>
-            <OutputPreview output={output} context="dialog" full={full} onToggleFull={toggleFull} />
+        <Toolbar edit={external} onOpenLarger={openLarger} collapsed={larger} onNotice={say} onRemoved={afterRemoved} />
+        {!larger && !missing && <DetailTabs idPrefix={tabsPrefix} />}
+        {!larger && (
+          <div className="output-detail-body" role="tabpanel" id={panelId} aria-labelledby={labelId}>
+            <Body onCloseCompare={closeCompare} onCloseEditor={closeEditor} full={false} onToggleFull={toggleFull} onOpenLarge={openLarger} context="detail" />
           </div>
-        </Dialog>
+        )}
+        {!larger && (
+          <p className="sr-only" role="status" data-testid="output-live">
+            {live}
+          </p>
+        )}
+        {larger && <p className="output-detail-hint">Showing in the larger view.</p>}
+      </section>
+      {larger && (
+        <OutputViewer
+          value={value}
+          onClose={closeLarger}
+          full={full}
+          live={live}
+          notice={notice}
+          head={
+            <div className="output-viewer-head">
+              {versionRow}
+              {meta}
+            </div>
+          }
+          tools={
+            <ViewerTools edit={external} say={say} afterRemoved={afterRemoved} idPrefix={tabsPrefix} status={status} />
+          }
+          body={
+            <div className="output-detail-body" role="tabpanel" id={panelId} aria-labelledby={labelId}>
+              <Body onCloseCompare={closeCompare} onCloseEditor={closeEditor} full={full} onToggleFull={toggleFull} context="dialog" />
+            </div>
+          }
+        />
       )}
-    </section>
+      {guarding && <GuardDialog title={title} onChoose={(c) => guardResolve.current?.(c)} />}
+      {revise && (
+        <ReviseDialog
+          output={output}
+          version={version}
+          init={revise}
+          dirty={dirty}
+          onSaveFirst={async () => (await saveRef.current?.()) ?? false}
+          onClose={onReviseClose}
+        />
+      )}
+    </OutputDetailContext.Provider>
+  )
+}
+
+/** Banner, toolbar, status and tabs of the Larger view (they read the viewer's context from where they render). */
+function ViewerTools({ edit, say, afterRemoved, idPrefix, status }: { edit: ExternalEdit; say(t: string): void; afterRemoved(id: string): void; idPrefix: string; status: ReactElement }): ReactElement {
+  return (
+    <div className="output-viewer-tools">
+      {status}
+      <OldVersionBanner />
+      <Toolbar edit={edit} onOpenLarger={() => undefined} collapsed={false} onNotice={say} onRemoved={afterRemoved} />
+      <DetailTabs idPrefix={`${idPrefix}`} />
+    </div>
   )
 }

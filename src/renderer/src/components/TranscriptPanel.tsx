@@ -57,7 +57,9 @@ import { collapseSelfHelp, type SelfHelpRow } from '../lib/selfHelpRows'
 import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
 import RunOutputs from './outputs/RunOutputs'
 import { revealOutputsTab } from './outputs/revealOutputsTab'
-import { collapseOutputCalls, matchOutputId, registeredSentence, type OutputWriteRow } from '../lib/outputsRun'
+import ReviseDialog from './outputs/ReviseDialog'
+import { canRevise } from '../lib/outputRevise'
+import { collapseOutputCalls, matchOutputId, producedSentence, registeredSentence, type OutputWriteRow } from '../lib/outputsRun'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -294,9 +296,12 @@ function OutputWriteRowView({ row, body, runId, tabRunId, arrive }: { arrive?: b
     return pid ? s.outputsByProject[pid] : undefined
   })
   const id = row.state === 'refused' ? undefined : matchOutputId(outputs, runId, row.title, row.relPath)
-  // The tool result no longer names the kind, so a registered row takes it from the matched index entry.
-  const entry = id ? outputs?.find((o) => o.id === id) : undefined
-  const text = row.state === 'registered' && entry ? registeredSentence(entry.kind, row.title) : row.text
+  const matched = id ? outputs?.find((o) => o.id === id) : undefined
+  // Main's result text no longer names the kind, so the matched index entry supplies it for the sentence.
+  const text = matched && row.state === 'produced' ? producedSentence(matched.kind, row.title) : matched && row.state === 'registered' ? registeredSentence(matched.kind, row.title) : row.text
+  const revisable = matched !== undefined && canRevise(matched).ok
+  const [revising, setRevising] = useState(false)
+  const reviseBtn = useRef<HTMLButtonElement>(null)
   return (
     <div className={`entry system harness output-write-row${arriveClass(arrive)}`} data-testid="output-write-row" data-state={row.state}>
       <Icon icon={row.state === 'refused' ? AlertTriangle : Files} size="sm" />
@@ -312,6 +317,23 @@ function OutputWriteRowView({ row, body, runId, tabRunId, arrive }: { arrive?: b
             >
               Show
             </button>
+          </>
+        )}
+        {revisable && matched && (
+          <>
+            {' '}
+            <button ref={reviseBtn} type="button" className="link-btn output-write-revise" data-testid="output-write-revise" aria-label={`Ask the team to revise ${row.title}`} onClick={() => setRevising(true)}>
+              Revise
+            </button>
+            {revising && (
+              <ReviseDialog
+                output={matched}
+                onClose={() => {
+                  setRevising(false)
+                  requestAnimationFrame(() => reviseBtn.current?.focus())
+                }}
+              />
+            )}
           </>
         )}
         {body && row.state !== 'refused' && (

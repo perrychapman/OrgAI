@@ -1,5 +1,9 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import type { SlideBox } from '@shared/types'
+import { boxesIntersect, visibleFraction } from '../../../lib/outputNotes'
+import { useOutputDetail } from '../outputDetailContext'
+import RegionLayer, { useRegionKeys } from '../RegionLayer'
 import type { PanZoom } from './usePanZoom'
 
 /**
@@ -54,6 +58,52 @@ export function PanZoomSurface({ pz, title, kind, hint, describedBy, children, o
   const hintId = `${uid}-hint`
   const [focused, setFocused] = useState(false)
   const { view, natural } = pz
+  const ctx = useOutputDetail()
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [space, setSpace] = useState(false)
+  // With the region tool on, a drag draws; holding Space pans instead (docs/design/outputs-2.md 11.2).
+  const drawing = ctx !== null && ctx.regionTool !== 'off' && ctx.mode === 'preview'
+  // A diagram's labels are the texts of the drawn shapes whose bounds meet the region.
+  const labelsIn = useCallback(
+    (box: SlideBox): string[] => {
+      if (kind !== 'diagram') return []
+      const content = contentRef.current
+      const shadow = content?.querySelector('[data-testid="output-mermaid-svg"]')?.shadowRoot
+      if (!content || !shadow) return []
+      const cr = content.getBoundingClientRect()
+      if (cr.width <= 0 || cr.height <= 0) return []
+      const out: string[] = []
+      shadow.querySelectorAll('text').forEach((t) => {
+        const r = t.getBoundingClientRect()
+        const b = { x: (r.left - cr.left) / cr.width, y: (r.top - cr.top) / cr.height, w: r.width / cr.width, h: r.height / cr.height }
+        const label = (t.textContent ?? '').replace(/\s+/g, ' ').trim()
+        if (label && boxesIntersect(box, b)) out.push(label)
+      })
+      return out
+    },
+    [kind]
+  )
+  const regionKeys = useRegionKeys({ labelsIn })
+  const bind: PanZoom['bind'] = {
+    ...pz.bind,
+    onPointerDown: (e) => {
+      if (drawing && !space) return
+      pz.bind.onPointerDown(e)
+    },
+    onDoubleClick: (e) => {
+      if (drawing) return
+      pz.bind.onDoubleClick(e)
+    },
+    onKeyDown: (e) => {
+      if (e.target === e.currentTarget && e.key === ' ') setSpace(true)
+      if (ready && natural && regionKeys(e, visibleFraction(view, pz.box, natural))) return
+      pz.bind.onKeyDown(e)
+    },
+    onKeyUp: (e) => {
+      if (e.key === ' ') setSpace(false)
+      pz.bind.onKeyUp(e)
+    }
+  }
   const ready = natural !== null && pz.box.w > 0
   const dataAttrs: Record<string, string> = {}
   for (const [k, v] of Object.entries(data ?? {})) if (v !== undefined) dataAttrs[`data-${k}`] = String(v)
@@ -79,11 +129,15 @@ export function PanZoomSurface({ pz, title, kind, hint, describedBy, children, o
         {...dataAttrs}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
-        {...pz.bind}
+        data-drawing={drawing ? 'true' : undefined}
+        data-space={space ? 'true' : undefined}
+        {...bind}
       >
         <div
+          ref={contentRef}
           className="pz-content"
           style={{
+            ['--pz-k' as string]: view.k,
             width: natural ? natural.w : undefined,
             height: natural ? natural.h : undefined,
             transform: ready ? `translate(${view.x}px, ${view.y}px) scale(${view.k})` : undefined,
@@ -91,6 +145,7 @@ export function PanZoomSurface({ pz, title, kind, hint, describedBy, children, o
           }}
         >
           {children}
+          {natural && <RegionLayer naturalW={natural.w} naturalH={natural.h} labelsIn={kind === 'diagram' ? labelsIn : undefined} />}
         </div>
       </div>
       <p id={hintId} className="sr-only">

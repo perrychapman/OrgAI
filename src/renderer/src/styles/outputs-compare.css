@@ -1,0 +1,466 @@
+/* Compare (docs/design/outputs-2.md 12.2). Owned by components/outputs/Compare*.tsx. Tokens only, both themes.
+   Added = "+" glyph and underline, removed = "-" glyph and strike-through: colour only backs them up. The page never
+   scrolls: each body is a scroller of its own with a bounded height. */
+
+.output-compare {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  container-type: inline-size;
+}
+.compare-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.compare-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.compare-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.compare-pick .select {
+  min-width: 0;
+  max-width: 220px;
+}
+.compare-summary {
+  margin: 0;
+  min-height: var(--text-small-lh);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.compare-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.compare-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.compare-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.compare-nav,
+.compare-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.compare-nav-count {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.compare-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.compare-note {
+  margin: 0;
+  padding: var(--space-2) 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.compare-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--danger-text);
+}
+.compare-error p {
+  margin: 0;
+}
+
+/* ---------- Body ---------- */
+.compare-body {
+  flex: 1 1 auto;
+  min-height: 160px;
+  max-height: min(70vh, 640px);
+  overflow: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+/* In the detail column (S3) the body is one bounded scroller below the head; in the viewer (S4) Compare takes the whole
+   content area and the body fills what the head leaves, so there is one scroller, never two. */
+.output-detail .output-detail-body > .output-compare .compare-body {
+  max-height: clamp(200px, 55vh, 560px);
+}
+.output-viewer-content > .output-detail-body:has(> .output-compare) {
+  overflow: hidden;
+}
+.output-viewer-content > .output-detail-body > .output-compare {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.output-viewer-content > .output-detail-body > .output-compare .compare-body {
+  max-height: none;
+  min-height: 0;
+}
+.compare-body:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.compare-col-head {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+
+/* Lines */
+.compare-lines,
+.compare-side {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.compare-line {
+  display: grid;
+  grid-template-columns: 4ch 4ch 2ch minmax(0, 1fr);
+  gap: 0 var(--space-1);
+  padding: 0 var(--space-2);
+}
+.compare-num {
+  text-align: right;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+.compare-glyph {
+  text-align: center;
+  font-weight: var(--weight-semibold);
+  user-select: none;
+}
+.compare-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+.compare-line[data-op='add'],
+.compare-side-cell[data-op='add'] {
+  background: var(--diff-add-bg);
+}
+.compare-line[data-op='del'],
+.compare-side-cell[data-op='del'] {
+  background: var(--diff-del-bg);
+}
+.compare-line[data-op='add'] .compare-glyph,
+.compare-side-cell[data-op='add'] .compare-glyph,
+.compare-block[data-op='add'] .compare-glyph {
+  color: var(--success-text);
+}
+.compare-line[data-op='del'] .compare-glyph,
+.compare-side-cell[data-op='del'] .compare-glyph,
+.compare-block[data-op='del'] .compare-glyph {
+  color: var(--danger-text);
+}
+.compare-line[data-op='add'] .compare-text,
+.compare-side-cell[data-op='add'] .compare-text,
+.compare-block[data-op='add'] .compare-block-body {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.compare-line[data-op='del'] .compare-text,
+.compare-side-cell[data-op='del'] .compare-text,
+.compare-block[data-op='del'] .compare-block-body {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger-text);
+}
+.compare-mark {
+  color: inherit;
+  border-radius: 2px;
+}
+[data-op='add'] .compare-mark {
+  background: color-mix(in oklab, var(--success) 32%, transparent);
+  text-decoration: underline solid;
+  text-underline-offset: 3px;
+}
+[data-op='del'] .compare-mark {
+  background: color-mix(in oklab, var(--danger) 32%, transparent);
+  text-decoration: line-through solid;
+}
+[data-current='true'] {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.compare-gap {
+  display: flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  font-family: var(--font-body, inherit);
+}
+.compare-gap-text {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+
+/* Side by side */
+.compare-side-head,
+.compare-side-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.compare-side-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-default);
+  font-family: var(--font-body, inherit);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.compare-side-cell {
+  display: grid;
+  grid-template-columns: 4ch 2ch minmax(0, 1fr);
+  gap: 0 var(--space-1);
+  padding: 0 var(--space-2);
+  min-width: 0;
+}
+.compare-side-cell[data-side='right'] {
+  border-left: 1px solid var(--border-subtle);
+}
+.compare-side-cell[data-empty='true'] {
+  background: var(--surface-2);
+}
+.compare-empty-line::before {
+  content: '\00a0';
+}
+
+/* Rendered markdown */
+.compare-rendered {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.compare-rendered-col {
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+}
+.compare-rendered-col + .compare-rendered-col {
+  border-left: 1px solid var(--border-default);
+}
+@container (max-width: 560px) {
+  .compare-rendered {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Document blocks */
+.compare-block {
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+.compare-block[data-op='add'] {
+  background: var(--diff-add-bg);
+}
+.compare-block[data-op='del'] {
+  background: var(--diff-del-bg);
+}
+.compare-block-body {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+.compare-block-heading {
+  font-weight: var(--weight-semibold);
+}
+.compare-block-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+}
+.compare-list {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.compare-table {
+  border-collapse: collapse;
+  font-size: var(--text-small);
+}
+.compare-table th,
+.compare-table td {
+  padding: var(--space-0h, 2px) var(--space-2);
+  border: 1px solid var(--border-default);
+  text-align: left;
+  font-weight: inherit;
+  vertical-align: top;
+}
+
+/* Cell grid */
+.compare-grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.compare-grid th,
+.compare-grid td {
+  padding: var(--space-0h, 2px) var(--space-2);
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  white-space: pre;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+.compare-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  color: var(--text-tertiary);
+  font-weight: var(--weight-medium, 500);
+}
+.compare-rowhead {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface-2);
+  color: var(--text-tertiary);
+  text-align: right !important;
+  font-weight: var(--weight-medium, 500);
+}
+.compare-grid thead .compare-corner {
+  left: 0;
+  z-index: 3;
+}
+.compare-grid-row[data-op='add'] td {
+  background: var(--diff-add-bg);
+}
+.compare-grid-row[data-op='del'] td {
+  background: var(--diff-del-bg);
+}
+.compare-grid-row[data-op='del'] td {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger-text);
+}
+.compare-grid-row[data-op='add'] .compare-rowhead .compare-glyph {
+  color: var(--success-text);
+}
+.compare-grid-row[data-op='del'] .compare-rowhead .compare-glyph {
+  color: var(--danger-text);
+}
+.compare-cell {
+  outline: 2px solid var(--warning-text, var(--accent));
+  outline-offset: -2px;
+}
+.compare-cell[data-op='add'] {
+  outline-color: var(--success-text);
+}
+.compare-cell[data-op='del'] {
+  outline-color: var(--danger-text);
+}
+.compare-cell-mark {
+  margin-right: var(--space-1);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.compare-cell-was {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger-text);
+}
+.compare-grid [data-current='true'] td:first-of-type {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.compare-grid tr[data-current='true'] {
+  box-shadow: none;
+}
+
+/* Two-up viewports */
+.compare-twoup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.compare-twoup-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.compare-viewport-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 240px;
+  max-height: min(60vh, 560px);
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+.compare-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  color: var(--text-primary);
+}
+.compare-viewport[data-dragging='true'] {
+  cursor: grabbing;
+}
+.compare-viewport:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.compare-viewport-content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+.compare-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  -webkit-user-drag: none;
+}
+@container (max-width: 520px) {
+  .compare-twoup {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
