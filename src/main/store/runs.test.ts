@@ -232,6 +232,28 @@ describe('RunStore', () => {
 })
 
 describe('RunStore image store', () => {
+  it('externalizes and hydrates returned images in ordered parts and assistant output', () => {
+    const store = new RunStore(dataDir)
+    const data = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]).toString('base64')
+    const image: ImageAttachment = { mediaType: 'image/png', data }
+    const transcript: TranscriptEntry[] = [
+      { id: 't', agentId: 'root', at: 1, block: { kind: 'tool_result', toolUseId: 'use', content: 'before\n[Image]\nafter', isError: false, parts: [{ type: 'text', text: 'before' }, { type: 'media', media: { kind: 'image', image } }, { type: 'text', text: 'after' }] } },
+      { id: 'a', agentId: 'root', at: 2, block: { kind: 'media', media: { kind: 'image', image } } }
+    ]
+    store.saveRecord(record(run('returned'), { transcript }))
+    const raw = readFileSync(join(dataDir, 'runs', 'returned.json'), 'utf8')
+    expect(raw).not.toContain(data)
+    expect(raw).toContain('ref')
+    expect(readdirSync(join(dataDir, 'runs', 'returned', 'images'))).toHaveLength(1)
+    expect(store.getRecord('returned')?.transcript).toEqual(transcript)
+    expect(image.data).toBe(data)
+    rmSync(join(dataDir, 'runs', 'returned', 'images'), { recursive: true })
+    const missing = store.getRecord('returned')!
+    expect(JSON.stringify(missing.transcript)).not.toContain(data)
+    expect(JSON.stringify(missing.transcript)).not.toContain('"ref"')
+    expect(JSON.stringify(missing.transcript)).toContain('"data":""')
+  })
+
   const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString('base64')
   const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]).toString('base64')
   const sha = (b64: string): string => createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex')
