@@ -3,6 +3,7 @@ import type { AgentMessage } from '@shared/types'
 import { useReducedMotion } from '../../../lib/canvas'
 import { assignDepartmentSlots, buildingBlocked, buildingDesk, buildingLayout, buildingProps, DESKS_PER_ROOM, floorBounds, OFFICE_TILE, route } from '../../../lib/office/layout'
 import { baseline, finish, ingest } from '../../../lib/office/scheduler'
+import { consumeSceneMessages } from '../../../lib/office/messageCursor'
 import { Button } from '../../ui/Button'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
 import atlas from '../../../assets/pocket-office/atlas.json'
@@ -84,30 +85,30 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
   const idsKey = JSON.stringify(eligibleIds)
   const ids = useMemo(() => new Set<string>(JSON.parse(idsKey)), [idsKey])
   const scheduler = useRef(baseline(messages))
-  const crossSeen = useRef<readonly AgentMessage[]>(messages)
-  const [crossFloor, setCrossFloor] = useState<AgentMessage[]>([])
+  const crossSeen = useRef({ runId, seen: messages as readonly AgentMessage[] })
+  const [crossFloorState, setCrossFloor] = useState<AgentMessage[]>([])
+  const crossFloor = crossSeen.current.runId === runId ? crossFloorState : []
   const schedulerRun = useRef(runId)
   if (schedulerRun.current !== runId) { scheduler.current = baseline(messages); schedulerRun.current = runId }
   const [, redraw] = useState(0)
   useEffect(() => {
-    if (schedulerGeometryReset.current) { scheduler.current = baseline(messages); crossSeen.current = messages.slice(); setCrossFloor([]); schedulerGeometryReset.current = false; redraw(n => n + 1); return }
-    let overlap = Math.min(crossSeen.current.length, messages.length)
-    while (overlap > 0 && !crossSeen.current.slice(-overlap).every((message, i) => message === messages[i])) overlap--
-    const fresh = messages.slice(overlap).filter(message => {
+    const incoming = consumeSceneMessages(crossSeen.current, runId, messages)
+    crossSeen.current = incoming.cursor
+    if (schedulerGeometryReset.current || incoming.reset) { scheduler.current = baseline(messages); setCrossFloor([]); schedulerGeometryReset.current = false; redraw(n => n + 1); return }
+    const fresh = incoming.fresh.filter(message => {
       const from = layout.rooms.find(r => r.agents.includes(message.from)); const to = layout.rooms.find(r => r.agents.includes(message.to ?? ''))
       return from && to && from.floor !== to.floor
     })
-    crossSeen.current = messages.slice()
     if (mode === 'live' && !document.hidden && fresh.length) setCrossFloor(previous => [...previous, ...fresh].slice(-3))
     if (mode !== 'live') setCrossFloor(previous => previous.length ? [] : previous)
     scheduler.current = mode === 'live' ? ingest(scheduler.current, messages, ids, Date.now(), !document.hidden, reduced) : baseline(messages)
     redraw(n => n + 1)
-  }, [messages, ids, mode, reduced, geometryKey])
+  }, [messages, ids, mode, reduced, geometryKey, runId])
   useEffect(() => {
-    const change = () => { scheduler.current = baseline(messages); crossSeen.current = messages.slice(); setCrossFloor([]); redraw(n => n + 1) }
+    const change = () => { scheduler.current = baseline(messages); crossSeen.current = { runId, seen: messages.slice() }; setCrossFloor([]); redraw(n => n + 1) }
     document.addEventListener('visibilitychange', change)
     return () => document.removeEventListener('visibilitychange', change)
-  }, [messages])
+  }, [messages, runId])
   useEffect(() => {
     if (!crossFloor.length) return
     const timer = window.setTimeout(() => setCrossFloor([]), 8000)
@@ -178,6 +179,6 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
     </div>
     <div data-testid="office-deliveries" data-active={mode === 'live' && !reduced ? scheduler.current.active.length : 0} data-queued={mode === 'live' && !reduced ? scheduler.current.queued.length : 0}>{deliveries.slice(0, Math.max(0, 3 - crossFloor.length)).map((d, i) => { const from = layout.rooms.find(r => r.agents.includes(d.message.from)); const to = layout.rooms.find(r => r.agents.includes(d.message.to ?? '')); return <p key={i} data-testid="office-caption" title={d.message.text}>{from && to && from.floor !== to.floor && <span>Floor {from.floor + 1} to floor {to.floor + 1}: </span>}{d.message.text.length > 80 ? `${d.message.text.slice(0, 80)}…` : d.message.text}{d.count > 1 ? ` (${d.count} messages)` : ''}<span className="office-full-message"> Full available message: {d.message.text}</span></p> })}</div>
     {crossFloor.map((message, i) => { const from = layout.rooms.find(r => r.agents.includes(message.from)); const to = layout.rooms.find(r => r.agents.includes(message.to ?? '')); return from && to && <p key={i} data-testid="office-caption" title={message.text}>Floor {from.floor + 1} to floor {to.floor + 1}: {message.text.length > 80 ? `${message.text.slice(0, 80)}…` : message.text}<span className="office-full-message"> Full available message: {message.text}</span></p> })}
-    <div className="office-roster" aria-label="Agents" role="region"><strong>Agents ({agents.length})</strong>{agents.map(a => <button type="button" key={a.id} data-office-agent-id={a.id} data-office-agent-context={a.context} aria-pressed={a.id === selectedId} onClick={() => selectAgent(a)} onKeyDown={e => removeOnDelete(e, a)}><span>{a.name}</span> <span>{a.statusLabel ?? a.status}</span>{a.context && <span> · {a.context}</span>}{a.activity && <span> · {a.activity}</span>}</button>)}</div>
+    <div className="office-roster" aria-label="Agents" role="region"><strong>Agents ({agents.length})</strong>{agents.map(a => <button type="button" key={a.id} data-office-agent-id={a.id} data-office-agent-context={a.context} data-office-floor={(layout.rooms.find(room => room.agents.includes(a.id))?.floor ?? 0) + 1} aria-pressed={a.id === selectedId} onClick={() => selectAgent(a)} onKeyDown={e => removeOnDelete(e, a)}><span>{a.name}</span> <span>{a.statusLabel ?? a.status}</span>{a.context && <span> · {a.context}</span>}{a.activity && <span> · {a.activity}</span>}</button>)}</div>
   </section>
 }

@@ -117,12 +117,13 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   check(await page.getByText('Splitting the work in two.', { exact: true }).count() > 0, 'selecting an earlier lead opens its original transcript')
   // Exercise genuine normalized messages through the mock runtime while the office is mounted.
   await endSession(page)
-  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 180, work: [
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400, work: [
     { type: 'spawn', id: 'office-a', name: 'office-a', description: 'Send the findings' },
     { type: 'spawn', id: 'office-b', name: 'office-b', description: 'Receive the findings' },
     ...Array.from({ length: 24 }, (_, i) => ({ type: 'message', from: 'office-a', to: 'office-b', text: `Actual office message ${i}: <script>plain text</script>` })),
     { type: 'text', text: 'Office delivery fixture complete.' }
   ] }))
+  await resizeTo(1024, 640)
   await setAppearance({ reduceMotion: 'system' })
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor()
@@ -130,6 +131,14 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await page.locator('.composer textarea').press('Enter')
   await scene().locator('[data-testid=office-caption]').first().waitFor({ timeout: 20_000 })
   const delivery = scene().locator('[data-testid=office-deliveries]')
+  const floorMapping = await scene().locator('button[data-office-agent-id]').evaluateAll(buttons => buttons.filter(button => ['office-a', 'office-b'].includes(button.getAttribute('data-office-agent-id'))).map(button => button.getAttribute('data-office-floor')))
+  check(floorMapping.length === 2 && floorMapping[0] !== floorMapping[1] && floorMapping.every(Boolean), 'runtime message endpoints are explicitly on different floors')
+  check(/Floor \d+ to floor \d+:/.test(await scene().locator('[data-testid=office-caption]').first().innerText()), 'cross-floor delivery presents an immediate truthful floor cue')
+  check(await delivery.getAttribute('data-active') === '0' && await delivery.getAttribute('data-queued') === '0', 'cross-floor events never enter the walking queue')
+  check(await scene().locator('[data-testid=office-caption]').count() <= 3, 'cross-floor captions share the three-caption limit')
+  await resizeTo(1600, 1000)
+  await page.waitForFunction(() => Number(document.querySelector('[data-testid=office-deliveries]')?.getAttribute('data-active')) > 0, undefined, { timeout: 15_000 })
+  check(Number(await delivery.getAttribute('data-active')) > 0, 'genuinely new messages after responsive reflow animate on the shared floor')
   check(Number(await delivery.getAttribute('data-active')) <= 3 && Number(await delivery.getAttribute('data-queued')) <= 12, 'real message burst respects active and queued visual limits')
   check(await scene().locator('[data-testid=office-caption] script').count() === 0, 'agent-authored message markup renders as text')
   await shot('office-real-message')
