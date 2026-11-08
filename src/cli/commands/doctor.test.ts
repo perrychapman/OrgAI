@@ -151,9 +151,9 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     expect(checks.find((c) => c.id === 'node')).toEqual({ id: 'node', status: 'ok', detail: 'Node 24.22.1' })
   })
 
-  it('shim: missing is ok and names where to install it', () => {
+  it('shim: missing is ok (no old app command)', () => {
     packaged()
-    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: 'The orgai command is not installed on PATH (npm i -g orgai-cli)' })
+    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: 'No old app command found (nothing to remove)' })
   })
 
   it('shim: a foreign file warns and names the path', () => {
@@ -223,7 +223,7 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     const f = fakeContext({ paths: { userDataDir: dir, dataDir: join(dir, 'data') }, platform: 'darwin', env: { PATH: '/usr/bin' } })
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
     expect(f.out()).toMatch(/^ok {4}install +Packaged OrgAI at /m)
-    expect(f.out()).toMatch(/^ok {4}shim +The orgai command is not installed/m)
+    expect(f.out()).toMatch(/^ok {4}shim +No old app command found/m)
     expect(files.size).toBe(0)
   })
 })

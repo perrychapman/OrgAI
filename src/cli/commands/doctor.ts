@@ -80,7 +80,7 @@ export const doctorProbes = {
 /** A line of the packaged launcher (build/bin/orgai): a file at the shim path that reads through to it is a link to one. */
 export const PACKAGED_LAUNCHER_MARK = 'The orgai command of a packaged OrgAI'
 
-const SHIM_NOT_INSTALLED = 'The orgai command is not installed on PATH (npm i -g orgai-cli)'
+const SHIM_NOT_INSTALLED = 'No old app command found (nothing to remove)'
 
 /** How this CLI runs (cli-spec 7): packaged app, dev checkout or a standalone bundle; warns for a transient app copy. */
 export function installCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): DoctorCheck {
@@ -110,7 +110,7 @@ function devCheckoutRoot(bundleDir: string): string | undefined {
 }
 
 /**
- * The user-level orgai shim (cli-spec 7(3)), read only: never written or repaired here. Missing is fine; a foreign
+ * The old app's orgai shim (cli-spec 7(3)), read only: never written or repaired here. Missing is fine (nothing to remove); a foreign
  * file, a shim pointing at another install or at a missing launcher, and a shim folder that is not on PATH warn.
  */
 export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): DoctorCheck {
