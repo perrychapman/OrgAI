@@ -66,6 +66,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await openTeam(page)
   await scene().waitFor()
   check(await scene().locator('button[data-office-agent-id]').count() === 33, 'large team keeps all 33 real roles in the accessible roster')
+  check(await scene().getAttribute('data-palette') === 'green', 'saved office presentation and palette survive a renderer reload')
   await scene().locator('button[data-office-agent-id="office-worker-3-6"]').click()
   check(Number(await scene().getAttribute('data-floor')) > 1, 'roster selection jumps to the correct explicit floor')
   const selectedFloor = Number(await scene().getAttribute('data-floor'))
@@ -118,9 +119,8 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   // Exercise genuine normalized messages through the mock runtime while the office is mounted.
   await endSession(page)
   fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400, work: [
-    { type: 'spawn', id: 'office-a', name: 'office-a', description: 'Send the findings' },
-    { type: 'spawn', id: 'office-b', name: 'office-b', description: 'Receive the findings' },
-    ...Array.from({ length: 24 }, (_, i) => ({ type: 'message', from: 'office-a', to: 'office-b', text: `Actual office message ${i}: <script>plain text</script>` })),
+    { type: 'spawn', id: 'office-a', name: 'office-a', description: 'Receive the findings' },
+    ...Array.from({ length: 24 }, (_, i) => ({ type: 'message', to: 'office-a', text: `Actual office message ${i}: <script>plain text</script>` })),
     { type: 'text', text: 'Office delivery fixture complete.' }
   ] }))
   await resizeTo(1024, 640)
@@ -129,14 +129,19 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await page.locator('.new-run').waitFor()
   await page.locator('.composer textarea').fill('Office messages')
   await page.locator('.composer textarea').press('Enter')
+  await scene().waitFor()
+  await scene().getByRole('button', { name: 'Zoom in', exact: true }).click()
   await scene().locator('[data-testid=office-caption]').first().waitFor({ timeout: 20_000 })
   const delivery = scene().locator('[data-testid=office-deliveries]')
-  const floorMapping = await scene().locator('button[data-office-agent-id]').evaluateAll(buttons => buttons.filter(button => ['office-a', 'office-b'].includes(button.getAttribute('data-office-agent-id'))).map(button => button.getAttribute('data-office-floor')))
+  const floorMapping = await scene().locator('button[data-office-agent-id]').evaluateAll(buttons => buttons.filter(button => ['root', 'office-a'].includes(button.getAttribute('data-office-agent-id'))).map(button => button.getAttribute('data-office-floor')))
   check(floorMapping.length === 2 && floorMapping[0] !== floorMapping[1] && floorMapping.every(Boolean), 'runtime message endpoints are explicitly on different floors')
   check(/Floor \d+ to floor \d+:/.test(await scene().locator('[data-testid=office-caption]').first().innerText()), 'cross-floor delivery presents an immediate truthful floor cue')
   check(await delivery.getAttribute('data-active') === '0' && await delivery.getAttribute('data-queued') === '0', 'cross-floor events never enter the walking queue')
   check(await scene().locator('[data-testid=office-caption]').count() <= 3, 'cross-floor captions share the three-caption limit')
+  await scene().getByRole('button', { name: 'Zoom out', exact: true }).click()
   await resizeTo(1600, 1000)
+  const reflowedFloors = await scene().locator('button[data-office-agent-id]').evaluateAll(buttons => buttons.filter(button => ['root', 'office-a'].includes(button.getAttribute('data-office-agent-id'))).map(button => button.getAttribute('data-office-floor')))
+  check(reflowedFloors.length === 2 && reflowedFloors[0] === reflowedFloors[1], 'responsive reflow places both actual message endpoints on the shared floor')
   await page.waitForFunction(() => Number(document.querySelector('[data-testid=office-deliveries]')?.getAttribute('data-active')) > 0, undefined, { timeout: 15_000 })
   check(Number(await delivery.getAttribute('data-active')) > 0, 'genuinely new messages after responsive reflow animate on the shared floor')
   check(Number(await delivery.getAttribute('data-active')) <= 3 && Number(await delivery.getAttribute('data-queued')) <= 12, 'real message burst respects active and queued visual limits')
