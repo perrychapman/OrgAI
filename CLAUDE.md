@@ -5,6 +5,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 
 - `npm run typecheck` runs both tsconfigs (node + web). Keep it clean. TypeScript 7: no `baseUrl`, paths are `./`-relative.
 - Shared types live in `src/shared/types.ts`. Anything crossing IPC must be defined there and be structured-clone safe.
+- Live root model selection uses `runs:switchModel` / `runs.switchModel`, `RunSummary.modelSelection` and main-owned `run.model`. A false `applied` with saved selection means next continuation, not active now. Live switches require an idle safe boundary; changing provider/connection requires End session then select and Send. Continuation routes selection before adapter start, uses fenced bounded transcript data across providers, and never passes the old native session id to another provider. Native successor sessions remain resumable through `modelAdapter`. Session-only grants expire; project restrictions and narrowing overrides remain; switching does not reset the conversation budget. Checked by runtime/adapter unit tests; live provider behavior remains unverified. `e2e/model-switch.mjs` covers the shared run-backed UI; one-shot recommendations/drafts are outside live session switching.
 - The renderer only sees normalized `RunEvent`s. Vendor specifics stay inside `src/main/runtime/<provider>.ts`.
 - Adding a provider: the adapter is SDK event mapping plus hook mechanics only (spawn enforcement, deciding isolation
   at spawn time, reporting an agent's real cwd, exposing tools). Harness tools live in `harnessTools.ts`, role
