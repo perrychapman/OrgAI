@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { Palette } from 'lucide-react'
 import { applyCanvasStyle, styleLabel, useCanvasOptions, type CanvasStyleId } from '../../lib/canvas'
 import { canvasAnnouncement, saveCanvas, PRESENTATION_OPTIONS, SCENE_PALETTE_OPTIONS } from '../../lib/canvasSettings'
@@ -17,17 +17,7 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
   const canvas = useCanvasOptions()
   const announce = useFrameAnnounce()
   const root = useRef<HTMLDivElement>(null)
-
-  // The popover places the panel before focusing; start at the current presentation.
-  useEffect(() => {
-    const timers = [0, 60, 160].map((ms) =>
-      setTimeout(() => {
-        const active = document.activeElement
-        if (!root.current?.contains(active) || active?.matches('[data-testid="canvas-preset"]')) root.current?.querySelector<HTMLInputElement>('[data-testid="canvas-presentation"] input:checked')?.focus()
-      }, ms)
-    )
-    return () => timers.forEach(clearTimeout)
-  }, [])
+  const focused = useRef(false)
 
   const pick = (id: CanvasStyleId): void => {
     void saveCanvas((c) => applyCanvasStyle(c, id)).catch(() => undefined)
@@ -35,7 +25,12 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
   }
 
   return (
-    <div className="canvas-style-popover-body" ref={root}>
+    <div className="canvas-style-popover-body" ref={root} onFocusCapture={() => {
+      // Popover moves focus after placement. Redirect only that first entry, never later user navigation.
+      if (focused.current) return
+      focused.current = true
+      root.current?.querySelector<HTMLInputElement>('[data-testid="canvas-presentation"] input:checked')?.focus()
+    }}>
       <h3 className="canvas-style-popover-heading">Canvas style</h3>
       <div data-testid="canvas-presentation">
         <SegmentedControl label="Presentation" value={canvas.presentation} options={PRESENTATION_OPTIONS} onChange={(presentation) => {
