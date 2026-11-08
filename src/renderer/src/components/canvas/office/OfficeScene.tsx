@@ -64,13 +64,14 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
     observer.observe(stage.current)
     return () => observer.disconnect()
   }, [])
-  const geometryKey = JSON.stringify([layout.rooms.map(r => [r.id, r.floor, r.x, r.y]), width, height, currentFloor])
+  const placementKey = JSON.stringify(layout.rooms.map(r => [r.id, r.floor, r.x, r.y]))
+  const geometryKey = JSON.stringify([placementKey, width, height, currentFloor])
   const previousGeometry = useRef(geometryKey)
   if (previousGeometry.current !== geometryKey) {
     previousGeometry.current = geometryKey
     schedulerGeometryReset.current = true
   }
-  useEffect(() => { if (selectedFloor !== undefined) setFloor(selectedFloor) }, [geometryKey, selectedFloor])
+  useEffect(() => { if (selectedFloor !== undefined) setFloor(selectedFloor) }, [placementKey, selectedFloor])
   const selectAgent = (a: OfficeAgent) => {
     setFloor(layout.rooms.find(r => r.agents.includes(a.id))?.floor ?? 0)
     onSelect(a.id)
