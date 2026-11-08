@@ -53,7 +53,7 @@ async function leaveEditor(page) {
 }
 
 export default async function (ctx) {
-  const { page, label, check, sleep } = ctx
+  const { app, page, label, check, sleep } = ctx
   const log = (s) => console.log(`  [outputs-edit ${label}] ${s}`)
   const skip = (why) => log(`SKIP ${why}`)
 
@@ -75,11 +75,58 @@ export default async function (ctx) {
   check((await page.locator('[data-testid=output-edit-rendered]').textContent())?.includes('Added in the editor.') === true, `${label}: rendered side follows the source`)
   check((await page.locator('[data-testid=output-edit-dirty]').textContent())?.trim() === 'Unsaved changes', `${label}: bar says Unsaved changes`)
   check(await noPageScroll(page), `${label}: no page scroll while editing markdown`)
+  // Hold the first IPC request after capture, then type a newer draft before it completes.
+  await app.evaluate(({ ipcMain }) => {
+    const handlers = ipcMain._invokeHandlers
+    const original = handlers.get('outputs:saveEdit')
+    if (!original) throw new Error('outputs:saveEdit handler missing')
+    globalThis.outputSaveGate = { original, captured: null, release: null, result: null }
+    handlers.set('outputs:saveEdit', async (...args) => {
+      const gate = globalThis.outputSaveGate
+      const wait = new Promise((resolve) => { gate.release = resolve })
+      gate.captured = args[1]
+      await wait
+      const result = await original(...args)
+      gate.result = result
+      return result
+    })
+  })
   await page.keyboard.press('Control+s')
+  let captured = null
+  try {
+    for (let i = 0; i < 100 && !captured; i++) {
+      captured = await app.evaluate(() => globalThis.outputSaveGate.captured)
+      if (!captured) await sleep(100)
+    }
+    if (!captured) throw new Error('first save did not reach the delayed IPC handler')
+    await area.focus()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type('Newer draft while saving.')
+  } finally {
+    await app.evaluate(({ ipcMain }) => {
+      const gate = globalThis.outputSaveGate
+      ipcMain._invokeHandlers.set('outputs:saveEdit', gate.original)
+      gate.release?.()
+    })
+  }
+  check(await spoken(page, /Newer changes are not saved\./), `${label}: delayed save announces newer changes`)
+  const result = await app.evaluate(() => globalThis.outputSaveGate.result)
+  if (!result?.ok) throw new Error('first save did not complete')
+  const persisted = await page.evaluate(async ({ input, result }) => window.orgai.outputs.readSource({ projectId: input.projectId, outputId: input.outputId, version: result.version }), { input: captured, result })
+  check(persisted.text === captured.text, `${label}: first save persists the captured text`)
+  check((await page.locator('[data-testid=output-editor]').count()) === 1, `${label}: newer draft stays open`)
+  check((await area.inputValue()).endsWith('Newer draft while saving.'), `${label}: newer typed draft is preserved`)
+  check((await page.locator('[data-testid=output-edit-dirty]').textContent())?.trim() === 'Unsaved changes', `${label}: newer draft remains dirty`)
+  await page.locator('[data-testid=output-save]').click()
   const savedMd = await spoken(page, /Saved as version \d+\./)
   check(savedMd, `${label}: Ctrl+S saves and says "Saved as version N."`)
   await page.waitForSelector('[data-testid=output-editor]', { state: 'detached', timeout: 6000 }).catch(() => undefined)
   check((await page.locator('[data-testid=output-editor]').count()) === 0, `${label}: back to the preview after Save`)
+  const latest = await page.evaluate(async (input) => {
+    const output = (await window.orgai.outputs.list(input.projectId)).find((item) => item.id === input.outputId)
+    return output ? window.orgai.outputs.readSource({ projectId: input.projectId, outputId: input.outputId, version: output.version }) : null
+  }, captured)
+  check(latest?.text?.endsWith('Newer draft while saving.') === true, `${label}: second save persists the newer draft`)
 
   // ---------- csv: the grid by keyboard ----------
   const csvId = await openKind(page, 'csv')

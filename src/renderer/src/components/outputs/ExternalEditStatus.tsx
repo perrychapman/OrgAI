@@ -111,7 +111,7 @@ export default function ExternalEditStatus({ edit, output, onCompare }: { edit: 
       {edit.watching && (
         <p className="output-external-status" data-testid="output-external-status">
           Watching {output.fileName} for changes. Save in your app and the new version appears here.{' '}
-          <button type="button" className="link-btn" data-testid="output-external-stop" onClick={(e) => { const scope = e.currentTarget.closest('[data-testid=output-detail], [data-testid=output-viewer]'); edit.stop(); requestAnimationFrame(() => scope?.querySelector<HTMLElement>('[data-testid=output-edit-external]')?.focus()) }}>
+          <button type="button" className="link-btn" data-testid="output-external-stop" onClick={(e) => { const scope = e.currentTarget.closest('[data-testid=output-detail], [data-testid=output-dialog]'); edit.stop(); requestAnimationFrame(() => scope?.querySelector<HTMLElement>('[data-testid=output-edit-external]')?.focus()) }}>
             Stop watching
           </button>
         </p>
