@@ -44,25 +44,28 @@ describe('computeLayout', () => {
     expect(split.mode).toBe('split')
     const tree = split.panes.find((b) => b.pane === 'tree')
     const transcript = split.panes.find((b) => b.pane === 'transcript')
-    expect(tree?.column).toBe(0)
-    expect(transcript?.column).toBe(1)
+    expect(tree?.column).toBe(1)
+    expect(transcript?.column).toBe(0)
     expect(split.gutter).toBe(1)
     expect((tree?.width ?? 0) + (split.gutter ?? 0) + (transcript?.width ?? 0)).toBe(110)
     expect(tree?.width).toBeGreaterThanOrEqual(28)
-    expect(tree?.width).toBeLessThanOrEqual(48)
+    expect(tree?.width).toBeLessThanOrEqual(42)
     const stacked = computeLayout(input({ cols: 109 }))
     expect(stacked.mode).toBe('stacked')
     expect(stacked.panes.every((b) => b.column === 0 && b.width === 109)).toBe(true)
   })
 
-  it('clamps the tree column to 28..48 and keeps the plan to a third of the right column', () => {
+  it('clamps the tree column to 28..42 and keeps the plan to a third of the right column', () => {
     const wide = computeLayout(input({ cols: 300, rows: 60 }))
-    expect(wide.panes.find((b) => b.pane === 'tree')?.width).toBe(48)
+    expect(wide.panes.find((b) => b.pane === 'tree')?.width).toBe(42)
     const plan = wide.panes.find((b) => b.pane === 'plan')
     const body = 60 - 1 - 3
     expect(plan?.height).toBeLessThanOrEqual(Math.floor(body / 3))
     expect(plan?.height).toBeGreaterThanOrEqual(4)
     expect(wide.statusRows).toBe(1)
+    expect(plan?.column).toBe(1)
+    expect(wide.panes.find((b) => b.pane === 'worktrees')?.column).toBe(1)
+    expect(wide.panes.find((b) => b.pane === 'transcript')?.height).toBe(body)
     // Short split: the plan cannot get 4 rows and is left out, the transcript keeps the column.
     const short = computeLayout(input({ cols: 120, rows: 14, composerRows: 3 }))
     expect(panes(short)).not.toContain('plan')
@@ -128,7 +131,7 @@ describe('computeLayout', () => {
   it('split: worktrees take what their rows want, not 40% of the column', () => {
     const wt = (wanted?: number): number =>
       computeLayout(input({ cols: 120, rows: 40, trayRows: 0, ...(wanted !== undefined ? { worktreeRows: wanted } : {}) })).panes.find((b) => b.pane === 'worktrees')!.height
-    expect(wt()).toBe(Math.floor(35 * 0.4))
+    expect(wt()).toBe(Math.floor((36 - Math.floor(36 / 3)) * 0.4))
     expect(wt(4)).toBe(4)
   })
 

@@ -29,6 +29,7 @@ import {
   confirmQuestion,
   decisionFor,
   hintPhrases,
+  proposalPreview,
   secretSlotsFor,
   wrapPhrases,
   type SecretSlotView,
@@ -38,8 +39,8 @@ import {
 import { UNFOCUSED_HINT } from './keymap'
 import { styleFor, type Seg } from './panes/lines'
 import { truncateEnd } from './panes/text'
-import { glyphs, separatorFor } from './theme'
-import { NEXT_CARDS_MAX } from './trayLayout'
+import { asciiOnly, glyphs, separatorFor, toneColor } from './theme'
+import { NEXT_CARDS_MAX, PROPOSAL_CARD_MAX_WIDTH } from './trayLayout'
 import type { DecisionTrayProps, InputEvent, KeyEvent, TrayCard } from './types'
 
 type Mode =
@@ -132,7 +133,7 @@ function actionFor(card: TrayCard, b: TrayBinding, extra: { text?: string; secre
   }
 }
 
-export function DecisionTray(props: DecisionTrayProps) {
+export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
   const env = useTuiEnv()
   const g = glyphs(env)
   const now = props.now ?? Date.now
@@ -370,16 +371,21 @@ export function DecisionTray(props: DecisionTrayProps) {
 
   // ---------- Layout ----------
 
-  const width = Math.max(20, props.width)
+  const proposalCard = props.compact && props.variant === 'full' && top && proposalPreview(top, props.width) !== undefined
+  const panelWidth = Math.min(props.width, PROPOSAL_CARD_MAX_WIDTH)
+  const width = Math.max(20, proposalCard ? panelWidth - 3 : props.width)
   const height = Math.max(1, Math.floor(props.height))
   const focused = props.focused
   const ell = g.ellipsis
   // Question lines carry a selection marker ("> [x] ") in front, so they wrap narrower and are never cut.
   const detailView = top ? cardDetail(top, width - (top.kind === 'question' ? 8 : 2)) : undefined
-  const detail = detailView?.lines ?? []
+  const preview = props.compact && top ? proposalPreview(top, width - 2) : undefined
+  const detail = preview ?? detailView?.lines ?? []
   const statusRows = st.status ? 1 : 0
   const modeRows = st.mode.t !== 'idle' || st.pending ? 1 : 0
-  let hints = top ? (focused ? wrapPhrases(hintPhrases(top, env.dumbTerminal), sep, width, ell) : [UNFOCUSED_HINT]) : []
+  const phrases = top ? hintPhrases(top, env.dumbTerminal, props.compact) : []
+  if (props.compact) phrases.push(focused ? 'Esc to type' : props.focusHint ?? 'Shift+Tab to choose')
+  let hints = top ? (focused || props.compact ? wrapPhrases(phrases, sep, width, ell) : [UNFOCUSED_HINT]) : []
   const maxHints = Math.max(1, height - 1 - statusRows - modeRows - 1)
   if (hints.length > maxHints) {
     hints = hints.slice(0, maxHints)
@@ -387,7 +393,8 @@ export function DecisionTray(props: DecisionTrayProps) {
   }
   const nextCards = cards.slice(1, 1 + NEXT_CARDS_MAX)
   const moreRows = cards.length - 1 > NEXT_CARDS_MAX ? 1 : 0
-  const avail = height - 1 - statusRows - modeRows - hints.length
+  const actionGap = proposalCard && height >= 6 ? 1 : 0
+  const avail = height - 1 - statusRows - modeRows - hints.length - actionGap
   // Queued cards: listed while the body keeps room, else one count line, else nothing.
   let queueMode: 'list' | 'count' | 'none' = 'none'
   if (cards.length > 1) {
@@ -601,7 +608,9 @@ export function DecisionTray(props: DecisionTrayProps) {
   const q = top.kind === 'question' && st.question?.key === top.key ? st.question : undefined
   // A screen reader hears words, not marker glyphs: "Focused:" instead of ">" and the separator rule's commas.
   const lead = env.screenReader ? (focused ? 'Focused: ' : '') : focused ? '> ' : '  '
-  const header = `${lead}Needs you (${cards.length})${sep}${top.runTag}${sep}${top.agentLabel ? `${top.agentLabel}${sep}` : ''}${cardKindWord(top)}: ${title}`
+  const header = props.compact
+    ? `${proposalCard ? '' : lead}${top.kind === 'proposal' ? title.replace(/^Approve /, 'Review ').replace(/ proposal$/, '') : top.kind === 'permission' ? 'Approval needed' : 'Decision needed'}${cards.length > 1 ? ` (${cards.length})` : ''}${top.kind === 'proposal' ? '' : `${sep}${top.runTag}`}${top.agentLabel ? `${sep}${top.agentLabel}` : ''}`
+    : `${lead}Needs you (${cards.length})${sep}${top.runTag}${sep}${top.agentLabel ? `${top.agentLabel}${sep}` : ''}${cardKindWord(top)}: ${title}`
   const hidden = detail.length - st.scroll - bodyRows
   const canView = bindingsFor(top).some((b) => b.act === 'view')
   const cue =
@@ -612,12 +621,13 @@ export function DecisionTray(props: DecisionTrayProps) {
         : `End of card${sep}Up scrolls back${canView ? `${sep}v full view` : ''}`
 
   const rows: { key: string; text: string; style: Omit<Seg, 'text'> }[] = []
-  rows.push({ key: 'head', text: `${header}${guardMark}`, style: focused ? { tone: 'warn', bold: true } : { dim: true } })
-  shown.forEach((l, i) => rows.push({ key: `d${st.scroll + i}`, text: ` ${questionMark(l, q, top)}${l}`, style: {} }))
+  rows.push({ key: 'head', text: `${header}${guardMark}`, style: proposalCard ? { tone: 'muted' } : focused ? { tone: 'warn', bold: true } : { dim: true } })
+  shown.forEach((l, i) => rows.push({ key: `d${st.scroll + i}`, text: `${proposalCard ? '' : ' '}${questionMark(l, q, top)}${l}`, style: proposalCard ? st.scroll + i === 0 ? { bold: true } : { tone: 'muted' } : {} }))
   if (cue) rows.push({ key: 'cue', text: cue, style: { tone: 'dim' } })
   if (modeLine) rows.push({ key: 'mode', text: modeLine, style: { tone: 'warn' } })
   if (st.status) rows.push({ key: 'status', text: st.status.text, style: { tone: st.status.tone } })
-  hints.forEach((h, i) => rows.push({ key: `h${i}`, text: h, style: focused ? { tone: 'accent' } : { dim: true } }))
+  if (actionGap) rows.push({ key: 'action-gap', text: '', style: {} })
+  hints.forEach((h, i) => rows.push({ key: `h${i}`, text: h, style: proposalCard ? {} : focused ? { tone: 'accent' } : { dim: true } }))
   if (queueMode === 'list') {
     for (const c of nextCards) rows.push({ key: `n${c.key}`, text: `${env.screenReader ? 'Next:' : g.arrow} ${c.runTag} ${cardTitle(c)}`, style: { dim: true } })
     if (moreRows) rows.push({ key: 'more', text: `and ${cards.length - 1 - NEXT_CARDS_MAX} more`, style: { dim: true } })
@@ -625,10 +635,13 @@ export function DecisionTray(props: DecisionTrayProps) {
     rows.push({ key: 'count', text: `+${cards.length - 1} more ${cards.length - 1 === 1 ? 'card' : 'cards'}`, style: { dim: true } })
   }
   return (
-    <Box flexDirection="column" width={width} height={height} overflow="hidden">
+    <Box flexDirection="column" width={proposalCard ? panelWidth : width} height={height} overflow="hidden"
+      {...(proposalCard ? { paddingLeft: 1, paddingRight: 1, ...(env.screenReader ? { paddingLeft: 2 } : { borderStyle: asciiOnly(env) ? 'classic' as const : 'single' as const, borderTop: false, borderRight: false, borderBottom: false, borderColor: toneColor(focused ? 'accent' : 'muted', env) }) } : {})}>
       {rows.slice(0, height).map((r) => (
         <Text key={r.key} {...styleFor(r.style, env)} wrap="truncate-end">
-          {truncateEnd(r.text, width, ell)}
+          {proposalCard && r.key.startsWith('h') && r.key !== 'head'
+            ? truncateEnd(r.text, width, ell).split(/(\[[^\]]+\])/).map((part, i) => <Text key={i} {...styleFor(part.startsWith('[') ? { tone: 'accent', bold: true } : {}, env)}>{part}</Text>)
+            : truncateEnd(r.text, width, ell)}
         </Text>
       ))}
     </Box>

@@ -11,7 +11,7 @@
  */
 import { useRef, useState } from 'react'
 import { splitLabelTail } from '../../shared/view/agentTree'
-import { isWorkingAgentState, motionEnabled, useActivityTick } from './activity'
+import { agentActivityLabel, distinctActivity, isWorkingAgentState, motionEnabled, useActivityTick } from './activity'
 import type { TeamMessageRow } from './collaboration'
 import { useFocusHandler, useTuiEnv } from './context'
 import { treeCounts } from './treeRows'
@@ -87,42 +87,48 @@ function shimmerSeg(seg: Seg, active: boolean): Seg {
 }
 
 /** One row, one line. Role and handle give way before the state word and chips. */
-export function rowLine(item: Item, selected: boolean, focused: boolean, width: number, env: TuiEnv, phase = 0, motion = false, highlight = false): Seg[] {
+export function rowLine(item: Item, selected: boolean, focused: boolean, width: number, env: TuiEnv, phase = 0, motion = false, highlight = false, compact = false): Seg[] {
   const row = item.row!
+  if (width < 20) return cutSegs([{ text: row.label, tone: row.identityTone ?? 'identity', bold: true, inverse: selected && focused }], width, env)
   const g = glyphs(env)
   const group = row.kind === 'group'
   const inv = selected && focused
   const marker = selected ? (focused ? '>' : '*') : ' '
   const tone = stateTone(row.state)
   const live = motion && !row.earlier && isWorkingAgentState(row.state)
-  const thinking = live && row.state === 'thinking'
-  const lead = `${marker} ${item.prefix}`
+  const thinking = live
+  const lead = compact ? item.prefix : `${marker} ${item.prefix}`
   const glyph = env.screenReader ? '' : `${live ? spinnerFrame(env, phase) : stateGlyph(row.state, env)} `
   const label0 = group && env.screenReader ? `${row.label}, folded` : row.label
   const role = !group && row.roleShown !== false && row.role && row.role !== row.label ? ` (${row.role})` : ''
   const traffic = row.traffic ? (env.screenReader ? ', messaging' : '~') : ''
   const wordPrefix = row.stateWord ? '  ' : ''
-  const word = row.stateWord ?? ''
-  const chips = chipsOf(row, env)
+  const chipRow = compact ? { ...row,
+    waiting: (row.waiting ?? 0) > 1 ? row.waiting : undefined,
+    worktreeChip: ['conflict', 'review', 'held'].includes(row.worktreeChip ?? '') ? row.worktreeChip : undefined
+  } : row
+  const chips = chipsOf(chipRow, env)
   const expander = group ? (env.screenReader ? '' : ' >') : ''
-  const cost = row.costText ? `${row.costText}${expander}` : expander.trim()
+  const cost = compact ? '' : row.costText ? `${row.costText}${expander}` : expander.trim()
 
   const chipsW = (list: Chip[]): number => list.reduce((n, c) => n + 1 + textWidth(c.text), 0)
+  const activityRoom = width - textWidth(lead + glyph + traffic) - Math.min(LABEL_MIN, textWidth(label0)) - 2 - chipsW(chips) - (cost ? textWidth(cost) + 1 : 0)
+  const word = isWorkingAgentState(row.state) ? truncateEnd(agentActivityLabel(row), Math.max(8, Math.min(24, activityRoom)), g.ellipsis) : row.stateWord
   const need = (labelW: number, withRole: boolean, list: Chip[]): number =>
     textWidth(lead) + textWidth(glyph) + labelW + (withRole ? textWidth(role) : 0) + textWidth(wordPrefix) + textWidth(word) + textWidth(traffic) + chipsW(list) + (cost ? textWidth(cost) + 1 : 0)
-  let useRole = role !== ''
+  let useRole = !compact && role !== ''
   let label = label0
   let list = chips
   if (need(textWidth(label), useRole, list) > width) useRole = false
   if (need(textWidth(label), useRole, list) > width) {
-    while (list.length > 0 && width - need(0, false, list) < Math.min(LABEL_MIN, textWidth(label0))) list = list.slice(0, -1)
+    while (list.length > 0 && width - need(0, false, list) < Math.min(compact ? 4 : LABEL_MIN, textWidth(label0))) list = list.slice(0, -1)
     const room = width - need(0, false, list)
     label = room >= 4 ? clipMiddle(label0, room, g.ellipsis) : label0
   }
 
   const left: Seg[] = [{ text: lead, inverse: inv }]
   if (glyph) left.push({ text: glyph, tone, inverse: inv })
-  left.push({ text: label, bold: !group, tone: group ? undefined : 'identity', inverse: inv })
+  left.push({ text: label, bold: !group, tone: group ? undefined : row.identityTone ?? 'identity', inverse: inv })
   if (useRole) left.push({ text: role, dim: !inv, inverse: inv })
   if (wordPrefix) left.push({ text: wordPrefix, inverse: inv })
   if (word) left.push(shimmerSeg({ text: word, tone: thinking ? undefined : tone, inverse: inv }, thinking))
@@ -197,7 +203,7 @@ function messagePreview(message: TeamMessageRow, env: TuiEnv, width: number): Se
 const isChar = (e: Parameters<Parameters<typeof useFocusHandler>[1]>[0], ch: string): boolean =>
   e.type === 'key' && e.name === 'char' && !e.ctrl && !e.alt && e.ch === ch
 
-type MotionOrgTreePaneProps = OrgTreePaneProps & { animated?: boolean; messages?: TeamMessageRow[] }
+type MotionOrgTreePaneProps = OrgTreePaneProps & { animated?: boolean; messages?: TeamMessageRow[]; compact?: boolean; teamSize?: number }
 
 export function OrgTreePane(props: MotionOrgTreePaneProps) {
   const env = useTuiEnv()
@@ -218,10 +224,12 @@ export function OrgTreePane(props: MotionOrgTreePaneProps) {
   const selId = (has(props.selectedId) ? props.selectedId : undefined) ?? (has(localSel) ? localSel : undefined) ?? (selectable.find((r) => r.waiting) ?? selectable[0])?.id
   const selRef = useRef<string | undefined>(selId)
   selRef.current = selId
+  const compact = props.compact === true && !props.focused && (!!props.teamSize || (selectable.length === 1 && selectable[0]?.kind !== 'group'))
   const bodyH = Math.max(0, height - 1)
   const selRow = selectable.find((r) => r.id === selId)
-  const footerText = selRow?.activity ? (selRow.kind === 'group' ? selRow.activity : `${selRow.label}: ${selRow.activity}`) : ''
-  const footer = footerText !== '' && bodyH >= 3
+  const activity = selRow?.kind === 'group' ? selRow.activity : distinctActivity(selRow?.activity, selRow ? agentActivityLabel(selRow) : undefined)
+  const footerText = activity && selRow ? (selRow.kind === 'group' ? activity : `${selRow.label}: ${activity}`) : ''
+  const footer = !compact && footerText !== '' && bodyH >= 3
   const msgAll = selRow && selRow.kind !== 'group' ? messageLines(selRow, env, width) : []
   const msgTexts = bodyH >= (footer ? 4 : 3) + (msgAll.length > 1 ? 1 : 0) ? msgAll : bodyH >= (footer ? 4 : 3) ? [msgAll.join(env.screenReader ? '; ' : '  ')].filter(Boolean) : []
   const footerRows = (footer ? 1 : 0) + msgTexts.length
@@ -259,7 +267,7 @@ export function OrgTreePane(props: MotionOrgTreePaneProps) {
         return true
       }
       if (isChar(e, 'z')) {
-        if (row && row.kind !== 'group' && !row.earlier) props.onZoom?.(row)
+        if (row && row.kind !== 'group' && row.kind !== 'role' && !row.earlier) props.onZoom?.(row)
         else props.onNotice?.('Pick an agent of this session to focus on.')
         return true
       }
@@ -301,7 +309,7 @@ export function OrgTreePane(props: MotionOrgTreePaneProps) {
     if (selected) selAt = lines.length
     lineOf.set(row.id, lines.length)
     const involved = Boolean(highlightMessage && newest && (row.id === newest.fromId || row.id === newest.toId))
-    lines.push({ key: `${row.runId}:${row.id}`, segs: rowLine(item, selected, props.focused, width, env, phase, motionAllowed, involved) })
+    lines.push({ key: `${row.runId}:${row.id}`, segs: rowLine(item, selected, props.focused, width, env, phase, motionAllowed, involved, compact) })
   }
 
   let body: PaneLine[]
@@ -320,10 +328,11 @@ export function OrgTreePane(props: MotionOrgTreePaneProps) {
     return r.waiting && at !== undefined && (at < top || at >= top + rowsH) ? n + r.waiting : n
   }, 0)
   const rightParts: string[] = []
-  if (props.planChip) rightParts.push(props.planChip)
+  if (props.planChip && !compact) rightParts.push(props.planChip)
   if (offscreen > 0) rightParts.push(env.screenReader ? `${waitingWords(offscreen)} off screen` : `! ${offscreen} off screen`)
   const right: Seg | undefined = rightParts.length ? { text: rightParts.join(` ${glyphs(env).bullet} `), dim: true } : undefined
-  const titleSegs = alignSegs([{ text: titleText(props.rows, env, props.zoomPath), bold: true, tone: props.focused ? 'accent' : undefined }], right, width, env)
+  const title = props.teamSize && !props.zoomPath ? `Team ${props.teamSize}` : compact && !props.zoomPath ? 'Agents 1' : titleText(props.rows, env, props.zoomPath)
+  const titleSegs = alignSegs([{ text: title, bold: true, tone: props.focused ? 'accent' : undefined }], right, width, env)
   const rail = railMessages.map((message) => ({ key: `message:${message.key}`, segs: messagePreview(message, env, width) }))
   const all: PaneLine[] = [{ key: 'title', segs: titleSegs }, ...rail, ...body]
   return <PaneLines width={width} height={height} lines={all} env={env} phase={phase} />

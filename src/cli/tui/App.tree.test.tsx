@@ -5,7 +5,7 @@
  */
 import { render } from 'ink-testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentInstance, PermissionRequest, RunEvent, RunSummary } from '../../shared/types'
+import type { AgentInstance, PermissionRequest, Role, RunEvent, RunSummary } from '../../shared/types'
 import { project, record, summary } from '../testing/fakeContext'
 import { App } from './App'
 import { DEFAULT_TUI_ENV } from './context'
@@ -121,7 +121,7 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
   return { r, session, send, sendBatch, frame }
 }
 
-// The 41-column tree clips the long handles in the middle ("mock-lead-…ort-2"); their ends stay apart.
+// The narrow sidebar clips the long handles in the middle ("mock-lead-…ort-2"); their ends stay apart.
 const AGENT_ROWS = ['Orchestrator', 'mock-lead ', 'ort-2', '1 done', '2 done']
 
 /** Indexes of the lines carrying each tree row, in order; the rows must be consecutive (no blank line between agents). */
@@ -137,6 +137,29 @@ function expectConsecutive(frame: string): void {
 }
 
 describe('the org tree in the real App: folded, one line per agent, the waiting agent in view', () => {
+  it.each([true, false])('shows the configured team and opens available role details (run present: %s)', async (hasRun) => {
+    const roles = ['Coordinator', 'Builder', 'Reviewer'].map((name, index): Role => ({
+      id: name, slug: name.toLowerCase(), name, reportsTo: index ? 'Coordinator' : null,
+      description: `${name} role description`, responsibilities: ['Review the code'], prompt: '', tools: [],
+      model: 'inherit', canSpawn: false, spawnable: [], position: { x: 0, y: 0 }, color: ''
+    }))
+    let state: TuiState = { ...createInitialState('/work'), project: project('p1', '/work', { roles }), connection: 'live' }
+    if (hasRun) state = setActiveRun(applyRecord(state, record(summary('run1', { status: 'idle' }), {
+      agents: { root: agent('root', null, { roleId: 'Coordinator', name: 'Coordinator', roleSlug: 'coordinator', state: 'idle' }) }
+    })), 'run1')
+    const m = mount({ cols: 120, rows: 40, state })
+    await tick()
+    expect(m.frame().split('\n')[0].indexOf('Team 3')).toBeGreaterThan(70)
+    expect(m.frame()).toContain('Builder')
+    expect(m.frame()).toContain('Reviewer')
+    expect(m.frame().match(/Available/g)).toHaveLength(hasRun ? 2 : 3)
+    await m.send(named('tab'), named('tab'), named('down'), named('enter'))
+    expect(m.frame()).toContain('Builder role description')
+    expect(m.frame()).toContain('not started in this run')
+    expect(m.session.submitPrompt).not.toHaveBeenCalled()
+    m.r.unmount()
+  })
+
   it('120x40 split: five rows for six agents, the title counts, the tray names the agent', async () => {
     const m = mount({ cols: 120, rows: 40 })
     await tick()
@@ -146,7 +169,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     expect(f).toContain('2 done  (1 failed)')
     const wait = f.split('\n').find((l) => l.includes('ort-2'))!
     expect(wait).toContain('Needs you')
-    expect(f).toMatch(/Needs you \(1\) · R1 · mock-lead-report-2 · permission/)
+    expect(f).toContain('Approval needed · R1 · mock-lead-report-2')
     // The Worktrees and Plan panes are not drawn: nothing needs them.
     expect(f).not.toContain('Worktrees (')
     expect(f).not.toContain('No plan yet')
@@ -161,7 +184,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     expect(f).toContain('mock-lead-report-2')
     expect(f.split('\n').find((l) => l.includes('mock-lead-report-2'))).toMatch(/! 1 +2f/)
     expectConsecutive(f)
-    expect(f).toMatch(/Needs you \(1\)/)
+    expect(f).toContain('Approval needed')
     m.r.unmount()
   })
 
@@ -171,7 +194,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     const f = m.frame()
     expect(f.split('\n').length).toBeLessThanOrEqual(24)
     expect(f).toContain('mock-lead-report-2')
-    expect(f).toMatch(/Needs you \(1\)/)
+    expect(f).toContain('Approval needed')
     expect(f).toContain('Message R1')
     m.r.unmount()
   })
@@ -211,8 +234,8 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
   it('keys: Right expands a group, Left folds it back, h shows every agent, n jumps to the waiting agent, Enter focuses its card', async () => {
     const m = mount({ cols: 120, rows: 40 })
     await tick()
-    // Focus the tree: Tab from the composer.
-    await m.send(named('tab'))
+    // Focus the tree: Tab past the conversation from the composer.
+    await m.send(named('tab'), named('tab'))
     expect(m.frame()).toContain('Agents 6')
     // The waiting agent is selected by default; Down moves to its "1 done" group; Right opens it.
     await m.send(named('down'))
@@ -234,7 +257,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     await m.send(named('home'))
     await m.send(key('n'))
     await m.send(named('enter'))
-    expect(m.frame()).toMatch(/Needs you \(1\) · R1 · mock-lead-report-2/)
+    expect(m.frame()).toMatch(/Approval needed · R1 · mock-lead-report-2/)
     expect(m.frame()).toContain('Allow once')
     m.r.unmount()
   })
@@ -258,7 +281,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     const calm: TuiState = { ...s, runs: { ...s.runs, run1: { ...s.runs.run1, cards: { ...s.runs.run1.cards, permissions: [] } } } }
     const m = mount({ cols: 120, rows: 40, state: calm })
     await tick()
-    await m.send(named('tab'))
+    await m.send(named('tab'), named('tab'))
     await m.send(key('n'))
     expect(m.session.notify).toHaveBeenCalledWith('Nothing needs you.', undefined)
     m.r.unmount()
@@ -278,12 +301,12 @@ describe('the deep-tree keys of the pty test (section i)', () => {
     s = applyRecord(s, { ...record(summary('run1', { status: 'running', prompt: 'deep' }) as RunSummary), agents })
     return setActiveRun(s, 'run1')
   }
-  const treeRows = (f: string): string[] => f.split('\n').map((l) => l.slice(0, 41)).filter((l) => /done|mock-lead|Orchestrator/.test(l))
+  const treeRows = (f: string): string[] => f.split('\n').map((l) => l.slice(79)).filter((l) => /done|mock-lead|Orchestrator/.test(l))
 
   it('once everything has settled the tree is root + "3 done"; Down, Right selects mock-lead and Enter opens its inspector', async () => {
     const m = mount({ cols: 120, rows: 40, state: deepState(OLD) })
     await tick()
-    await m.send(named('tab'), key('n'), named('down'))
+    await m.send(named('tab'), named('tab'), key('n'), named('down'))
     expect(treeRows(m.frame()).some((l) => l.startsWith('> ') && l.includes('3 done'))).toBe(true)
     await m.send(named('right'))
     expect(treeRows(m.frame()).some((l) => l.startsWith('> ') && /mock-lead\s+Finished/.test(l))).toBe(true)
@@ -297,7 +320,7 @@ describe('the deep-tree keys of the pty test (section i)', () => {
   it('Enter on a "N done" row unfolds it and opens no inspector (how the old fixed-sleep script lost its Enter)', async () => {
     const m = mount({ cols: 120, rows: 40, state: deepState(OLD) })
     await tick()
-    await m.send(named('tab'), named('down'))
+    await m.send(named('tab'), named('tab'), named('down'))
     await m.send(named('enter'))
     const f = m.frame()
     expect(f).not.toContain('transcript (this agent')
@@ -308,7 +331,7 @@ describe('the deep-tree keys of the pty test (section i)', () => {
   it('while mock-lead is still live the tree is root, mock-lead, "2 done"; Down Down, Right, Up, Enter opens mock-lead', async () => {
     const m = mount({ cols: 120, rows: 40, state: deepState() })
     await tick()
-    await m.send(named('tab'), named('down'), named('down'), named('right'), named('up'), named('enter'))
+    await m.send(named('tab'), named('tab'), named('down'), named('down'), named('right'), named('up'), named('enter'))
     expect(m.frame()).toContain('mock-lead (Lead)')
     expect(m.frame()).toContain('transcript (this agent')
     m.r.unmount()

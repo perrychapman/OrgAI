@@ -280,11 +280,19 @@ export function createTerminal(opts: {
  * The stdout handed to Ink: every write is dropped while `held()` (the terminal is suspended for the pager or a stop),
  * so no frame lands on the child's screen. The App holds its state still while suspended (no new <Static> rows), so
  * a dropped write is only a repaint of the frame already shown; the resume listener clears and redraws. A dropped
- * write still calls its callback. Everything else (columns, rows, isTTY, 'resize' listeners) is the real stream's.
+ * write still calls its callback. Fullscreen uses a drawn composer cursor, so each renderer write keeps the native
+ * cursor hidden. Lifecycle writes bypass this proxy to restore it for the pager, suspension, and exit.
+ * Everything else (columns, rows, isTTY, 'resize' listeners) is the real stream's.
  */
-export function gateWrites<T extends NodeJS.WritableStream>(stream: T, held: () => boolean): T {
+export function gateWrites<T extends NodeJS.WritableStream>(stream: T, held: () => boolean, hideCursor = false): T {
   const write = (chunk: unknown, encOrCb?: unknown, cb?: unknown): boolean => {
-    if (!held()) return (stream.write as (...a: unknown[]) => boolean)(chunk, encOrCb, cb)
+    if (!held()) {
+      if (hideCursor) {
+        if (typeof chunk === 'string') chunk = SEQ.cursorHide + chunk + SEQ.cursorHide
+        else if (chunk instanceof Uint8Array) chunk = Buffer.concat([Buffer.from(SEQ.cursorHide), chunk, Buffer.from(SEQ.cursorHide)])
+      }
+      return (stream.write as (...a: unknown[]) => boolean)(chunk, encOrCb, cb)
+    }
     const done = typeof encOrCb === 'function' ? encOrCb : typeof cb === 'function' ? cb : undefined
     if (done) queueMicrotask(() => (done as (err?: Error | null) => void)(null))
     return true

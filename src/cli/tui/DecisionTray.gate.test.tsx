@@ -34,19 +34,20 @@ const SIZES: [number, number][] = [
 /** Words of 9 characters, so a body grows by about one row per (width / 10) words. */
 const words = (n: number): string => Array.from({ length: n }, (_, i) => `seg${String(i).padStart(5, '0')}`).join(' ')
 
-async function trial(c: TrayCard, cols: number, rows: number, scrollFirst: number): Promise<{ accepted: boolean; sawLast: boolean }> {
+async function trial(c: TrayCard, cols: number, rows: number, scrollFirst: number, unfocusedFirst = false): Promise<{ accepted: boolean; sawLast: boolean }> {
   const bus = new InputBus()
   const clock = { t: 10_000 }
   const calls: unknown[] = []
   const height = trayHeight([c], cols, rows, false)
   const last = cardDetail(c, cols - 2).lines.at(-1) ?? ''
-  const r = render(
+  const element = (focused: boolean) => (
     <TuiEnvContext.Provider value={DEFAULT_TUI_ENV}>
       <InputBusContext.Provider value={bus}>
         <DecisionTray
           width={cols}
           height={height}
-          focused
+          compact
+          focused={focused}
           variant="full"
           cards={[c]}
           resolved={[]}
@@ -61,7 +62,14 @@ async function trial(c: TrayCard, cols: number, rows: number, scrollFirst: numbe
       </InputBusContext.Provider>
     </TuiEnvContext.Provider>
   )
+  const r = render(element(!unfocusedFirst))
   await tick()
+  if (unfocusedFirst) {
+    expect(r.lastFrame()).toContain("Allow once")
+    expect(r.lastFrame()).not.toContain(last)
+    r.rerender(element(true))
+    await tick()
+  }
   clock.t += 1000
   let sawLast = (r.lastFrame() ?? '').includes(last)
   for (let i = 0; i < scrollFirst; i++) {
@@ -78,6 +86,12 @@ async function trial(c: TrayCard, cols: number, rows: number, scrollFirst: numbe
 }
 
 describe('R2-H1 read-first gate follows the drawn rows', () => {
+  it('inline choices do not count as reading unseen permission lines', async () => {
+    const c = card('permission', 'preview', perm('preview', { input: { command: words(40) }, summary: 'Run a long command' }))
+    expect(await trial(c, 80, 24, 0, true)).toEqual({ accepted: false, sawLast: false })
+    expect(await trial(c, 80, 24, 30, true)).toEqual({ accepted: true, sawLast: true })
+  })
+
   for (const [cols, rows] of SIZES) {
     for (const tool of ['Bash', 'Edit'] as const) {
       it(`${cols}x${rows} ${tool}: y decides only after the last wrapped row was drawn (bodies around the tray height)`, async () => {

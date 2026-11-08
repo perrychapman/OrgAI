@@ -161,11 +161,11 @@ describe('OrgTreePane: messages and subtree keys', () => {
 
   it('shows the ~ mark after the state word for recent traffic and the footer for the selected row', () => {
     const f = treeFrame([r({ traffic: true, msgOut: [{ label: 'mock-lead', count: 1 }] })]).out.lastFrame() ?? ''
-    expect(f).toContain('Thinking~')
+    expect(f).toContain('Typing~')
     expect(f).toContain('→ mock-lead (1)')
-    expect(f).toContain('writer-1: Typing')
+    expect(f).not.toContain('writer-1: Typing')
     const sr = treeFrame([r({ traffic: true })], env({ color: false, screenReader: true })).out.lastFrame() ?? ''
-    expect(sr).toContain('Thinking, messaging')
+    expect(sr).toContain('Typing, messaging')
   })
 
   it('z asks to focus the agent, Z and Backspace to go back; z on a group says why not; the title carries the breadcrumb', () => {

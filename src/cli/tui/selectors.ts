@@ -13,6 +13,9 @@ import { canContinueIn, isOpenStatus } from '../../shared/view/runChains'
 import { runName, runTag } from '../../shared/view/runLabels'
 import { settleEndedAgents, type RunTone } from '../../shared/view/runStatus'
 import { humanizeToolResult, humanizeToolUse, mergeChainFeed } from '../../shared/view/transcriptRows'
+import { commandSummary, isCompoundCommand } from './streamRows'
+import { roleRepresentatives, withTeamRows } from './teamRows'
+import { agentIdentityTone } from './identity'
 import { safe, safeLine } from '../output'
 import { agentLabel, imageLabel, pendingItems, statusViewOf, toolNamesOf } from '../render'
 import { statusText } from '../../shared/view/runStatus'
@@ -162,6 +165,8 @@ export function topCard(s: TuiState): TrayCard | undefined {
 
 /** How the tree folds finished agents (F1). Without options nothing folds. */
 export interface OrgTreeOptions {
+  includeRoles?: boolean
+  persistentAgents?: ReadonlySet<string>
   /** Hide finished agents (the app's default; the TUI's `h`). */
   collapse?: boolean
   /** Expanded group keys: a visible agent's id or an earlier-session key; a number is when it was expanded. */
@@ -335,7 +340,7 @@ function treeOf(
     const now = opts.now ?? Date.now()
     const result = foldFinished({
       agents: normalizeParents(list),
-      isSettled: (a) => isSettledAt(a, now) && (waiting[a.id]?.length ?? 0) === 0,
+      isSettled: (a) => !opts.persistentAgents?.has(a.id) && isSettledAt(a, now) && (waiting[a.id]?.length ?? 0) === 0,
       expanded,
       collapse: true
     })
@@ -364,6 +369,8 @@ function treeOf(
     const open = earlier ? 0 : (waiting[a.id]?.length ?? 0)
     const chip = a.worktree ? worktreeChipOf(a.worktree) : undefined
     const tr = earlier ? undefined : traffic.get(a.id)
+    const fullActivity = failedTurnSentence(safeLine(a.activity))
+    const activity = clipLine(fullActivity, ACTIVITY_MAX)
     out.push({
       id: rowId(a),
       runId,
@@ -372,7 +379,8 @@ function treeOf(
       role,
       state: a.state,
       stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
-      activity: clipLine(failedTurnSentence(safeLine(a.activity)), ACTIVITY_MAX),
+      activity,
+      activityIsCompound: isCompoundCommand(a.activity) || activity !== fullActivity,
       costText: cost.empty ? '' : cost.text,
       isRoot: a.parentId === null,
       kind: 'agent',
@@ -410,13 +418,18 @@ function treeOf(
  */
 export function orgTreeRows(s: TuiState, opts: OrgTreeOptions = {}): OrgTreeRow[] {
   const run = activeRun(s)
-  if (!run) return []
+  const roles = opts.includeRoles ? s.project?.roles ?? [] : []
+  if (!run) return withTeamRows([], roles, [], '')
+  const agents = Object.values(run.agents)
+  const options = { ...opts, persistentAgents: new Set(roleRepresentatives(roles, agents).values()) }
   const waiting = cardsByAgent(s)
-  const own = treeOf(run, 0, false, false, opts, waiting, trafficByAgent(run, opts.now ?? Date.now()))
+  const paletteRoles = s.project?.roles ?? []
+  let own: OrgTreeRow[] = treeOf(run, 0, false, false, options, waiting, trafficByAgent(run, opts.now ?? Date.now())).map(row => ({ ...row, identityTone: agentIdentityTone(paletteRoles, run.agents[row.id]) }))
   if (opts.rootId !== undefined && run.agents[opts.rootId]) return own
+  own = withTeamRows(own, roles, agents, run.summary.id)
   const earlier = chainRuns(s)
     .filter((r) => r.summary.id !== run.summary.id)
-    .flatMap((r) => treeOf(r, 1, true, true, opts))
+    .flatMap((r) => treeOf(r, 1, true, true, opts).map(row => ({ ...row, identityTone: agentIdentityTone(paletteRoles, r.agents[row.id.slice(r.summary.id.length + 1)]) })))
   if (earlier.length === 0) return own
   const rootAt = own.findIndex((r) => r.isRoot)
   if (rootAt < 0) return [...earlier, ...own]
@@ -474,6 +487,16 @@ export function failedTurnSentence(text: string): string {
   return FAILED_TURN_REASONS.has(t) ? `The last turn failed (error ${t}). Send a message to try again.` : text
 }
 
+// Entries survive streaming updates; clean each bounded result once, not on every App repaint.
+const resultDetails = new WeakMap<TranscriptEntry, { content: string; text: string }>()
+function resultDetail(entry: TranscriptEntry, content: string): string {
+  const previous = resultDetails.get(entry)
+  if (previous?.content === content) return previous.text
+  const text = safe(content.slice(0, 4000) + (content.length > 4000 ? '\n… (output truncated)' : ''))
+  resultDetails.set(entry, { content, text })
+  return text
+}
+
 function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id: string) => string | undefined): TranscriptRow | null {
   const key = `${runId}|${e.id}`
   const harness = e.source === 'harness'
@@ -488,13 +511,20 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
       const text = safe(b.text).trim()
       return text ? { ...base, kind: 'thinking', text, tone: 'dim' } : null
     }
-    case 'tool_use':
-      return { ...base, kind: 'tool', toolUseId: b.id, text: safeLine(humanizeToolUse(b.name, b.input).label), tone: 'dim' }
+    case 'tool_use': {
+      const view = humanizeToolUse(b.name, b.input)
+      const input = b.input && typeof b.input === 'object' ? b.input as Record<string, unknown> : {}
+      const command = (b.name === 'Bash' || b.name === 'PowerShell') && typeof input.command === 'string' ? input.command : undefined
+      const summary = command === undefined ? view.label : `Ran ${commandSummary(command)}`
+      const pendingSummary = command === undefined ? undefined : safeLine(`Command: ${commandSummary(command)}`)
+      const detail = command === undefined ? `${view.label}\n${view.details}` : `Command: ${command}`
+      return { ...base, kind: 'tool', toolUseId: b.id, text: safeLine(view.label), summary: safeLine(summary), pendingSummary, detail: safe(detail), tone: 'dim' }
+    }
     case 'tool_result': {
       const row = humanizeToolResult(toolName(b.toolUseId), b.content, b.isError)
       if (!row) return null
       const failed = b.isError || !!row.failed
-      return { ...base, kind: failed ? 'error' : 'result', toolUseId: b.toolUseId, text: safeLine(row.label), tone: failed ? 'danger' : 'dim' }
+      return { ...base, kind: failed ? 'error' : 'result', toolUseId: b.toolUseId, text: safeLine(row.label), detail: resultDetail(e, b.content), tone: failed ? 'danger' : 'dim' }
     }
     case 'user': {
       const text = safe(b.text).trim()
@@ -533,7 +563,7 @@ export function transcriptRows(s: TuiState, filter: TranscriptFilter = {}): { ro
     } else {
       const agents = s.runs[item.runId]?.agents ?? {}
       const row = entryRow(item.entry, item.runId, agentLabel(agents[item.entry.agentId]), (id) => tools.get(id))
-      if (row) rows.push(row)
+      if (row) rows.push({ ...row, identityTone: agentIdentityTone(s.project?.roles ?? [], agents[item.entry.agentId]) })
     }
   }
   const only = filter.agentIds
@@ -548,7 +578,7 @@ export function partialRows(s: TuiState, filter: TranscriptFilter = {}): Partial
   const out: PartialRow[] = []
   for (const [agentId, text] of Object.entries(run.partials)) {
     if (!text || (filter.agentIds && !filter.agentIds.has(agentId))) continue
-    out.push({ key: `partial|${run.summary.id}|${agentId}`, runId: run.summary.id, agentId, agentLabel: agentLabel(run.agents[agentId]), text })
+    out.push({ key: `partial|${run.summary.id}|${agentId}`, runId: run.summary.id, agentId, agentLabel: agentLabel(run.agents[agentId]), identityTone: agentIdentityTone(s.project?.roles ?? [], run.agents[agentId]), text })
   }
   const started = (id: string): number => run.agents[id]?.startedAt ?? 0
   return out.sort((a, b) => started(a.agentId) - started(b.agentId) || a.agentId.localeCompare(b.agentId))

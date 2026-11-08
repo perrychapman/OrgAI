@@ -10,7 +10,7 @@
 //    project, a typed prompt starts a run whose text appears; /quit (Ctrl+D as a fallback, plus the inproc stop
 //    confirmation) leaves the alternate screen: the tail has \x1b[?1049l, \x1b[?2004l, \x1b[?25h and the exit is 0.
 // b. Resize 120x30 -> 100x30 (stacked: the transcript starts at the left edge, the agents pane above it) -> 120x30
-//    (split: the transcript sits right of the agents pane); no \x1b[?1049l / \x1b[?1049h during the resizes.
+//    (split: the transcript sits left of the agents pane); no \x1b[?1049l / \x1b[?1049h during the resizes.
 // c. Inline at 90x20 (below 100x24 at launch): no \x1b[?1049h at all; transcript rows land in the primary scrollback;
 //    the footer carries the status bar. (The status bar drops the project name first when it does not fit, so these
 //    steps wait on "N need you", drawn once the project is loaded; the name is asserted through `orgai status`.)
@@ -29,8 +29,8 @@
 //    further permission card resolves nothing within 1 s; `orgai decide <id> deny` from another process resolves it
 //    (surface 'cli') and the TUI says "Resolved in another window".
 // i. The org tree (ux-review-tui-org.md, `[mock:deep-tree]` on the mock's default script, full screen 120x40): the root, mock-lead
-//    and its two reports; once they finish and the 6 s grace passes they fold (reports first, "2 done", then mock-lead with
-//    them, "3 done" under the root; the run is still open); Right on the "3 done" row unfolds it and selects mock-lead; `n`
+//    and its two reports; configured team members stay visible after the 6 s grace, with unstarted roles Available.
+//    Down selects mock-lead; `n`
 //    with nothing waiting says so; Enter on mock-lead opens the
 //    agent inspector (facts and its own transcript); `?` opens the which-key overlay with the glyph legend; Esc closes the
 //    overlay, then the inspector; `z` roots the tree at mock-lead (breadcrumb) and Z goes back. The `n` jump to a waiting
@@ -58,12 +58,8 @@ const UI = {
   resolvedElsewhere: /Resolved in another window/i,
   /** The agents pane's heading (soft check: the layout is judged by where the transcript text starts). */
   treeHeading: /\b(Agents|Org|Team)\b/,
-  /**
-   * The status bar's "N need(s) you" segment. It is drawn only once a project or run is known (StatusBar buildSegs), and it
-   * is never dropped by the fitting, which gives up the project name first (3d62f0b). So it is the ready signal for "the TUI
-   * has loaded the project" at any width; the project name itself is not reliably on screen (a long name does not fit).
-   */
-  statusReady: /\bneeds? you\b/
+  /** Fullscreen welcomes a loaded project; the inline footer retains its decision count. */
+  statusReady: /\bneeds? you\b|What would you like your team to work on\?|(?:Message|Send to continue) R\d+/
 }
 
 const skip = (why) => {
@@ -253,7 +249,8 @@ try {
 
       // b. Resize.
       const splitAt = locate(t, /E2E-MARK-(ALPHA|OMEGA)/)
-      check(!!splitAt && splitAt.col >= 25, 'b: at 120 columns the transcript sits beside the agents pane (split)', esc(t.screen()))
+      const splitTree = locate(t, UI.treeHeading)
+      check(!!splitAt && !!splitTree && splitAt.col < splitTree.col && splitTree.col >= 70, 'b: at 120 columns the agent room sits right of the transcript', esc(t.screen()))
       const mark = t.raw().length
       await t.resize(100, 30)
       await sleep(900)
@@ -264,7 +261,8 @@ try {
       await t.resize(120, 30)
       await sleep(900)
       const splitAgain = locate(t, /E2E-MARK-(ALPHA|OMEGA)/)
-      check(!!splitAgain && splitAgain.col >= 25, 'b: back at 120 columns the layout is split again', esc(t.screen()))
+      const treeAgain = locate(t, UI.treeHeading)
+      check(!!splitAgain && !!treeAgain && splitAgain.col < treeAgain.col && treeAgain.col >= 70, 'b: back at 120 columns the agent room is on the right again', esc(t.screen()))
       const during = t.rawSince(mark)
       check(!during.includes('\x1b[?1049l') && !during.includes('\x1b[?1049h'), 'b: resizing never leaves or re-enters the alternate screen', esc(during.slice(-200)))
 
@@ -287,6 +285,16 @@ try {
       await sleep(300)
 
       // a. Quit.
+      t.key('ctrl+d')
+      // A PTY can split one painted frame across reads. Wait for the input below
+      // the confirmation too, rather than inspecting a half-delivered frame.
+      await t.waitFor(s => s.includes('Quit and stop') && /Message R\d+/.test(s), 10_000)
+      const confirmRow = locate(t, /Quit and stop/)
+      const inputRow = locate(t, /Message R\d+/)
+      check(t.screen().includes('E2E-MARK-OMEGA') && !!confirmRow && !!inputRow && inputRow.row - confirmRow.row <= 5,
+        'a: quit confirmation stays above the input and preserves the conversation', esc(t.screen()))
+      t.key('escape')
+      await t.waitFor(s => !s.includes('Quit and stop'), 10_000)
       const tail = t.raw().length
       const e = await quit(t, { confirm: true })
       const end = t.rawSince(tail)
@@ -387,6 +395,10 @@ try {
       const cmdOf = (e) => e.request?.input?.command
       await sleep(1500) // the watch is subscribed
 
+      // Inline choices never steal the composer while a follow-up is being typed.
+      await t.waitFor('Shift+Tab to choose', 5000)
+      check(true, 'f: a new approval stays inline without stealing the composer')
+      await sleep(100)
       // f. Paste safety.
       t.paste('y\na\n')
       await sleep(1200)
@@ -412,8 +424,8 @@ try {
       const card1Gone = await t.waitFor((s) => !s.includes('Allow once'), 10_000).then(() => true, () => false)
       check(card1Gone, "g: card 1's hints leave the tray once it is allowed", esc(t.screen()))
       const req2ev = await waitEv('card 2', 'permission.request', (e) => cmdOf(e) === 'npm run card-two')
-      // An unfocused tray shows "Alt+D or F2 to answer" instead of its keys (issue #25, L8), a focused one "Allow once".
-      await t.waitFor((s) => /Allow once|Alt\+D or F2 to answer/.test(s) && s.includes('card-two'), 10_000)
+      // Inline choices stay visible whether the composer or the card has focus.
+      await t.waitFor((s) => /Allow once/.test(s) && s.includes('card-two'), 10_000)
       const drawnAt = Date.now()
       t.write('\x1bOQy') // F2 (in case focus moved while the tray was empty) and `y`, right after card 2 is drawn
       const lag = Date.now() - drawnAt
@@ -513,30 +525,26 @@ try {
       t.key('enter')
       await t.waitFor('mock-lead', 40_000)
       check(true, 'i: the deep-tree run shows mock-lead in the agents pane')
-      // The reports finish at once; after the 6 s grace they fold into one row while the run is still open.
-      // The reports fold first ("2 done"); mock-lead ends a moment later and folds with them into "3 done" under the
-      // root. Keys sent between those two moments land on rows that then move, so wait for the final shape (the
-      // earlier fixed-sleep version lost Enter to exactly that: it hit the "3 done" row and unfolded it).
-      const folded = await t.waitFor(/\b[23] done\b/, 30_000).then(() => true, () => false)
-      check(folded, 'i: the finished reports fold into a "done" row after the grace', esc(t.screen()))
-      const settled = await t.waitFor(/\b3 done\b/, 30_000).then(() => true, () => false)
-      check(settled, 'i: mock-lead folds with its reports into one "3 done" row', esc(t.screen()))
+      // Configured roles stay visible after their agents finish. Unstarted roles remain Available.
+      await t.waitFor(/^.{79}.*mock-lead\s+Finished/m, 30_000)
+      await sleep(7000)
+      check(/^.{79}.*mock-lead\s+Finished/m.test(t.screen()), 'i: the configured team stays visible after the settle grace', esc(t.screen()))
+      check(/Team 4/.test(t.screen()) && /Reviewer\s+Available/.test(t.screen()) && /Researcher\s+Available/.test(t.screen()),
+        'i: the sidebar includes configured roles that have not started', esc(t.screen()))
 
-      t.key('tab') // the agents pane
+      t.key('tab') // conversation on the left
+      t.key('tab') // agents on the right
       await t.waitFor(/Enter details|Enter\/Right unfold/, 5_000).catch(() => undefined)
       t.write('n')
       await t.waitFor('Nothing needs you.', 5_000).then(
         () => check(true, 'i: `n` with nothing waiting says so'),
         () => check(false, 'i: `n` with nothing waiting says so', esc(t.screen()))
       )
-      // Selection starts on the root; the "3 done" group is the next row. Wait for it to be the selected row.
+      // At 120 columns the 41-column agent room begins at column 79. Match its selection marker,
+      // not a prompt or a mention in the conversation to its left. The next row after the root is mock-lead.
       t.key('down')
-      const onGroup = await t.waitFor(/^> .*\b3 done\b/m, 5_000).then(() => true, () => false)
-      check(onGroup, 'i: Down selects the "3 done" row', esc(t.screen()))
-      t.key('right')
-      // Wait for the tree row itself (the name also sits in the transcript beside it) and for the selection to move to it.
-      const open2 = await t.waitFor(/^> .*mock-lead\s+Finished/m, 8_000).then(() => true, () => false)
-      check(open2, 'i: Right on the "3 done" row unfolds it and selects mock-lead', esc(t.screen()))
+      const open2 = await t.waitFor(/^.{79}> .*mock-lead\s+Finished/m, 8_000).then(() => true, () => false)
+      check(open2, 'i: Down selects the finished team member', esc(t.screen()))
 
       // Enter on the agent row (not a group) opens its inspector.
       t.key('enter')

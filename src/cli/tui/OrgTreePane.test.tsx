@@ -49,6 +49,13 @@ function mount(props: Partial<MotionProps> = {}, e: TuiEnv = env()) {
 
 const lines = (frame: string | undefined): string[] => (frame ?? '').split('\n')
 
+it('keeps multiple decisions and conflicts visible in a compact unfocused roster', () => {
+  const item = { kind: 'row' as const, prefix: '', row: row('builder', { waiting: 3, worktreeChip: 'conflict', state: 'waiting', stateWord: 'Needs you' }) }
+  const text = rowLine(item, false, false, 42, env(), 0, false, false, true).map(seg => seg.text).join('')
+  expect(text).toContain('! 3')
+  expect(text).toContain('conflict')
+})
+
 describe('OrgTreePane chips in screen-reader mode (review M2)', () => {
   const chipRows = [
     row('root', { depth: 0, label: 'orchestrator', role: 'orchestrator', isRoot: true, waiting: 1, worktreeChip: '1f' }),
@@ -77,14 +84,14 @@ describe('OrgTreePane', () => {
     const out = lines(r.lastFrame())
     expect(out[0]).toBe('Agents 4 • 2 working')
     const root = out.find((l) => l.includes('orchestrator'))!
-    expect(root).toContain('Working')
+    expect(root).toContain('root is reading files')
     expect(root).not.toContain('(orchestrator)')
     expect(root.trimEnd().endsWith('$1.20')).toBe(true)
     const dev = out.find((l) => l.includes('dev-1') && l.includes('(Developer)'))!
     expect(dev).toContain('├─')
-    // Activity only for the selected row (the root, first), in one footer line; no blank line between agents.
-    expect(out.filter((l) => l.includes('is reading files'))).toHaveLength(1)
-    expect(out.some((l) => l.includes('orchestrator: root is reading files'))).toBe(true)
+    // Every working row carries its activity, with no duplicate selected-agent footer.
+    expect(out.filter((l) => l.includes('is reading files'))).toHaveLength(2)
+    expect(out.some((l) => l.includes('orchestrator: root is reading files'))).toBe(false)
     const rowAt = (id: string): number => out.findIndex((l) => l.includes(id))
     expect(rowAt('dev-2') - rowAt('dev-1')).toBe(1)
     expect(out.find((l) => l.includes('dev-2'))).toContain('└─')
@@ -99,7 +106,7 @@ describe('OrgTreePane', () => {
     const r = mount({ height: 3 })
     const out = lines(r.lastFrame())
     expect(out.length).toBeLessThanOrEqual(3)
-    expect(out.some((l) => l.includes('is reading files'))).toBe(false)
+    expect(out.some((l) => l.includes('orchestrator:'))).toBe(false)
     r.unmount()
   })
 
@@ -150,7 +157,7 @@ describe('OrgTreePane', () => {
       const out = sr.lastFrame() ?? ''
       expect(out).not.toMatch(/[├└●✓]/)
       expect(out).not.toContain('|-')
-      expect(out).toContain('Working')
+      expect(out).toContain('root is reading files')
       sr.unmount()
     })
   })
@@ -300,19 +307,19 @@ describe('OrgTreePane', () => {
     })
   })
 
-  it('shimmers only the live state word, not the static agent label', () => {
-    const active = row('active', { depth: 0, state: 'thinking', stateWord: 'Working' })
+  it('shimmers only the live activity, not the static agent label', () => {
+    const active = row('active', { depth: 0, state: 'thinking', stateWord: 'Working', activity: 'Reading files' })
     const item = { kind: 'row' as const, row: active, prefix: '' }
     const live = rowLine(item, false, false, 60, env(), 0, true)
     const shimmer = (segment: unknown): boolean => Boolean((segment as { shimmer?: boolean }).shimmer)
-    expect(shimmer(live.find((segment) => segment.text === 'Working'))).toBe(true)
+    expect(shimmer(live.find((segment) => segment.text === 'Reading files'))).toBe(true)
     expect(shimmer(live.find((segment) => segment.text === 'active'))).toBe(false)
 
     const idle = rowLine({ ...item, row: { ...active, state: 'idle', stateWord: 'Idle' } }, false, false, 60, env(), 0, true)
     expect(shimmer(idle.find((segment) => segment.text === 'Idle'))).toBe(false)
 
     const tool = rowLine({ ...item, row: { ...active, state: 'tool', stateWord: 'Using a tool' } }, false, false, 60, env(), 0, true)
-    expect(shimmer(tool.find((segment) => segment.text === 'Using a tool'))).toBe(false)
+    expect(shimmer(tool.find((segment) => segment.text === 'Reading files'))).toBe(true)
   })
 
   it('keeps active row bodies and labels within narrow widths', () => {
@@ -337,11 +344,11 @@ describe('OrgTreePane', () => {
   })
 
   it('highlights message participants briefly without changing the state word contract', () => {
-    const active = row('a', { depth: 0, state: 'thinking', stateWord: 'Thinking' })
+    const active = row('a', { depth: 0, state: 'thinking', stateWord: 'Thinking', activity: 'Reading files' })
     const item = { kind: 'row' as const, row: active, prefix: '' }
     const highlighted = rowLine(item, false, false, 60, env(), 0, true, true)
     expect(highlighted.find((segment) => segment.text === 'a')?.tone).toBe('identity')
-    expect(highlighted.find((segment) => segment.text?.includes('Thinking'))?.shimmer).toBe(true)
+    expect(highlighted.find((segment) => segment.text?.includes('Reading files'))?.shimmer).toBe(true)
     const traffic = rowLine({ ...item, row: { ...active, traffic: true } }, false, false, 60, env(), 0, true, true)
     expect(traffic.find((segment) => segment.text === '~')?.tone).toBe('message')
   })

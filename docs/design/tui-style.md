@@ -8,8 +8,8 @@ in `src/cli/tui/theme.ts`; tests check token parity and text contrast in both th
 | --- | --- |
 | Logo | White on dark, dark ink on light; a brief violet sweep followed by a long quiet interval |
 | Commands, selected controls, prompt marker | Violet accent text |
-| Agent names | Bold, low-saturation brand tint; never a status hue |
-| Active work | Blue glyph and state label; only thinking labels shimmer |
+| Agent names | Bold, with stable violet, cyan, green, amber, pink and blue role colors shared by sidebar and transcript |
+| Active work | Blue glyph and a shimmering description of the reported activity |
 | Agent exchanges | Slate-blue direction marker, tinted sender/recipient, secondary body text |
 | Tools, paths, code | Secondary ink; prefix and indentation distinguish them from prose |
 | Success, attention, error | Green, amber, red respectively, always with words or glyphs |
@@ -28,3 +28,34 @@ dimensions, with plain text labels and selection markers preserved when styling 
 
 Previews use the actual Ink components with simulated task events, rendered entirely offscreen:
 [dark](../media/tui-team-dark.gif) and [light](../media/tui-team-light.gif).
+
+Wide terminals put the conversation on the left and the agent room, plan and worktrees in a right
+sidebar capped at 42 columns. Short conversations align to the bottom, keeping the latest message
+near the composer; scrolling up preserves the reading position. Agent inspection replaces the
+conversation and keeps the agent room visible. Narrow terminals keep the stacked layout. The composer
+uses a single footer row for run status, notices and essential shortcuts, with no separate hint row or gap below the input. Approval choices and their command details appear inline above the composer. New requests never take typing focus. Shift+Tab from the composer or F2 from another pane selects
+the inline choices; Esc returns to typing. Long permission bodies must still be read
+before approval, and the arrival guard prevents buffered keys from answering a new request.
+A single-agent sidebar shows only the name and state until focused. The fullscreen footer omits
+duplicate single-run titles, zero-decision counts and lone run chips; multiple-run navigation and
+connection warnings remain visible.
+
+The fullscreen conversation shows a bold agent heading when the speaker changes or after a user
+message. Prose has space to breathe; completed tool calls collapse into muted, single-line summaries,
+while failures remain visible. Ctrl+O toggles full tool commands and output from the composer or
+conversation without changing the draft. The activity row keeps one shimmering state label followed
+by elapsed run time and reported total tokens (including cache usage), with the interrupt hint at the right.
+The activity row and sidebar use the same reported activity, such as reading files, running tests,
+updating a plan or waiting for reports. Generic thinking falls back to "Working". Setup proposals show a short preview with a full
+review action, and quit confirmations occupy a compact area above the input while the conversation
+stays visible. Action hints include one way back to typing, without duplicate Escape labels.
+Setup review cards are capped at 96 columns, with a left border, bold proposal title, secondary
+summary and timing text, and bracketed action keys separated from the preview by a blank line.
+The right sidebar includes the configured project team. Unstarted roles show "Available" in their
+reporting hierarchy; starting an agent replaces that role entry with its live state. Configured
+roles stay visible after completion. Enter on an available role opens its description without
+starting work. Projects without a configured team retain the run-agent view.
+
+Agent identity colors distinguish roles; they are not status indicators. State is carried separately
+by a labeled glyph and state text, so a green or amber agent name does not imply success or a warning.
+Tab follows the visible conversation column, then the sidebar from top to bottom.
