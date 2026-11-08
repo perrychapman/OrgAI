@@ -63,6 +63,7 @@ import { CanvasFrame, FrameStage, FrameToolbar, FrameTray } from '../components/
 import RunTabs from '../components/RunTabs'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
+import { LiveModelSwitch } from '../components/LiveModelSwitch'
 import { formatUntil, layoutCanvas } from '../lib/layout'
 import { agentLabel, normalizeParents } from '../lib/agentTree'
 
@@ -1128,6 +1129,23 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </FrameTray>
         </CanvasFrame>
 
+        <div className="live-composer-region">
+        {!successor && (
+          <LiveModelSwitch
+            key={runId}
+            run={run.summary}
+            onRunChanged={(summary) => {
+              if (summary.id !== runId) {
+                void openRun(summary.id).then(() => focusComposer())
+                return
+              }
+              useAppStore.setState((state) => {
+                const current = state.runs[summary.id]
+                return current ? { runs: { ...state.runs, [summary.id]: { ...current, summary } } } : {}
+              })
+            }}
+          />
+        )}
         {successor && newestRun && newestRun.id !== runId ? (
           <div className="composer composer-ended" data-testid="composer-superseded">
             <div className="composer-notice info">
@@ -1192,6 +1210,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         />
         )}
 
+        </div>
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} arrival={usageArrival}>
           <div className="live-panel">
             <TranscriptPanel

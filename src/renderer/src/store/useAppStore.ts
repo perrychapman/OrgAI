@@ -2117,6 +2117,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // A run nobody opened yet (another run of this project, or another project's): fetch its real summary.
       if (!existing) queueMicrotask(() => void get().fillSummary(e.runId))
       switch (e.type) {
+        case 'run.model':
+          run.summary = { ...run.summary, modelSelection: e.selection }
+          break
         case 'run.status':
           run.summary = {
             ...run.summary,

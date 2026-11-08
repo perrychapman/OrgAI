@@ -12,6 +12,7 @@ const sdk = vi.hoisted(() => {
   class FakeQuery {
     inputs: Msg[] = []
     setMcpCalls: Record<string, unknown>[] = []
+    setModel = vi.fn(async (_model: string) => {})
     inputClosed = false
     private out: Msg[] = []
     private waiters: { resolve: (r: IteratorResult<Msg>) => void; reject: (e: Error) => void }[] = []
@@ -768,6 +769,45 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
   const attach = (s: ClaudeSession, spec: McpServerSpec) => (s as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(spec)
   const init = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] }
   const result = { type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} }
+  it('switches the idle root in the existing query without changing transcript or continuation state', async () => {
+    const { ctx, session } = start([])
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    q.emit(init)
+    q.emit(result)
+    await vi.waitFor(() => expect(session.settlement()).toMatchObject({ rootIdle: true, quiescent: true }))
+    const before = session.settlement()
+    const roleModel = ctx.roles.find((r) => r.reportsTo === null)?.model
+    const transcriptCount = ctx.events.filter((e) => e.type === 'transcript').length
+    await session.switchModel({ model: 'sonnet' })
+    expect(q.setModel).toHaveBeenCalledWith('sonnet')
+    expect(sdk.queries).toHaveLength(1)
+    expect(session.settlement()).toEqual(before)
+    expect(ctx.events.filter((e) => e.type === 'transcript')).toHaveLength(transcriptCount)
+    expect(ctx.roles.find((r) => r.reportsTo === null)?.model).toBe(roleModel)
+    q.setModel.mockRejectedValueOnce(new Error('unsupported model'))
+    await expect(session.switchModel({ model: 'bad-model' })).rejects.toThrow('unsupported model')
+    expect(ctx.events.filter((e) => e.type === 'agent.upsert').at(-1)).toMatchObject({ agent: { model: 'sonnet' } })
+    await expect(session.switchModel({ model: 'bad model' })).rejects.toThrow('Invalid model')
+    await expect(session.switchModel({ model: 'other', connection: { connection: 'other' as never, adapter: 'claude' } })).rejects.toThrow('Switching connections')
+    await session.stop()
+    await expect(session.switchModel({ model: 'opus' })).rejects.toThrow('not live')
+  })
+
+  it('refuses a busy root or pending cards without sending a model command', async () => {
+    let pending = 0
+    const { session } = start([], { pendingInteractions: () => pending })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    q.emit(init)
+    await vi.waitFor(() => expect(session.settlement().rootIdle).toBe(false))
+    await expect(session.switchModel({ model: 'sonnet' })).rejects.toThrow('idle')
+    q.emit(result)
+    await vi.waitFor(() => expect(session.settlement().rootIdle).toBe(true))
+    pending = 1
+    await expect(session.switchModel({ model: 'sonnet' })).rejects.toThrow('decision cards')
+    expect(q.setModel).not.toHaveBeenCalled()
+  })
   const preToolUse = (q: Fake) => q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>
   const call = (tool: string, agent?: { id: string; type: string }) => ({
     hook_event_name: 'PreToolUse',
