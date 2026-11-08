@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 export async function checkPocketOffice({ page, name, resizeTo, setAppearance, setCanvas, noPageScroll, shot, scriptFile }) {
   const scene = () => page.locator('[data-testid=office-scene]').first()
   const graph = { pattern: 'blueprint', layout: 'left-right', nodeStyle: 'compact', edges: 'orthogonal', minimap: true, tint: false }
-  await setCanvas({ ...graph, presentation: 'graph', scenePalette: 'neutral' })
+  await setCanvas({ ...graph, presentation: 'graph', scenePalette: 'color' })
   await openAppSettings(page)
   const section = page.locator('[data-testid=canvas-section]')
   const office = section.locator('[data-testid=canvas-presentation] input[value="pocket-office"]')
@@ -13,6 +13,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'pocket-office')
   check(await section.locator('[data-testid=canvas-preview] [data-testid=office-scene]').count() === 1, 'Pocket Office settings shows the shared scene sample')
   check(await scene().getAttribute('data-mode') === 'sample', 'settings office is explicitly static sample data')
+  check(await section.locator('[data-testid=canvas-scene-palette] input[value="color"]').isChecked(), 'Color is exposed and selected as the default office palette')
   await section.locator('[data-testid=canvas-scene-palette] input[value="green"]').check()
   await page.waitForFunction(() => document.documentElement.dataset.canvasScenePalette === 'green')
   const saved = await page.evaluate(async () => (await window.orgai.settings.get()).appearance.canvas)
@@ -28,17 +29,51 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
     await resizeTo(w, h)
     for (const theme of ['dark', 'light']) {
-      for (const palette of ['neutral', 'green']) {
+      for (const palette of ['color', 'neutral', 'green']) {
         await setAppearance({ theme }, { presentation: 'pocket-office', scenePalette: palette })
         await scene().waitFor()
         check(await scene().getAttribute('data-mode') === 'team', `Team is static at ${w}x${h} ${theme}/${palette}`)
         check(await scene().getAttribute('data-palette') === palette, `office follows palette at ${w}x${h} ${theme}/${palette}`)
         check(await noPageScroll(), `office fits the window at ${w}x${h} ${theme}/${palette}`)
         check(await scene().locator('[data-office-agent-id]').count() > 1, `Team exposes named agent buttons at ${w}x${h} ${theme}/${palette}`)
+        const fills = await scene().evaluate(el => {
+          const stage = el.querySelector('.office-stage')
+          const floor = el.querySelector('[data-testid=office-floor]')?.getBoundingClientRect()
+          return !!stage && !!floor && floor.width >= stage.clientWidth - 1 && floor.height >= stage.clientHeight - 1
+        })
+        check(fills, `office floor fills the resized stage at ${w}x${h} ${theme}/${palette}`)
+        check(await scene().locator('[data-office-department-id]').count() > 0, `real reporting branches label departments at ${w}x${h} ${theme}/${palette}`)
         await shot(`office-team-${w}x${h}-${theme}-${palette}`)
       }
     }
   }
+  // A real project role tree with four departments overflows floors while retaining every role in the roster.
+  const original = await page.evaluate(async projectName => (await window.orgai.projects.list()).find(project => project.name === projectName), name)
+  await page.evaluate(async project => {
+    const root = project.roles.find(role => role.reportsTo === null)
+    const template = project.roles.find(role => role.reportsTo !== null) ?? root
+    const roles = [root]
+    for (let branch = 0; branch < 4; branch++) {
+      const leadId = `office-lead-${branch}`
+      roles.push({ ...template, id: leadId, slug: `office-lead-${branch}`, name: `Department lead ${branch + 1}`, reportsTo: root.id })
+      for (let worker = 0; worker < 7; worker++) roles.push({ ...template, id: `office-worker-${branch}-${worker}`, slug: `office-worker-${branch}-${worker}`, name: `Worker ${branch + 1}.${worker + 1}`, reportsTo: leadId })
+    }
+    await window.orgai.projects.save({ ...project, roles })
+  }, original)
+  await page.reload()
+  await page.locator('.sidebar').waitFor()
+  await openProject(page, name)
+  await openTeam(page)
+  await scene().waitFor()
+  check(await scene().locator('button[data-office-agent-id]').count() === 33, 'large team keeps all 33 real roles in the accessible roster')
+  await scene().locator('button[data-office-agent-id="office-worker-3-6"]').click()
+  check(Number(await scene().getAttribute('data-floor')) > 1, 'roster selection jumps to the correct explicit floor')
+  await page.evaluate(async project => { await window.orgai.projects.save(project) }, original)
+  await page.reload()
+  await page.locator('.sidebar').waitFor()
+  await openProject(page, name)
+  await openTeam(page)
+  await scene().waitFor()
   const worker = scene().locator('button[data-office-agent-id]').first()
   await worker.focus()
   await page.keyboard.press('Enter')
