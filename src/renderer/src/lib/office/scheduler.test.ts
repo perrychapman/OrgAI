@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentMessage } from '@shared/types'
-import { baseline, ingest, MAX_AGE } from './scheduler'
+import { baseline, finish, ingest, MAX_AGE } from './scheduler'
 
 const message = (): AgentMessage => ({ from: 'a', to: 'b', toHandle: 'b', text: 'hello', at: 1 })
 const agents = new Set(['a', 'b'])
@@ -42,5 +42,19 @@ describe('office message scheduler', () => {
     const old = message(); const hidden = message()
     const paused = ingest(baseline([old]), [old, hidden], agents, 1, false, false)
     expect(ingest(paused, [old, hidden], agents, 2, true, false).active).toHaveLength(0)
+  })
+  it('advances queued messages before their age limit', () => {
+    const all = Array.from({ length: 4 }, message)
+    const initial = ingest(baseline([]), all, agents, 0, true, false)
+    const next = finish(initial, 2000)
+    expect(next.active.map(d => d.message)).toEqual([all[3]])
+    expect(next.active[0].started).toBe(2000)
+  })
+  it('skips a delivery when either endpoint is outside the current room', () => {
+    expect(ingest(baseline([]), [message()], new Set(['a']), 0, true, false).active).toHaveLength(0)
+  })
+  it('expires reduced-motion captions', () => {
+    const state = ingest(baseline([]), [message()], agents, 0, true, true)
+    expect(finish(state, MAX_AGE).active).toHaveLength(0)
   })
 })
