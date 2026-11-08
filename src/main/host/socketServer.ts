@@ -187,21 +187,20 @@ export const TERMINAL_ACCESS_OFF_MESSAGE =
 export const TERMINAL_ACCESS_LEVEL_MESSAGE =
   'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access.'
 /**
- * The same two refusals from a Node host (Wave 7, cli-standalone.md 4.2.1): a machine with only the npm CLI has no App
- * settings, so they name the commands that change the stored Terminal access (review round 1).
+ * The same two refusals from a Node host (Wave 7, cli-standalone.md 4.2.1). No node host starts any more
+ * (cli-standalone-default.md 4.1); this wording and the node branches go with the handoff in phase 2. They name no command.
  */
 export const NODE_TERMINAL_ACCESS_OFF_MESSAGE =
-  'Terminal access is off. Once this background host has stopped (its idle exit), turn it on with `orgai terminal-access on`.'
+  'Terminal access is off for this background host.'
 export const NODE_TERMINAL_ACCESS_LEVEL_MESSAGE =
-  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop this background host (`orgai daemon stop`), then run `orgai terminal-access --level full`.'
+  'Terminal access lets terminal clients watch and run work only; this background host does not let a terminal answer decisions or change settings.'
 
 /**
  * A socket settings:set that would turn Terminal access off on a Node host (review round 2): refused, since the host
- * would then run unreachable (4.2.1): neither `orgai daemon stop` nor `orgai terminal-access` could talk to it, and
- * its idle exit never comes while runs are live or with ORGAI_DAEMON_IDLE_MINUTES=0.
+ * would then run unreachable (4.2.1): no terminal could talk to it any more.
  */
 export const NODE_TERMINAL_ACCESS_OFF_REFUSED =
-  'A background host cannot turn Terminal access off from a terminal: nothing could reach it afterwards. Stop it with `orgai daemon stop`, then run `orgai terminal-access off`.'
+  'A background host cannot turn Terminal access off from a terminal: nothing could reach it afterwards.'
 
 /**
  * Whether a socket settings:set (`params` as sent) turns Terminal access off on this host: on a Node host, a
@@ -242,7 +241,7 @@ export const DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE = 'An OrgAI app hand-off connec
  * grant existed.
  */
 export const DESKTOP_HANDOFF_REFUSED_MESSAGE =
-  "This OrgAI host does not hand its data folder over to the app; only a background host started with `orgai daemon start` does. Stop it from its terminal, or with `orgai daemon stop --force`."
+  'This OrgAI host does not hand its data folder over to the app.'
 
 /** hello refused on win32 when daemon.secret could not be restricted to the current user. */
 export const SECRET_ACL_MESSAGE =
@@ -892,7 +891,7 @@ export class HostSocketServer {
       )
     }
     // host.stop is the one 'configure' channel any client that asked for 'configure' may call whatever the Terminal
-    // access level: it does nothing a same-user `kill` of the pid in daemon.json could not (`orgai daemon stop`).
+    // access level: it does nothing a same-user `kill` of the pid in daemon.json could not.
     const stopOnly = method === HOST_METHODS.hostStop && conn.withheld.includes('configure')
     if (scope !== undefined && conn.withheld.includes(scope as HostScope) && !stopOnly) {
       return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method} needs the '${scope}' scope. ${terminalAccessLevelMessage(this.opts.hostKind)}` }))

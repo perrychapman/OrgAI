@@ -380,7 +380,7 @@ export function App(props: AppProps) {
   }
   const announceResolved = useCallback((info: (typeof state.resolved)[number]): void => {
     if (info.ref.runId !== activeRunId.current || info.cancelled || !info.decidedBy) return
-    notify(`Resolved in another window (${surfaceWords(info.decidedBy)})`, 'dim')
+    notify(`Resolved by ${surfaceWords(info.decidedBy)}`, 'dim')
   }, [notify])
   useEffect(() => {
     if (sessionChanged) return
@@ -1108,7 +1108,7 @@ export function App(props: AppProps) {
     }
     if (focus === 'onboarding') {
       if (ctrl(e, 'c') || ctrl(e, 'd')) {
-        // Through the quit check: another terminal may have runs on this terminal's shared host.
+        // Through the quit check: this terminal may have live runs.
         requestQuit()
         return
       }

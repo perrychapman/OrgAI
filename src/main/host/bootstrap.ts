@@ -469,6 +469,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
     // attachedClientCount, which leaves non-interactive CLI exec sockets out). `activity` is created further down;
     // before that (never during a run) there is nobody to count.
+    noWaitPolicy: hostKind === 'inproc',
     interactiveClients: () => (activityRef ? activityRef.snapshot().counts.interactiveClients : 0),
     // "Always allow for project" cards: append folders / switch to Accept edits on the stored project (the store cleans them).
     saveProjectPermissions: (projectId, patch) =>

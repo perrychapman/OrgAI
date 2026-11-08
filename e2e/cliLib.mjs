@@ -38,6 +38,8 @@ delete ENV.ELECTRON_RUN_AS_NODE
 const KEY_DIR = privateTempDir('orgai-e2e-key-')
 writeRestrictedKeyFile(path.join(KEY_DIR, 'vault.key'), randomBytes(32))
 ENV.ORGAI_CLI_VAULT_KEY_FILE = path.join(KEY_DIR, 'vault.key')
+// Belt and braces beside the key file: a CLI e2e child never reaches the real OS keychain, even without it.
+ENV.ORGAI_CLI_VAULT_NO_OS_KEYSTORE = '1'
 process.on('exit', () => fs.rmSync(KEY_DIR, { recursive: true, force: true }))
 
 /** Exit 1 with a hint when the CLI bundle is missing. */

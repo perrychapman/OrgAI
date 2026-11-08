@@ -460,6 +460,6 @@ export function handoffUnavailableText(owner: DaemonInfo, runDir?: string): { ti
     : 'another OrgAI'
   return {
     title: 'OrgAI is already running',
-    detail: `OrgAI's data folder is in use by ${who} (pid ${owner.pid}), which did not hand it over.\n\nStop it with \`orgai daemon stop --force\` (that ends its runs; they can be continued), then start OrgAI again.${runDir ? `\n\nIf you are sure nothing is running, delete the folder ${runDir} and start OrgAI again.` : ''}`
+    detail: `OrgAI's data folder is in use by ${who} (pid ${owner.pid}), which did not hand it over.\n\nStop it (end the orgai process; its runs can be continued), then start OrgAI again.${runDir ? `\n\nIf you are sure nothing is running, delete the folder ${runDir} and start OrgAI again.` : ''}`
   }
 }

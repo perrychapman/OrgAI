@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SecretsStatusResult } from '../../shared/types'
 import { CLI_VAULT_MESSAGES as VAULT_MESSAGES } from '../../main/store/vaultTypes'
 import { fakeContext, FakeHostClient, rpcError } from '../testing/fakeContext'
-import { hostSecretsChecks, offlineSecretsChecks, pendingLegacyCount, secretsChecks } from './secretsChecks'
+import { hostSecretsChecks, offlineSecretsChecks, pendingLegacyCount, secretsChecks, vaultCustodyCheck } from './secretsChecks'
 
 let dir: string
 beforeEach(() => {
@@ -99,6 +99,7 @@ describe('doctor: secure storage through the host', () => {
     expect(checks.map((c) => [c.id, c.status])).toEqual([
       ['vault-host', 'warn'],
       ['vault', 'ok'],
+      ['vault-custody', 'ok'],
       ['legacy-secrets', 'ok']
     ])
   })
@@ -109,8 +110,9 @@ const ENTRY = { ...CT, at: 1, lc: true }
 
 describe('doctor: secure storage without a host (metadata only)', () => {
   it('no files: nothing created yet, no legacy copy', () => {
-    expect(offlineSecretsChecks(dir).map((c) => [c.id, c.status, c.detail])).toEqual([
+    expect(offlineSecretsChecks(dir, false, {}, 'darwin').map((c) => [c.id, c.status, c.detail])).toEqual([
       ['vault', 'ok', 'Not created yet; the first saved secret creates it'],
+      ['vault-custody', 'ok', expect.stringContaining('"OrgAI CLI Vault"')],
       ['legacy-secrets', 'ok', "secrets.json (an older copy): none"]
     ])
   })
@@ -191,6 +193,29 @@ describe('doctor: secure storage without a host (metadata only)', () => {
 
   it('without a client the group reads the files', async () => {
     const f = fakeContext({ paths: { userDataDir: dir, dataDir: dir } })
-    expect((await secretsChecks({ ctx: f.ctx })).map((c) => c.id)).toEqual(['vault', 'legacy-secrets'])
+    expect((await secretsChecks({ ctx: f.ctx })).map((c) => c.id)).toEqual(['vault', 'vault-custody', 'legacy-secrets'])
+  })
+})
+
+describe('doctor: the CLI vault custody names (cli-standalone-default.md 4.5)', () => {
+  it('names the CLI item per platform, never the app item, and no value', () => {
+    const mac = vaultCustodyCheck(undefined, {}, 'darwin')
+    expect(mac).toMatchObject({ id: 'vault-custody', status: 'ok' })
+    expect(mac.detail).toContain('"OrgAI CLI Vault"')
+    expect(mac.detail).toContain('ORGAI_CLI_VAULT_KEY_FILE')
+    expect(mac.detail).not.toMatch(/"OrgAI Vault"/)
+    const linux = vaultCustodyCheck(undefined, {}, 'linux')
+    expect(linux.detail).toContain('orgai-cli')
+    expect(linux.detail).toContain('OrgAI CLI vault')
+    expect(vaultCustodyCheck(undefined, {}, 'win32').detail).toContain('DPAPI')
+    expect(vaultCustodyCheck(undefined, {}, 'freebsd')).toMatchObject({ status: 'warn', detail: expect.stringContaining('ORGAI_CLI_VAULT_KEY_FILE') })
+  })
+
+  it('the key-file variable wins and the app variable is ignored; a recorded key-file vault without the variable warns', () => {
+    const set = vaultCustodyCheck(undefined, { ORGAI_CLI_VAULT_KEY_FILE: '/k/key', ORGAI_VAULT_KEY_FILE: '/app/key' }, 'darwin')
+    expect(set.detail).toContain('/k/key')
+    expect(set.detail).not.toContain('/app/key')
+    expect(vaultCustodyCheck('key-file', {}, 'darwin')).toMatchObject({ status: 'warn', detail: expect.stringContaining('is not set') })
+    expect(vaultCustodyCheck('keychain', { ORGAI_VAULT_KEY_FILE: '/app/key' }, 'linux').detail).toContain('macOS keychain')
   })
 })

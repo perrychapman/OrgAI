@@ -175,22 +175,23 @@ describe('DecisionTray: two-step confirmations', () => {
     h.unmount()
   })
 
-  it("closes with 'Resolved in another window' when the card is removed and the desktop decided it", async () => {
+  it("closes with 'Resolved by' when the card is removed and the headless policy decided it", async () => {
     const a = tray('permission', 'a', permission('a'))
     const h = await mount({ cards: [a] })
     h.clock.t += 1000
     await h.press('a')
     expect(h.frame()).toContain('to confirm')
-    const resolved: ResolvedCardInfo[] = [{ key: a.key, ref: a.ref, cancelled: false, decidedBy: { surface: 'desktop' }, at: h.clock.t }]
+    const resolved: ResolvedCardInfo[] = [{ key: a.key, ref: a.ref, cancelled: false, decidedBy: { surface: 'policy' }, at: h.clock.t }]
     await h.set({ cards: [], resolved })
     expect(h.frame()).not.toContain('to confirm')
-    expect(h.frame()).toContain('Resolved in another window (the desktop app)')
+    expect(h.frame()).toContain('Resolved by the headless decision policy')
+    expect(h.frame()).not.toMatch(/another window|desktop app/)
     await h.press('a')
     expect(h.calls).toHaveLength(0)
     h.unmount()
   })
 
-  it("another terminal UI's decision closes a confirmation with 'Resolved in another window' too", async () => {
+  it("a terminal UI decision closes a confirmation with 'Resolved by' too", async () => {
     const a = tray('permission', 'a', permission('a'))
     const h = await mount({ cards: [a] })
     h.clock.t += 1000
@@ -198,7 +199,7 @@ describe('DecisionTray: two-step confirmations', () => {
     expect(h.frame()).toContain('to confirm')
     const resolved: ResolvedCardInfo[] = [{ key: a.key, ref: a.ref, cancelled: false, decidedBy: { surface: 'tui' }, at: h.clock.t }]
     await h.set({ cards: [], resolved })
-    expect(h.frame()).toContain('Resolved in another window (the terminal UI)')
+    expect(h.frame()).toContain('Resolved by the terminal UI')
     expect(h.calls).toHaveLength(0)
     h.unmount()
   })

@@ -2,7 +2,7 @@ import { readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { checkCliFolder, folderRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
+import { checkCliFolder, folderRefusal, markerUnreadableRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
 
 const dirs: string[] = []
 const base = (): string => {
@@ -63,15 +63,46 @@ describe('product marker', () => {
     expect(readProductMarker(dir)).toEqual({ state: 'absent' })
   })
 
-  it('treats a damaged marker like no marker', () => {
+  it('refuses a folder whose marker is damaged, unknown or unreadable instead of replacing it', () => {
     const dir = base()
     mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'product.json'), '{nope')
+    const file = join(dir, 'product.json')
+    writeFileSync(file, '{nope')
     expect(readProductMarker(dir)).toEqual({ state: 'invalid' })
-    expect(check(dir, join(base(), 'OrgAI'))).toBeUndefined()
-    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-cli' })
-    writeFileSync(join(dir, 'product.json'), JSON.stringify({ product: 'something', version: 1 }))
+    expect(check(dir, join(base(), 'OrgAI'))).toBe(markerUnreadableRefusal(dir))
+    expect(readFileSync(file, 'utf8')).toBe('{nope')
+    // A marker of a newer version or another product (a future app folder with its marker but no data/ yet).
+    writeFileSync(file, JSON.stringify({ product: 'orgai-desktop', version: 2, extra: true }))
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-desktop' })
+    writeFileSync(file, JSON.stringify({ product: 'something', version: 1 }))
     expect(readProductMarker(dir)).toEqual({ state: 'invalid' })
+    expect(check(dir, join(base(), 'OrgAI'))).toBe(markerUnreadableRefusal(dir))
+    expect(JSON.parse(readFileSync(file, 'utf8')).product).toBe('something')
+    // A product.json that is a directory (EISDIR) is unreadable too.
+    rmSync(file)
+    mkdirSync(file)
+    expect(check(dir, join(base(), 'OrgAI'))).toBe(markerUnreadableRefusal(dir))
+  })
+
+  it('refuses a CLI-marked folder whose data/ links into the app data (a symlink), and any data/ that is not its own', () => {
+    const app = join(base(), 'OrgAI')
+    mkdirSync(join(app, 'data'), { recursive: true })
+    writeFileSync(join(app, 'data', 'projects.json'), '[]')
+    const dir = base()
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'product.json'), JSON.stringify({ product: 'orgai-cli', version: 1 }))
+    link(join(app, 'data'), join(dir, 'data'))
+    expect(check(dir, app)).toBe(folderRefusal(dir))
+    // Even a link to a harmless folder elsewhere is not <userDataDir>/data.
+    rmSync(join(dir, 'data'))
+    const other = join(base(), 'elsewhere')
+    mkdirSync(other, { recursive: true })
+    link(other, join(dir, 'data'))
+    expect(check(dir, app)).toBe(folderRefusal(dir))
+    // A real data/ is fine.
+    rmSync(join(dir, 'data'))
+    mkdirSync(join(dir, 'data'))
+    expect(check(dir, app)).toBeUndefined()
   })
 
   it('refuses the desktop default folder itself, even unmarked and empty', () => {

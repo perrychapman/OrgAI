@@ -357,11 +357,12 @@ describe('handoff helpers', () => {
     expect(await exited(o2)).toBe(true)
   })
 
-  it('handoffUnavailableText names the owner and the orgai daemon stop --force hint', () => {
+  it('handoffUnavailableText names the owner and how to stop it, without naming a removed command', () => {
     const t = handoffUnavailableText(owner('node'), '/data/run')
     expect(t.title).toBe('OrgAI is already running')
     expect(t.detail).toContain('a background host started from a terminal (pid 4321)')
-    expect(t.detail).toContain('orgai daemon stop --force')
+    expect(t.detail).not.toContain('orgai daemon')
+    expect(t.detail).toContain('end the orgai process')
     expect(t.detail).toContain('/data/run')
   })
 })

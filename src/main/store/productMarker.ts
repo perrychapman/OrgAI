@@ -18,7 +18,9 @@ export function readProductMarker(userDataDir: string): MarkerRead {
   try {
     text = readFileSync(join(userDataDir, PRODUCT_MARKER_FILE), 'utf8')
   } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? { state: 'absent' } : { state: 'invalid' }
+    // A path under a file (ENOTDIR) holds no marker either; any other failure (EACCES, EISDIR) is unreadable, not absent.
+    const code = (e as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? { state: 'absent' } : { state: 'invalid' }
   }
   try {
     const v = JSON.parse(text) as { product?: unknown }
@@ -117,12 +119,16 @@ export interface CliFolderCheck {
 /** The refusal when the marker cannot be written (before any other write, so a later start never misreads the folder). */
 export const markerWriteRefusal = (userDataDir: string): string => `orgai cannot write ${PRODUCT_MARKER_FILE} in ${userDataDir}; choose another folder.`
 
+/** The refusal for a marker the CLI cannot read or does not know (maybe the app's, or a newer version's): never replaced. */
+export const markerUnreadableRefusal = (userDataDir: string): string =>
+  `${join(userDataDir, PRODUCT_MARKER_FILE)} cannot be read or is not an OrgAI marker, so orgai will not use ${userDataDir}; choose another folder or remove that file.`
+
 /** The refusal text of 3.1. */
 export const folderRefusal = (userDataDir: string): string => `${userDataDir} belongs to the OrgAI app. orgai keeps its own data; choose another folder.`
 
 /**
  * Decides whether the CLI may use the folder, before any other read or write there. Returns the refusal text, or
- * undefined when it may (an empty or missing folder gets the CLI marker; a CLI-marked one is left as it is).
+ * undefined when it may (an empty or missing folder gets the CLI marker; a CLI-marked one is left as it is; an unreadable marker refuses).
  */
 export function checkCliFolder(c: CliFolderCheck): string | undefined {
   const platform = c.platform ?? process.platform
@@ -131,7 +137,18 @@ export function checkCliFolder(c: CliFolderCheck): string | undefined {
   // The app's own folder, anything inside it and anything that contains it (G1: never write the app's data).
   if (isInside(c.userDataDir, c.desktopDefault, platform) || isInside(c.desktopDefault, c.userDataDir, platform)) return folderRefusal(c.userDataDir)
   if (insideDesktopMarkedFolder(c.userDataDir)) return folderRefusal(c.userDataDir)
+  // The data subfolder is `<userDataDir>/data` by its real path, never a link into another place (the app's data included).
+  if (existsSync(c.dataDir)) {
+    const fold = platform === 'win32' || platform === 'darwin'
+    const norm = (p: string): string => (fold ? p.toLowerCase() : p)
+    const api = platform === 'win32' ? win32 : posix
+    const expected = api.join(real(c.userDataDir), basename(c.dataDir))
+    if (norm(real(c.dataDir)) !== norm(expected)) return folderRefusal(c.userDataDir)
+    if (isInside(c.dataDir, c.desktopDefault, platform) || insideDesktopMarkedFolder(c.dataDir)) return folderRefusal(c.userDataDir)
+  }
   if (marker.state === 'marked') return undefined
+  // A marker that exists but cannot be read, or that this version does not know, is not an empty folder: leave it alone.
+  if (marker.state === 'invalid') return markerUnreadableRefusal(c.userDataDir)
   if (dataFolderHoldsFiles(c.dataDir)) return folderRefusal(c.userDataDir)
   if (!writeProductMarker(c.userDataDir, 'orgai-cli')) return markerWriteRefusal(c.userDataDir)
   return undefined

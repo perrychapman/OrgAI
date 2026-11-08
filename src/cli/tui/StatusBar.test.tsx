@@ -52,8 +52,8 @@ describe('StatusBar', () => {
   })
 
   it('shows a fresh notice before the hint when there is room, and the hint alone once it expired', () => {
-    const f = frame({ notice: { id: 1, text: 'Resolved in another window', at: 1000 }, now: () => 1000 })
-    expect(f).toContain('Resolved in another window   Tab focus  / commands')
+    const f = frame({ notice: { id: 1, text: 'Resolved by the CLI', at: 1000 }, now: () => 1000 })
+    expect(f).toContain('Resolved by the CLI   Tab focus  / commands')
     const old = frame({ notice: { id: 1, text: 'Interrupting the run...', at: 1000 }, now: () => 1000 + TUI_NOTICE_TTL_MS })
     expect(old).not.toContain('Interrupting')
     expect(old).toContain('Tab focus')

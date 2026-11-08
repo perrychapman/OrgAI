@@ -161,6 +161,25 @@ beside a live owner without a socket hello, store construction, migration or wri
 `orgai help`, the command table, completions and doctor drop removed commands, `--host` and background-host checks;
 doctor reports the data folder, its marker, the vault custody and "another orgai is running (pid, folder)" when owned.
 
+### 4.6 Exec outcomes, exit codes and policies (kept from cli-spec.md)
+
+`cli-spec.md` and `cli-standalone.md` are left out of the self-help corpus whole, not by section (decided in phase 1:
+splitting them by heading would keep stale `--host` / daemon text next to the valid parts). What is still true of them
+lives here and in the command table (`orgai help exec`, `orgai help tui`, `orgai help secrets`).
+
+- Exit codes: 0 ok, 1 failure, 2 usage, 3 needs the user, 4 usage limit, 5 authentication, 6 another `orgai` owns the
+  folder, 130 SIGINT, 143 SIGTERM.
+- `orgai exec` exit by outcome: `completed` and `completed-unplanned` 0; `unmerged-conflicts`, `blocked`,
+  `incomplete-plan`, `needs-decision`, `budget-exceeded` 3; `rate-limited` 4; `auth-error` 5; `failed` and `stalled` 1;
+  `interrupted` 130.
+- Decision policies (`--on-permission`, `--on-rules`, `--on-mcp-install`, `--on-question`, `--on-proposal`, `--on-merge`):
+  deny / decline / hold / conservative answer or fail the run. `wait` is refused by the exec flags and turned into `fail`
+  by the in-process host for any other path, because nothing else can answer a card of an `orgai` run.
+- The TUI (`orgai`, `orgai tui [run]`, `orgai resume`) answers cards itself; its status lines say "Resolved by ..." for
+  the headless policy or the terminal UI, never "another window".
+- Secrets: `orgai secrets status|init|reset|undelete|keep-removed`, never a value as an argument (`--from-env`,
+  `--stdin`); the CLI's vault key is its own (3.2).
+
 ## 5. Desktop app
 
 ### 5.1 No terminals, no socket
@@ -213,8 +232,9 @@ App settings > Terminal: one row, replacing `CliShimRow`.
 Updated in the phase that changes the behaviour, not later:
 
 - The runtime reference corpus (`appReference.ts`, `reference/docs.ts`, code) excludes withdrawn and superseded
-  designs (`cli-approvals.md`, the `--host` / daemon parts of `cli-spec.md` and `cli-standalone.md`); the CLI command
-  table it embeds comes from the new command table.
+  designs (`cli-approvals.md`, `cli-spec.md` and `cli-standalone.md`, whole files: phase 1 chose whole-file exclusion over
+  filtering by heading); the CLI command table it embeds comes from the new command table, and 4.6 keeps the still-valid
+  exec, exit code, policy and TUI facts.
 - In-app text about Terminal access, `orgai daemon`, `orgai app` or a shared vault is removed or rewritten.
 - Desktop recovery actions for its own vault stay.
 

@@ -46,6 +46,8 @@ describe('corpus', () => {
     const keys = Object.keys(bundledDocs())
     for (const gone of ['cli-approvals', 'cli-spec', 'cli-standalone']) expect(keys).not.toContain(gone)
     expect(keys).toContain('cli-standalone-default')
+    // The still-valid exec and exit code facts of the withdrawn designs live in the kept spec (4.6), so self-help finds them.
+    expect(bundledDocs()['cli-standalone-default']).toMatch(/Exec outcomes, exit codes and policies/)
     const ids = buildReferenceCorpus({ shortcuts: [] }).map((x) => x.id).filter((i) => i.startsWith('command:'))
     for (const removed of ['daemon', 'app', 'terminal-access', 'watch', 'inbox', 'decide', 'attach']) expect(ids).not.toContain(`command:${removed}`)
     expect(ids).toEqual(expect.arrayContaining(['command:status', 'command:doctor', 'command:tui', 'command:exec']))

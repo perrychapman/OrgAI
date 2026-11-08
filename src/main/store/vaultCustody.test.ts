@@ -2,7 +2,8 @@
  * Product-scoped vault custody (standalone spec 3.2): the CLI and the desktop app use different key item names and key
  * file variables, and neither reads or touches the other's.
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -32,7 +33,9 @@ afterEach(() => {
 /** A fake `security` with an in-memory keychain keyed by service and account, shared by both products. */
 function sharedKeychain(items = new Map<string, string>()) {
   const make = () =>
-    fakeSpawner(({ args, stdin }) => {
+    fakeSpawner(({ file, args, stdin }) => {
+      // A key file's folder and file have no ACL entries (the macOS check of the key file custodian).
+      if (file.endsWith('/ls')) return { code: 0, stdout: 'drwx------  2 me  staff  64 Nov  8 03:00 .\n' }
       const service = args[args.indexOf('-s') + 1] ?? ''
       const acct = args[args.indexOf('-a') + 1] ?? ''
       const key = `${service}\u0000${acct}`
@@ -163,50 +166,92 @@ describe('key file variables stay separate', () => {
   })
 })
 
+type Product = 'cli' | 'desktop'
+const SERVICE: Record<Product, string> = { cli: 'OrgAI CLI Vault', desktop: 'OrgAI Vault' }
+
+/** Two stores on one shared fake keychain, one per product, each with its own spawner so the calls can be told apart. */
+async function bothProducts() {
+  const kc = sharedKeychain()
+  const spawners = { cli: kc.make(), desktop: kc.make() }
+  const dirs2 = { cli: tmp(), desktop: tmp() }
+  const open = (product: Product) => {
+    const dir = dirs2[product]
+    const dataDir = join(dir, 'data')
+    return openSecretStore({
+      dataDir,
+      userDataDir: dir,
+      hostKind: 'inproc',
+      product,
+      cipher: noCipher,
+      platform: 'darwin',
+      env: macEnv,
+      custodian: createCustodianFactory({ dataDir, userDataDir: dir, product, spawner: spawners[product].spawner, env: macEnv, platform: 'darwin' }),
+      log: () => undefined,
+      retryMs: 0
+    })
+  }
+  const itemsOf = (product: Product): string[] => [...kc.items.entries()].filter(([k]) => k.startsWith(`${SERVICE[product]}\u0000`)).map(([k, v]) => `${k}=${v}`)
+  const callsMention = (product: Product, other: Product): boolean =>
+    spawners[product].calls.some((c) => `${c.args.join(' ')} ${c.stdin}`.replace(SERVICE.cli, '').includes(SERVICE.desktop) && other === 'desktop') ||
+    spawners[product].calls.some((c) => `${c.args.join(' ')} ${c.stdin}`.includes(SERVICE.cli) && other === 'cli')
+  return { open, itemsOf, callsMention, dirs: dirs2 }
+}
+
 describe('reset and rotation in one product leave the other untouched', () => {
-  it('a CLI reset never touches the desktop item, and each store only ever names its own service', async () => {
-    const kc = sharedKeychain()
-    const cliSp = kc.make()
-    const appSp = kc.make()
-    const open = async (product: 'cli' | 'desktop', dir: string, sp: ReturnType<typeof kc.make>) => {
-      const dataDir = join(dir, 'data')
-      return openSecretStore({
-        dataDir,
-        userDataDir: dir,
-        hostKind: 'inproc',
-        product,
-        cipher: noCipher,
-        platform: 'darwin',
-        env: macEnv,
-        custodian: createCustodianFactory({ dataDir, userDataDir: dir, product, spawner: sp.spawner, env: macEnv, platform: 'darwin' }),
-        log: () => undefined,
-        retryMs: 0
-      })
-    }
-    const cliDir = tmp()
-    const appDir = tmp()
-    const cli = await open('cli', cliDir, cliSp)
-    const app = await open('desktop', appDir, appSp)
-    await cli.prepareWrite()
-    cli.set('k', 'cli-value')
-    await app.prepareWrite()
-    app.set('k', 'app-value')
-    const appItemsBefore = [...kc.items.keys()].filter((k) => k.startsWith('OrgAI Vault\u0000'))
-    expect(appItemsBefore).toHaveLength(1)
-    expect([...kc.items.keys()].filter((k) => k.startsWith('OrgAI CLI Vault\u0000'))).toHaveLength(1)
+  for (const [actor, other] of [['cli', 'desktop'], ['desktop', 'cli']] as const) {
+    it(`a ${actor} reset never touches the ${other} item or value, and ${actor} only ever names its own service`, async () => {
+      const w = await bothProducts()
+      const a = await w.open(actor)
+      const b = await w.open(other)
+      await a.prepareWrite()
+      a.set('k', `${actor}-value`)
+      await b.prepareWrite()
+      b.set('k', `${other}-value`)
+      const otherItems = w.itemsOf(other)
+      expect(otherItems).toHaveLength(1)
+      expect(w.itemsOf(actor)).toHaveLength(1)
 
-    await cli.resetVault({ confirm: true })
-    await cli.prepareWrite()
-    cli.set('k', 'cli-value-2')
+      await a.resetVault({ confirm: true })
+      await a.prepareWrite()
+      a.set('k', `${actor}-value-2`)
 
-    // The desktop vault and its item are as they were; the reset created a second CLI item, never touched the app's.
-    expect([...kc.items.keys()].filter((k) => k.startsWith('OrgAI Vault\u0000'))).toEqual(appItemsBefore)
-    expect(app.get('k')).toBe('app-value')
-    expect(cli.get('k')).toBe('cli-value-2')
-    const named = (calls: { args: string[]; stdin: string }[]): string[] => calls.map((c) => `${c.args.join(' ')} ${c.stdin}`)
-    expect(named(cliSp.calls).some((s) => /"?OrgAI Vault"?(\s|$)/.test(s.replace('OrgAI CLI Vault', '')))).toBe(false)
-    expect(named(appSp.calls).some((s) => s.includes('OrgAI CLI Vault'))).toBe(false)
-    cli.dispose()
-    app.dispose()
-  })
+      // The other vault and its item are as they were; the reset created a second item of the actor, never touched the other's.
+      expect(w.itemsOf(other)).toEqual(otherItems)
+      expect(b.get('k')).toBe(`${other}-value`)
+      expect(a.get('k')).toBe(`${actor}-value-2`)
+      expect(w.callsMention(actor, other)).toBe(false)
+      a.dispose()
+      b.dispose()
+    })
+
+    it(`rotating the ${actor} key (reset, then a new key file imported) leaves the ${other} item and value alone`, async () => {
+      const w = await bothProducts()
+      const a = await w.open(actor)
+      const b = await w.open(other)
+      await a.prepareWrite()
+      a.set('k', 'before')
+      await b.prepareWrite()
+      b.set('k', `${other}-value`)
+      const otherItems = w.itemsOf(other)
+      const keyDir = tmp()
+      const first = join(keyDir, 'first.key')
+      const second = join(keyDir, 'second.key')
+      writeFileSync(second, randomBytes(32), { mode: 0o600 })
+
+      await a.resetVault({ confirm: true })
+      expect((await a.initVault({ keyFile: first })).action).toBe('created')
+      a.set('k', 'with-first-key')
+      await a.resetVault({ confirm: true })
+      expect((await a.initVault({ keyFile: second, importKeyFile: true })).action).toBe('created')
+      a.set('k', 'with-second-key')
+      expect(a.currentCustody()).toMatchObject({ scheme: 'key-file', keyFile: expect.stringMatching(/second\.key$/) })
+
+      expect(w.itemsOf(other)).toEqual(otherItems)
+      expect(b.get('k')).toBe(`${other}-value`)
+      expect(b.currentCustody()).toMatchObject({ scheme: 'keychain' })
+      expect(w.callsMention(actor, other)).toBe(false)
+      a.dispose()
+      b.dispose()
+    })
+  }
 })

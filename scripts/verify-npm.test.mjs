@@ -14,6 +14,8 @@ import {
   listInstalledTree,
   main,
   npmCliEnv,
+  npmFreshUserEnv,
+  cliDefaultFolder,
   npmEnv,
   packumentFor,
   parseArgs,
@@ -75,6 +77,17 @@ test('environment helpers', () => {
   assert.equal('x' in e, false)
   assert.deepEqual(npmCliEnv({ ORGAI_VAULT_KEY_FILE: '/k', ORGAI_CLI_VAULT_KEY_FILE: '/ck', ORGAI_CLAUDE_PATH: '/c', ORGAI_MOCK: '1' }), { ORGAI_MOCK: '1', ORGAI_CLI_VAULT_NO_OS_KEYSTORE: '1' }, 'the OS keychain stays off')
   assert.deepEqual(npmCliEnv({ ORGAI_DATA_DIR: '/app', ORGAI_CLI_DATA_DIR: '/old' }, '/cli'), { ORGAI_CLI_DATA_DIR: '/cli', ORGAI_CLI_VAULT_NO_OS_KEYSTORE: '1' }, 'the CLI folder comes from ORGAI_CLI_DATA_DIR')
+})
+
+test('the fresh-user environment drops ORGAI_CLI_DATA_DIR, points the user folders at the temp home and decoys ORGAI_DATA_DIR', () => {
+  const env = npmFreshUserEnv({ ORGAI_CLI_DATA_DIR: '/x', ORGAI_MOCK: '1', HOME: '/real' }, '/h', '/decoy')
+  assert.equal(env.ORGAI_CLI_DATA_DIR, undefined)
+  assert.deepEqual([env.HOME, env.USERPROFILE, env.ORGAI_DATA_DIR, env.ORGAI_MOCK], ['/h', '/h', '/decoy', '1'])
+  assert.equal(env.APPDATA, path.join('/h', 'AppData', 'Roaming'))
+  assert.equal(env.XDG_CONFIG_HOME, path.join('/h', '.config'))
+  assert.equal(cliDefaultFolder('darwin', '/h'), path.join('/h', 'Library', 'Application Support', 'orgai-cli'))
+  assert.equal(cliDefaultFolder('win32', '/h'), path.join('/h', 'AppData', 'Roaming', 'orgai-cli'))
+  assert.equal(cliDefaultFolder('linux', '/h'), path.join('/h', '.config', 'orgai-cli'))
 })
 
 test('output readers', () => {
@@ -265,6 +278,12 @@ function fakeRun(calls, { pkg, sw }, answers = {}) {
       fs.writeFileSync(bin, '')
       return { code: 0, stdout: '', stderr: '' }
     }
+    // A fresh user (no ORGAI_CLI_DATA_DIR): the CLI marks <user config>/orgai-cli, or the app's variable when answers.useAppDir (a broken CLI).
+    if (cmd.env && !cmd.env.ORGAI_CLI_DATA_DIR && cmd.env.HOME && a.includes('doctor')) {
+      const dir = answers.useAppDir ? cmd.env.ORGAI_DATA_DIR : cliDefaultFolder(process.platform, cmd.env.HOME)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'product.json'), JSON.stringify({ product: 'orgai-cli', version: 1 }))
+    }
     // The CLI marks its folder on first use (spec 3.1).
     if (cmd.env?.ORGAI_CLI_DATA_DIR && !fs.existsSync(path.join(cmd.env.ORGAI_CLI_DATA_DIR, 'product.json'))) fs.writeFileSync(path.join(cmd.env.ORGAI_CLI_DATA_DIR, 'product.json'), JSON.stringify({ product: 'orgai-cli', version: 1 }))
     if (a.includes('--version') && /claude(\.exe)?$/.test(cmd.command)) return { code: 0, stdout: '2.1.312 (Claude Code)\n', stderr: '' }
@@ -320,6 +339,17 @@ test('main: a matching install passes, vault and codex skip, temp dirs removed',
     assert.equal(exec.env.ORGAI_CLI_VAULT_NO_OS_KEYSTORE, '1', 'no child may reach the real OS keychain')
     assert.ok(exec.env.ORGAI_CLI_DATA_DIR && exec.env.ORGAI_DATA_DIR !== exec.env.ORGAI_CLI_DATA_DIR, 'the CLI folder is not the app variable')
     assert.ok(exec.env.PATH.startsWith(path.dirname(process.execPath)))
+  } finally {
+    fs.rmSync(fake.root, { recursive: true, force: true })
+  }
+})
+
+test('main step (8): a CLI that falls back to ORGAI_DATA_DIR in a fresh user fails', async () => {
+  const fake = fakeRoot()
+  try {
+    const r = await runMain(fake, { useAppDir: true })
+    assert.equal(r.code, 1)
+    assert.match(r.out, /fail +\(8\) data folder .*did not write .*orgai-cli.*ORGAI_DATA_DIR alone was not ignored/)
   } finally {
     fs.rmSync(fake.root, { recursive: true, force: true })
   }

@@ -235,3 +235,12 @@ test('the README of a prerelease installs from the next tag, a stable one from l
   assert.match(readmeText({ version: '0.1.6-dev1' }), /npm i -g orgai-cli@next\n/)
   assert.match(readmeText({ version: '0.1.6' }), /npm i -g orgai-cli\n/)
 })
+
+test('the README describes the standalone CLI: no daemon, no --host, no shared data folder', () => {
+  const text = readmeText({ version: '0.1.6' })
+  assert.doesNotMatch(text, /daemon/i)
+  assert.doesNotMatch(text, /--host/)
+  assert.doesNotMatch(text, /share one data folder/)
+  assert.doesNotMatch(text, /connects to it|starts it in the background/)
+  for (const word of ['orgai-cli', 'ORGAI_CLI_DATA_DIR', 'ORGAI_CLI_VAULT_KEY_FILE', '--data-dir']) assert.ok(text.includes(word), word)
+})

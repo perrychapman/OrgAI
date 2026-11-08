@@ -94,6 +94,20 @@ export function execBudgetUsd(effective: Project, o?: RunOverrides): number | un
   return undefined
 }
 
+/**
+ * The overrides with every `wait` decision choice turned into `fail` (cli-standalone-default.md 4.3). A host whose cards
+ * only this process could answer (the orgai command's own host) has nobody to wait for, so a policy that waits would hang
+ * until its timeout; this holds for any path that reaches the host, not only the exec flag parser. Returns `o` itself
+ * when nothing waits.
+ */
+export function withoutWaitPolicy(o: RunOverrides): RunOverrides {
+  const policy = o.decisionPolicy
+  if (!policy || !Object.values(policy).includes('wait')) return o
+  const out: Record<string, unknown> = { ...policy }
+  for (const [k, v] of Object.entries(out)) if (v === 'wait') out[k] = 'fail'
+  return { ...o, decisionPolicy: out as unknown as HeadlessDecisionPolicy }
+}
+
 // ---------- RPC-boundary builder ----------
 
 const POLICY_CHOICES = {

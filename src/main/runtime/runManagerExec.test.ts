@@ -111,6 +111,38 @@ const agent = (over: Partial<AgentInstance> & { id: string }): AgentInstance => 
   ...over
 })
 
+describe('wait policies on the orgai command host (cli-standalone-default.md 4.3)', () => {
+  const waiting = { permission: 'wait', rules: 'deny', mcpInstall: 'deny', question: 'wait', proposal: 'decline', merge: 'hold', waitTimeoutMs: 60_000 } as const
+
+  it('noWaitPolicy turns every wait choice into fail when a run starts, and keeps the rest', async () => {
+    const { m } = rig({ noWaitPolicy: true })
+    const run = await m.start({ project: proj(), prompt: 'go', team: 'single', overrides: exec({ decisionPolicy: { ...waiting } }) })
+    expect(run.overrides?.decisionPolicy).toMatchObject({ permission: 'fail', question: 'fail', rules: 'deny', merge: 'hold', waitTimeoutMs: 60_000 })
+    await m.stopAll()
+  })
+
+  it('a stored chain policy that waits is normalised on the continuation too', async () => {
+    const { m, fakes } = rig()
+    const p = proj()
+    // The chain was started elsewhere with a waiting policy; this host (noWaitPolicy) continues it with resume --exec.
+    const run = await m.start({ project: p, prompt: 'go', team: 'single', overrides: exec({ decisionPolicy: { ...waiting } }) })
+    expect(run.overrides?.decisionPolicy).toMatchObject({ permission: 'wait' })
+    endTurn(fakes[0])
+    await flush()
+    ;(m as unknown as { options: RunManagerOptions }).options.noWaitPolicy = true
+    const next = await m.continueRun(p, run.id, 'again', undefined, { exec: true })
+    expect(next.overrides?.decisionPolicy).toMatchObject({ permission: 'fail', question: 'fail' })
+    await m.stopAll()
+  })
+
+  it('without the option (the app, a background host) a wait policy is kept', async () => {
+    const { m } = rig()
+    const run = await m.start({ project: proj(), prompt: 'go', team: 'single', overrides: exec({ decisionPolicy: { ...waiting } }) })
+    expect(run.overrides?.decisionPolicy).toMatchObject({ permission: 'wait', question: 'wait' })
+    await m.stopAll()
+  })
+})
+
 describe('exec settlement', () => {
   it('a single-agent run settles completed-unplanned after turn 1', async () => {
     const { m, fakes } = rig()

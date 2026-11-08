@@ -88,7 +88,7 @@ export const CARD_SWAP_GUARD_MS = 750
 export const TUI_TRANSCRIPT_MAX = 5000
 /** Notices kept in state. */
 export const TUI_NOTICE_MAX = 20
-/** Resolved-card infos kept (for "Resolved in another window"). */
+/** Resolved-card infos kept (for "Resolved by ..."). */
 export const TUI_RESOLVED_MAX = 50
 /** Agent-to-agent messages kept per run (counts only, never the text). */
 export const TUI_MESSAGES_MAX = 200

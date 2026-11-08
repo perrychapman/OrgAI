@@ -499,7 +499,7 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     const denied = await c.response(2)
     expect(denied.error.data.code).toBe('scope_denied')
     expect(denied.error.data.message).toContain(NODE_TERMINAL_ACCESS_LEVEL_MESSAGE)
-    expect(denied.error.data.message).toContain('orgai terminal-access --level full')
+    expect(denied.error.data.message).not.toMatch(/orgai (daemon|terminal-access)/)
     expect(denied.error.data.message).not.toContain('App settings')
     st.terminalServer = false
     const { res: off } = await hello(await client())

@@ -11,11 +11,13 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Test isolation: ORGAI_VAULT_NO_OS_KEYSTORE keeps the vault off the OS keystore for every app, CLI or helper an e2e
-// script starts. Every child inherits process.env, so setting it here (an import side effect, before any launch) covers
-// launch(), startCli() and the pty driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE) keeps it; the
-// flag is harmless beside it.
+// Test isolation: ORGAI_VAULT_NO_OS_KEYSTORE (the app's vault) and ORGAI_CLI_VAULT_NO_OS_KEYSTORE (the orgai CLI's own
+// vault, a separate product) keep the vaults off the OS keystore for every app, CLI or helper an e2e script starts.
+// Every child inherits process.env, so setting them here (an import side effect, before any launch) covers launch(),
+// startCli() and the pty driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE, ORGAI_CLI_VAULT_KEY_FILE)
+// keeps it; the flags are harmless beside it.
 process.env.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
+process.env.ORGAI_CLI_VAULT_NO_OS_KEYSTORE = '1'
 // Electron's own safeStorage (the app's older secrets.json) would otherwise create a "... Safe Storage" keychain item on
 // macOS. Only launch() passes Chromium's --use-mock-keychain (key kept in memory); apps started elsewhere (cli-readonly,
 // verify-pack) do not, so they can still reach the real keychain through safeStorage.

@@ -1,7 +1,7 @@
 /**
- * Secure storage in `orgai doctor` (cli-standalone.md 5.7): custodian scheme and probe, vault state, legacy file
- * state, the pending-legacy count with the "open the app once" hint, soft deletes and orphans. With a host: its
- * secrets:status (probe on). Without one: vault.json metadata (readVaultMetadata, plus the key names, baseline hashes
+ * Secure storage in `orgai doctor` (cli-standalone.md 5.7, cli-standalone-default.md 4.5): the vault state, the CLI's own
+ * custody names (never the app's), legacy file state, the pending-legacy count, soft deletes and orphans. The doctor
+ * command is always hostless (a client, when one is passed, gives secrets:status), so it reads vault.json metadata (readVaultMetadata, plus the key names, baseline hashes
  * and tombstone kinds of a valid file) and secrets.json's keys and value strings, hashed, never decrypted: the
  * pending-legacy count of 5.4 / 5.5 (rows 3 and 4) and the legacy-removal notice. Never a custodian call, never a
  * write. Never prints a value, and never throws (a failure is a 'warn' check).
@@ -11,7 +11,8 @@ import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SecretsStatusResult } from '../../shared/types'
 import { readVaultMetadata } from '../../main/store/vaultMetadata'
-import { CLI_VAULT_MESSAGES as VAULT_MESSAGES, LEGACY_SECRETS_FILE, VAULT_FILE } from '../../main/store/vaultTypes'
+import { platformVaultScheme } from '../../main/store/secrets'
+import { CLI_VAULT_MESSAGES as VAULT_MESSAGES, LEGACY_SECRETS_FILE, VAULT_FILE, vaultNames } from '../../main/store/vaultTypes'
 import type { DoctorCheck } from '../commands/doctor'
 import { schemeText, STATE_TEXT } from '../commands/secrets'
 import type { DoctorCheckGroup } from './types'
@@ -183,8 +184,32 @@ export function pendingLegacyCount(values: Readonly<Record<string, string>>, vau
   return n
 }
 
+/**
+ * Which custody the CLI's vault uses, by name only (3.2): the key-file variable (and its path when set), or the platform
+ * key store's item for the recorded or default scheme. Reads names and the environment; calls no custodian.
+ */
+export function vaultCustodyCheck(recorded: SecretsStatusResult['scheme'] | undefined, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): DoctorCheck {
+  const names = vaultNames('cli')
+  const keyFile = env[names.keyFileEnv]?.trim()
+  if (keyFile) return { id: 'vault-custody', status: 'ok', detail: `The CLI's own vault key is in the key file ${keyFile} (${names.keyFileEnv}); the app's secure storage is not used` }
+  const scheme = recorded ?? platformVaultScheme(platform)
+  const fileHint = `${names.keyFileEnv} names a key file instead`
+  switch (scheme) {
+    case 'keychain':
+      return { id: 'vault-custody', status: 'ok', detail: `The CLI's own vault key is the macOS keychain item "${names.keychainService}" (not the app's); ${fileHint}` }
+    case 'secret-service':
+      return { id: 'vault-custody', status: 'ok', detail: `The CLI's own vault key is the Secret Service item "${names.secretServiceLabel}" (attribute ${names.secretServiceAttribute}, not the app's); ${fileHint}` }
+    case 'dpapi-user':
+      return { id: 'vault-custody', status: 'ok', detail: `The CLI's own vault key is protected by Windows DPAPI for this user (entropy ${names.dpapiEntropyPrefix}, not the app's); ${fileHint}` }
+    case 'key-file':
+      return { id: 'vault-custody', status: 'warn', detail: `This vault keeps its key in a key file, but ${names.keyFileEnv} is not set; set it to the key file's path` }
+    default:
+      return { id: 'vault-custody', status: 'warn', detail: `No key store is available on this system; set ${names.keyFileEnv} or run \`orgai secrets init --key-file <path>\`` }
+  }
+}
+
 /** Checks without a host: metadata, key names and hashes only. */
-export function offlineSecretsChecks(dataDir: string, ownerRunning = false): DoctorCheck[] {
+export function offlineSecretsChecks(dataDir: string, ownerRunning = false, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): DoctorCheck[] {
   const meta = readVaultMetadata(dataDir)
   const checks: DoctorCheck[] = []
   if (meta.state === 'absent') checks.push({ id: 'vault', status: 'ok', detail: 'Not created yet; the first saved secret creates it' })
@@ -193,6 +218,7 @@ export function offlineSecretsChecks(dataDir: string, ownerRunning = false): Doc
     const tomb = meta.tombstones ? `, ${plural(meta.tombstones, 'removed secret')} kept` : ''
     checks.push({ id: 'vault', status: 'ok', detail: `Present (${schemeText(meta.scheme ?? null)}): ${plural(meta.entries, 'secret')}${tomb}; not opened here${ownerRunning ? ' (another orgai is running)' : ''}` })
   }
+  checks.push(vaultCustodyCheck(meta.state === 'present' ? meta.scheme : undefined, env, platform))
   const legacy = readLegacyShape(dataDir)
   if (meta.legacyRetired && legacy.state === 'missing') checks.push(legacyCheck('retired', 0))
   else checks.push(legacyCheck(legacy.state, legacy.keys))

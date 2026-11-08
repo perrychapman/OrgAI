@@ -153,7 +153,6 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   }
   const { userDataDir, dataDir } = opts
   const logsDir = join(userDataDir, 'logs')
-  if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })
   if (opts.quiet) quietConsole()
   const hostInstanceId = currentHostInstanceId()
   const hostKind = 'inproc' as const
@@ -195,6 +194,9 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)
     throw e
   }
+  // Logging only once ownership is held: a refused second orgai must not create logs/ or rotate main.log under the owner
+  // (it reports on stderr only; spec 4.2).
+  if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })
   // After ownership (the in-process twin of the desktop's single-instance lock), before anything can fetch.
   const certOpt = opts.systemCertificates ?? true
   const certs = certOpt === true ? SYSTEM_CERTS : certOpt === false ? undefined : certOpt

@@ -55,7 +55,7 @@ const DAEMON_JSON = path.join(DATA_DIR, 'data', 'run', 'daemon.json')
 const UI = {
   fullscreenArgs: ['tui'],
   inlineArgs: ['tui'], // at 90x20 the TUI picks inline by size; `--inline` forces it at any size
-  resolvedElsewhere: /Resolved in another window/i,
+  resolvedElsewhere: /Resolved by (the |something)/i,
   /** The agents pane's heading (soft check: the layout is judged by where the transcript text starts). */
   treeHeading: /\b(Agents|Org|Team)\b/,
   /**

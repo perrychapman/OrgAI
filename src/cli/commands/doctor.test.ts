@@ -45,7 +45,7 @@ describe('orgai doctor', () => {
     const j = JSON.parse(f.out())
     expect(j.ok).toBe(true)
     const ids = j.checks.map((c: { id: string }) => c.id)
-    expect(ids).toEqual(['node', 'install', 'data-dir', 'product', 'run-dir', 'daemon-json', 'shim', 'git', 'mock', 'install-channel', 'orgai-on-path', 'node-certs', 'claude-runtime', 'codex-runtime', 'vault', 'legacy-secrets'])
+    expect(ids).toEqual(['node', 'install', 'data-dir', 'product', 'run-dir', 'daemon-json', 'shim', 'git', 'mock', 'install-channel', 'orgai-on-path', 'node-certs', 'claude-runtime', 'codex-runtime', 'vault', 'vault-custody', 'legacy-secrets'])
     expect(j.checks.every((c: { status: string }) => c.status !== 'fail')).toBe(true)
     expect(j.checks.find((c: { id: string }) => c.id === 'daemon-json').detail).toMatch(/^Another orgai is running \(pid \d+/)
     expect(f.connectCalls).toHaveLength(0)

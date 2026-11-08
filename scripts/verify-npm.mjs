@@ -134,6 +134,23 @@ export function npmCliEnv(base, cliDataDir) {
   return out
 }
 
+/**
+ * The environment of the fresh-user run (step 8): no ORGAI_CLI_DATA_DIR, the user folders pointed at `home`, and the
+ * app's ORGAI_DATA_DIR set to `decoy`. Pure.
+ */
+export function npmFreshUserEnv(childEnv, home, decoy) {
+  const out = { ...childEnv }
+  delete out.ORGAI_CLI_DATA_DIR
+  return { ...out, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: path.join(home, '.config'), ORGAI_DATA_DIR: decoy }
+}
+
+/** Where a fresh install keeps the CLI's data folder under `home` (cli-standalone-default.md 3.1). Pure. */
+export function cliDefaultFolder(platform, home) {
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'orgai-cli')
+  if (platform === 'win32') return path.join(home, 'AppData', 'Roaming', 'orgai-cli')
+  return path.join(home, '.config', 'orgai-cli')
+}
+
 /** True when `--version` output names `channel npm`. Pure. */
 export function versionSaysNpm(stdout) {
   return /\bchannel npm\b/.test(String(stdout ?? ''))
@@ -552,7 +569,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const childEnv = { ...withNodeFirst(npmCliEnv(baseVerifyEnv(env), userDataDir), nodeDir, platform), ORGAI_DATA_DIR: decoyAppDir }
   const orgaiAt = (bin, args, cwd, extra = {}) => {
     const cmd = launchCommand(platform, bin, args, env)
-    return run({ ...cmd, cwd, env: { ...childEnv, ...(extra.env ?? {}) }, timeoutMs: CHECK_TIMEOUT_MS, ...(extra.input !== undefined ? { input: extra.input } : {}) })
+    return run({ ...cmd, cwd, env: extra.replaceEnv ? extra.env : { ...childEnv, ...(extra.env ?? {}) }, timeoutMs: CHECK_TIMEOUT_MS, ...(extra.input !== undefined ? { input: extra.input } : {}) })
   }
   const orgai = (args, cwd = userDataDir, extra) => orgaiAt(layout.bin, args, cwd, extra)
   let proxy
@@ -749,7 +766,21 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         problems8.push(`no readable product.json in the CLI data folder (${e.code ?? e.message})`)
       }
       if (fs.readdirSync(decoyAppDir).length > 0) problems8.push(`ORGAI_DATA_DIR was not ignored: ${decoyAppDir} holds ${fs.readdirSync(decoyAppDir).join(', ')}`)
-      report('(8) data folder', problems8.length === 0 ? 'ok' : 'fail', problems8.length ? problems8.join('; ') : 'product.json marks the CLI folder (orgai-cli); ORGAI_DATA_DIR was ignored')
+      // A fresh user: ORGAI_CLI_DATA_DIR unset, the user folders in a temp home, ORGAI_DATA_DIR a decoy. The marker must
+      // appear in the default orgai-cli folder and the decoy must stay empty.
+      const freshHome = path.join(work, 'fresh-home')
+      const freshDecoy = path.join(work, 'fresh-app-decoy')
+      for (const d of [freshHome, freshDecoy]) fs.mkdirSync(d)
+      const fresh = await orgai(['--output-format', 'json', 'doctor'], freshHome, { env: npmFreshUserEnv(childEnv, freshHome, freshDecoy), replaceEnv: true })
+      const freshMarker = path.join(cliDefaultFolder(platform, freshHome), 'product.json')
+      try {
+        const marker = JSON.parse(fs.readFileSync(freshMarker, 'utf8'))
+        if (marker.product !== 'orgai-cli') problems8.push(`a fresh install: product.json says ${JSON.stringify(marker.product)}, expected "orgai-cli"`)
+      } catch (e) {
+        problems8.push(`a fresh install did not write ${freshMarker} (${e.code ?? e.message}): ${showRun(fresh)}`)
+      }
+      if (fs.readdirSync(freshDecoy).length > 0) problems8.push(`ORGAI_DATA_DIR alone was not ignored: ${freshDecoy} holds ${fs.readdirSync(freshDecoy).join(', ')}`)
+      report('(8) data folder', problems8.length === 0 ? 'ok' : 'fail', problems8.length ? problems8.join('; ') : 'product.json marks the CLI folder (orgai-cli), also in a fresh user\'s default orgai-cli folder; ORGAI_DATA_DIR was ignored')
     }
 
     // (7) Codex, bring-your-own

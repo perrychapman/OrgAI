@@ -119,7 +119,7 @@ import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { effectiveRunProject, execBudgetUsd } from './runOverrides'
+import { effectiveRunProject, execBudgetUsd, withoutWaitPolicy } from './runOverrides'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
 import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
 import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
@@ -662,6 +662,11 @@ export interface RunManagerOptions {
    * policy waits humanGraceMs before auto-resolving a card while this is above 0. Missing = 0.
    */
   interactiveClients?: () => number
+  /**
+   * The orgai command's own host (hostKind 'inproc'): nothing but that process can answer a card, so a `wait` decision
+   * policy is turned into `fail` when a run starts, whichever path brought it (cli-standalone-default.md 4.3).
+   */
+  noWaitPolicy?: boolean
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
   /**
@@ -1366,7 +1371,8 @@ export class RunManager {
     this.refuseWhileQuitting()
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
     // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
-    const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    let overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    if (overrides && this.options.noWaitPolicy) overrides = withoutWaitPolicy(overrides)
     if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
     if (team === 'single') {
       if (kind !== 'work') throw new Error('Only a work run can use the single assistant.')
