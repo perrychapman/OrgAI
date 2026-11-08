@@ -14,14 +14,6 @@ export const CLI_SHIM_UNAVAILABLE = 'Available in the installed OrgAI app, not i
 export const CLI_SHIM_CHECKING = 'Checking…'
 /** Said when the status could not be read and no earlier status is known. */
 export const CLI_SHIM_LOAD_FAILED = 'OrgAI could not check the orgai command. Open App settings again to retry.'
-/**
- * The same-user trust model of Terminal access (review H2), shared by the Terminal access row and the confirm after
- * an install.
- */
-export const TERMINAL_ACCESS_TRUST =
-  'While it is on, any program you run on this computer, agent shells included, can see and control OrgAI.'
-/** After an install while Terminal access is off: the command cannot reach OrgAI until the user turns it on. */
-export const CLI_SHIM_ACCESS_OFF_NOTE = 'Terminal access is still off, so the command cannot reach OrgAI until you turn it on.'
 export const CLI_SHIM_INSTALL_LABEL = 'Install orgai command'
 export const CLI_SHIM_UPDATE_LABEL = 'Update orgai command'
 /** Said when main answers with a state this renderer does not know or with no reason for a foreign file. */
@@ -158,14 +150,6 @@ export function cliShimDescribedBy(descId: string, view: CliShimView | null): st
 export function cliShimLine(view: CliShimView | null, loadFailed: boolean): string {
   if (view) return view.line
   return loadFailed ? CLI_SHIM_LOAD_FAILED : CLI_SHIM_CHECKING
-}
-
-/**
- * After an install or update: ask to turn Terminal access on only when it succeeded and access is off (review H2:
- * installing never turns it on by itself).
- */
-export function askTerminalAccessAfter(action: 'install' | 'update' | 'remove', result: CliShimResult | null | undefined, terminalAccessOn: boolean): boolean {
-  return action !== 'remove' && result?.ok === true && !terminalAccessOn
 }
 
 /** True when the preload exposes the shim API (older builds and tests may not). */

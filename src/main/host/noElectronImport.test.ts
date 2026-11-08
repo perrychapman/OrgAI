@@ -53,8 +53,7 @@ const PURE_NODE_MODULES = [
   '../capabilities/service',
   '../quick/quickRuns',
   '../maintenance',
-  '../usageMonitor',
-  '../handoff'
+  '../usageMonitor'
 ]
 
 describe('host modules load without electron', () => {

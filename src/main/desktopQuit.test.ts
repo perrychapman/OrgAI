@@ -2,13 +2,12 @@
  * The desktop's real before-quit / will-quit handlers (desktopQuit.ts, as index.ts installs them) against a fake app
  * that dispatches quit() the way Electron does (before-quit, then will-quit unless prevented, then exit), with the real
  * ShutdownCoordinator and HostActivityTracker (cli-standalone.md 4.3: Quit is held until the writers settled and
- * ownership was released; will-quit never releases).
+ * ownership was released; will-quit never releases). The app has no socket, so nothing is closed there.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { beforeQuitHandler, willQuitHandler, type QuitEventLike, type QuitHost } from './desktopQuit'
+import { beforeQuitHandler, type QuitEventLike, type QuitHost } from './desktopQuit'
 import { HostActivityTracker } from './host/activity'
 import { ShutdownCoordinator, type ShutdownReason } from './host/shutdown'
-import { quitPromptNeeded } from './hostLifecycle'
 
 class FakeApp {
   readonly order: string[] = []
@@ -37,20 +36,18 @@ class FakeApp {
 }
 
 /** index.ts in miniature: its module state, the coordinator wired as bootOrgAIHost wires it, the two handlers. */
-function desktop(opts: { terminalClients?: number; host?: boolean; shutdownFails?: boolean } = {}) {
+function desktop(opts: { host?: boolean; shutdownFails?: boolean } = {}) {
   const app = new FakeApp()
-  const state = { quitting: false, drainQuit: false, quitAnswered: false, promptOpen: false, reason: 'desktop-quit' as ShutdownReason }
+  const state = { quitting: false, drainQuit: false, reason: 'desktop-quit' as ShutdownReason }
   const releases: string[] = []
   const exits: number[] = []
   const warnings: string[] = []
-  const askQuit = vi.fn()
   const forceStop = vi.fn(async () => void app.order.push('runs stopped'))
   const shutdown = new ShutdownCoordinator({
     release: () => {
       releases.push('release')
       app.order.push('release')
     },
-    closeSocket: async () => void app.order.push('sockets closed'),
     // index.ts onDrained: the quit that follows comes from the shutdown itself.
     onReleased: () => {
       state.drainQuit = true
@@ -69,22 +66,15 @@ function desktop(opts: { terminalClients?: number; host?: boolean; shutdownFails
     'before-quit',
     beforeQuitHandler({
       host: () => (opts.host === false ? undefined : host),
-      terminalClients: () => opts.terminalClients ?? 0,
-      promptNeeded: quitPromptNeeded,
-      drainQuit: () => state.drainQuit,
-      quitAnswered: () => state.quitAnswered,
       quitting: () => state.quitting,
       markQuitting: () => void (state.quitting = true),
-      promptOpen: () => state.promptOpen,
-      askQuit,
       reason: () => state.reason,
       stopCertRead: () => app.order.push('cert read stopped'),
       exit: (code) => void exits.push(code),
       warn: (m) => void warnings.push(m)
     })
   )
-  app.on('will-quit', willQuitHandler({ closeServer: () => app.order.push('server closed') }))
-  return { app, state, shutdown, activity, releases, exits, warnings, askQuit, forceStop, dispose }
+  return { app, state, shutdown, activity, releases, exits, warnings, forceStop, dispose }
 }
 
 const waitFor = async (fn: () => boolean, ms = 2_000): Promise<void> => {
@@ -118,13 +108,11 @@ describe('desktop Quit through the real before-quit / will-quit handlers (cli-st
       'runs stopped',
       'before-quit held',
       'write landed',
-      'sockets closed',
       'release',
       // The coordinator's exit step quits again; the handler lets it through and disposes the host.
       'cert read stopped',
       'host disposed',
       'before-quit through',
-      'server closed',
       'exited'
     ])
     expect(d.releases).toEqual(['release'])
@@ -143,21 +131,6 @@ describe('desktop Quit through the real before-quit / will-quit handlers (cli-st
     expect(d.releases).toEqual(['release'])
   })
 
-  it('with terminal clients attached it asks first; the prompt never starts the shutdown, "Stop all runs and quit" does', async () => {
-    const d = desktop({ terminalClients: 2 })
-    d.app.quit()
-    expect(d.askQuit).toHaveBeenCalledWith(2)
-    expect(d.app.order).toEqual(['before-quit held'])
-    expect(d.state.quitting).toBe(false)
-    expect(d.shutdown.phase()).toBe('running')
-    // The user answered "Stop all runs and quit".
-    d.state.quitAnswered = true
-    d.app.quit()
-    await waitFor(() => d.app.exited)
-    expect(d.askQuit).toHaveBeenCalledTimes(1)
-    expect(d.releases).toEqual(['release'])
-  })
-
   it('the last window closing on Windows / Linux quits with reason window-closed through the same sequence', async () => {
     const d = desktop()
     d.state.reason = 'window-closed'
@@ -169,10 +142,10 @@ describe('desktop Quit through the real before-quit / will-quit handlers (cli-st
     expect(d.forceStop).toHaveBeenCalledTimes(1)
   })
 
-  it('nothing booted (a quit while waiting for a handoff): the quit goes through at once', () => {
+  it('nothing booted (a refused data folder): the quit goes through at once', () => {
     const d = desktop({ host: false })
     d.app.quit()
-    expect(d.app.order).toEqual(['cert read stopped', 'before-quit through', 'server closed', 'exited'])
+    expect(d.app.order).toEqual(['cert read stopped', 'before-quit through', 'exited'])
     expect(d.state.quitting).toBe(true)
     expect(d.dispose).not.toHaveBeenCalled()
   })

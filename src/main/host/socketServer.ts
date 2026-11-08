@@ -195,29 +195,6 @@ export const NODE_TERMINAL_ACCESS_OFF_MESSAGE =
 export const NODE_TERMINAL_ACCESS_LEVEL_MESSAGE =
   'Terminal access lets terminal clients watch and run work only; this background host does not let a terminal answer decisions or change settings.'
 
-/**
- * A socket settings:set that would turn Terminal access off on a Node host (review round 2): refused, since the host
- * would then run unreachable (4.2.1): no terminal could talk to it any more.
- */
-export const NODE_TERMINAL_ACCESS_OFF_REFUSED =
-  'A background host cannot turn Terminal access off from a terminal: nothing could reach it afterwards.'
-
-/**
- * Whether a socket settings:set (`params` as sent) turns Terminal access off on this host: on a Node host, a
- * `terminalServer: false` while it is stored on. An echo of a stored false changes nothing and passes.
- */
-export function turnsNodeTerminalAccessOff(hostKind: HostKind, method: string, params: unknown, stored: () => { terminalServer?: boolean }): boolean {
-  if (hostKind !== 'node' || method !== IPC.settingsSet) return false
-  const input = Array.isArray(params) ? params[0] : undefined
-  if (!isObj(input) || input.terminalServer !== false) return false
-  try {
-    return stored().terminalServer === true
-  } catch {
-    // Unreadable settings: refuse rather than risk an unreachable host.
-    return true
-  }
-}
-
 /** TERMINAL_ACCESS_OFF_MESSAGE, or its Node host wording. */
 export function terminalAccessOffMessage(hostKind: HostKind): string {
   return hostKind === 'node' ? NODE_TERMINAL_ACCESS_OFF_MESSAGE : TERMINAL_ACCESS_OFF_MESSAGE
@@ -304,17 +281,13 @@ const isClosed = (c: Conn): boolean => c.state === 'closed'
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /**
- * The host's Terminal access (OrgAIHost.terminalAccess; a host without it reads AppSettings directly); off with the
- * lowest level when it cannot be read. The same on every host kind: an in-process host's own CLI is recognised by its
- * ownerProof, never by the host kind (review H2).
+ * The host's socket access (OrgAIHost.terminalAccess): fixed by the host kind, never a setting. An orgai host serves its
+ * own process only (the owner proof), so this decides nothing for it; off with the lowest level when it cannot be read.
  */
 function accessOf(host: OrgAIHost): HostTerminalAccess {
   try {
-    const fromHost = typeof host.terminalAccess === 'function' ? host.terminalAccess() : undefined
-    const s = fromHost ? undefined : host.settings.get()
-    const enabled = fromHost ? fromHost.enabled === true : s?.terminalServer === true
-    const level: TerminalAccessLevel = (fromHost ? fromHost.level : s?.terminalAccessLevel) === 'full' ? 'full' : 'operate'
-    return { enabled, level }
+    const a = host.terminalAccess()
+    return { enabled: a.enabled === true, level: a.level === 'full' ? 'full' : 'operate' }
   } catch {
     return { enabled: false, level: 'operate' }
   }
@@ -895,9 +868,6 @@ export class HostSocketServer {
     const stopOnly = method === HOST_METHODS.hostStop && conn.withheld.includes('configure')
     if (scope !== undefined && conn.withheld.includes(scope as HostScope) && !stopOnly) {
       return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method} needs the '${scope}' scope. ${terminalAccessLevelMessage(this.opts.hostKind)}` }))
-    }
-    if (turnsNodeTerminalAccessOff(this.opts.hostKind, method, req.params, () => host.settings.get())) {
-      return this.send(conn, rpcError(id, { code: 'bad_request', message: NODE_TERMINAL_ACCESS_OFF_REFUSED }))
     }
     const grantedScopes: HostScope[] = stopOnly ? [...conn.scopes, 'configure'] : conn.scopes
     const authorizing = method === IPC.mcpAuthorize ? this.trackAuthorize(conn, req.params) : undefined

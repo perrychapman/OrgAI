@@ -198,9 +198,8 @@ export interface OrgAIHost {
    */
   shutdown: ShutdownCoordinator
   /**
-   * Whether host.hello accepts terminal clients now and the most it grants (socketServer.ts): AppSettings.terminalServer,
-   * or this session of a headless / in-process boot while the user has made no choice; the level from
-   * AppSettings.terminalAccessLevel on every host kind (an in-process host's own CLI proves itself with the owner key).
+   * Whether host.hello accepts terminal clients and the most it grants (socketServer.ts). Fixed by the host kind; an
+   * in-process host's own CLI proves itself with the owner key and gets every scope regardless.
    */
   terminalAccess(): HostTerminalAccess
   /** Stop background timers and probes (before-quit). Idempotent. */
@@ -252,27 +251,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
 
   const runStore = new RunStore(dataDir)
   const secrets = opts.secretStore ?? new SecretStore(dataDir, opts.safeStorage, opts.secrets)
-  // A headless or in-process host exists to serve the CLI: it accepts terminal clients for this session (cli-spec 1 /
-  // 3.3, "enabled when ... launches via orgai"; AppSettings.terminalServer) without saving that, so the desktop app
-  // never inherits an open socket nobody chose (review H2). A choice made in App settings (terminalServerChosen)
-  // stands: off means host.hello refuses terminal clients here too.
-  const sessionTerminal = hostKind !== 'desktop' && settings.get().terminalServer !== true && settings.get().terminalServerChosen !== true
-  if (hostKind !== 'desktop' && settings.get().terminalServer !== true) {
-    log.info(
-      sessionTerminal
-        ? `Terminal access is on for this ${hostKind === 'node' ? 'background host' : 'command'}'s session only (not saved).`
-        : `Terminal access is off in App settings; this ${hostKind === 'node' ? 'background host' : 'command'} refuses terminal clients until it is turned on.`
-    )
-  }
-  const terminalAccess = (): HostTerminalAccess => {
-    const s = settings.get()
-    return {
-      enabled: s.terminalServer === true || (sessionTerminal && s.terminalServerChosen !== true),
-      // The same on every host kind (review H2): an in-process host's own CLI gets every scope through its in-memory
-      // owner key (socketServer.ts ownerKey), never through this level, so another client of it is capped too.
-      level: s.terminalAccessLevel === 'full' ? 'full' : 'operate'
-    }
-  }
+  // Socket access is fixed by the host kind (no setting): the orgai process's in-process host answers its own process
+  // through the owner proof (every scope), so a non-desktop host grants every scope; the desktop opens no socket at all.
+  const terminalAccess = (): HostTerminalAccess => ({ enabled: hostKind !== 'desktop', level: hostKind === 'desktop' ? 'operate' : 'full' })
   // `adapters` is declared below and only read when discovery runs.
   let adapters: { claude: ClaudeAdapter; codex: CodexAdapter; mock?: MockAdapter }
   const connections = new ConnectionService({

@@ -440,58 +440,18 @@ describe('bootOrgAIHost', () => {
     expect(armIdle).not.toHaveBeenCalled()
   })
 
-  it('a headless boot opens Terminal access for its session only, never saving it (review H2)', () => {
-    const fresh = boot({ hostKind: 'headless-host' })
-    expect(fresh.settings.get().terminalServer).toBe(false)
-    expect(fresh.settings.get().terminalServerChosen).toBeUndefined()
-    expect(fresh.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    fresh.dispose()
-    // Nothing reached settings.json: a desktop boot afterwards keeps it off.
+  it('socket access is fixed by the host kind; no setting changes it', () => {
     const desktop = boot({ hostKind: 'desktop' })
     expect(desktop.terminalAccess()).toEqual({ enabled: false, level: 'operate' })
-    // The user allows full access, then turns Terminal access off in App settings (settings:set marks the choice).
-    desktop.settings.set({ ...desktop.settings.get(), terminalAccessLevel: 'full' })
-    expect(desktop.terminalAccess()).toEqual({ enabled: false, level: 'full' })
-    desktop.settings.set({ ...desktop.settings.get(), terminalServer: false, terminalServerChosen: true })
     desktop.dispose()
-    for (const hostKind of ['headless-host', 'inproc'] as const) {
-      const later = boot({ hostKind })
-      expect(later.settings.get().terminalServer, hostKind).toBe(false)
-      expect(later.settings.get().terminalServerChosen).toBe(true)
-      expect(later.terminalAccess().enabled, hostKind).toBe(false)
-      later.dispose()
+    for (const hostKind of ['inproc', 'node'] as const) {
+      const h = boot({ hostKind })
+      expect(h.terminalAccess(), hostKind).toEqual({ enabled: true, level: 'full' })
+      // An old settings file's removed keys change nothing.
+      h.settings.set({ ...h.settings.get(), ...({ terminalServer: false, terminalAccessLevel: 'full' } as object) })
+      expect(h.terminalAccess(), hostKind).toEqual({ enabled: true, level: 'full' })
+      h.dispose()
     }
-  })
-
-  it('an in-process host follows the stored level like any host (its own CLI proves itself with the owner key); a choice made during a headless session wins at once', () => {
-    const inproc = boot({ hostKind: 'inproc' })
-    expect(inproc.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    inproc.settings.set({ ...inproc.settings.get(), terminalAccessLevel: 'full' })
-    expect(inproc.terminalAccess()).toEqual({ enabled: true, level: 'full' })
-    inproc.dispose()
-    const headless = boot({ hostKind: 'headless-host' })
-    expect(headless.terminalAccess().enabled).toBe(true)
-    headless.settings.set({ ...headless.settings.get(), terminalServer: false, terminalServerChosen: true })
-    expect(headless.terminalAccess().enabled).toBe(false)
-    headless.settings.set({ ...headless.settings.get(), terminalServer: true, terminalServerChosen: true })
-    expect(headless.terminalAccess().enabled).toBe(true)
-    headless.dispose()
-  })
-
-  it('a background host follows the stored Terminal access and level like the headless host, and arms idle exit (Wave 7, 4.2.1)', () => {
-    const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
-    const node = boot({ hostKind: 'node' })
-    expect(armIdle).toHaveBeenCalledTimes(1)
-    // No stored choice: on for this session, 'operate' (never 'full' as an in-process host would be).
-    expect(node.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    node.settings.set({ ...node.settings.get(), terminalAccessLevel: 'full', terminalAccessLevelChosen: true })
-    expect(node.terminalAccess()).toEqual({ enabled: true, level: 'full' })
-    node.settings.set({ ...node.settings.get(), terminalServer: false, terminalServerChosen: true })
-    expect(node.terminalAccess()).toEqual({ enabled: false, level: 'full' })
-    node.dispose()
-    const later = boot({ hostKind: 'node' })
-    expect(later.terminalAccess()).toEqual({ enabled: false, level: 'full' })
-    later.dispose()
   })
 
   it('dispose() is idempotent and leaves no timers behind', () => {

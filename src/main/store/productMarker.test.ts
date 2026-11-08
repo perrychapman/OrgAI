@@ -2,7 +2,7 @@ import { readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { checkCliFolder, containsAppRefusal, folderRefusal, markerUnreadableRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
+import { checkCliFolder, checkDesktopFolder, cliFolderRefusal, containsAppRefusal, folderRefusal, markerUnreadableRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
 
 const dirs: string[] = []
 const base = (): string => {
@@ -185,5 +185,42 @@ describe('product marker', () => {
     const dir = base()
     expect(writeProductMarker(dir, 'orgai-cli')).toBe(true)
     expect(readdirSync(dir)).toEqual(['product.json'])
+  })
+})
+
+describe('desktop folder check', () => {
+  it('an unmarked folder (every existing install) gets the desktop marker', () => {
+    const dir = base()
+    mkdirSync(join(dir, 'data'))
+    writeFileSync(join(dir, 'data', 'projects.json'), '[]')
+    expect(checkDesktopFolder(dir)).toEqual({})
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-desktop' })
+  })
+
+  it('a missing folder is created and marked', () => {
+    const dir = join(base(), 'OrgAI')
+    expect(checkDesktopFolder(dir)).toEqual({})
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-desktop' })
+  })
+
+  it('refuses a folder marked orgai-cli and writes nothing', () => {
+    const dir = base()
+    marker(dir, 'orgai-cli')
+    const r = checkDesktopFolder(dir)
+    expect(r.refusal).toBe(cliFolderRefusal(dir))
+    expect(r.refusal).toContain(dir)
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-cli' })
+  })
+
+  it('keeps a desktop marker and leaves an unreadable one alone', () => {
+    const a = base()
+    marker(a, 'orgai-desktop')
+    expect(checkDesktopFolder(a)).toEqual({})
+    const b = base()
+    writeFileSync(join(b, 'product.json'), '{nope')
+    const r = checkDesktopFolder(b)
+    expect(r.refusal).toBeUndefined()
+    expect(r.warning).toBeTruthy()
+    expect(readFileSync(join(b, 'product.json'), 'utf8')).toBe('{nope')
   })
 })

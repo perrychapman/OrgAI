@@ -12,6 +12,7 @@ vi.mock('electron', () => ({
 }))
 
 const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs, connectionIdArg, connectionSecretArgs, proxyCreateArgs, proxyIdArg, CONNECTION_SECRET_MAX_CHARS, modelsQueryArg, withEffectiveDefault } = await import('./ipc')
+const { normalizeSettings } = await import('./store/settings')
 const { DEFAULT_APP_SETTINGS } = await import('@shared/defaults')
 const { openPathRefusal, lstatDirectory, OPEN_PATH_REFUSAL } = await import('./ipc')
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
@@ -402,30 +403,12 @@ describe('settingsSetArgs (settings:set, self-configuration H3 / M3)', () => {
   })
 })
 
-describe('settingsSetArgs terminalServerChosen (cli-spec 3.3)', () => {
-  it('is main-owned and set once a save changes terminalServer', () => {
-    const base = { ...DEFAULT_APP_SETTINGS, terminalServer: true }
-    expect(settingsSetArgs({ terminalServerChosen: true, notifications: false }, base)).not.toHaveProperty('terminalServerChosen')
-    expect(settingsSetArgs({ terminalServer: true }, base)).not.toHaveProperty('terminalServerChosen')
-    expect(settingsSetArgs({ terminalServer: false }, base).terminalServerChosen).toBe(true)
-    expect(settingsSetArgs({ terminalServer: true }, { ...base, terminalServer: false }).terminalServerChosen).toBe(true)
-    // Sticky: a later save that leaves the switch alone (or tries to clear the flag) keeps it.
-    const chosen = { ...base, terminalServer: false, terminalServerChosen: true }
-    expect(settingsSetArgs({ notifications: false, terminalServerChosen: false }, chosen).terminalServerChosen).toBe(true)
-  })
-
-  it('terminalAccessLevelChosen is main-owned and set once a save names another level (Wave 7, round 6 item 11)', () => {
-    const base = { ...DEFAULT_APP_SETTINGS }
-    expect(settingsSetArgs({ terminalAccessLevelChosen: true, notifications: false }, base)).not.toHaveProperty('terminalAccessLevelChosen')
-    // An echo of the stored settings (no level) chooses nothing.
-    expect(settingsSetArgs({ ...base }, base)).not.toHaveProperty('terminalAccessLevelChosen')
-    expect(settingsSetArgs({ terminalAccessLevel: 'full' }, base).terminalAccessLevelChosen).toBe(true)
-    // Picking 'operate' explicitly over an unset level is a choice too.
-    expect(settingsSetArgs({ terminalAccessLevel: 'operate' }, base).terminalAccessLevelChosen).toBe(true)
-    expect(settingsSetArgs({ terminalAccessLevel: 'full' }, { ...base, terminalAccessLevel: 'full' })).not.toHaveProperty('terminalAccessLevelChosen')
-    expect(settingsSetArgs({ terminalAccessLevel: 'junk' } as never, base)).not.toHaveProperty('terminalAccessLevelChosen')
-    const chosen = { ...base, terminalAccessLevel: 'operate' as const, terminalAccessLevelChosen: true }
-    expect(settingsSetArgs({ notifications: false, terminalAccessLevelChosen: false }, chosen).terminalAccessLevelChosen).toBe(true)
+describe('settingsSetArgs and the removed Terminal access keys', () => {
+  it('a save that still carries them leaves them out of the result the store keeps', () => {
+    const out = normalizeSettings(settingsSetArgs({ terminalServer: true, terminalAccessLevel: 'full', notifications: false } as never, DEFAULT_APP_SETTINGS))
+    expect(out).not.toHaveProperty('terminalServer')
+    expect(out).not.toHaveProperty('terminalAccessLevel')
+    expect(out.notifications).toBe(false)
   })
 })
 

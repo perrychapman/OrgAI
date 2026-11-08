@@ -1940,38 +1940,6 @@ export interface AppSettings {
    * runs re-price on their next usage update); persisted runs keep the cost they were saved with.
    */
   modelPrices?: ModelPriceOverride[]
-  /**
-   * Terminal access: external CLI / TUI clients (host.hello from clientKind 'cli' | 'tui' over the host socket,
-   * cli-spec 3.3) are accepted only while this is true; otherwise host.hello answers 'terminal_server_disabled'.
-   * Default false (normalized: only a boolean true stays true). A host booted as 'headless-host' or 'inproc' accepts
-   * terminal clients for that session only (OrgAIHost.terminalAccess, bootstrap.ts), never saving true, unless the user
-   * has chosen a value (terminalServerChosen). A stored true without terminalServerChosen (an older build saved it on
-   * a headless boot) is read as false (store/settings.ts).
-   */
-  terminalServer: boolean
-  /**
-   * What Terminal access lets a terminal client do: host.hello grants at most these scopes (socketServer.ts
-   * scopesForAccessLevel). Missing = 'operate': read and operate (watch, start, send to, interrupt and stop runs);
-   * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
-   * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
-   * when this is already 'full', so the socket can lower it but never raise it. The host a CLI command runs in-process applies it to
-   * every client too; only the CLI process that started it gets every scope, through RpcHelloParams.ownerProof (an
-   * in-memory key). Normalized: 'full' and an explicit 'operate' are stored (Wave 7: the choice is kept with
-   * terminalAccessLevelChosen); anything else is dropped.
-   */
-  terminalAccessLevel?: TerminalAccessLevel
-  /**
-   * Main-owned: true once a settings:set changed terminalServer (the user's choice in App settings, or a configure
-   * client). A headless or in-process boot then never turns terminal access on by itself. settings:set never writes
-   * it directly (args.ts settingsSetArgs).
-   */
-  terminalServerChosen?: boolean
-  /**
-   * Main-owned (Wave 7, cli-standalone.md round 6 item 11): true once the user chose terminalAccessLevel (a settings:set
-   * that changed it, or `orgai terminal-access --level`). While it is unset the app may ask once. settings:set never writes it
-   * directly (args.ts settingsSetArgs).
-   */
-  terminalAccessLevelChosen?: boolean
 }
 
 /**
@@ -6367,7 +6335,7 @@ export const HOST_PROTOCOL_VERSION = 1
 export type HostScope = 'read' | 'operate' | 'decide' | 'configure'
 export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
 
-/** AppSettings.terminalAccessLevel: 'operate' grants read + operate, 'full' every scope. */
+/** The most a socket client may be granted: 'operate' is read + operate, 'full' every scope. */
 export type TerminalAccessLevel = 'operate' | 'full'
 
 /**

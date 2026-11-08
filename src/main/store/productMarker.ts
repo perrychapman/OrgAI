@@ -158,3 +158,27 @@ export function checkCliFolder(c: CliFolderCheck): string | undefined {
   if (!writeProductMarker(c.userDataDir, 'orgai-cli')) return markerWriteRefusal(c.userDataDir)
   return undefined
 }
+
+/** The text of the dialog the desktop shows for a folder the orgai CLI owns. */
+export const cliFolderRefusal = (userDataDir: string): string =>
+  `${userDataDir} belongs to the orgai command line tool. The OrgAI app keeps its own data; choose another folder (ORGAI_DATA_DIR) or remove the folder's ${PRODUCT_MARKER_FILE}.`
+
+export interface DesktopFolderCheck {
+  /** A refusal text: the app must show it and quit. */
+  refusal?: string
+  /** Something to log (the marker could not be written or read); the app starts anyway. */
+  warning?: string
+}
+
+/**
+ * Decides whether the desktop app may use its folder (standalone spec 3.1): a folder marked orgai-cli is refused; a
+ * folder without a marker (every install made before the marker existed, or a new one) gets the desktop marker.
+ * An unreadable marker is left alone and does not stop an existing install from starting.
+ */
+export function checkDesktopFolder(userDataDir: string): DesktopFolderCheck {
+  const marker = readProductMarker(userDataDir)
+  if (marker.state === 'marked') return marker.product === 'orgai-cli' ? { refusal: cliFolderRefusal(userDataDir) } : {}
+  if (marker.state === 'invalid') return { warning: `${join(userDataDir, PRODUCT_MARKER_FILE)} cannot be read or is not an OrgAI marker; it was left as it is.` }
+  if (!writeProductMarker(userDataDir, 'orgai-desktop')) return { warning: `Could not write ${PRODUCT_MARKER_FILE} in ${userDataDir}.` }
+  return {}
+}

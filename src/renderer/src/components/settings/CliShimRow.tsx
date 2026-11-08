@@ -2,14 +2,10 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CliShimResult, CliShimStatus } from '@shared/types'
 import { Button } from '../ui/Button'
-import { useConfirm } from '../ui/ConfirmDialog'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { useAppStore } from '../../store/useAppStore'
 import {
-  CLI_SHIM_ACCESS_OFF_NOTE,
   CLI_SHIM_PATH_HINT_ID,
-  TERMINAL_ACCESS_TRUST,
-  askTerminalAccessAfter,
   cliShimDescribedBy,
   cliShimFocusAfter,
   cliShimLine,
@@ -32,18 +28,8 @@ function guessPlatform(): string {
 /**
  * App settings > General > Advanced settings > Terminal: install, update or remove the orgai command shim
  * (cli-spec 7(3)). Main owns the file; this row only shows the status and asks. Hidden when the API is missing.
- * Installing never turns Terminal access on by itself (review H2): while it is off, the row asks after an install and
- * turns it on through `onTurnOnTerminalAccess` only when the user confirms.
  */
-export function CliShimRow({
-  terminalAccessOn = false,
-  onTurnOnTerminalAccess
-}: {
-  /** AppSettings.terminalServer as shown by the Terminal access switch. */
-  terminalAccessOn?: boolean
-  /** Turn Terminal access on (the same save as the switch). Without it the row never offers to. */
-  onTurnOnTerminalAccess?: () => void
-} = {}): ReactElement | null {
+export function CliShimRow(): ReactElement | null {
   const api = typeof window === 'undefined' ? undefined : window.orgai?.app
   const available = hasCliShimApi(api)
   const platform = useAppStore((s) => s.appInfo?.platform) ?? guessPlatform()
@@ -57,9 +43,6 @@ export function CliShimRow({
   const removeRef = useRef<HTMLSpanElement>(null)
   const statusRef = useRef<HTMLSpanElement>(null)
   const seq = useRef(0)
-  const accessOn = useRef(terminalAccessOn)
-  accessOn.current = terminalAccessOn
-  const { confirm, dialog } = useConfirm()
 
   const refresh = useCallback(async () => {
     if (!available || !api) return
@@ -101,38 +84,12 @@ export function CliShimRow({
     else statusRef.current?.focus()
   }, [busy, status])
 
-  /** After an install while Terminal access is off: ask, never turn it on silently (review H2). */
-  const offerTerminalAccess = async (installNotice: string): Promise<void> => {
-    if (!onTurnOnTerminalAccess) {
-      setNotice({ text: `${installNotice} ${CLI_SHIM_ACCESS_OFF_NOTE}`, ok: true })
-      return
-    }
-    const yes = await confirm({
-      title: 'Turn on Terminal access?',
-      body: (
-        <>
-          <p>Terminal access lets the orgai command use OrgAI while this app is running. When the app is closed, orgai runs on its own.</p>
-          <p>{TERMINAL_ACCESS_TRUST}</p>
-        </>
-      ),
-      confirmLabel: 'Turn on Terminal access',
-      confirmTestId: 'cli-shim-terminal-confirm'
-    })
-    if (yes && !accessOn.current) {
-      onTurnOnTerminalAccess()
-      setNotice({ text: `${installNotice} Terminal access is on.`, ok: true })
-    } else if (!yes) {
-      setNotice({ text: `${installNotice} ${CLI_SHIM_ACCESS_OFF_NOTE}`, ok: true })
-    }
-  }
-
   const act = (action: 'install' | 'update' | 'remove'): void => {
     if (!api) return
     const p = flight.current.run(() => (action === 'remove' ? api.uninstallCliShim() : api.installCliShim()))
     if (!p) return
     setBusy(true)
     setNotice(null)
-    let ask: string | null = null
     void p
       .then(async (result) => {
         const text = cliShimNotice(result)
@@ -144,13 +101,11 @@ export function CliShimRow({
           setLoadFailed(false)
           pendingFocus.current = cliShimFocusAfter(action, cliShimView(next, platform))
         }
-        if (askTerminalAccessAfter(action, result, accessOn.current)) ask = text
       })
       .catch(() => setNotice({ text: cliShimNotice(null), ok: false }))
       .finally(() => {
         setBusy(false)
         void refresh()
-        if (ask !== null) void offerTerminalAccess(ask)
       })
   }
 
@@ -166,7 +121,7 @@ export function CliShimRow({
         title="orgai command"
         description={
           <>
-            Use OrgAI from a terminal on this computer. The command needs Terminal access; OrgAI asks before turning it on.
+            Puts the orgai command on your PATH for use in a terminal.
             {/* A live region: "Checking…" turning into the status (or a load failure) is announced (review Low). */}
             <span
               className="cli-shim-status"
@@ -224,7 +179,6 @@ export function CliShimRow({
       <span className={`cli-shim-notice${notice && !notice.ok ? ' is-error' : ''}`} role="status" data-testid="cli-shim-notice">
         {notice?.text ?? ''}
       </span>
-      {dialog}
     </div>
   )
 }

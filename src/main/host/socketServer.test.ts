@@ -16,8 +16,6 @@ import {
   TERMINAL_ACCESS_LEVEL_MESSAGE,
   NODE_TERMINAL_ACCESS_LEVEL_MESSAGE,
   NODE_TERMINAL_ACCESS_OFF_MESSAGE,
-  NODE_TERMINAL_ACCESS_OFF_REFUSED,
-  turnsNodeTerminalAccessOff,
   TERMINAL_ACCESS_OFF_MESSAGE,
   authorizeKey,
   grantScopes,
@@ -177,7 +175,8 @@ function fakeHost(st: FakeHostState): { host: OrgAIHost; events: HostEventBus; r
     events,
     runs,
     services: { projects: { list: () => [] } },
-    settings: { get: () => ({ terminalServer: st.terminalServer, ...(st.accessLevel ? { terminalAccessLevel: st.accessLevel } : {}) }) },
+    settings: { get: () => ({}) },
+    terminalAccess: () => ({ enabled: st.terminalServer, level: st.accessLevel ?? 'operate' }),
     activity: {
       state: () => st.state,
       addSource: (_k: string, f: () => number) => {
@@ -504,24 +503,6 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     st.terminalServer = false
     const { res: off } = await hello(await client())
     expect(off.error.data).toMatchObject({ code: 'terminal_server_disabled', message: NODE_TERMINAL_ACCESS_OFF_MESSAGE })
-  })
-
-  it('a background host refuses a settings:set that turns Terminal access off, so it never runs unreachable (review round 2)', async () => {
-    st.accessLevel = 'full'
-    st.terminalServer = true
-    st.result = (method) => ({ method })
-    await start({ hostKind: 'node' })
-    const c = await client()
-    await hello(c, { scopes: ['read', 'configure'] })
-    c.send(rpcRequest(2, 'settings:set', [{ terminalServer: false, notifications: false }]))
-    const refused = await c.response(2)
-    expect(refused.error.data).toEqual({ code: 'bad_request', message: NODE_TERMINAL_ACCESS_OFF_REFUSED })
-    expect(st.calls.map((x) => x.method)).toEqual([])
-    // Other saves (an echo of the stored on included) still go through.
-    c.send(rpcRequest(3, 'settings:set', [{ terminalServer: true, notifications: false }]))
-    expect((await c.response(3)).result).toEqual({ method: 'settings:set' })
-    c.send(rpcRequest(4, 'settings:set', [{ notifications: false }]))
-    expect((await c.response(4)).result).toEqual({ method: 'settings:set' })
   })
 
   it('host_starting before attach', async () => {
@@ -865,28 +846,6 @@ describe('scope helpers', () => {
     expect(authorizeKey({ projectId: 'p', serverId: 's' })).not.toBe(authorizeKey({ libraryId: 'p' }))
     expect(authorizeKey({ projectId: 'p' })).toBeUndefined()
     expect(authorizeKey('x')).toBeUndefined()
-  })
-})
-
-describe('turnsNodeTerminalAccessOff (review round 2; platform-neutral)', () => {
-  const on = () => ({ terminalServer: true })
-  const off = () => ({ terminalServer: false })
-  it('is true only for a background host, settings:set, terminalServer false and Terminal access stored on', () => {
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: false }], on)).toBe(true)
-    expect(turnsNodeTerminalAccessOff('headless-host', 'settings:set', [{ terminalServer: false }], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('desktop', 'settings:set', [{ terminalServer: false }], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('node', 'runs:list', [{ terminalServer: false }], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: true }], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{}], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', 'junk', on)).toBe(false)
-    // Stored off but open for this session (no choice): an echo of false changes nothing (settingsSetArgs marks no choice).
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: false }], off)).toBe(false)
-    // Unreadable settings: refused.
-    expect(
-      turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: false }], () => {
-        throw new Error('x')
-      })
-    ).toBe(true)
   })
 })
 

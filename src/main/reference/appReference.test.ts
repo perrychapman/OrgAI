@@ -9,7 +9,7 @@ import { bundledDocs } from './docs'
 const SECRET = 'sk-SECRET-proxy-key-123456'
 
 function statusDeps(): NonNullable<AppReferenceDeps['status']> {
-  const settings = { terminalServer: true, terminalAccessLevel: 'full', proxies: [{ id: 'p1', apiKey: SECRET, anthropicBaseUrl: `https://user:${SECRET}@proxy.example.com` }], authorization: `Bearer ${SECRET}` } as unknown as AppSettings
+  const settings = { proxies: [{ id: 'p1', apiKey: SECRET, anthropicBaseUrl: `https://user:${SECRET}@proxy.example.com` }], authorization: `Bearer ${SECRET}` } as unknown as AppSettings
   const conns = [
     { connection: { id: 'anthropic', enabled: true }, status: { state: 'connected', detail: `url https://x:${SECRET}@h` }, isDefault: true },
     { connection: { id: 'p1', name: 'Mine', anthropicBaseUrl: `https://u:${SECRET}@h` }, status: { state: 'error' }, isDefault: false }
@@ -102,16 +102,9 @@ describe('query', () => {
     expect(r.text).toContain('1.2.3')
     expect(r.text).toContain('connection anthropic')
     expect(r.text).toContain('default')
-    expect(r.text).toContain('level full')
     expect(r.text).not.toContain(SECRET)
     expect(r.text).not.toContain('proxy.example.com')
     expect(r.text).not.toContain('http')
-  })
-  it('status leaves the terminal access line out on an in-process host', async () => {
-    const inproc = createAppReference({ status: { ...statusDeps(), hostKind: 'inproc' } })
-    const r = await inproc.query({ action: 'status' }, { status: true })
-    expect(r.text).toContain('1.2.3')
-    expect(r.text).not.toContain('terminal access')
   })
   it('measures a search over the full corpus', async () => {
     const full = createAppReference()

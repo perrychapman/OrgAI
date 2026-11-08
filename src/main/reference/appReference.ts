@@ -501,7 +501,6 @@ export function createAppReference(deps: AppReferenceDeps = {}): AppReferenceSer
     }
     if (settings) {
       lines.push(`proxies: ${Array.isArray(settings.proxies) ? settings.proxies.length : 0}`)
-      if (d.hostKind !== 'inproc') lines.push(`terminal access: ${settings.terminalServer === true ? 'on' : 'off'}, level ${fenceDatum(String(settings.terminalAccessLevel ?? 'operate'), 20)}`)
     }
     try {
       lines.push(`projects: ${d.projectCount()}`, `library MCP servers: ${d.mcpLibraryCount()}`, `skill library entries: ${d.skillLibraryCount()}`)

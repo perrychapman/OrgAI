@@ -885,10 +885,10 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: [APP, 'General', 'Advanced', 'Terminal'],
     kind: 'section',
     scope: 'app',
-    summary: 'Allow terminal clients to connect, choose what they may do, and install the orgai command on your PATH.',
+    summary: 'Install the orgai command on your PATH.',
     reach: [{ via: 'button', label: 'Advanced settings', on: 'app-settings-general' }],
-    settings: ['terminalServer', 'terminalAccessLevel'],
-    testIds: ['terminal-server-switch', 'terminal-access-level', 'cli-shim-row']
+    settings: [],
+    testIds: ['cli-shim-row']
   },
   {
     id: 'app-settings-connections',
@@ -1374,26 +1374,6 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
     summary: 'Your own per-model prices; they win over every other price source.',
     surface: 'app-settings-connections-model-prices',
     control: 'user'
-  },
-  terminalServer: {
-    summary: 'Terminal access: whether terminal clients such as the orgai command may connect.',
-    surface: 'app-settings-general-terminal',
-    control: 'user'
-  },
-  terminalAccessLevel: {
-    summary: 'What terminal clients may do: read and operate by default, or Full to also decide and configure.',
-    surface: 'app-settings-general-terminal',
-    control: 'user'
-  },
-  terminalServerChosen: {
-    summary: 'Whether you chose the Terminal access value yourself, so a background host does not override it.',
-    surface: 'none',
-    control: 'main'
-  },
-  terminalAccessLevelChosen: {
-    summary: 'Whether you chose the Terminal access level yourself, so a background host does not override it.',
-    surface: 'none',
-    control: 'main'
   }
 }
 

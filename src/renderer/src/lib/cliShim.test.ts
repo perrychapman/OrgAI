@@ -7,8 +7,6 @@ import {
   CLI_SHIM_PATH_HINT_ID,
   CLI_SHIM_UNAVAILABLE,
   CLI_SHIM_UPDATE_LABEL,
-  TERMINAL_ACCESS_TRUST,
-  askTerminalAccessAfter,
   cleanShown,
   cliShimDescribedBy,
   cliShimFocusAfter,
@@ -32,20 +30,6 @@ describe('row wiring (review Lows, H2)', () => {
     expect(cliShimLine(null, false)).toBe(CLI_SHIM_CHECKING)
     expect(cliShimLine(null, true)).toBe(CLI_SHIM_LOAD_FAILED)
     expect(cliShimLine(view, true)).toBe(view.line)
-  })
-  it('asks to turn Terminal access on only after a successful install or update while it is off', () => {
-    const ok = { ok: true, message: 'Installed.', status: { state: 'installed' } } as unknown as CliShimResult
-    const bad = { ...ok, ok: false } as CliShimResult
-    expect(askTerminalAccessAfter('install', ok, false)).toBe(true)
-    expect(askTerminalAccessAfter('update', ok, false)).toBe(true)
-    expect(askTerminalAccessAfter('install', ok, true)).toBe(false)
-    expect(askTerminalAccessAfter('install', bad, false)).toBe(false)
-    expect(askTerminalAccessAfter('install', null, false)).toBe(false)
-    expect(askTerminalAccessAfter('remove', ok, false)).toBe(false)
-  })
-  it('the trust sentence names agent shells', () => {
-    expect(TERMINAL_ACCESS_TRUST).toMatch(/any program you run/)
-    expect(TERMINAL_ACCESS_TRUST).toMatch(/agent shells/)
   })
 })
 
