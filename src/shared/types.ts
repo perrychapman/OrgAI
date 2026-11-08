@@ -3201,13 +3201,15 @@ export interface SwitchRunModelInput {
 }
 
 export interface SwitchRunModelResult {
+  /** May be a successor run after an explicit provider handoff; callers must follow its id. */
   run: RunSummary
+  /** True only when the returned run is using the selection. False may also mean saved for continuation (reason explains). */
   applied: boolean
   reason?: string
 }
 
 export interface RunSummary {
-  /** Explicit root model selected for this conversation; does not alter project defaults. */
+  /** Root selection; on an ended/paused run applies to its next continuation. Never alters project defaults. */
   modelSelection?: { model: string; connection: ConnectionId }
   id: string
   projectId: string
