@@ -1,6 +1,6 @@
 # Pocket Office: initial visual slice
 
-Status: direction approved for expansion. Artwork is original, made for OrgAI, with no borrowed franchise assets. `generate-atlas.py` is the editable deterministic source for the paired PNG sheets and JSON metadata; the review SVGs are concept sources. The generator uses Pillow. The four-frame delivery storyboard is not a finished animation.
+Status: direction approved for expansion. Artwork is original, made for OrgAI, with no borrowed franchise assets. `generate-atlas.py` is the editable deterministic source for the paired PNG sheets and JSON metadata; the review SVGs are concept sources. Regenerate from the repository root with `python src/renderer/src/assets/pocket-office/generate-atlas.py` using Python and Pillow 12.3.0, the authoring version used for these exports. Pillow is an authoring dependency only, not an application runtime dependency. The four-frame delivery storyboard is not a finished animation.
 
 ## Direction and contract
 
@@ -28,4 +28,4 @@ Proposed selectors: `pocket-office-scene`, `pocket-office-agent` with `data-agen
 
 The [four-worker vignette](../../src/renderer/src/assets/pocket-office/review-vignette.svg) and [delivery storyboard](../../src/renderer/src/assets/pocket-office/review-delivery-strip.svg) established the approved palette and direction. The generated set has 48 tiles, 14 props and six workers with four directions and seven poses. Validate exports for alpha, dimensions, colors, frame bounds, feet, prop anchors and route connectivity. Review walk frames at 1× and integer enlargement; frame quality remains subject to integration review.
 
-Mock UX walk in both themes at 1024 × 640 and 1600 × 1000: select and inspect by mouse and keyboard; inspect accessible names, roles, focus and status; check empty, waiting, failed, finished and large rooms, sample labeling and caption expansion; exercise bursts, hidden/resumed views, removal, theme switching, reduced motion and reopening without replay. Measure shared UI contrast against actual backgrounds. No app walkthrough, contrast measurement, production atlas or final art approval is claimed yet.
+Mock UX walk in both themes at 1024 × 640 and 1600 × 1000: select and inspect by mouse and keyboard; inspect accessible names, roles, focus and status; check empty, waiting, failed, finished and large rooms, sample labeling and caption expansion; exercise bursts, hidden/resumed views, removal, theme switching, reduced motion and reopening without replay. Measure shared UI contrast against actual backgrounds. The atlas has been produced and its frame counts, paired sheet dimensions, palette color counts and alpha checked. Integrated motion, route behavior, app walkthrough and rendered contrast remain unverified.
