@@ -846,6 +846,14 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     without a host and never decrypts). `shimInstaller` `otherCli` prefers an npm or archive `orgai` anywhere on PATH; the shim path
     counts as this install's own only while an OrgAI shim sits there, so npm's link in `~/.local/bin` is named "The orgai command from
     npm (<v>) is on your PATH at <path>. OrgAI leaves it alone." and Install is refused (`CliShimRow`, `lib/cliShim.ts`).
+  - Install row (standalone spec 5.3, replaces `CliShimRow` and the shim install half; the lines above are history): App settings >
+    Terminal `CliCommandRow` (`cli-command-row`, `-status[data-state]`, `-install`, `-cancel`, `-remove-old`, `-text`, `-hint`,
+    `-output`; `lib/cliCommand.ts`) over `src/main/host/cliInstaller.ts`. Status is metadata only (`orgaiOnPath.ts` also reads an
+    `orgai-cli` package.json beside the bin; an empty login PATH falls back to the process PATH). Install: absolute npm from PATH,
+    `install -g orgai-cli@<latest|next> --ignore-scripts`, cwd home, env scrubbed of ORGAI_/ANTHROPIC_/OPENAI_/CLAUDE_/CODEX_/AWS_/
+    GOOGLE_/AZURE_, one at a time, cancellable, 200 lines / 64 KB output. `shimInstaller.ts` is cleanup only (ownership re-checked
+    before unlink). IPC `app:cliCommandStatus|installCliCommand|cancelCliInstall|removeOldCliShim`. `e2e/install-row.mjs` uses a
+    fake npm; Windows (npm.cmd through cmd.exe, taskkill) is unit-tested only.
   - PR #24 review fixes (2026-11-07, unit-tested only, nothing live): MCP secrets that leave argv (cli-standalone R3) go into the
     agent CLI's environment under random per-query names `ORGAI_MCP_<16 hex>_<n>_<k>` (Codex: per launch, `..._H<k>`). The
     self-control gate denies any word referencing ORGAI_MCP_ or ORGAI_VAULT_ (and shortened prefixes such as `ORGAI_` or `ORGAI*`)
@@ -1343,7 +1351,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     Word, Excel, full label as title); `output-ext` badge (".docx") beside titles; search also matches the kind name,
     "word", "excel" and the extension. History rows show `history-outputs` "N outputs", which opens the run on its
     Outputs tab. Driven by `e2e/outputs.mjs`; not seen: a real SVG output, the hint in a run window.
-- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `outputs.mjs`, `usage-app.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` and `separation` (app on one folder, orgai on another; `dialog-stub.cjs` records the app's refusal dialog) (package.json). Update selectors in the same change.
+- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `outputs.mjs`, `usage-app.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` and `separation` (app on one folder, orgai on another; `dialog-stub.cjs` records the app's refusal dialog) and `install-row` (the Terminal row with a fake npm on PATH, no network) (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
   `ImportNotice.source: 'template'`), New project "Start from a template" (`setup-choice-template`,

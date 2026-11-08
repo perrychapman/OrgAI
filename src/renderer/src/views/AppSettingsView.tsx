@@ -37,7 +37,7 @@ import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 import TemplatesSection from '../components/templates/TemplatesSection'
 import KitSection from '../components/kit/KitSection'
 import { CanvasSection } from '../components/settings/CanvasSection'
-import { CliShimRow } from '../components/settings/CliShimRow'
+import { CliCommandRow } from '../components/settings/CliCommandRow'
 import { Select } from '../components/ui/Select'
 import { mergePendingSettings } from '../lib/settingsMerge'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
@@ -516,7 +516,7 @@ export default function AppSettingsView(): ReactElement {
               </SettingsGroup>
               <SettingsGroup title="Terminal">
                 <SettingsCard>
-                  <CliShimRow />
+                  <CliCommandRow />
                 </SettingsCard>
               </SettingsGroup>
             </SettingsAdvanced>

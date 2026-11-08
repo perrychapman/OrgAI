@@ -27,7 +27,7 @@ import type {
   AppReferenceSectionKind,
   AppSettings,
   ConnectionInfo,
-  CliShimStatus
+  CliCommandStatus
 } from '../../shared/types'
 import { CONNECTORS, connectorEase } from '../../shared/connectors'
 import { fenceDatum, fencedBlock, KNOWLEDGE_STOPWORDS, tokenizeKnowledge } from '../../shared/knowledgeIndex'
@@ -356,7 +356,7 @@ export interface ReferenceStatusDeps {
   projectCount(): number
   mcpLibraryCount(): number
   skillLibraryCount(): number
-  cliShim?(): CliShimStatus | Promise<CliShimStatus>
+  cliShim?(): CliCommandStatus | Promise<CliCommandStatus>
 }
 
 /** The shared shortcut table (src/shared/view/shortcuts.ts, the source the renderer re-exports) as reference rows. */

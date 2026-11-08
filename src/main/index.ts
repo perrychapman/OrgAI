@@ -33,7 +33,8 @@ import { windowBackground } from './appInfo'
 import { installShutdownSignals, type ShutdownReason } from './host/shutdown'
 import { beforeQuitHandler } from './desktopQuit'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
-import { createCliShimService, type CliShimService } from './host/shimInstaller'
+import { createCliInstallService, type CliInstallService } from './host/cliInstaller'
+import { createOldShimService } from './host/shimInstaller'
 import { RepoCloneService } from './repoClone'
 
 // The certificate-reader child runs this binary with ELECTRON_RUN_AS_NODE=1; if a RunAsNode fuse is off it would boot a full app here.
@@ -143,7 +144,7 @@ if (gotLock && !folderRefused) {
   installElectronLogHooks(app)
 }
 // Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
-// The login shell's own PATH (without OrgAI's additions) is kept for the orgai command shim's "on your PATH" check.
+// The login shell's own PATH (without OrgAI's additions) is kept for the orgai command's "on your PATH" check.
 const shellPathResult = applyShellPath()
 if (gotLock && !folderRefused) {
   // Trust the OS certificate store too (corporate / inspecting root CAs), before anything can fetch (issue #16). Only
@@ -370,7 +371,7 @@ app.whenReady().then(async () => {
   }
   // Stores, services, adapters, background probes and housekeeping (cli-spec 3.2(2) step 4). The boot's markReady is
   // held back: the record turns 'ready' below, once the boot returned.
-  let cliShimForStatus: CliShimService | undefined
+  let cliInstallForStatus: CliInstallService | undefined
   const bootOwnership = {
     get info() {
       return owned.info
@@ -404,10 +405,10 @@ app.whenReady().then(async () => {
     safeStorage,
     secretStore,
     openExternal: (url) => shell.openExternal(url),
-    // The reference status snapshot reads the orgai command shim's state; the shim service is built after boot.
+    // The reference status snapshot reads the orgai command's state; the install service is built after boot.
     cliShimStatus: () => {
-      if (!cliShimForStatus) throw new Error('not ready')
-      return cliShimForStatus.status()
+      if (!cliInstallForStatus) throw new Error('not ready')
+      return cliInstallForStatus.status()
     },
     desktop: {
       openRunWindow,
@@ -469,8 +470,10 @@ app.whenReady().then(async () => {
   })
   // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
-  const cliShim = buildCliShim()
-  cliShimForStatus = cliShim
+  const cliInstall = buildCliInstall()
+  cliInstallForStatus = cliInstall
+  // An install still running when the app quits is stopped with it.
+  app.once('will-quit', () => cliInstall.cancel())
   // Start a project from a repository (desktop only: progress goes to the calling window, a closed window cancels).
   const clones = new RepoCloneService({
     dataDir,
@@ -505,7 +508,7 @@ app.whenReady().then(async () => {
     })
   }
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
-  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim, repoClone: clones })
+  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliInstall, repoClone: clones })
   installAppMenu(
     menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
   )
@@ -518,22 +521,21 @@ app.whenReady().then(async () => {
 })
 
 /**
- * The old orgai command shim service (cli-spec 7(3)): status and removal only, since the app ships no launcher; phase 3 of the standalone spec replaces it.
+ * The orgai command installer (5.3): status from file metadata, `npm install -g orgai-cli`, and removal of the old
+ * app shim. process.env already holds the login shell's PATH merged in (applyShellPath above).
  */
-function buildCliShim(): CliShimService {
+function buildCliInstall(): CliInstallService {
   const shellPath = shellPathResult?.shellPath ?? []
-  return createCliShimService({
+  const home = homedir()
+  return createCliInstallService({
     platform: process.platform,
-    isPackaged: app.isPackaged,
-    dataDirOverride: !!dataOverride,
-    resourcesPath: process.resourcesPath,
-    userDataDir,
-    home: homedir(),
+    home,
     env: process.env,
-    // POSIX: the login shell's own PATH, '' (unknown) when it printed none; process.env.PATH holds OrgAI's merged
-    // additions (~/.local/bin among them), so it would always answer yes. Windows: the inherited user Path.
+    // POSIX: the login shell's own PATH; when it printed none, the installer falls back to the merged process.env.PATH.
+    // Windows: the inherited user Path.
     ...(process.platform === 'win32' ? {} : { loginPath: shellPath.join(':') }),
-    onInstalled: () => log.info('Installed the orgai command.')
+    appVersion: app.getVersion(),
+    oldShim: createOldShimService({ platform: process.platform, home, env: process.env })
   })
 }
 

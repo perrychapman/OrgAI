@@ -61,6 +61,22 @@ describe('findOrgaiOnPath on a real folder tree', () => {
   })
   afterEach(() => rmSync(root, { recursive: true, force: true }))
 
+  posixOnly('recognises an npm install by the orgai-cli package.json beside the bin, without install.json', () => {
+    const pkg = join(root, 'npm', 'lib', 'node_modules', 'orgai-cli')
+    mkdirSync(join(pkg, 'out', 'cli'), { recursive: true })
+    writeFileSync(join(pkg, 'out', 'cli', 'orgai.mjs'), '#!/usr/bin/env node\n', { mode: 0o755 })
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'orgai-cli', version: '0.3.1' }))
+    mkdirSync(join(root, 'npm', 'bin'))
+    symlinkSync(join(pkg, 'out', 'cli', 'orgai.mjs'), join(root, 'npm', 'bin', 'orgai'))
+    const [hit] = findOrgaiOnPath({ platform: process.platform, pathList: join(root, 'npm', 'bin') })
+    expect(hit).toMatchObject({ kind: 'npm', channel: 'npm', version: '0.3.1' })
+    // Another package name beside a bin is not npm's orgai-cli.
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'something-else', version: '9.9.9' }))
+    const [other] = findOrgaiOnPath({ platform: process.platform, pathList: join(root, 'npm', 'bin') })
+    expect(other?.kind).not.toBe('npm')
+    expect(other?.version).toBeUndefined()
+  })
+
   posixOnly('reads an npm link, an app shim and an unknown file in PATH order', () => {
     // npm: <prefix>/bin/orgai -> ../lib/node_modules/orgai-cli/out/cli/orgai.mjs
     const npmCli = join(root, 'npm', 'lib', 'node_modules', 'orgai-cli', 'out', 'cli')

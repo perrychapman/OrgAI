@@ -116,10 +116,11 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.appInfo]: NONE,
   // appReferenceArgs rebuilds the query.
   [IPC.appReference]: OBJECT,
-  // Desktop only (cli-spec 7(3), shimInstaller.ts); the socket refuses them before params.
-  [IPC.appCliShimStatus]: NONE,
-  [IPC.appInstallCliShim]: NONE,
-  [IPC.appUninstallCliShim]: NONE,
+  // Desktop only (cli-spec 7(3), cliInstaller.ts); the socket refuses them before params.
+  [IPC.appCliCommandStatus]: NONE,
+  [IPC.appInstallCliCommand]: NONE,
+  [IPC.appCancelCliInstall]: NONE,
+  [IPC.appRemoveOldCliShim]: NONE,
   // Desktop only (REPO_CLONE_IPC, ipc.ts registerRepoIpc); the socket refuses them before params. The handlers coerce
   // or rebuild their input (parseSource takes any value, repoCloneArgs / repoCancelArg refuse a bad one).
   [IPC.projectsParseRepoSource]: [{ kind: 'any' }],

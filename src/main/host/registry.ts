@@ -157,7 +157,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
     'kit:previewImport', 'kit:applyImport', 'menu:setState', 'app:openPath', 'app:openLogs', 'app:setNotifications',
-    'app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim', 'projects:parseRepoSource', 'projects:repoTools',
+    'app:cliCommandStatus', 'app:installCliCommand', 'app:cancelCliInstall', 'app:removeOldCliShim', 'projects:parseRepoSource', 'projects:repoTools',
     'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'teamFiles:approve', 'teamFiles:reject',
     'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit',
     'outputs:open', 'outputs:reveal', 'outputs:saveAs', 'outputs:saveImage'
@@ -217,7 +217,7 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   ],
   'ipc.ts registerKitIpc': [KIT_IPC.kitPickExportPath, KIT_IPC.kitPickImportPath, KIT_IPC.kitExport, KIT_IPC.kitPreviewImport, KIT_IPC.kitApplyImport],
   'ipc.ts registerIpc (UsageMonitor.refresh)': [IPC.usageRefresh],
-  'ipc.ts desktop-only (shimInstaller.ts)': [IPC.appCliShimStatus, IPC.appInstallCliShim, IPC.appUninstallCliShim],
+  'ipc.ts desktop-only (cliInstaller.ts)': [IPC.appCliCommandStatus, IPC.appInstallCliCommand, IPC.appCancelCliInstall, IPC.appRemoveOldCliShim],
   'ipc.ts registerRepoIpc (desktop-only; repoClone.ts, progress and cancel-on-close use the IPC sender)': [
     IPC.projectsParseRepoSource, IPC.projectsRepoTools, IPC.projectsCloneRepo, IPC.projectsCancelClone
   ],

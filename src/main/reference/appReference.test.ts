@@ -14,7 +14,7 @@ function statusDeps(): NonNullable<AppReferenceDeps['status']> {
     { connection: { id: 'anthropic', enabled: true }, status: { state: 'connected', detail: `url https://x:${SECRET}@h` }, isDefault: true },
     { connection: { id: 'p1', name: 'Mine', anthropicBaseUrl: `https://u:${SECRET}@h` }, status: { state: 'error' }, isDefault: false }
   ] as unknown as ConnectionInfo[]
-  return { appVersion: '1.2.3', platform: 'win32', dataDir: 'C:\\data', mock: true, settings: () => settings, connections: () => conns, projectCount: () => 4, mcpLibraryCount: () => 2, skillLibraryCount: () => 1, cliShim: () => ({ state: 'installed', path: '', binDir: '' }) }
+  return { appVersion: '1.2.3', platform: 'win32', dataDir: 'C:\\data', mock: true, settings: () => settings, connections: () => conns, projectCount: () => 4, mcpLibraryCount: () => 2, skillLibraryCount: () => 1, cliShim: () => ({ state: 'npm', oldShim: false, npmFound: true, tag: 'latest', command: 'npm install -g orgai-cli@latest', installing: false }) }
 }
 
 describe('corpus', () => {

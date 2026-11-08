@@ -56,7 +56,7 @@ import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
 import { createAppReference, type ShortcutRow } from '../reference/appReference'
 import { withAppSettingChanges } from '../../shared/appSettingsProposal'
-import type { AppSettingsProposalPayload, CliShimStatus } from '../../shared/types'
+import type { AppSettingsProposalPayload, CliCommandStatus } from '../../shared/types'
 import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
 import { HostEventBus } from './events'
@@ -137,7 +137,7 @@ export interface BootOrgAIHostOptions {
   /** Shortcut rows for the reference corpus (the shell maps shared/view SHORTCUTS to this; main never imports renderer code). */
   referenceShortcuts?: readonly ShortcutRow[]
   /** The command line shim state for the reference status snapshot (desktop shell only). */
-  cliShimStatus?: () => CliShimStatus | Promise<CliShimStatus>
+  cliShimStatus?: () => CliCommandStatus | Promise<CliCommandStatus>
   /** ORGAI_MOCK === '1': registers the scripted mock adapter and keeps discovery off the real home. */
   mock: boolean
   platform?: NodeJS.Platform

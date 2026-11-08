@@ -4894,12 +4894,14 @@ export interface OrgAIApi {
     logPath(): Promise<string>
     /** Version, platform, data and logs folders, and whether the token-free mock adapter is available. */
     info(): Promise<AppInfo>
-    /** The orgai command shim's state (cli-spec 7(3)). Never rejects. */
-    cliShimStatus(): Promise<CliShimStatus>
-    /** Write or refresh the orgai command shim. Never rejects; failures come back as ok: false with a message. */
-    installCliShim(): Promise<CliShimResult>
-    /** Remove the orgai command shim (only OrgAI's own). Never rejects; failures come back as ok: false. */
-    uninstallCliShim(): Promise<CliShimResult>
+    /** The orgai command's state (5.3), from file metadata only. Never rejects. */
+    cliCommandStatus(): Promise<CliCommandStatus>
+    /** Run `npm install -g orgai-cli@<tag> --ignore-scripts` in the main process. One at a time. Never rejects. */
+    installCliCommand(): Promise<CliCommandResult>
+    /** Cancel the running install; true when one was running. */
+    cancelCliInstall(): Promise<boolean>
+    /** Remove the old app shim (only OrgAI's own file). Never rejects; failures come back as ok: false. */
+    removeOldCliShim(): Promise<CliCommandResult>
     /**
      * app:reference: search or read OrgAI's own reference (the atlas of screens and settings, menus, shortcuts,
      * harness tools, host channels, CLI commands, connectors and bundled docs), locate a setting or feature, or a
@@ -5688,46 +5690,47 @@ export interface AppInfo {
   packaged: boolean
 }
 
-// ---- orgai command shim (cli-spec 7(3), Wave 6) ----
+// ---- Install the orgai command (cli-standalone-default.md 5.3) ----
 
 /**
- * Where the orgai command shim stands. 'unavailable': this OrgAI cannot install it (a dev build, ORGAI_DATA_DIR set,
- * a translocated / disk-image / AppImage / portable copy; `reason` says which). 'not-installed': no file at `path`.
- * 'installed': OrgAI's shim runs this install's launcher. 'outdated': OrgAI's shim runs another launcher (`target`).
- * 'foreign': a file at `path` that OrgAI did not write; OrgAI never overwrites or removes it.
+ * What the Terminal row shows. Read from file metadata only; no `orgai` found on PATH is ever run.
+ * 'npm': the first orgai on the login PATH is an npm-installed orgai-cli (`version` from its package.json).
+ * 'old-shim': an older OrgAI app's command (no longer works). 'other': another program named orgai.
  */
-export type CliShimState = 'unavailable' | 'not-installed' | 'installed' | 'outdated' | 'foreign'
+export type CliCommandState = 'npm' | 'old-shim' | 'other' | 'not-installed'
 
-/** The orgai command shim (app:cliShimStatus). Structured-clone safe. */
-export interface CliShimStatus {
-  state: CliShimState
-  /** The shim file (~/.local/bin/orgai or %LOCALAPPDATA%\OrgAI\bin\orgai.cmd); '' when unknown. */
-  path: string
-  /** The shim's folder; '' when unknown. */
-  binDir: string
-  /** The launcher an OrgAI shim runs now (for 'outdated': the other install's). */
-  target?: string
-  /** True when binDir is on the login shell PATH; undefined when unknown. */
-  onPath?: boolean
-  /** One plain sentence for 'unavailable' and 'foreign'. */
-  reason?: string
-  /**
-   * Wave 7 (cli-standalone.md 8.2, 9.2): the first `orgai` on the login shell PATH that is not this install's shim (an
-   * npm install, an archive, another app's shim); unset when there is none or PATH could not be read. The Terminal row
-   * then says "The orgai command from npm (<version>) is on your PATH" and offers no Install.
-   */
-  otherCli?: { path: string; channel?: InstallChannel; version?: string }
-  /** false when this install ships no orgai launcher (every packaged app now): only an existing old shim can be removed. */
-  installable?: false
+/** The answer of app:cliCommandStatus. Structured-clone safe. */
+export interface CliCommandStatus {
+  state: CliCommandState
+  /** The first orgai on the login PATH, when there is one. */
+  path?: string
+  /** The installed orgai-cli version (state 'npm'). */
+  version?: string
+  /** An old app shim file sits at its usual place and can be removed (it may be shadowed by an npm install). */
+  oldShim: boolean
+  /** An absolute npm was found on the login PATH. */
+  npmFound: boolean
+  /** The dist-tag the install uses: 'latest' for a stable app, 'next' for a prerelease. */
+  tag: 'latest' | 'next'
+  /** `npm install -g orgai-cli@<tag>`: what Install runs (plus --ignore-scripts) and what Copy puts on the clipboard. */
+  command: string
+  /** An install is running now. */
+  installing: boolean
 }
 
-/** The answer of app:installCliShim / app:uninstallCliShim. Never a rejection: failures are ok: false. */
-export interface CliShimResult {
+/** The answer of app:installCliCommand, app:removeOldCliShim. Never a rejection: failures are ok: false. */
+export interface CliCommandResult {
   ok: boolean
   /** One plain sentence for the user. */
   message: string
+  /** npm's output: the last 200 lines, at most 64 KB, control characters removed. */
+  output?: string
+  /** The `--prefix` hint after a permission failure. */
+  hint?: string
+  /** True when the user cancelled the install. */
+  cancelled?: boolean
   /** The status after the change (or the unchanged status after a failure). */
-  status: CliShimStatus
+  status: CliCommandStatus
 }
 
 /**
@@ -5814,12 +5817,14 @@ export const IPC = {
   appOpenLogs: 'app:openLogs',
   appLogPath: 'app:logPath',
   appInfo: 'app:info',
-  /** Desktop only (cli-spec 7(3)): the orgai command shim's CliShimStatus. Refused over the socket. */
-  appCliShimStatus: 'app:cliShimStatus',
-  /** Desktop only (cli-spec 7(3)): write or refresh the orgai command shim; answers CliShimResult. */
-  appInstallCliShim: 'app:installCliShim',
-  /** Desktop only (cli-spec 7(3)): remove the orgai command shim when it is OrgAI's; answers CliShimResult. */
-  appUninstallCliShim: 'app:uninstallCliShim',
+  /** Desktop only (5.3): the orgai command's CliCommandStatus. */
+  appCliCommandStatus: 'app:cliCommandStatus',
+  /** Desktop only (5.3): run the npm install of orgai-cli; answers CliCommandResult. */
+  appInstallCliCommand: 'app:installCliCommand',
+  /** Desktop only (5.3): cancel the running install; answers boolean. */
+  appCancelCliInstall: 'app:cancelCliInstall',
+  /** Desktop only (5.3): remove the old app shim when it is OrgAI's; answers CliCommandResult. */
+  appRemoveOldCliShim: 'app:removeOldCliShim',
   permissionsList: 'permissions:list',
   permissionsIgnored: 'permissions:ignored',
   permissionsRemove: 'permissions:remove',
