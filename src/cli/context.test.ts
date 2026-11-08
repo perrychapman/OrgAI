@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { cliUserDataDir } from './client/locate'
 import { buildContext, FIRST_START_NOTE, resetDesktopEnvNote, reusableInproc } from './context'
 import { fakeInproc } from './testing/fakeContext'
 import { CliError, EXIT, type CliIo, type InprocStartOptions } from './types'
@@ -53,7 +54,8 @@ describe('buildContext', () => {
     globals: { outputFormat: 'text' as const, color: false, secretEnv: [] },
     env: { ORGAI_CLI_DATA_DIR: dir, ...extraEnv },
     cwd: dir,
-    platform: 'linux' as const,
+    // Real folders on disk, so the real platform's path rules (a fixed 'linux' mangles Windows temp paths).
+    platform: process.platform,
     io
   })
 
@@ -106,7 +108,7 @@ describe('buildContext', () => {
     buildContext(noOverride(a.io))
     expect(a.err().split("ORGAI_DATA_DIR is the OrgAI app's setting; orgai uses ORGAI_CLI_DATA_DIR.\n")).toHaveLength(2)
     expect(a.err()).toContain(FIRST_START_NOTE)
-    expect(existsSync(join(home, '.config', 'orgai-cli', 'product.json'))).toBe(true)
+    expect(existsSync(join(cliUserDataDir(process.platform, { ORGAI_DATA_DIR: '/app' }, home), 'product.json'))).toBe(true)
     resetDesktopEnvNote()
     const b = sink()
     buildContext({ ...baseFor(join(home, 'other'), { ORGAI_DATA_DIR: '/app' }, b.io), home })

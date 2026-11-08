@@ -61,6 +61,8 @@ describe('read-only commands beside a live owner', () => {
     it(`${name}: no connect, no host, no write${notes ? ', and the snapshot line' : ''}`, async () => {
       const f = fakeContext({
         cwd: '/work/app',
+        // Real folders: doctor's run-dir check reads POSIX mode bits unless the platform is win32.
+        platform: process.platform,
         paths: { userDataDir, dataDir },
         store: { projects: [p1], runs, records, hostState: 'ready', daemon: { pid: 4242, ownerCwd: '/work/other', state: 'ready', startedAt: 1, appVersion: '9.9' } as never }
       })

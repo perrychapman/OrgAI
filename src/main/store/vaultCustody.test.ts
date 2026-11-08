@@ -250,7 +250,9 @@ describe('reset and rotation in one product leave the other untouched', () => {
       b.dispose()
     })
 
-    it(`rotating the ${actor} key (reset, then a new key file imported) leaves the ${other} item and value alone`, async () => {
+    // The world is a simulated macOS (keychain), but the key files are real temp paths, which a darwin key-file custodian
+    // refuses as not absolute on a Windows runner.
+    it.skipIf(process.platform === 'win32')(`rotating the ${actor} key (reset, then a new key file imported) leaves the ${other} item and value alone`, async () => {
       const w = await bothProducts()
       const a = await w.open(actor)
       const b = await w.open(other)

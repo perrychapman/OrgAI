@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -64,7 +64,7 @@ const dataDir = mkdtempSync(join(tmpdir(), 'orgai-index-'))
 writeProductMarker(dataDir, 'orgai-cli')
 const run = async (argv: string[], env: NodeJS.ProcessEnv = {}) => {
   const t = io()
-  const code = await main(argv.includes('--data-dir') ? argv : ['--data-dir', dataDir, ...argv], { env, cwd: '/tmp', platform: 'linux', io: t.io })
+  const code = await main(argv.includes('--data-dir') ? argv : ['--data-dir', dataDir, ...argv], { env, cwd: tmpdir(), platform: process.platform, io: t.io })
   return { code, ...t.o }
 }
 
@@ -91,7 +91,8 @@ describe('orgai routing', () => {
   })
 
   it('builds the context from the globals', async () => {
-    const ud = join(mkdtempSync(join(tmpdir(), 'orgai-index-')), 'ud')
+    // Real path: on Windows the runner's temp folder is an 8.3 short name (RUNNER~1) that the context resolves.
+    const ud = join(realpathSync(mkdtempSync(join(tmpdir(), 'orgai-index-'))), 'ud')
     await run(['--data-dir', ud, '--project', 'p1', '--no-color', 'status'])
     const ctx = calls[0].ctx
     expect(ctx.paths).toEqual({ userDataDir: ud, dataDir: join(ud, 'data') })
