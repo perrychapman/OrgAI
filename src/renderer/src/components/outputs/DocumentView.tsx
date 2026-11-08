@@ -3,8 +3,9 @@ import { useMemo, useRef } from 'react'
 import type { DocumentBlock, DocumentRun } from '@shared/types'
 import { spoofHost } from '../Markdown'
 import { isSafeImageDataUrl, safeDocHref } from '../../lib/outputPreview'
-import { anchorDescription, blockPartOffsets, blockText, quoteOf, segmentsOf, type TextRange } from '../../lib/outputNotes'
+import { anchorDescription, blockPartOffsets, blockText, docItems, docItemsRange, quoteOf, segmentsOf, type TextRange } from '../../lib/outputNotes'
 import { NoteMark, findNoted, useScrollToShown, useTextSelection, useViewedNotes } from './NoteMarks'
+import { useBlockCursor } from './useBlockCursor'
 
 /** A heading's level shifted down so the document never competes with the detail's own headings: h1 -> h4, capped at h6. */
 export function docHeadingTag(level: number): 'h4' | 'h5' | 'h6' {
@@ -77,7 +78,7 @@ function Block({ block, ranges }: { block: DocumentBlock; ranges: readonly TextR
       return (
         <Tag>
           {block.items.map((item, i) => (
-            <li key={i}>
+            <li key={i} data-doc-item="">
               <Runs runs={item} base={offs[i]} ranges={ranges} />
             </li>
           ))}
@@ -96,11 +97,11 @@ function Block({ block, ranges }: { block: DocumentBlock; ranges: readonly TextR
       const cell = (row: DocumentRun[][], r: number, th: boolean): ReactElement[] =>
         row.map((c, j) =>
           th ? (
-            <th key={j} scope="col">
+            <th key={j} scope="col" data-doc-item="">
               <Runs runs={c} base={offs[rowStart[r] + j]} ranges={ranges} />
             </th>
           ) : (
-            <td key={`${r}-${j}`}>
+            <td key={`${r}-${j}`} data-doc-item="">
               <Runs runs={c} base={offs[rowStart[r] + j]} ranges={ranges} />
             </td>
           )
@@ -188,6 +189,15 @@ function blockOf(node: Node, root: Element): Element | null {
 /** A simplified Word-style preview built from blocks (never HTML). */
 export default function DocumentView({ blocks, truncated, title }: { blocks: DocumentBlock[]; truncated?: boolean; title: string }): ReactElement {
   const ref = useRef<HTMLDivElement>(null)
+  const items = useMemo(() => docItems(blocks), [blocks])
+  const cursor = useBlockCursor({ rootRef: ref, itemSelector: '[data-doc-item]', resetKey: blocks,
+    canExtend: (a, b) => items[a]?.block === items[b]?.block,
+    select: (lo, hi) => {
+      const r = docItemsRange(items, lo, hi)
+      const anchor = r ? { type: 'block' as const, ...r, quote: quoteOf(blockText(blocks[r.index]).slice(r.start, r.end)) } : null
+      return { selection: anchor ? { anchor, description: anchorDescription(anchor) } : null, sentence: `${items[lo]?.label ?? 'Block'} selected` }
+    }
+  })
   const notes = useViewedNotes()
   const byBlock = useMemo(() => {
     const m = new Map<number, TextRange[]>()
@@ -228,9 +238,9 @@ export default function DocumentView({ blocks, truncated, title }: { blocks: Doc
   return (
     <div className="output-doc" data-testid="output-doc">
       <p className="output-preview-lead">Simplified preview. Open the file for the exact layout.</p>
-      <div ref={ref} className="output-scroll output-doc-body" role="region" aria-label={`${title} text`} tabIndex={0}>
+      <div ref={ref} className="output-scroll output-doc-body" role="group" aria-label={`${title} text`} tabIndex={0} onKeyDown={cursor.onKeyDown}>
         {blocks.map((b, i) => (
-          <div key={i} className="output-doc-block" data-block={i}>
+          <div key={i} className="output-doc-block" data-block={i} data-doc-item={b.type === 'heading' || b.type === 'paragraph' || b.type === 'code' ? '' : undefined}>
             <Block block={b} ranges={byBlock.get(i) ?? []} />
           </div>
         ))}

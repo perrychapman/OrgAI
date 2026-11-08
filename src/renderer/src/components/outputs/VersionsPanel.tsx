@@ -179,7 +179,7 @@ export default function VersionsPanel(): ReactElement | null {
                   <Button type="submit" size="sm" variant="primary" testId="output-version-name-save">
                     Save name
                   </Button>
-                  <Button size="sm" onClick={() => setNaming(null)}>
+                  <Button size="sm" onClick={() => { setNaming(null); refocusName(v.n) }}>
                     Cancel
                   </Button>
                 </form>
