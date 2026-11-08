@@ -7,7 +7,15 @@ export interface Desk { slot: number; room: number; furniture: Point; anchor: Po
 export const DESKS_PER_ROOM = 8
 export const ROOM_WIDTH = 18
 export const ROOM_HEIGHT = 13
-export const ROOM_PROPS = [{ name: 'plant', x: 0, y: 10 }, { name: 'shelf', x: 7, y: 10 }, { name: 'coffee-station', x: 15, y: 10 }] as const
+export const ROOM_PROPS = [{ name: 'plant', x: 0, y: 11 }, { name: 'shelf', x: 7, y: 11 }, { name: 'coffee-station', x: 15, y: 11 }] as const
+
+export function roomHeight(slots: readonly number[]): number {
+  return slots.some(slot => slot % DESKS_PER_ROOM >= 4) ? ROOM_HEIGHT : 8
+}
+
+export function roomProps(height = ROOM_HEIGHT) {
+  return ROOM_PROPS.map(prop => ({ ...prop, y: height - 2 }))
+}
 
 /** Retain tombstones so removal and later additions never move an existing desk. */
 export function assignDesks(previous: ReadonlyMap<string, number>, ids: readonly string[]): Map<string, number> {
@@ -25,16 +33,16 @@ export function deskForSlot(slot: number): Desk {
   return { slot, room: Math.floor(slot / DESKS_PER_ROOM), furniture: { x, y }, anchor: { x: x + ax, y: y + ay } }
 }
 
-export function blockedCells(): Set<string> {
-  const furniture = Array.from({ length: DESKS_PER_ROOM }, (_, i) => {
+export function blockedCells(slots: readonly number[] = Array.from({ length: DESKS_PER_ROOM }, (_, i) => i), height = ROOM_HEIGHT): Set<string> {
+  const furniture = slots.flatMap((i) => {
     const { furniture } = deskForSlot(i)
-    return { ...furniture, footprint: atlas.props.desk.footprint }
-  }).concat(ROOM_PROPS.map(({ x, y, name }) => ({ x, y, footprint: atlas.props[name].footprint })))
+    return [{ ...furniture, footprint: atlas.props.desk.footprint }, { x: furniture.x + 2, y: furniture.y, footprint: atlas.props.chair.footprint }]
+  }).concat(roomProps(height).map(({ x, y, name }) => ({ x, y, footprint: atlas.props[name].footprint })))
   return new Set(furniture.flatMap(p => p.footprint.map(([x, y]) => `${p.x + x},${p.y + y}`)))
 }
 
 /** Breadth-first route through the connected floor; includes both endpoints. */
-export function route(from: Point, to: Point, blocked = blockedCells()): Point[] {
+export function route(from: Point, to: Point, blocked = blockedCells(), height = ROOM_HEIGHT): Point[] {
   const key = (p: Point): string => `${p.x},${p.y}`
   if (blocked.has(key(from)) || blocked.has(key(to))) return []
   const queue = [from]
@@ -49,7 +57,7 @@ export function route(from: Point, to: Point, blocked = blockedCells()): Point[]
     }
     for (const d of [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }]) {
       const n = { x: p.x + d.x, y: p.y + d.y }
-      if (n.x < 0 || n.y < 0 || n.x >= ROOM_WIDTH || n.y >= ROOM_HEIGHT || blocked.has(key(n)) || parent.has(key(n))) continue
+      if (n.x < 0 || n.y < 0 || n.x >= ROOM_WIDTH || n.y >= height || blocked.has(key(n)) || parent.has(key(n))) continue
       parent.set(key(n), p); queue.push(n)
     }
   }

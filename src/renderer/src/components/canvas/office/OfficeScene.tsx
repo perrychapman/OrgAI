@@ -1,7 +1,7 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react'
 import type { AgentMessage } from '@shared/types'
 import { useReducedMotion } from '../../../lib/canvas'
-import { assignDesks, blockedCells, deskForSlot, OFFICE_TILE, ROOM_HEIGHT, ROOM_PROPS, ROOM_WIDTH, route } from '../../../lib/office/layout'
+import { assignDesks, blockedCells, deskForSlot, OFFICE_TILE, roomHeight, roomProps, ROOM_WIDTH, route } from '../../../lib/office/layout'
 import { baseline, finish, ingest } from '../../../lib/office/scheduler'
 import { Button } from '../../ui/Button'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
@@ -42,6 +42,9 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
   const maxRoom = Math.max(0, ...agents.map(a => deskForSlot(slots.current.get(a.id)!).room))
   const currentRoom = Math.min(room, maxRoom)
   const visibleAgents = agents.filter(a => deskForSlot(slots.current.get(a.id)!).room === currentRoom)
+  const visibleSlots = visibleAgents.map(a => slots.current.get(a.id)!)
+  const height = roomHeight(visibleSlots)
+  const furnitureProps = roomProps(height)
   const selectAgent = (a: OfficeAgent) => {
     setRoom(deskForSlot(slots.current.get(a.id)!).room)
     onSelect(a.id)
@@ -79,9 +82,9 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
     const timer = window.setTimeout(() => { scheduler.current = finish(scheduler.current, Date.now()); redraw(n => n + 1) }, 8000)
     return () => window.clearTimeout(timer)
   }, [messages, reduced, ids])
-  const fit = () => setZoom(Math.max(1, Math.min(4, Math.floor(Math.min((stage.current?.clientWidth ?? ROOM_WIDTH * OFFICE_TILE) / (ROOM_WIDTH * OFFICE_TILE), (stage.current?.clientHeight ?? ROOM_HEIGHT * OFFICE_TILE) / (ROOM_HEIGHT * OFFICE_TILE))))))
-  useEffect(() => { fit() }, [])
-  useImperativeHandle(controlRef, () => ({ zoomIn: () => setZoom(z => Math.min(4, z + 1)), zoomOut: () => setZoom(z => Math.max(1, z - 1)), fit }), [])
+  const fit = () => setZoom(Math.max(1, Math.min(4, Math.floor(Math.min((stage.current?.clientWidth ?? ROOM_WIDTH * OFFICE_TILE) / (ROOM_WIDTH * OFFICE_TILE), (stage.current?.clientHeight ?? height * OFFICE_TILE) / (height * OFFICE_TILE))))))
+  useEffect(() => { fit() }, [height])
+  useImperativeHandle(controlRef, () => ({ zoomIn: () => setZoom(z => Math.min(4, z + 1)), zoomOut: () => setZoom(z => Math.max(1, z - 1)), fit }), [height])
   const tiles = palette === 'green' ? tilesGreen : tilesNeutral
   const props = palette === 'green' ? propsGreen : propsNeutral
   const workers = palette === 'green' ? workersGreen : workersNeutral
@@ -97,10 +100,10 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
     <div className="office-controls"><Button size="sm" onClick={() => setZoom(z => Math.max(1, z - 1))}>Zoom out</Button><span>{zoom}×</span><Button size="sm" onClick={() => setZoom(z => Math.min(4, z + 1))}>Zoom in</Button><Button size="sm" onClick={fit}>Fit</Button>
       <Button size="sm" disabled={currentRoom === 0} onClick={() => setRoom(r => Math.max(0, r - 1))}>Previous room</Button><span>Room {currentRoom + 1} of {maxRoom + 1}</span><Button size="sm" disabled={currentRoom >= maxRoom} onClick={() => setRoom(r => Math.min(maxRoom, r + 1))}>Next room</Button></div>
     <div className="office-stage" ref={stage} tabIndex={0} aria-label="Office scene, scroll to pan">
-      <div className="office-map" style={{ width: ROOM_WIDTH * OFFICE_TILE * zoom, height: ROOM_HEIGHT * OFFICE_TILE * zoom }}><div className="office-pixels" aria-hidden="true" style={{ width: ROOM_WIDTH * OFFICE_TILE, height: ROOM_HEIGHT * OFFICE_TILE, transform: `scale(${zoom})` }}>
-        {Array.from({ length: ROOM_WIDTH * ROOM_HEIGHT }, (_, i) => { const x = i % ROOM_WIDTH; const y = Math.floor(i / ROOM_WIDTH); const f = tileFrames[y === 0 ? 'tile.08' : 'tile.00']; return <i className="office-sprite" key={`t${i}`} style={frameStyle(f, tiles, x * 16, y * 16, 0)} /> })}
-        {ROOM_PROPS.map(p => <i className="office-sprite" key={p.name} style={frameStyle(propFrames[`prop.${p.name}`], props, p.x * 16, p.y * 16, p.y * 16 + atlas.props[p.name].depthAnchor[1])} />)}
-        {visibleAgents.map(a => { const desk = deskForSlot(slots.current.get(a.id)!); const x = desk.furniture.x * 16; const y = desk.furniture.y * 16; const f = propFrames['prop.desk']; const crt = propFrames['prop.crt']; const chair = propFrames['prop.chair']; const depth = y + atlas.props.desk.depthAnchor[1]; return <span key={`d${a.id}`}><i className="office-sprite" style={frameStyle(chair, props, x, y, y + atlas.props.chair.depthAnchor[1] - 1)} /><i className="office-sprite" style={frameStyle(f, props, x, y, depth)} /><i className="office-sprite" style={frameStyle(crt, props, x, y, depth + 1)} /></span> })}
+      <div className="office-map" style={{ width: ROOM_WIDTH * OFFICE_TILE * zoom, height: height * OFFICE_TILE * zoom }}><div className="office-pixels" aria-hidden="true" style={{ width: ROOM_WIDTH * OFFICE_TILE, height: height * OFFICE_TILE, transform: `scale(${zoom})` }}>
+        {Array.from({ length: ROOM_WIDTH * height }, (_, i) => { const x = i % ROOM_WIDTH; const y = Math.floor(i / ROOM_WIDTH); const f = tileFrames[y === 0 ? 'tile.08' : 'tile.00']; return <i className="office-sprite" key={`t${i}`} style={frameStyle(f, tiles, x * 16, y * 16, 0)} /> })}
+        {furnitureProps.map(p => <i className="office-sprite" key={p.name} style={frameStyle(propFrames[`prop.${p.name}`], props, p.x * 16, p.y * 16, p.y * 16 + atlas.props[p.name].depthAnchor[1])} />)}
+        {visibleAgents.map(a => { const desk = deskForSlot(slots.current.get(a.id)!); const x = desk.furniture.x * 16; const y = desk.furniture.y * 16; const f = propFrames['prop.desk']; const crt = propFrames['prop.crt']; const chair = propFrames['prop.chair']; const depth = y + atlas.props.desk.depthAnchor[1]; return <span key={`d${a.id}`}><i className="office-sprite" style={frameStyle(chair, props, x + 2 * OFFICE_TILE, y, y + atlas.props.chair.depthAnchor[1])} /><i className="office-sprite" style={frameStyle(f, props, x, y, depth)} /><i className="office-sprite" style={frameStyle(crt, props, x, y, depth + 1)} /></span> })}
         {visibleAgents.map(a => {
           const desk = deskForSlot(slots.current.get(a.id)!)
           let x = desk.anchor.x * 16; let y = desk.anchor.y * 16
@@ -110,11 +113,11 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
           let pose = a.status === 'failed' || a.status === 'error' ? 'error' : a.status === 'finished' || a.status === 'done' ? 'done' : a.status === 'waiting' ? 'wait' : 'work'
           if (delivery && !reduced && delivery.message.to) {
             const target = deskForSlot(slots.current.get(delivery.message.to)!)
-            const blocked = blockedCells()
+            const blocked = blockedCells(visibleSlots, height)
             for (const other of visibleAgents) if (other.id !== a.id && other.id !== delivery.message.to) {
               const p = deskForSlot(slots.current.get(other.id)!).anchor; blocked.add(`${p.x},${p.y}`)
             }
-            const path = route(desk.anchor, target.anchor, blocked).slice(0, -1)
+            const path = route(desk.anchor, target.anchor, blocked, height).slice(0, -1)
             const step = Math.min(path.length - 1, Math.floor(Math.max(0, tick - delivery.started) / 2000 * path.length))
             if (step >= 0 && path[step]) {
               x = path[step].x * 16; y = path[step].y * 16
