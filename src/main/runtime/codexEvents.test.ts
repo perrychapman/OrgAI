@@ -18,6 +18,10 @@ describe('returned media', () => {
     const updates = new CodexEventMapper().handle('item/completed', { threadId: 't', item: { type: 'imageView', id: 'i', path: 'C:/private/secret.png' } })
     expect(updates).toEqual([{ type: 'media', threadId: 't', media: expect.objectContaining({ kind: 'unsupported', reason: expect.any(String) }) }])
   })
+  it('retains structured-only MCP result JSON', () => {
+    const updates = new CodexEventMapper().handle('item/completed', { threadId: 't', item: { type: 'mcpToolCall', id: 'json', status: 'completed', result: { structuredContent: { count: 3 } } } })
+    expect(updates).toEqual([{ type: 'toolResult', threadId: 't', toolUseId: 'json', content: JSON.stringify({ count: 3 }), isError: false }])
+  })
 })
 
 function fixture(name: string): { method: string; params: unknown }[] {
