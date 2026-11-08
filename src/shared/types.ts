@@ -1816,6 +1816,12 @@ export const CANVAS_NODE_STYLES: readonly CanvasNodeStyle[] = ['card', 'compact'
 export type CanvasEdgeStyle = 'curved' | 'orthogonal' | 'straight'
 export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthogonal', 'straight']
 
+/** Presentation is independent of the saved graph layout, pattern and node preferences. */
+export type CanvasPresentation = 'graph' | 'pocket-office'
+export const CANVAS_PRESENTATIONS: readonly CanvasPresentation[] = ['graph', 'pocket-office']
+export type CanvasScenePalette = 'neutral' | 'green'
+export const CANVAS_SCENE_PALETTES: readonly CanvasScenePalette[] = ['neutral', 'green']
+
 /** App-wide look. Main applies `theme` to nativeTheme.themeSource at startup and on every settings:set. */
 export interface AppearanceSettings {
   /** Default 'dark' until the light theme is signed off (docs/design/plan.md section 2). */
@@ -1823,6 +1829,10 @@ export interface AppearanceSettings {
   /** Accent color '#rrggbb' (lowercase). Default '#7c5cff'. */
   accent: string
   canvas: {
+    /** Missing on legacy inputs; normalization fills 'graph' without changing graph preferences. */
+    presentation?: CanvasPresentation
+    /** Scene artwork palette, independent of app theme. Normalization fills 'neutral'. */
+    scenePalette?: CanvasScenePalette
     pattern: CanvasPattern
     /** Tint the canvas background with the accent. */
     tint: boolean
@@ -1835,6 +1845,14 @@ export interface AppearanceSettings {
   }
   /** 'system' honours prefers-reduced-motion; 'on' always reduces motion. */
   reduceMotion: 'system' | 'on'
+}
+
+/** DEFAULT_APPEARANCE and normalizeAppearance guarantee the new fields; legacy input literals stay valid. */
+export interface NormalizedAppearanceSettings extends AppearanceSettings {
+  canvas: AppearanceSettings['canvas'] & {
+    presentation: CanvasPresentation
+    scenePalette: CanvasScenePalette
+  }
 }
 
 /** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
