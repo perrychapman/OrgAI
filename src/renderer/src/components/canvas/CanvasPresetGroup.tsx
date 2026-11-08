@@ -120,5 +120,5 @@ export function CanvasPresetGroup({
 
 /** Moves focus to the checked option of a preset group inside `root` (the deep link and the popover use it). */
 export function focusCheckedPreset(root: ParentNode | null): void {
-  root?.querySelector<HTMLElement>('[data-testid="canvas-preset"][aria-checked="true"]')?.focus({ preventScroll: true })
+  root?.querySelector<HTMLElement>('[data-testid="canvas-presentation"] input:checked')?.focus({ preventScroll: true })
 }

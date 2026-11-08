@@ -508,13 +508,13 @@ try {
   await sleep(700)
   const inView = await page.evaluate(() => {
     const sc = document.querySelector('.settings-scroll')?.getBoundingClientRect()
-    const first = document.querySelector('[data-testid=canvas-section] [data-testid=canvas-preset]')?.getBoundingClientRect()
+    const first = document.querySelector('[data-testid=canvas-section] [data-testid=canvas-presentation]')?.getBoundingClientRect()
     return !!sc && !!first && first.top >= sc.top - 1 && first.bottom <= sc.bottom + 1
   })
-  check(inView, 'More canvas settings scrolls the gallery\'s first option into the settings view at 1024x640')
+  check(inView, 'More canvas settings scrolls Presentation into the settings view at 1024x640')
   const shift = await windowShift(page)
   check(shift.ok, 'the deep link does not shift the window', JSON.stringify(shift))
-  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'canvas-preset'), 'the deep link focuses the checked style option')
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid="canvas-presentation"] input:checked')), 'the deep link focuses the checked presentation')
   await shot('deep-link-canvas')
 
   // ---------- A message between two working reports (M4) ----------

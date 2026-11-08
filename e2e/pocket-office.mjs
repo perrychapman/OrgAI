@@ -70,12 +70,12 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await endSession(page)
   await page.locator('.composer textarea').fill('Office continuation [mock:deep-tree]')
   await page.locator('.composer textarea').press('Enter')
-  const prior = scene().locator('button[data-office-agent-id$="/mock-lead-report-1"]').first()
+  const prior = scene().locator('button[data-office-agent-id$="/mock-lead"]').first()
   await prior.waitFor({ timeout: 30_000 })
   check(/Earlier|Session/i.test(await prior.innerText()), 'the prior report retains visible session context')
   await prior.click()
-  await page.getByText('First half done.', { exact: true }).first().waitFor({ timeout: 10_000 })
-  check(await page.getByText('First half done.', { exact: true }).count() > 0, 'selecting an earlier report opens its original transcript')
+  await page.getByText('Splitting the work in two.', { exact: true }).first().waitFor({ timeout: 10_000 })
+  check(await page.getByText('Splitting the work in two.', { exact: true }).count() > 0, 'selecting an earlier lead opens its original transcript')
   // Exercise genuine normalized messages through the mock runtime while the office is mounted.
   await endSession(page)
   fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 180, work: [

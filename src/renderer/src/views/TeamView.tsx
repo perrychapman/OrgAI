@@ -810,7 +810,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         </div>
         <FrameStage>
           {options.presentation === 'pocket-office' ? (
-            <OfficeScene mode="team" palette={options.scenePalette} agents={project.roles.map((role) => ({ id: role.id, name: role.name, status: 'Sample' }))} messages={[]} selectedId={selectedRoleId ?? undefined} onSelect={(id) => { setSelectedEdgeId(null); selectRole(id); setPanelOpen(true); setPanelTab('role') }} onRemove={(id) => void requestRemove(id)} />
+            <OfficeScene mode="team" palette={options.scenePalette} agents={project.roles.map((role) => ({ id: role.id, name: role.name, status: 'Role' }))} messages={[]} selectedId={selectedRoleId ?? undefined} onSelect={(id) => { setSelectedEdgeId(null); selectRole(id); setPanelOpen(true); setPanelTab('role') }} onRemove={(id) => void requestRemove(id)} />
           ) : (
           <ReactFlow
             nodes={nodes}
