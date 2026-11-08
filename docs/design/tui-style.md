@@ -70,3 +70,11 @@ starting work. Projects without a configured team retain the run-agent view.
 Agent identity colors distinguish roles; they are not status indicators. State is carried separately
 by a labeled glyph and state text, so a green or amber agent name does not imply success or a warning.
 Tab follows the visible conversation column, then the sidebar from top to bottom.
+
+The wide team roster separates each agent name from its activity and adds a blank row between agents
+when the available height permits. Smaller panes fall back to two-line or single-line rows so names
+and decision badges stay reachable. The checklist remains below the roster.
+New agent-to-agent message events animate a brief sender-to-recipient courier beneath the roster and
+mark both participants. It lasts about 1.6 seconds, works even for idle agents, and settles to a static
+last-message label. Mounting history, switching runs, or resuming animation never replays old traffic.
+Reduced-motion, screen-reader, no-color, inline, and dumb-terminal modes retain a static message cue.

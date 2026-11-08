@@ -28,7 +28,7 @@ const ROWS: OrgTreeRow[] = [
   row('old-1', { label: 'old-1', earlier: true, depth: 1, state: 'done', stateWord: 'Finished' })
 ]
 
-type MotionProps = OrgTreePaneProps & { animated?: boolean; messages?: TeamMessageRow[] }
+type MotionProps = OrgTreePaneProps & { animated?: boolean; messages?: TeamMessageRow[]; compact?: boolean; teamSize?: number }
 
 function mount(props: Partial<MotionProps> = {}, e: TuiEnv = env()) {
   const bus = new InputBus()
@@ -48,6 +48,21 @@ function mount(props: Partial<MotionProps> = {}, e: TuiEnv = env()) {
 }
 
 const lines = (frame: string | undefined): string[] => (frame ?? '').split('\n')
+
+it('gives sidebar agents separate name/status lines with breathing room', () => {
+  const r = mount({ compact: true, teamSize: 2, width: 42, height: 12, rows: [
+    row('root', { depth: 0, label: 'Orchestrator', activity: '', state: 'idle', stateWord: 'Idle' }),
+    row('builder', { label: 'Implementer', activity: '', state: 'idle', stateWord: 'Available' })
+  ] })
+  const out = lines(r.lastFrame())
+  const root = out.findIndex(line => line.includes('Orchestrator'))
+  const builder = out.findIndex(line => line.includes('Implementer'))
+  expect(out[root]).not.toContain('Idle')
+  expect(out[root + 1]).toContain('Idle')
+  expect(builder - root).toBe(3)
+  expect(out[builder + 1]).toContain('Available')
+  r.unmount()
+})
 
 it('keeps multiple decisions and conflicts visible in a compact unfocused roster', () => {
   const item = { kind: 'row' as const, prefix: '', row: row('builder', { waiting: 3, worktreeChip: 'conflict', state: 'waiting', stateWord: 'Needs you' }) }
@@ -350,6 +365,6 @@ describe('OrgTreePane', () => {
     expect(highlighted.find((segment) => segment.text === 'a')?.tone).toBe('identity')
     expect(highlighted.find((segment) => segment.text?.includes('Reading files'))?.shimmer).toBe(true)
     const traffic = rowLine({ ...item, row: { ...active, traffic: true } }, false, false, 60, env(), 0, true, true)
-    expect(traffic.find((segment) => segment.text === '~')?.tone).toBe('message')
+    expect(traffic.find((segment) => segment.text === ' ↔')?.tone).toBe('message')
   })
 })

@@ -493,7 +493,8 @@ export function App(props: AppProps) {
   // Budget every optional roster line before capping it: heading/footer, earlier-session separator,
   // focused key hint, up to one line per peer direction, and the two recent-message previews.
   const peerLines = (selectedTreeRow?.msgIn?.length ? 1 : 0) + (selectedTreeRow?.msgOut?.length ? 1 : 0)
-  const treeWanted = treeRows.length + 2 + (treeRows.some(row => row.earlier) ? 1 : 0)
+  const rosterRows = size.cols >= SPLIT_MIN_COLS ? Math.max(0, treeRows.length * 3 - 1) : treeRows.length
+  const treeWanted = rosterRows + 2 + (treeRows.some(row => row.earlier) ? 1 : 0)
     + (focus === 'tree' ? 1 : 0) + peerLines + Math.min(2, messages.length)
   // The inspector takes the conversation column (split) or the whole body; the layout keeps a transcript column for it.
   const layoutVisible: Record<PaneId, boolean> = inspecting ? { ...effective, transcript: true, plan: false } : effective

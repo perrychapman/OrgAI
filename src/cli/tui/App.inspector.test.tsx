@@ -194,7 +194,7 @@ describe('agent inspector (F4)', () => {
     const f = m.frame()
     expect(f).not.toContain('transcript (this agent')
     expect(f).toContain('ROOT-ONLY-LINE')
-    const row = lines(f).find((l) => /mock-lead\s+Reviewing/.test(l))!
+    const row = lines(f).find((l) => /mock-lead(?:\s|~|$)/.test(l))!
     expect(row.trimStart().startsWith('>')).toBe(true)
   })
 
@@ -409,7 +409,7 @@ describe('message counts (F6)', () => {
   it('the selected row footer and the ~ mark; the inspector shows counts', async () => {
     const m = mount({ cols: 120, rows: 40, state: withMessages(sampleState()) })
     const f0 = m.frame()
-    const leadRow = lines(f0).find((l) => /mock-lead\s+Reviewing/.test(l))!
+    const leadRow = lines(f0).find((l) => /mock-lead(?:\s|~|$)/.test(l))!
     expect(leadRow).toContain('~')
     await m.onLeadRow()
     const f = m.frame()
