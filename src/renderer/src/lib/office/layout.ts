@@ -5,7 +5,7 @@ export const OFFICE_TILE = atlas.tileSize
 export interface Point { x: number; y: number }
 export interface Desk { slot: number; room: number; furniture: Point; anchor: Point }
 export interface BuildingAgent { id: string; departmentId: string; departmentName: string; central: boolean }
-export interface BuildingRoom { id: string; label: string; floor: number; x: number; y: number; agents: string[] }
+export interface BuildingRoom { id: string; label: string; floor: number; x: number; y: number; width: number; height: number; agents: string[] }
 export interface BuildingLayout { rooms: BuildingRoom[]; floorCount: number; width: number; height: number; columns: number }
 export function floorBounds(layout: BuildingLayout, viewportWidth: number, viewportHeight: number, zoom: number): { width: number; height: number } {
   return { width: Math.max(layout.width, Math.ceil(viewportWidth / (OFFICE_TILE * zoom))), height: Math.max(layout.height, Math.ceil(viewportHeight / (OFFICE_TILE * zoom))) }
@@ -17,8 +17,35 @@ export const ROOM_HEIGHT = 13
 export const ROOM_PROPS = [{ name: 'plant', x: 0, y: 11 }, { name: 'shelf', x: 7, y: 11 }, { name: 'coffee-station', x: 15, y: 11 }] as const
 
 const BUILDING_ROOM_WIDTH = ROOM_WIDTH + 2
-const BUILDING_INTERIOR_HEIGHT = ROOM_HEIGHT + 7
-const BUILDING_ROW_HEIGHT = BUILDING_INTERIOR_HEIGHT + 4
+const BUILDING_INTERIOR_HEIGHT = ROOM_HEIGHT + 3
+/** Stop before a two-tile-wide, three-tile-high person could overlap another. */
+export function clearWorkerPath(path: readonly Point[], occupied: readonly Point[]): Point[] {
+  const safe: Point[] = []
+  for (const point of path) {
+    if (occupied.some(other => Math.abs(point.x - other.x) < 2 && Math.abs(point.y - other.y) < 3)) break
+    safe.push(point)
+  }
+  return safe
+}
+
+export function assignAppearances(previous: ReadonlyMap<string, number>, ids: readonly string[], count: number): Map<string, number> {
+  const next = new Map(previous)
+  const present = new Set(ids)
+  for (const id of ids) {
+    if (next.has(id)) continue
+    let hash = 0
+    for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) >>> 0
+    const preferred = hash % count
+    const used = new Set([...next].filter(([existing]) => present.has(existing)).map(([, value]) => value))
+    let look = preferred
+    for (let offset = 0; offset < count; offset++) {
+      const candidate = (preferred + offset) % count
+      if (!used.has(candidate)) { look = candidate; break }
+    }
+    next.set(id, look)
+  }
+  return next
+}
 
 /** Group slots retain tombstones just like agent slots, including across resizes. */
 export function assignDepartmentSlots(previous: ReadonlyMap<string, number>, agents: readonly BuildingAgent[]): Map<string, number> {
@@ -35,9 +62,6 @@ export function assignDepartmentSlots(previous: ReadonlyMap<string, number>, age
 }
 
 export function buildingLayout(agents: readonly BuildingAgent[], slots: ReadonlyMap<string, number>, viewportWidth: number, viewportHeight: number, zoom: number): BuildingLayout {
-  const columns = Math.max(1, Math.min(4, Math.floor((viewportWidth / (OFFICE_TILE * zoom) - 2) / BUILDING_ROOM_WIDTH)))
-  const rows = Math.max(1, Math.min(4, Math.floor(viewportHeight / (OFFICE_TILE * zoom) / BUILDING_ROW_HEIGHT)))
-  const capacity = Math.min(4, columns * rows)
   const groups = new Map<string, { label: string; rooms: Map<number, string[]> }>()
   for (const agent of agents) {
     const group = agent.central ? '__central__' : agent.departmentId
@@ -48,36 +72,60 @@ export function buildingLayout(agents: readonly BuildingAgent[], slots: Readonly
   }
   const entries = [...groups].sort(([a], [b]) => a === '__central__' ? -1 : b === '__central__' ? 1 : a.localeCompare(b))
     .flatMap(([group, value]) => [...value.rooms].sort(([a], [b]) => a - b).map(([number, members]) => ({ id: JSON.stringify([group, number]), label: `${value.label}${value.rooms.size > 1 || number > 0 ? ` ${number + 1}` : ''}`, agents: members })))
+  const smallRooms = entries.every(entry => entry.agents.every(id => (slots.get(JSON.stringify([JSON.parse(entry.id)[0], id])) ?? 0) % DESKS_PER_ROOM < 2))
+  const roomWidth = smallRooms ? 12 : BUILDING_ROOM_WIDTH
+  const roomHeight = smallRooms ? 14 : BUILDING_INTERIOR_HEIGHT + 2
+  const rowHeight = roomHeight + 2
+  const columns = Math.max(1, Math.min(4, Math.floor((viewportWidth / (OFFICE_TILE * zoom) - 2) / roomWidth)))
+  const rows = Math.max(1, Math.min(4, Math.floor(viewportHeight / (OFFICE_TILE * zoom) / rowHeight)))
+  const capacity = Math.min(4, columns * rows)
   const rooms = entries.map((entry, i) => {
     const position = i % capacity
-    return { ...entry, floor: Math.floor(i / capacity), x: 2 + (position % columns) * BUILDING_ROOM_WIDTH, y: Math.floor(position / columns) * BUILDING_ROW_HEIGHT }
+    return { ...entry, width: roomWidth, height: roomHeight, floor: Math.floor(i / capacity), x: 2 + (position % columns) * roomWidth, y: Math.floor(position / columns) * rowHeight }
   })
   const usedColumns = Math.max(1, Math.min(columns, capacity, entries.length))
   const usedRows = Math.max(1, Math.ceil(Math.min(capacity, Math.max(1, entries.length)) / columns))
-  return { rooms, floorCount: Math.max(1, Math.ceil(entries.length / capacity)), width: 2 + usedColumns * BUILDING_ROOM_WIDTH, height: usedRows * BUILDING_ROW_HEIGHT, columns }
+  return { rooms, floorCount: Math.max(1, Math.ceil(entries.length / capacity)), width: 2 + usedColumns * roomWidth, height: usedRows * rowHeight, columns }
 }
 
 export function buildingDesk(room: BuildingRoom, localSlot: number): Desk {
+  if (room.width === 12) {
+    const furniture = { x: room.x + 2 + (localSlot % 2) * 4, y: room.y + 4 }
+    const [ax, ay] = atlas.props.desk.interactionAnchors[0].cell
+    return { slot: localSlot, room: 0, furniture, anchor: { x: furniture.x + ax, y: furniture.y + ay } }
+  }
   const desk = deskForSlot(localSlot)
-  const offsetY = 5 + Math.floor((localSlot % DESKS_PER_ROOM) / 4) * 3
+  const offsetY = 3 + Math.floor((localSlot % DESKS_PER_ROOM) / 4)
   return { ...desk, furniture: { x: desk.furniture.x + room.x + 1, y: desk.furniture.y + room.y + offsetY }, anchor: { x: desk.anchor.x + room.x + 1, y: desk.anchor.y + room.y + offsetY } }
 }
 
 export function buildingProps(room: BuildingRoom) {
-  return roomProps(BUILDING_INTERIOR_HEIGHT).map(prop => ({ ...prop, x: room.x + 1 + prop.x, y: room.y + 1 + prop.y }))
+  const furnishings = room.width === 12 && room.agents.length === 1 ? [
+    { name: 'sofa', x: 6, y: 2 }, { name: 'side-table', x: 8, y: 2 }, { name: 'window', x: 8, y: -1 },
+    { name: 'plant', x: 0, y: 10 }, { name: 'shelf', x: 3, y: 10 }, { name: 'coffee-station', x: 8, y: 10 },
+  ] as const : room.width === 12 ? [
+    { name: 'sofa', x: 1, y: 1 }, { name: 'side-table', x: 3, y: 1 }, { name: 'window', x: 8, y: -1 },
+    { name: 'plant', x: 0, y: 10 }, { name: 'shelf', x: 3, y: 10 }, { name: 'coffee-station', x: 8, y: 10 },
+  ] as const : [
+    { name: 'sofa', x: 2, y: 1 }, { name: 'side-table', x: 4, y: 1 },
+    { name: 'lamp', x: 7, y: 1 }, { name: 'whiteboard', x: 11, y: 1 },
+    { name: 'window', x: 15, y: -1 }, { name: 'plant', x: 0, y: 1 },
+    { name: 'plant', x: 0, y: 14 }, { name: 'shelf', x: 3, y: 14 },
+    { name: 'printer', x: 6, y: 14 }, { name: 'coffee-station', x: 15, y: 14 },
+  ] as const
+  return furnishings.map((prop, index) => ({ ...prop, key: `${prop.name}-${index}`, x: room.x + 1 + prop.x, y: room.y + 1 + prop.y }))
 }
 
 /** Walls have two-cell doors to a two-cell corridor and the corridor's left trunk. */
 export function buildingBlocked(rooms: readonly BuildingRoom[], agents: readonly BuildingAgent[], slots: ReadonlyMap<string, number>): Set<string> {
   const blocked = new Set<string>()
   for (const room of rooms) {
-    for (let x = 0; x < BUILDING_ROOM_WIDTH; x++) {
+    const door = Math.floor(room.width / 2) - 1
+    for (let x = 0; x < room.width; x++) {
       blocked.add(`${room.x + x},${room.y}`)
-      if (x !== 9 && x !== 10) blocked.add(`${room.x + x},${room.y + BUILDING_INTERIOR_HEIGHT + 1}`)
+      if (x !== door && x !== door + 1) blocked.add(`${room.x + x},${room.y + room.height - 1}`)
     }
-    for (let y = 1; y <= BUILDING_INTERIOR_HEIGHT; y++) { blocked.add(`${room.x},${room.y + y}`); blocked.add(`${room.x + BUILDING_ROOM_WIDTH - 1},${room.y + y}`) }
-    // Nameplates occupy these bands; leave the two-cell aisle at the left clear.
-    for (const start of [2, 10]) for (let y = start; y < start + 3; y++) for (let x = 3; x < 19; x++) blocked.add(`${room.x + x},${room.y + y}`)
+    for (let y = 1; y < room.height - 1; y++) { blocked.add(`${room.x},${room.y + y}`); blocked.add(`${room.x + room.width - 1},${room.y + y}`) }
     const furniture = agents.filter(a => room.agents.includes(a.id)).flatMap(a => {
       const local = (slots.get(JSON.stringify([a.central ? '__central__' : a.departmentId, a.id])) ?? 0) % DESKS_PER_ROOM
       const { furniture } = buildingDesk(room, local)

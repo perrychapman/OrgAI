@@ -4,6 +4,10 @@ import * as fs from 'node:fs'
 
 export async function checkPocketOffice({ page, name, resizeTo, setAppearance, setCanvas, noPageScroll, shot, scriptFile }) {
   const scene = () => page.locator('[data-testid=office-scene]').first()
+  const openDirectory = async () => {
+    const directory = scene().locator('details.office-directory')
+    if (await directory.count() && await directory.getAttribute('open') === null) await directory.locator('summary').click()
+  }
   const graph = { pattern: 'blueprint', layout: 'left-right', nodeStyle: 'compact', edges: 'orthogonal', minimap: true, tint: false }
   await setCanvas({ ...graph, presentation: 'graph', scenePalette: 'color' })
   await openAppSettings(page)
@@ -36,6 +40,17 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
         check(await scene().getAttribute('data-palette') === palette, `office follows palette at ${w}x${h} ${theme}/${palette}`)
         check(await noPageScroll(), `office fits the window at ${w}x${h} ${theme}/${palette}`)
         check(await scene().locator('[data-office-agent-id]').count() > 1, `Team exposes named agent buttons at ${w}x${h} ${theme}/${palette}`)
+        const targets = await scene().locator('button[data-office-worker-id]').evaluateAll(buttons => buttons.map(button => {
+          const rect = button.getBoundingClientRect()
+          const sprite = [...document.querySelectorAll('[data-office-sprite-id]')].find(el => el.getAttribute('data-office-sprite-id') === button.getAttribute('data-office-worker-id'))
+          const art = sprite?.getBoundingClientRect()
+          return { size: rect.width >= 24 && rect.height >= 24, aligned: !!art && rect.left <= art.left && rect.right >= art.right && rect.top <= art.top && rect.bottom >= art.bottom, named: !!button.getAttribute('aria-label') || !!button.textContent?.trim() }
+        }))
+        check(targets.length > 0 && targets.every(target => target.size && target.aligned && target.named), `native person targets cover their visible sprites with accessible names at ${w}x${h} ${theme}/${palette}`)
+        const directory = scene().locator('details.office-directory')
+        check(await directory.count() === 1 && await directory.getAttribute('open') === null, `agent directory stays optional at ${w}x${h} ${theme}/${palette}`)
+        const identityFrames = await scene().locator('[data-office-sprite-id]').evaluateAll(sprites => sprites.map(sprite => sprite.style.backgroundPosition))
+        check(identityFrames.length <= 12 && new Set(identityFrames).size === identityFrames.length, `small team people have distinct silhouettes at ${w}x${h} ${theme}/${palette}`)
         const fills = await scene().evaluate(el => {
           const stage = el.querySelector('.office-stage')
           const floor = el.querySelector('[data-testid=office-floor]')?.getBoundingClientRect()
@@ -49,7 +64,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   }
   // A real project role tree with four departments overflows floors while retaining every role in the roster.
   const original = await page.evaluate(async projectName => (await window.orgai.projects.list()).find(project => project.name === projectName), name)
-  await page.evaluate(async project => {
+  const largeProject = await page.evaluate(async project => {
     const root = project.roles.find(role => role.reportsTo === null)
     const template = project.roles.find(role => role.reportsTo !== null) ?? root
     const roles = [root]
@@ -58,14 +73,31 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
       roles.push({ ...template, id: leadId, slug: `office-lead-${branch}`, name: `Department lead ${branch + 1}`, reportsTo: root.id })
       for (let worker = 0; worker < 7; worker++) roles.push({ ...template, id: `office-worker-${branch}-${worker}`, slug: `office-worker-${branch}-${worker}`, name: `Worker ${branch + 1}.${worker + 1}`, reportsTo: leadId })
     }
-    await window.orgai.projects.save({ ...project, roles })
+    await window.orgai.projects.save({ ...project, roles: roles.slice(0, 12) })
+    return { ...project, roles }
   }, original)
   await page.reload()
   await page.locator('.sidebar').waitFor()
   await openProject(page, name)
   await openTeam(page)
   await scene().waitFor()
-  check(await scene().locator('button[data-office-agent-id]').count() === 33, 'large team keeps all 33 real roles in the accessible roster')
+  const firstPeople = new Map()
+  for (let floor = 0; floor < 33 && firstPeople.size < 12; floor++) {
+    const people = await scene().locator('[data-office-sprite-id]').evaluateAll(sprites => sprites.map(sprite => [sprite.getAttribute('data-office-sprite-id'), sprite.style.backgroundPosition]))
+    for (const [id, appearance] of people) if (firstPeople.size < 12) firstPeople.set(id, appearance)
+    const next = scene().getByRole('button', { name: 'Next floor', exact: true })
+    if (await next.isDisabled()) break
+    await next.click()
+  }
+  check(firstPeople.size === 12 && new Set(firstPeople.values()).size === 12, 'first twelve people retain visibly distinct atlas identities across floors')
+  await page.evaluate(async project => { await window.orgai.projects.save(project) }, largeProject)
+  await page.reload()
+  await page.locator('.sidebar').waitFor()
+  await openProject(page, name)
+  await openTeam(page)
+  await scene().waitFor()
+  check(await scene().locator('button[data-office-agent-id]').count() === 33, 'large team keeps all 33 real roles in the optional directory')
+  await openDirectory()
   check(await scene().getAttribute('data-palette') === 'green', 'saved office presentation and palette survive a renderer reload')
   await scene().locator('button[data-office-agent-id="office-worker-3-6"]').click()
   check(Number(await scene().getAttribute('data-floor')) > 1, 'roster selection jumps to the correct explicit floor')
@@ -79,19 +111,20 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await openProject(page, name)
   await openTeam(page)
   await scene().waitFor()
-  const worker = scene().locator('button[data-office-agent-id]').first()
+  const worker = scene().locator('button[data-office-worker-id]').first()
   await worker.focus()
   await page.keyboard.press('Enter')
   await page.locator('[data-testid=role-capabilities]').waitFor()
   check(await page.locator('[data-testid=role-capabilities]').count() === 1, 'office keyboard selection opens the existing editable role inspector')
   await page.keyboard.press('Escape')
-  check(await page.evaluate(() => !!document.activeElement?.hasAttribute('data-office-agent-id')), 'Escape returns Team focus to an office agent')
+  check(await page.evaluate(() => !!document.activeElement?.hasAttribute('data-office-worker-id') || !!document.activeElement?.hasAttribute('data-office-agent-id')), 'Escape returns Team focus to an office agent')
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })
   await page.locator('.composer textarea').fill('Office deep tree [mock:deep-tree]')
   await page.locator('.composer textarea').press('Enter')
   await scene().waitFor()
+  await openDirectory()
   await scene().locator('button[data-office-agent-id="mock-lead-report-1"]').first().waitFor({ timeout: 20_000 })
   await page.getByText('The lead finished: both halves are done. Anything else?', { exact: true }).first().waitFor({ timeout: 30_000 })
   check(await scene().getAttribute('data-mode') === 'live', 'Live uses the live scene')
@@ -110,6 +143,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await endSession(page)
   await page.locator('.composer textarea').fill('Office continuation [mock:deep-tree]')
   await page.locator('.composer textarea').press('Enter')
+  await openDirectory()
   const prior = scene().locator('button[data-office-agent-id$="/mock-lead"]').first()
   await prior.waitFor({ timeout: 30_000 })
   check(/Earlier|Session/i.test(await prior.innerText()), 'the prior report retains visible session context')
@@ -130,7 +164,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await page.locator('.composer textarea').fill('Office messages')
   await page.locator('.composer textarea').press('Enter')
   await scene().waitFor()
-  await scene().getByRole('button', { name: 'Zoom in', exact: true }).click()
+  while (Number(await scene().locator('[data-testid=office-zoom]').getAttribute('data-zoom')) < 3) await scene().getByRole('button', { name: 'Zoom in', exact: true }).click()
   await scene().locator('[data-testid=office-caption]').first().waitFor({ timeout: 20_000 })
   const delivery = scene().locator('[data-testid=office-deliveries]')
   const floorMapping = await scene().locator('button[data-office-agent-id]').evaluateAll(buttons => buttons.filter(button => ['root', 'office-a'].includes(button.getAttribute('data-office-agent-id'))).map(button => button.getAttribute('data-office-floor')))
@@ -150,6 +184,17 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
     return active > 0 && { active, queued }
   }, undefined, { timeout: 15_000 })).jsonValue()
   check(observedDelivery.active > 0, 'genuinely new messages after responsive reflow animate on the shared floor')
+  const movingTargetsMatch = await scene().evaluate(async el => {
+    const matches = () => [...el.querySelectorAll('button[data-office-worker-id]')].every(button => {
+      const sprite = [...el.querySelectorAll('[data-office-sprite-id]')].find(art => art.getAttribute('data-office-sprite-id') === button.getAttribute('data-office-worker-id'))
+      if (!sprite) return false
+      const target = button.getBoundingClientRect(); const art = sprite.getBoundingClientRect()
+      return Math.abs((target.left + target.right) - (art.left + art.right)) < 2 && Math.abs((target.top + target.bottom) - (art.top + art.bottom)) < 2 && target.left <= art.left + 1 && target.top <= art.top + 1 && target.right >= art.right - 1 && target.bottom >= art.bottom - 1
+    })
+    for (let i = 0; i < 12; i++) { if (!matches()) return false; await new Promise(resolve => requestAnimationFrame(resolve)) }
+    return true
+  })
+  check(movingTargetsMatch, 'person hit targets track rendered sprite coordinates throughout live delivery frames')
   check(observedDelivery.active <= 3 && observedDelivery.queued <= 12, 'real message burst respects active and queued visual limits')
   check(await scene().locator('[data-testid=office-caption] script').count() === 0, 'agent-authored message markup renders as text')
   await shot('office-real-message')

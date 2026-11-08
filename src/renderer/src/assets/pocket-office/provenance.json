@@ -1,0 +1,11 @@
+{
+  "name": "OrgAI Pocket Office",
+  "creator": "OrgAI project contributors",
+  "creatorUrl": null,
+  "source": "generate-atlas.py in this directory; original procedural pixel drawings authored for OrgAI",
+  "license": "MIT, same as repository LICENSE",
+  "attribution": "Retain repository copyright and license notice when distributing source or substantial portions.",
+  "distributionRestrictions": "No restrictions beyond the repository MIT license notice requirements.",
+  "thirdPartyArtwork": false,
+  "notes": "No downloaded or franchise artwork. Twelve original worker identities, twenty props, PNG sheets, color vignette and labeled 2x/4x worker contact sheets are generated from the editable Python source. Review SVG concepts remain historical original project artwork."
+}

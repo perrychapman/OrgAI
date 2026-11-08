@@ -1073,7 +1073,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   setLoadingEarlier(true)
                   void loadEarlierSessions(runId).finally(() => {
                     setLoadingEarlier(false)
-                    requestAnimationFrame(() => bodyRef.current?.querySelector<HTMLElement>('[data-office-agent-id]')?.focus())
+                    requestAnimationFrame(() => {
+                      const person = bodyRef.current?.querySelector<HTMLElement>('[data-office-worker-id]')
+                      if (person) { person.focus(); return }
+                      const directoryTarget = bodyRef.current?.querySelector<HTMLElement>('[data-office-agent-id]')
+                      const directory = directoryTarget?.closest('details')
+                      if (directory) directory.open = true
+                      directoryTarget?.focus()
+                    })
                   })
                 }}>Load earlier sessions ({earlierToLoad})</Button>
               )}
