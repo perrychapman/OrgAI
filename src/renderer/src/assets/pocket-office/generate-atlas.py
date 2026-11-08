@@ -7,6 +7,7 @@ HERE = Path(__file__).resolve().parent
 PALETTES = {
     'neutral': ['#242a2a', '#65706c', '#aab4a4', '#e4ead5'],
     'green': ['#203c31', '#496b47', '#91ac70', '#d8e5b5'],
+    'color': ['#30283a', '#a86845', '#dfb67c', '#f5e4bc'],
 }
 DIRS = ['down', 'left', 'right', 'up']
 POSES = ['idle', 'walk-1', 'walk-2', 'work', 'wait', 'done', 'error']
@@ -105,7 +106,32 @@ def prop(i):
 
 def save_sheet(name, image):
     for palette_name, colors in PALETTES.items():
-        rgba = Image.new('RGBA', image.size, (0, 0, 0, 0)); rgba.putdata([tuple(bytes.fromhex(colors[p][1:])) + (255,) if p != 255 else (0, 0, 0, 0) for p in image.getdata()]); rgba.save(HERE / f'{name}-{palette_name}.png', optimize=False)
+        rgba = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        pixels = []
+        for index, p in enumerate(image.getdata()):
+            if p == 255:
+                pixels.append((0,0,0,0)); continue
+            x, y = index % image.width, index // image.width
+            ramp = colors
+            if palette_name == 'color':
+                if name == 'tiles':
+                    family = y // 16
+                    ramp = [['#554037','#cda67c','#e6cba0','#f5e4bc'],['#493741','#977579','#d5b8a3','#f5e4bc'],['#49364b','#9d6170','#d7a28a','#f5e4bc'],['#48333a','#9d6146','#d9a77a','#f6dcad'],['#4a3c48','#9d7771','#d5bcb0','#f5e4bc'],['#51443b','#bc8d62','#e3c596','#f5e4bc']][family]
+                elif name == 'props':
+                    item = (y//32)*4+x//32
+                    if item in (8,9): ramp = ['#31473a','#4f9255','#91c576','#e8e2ae']
+                    elif item in (2,3): ramp = ['#303744','#687987','#8ed2c4','#e4f1d2']
+                    elif item in (4,5): ramp = ['#473648','#a95c69','#db8991','#f5d5bc']
+                    else: ramp = ['#493037','#a45f3d','#dfae76','#f9dfab']
+                else:
+                    sil = y//(24*4); local_y = y % 24
+                    hair = ['#443037','#513a28','#8c4e35','#2f3944','#704330','#5d4a3a'][sil]
+                    clothes = ['#467c9c','#b45d64','#749250','#aa7142','#786b9e','#447f76'][sil]
+                    skin = ['#eac19a','#bf845f','#f0c9a2','#9f684e','#d6a17c','#efcfaa'][sil]
+                    ramp = [hair, clothes, skin if local_y < 10 else '#c3d9c4', '#f5e4bc']
+            value = ramp[p]
+            pixels.append(tuple(bytes.fromhex(value[1:])) + (255,))
+        rgba.putdata(pixels); rgba.save(HERE / f'{name}-{palette_name}.png', optimize=False)
 
 frames = {}; props = {}; tiles = {}; workers = {}
 sheet = Image.new('P', (128, 96), 255)
@@ -125,3 +151,19 @@ for s, sil in enumerate(SILHOUETTES):
 save_sheet('workers',sheet)
 metadata={'version':1,'tileSize':16,'palettes':PALETTES,'sheets':{'tiles':{'files':{p:f'tiles-{p}.png' for p in PALETTES},'frames':tiles},'props':{'files':{p:f'props-{p}.png' for p in PALETTES},'frames':frames},'workers':{'files':{p:f'workers-{p}.png' for p in PALETTES},'frames':workers}},'workerFeet':[8,23],'props':props}
 (HERE/'atlas.json').write_text(json.dumps(metadata,indent=2)+'\n',encoding='utf-8')
+
+# Four-worker review image, using the exact color sheet frames at 4× nearest-neighbor.
+preview = Image.new('RGBA', (192,144), '#f5e4bc')
+pd = ImageDraw.Draw(preview)
+pd.rectangle((0,0,191,12), fill='#977579'); pd.rectangle((0,11,191,13), fill='#493741')
+prop_sheet = Image.open(HERE/'props-color.png'); worker_sheet = Image.open(HERE/'workers-color.png')
+def paste_frame(sheet, frame, xy):
+    crop = sheet.crop((frame['x'], frame['y'], frame['x']+frame['w'], frame['y']+frame['h']))
+    preview.alpha_composite(crop, xy)
+for n, xy in [('shelf',(4,15)),('plant',(156,15)),('coffee-station',(145,103))]:
+    paste_frame(prop_sheet, frames['prop.'+n], xy)
+for i, (x,y) in enumerate([(42,23),(111,23),(42,87),(111,87)]):
+    paste_frame(prop_sheet, frames['prop.desk'], (x,y))
+    paste_frame(prop_sheet, frames['prop.crt'], (x,y-7))
+    paste_frame(worker_sheet, workers[f'worker.{SILHOUETTES[i]}.down.idle'], (x+8,y+25))
+preview.convert('RGB').resize((768,576), Image.Resampling.NEAREST).save(HERE/'review-color-vignette.png')
