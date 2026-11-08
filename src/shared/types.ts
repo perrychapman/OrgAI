@@ -3193,7 +3193,22 @@ export interface SetupStartInput {
   surface?: RunSurface
 }
 
+/** Explicit root-model selection for a running or recoverable conversation. */
+export interface SwitchRunModelInput {
+  runId: string
+  model: string
+  connection?: ConnectionId
+}
+
+export interface SwitchRunModelResult {
+  run: RunSummary
+  applied: boolean
+  reason?: string
+}
+
 export interface RunSummary {
+  /** Explicit root model selected for this conversation; does not alter project defaults. */
+  modelSelection?: { model: string; connection: ConnectionId }
   id: string
   projectId: string
   kind: RunKind
@@ -3564,6 +3579,7 @@ export interface UsageStatus {
 // ---------- Run events (main -> renderer) ----------
 
 export type RunEvent =
+  | { type: 'run.model'; runId: string; selection: { model: string; connection: ConnectionId } }
   | {
       type: 'run.status'
       runId: string
@@ -4823,6 +4839,7 @@ export interface OrgAIApi {
     decideMerge(input: { runId: string; reviewId: string; decision: MergeDecision }): Promise<void>
     /** A paused run: continue it now instead of waiting for the usage window to reset. */
     resumeNow(runId: string): Promise<RunSummary>
+    switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult>
     /** A paused run: keep it paused; the user continues it by hand. */
     cancelAutoResume(runId: string): Promise<void>
     /**
@@ -5817,6 +5834,7 @@ export const IPC = {
   runsDecide: 'runs:decide',
   runsContinue: 'runs:continue',
   runsResumeNow: 'runs:resumeNow',
+  runsSwitchModel: 'runs:switchModel',
   runsCancelAutoResume: 'runs:cancelAutoResume',
   runEvent: 'runs:event',
   setupStart: 'setup:start',
