@@ -7,7 +7,7 @@ export type CanvasSettings = AppearanceSettings['canvas']
 
 export const PRESENTATION_OPTIONS: { value: CanvasPresentation; label: string }[] = [
   { value: 'graph', label: 'Graph' },
-  { value: 'pocket-office', label: 'Office' }
+  { value: 'pocket-office', label: 'Pocket Office' }
 ]
 export const SCENE_PALETTE_OPTIONS: { value: CanvasScenePalette; label: string }[] = [
   { value: 'color', label: 'Color' },
