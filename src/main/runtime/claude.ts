@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1078,17 +1079,6 @@ function permissionKey(toolName: string, input: unknown): string {
   } catch {
     return toolName
   }
-}
-
-function textOf(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map((b) => (b && typeof b === 'object' && 'text' in b ? String((b as { text: unknown }).text) : ''))
-      .filter(Boolean)
-      .join('\n')
-  }
-  return ''
 }
 
 export class ClaudeSession implements RuntimeSession {
@@ -3454,6 +3444,9 @@ export class ClaudeSession implements RuntimeSession {
             this.seenBlocks.add(blockKey)
             a.lastText = block.text.trim().slice(0, 200)
             this.transcript(agentId, { kind: 'text', text: block.text })
+          } else if ((block as { type: string }).type === 'image') {
+            this.seenBlocks.add(blockKey)
+            this.transcript(agentId, { kind: 'media', media: normalizeTranscriptMedia(block) })
           } else if (block.type === 'thinking' && block.thinking?.trim()) {
             this.seenBlocks.add(blockKey)
             this.transcript(agentId, { kind: 'thinking', text: block.thinking })
@@ -3494,7 +3487,7 @@ export class ClaudeSession implements RuntimeSession {
               this.transcript(agentId, {
                 kind: 'tool_result',
                 toolUseId: block.tool_use_id,
-                content: textOf(block.content).slice(0, 4000),
+                ...normalizeTranscriptContent(block.content),
                 isError: !!block.is_error
               })
             }

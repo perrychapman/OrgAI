@@ -143,6 +143,23 @@ describe('CodexAdapter session', () => {
   })
 
   const ctxFor = (over: Partial<RuntimeContext> = {}) => fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, ...over })
+  it('forwards MCP media parts and native imageView fallback from the app-server', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ autoContinue: false })
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('item/completed', { threadId: 'th-1', item: { type: 'mcpToolCall', id: 'media-tool', status: 'completed', result: { content: [
+      { type: 'text', text: 'Returned media' }, { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' }
+    ] } } })
+    s.push('item/completed', { threadId: 'th-1', item: { type: 'imageView', id: 'native-image', path: 'C:/private/image.png' } })
+    await vi.waitFor(() => expect(ctx.events.some(e => e.type === 'transcript' && e.entry.block.kind === 'media')).toBe(true))
+    const blocks = ctx.events.flatMap(e => e.type === 'transcript' ? [e.entry.block] : [])
+    expect(blocks).toContainEqual(expect.objectContaining({ kind: 'tool_result', toolUseId: 'media-tool', parts: [
+      { type: 'text', text: 'Returned media' }, { type: 'media', media: expect.objectContaining({ kind: 'image' }) }
+    ] }))
+    expect(blocks).toContainEqual({ kind: 'media', media: expect.objectContaining({ kind: 'unsupported' }) })
+  })
   it('switches only subsequent root turns on the existing thread and refuses busy/cards/connections', async () => {
     let pending = 0
     const { adapter, servers } = setup()

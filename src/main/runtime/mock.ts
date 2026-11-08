@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { validModelId } from '../connections/codexAccount'
+import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
@@ -110,6 +111,7 @@ import { buildRolePrompt } from './prompts'
  * replies echo the active root model. [mock:model-switch-limit] ends the first session at a usage limit with
  * a reset 24 hours away (set autoResume off in the test); [mock:model-switch-error] ends it with a provider error.
  * Both recovery markers yield the simple idle script when resumed, so recovery never repeats the failure.
+ * [mock:media]: text/image/text tool result, unsupported audio, then a standalone assistant PNG; no files or network.
  *
  * Reference folders (same as the Claude adapter): a shell step touching one always asks, never through a rule, a
  * suggestion shortcut or acceptEdits; a Read / Glob / Grep card under one carries referenceFolder and no suggestions.
@@ -122,6 +124,7 @@ import { buildRolePrompt } from './prompts'
  */
 
 export type MockStep =
+  | { type: 'transcript'; block: TranscriptBlock }
   /**
    * Assistant text from an agent (default: the root). It streams as one agent.partial with the first half of `text`,
    * then the transcript entry, then an agent.partial '' clear. With `partials` (cli-spec Wave 4, e2e/cli-tui.mjs splits
@@ -595,6 +598,29 @@ export const EXEC_QUESTION_TOKEN = '[mock:exec-question]'
 export const TURN_FAIL_TOKEN = '[mock:turn-fail]'
 export const RATE_LIMIT_TOKEN = '[mock:rate-limit]'
 export const MODEL_SWITCH_TOKEN = '[mock:model-switch]'
+export const MEDIA_TOKEN = '[mock:media]'
+/** Fixed 1x1 PNG, also used by the Outputs fixture. Returned bytes only; no path reads. */
+export const MOCK_MEDIA_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='
+export function mediaSteps(): MockStep[] {
+  const image = { type: 'image', mimeType: 'image/png', data: MOCK_MEDIA_PNG }
+  return [
+    { type: 'transcript', block: { kind: 'tool_use', id: 'mock-media-result', name: 'mcp__fixture__media', input: {} } },
+    { type: 'transcript', block: { kind: 'tool_result', toolUseId: 'mock-media-result', ...normalizeTranscriptContent([
+      { type: 'text', text: 'Before the image.' }, image, { type: 'text', text: 'After the image.' },
+      { type: 'audio', mimeType: 'audio/wav', data: 'AAAA' }
+    ]), isError: false } },
+    { type: 'transcript', block: { kind: 'tool_use', id: 'mock-media-image-only', name: 'mcp__fixture__image_only', input: {} } },
+    { type: 'transcript', block: { kind: 'tool_result', toolUseId: 'mock-media-image-only', ...normalizeTranscriptContent([image]), isError: false } },
+    { type: 'transcript', block: { kind: 'tool_use', id: 'mock-media-unavailable', name: 'mcp__fixture__unavailable', input: {} } },
+    { type: 'transcript', block: { kind: 'tool_result', toolUseId: 'mock-media-unavailable', ...normalizeTranscriptContent([
+      { type: 'text', text: 'Unavailable image sources.' },
+      { type: 'image', source: { type: 'url', url: 'https://example.invalid/private.png' } },
+      { type: 'image' }
+    ]), isError: false } },
+    { type: 'transcript', block: { kind: 'media', media: normalizeTranscriptMedia(image) } },
+    { type: 'text', text: 'MOCK_MEDIA_DONE' }
+  ]
+}
 export const MODEL_SWITCH_LIMIT_TOKEN = '[mock:model-switch-limit]'
 export const MODEL_SWITCH_ERROR_TOKEN = '[mock:model-switch-error]'
 export const EXEC_SLOW_TOKEN = '[mock:exec-slow]'
@@ -1632,6 +1658,7 @@ export class MockSession implements RuntimeSession {
    * (ORGAI_MOCK_SCRIPT or MockAdapterOptions.script) runs exactly as written.
    */
   private firstTurnSteps(): MockStep[] {
+    if (this.ctx.prompt.includes(MEDIA_TOKEN)) return mediaSteps()
     if (this.modelSwitchMarker()) {
       if (this.ctx.prompt.includes(MODEL_SWITCH_LIMIT_TOKEN) && !this.ctx.resumeSessionId) return [{ type: 'rateLimit', untilInMs: 24 * 60 * 60 * 1000 }]
       return [{ type: 'text', text: `Mock root model: ${this.usageModel(ROOT_AGENT_ID)}` }]
@@ -1894,6 +1921,9 @@ export class MockSession implements RuntimeSession {
         this.upsert(a)
         return
       }
+      case 'transcript':
+        this.transcript(ROOT_AGENT_ID, step.block)
+        return
       case 'thinking': {
         this.transcript(step.agent ?? ROOT_AGENT_ID, { kind: 'thinking', text: step.text })
         return
