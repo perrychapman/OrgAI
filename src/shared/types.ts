@@ -1954,7 +1954,7 @@ export interface AppSettings {
    * scopesForAccessLevel). Missing = 'operate': read and operate (watch, start, send to, interrupt and stop runs);
    * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
    * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
-   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host applies it to
+   * when this is already 'full', so the socket can lower it but never raise it. The host a CLI command runs in-process applies it to
    * every client too; only the CLI process that started it gets every scope, through RpcHelloParams.ownerProof (an
    * in-memory key). Normalized: 'full' and an explicit 'operate' are stored (Wave 7: the choice is kept with
    * terminalAccessLevelChosen); anything else is dropped.
@@ -1968,8 +1968,7 @@ export interface AppSettings {
   terminalServerChosen?: boolean
   /**
    * Main-owned (Wave 7, cli-standalone.md round 6 item 11): true once the user chose terminalAccessLevel (a settings:set
-   * that changed it, `orgai terminal-access --level`, or the answer to `orgai daemon start --runtime node`'s one
-   * question). While it is unset that question is asked once on an interactive terminal. settings:set never writes it
+   * that changed it, or `orgai terminal-access --level`). While it is unset the app may ask once. settings:set never writes it
    * directly (args.ts settingsSetArgs).
    */
   terminalAccessLevelChosen?: boolean
@@ -6381,7 +6380,7 @@ export type HostClientKind = 'tui' | 'cli' | 'desktop'
 /**
  * 'desktop': the Electron app with a window. 'headless-host': the Electron app started with --headless-host. 'inproc':
  * pure Node inside the CLI command that started it. 'node' (Wave 7, cli-standalone.md 4.2): a detached pure-Node
- * background host (`orgai daemon start --runtime node`, hidden `orgai daemon run-node`). Capabilities per kind:
+ * background host (started by the desktop app; the orgai CLI never starts one). Capabilities per kind:
  * HOST_KIND_CAPABILITIES.
  */
 export type HostKind = 'desktop' | 'headless-host' | 'inproc' | 'node'
@@ -6440,7 +6439,7 @@ export interface RpcHelloParams {
    */
   clientProof: string
   /**
-   * Only from the CLI process that started a `--host inproc` host: HMAC-SHA256(that host's in-memory owner key,
+   * Only from the CLI process that started its in-process host: HMAC-SHA256(that host's in-memory owner key,
    * JSON.stringify(['owner:v1', hostInstanceId, hostNonce, clientNonce, clientProof])) (protocol.ts ownerProof). A
    * matching one is granted every requested scope; any other client of that host is capped by Terminal access like
    * on every other host. Never on disk, so a process that read daemon.secret still cannot make it.
@@ -6955,7 +6954,7 @@ export const HOST_CLIENT_KINDS: readonly HostClientKind[] = ['cli', 'tui', 'desk
 
 /**
  * Hosts that run in the background, detached from the command that asked for them (cli-standalone.md 4.1): what
- * `--host daemon` and `orgai daemon start` wait for. Never 'inproc', whose daemon.json belongs to another command.
+ * an app-side launcher waits for. Never 'inproc', whose daemon.json belongs to the CLI command that started it.
  */
 export const BACKGROUND_HOST_KINDS: readonly HostKind[] = ['headless-host', 'desktop', 'node']
 

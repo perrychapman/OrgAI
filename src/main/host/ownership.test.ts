@@ -409,6 +409,29 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
     })
 
+    it('release racing a new start: refused or a clean win, never two owners, and a later start wins', async () => {
+      for (let i = 0; i < 5; i++) {
+        const env = tempEnv()
+        const first = await acquire(env, { wait: 'none', sleep: never })
+        first.markReady()
+        const [, second] = await Promise.all([
+          Promise.resolve().then(() => first.release()),
+          acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).then((o) => o, (e: unknown) => e)
+        ])
+        if (second instanceof Error) {
+          expect([HostAlreadyRunningError, HostStartingOrBusyError].some((c) => second instanceof c)).toBe(true)
+          const third = await acquire(env, { wait: 'none', sleep: never })
+          expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(third.info.hostInstanceId)
+        } else {
+          const won = second as HostOwnership
+          cleanups.push(() => won.release())
+          expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(won.info.hostInstanceId)
+          const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).catch((e: unknown) => e)
+          expect(err).toBeInstanceOf(Error)
+        }
+      }
+    })
+
     it('a corrupt record is refused, and a record without ownerCwd still parses', async () => {
       const env = tempEnv()
       const first = await acquire(env, { wait: 'none' })

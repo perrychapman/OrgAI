@@ -38,10 +38,10 @@ export interface StartInprocHostOptions {
   log?: (m: string) => void
   /** installLogging (main.log under `<userDataDir>/logs`, console patches). Default true; tests turn it off. */
   logging?: boolean
-  /** bootOrgAIHost's background probes and discovery. Default true; tests turn it off. */
+  /** bootOrgAIHost's background probes and discovery (its `startBackground`). Default true; tests turn it off. */
   startBackground?: boolean
   /**
-   * Wave 7 (cli-standalone.md 4.1 step 4): per-kind overrides of startBackground (bootOrgAIHost `background`). A
+   * Wave 7 (cli-standalone.md 4.1 step 4): per-kind overrides of the switch above (bootOrgAIHost `background`). A
    * management command's fallback host keeps connection probes and turns off discovery, prices and the usage monitor.
    */
   background?: HostBackgroundOptions
