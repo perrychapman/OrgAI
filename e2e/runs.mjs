@@ -366,7 +366,7 @@ try {
       panel: Math.round(document.querySelector('.side-panel')?.getBoundingClientRect().width ?? 0),
       stage: Math.round(document.querySelector('.frame-stage')?.getBoundingClientRect().width ?? 0),
       gap: Math.round((document.querySelector('.side-panel')?.getBoundingClientRect().left ?? 0) - (document.querySelector('.run-body .react-flow')?.getBoundingClientRect().right ?? 0)),
-      composerInPanel: (() => { const c = document.querySelector('.run-body > .composer')?.getBoundingClientRect(); const p = document.querySelector('.side-panel')?.getBoundingClientRect(); return !!c && !!p && c.left >= p.left - 1 && c.top >= p.bottom - 1 })(),
+      composerInPanel: (() => { const c = document.querySelector('.run-body > .run-composer-slot')?.getBoundingClientRect(); const p = document.querySelector('.side-panel')?.getBoundingClientRect(); return !!c && !!p && c.left >= p.left - 1 && c.top >= p.bottom - 1 })(),
       sidebar: Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0)
     }))
     check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ explicitSidebarChoice: await page.evaluate(() => localStorage.getItem('orgai.sidebar')), ...(await geo()), ...(await envDiag()) }))
