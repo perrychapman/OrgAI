@@ -87,6 +87,8 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
 <!-- orgai:architecture -->
 ## Architecture and conventions
 
+- Transcript returned media uses optional ordered `tool_result.parts` plus its existing text `content` fallback, and standalone `kind: 'media'` assistant blocks. Never fetch provider URLs or open provider paths to render media. Runtime normalization, image-store round trips, host omission and provider handoff are unit tested; adapter event mappings use fake SDK events. Live provider behavior is unverified; details and bounds are in `.orgai/ARCHITECTURE.md` Shared contracts.
+
 - Model recovery budget review fixes: recording Codex-adapter tests in `runManager.test.ts` check remaining allowance after team-file refresh, newly spent stored caps refusing before start, all four kinds stopping on priced/unknown/provider-total usage, and unpriced startup refusal. Main enforces carried desktop caps even when the adapter does not; desktop settlement emits no exec outcome/finalized event. Reviewer recheck passed the inspected changes; live provider spend remains unverified.
 
 - Live model switch recovery: exact-value unit regressions in `runtime/runManager.test.ts` exercise all four run kinds with no-session API errors, repeated handoffs, native continuation, a newly lowered project cap and an explicit remaining allowance. `conversationBudgetUsd` is a total cap; carried override budgets are remaining allowance and must not have prior chain spend subtracted twice. Store/chain tests check normalization and staged no-session recovery. Codex also refuses an idle-root switch while reports remain active (fake app-server regression). These are fake-runtime checks; live Claude/Codex/proxy behavior remains unverified.
