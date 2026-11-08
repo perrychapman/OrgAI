@@ -3207,7 +3207,9 @@ export interface SwitchRunModelResult {
 }
 
 export interface RunSummary {
-  /** Explicit root model selected for this conversation; does not alter project defaults. */
+  /** Runtime actually used by this run, retained when selecting a different adapter for continuation. */
+  modelAdapter?: ProviderId
+  /** Root selection; on an ended/paused run applies to its next continuation. Never alters project defaults. */
   modelSelection?: { model: string; connection: ConnectionId }
   id: string
   projectId: string

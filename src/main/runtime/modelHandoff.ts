@@ -25,7 +25,7 @@ export function modelHandoff(records: RunRecord[]): string {
   let size = 0
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i].replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
-    if (size + row.length + 1 > available - 33) break
+    if (size + row.length + 1 > available - 33) continue
     selected.unshift(row)
     size += row.length + 1
   }
