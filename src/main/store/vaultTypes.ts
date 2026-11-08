@@ -309,7 +309,7 @@ export const VAULT_MESSAGES = {
   clearRefusedLegacyOnly: 'Saved by the OrgAI app: open the app once, or run `orgai secrets init` first',
   undeleteAppOnly: 'This deleted secret was saved by the OrgAI app. Open the app to restore it',
   resetBusy: 'A sign-in or save is in progress. Try again when it ends',
-  resetWarning: "Secrets saved only through the orgai command are lost. The OrgAI app's older copies, which may be outdated, are used instead.",
+  resetWarning: 'Starting over moves secure storage aside. Older copies of saved keys, which may be outdated, are used instead; enter any key that is missing again.',
   legacyRemovedNotice: (n: number): string => `${n} saved secret${n === 1 ? ' was' : 's were'} removed by an older version of OrgAI.`,
   moveRefused: (slot: string, server: string, reason: string): string =>
     `${slot} of ${server} cannot be read here (${reason}). Unlock secure storage (\`orgai secrets status\` shows how) and try again.`

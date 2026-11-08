@@ -88,7 +88,7 @@ const VAULT_PROBLEM: Partial<Record<SecretsStatusResult['state'], (reason?: stri
 
 /** What "Start over" gives up, shown in its confirmation (same meaning as VAULT_MESSAGES.resetWarning). */
 export const START_OVER_WARNING =
-  "Starting over moves secure storage aside. Secrets saved only through the orgai command are lost; the OrgAI app's older copies, which may be outdated, are used instead."
+  "Starting over moves secure storage aside. OrgAI then uses the older copies it kept, which may be outdated. Enter any key that is missing again."
 
 /** The notices for a status, most urgent first. Empty when there is nothing to say. */
 export function secretNotices(s: SecretsStatusResult, names: KeyNames = {}): SecretNotice[] {

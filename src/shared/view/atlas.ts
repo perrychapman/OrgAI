@@ -788,7 +788,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: [APP, 'General'],
     kind: 'pane',
     scope: 'app',
-    summary: 'Appearance, notifications, canvas style and the starting values for new projects; Advanced holds motion, assistant models and terminal access.',
+    summary: 'Appearance, notifications, canvas style and the starting values for new projects; Advanced holds motion, assistant models and the orgai command.',
     reach: [
       { via: 'sidebar', label: 'App settings' },
       { via: 'menu', action: 'open-app-settings' },
