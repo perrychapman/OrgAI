@@ -3,6 +3,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CodexEventMapper, ThrottledPartial, contentText, fileChangeTargets, fileChanges, parseJsonl, type CodexUpdate } from './codexEvents'
 import { parseNotification } from './codexProtocol'
 
+describe('returned media', () => {
+  const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='
+  it('retains MCP source order and unsupported audio alongside text', () => {
+    const mapper = new CodexEventMapper()
+    const updates = mapper.handle('item/completed', { threadId: 't', item: { type: 'mcpToolCall', id: 'm', status: 'completed', result: { content: [
+      { type: 'text', text: 'Before' }, { type: 'image', mimeType: 'image/png', data }, { type: 'text', text: 'After' }, { type: 'audio', mimeType: 'audio/wav', data: 'AAAA' }
+    ] } } })
+    expect(updates).toEqual([expect.objectContaining({ type: 'toolResult', toolUseId: 'm', isError: false, parts: [
+      { type: 'text', text: 'Before' }, { type: 'media', media: expect.objectContaining({ kind: 'image' }) }, { type: 'text', text: 'After' }, { type: 'media', media: expect.objectContaining({ kind: 'unsupported' }) }
+    ] })])
+  })
+  it('shows native imageView as unavailable without reading its arbitrary path', () => {
+    const updates = new CodexEventMapper().handle('item/completed', { threadId: 't', item: { type: 'imageView', id: 'i', path: 'C:/private/secret.png' } })
+    expect(updates).toEqual([{ type: 'media', threadId: 't', media: expect.objectContaining({ kind: 'unsupported', reason: expect.any(String) }) }])
+  })
+})
+
 function fixture(name: string): { method: string; params: unknown }[] {
   return parseJsonl(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'))
 }

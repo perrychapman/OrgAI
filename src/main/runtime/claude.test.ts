@@ -1409,6 +1409,22 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
     return sdk.queries[0]!
   }
+  it('maps assistant images and mixed tool results in source order and deduplicates replay', async () => {
+    const { ctx } = start()
+    const q = await firstQuery()
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' } }
+    const message = { type: 'assistant', message: { id: 'media-message', content: [{ type: 'text', text: 'Before' }, image, { type: 'text', text: 'After' }] } }
+    q.emit(message)
+    q.emit(message)
+    q.emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'mixed', content: [{ type: 'text', text: 'Tool before' }, image, { type: 'audio', mimeType: 'audio/wav', data: 'AAAA' }] }] } })
+    await vi.waitFor(() => expect(ctx.events.some(e => e.type === 'transcript' && e.entry.block.kind === 'tool_result')).toBe(true))
+    const blocks = ctx.events.flatMap(e => e.type === 'transcript' ? [e.entry.block] : []).filter(b => b.kind !== 'user')
+    expect(blocks.slice(0, 3)).toEqual([{ kind: 'text', text: 'Before' }, { kind: 'media', media: expect.objectContaining({ kind: 'image' }) }, { kind: 'text', text: 'After' }])
+    expect(blocks.filter(b => b.kind === 'media')).toHaveLength(1)
+    expect(blocks).toContainEqual(expect.objectContaining({ kind: 'tool_result', toolUseId: 'mixed', parts: [
+      { type: 'text', text: 'Tool before' }, { type: 'media', media: expect.objectContaining({ kind: 'image' }) }, { type: 'media', media: expect.objectContaining({ kind: 'unsupported' }) }
+    ] }))
+  })
   const bash = async (q: Fake, command: string): Promise<HookOut> =>
     (q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>)(
       { hook_event_name: 'PreToolUse', session_id: 's', transcript_path: '', cwd: '/repo', tool_name: 'Bash', tool_input: { command }, tool_use_id: `tu-${Math.random()}` },

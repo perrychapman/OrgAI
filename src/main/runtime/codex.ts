@@ -874,6 +874,9 @@ class CodexSession implements RuntimeSession {
       case 'partial':
         this.partial.set(agentId, u.text)
         return
+      case 'media':
+        this.transcript(agentId, { kind: 'media', media: u.media })
+        return
       case 'thinking':
         this.transcript(agentId, { kind: 'thinking', text: u.text })
         return
@@ -883,7 +886,7 @@ class CodexSession implements RuntimeSession {
         this.setState(agentId, u.state, u.activity)
         return
       case 'toolResult': {
-        this.transcript(agentId, { kind: 'tool_result', toolUseId: u.toolUseId, content: u.content, isError: u.isError })
+        this.transcript(agentId, { kind: 'tool_result', toolUseId: u.toolUseId, content: u.content, ...(u.parts ? { parts: u.parts } : {}), isError: u.isError })
         this.noteArchitectureEdit(agentId, u.toolUseId)
         if (agent && agent.state !== 'done' && agent.state !== 'error') {
           const activity = (agentId === ROOT_AGENT_ID && !this.setupLike ? stepActivity(this.ctx.getPlan()) : undefined) ?? 'Thinking…'

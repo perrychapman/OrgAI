@@ -79,6 +79,19 @@ function userBlocks(events: RunEvent[]): Extract<TranscriptBlock, { kind: 'user'
 }
 
 describe('mock adapter image attachments', () => {
+  it('emits the deterministic media marker with mixed, image-only and unavailable results', async () => {
+    const ctx = fakeCtx({ prompt: '[mock:media]', autoContinue: false })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await vi.waitFor(() => expect(ctx.events.some(e => e.type === 'transcript' && e.entry.block.kind === 'text' && e.entry.block.text === 'MOCK_MEDIA_DONE')).toBe(true))
+    const blocks = ctx.events.flatMap(e => e.type === 'transcript' ? [e.entry.block] : [])
+    expect(blocks).toContainEqual(expect.objectContaining({ kind: 'tool_result', toolUseId: 'mock-media-result', parts: [
+      { type: 'text', text: 'Before the image.' }, { type: 'media', media: expect.objectContaining({ kind: 'image' }) }, { type: 'text', text: 'After the image.' }, { type: 'media', media: expect.objectContaining({ kind: 'unsupported' }) }
+    ] }))
+    expect(blocks).toContainEqual(expect.objectContaining({ kind: 'tool_result', toolUseId: 'mock-media-image-only', parts: [{ type: 'media', media: expect.objectContaining({ kind: 'image' }) }] }))
+    expect(blocks).toContainEqual(expect.objectContaining({ kind: 'media', media: expect.objectContaining({ kind: 'image' }) }))
+    await session.stop()
+    await session.finished
+  })
   it('records images on the first prompt and on send(), and omits the key when there are none', async () => {
     const ctx = fakeCtx({ prompt: 'Look at this', images: [png] })
     const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
