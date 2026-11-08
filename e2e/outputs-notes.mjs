@@ -8,7 +8,7 @@
 // The Notes tab and the toolbar mount come from the detail shell; the revise dialog is asserted only if it renders.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E notes (orgai test)'
@@ -77,6 +77,7 @@ const until = async (fn, ms = 10_000) => {
 }
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 const noScroll = async (what) => {
+  await settleMotion(page)
   const o = await page.evaluate(() => {
     const el = document.scrollingElement
     const main = document.querySelector('main.main')
@@ -137,9 +138,21 @@ async function show(kind) {
   }
   await page.locator(`[data-testid=run-output-row][data-kind=${kind}]`).locator('[data-testid=run-output-show]').click()
   await page.locator(`[data-testid=output-detail][data-kind=${kind}]`).waitFor({ timeout: 8000 })
-  // The Notes panel and the toolbar are mounted by the detail; the shell may keep the panel on its own tab.
-  const tab = page.locator('[data-testid=output-tab-notes]')
-  if (await tab.count()) await tab.click()
+  await toTab('preview')
+}
+/**
+ * The detail shows the preview and the Notes list on separate tabs (outputs-2 section 7): selections, marks, pins and the
+ * note tools live on Preview; the list, its filter, Resolve, Edit, Delete and "Revise with notes" on Notes.
+ */
+async function toTab(which) {
+  const t = detail().locator(`[data-testid=output-tab-${which}]`)
+  if (!(await t.count())) return
+  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click()
+  await detail()
+    .locator(which === 'notes' ? '[data-testid=output-notes]' : '[data-testid=output-preview]')
+    .first()
+    .waitFor({ timeout: 8000 })
+    .catch(() => undefined)
 }
 const addBtn = () => detail().locator('[data-testid=output-note-add]').first()
 const addEnabled = async () => (await addBtn().getAttribute('aria-disabled')) !== 'true'
@@ -210,16 +223,19 @@ async function textFlow(label) {
   check(await until(async () => (await mark.count()) >= 1), `${label}: the source view marks the range (open)`)
   const markFacts = await mark.first().evaluate((el) => ({ text: el.textContent, deco: getComputedStyle(el).textDecorationLine, tab: el.tabIndex }))
   check(/quick brown fox/.test(markFacts.text) && /underline/.test(markFacts.deco) && markFacts.tab === -1, `${label}: the mark is underlined and not a tab stop`, JSON.stringify(markFacts))
+  await toTab('notes')
   const row = detail().locator('[data-testid=output-note]').first()
   check((await row.getAttribute('data-status')) === 'open', `${label}: the panel lists the note as open`)
   check(/1 open/.test(clean(await detail().locator('[data-testid=output-notes-count]').innerText())), `${label}: the count line says 1 open`)
   // Rendered view marks through the highlight API (no mark element), and selecting there maps to source.
+  await toTab('preview')
   await detail().locator('[data-testid=output-md-view] label', { hasText: 'Rendered' }).click()
   await page.locator('[data-testid=output-md-rendered]').waitFor()
   check(await selectText('[data-testid=output-detail] [data-testid=output-md-rendered]', 'lazy dog'), `${label}: selected text in the rendered view`)
   check(await until(addEnabled, 3000), `${label}: Add note turns on in the rendered view`)
   await page.evaluate(() => window.getSelection()?.removeAllRanges())
   // Resolve, reopen, edit, delete.
+  await toTab('notes')
   await row.locator('[data-testid=output-note-resolve]').click()
   check(await until(async () => (await detail().locator('mark.output-note-mark').count()) === 0 || true), 'settled')
   check(await until(async () => (await notesOf(await idOfKind('markdown')))[0]?.status === 'resolved'), `${label}: Resolve saves`)
@@ -272,8 +288,10 @@ async function sheetFlow(label) {
   check(await until(async () => (await region.locator('td[data-note-state=open]').count()) === 4), `${label}: four cells carry a corner mark`)
   const desc = await region.locator('td[data-note-state=open]').first().getAttribute('aria-description')
   check(/Check these figures/.test(desc ?? ''), `${label}: a noted cell exposes the note through aria-description`, String(desc))
+  await toTab('notes')
   check(/Cells A2:B3 on Budget/.test(clean(await detail().locator('[data-testid=output-note]').first().innerText())), `${label}: the panel says "Cells A2:B3 on Budget"`)
   await detail().locator('[data-testid=output-note-resolve]').first().click()
+  await toTab('preview')
   check(await until(async () => (await region.locator('td[data-note-state=resolved]').count()) === 4), `${label}: resolved cells get the outline corner`)
   await snap(`${label}-sheet`)
   await noScroll(`${label}: sheet notes`)
@@ -348,6 +366,9 @@ async function regionFlow(label) {
   await svgVp.waitFor()
   await sleep(500)
   await detail().locator('[data-testid=output-note-region-ellipse]').click()
+  // In the 360 px panel at 1024x640 the drawing sits below the fold of the detail's scroller: bring it on screen first.
+  await svgVp.scrollIntoViewIfNeeded()
+  await sleep(200)
   // The layer covers the drawing itself (a small SVG sits centred in a large viewport), so drag inside it.
   const r = await svgVp.locator('[data-testid=output-region-layer]').evaluate((el) => el.getBoundingClientRect().toJSON())
   await page.mouse.move(r.left + r.width * 0.3, r.top + r.height * 0.3)
@@ -372,6 +393,10 @@ try {
   await startRun()
   check(await until(async () => (await outputsOf()).length >= 6, 60_000), 'the run produced six outputs', String((await outputsOf()).length))
   await sleep(1000)
+  // Later runs (the revise part's continuation or new run) take the mock's default script, which answers revise requests.
+  await app.evaluate(() => {
+    delete process.env.ORGAI_MOCK_SCRIPT
+  })
   const combos = [
     { w: 1600, h: 1000, theme: 'dark' },
     { w: 1600, h: 1000, theme: 'light' },
@@ -393,6 +418,15 @@ try {
   }
   const part = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'outputs-revise.part.mjs')
   if (fs.existsSync(part)) {
+    // End the scripted run first: a revise request sent into it would reach the session that still plays the custom script
+    // (it only echoes). Ended, the default target is "continue the conversation", a new session on the default script,
+    // which answers revise requests with a new version.
+    const runIds = [...new Set((await outputsOf()).map((o) => o.runId))]
+    for (const id of runIds) await page.evaluate((rid) => window.orgai.runs.stop(rid), id).catch(() => {})
+    await until(async () => {
+      const st = await page.evaluate((ids) => Promise.all(ids.map((rid) => window.orgai.runs.get(rid).then((r) => r?.summary?.status ?? r?.status).catch(() => 'gone'))), runIds)
+      return st.every((s) => s !== 'running' && s !== 'idle' && s !== 'starting' && s !== 'stopping')
+    }, 15_000)
     const mod = await import(`file:///${part.replace(/\\/g, '/')}`)
     for (const c of combos) {
       await setSize(c.w, c.h)

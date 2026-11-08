@@ -10,7 +10,7 @@ import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { useDeleteOutputs } from '../components/outputs/DeleteOutputs'
-import OutputDetail from '../components/outputs/OutputDetail'
+import OutputDetail, { confirmLeaveOutput } from '../components/outputs/OutputDetail'
 import { OutputsFilters } from '../components/outputs/OutputsFilters'
 import { OutputsGrid } from '../components/outputs/OutputsGrid'
 import { OutputsList, type OutputsListHandle } from '../components/outputs/OutputsList'
@@ -154,18 +154,36 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     const t = window.setTimeout(() => setNotice(''), NOTICE_MS)
     return () => window.clearTimeout(t)
   }, [notice])
-  const selectItem = useCallback((id: string | null): void => {
-    setSelectedId(id)
-    setNotice('')
+  // Moving to another output asks first while the shown one has unsaved edits (outputs-2 9, dirty guard).
+  const selectedRef = useRef<string | null>(null)
+  selectedRef.current = selectedId
+  const leaveThen = useCallback((to: string | null, then: () => void): void => {
+    if (to === selectedRef.current) {
+      then()
+      return
+    }
+    void confirmLeaveOutput().then((ok) => {
+      if (ok) then()
+    })
   }, [])
+  const selectItem = useCallback(
+    (id: string | null): void =>
+      leaveThen(id, () => {
+        setSelectedId(id)
+        setNotice('')
+      }),
+    [leaveThen]
+  )
   const openItem = useCallback(
-    (id: string): void => {
-      selectItem(id)
-      setPaneOpen(true)
-      setReveal(`${id}:${Date.now()}`)
-      focusHeading()
-    },
-    [focusHeading, selectItem]
+    (id: string): void =>
+      leaveThen(id, () => {
+        setSelectedId(id)
+        setNotice('')
+        setPaneOpen(true)
+        setReveal(`${id}:${Date.now()}`)
+        focusHeading()
+      }),
+    [focusHeading, leaveThen]
   )
 
   // ---- list or grid (kept per project) ----
@@ -282,11 +300,13 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
 
   // Previous / next: a click keeps focus on the button, the keys put it on the new heading.
   const step = useCallback(
-    (to: string, viaKeyboard: boolean): void => {
-      selectItem(to)
-      if (viaKeyboard) focusHeading()
-    },
-    [focusHeading, selectItem]
+    (to: string, viaKeyboard: boolean): void =>
+      leaveThen(to, () => {
+        setSelectedId(to)
+        setNotice('')
+        if (viaKeyboard) focusHeading()
+      }),
+    [focusHeading, leaveThen]
   )
   const onStepKey = stepKeyHandler(rows, selectedId, step)
 

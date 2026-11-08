@@ -13,6 +13,7 @@ import { hasHidden, showHidden } from '../../lib/hiddenChars'
 import { HIDDEN_SHOWN_TITLE } from '../../lib/teamFound'
 import { runTag } from '../../lib/runLabels'
 import { oldVersionText, versionOptionLabel } from '../../lib/outputVersions'
+import { SENT_ANNOUNCEMENT } from '../../lib/outputRevise'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
@@ -94,6 +95,10 @@ export function settleRunFocus(): void {
     })
   )
 }
+
+const REVISE_SENT_TEXT = SENT_ANNOUNCEMENT
+/** Set for a moment after a revise request was sent, so a detail remounted by the run switch returns focus to Revise. */
+let reviseReturn: { id: string; until: number } | null = null
 
 /** The shown output's unsaved-changes guard, for a surface that is about to move away (selection, prev / next). True = fine to leave. */
 let activeGuard: (() => Promise<boolean>) | null = null
@@ -463,9 +468,20 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
 
   const external = useExternalEdit(output, versionsRead.data, announce)
 
-  // markOutputSeen: the user is looking at the current version.
+  // markOutputSeen: the user is looking at the current version. Only while the detail is really on screen: a pane folded
+  // to its rail (1024x640) keeps the detail mounted but hidden, and the "New" badge must stay until it is seen.
   useEffect(() => {
-    useAppStore.getState().markOutputSeen(output.id, current)
+    const el = heading.current?.closest('section')
+    const mark = (): void => useAppStore.getState().markOutputSeen(output.id, current)
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      mark()
+      return undefined
+    }
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting && e.intersectionRect.width > 0)) mark()
+    })
+    io.observe(el)
+    return () => io.disconnect()
   }, [output.id, current])
 
   // Esc leaves Full window first (and the dialog stays open); a second Esc closes it as before. An open menu keeps its own Esc.
@@ -509,6 +525,19 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
   const [hint] = useState(() => narrowHint === true && takeWideHint())
   const index = useRunIndexes().get(output.current?.runId ?? output.runId)
   useEffect(() => {
+    // A revise request that continued the run switches the run view to the new chain member, which remounts this
+    // detail: focus then goes back to Revise (spec 14.3: dialogs return to their opener) and the sentence is said again
+    // in the new live region, instead of landing on the heading.
+    const back = reviseReturn && reviseReturn.id === output.id && Date.now() < reviseReturn.until ? reviseReturn : null
+    reviseReturn = null
+    if (back) {
+      const btn = heading.current?.closest('section')?.querySelector<HTMLElement>('[data-testid=output-revise]')
+      if (btn) {
+        btn.focus({ preventScroll: true })
+        announce(REVISE_SENT_TEXT)
+        return
+      }
+    }
     if (autoFocus !== false) heading.current?.focus({ preventScroll: true })
     // Focus once per shown output, never on a refresh of the same one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -539,7 +568,10 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
   const closeEditor = useCallback(() => void setMode('preview'), [setMode])
   const onReviseClose = (r: OutputReviseResult | null): void => {
     setRevise(null)
-    if (r && !('refused' in r)) announce('Sent to the team. They will add a new version.')
+    if (r && !('refused' in r)) {
+      announce(REVISE_SENT_TEXT)
+      reviseReturn = { id: output.id, until: Date.now() + 3000 }
+    }
   }
 
   const meta = <p className="output-detail-meta" data-testid={larger ? 'output-dialog-meta' : 'output-detail-meta'}>{outputMetaLine(output)}</p>

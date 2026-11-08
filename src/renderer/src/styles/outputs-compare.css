@@ -112,6 +112,22 @@
   border-radius: var(--radius-md);
   background: var(--surface-1);
 }
+/* In the detail column (S3) the body is one bounded scroller below the head; in the viewer (S4) Compare takes the whole
+   content area and the body fills what the head leaves, so there is one scroller, never two. */
+.output-detail .output-detail-body > .output-compare .compare-body {
+  max-height: clamp(200px, 55vh, 560px);
+}
+.output-viewer-content > .output-detail-body:has(> .output-compare) {
+  overflow: hidden;
+}
+.output-viewer-content > .output-detail-body > .output-compare {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.output-viewer-content > .output-detail-body > .output-compare .compare-body {
+  max-height: none;
+  min-height: 0;
+}
 .compare-body:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;

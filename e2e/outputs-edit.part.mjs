@@ -123,16 +123,21 @@ export default async function (ctx) {
       check(((await cellAt(cr, cc).textContent()) ?? '') === was, `${label}: Esc leaves the cell as it was`)
       check((await page.locator('[data-testid=output-editor]').count()) === 1, `${label}: Esc in a cell does not close the editor`)
       // Typing edits; Enter commits and moves down.
-      await page.keyboard.type('zz')
+      // A value unique to this pass: an earlier size / theme pass saved its own into the same cell.
+      const typed = `z${Date.now() % 100000}`
+      await page.keyboard.type(typed)
       await page.keyboard.press('Enter')
-      check(((await cellAt(cr, cc).textContent()) ?? '') === 'zz', `${label}: typing then Enter commits the cell`)
-      check((await active()) === `${Number(cr) + 1},${cc}`, `${label}: Enter commits down`, await active())
+      check(((await cellAt(cr, cc).textContent()) ?? '') === typed, `${label}: typing then Enter commits the cell`)
+      // On the last row Enter commits and stays (there is no row below). aria-rowcount also counts the letters row.
+      const lastRow = await page.evaluate(() => Math.max(...Array.from(document.querySelectorAll('[data-testid=output-grid-editor] [data-r]')).map((e) => Number(e.getAttribute('data-r')))))
+      const downRow = Math.min(Number(cr) + 1, lastRow)
+      check((await active()) === `${downRow},${cc}`, `${label}: Enter commits down`, `${await active()}, last row ${lastRow}`)
       check((await page.locator('[data-testid=output-edit-dirty]').textContent())?.trim() === 'Unsaved changes', `${label}: a cell edit makes the bar dirty`)
       // Undo.
       await page.keyboard.press('Control+z')
       check(((await cellAt(cr, cc).textContent()) ?? '') === was, `${label}: Ctrl+Z puts the cell back`)
       await page.keyboard.press('Control+y')
-      check(((await cellAt(cr, cc).textContent()) ?? '') === 'zz', `${label}: Ctrl+Y redoes it`)
+      check(((await cellAt(cr, cc).textContent()) ?? '') === typed, `${label}: Ctrl+Y redoes it`)
       // Tools.
       const rows0 = Number(await grid.getAttribute('data-rows'))
       await page.locator('[data-testid=output-grid-add-row]').click()
@@ -157,7 +162,8 @@ export default async function (ctx) {
     check((await status.getAttribute('data-valid')) === 'false' && /^Line \d+: /.test((await status.textContent()) ?? ''), `${label}: invalid JSON says which line`, await status.textContent())
     check((await page.locator('[data-testid=output-save]').getAttribute('aria-disabled')) === 'true', `${label}: invalid JSON blocks Save`)
     check(((await page.locator('[data-testid=output-edit-reason]').textContent()) ?? '').length > 0, `${label}: the reason is visible text`)
-    await area2.fill('{"a":1,"b":[2,3]}')
+    // Unique per pass, so the formatted text is never what an earlier pass saved (else the editor is not dirty).
+    await area2.fill(JSON.stringify({ a: 1, b: [2, 3], pass: label }))
     check((await status.textContent())?.trim() === 'Valid JSON.', `${label}: valid JSON says Valid JSON.`)
     await page.locator('[data-testid=output-json-format]').click()
     check(((await area2.inputValue()).includes('\n  "a": 1')), `${label}: Format uses 2 spaces`)

@@ -93,7 +93,20 @@ function Panel({ ctx, variant }: { ctx: OutputDetailValue; variant: 'tab' | 'dra
     ctx.showNote(null)
     window.requestAnimationFrame(() => {
       ctx.showNote(n.id)
-      if (variant === 'drawer') window.setTimeout(() => btn?.focus(), 0)
+      if (variant === 'drawer') {
+        window.setTimeout(() => btn?.focus(), 0)
+        return
+      }
+      // The tab switched to Preview, so this button is gone: land on the focusable region that holds the note's mark
+      // (or pin), else on the Preview tab, never on the page body.
+      window.setTimeout(() => {
+        const detail = btn?.isConnected ? null : document.querySelector<HTMLElement>(`[data-testid=output-detail][data-id="${CSS.escape(ctx.output.id)}"]`)
+        if (!detail) return
+        const mark = detail.querySelector<HTMLElement>(`[data-note="${CSS.escape(n.id)}"]`)
+        const region = mark?.closest<HTMLElement>('[tabindex]:not([tabindex="-1"]), [role=grid], [role=group][tabindex]')
+        const target = region ?? detail.querySelector<HTMLElement>('[data-testid=output-tab-preview]')
+        target?.focus({ preventScroll: true })
+      }, 60)
     })
   }
 

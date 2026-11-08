@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as zlib from 'node:zlib'
-import { APP_DIR, TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, sleep } from './lib.mjs'
+import { APP_DIR, TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const USE_SCRIPT = process.env.E2E_OUTPUTS_SCRIPT === '1'
@@ -154,6 +154,7 @@ const until = async (fn, ms = 10_000) => {
 }
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 const noScroll = async (what) => {
+  await settleMotion(page)
   const o = await page.evaluate(() => {
     const el = document.scrollingElement
     const main = document.querySelector('main.main')
@@ -852,7 +853,11 @@ async function diagramChecks(label, full) {
   const shadowText = () => dlg.locator('[data-testid=output-mermaid-svg]').first().evaluate((el) => el.shadowRoot?.textContent ?? '')
   await ta.fill('flowchart TD\n  A[Start] --> Z[Zed]\n')
   check(await until(async () => (await shadowText()).includes('Zed'), 8000), `${label}: Split redraws the edited source`)
-  check((await dlg.locator('[data-testid=diagram-scratch-note]').count()) === 1, `${label}: the scratch note says edits are not saved`)
+  // Phase C: an edit of the current version belongs to the output (the editor bar with Save), never a scratch copy.
+  check(
+    (await dlg.locator('[data-testid=diagram-scratch-note]').count()) === 0 && (await until(async () => (await dlg.locator('[data-testid=output-edit-bar]').count()) === 1, 3000)) && (await dlg.locator('[data-testid=output-save]').isEnabled()),
+    `${label}: a Split edit shows the editor bar with Save (no scratch note)`
+  )
   check(/^Line \d+, column \d+ · /.test(clean(await dlg.locator('[data-testid=diagram-source-status]').innerText())), `${label}: the source status names the line and column`)
   await ta.fill('flowchart TD\n  A[Start --> Z\n')
   check(await until(async () => (await dlg.locator('[data-testid=diagram-error]').count()) === 1, 8000), `${label}: a broken edit shows the error pane`)
@@ -1003,7 +1008,7 @@ async function selectChecks(label, grid) {
   await items.first().focus()
   await page.keyboard.press('Escape')
   check(await until(async () => (await bar.count()) === 0), `${label}: Esc leaves select mode`)
-  check((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'outputs-select-toggle', `${label}: focus returns to Select`)
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'outputs-select-toggle', 3000), `${label}: focus returns to Select`)
   check((await page.locator('[data-testid=output-select]').count()) === 0, `${label}: the checkboxes are gone`)
   await viewRadio('List').check()
 }
@@ -1024,13 +1029,28 @@ async function secondRunChecks(label) {
     if (el) new MutationObserver(() => window.__statusLog.push(el.textContent ?? '')).observe(el, { childList: true, characterData: true, subtree: true })
   })
   const rows = page.locator('[data-testid=output-row]')
+  // The output shown in the detail counts as seen (it never reads "New"), so show another one while the run works.
+  const other = before.find((o) => o.id !== plan.id && !o.missing) ?? before.find((o) => o.id !== plan.id)
+  if (other) {
+    await page.locator(`[data-testid=output-row][data-id="${other.id}"]`).click()
+    await until(async () => (await page.locator('[data-testid=output-detail]').first().getAttribute('data-id')) === other.id, 3000)
+  } else {
+    // Project plan is the only output left, so it stays selected: fold the pane so its detail is not on screen.
+    const hide = page.locator('[data-testid=outputs-detail]').getByRole('button', { name: /^Hide output preview/ })
+    if (await hide.count()) await hide.click()
+    await until(async () => (await page.locator('[data-testid=outputs-detail]').getAttribute('data-collapsed')) === 'true', 3000)
+  }
   const orderBefore = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
   await page.evaluate(({ id, prompt }) => window.orgai.runs.start({ projectId: id, prompt }), { id: project.id, prompt: USE_SCRIPT ? 'Produce the deliverables' : 'Produce the deliverables [mock:outputs]' })
   const bumped = await until(async () => ((await outputsOf()).find((o) => o.id === plan.id)?.version ?? 1) >= 2, 60_000)
   check(bumped, `${label}: the second run made version 2 of Project plan`)
   if (!bumped) return
   const row = page.locator(`[data-testid=output-row][data-id="${plan.id}"]`)
-  check(await until(async () => (await row.locator('[data-testid=output-new-version]').count()) === 1, 8000), `${label}: the row shows a "New" badge`)
+  check(
+    await until(async () => (await row.locator('[data-testid=output-new-version]').count()) === 1, 8000),
+    `${label}: the row shows a "New" badge`,
+    JSON.stringify({ shown: await page.locator('[data-testid=output-detail]').evaluateAll((els) => els.map((e) => e.getAttribute('data-id'))), plan: plan.id, other: other?.id })
+  )
   const orderAfter = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
   const kept = orderAfter.filter((id) => orderBefore.includes(id))
   check(kept.join() === orderBefore.filter((id) => orderAfter.includes(id)).join(), `${label}: the updated row did not move`, `${orderBefore.join()} -> ${orderAfter.join()}`)

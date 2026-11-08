@@ -9,15 +9,23 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, projectTab, screenshot, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, openProject, projectTab, screenshot, settleMotion, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E versions (orgai test)'
+// The compare and edit parts save versions, so they get a project of their own: the checks here keep exact counts.
+const NAME_PARTS = 'E2E versions parts (orgai test)'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-versions-'))
 const repo = path.join(base, 'repo')
-makeFixtureRepo('outputs-versions', { at: repo })
-fs.mkdirSync(path.join(repo, 'reg'), { recursive: true })
-fs.writeFileSync(path.join(repo, 'reg', 'handoff.txt'), 'Handoff notes for the client.\n')
+const repoParts = path.join(base, 'repo-parts')
+for (const [name, at] of [
+  ['outputs-versions', repo],
+  ['outputs-versions-parts', repoParts]
+]) {
+  makeFixtureRepo(name, { at })
+  fs.mkdirSync(path.join(at, 'reg'), { recursive: true })
+  fs.writeFileSync(path.join(at, 'reg', 'handoff.txt'), 'Handoff notes for the client.\n')
+}
 
 const PLAN1 = '# Project plan\n\nPhase one is design.\n\n- Design\n- Build\n'
 const PLAN2 = '# Project plan\n\nPhase one is design and phase two is the build.\n\n- Design\n- Build\n- Launch\n'
@@ -74,6 +82,7 @@ const until = async (fn, ms = 10_000) => {
 }
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 const noScroll = async (what) => {
+  await settleMotion(page)
   const o = await page.evaluate(() => {
     const el = document.scrollingElement
     const main = document.querySelector('main.main')
@@ -282,7 +291,13 @@ async function mutatingChecks(label) {
   await noScroll(`${label}: after the removals`)
 }
 
+let mainProject
+let partsProject
 async function runParts(label, size, theme) {
+  if (!partsProject) return
+  project = partsProject
+  await openProject(page, NAME_PARTS)
+  await openOutputsTab()
   for (const name of ['outputs-compare.part.mjs', 'outputs-edit.part.mjs']) {
     const file = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), name)
     if (!fs.existsSync(file)) continue
@@ -292,11 +307,25 @@ async function runParts(label, size, theme) {
     } catch (e) {
       check(false, `${label}: ${name}`, String(e?.message ?? e).split('\n')[0])
     }
+    // A part may leave a dialog or the editor open: Esc twice, then answer a leave guard with "Don't save".
+    await page.keyboard.press('Escape').catch(() => {})
+    await page.keyboard.press('Escape').catch(() => {})
+    const discard = page.locator('[data-testid=output-guard-discard]')
+    if (await discard.count()) await discard.click().catch(() => {})
   }
+  project = mainProject
+  await openProject(page, NAME)
 }
 
 try {
-  project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
+  partsProject = await createProject(page, { mode: 'existing', path: repoParts, name: NAME_PARTS })
+  project = partsProject
+  if (partsProject) {
+    await runWith(1, 'Make the files', 7, 1)
+    await runWith(2, 'Update the files', 7, 2)
+  }
+  mainProject = await createProject(page, { mode: 'existing', path: repo, name: NAME })
+  project = mainProject
   check(!!project, 'project created on the mock adapter')
   await runWith(1, 'Make the files', 7, 1)
   await runWith(2, 'Update the files', 7, 2)
@@ -325,6 +354,7 @@ try {
     check(false, 'mutating checks', e.message.split('\n')[0])
   }
 } finally {
+  await deleteProject(page, NAME_PARTS).catch(() => {})
   await cleanup(app, page, NAME)
   fs.rmSync(base, { recursive: true, force: true })
 }

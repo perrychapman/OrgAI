@@ -12,7 +12,7 @@ import { runTag } from '../../lib/runLabels'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import OutputActions from './OutputActions'
-import OutputDetail from './OutputDetail'
+import OutputDetail, { confirmLeaveOutput } from './OutputDetail'
 import OutputKindIcon from './OutputKindIcon'
 import { OutputStepper, stepKeyHandler } from './OutputStepper'
 import ExtBadge from './ExtBadge'
@@ -84,10 +84,23 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
     if (id) setGrabFocus(true)
     useAppStore.getState().openRunOutput(runId, id)
   }
+  // Leaving the shown output (another one, Back) asks first while it has unsaved edits (outputs-2 9, dirty guard).
+  const leaveThen = (to: string | null, then: () => void): void => {
+    if (shown && to === shown.id) {
+      then()
+      return
+    }
+    void confirmLeaveOutput().then((ok) => {
+      if (ok) then()
+    })
+  }
   const back = (): void => {
     if (!shown) return
-    pendingFocus.current = { id: shown.id }
-    open(null)
+    const id = shown.id
+    leaveThen(null, () => {
+      pendingFocus.current = { id }
+      open(null)
+    })
   }
   const removed = (id: string): void => {
     const at = list.findIndex((o) => o.id === id)
@@ -111,10 +124,11 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
   }, [shown, list])
 
   // Previous / next: a click keeps focus on the button (the detail does not grab it); the keys put it on the heading.
-  const step = (to: string, viaKeyboard: boolean): void => {
-    setGrabFocus(viaKeyboard)
-    useAppStore.getState().openRunOutput(runId, to)
-  }
+  const step = (to: string, viaKeyboard: boolean): void =>
+    leaveThen(to, () => {
+      setGrabFocus(viaKeyboard)
+      useAppStore.getState().openRunOutput(runId, to)
+    })
   const onStepKey = stepKeyHandler(list, shown?.id ?? null, step)
 
   const onDetailKey = (e: KeyboardEvent<HTMLDivElement>): void => {
@@ -151,7 +165,7 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
         ) : (
           <ul className="run-outputs-list" data-testid="run-outputs-list" data-split={wide && shown ? 'true' : undefined} tabIndex={-1} aria-label="Outputs">
             {list.map((o) => (
-              <OutputRow key={o.id} output={o} current={o.id === shown?.id} tag={indexes.get(o.runId)} onShow={() => open(o.id)} onNotice={say} onRemoved={removed} />
+              <OutputRow key={o.id} output={o} current={o.id === shown?.id} tag={indexes.get(o.runId)} onShow={() => leaveThen(o.id, () => open(o.id))} onNotice={say} onRemoved={removed} />
             ))}
           </ul>
         ))}

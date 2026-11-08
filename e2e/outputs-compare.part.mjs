@@ -32,6 +32,20 @@ export default async function compare(ctx) {
     if (!(await btn.count())) return skip(`no Compare with current on a ${kind} version`), false
     await btn.click()
     await page.waitForSelector('[data-testid="output-compare"][data-state="ready"], [data-testid="output-compare"][data-state="error"]', { timeout: 15000 }).catch(() => undefined)
+    // Always the two versions the runs made (v1 and v2): an earlier pass's edit part saved more versions with only additions.
+    const a = q('output-compare-a')
+    const b = q('output-compare-b')
+    if ((await a.count()) && (await b.count())) {
+      const ok = await page.evaluate(() => {
+        const has = (id, v) => !!document.querySelector(`[data-testid="${id}"] option[value="${v}"]`)
+        return has('output-compare-a', '1') && has('output-compare-b', '2')
+      })
+      if (ok) {
+        await a.selectOption('1')
+        await b.selectOption('2')
+        await page.waitForSelector('[data-testid="output-compare"][data-state="ready"]', { timeout: 15000 }).catch(() => undefined)
+      }
+    }
     return true
   }
 

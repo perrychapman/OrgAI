@@ -10,7 +10,6 @@ import TextPreview from './TextPreview'
 import ImagePreview from './ImagePreview'
 import SlideViewer from './SlideViewer'
 import SvgPreview from './SvgPreview'
-import SlideViewer from './SlideViewer'
 import '../../styles/outputs-preview.css'
 import '../../styles/outputs-diagram.css'
 
@@ -142,9 +141,6 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
       break
     case 'image':
       body = <ImagePreview dataUrl={p.dataUrl} title={output.title} />
-      break
-    case 'slides':
-      body = <SlideViewer size={p.size} slides={p.slides} truncatedSlides={p.truncatedSlides} title={output.title} />
       break
     default:
       body = (
