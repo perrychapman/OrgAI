@@ -57,7 +57,7 @@ import { collapseSelfHelp, type SelfHelpRow } from '../lib/selfHelpRows'
 import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
 import RunOutputs from './outputs/RunOutputs'
 import { revealOutputsTab } from './outputs/revealOutputsTab'
-import { collapseOutputCalls, matchOutputId, type OutputWriteRow } from '../lib/outputsRun'
+import { collapseOutputCalls, matchOutputId, registeredSentence, type OutputWriteRow } from '../lib/outputsRun'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -294,11 +294,14 @@ function OutputWriteRowView({ row, body, runId, tabRunId, arrive }: { arrive?: b
     return pid ? s.outputsByProject[pid] : undefined
   })
   const id = row.state === 'refused' ? undefined : matchOutputId(outputs, runId, row.title, row.relPath)
+  // The tool result no longer names the kind, so a registered row takes it from the matched index entry.
+  const entry = id ? outputs?.find((o) => o.id === id) : undefined
+  const text = row.state === 'registered' && entry ? registeredSentence(entry.kind, row.title) : row.text
   return (
     <div className={`entry system harness output-write-row${arriveClass(arrive)}`} data-testid="output-write-row" data-state={row.state}>
       <Icon icon={row.state === 'refused' ? AlertTriangle : Files} size="sm" />
       <div className="tool-main">
-        <span className="entry-plain">{row.text}</span>
+        <span className="entry-plain">{text}</span>
         {id && (
           <>
             {' '}
