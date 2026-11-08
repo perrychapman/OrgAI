@@ -1,3 +1,4 @@
+.office-scene, .office-inspector { --office-surface: var(--surface-2); --office-border: var(--border-default); --office-accent: var(--accent-text); }
 .office-scene { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; color: var(--text-primary); background: var(--surface-1); }
 .office-scene > p { margin: var(--space-2); }
 .office-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
@@ -12,14 +13,19 @@
 .office-roster button { min-height: 24px; text-align: left; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border-default); font: inherit; }
 .office-roster button[aria-pressed='true'], .office-nameplate[aria-pressed='true'] { border: 3px double var(--text-primary); font-weight: var(--font-weight-semibold, 600); }
 .office-nameplate { position: absolute; display: flex; flex-direction: column; box-sizing: border-box; width: 64px; height: 48px; overflow: hidden; padding: var(--space-1); color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border-default); font-family: var(--font-sans); font-size: var(--text-caption); line-height: 1.1; text-align: left; }
-.office-room-label { position: absolute; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: var(--space-1); color: var(--text-primary); background: var(--surface-1); font: inherit; pointer-events: none; }
+.office-room-label { position: absolute; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: var(--space-1); color: var(--text-primary); background: var(--office-surface); border: 1px solid var(--office-border); border-radius: var(--radius-sm); font: inherit; pointer-events: none; }
 .office-nameplate span:first-child { flex: 1; min-height: 0; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
 .office-nameplate span:last-child { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .office-full-message { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .office-person { position: absolute; padding: 0; min-width: 24px; min-height: 24px; border: 2px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-primary); cursor: pointer; }
 .office-person[aria-pressed='true'] { border-color: var(--text-primary); border-style: double; }
-.office-person-label { position: absolute; display: flex; flex-direction: column; left: 50%; top: 100%; transform: translateX(-50%); width: 62px; padding: var(--space-1); font-family: var(--font-sans); font-size: var(--text-caption); line-height: 1.2; background: var(--surface-1); border: 1px solid var(--border-default); pointer-events: none; }
-.office-person-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-person-label { position: absolute; display: flex; flex-direction: column; left: 50%; top: 100%; transform: translateX(-50%); width: max-content; max-width: 10em; padding: var(--space-1); font-family: var(--font-sans); font-size: var(--text-caption); line-height: 1.2; background: var(--office-surface); border: 1px solid var(--office-border); border-radius: var(--radius-sm); pointer-events: none; }
+.office-person-label span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-person-label span:last-child { white-space: normal; overflow-wrap: anywhere; }
 .office-person:focus-visible .office-person-label, .office-person:hover .office-person-label { width: max-content; max-width: 200px; z-index: 1; }
 .office-person:focus-visible .office-person-label span, .office-person:hover .office-person-label span { white-space: normal; overflow-wrap: anywhere; }
 .office-empty { align-self: center; max-width: 30em; padding: var(--space-3); background: var(--surface-1); }
+.office-scene [data-testid='office-caption'] { width: fit-content; max-width: min(100%, 40em); margin: var(--space-1) var(--space-2); padding: var(--space-1) var(--space-2); overflow-wrap: anywhere; color: var(--text-primary); background: var(--office-surface); border: 1px solid var(--office-border); border-radius: var(--radius-sm); }
+.office-inspector { background: var(--office-surface); border-inline-start: 2px solid var(--office-accent); }
+.office-inspector-action { padding: var(--space-2); border-bottom: 1px solid var(--office-border); }
+.office-inspector-messages { padding: var(--space-2); overflow-wrap: anywhere; }

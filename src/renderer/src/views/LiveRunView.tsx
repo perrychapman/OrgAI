@@ -1238,7 +1238,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         </div>
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} arrival={usageArrival}>
-          <div className="live-panel">
+          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent && !conversation ? ' office-inspector' : ''}`} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent && !conversation) { event.preventDefault(); const id = selectedAgent.id; selectAgent(null); requestAnimationFrame(() => bodyRef.current?.querySelector<HTMLElement>(`[data-office-worker-id="${CSS.escape(id)}"]`)?.focus()) } }}>
+            {options.presentation === 'pocket-office' && selectedAgent && !conversation && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => { const id = selectedAgent.id; selectAgent(null); requestAnimationFrame(() => bodyRef.current?.querySelector<HTMLElement>(`[data-office-worker-id="${CSS.escape(id)}"]`)?.focus()) }}>Back to office</Button></div>}
             <TranscriptPanel
               runId={runId}
               tagRunId={chainIds[chainIds.length - 1]}
@@ -1249,6 +1250,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               logs={run.logs ?? []}
               finished={finishedGroup}
             />
+            {options.presentation === 'pocket-office' && selectedAgent && !conversation && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
           </div>
         </SidePanel>
       </div>
