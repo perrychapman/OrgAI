@@ -4,6 +4,7 @@
 // minimap (one shape per node, size at 1024x640, never under a popover), and the Team editor following the settings.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { checkPocketOffice } from './pocket-office.mjs'
 import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, sleep, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
@@ -142,7 +143,7 @@ try {
         `the default canvas shows Default checked and no Custom at ${w}x${h} ${theme}`
       )
       check((await section.locator('[data-preset=default] svg[data-canvas-thumb=dots]').count()) === 1, `the Default entry draws a dots thumbnail at ${w}x${h} ${theme}`)
-      check((await section.locator('[role=radiogroup][aria-label="Canvas style"] [role=radio][tabindex="0"]').count()) === 1, `the style gallery is one tab stop at ${w}x${h} ${theme}`)
+      check((await section.locator('[role=radiogroup][aria-label="Graph style"] [role=radio][tabindex="0"]').count()) === 1, `the style gallery is one tab stop at ${w}x${h} ${theme}`)
       // Two columns from 720 px of section width: the preview sits beside the gallery, else above it.
       const geo = await page.evaluate(() => {
         const r = (sel) => document.querySelector(sel)?.getBoundingClientRect()
@@ -485,10 +486,11 @@ try {
   const pop = page.locator('[data-testid=canvas-style-popover]')
   await pop.waitFor({ timeout: 5000 })
   await sleep(300)
-  check(await page.evaluate(() => document.activeElement?.getAttribute('data-preset') === 'default'), 'opening the popover focuses the checked option (Default)')
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid="canvas-presentation"] input[value="graph"]')), 'opening the popover focuses the current presentation (Graph)')
   check((await pop.locator('[data-preset=default]').count()) === 1 && (await pop.locator('[data-preset]').first().getAttribute('data-preset')) === 'default', 'the popover lists Default first')
   const popBox = await pop.boundingBox()
   check(!intersects(miniBox, popBox), 'the style popover does not land on the minimap', JSON.stringify({ miniBox, popBox }))
+  await pop.locator('[data-preset=default]').focus()
   await page.keyboard.press('ArrowDown')
   await sleep(600)
   check((await html('data-canvas-pattern')) === 'blueprint', 'an arrow in the popover applies Blueprint')
@@ -636,6 +638,7 @@ try {
     await shot(`team-blueprint-${theme}`)
   }
   await setAppearance({ theme: 'dark' }, { pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false })
+  await checkPocketOffice({ page, name: NAME, resizeTo, setAppearance, setCanvas, noPageScroll, shot })
 } catch (e) {
   check(false, 'canvas script ran to the end', e.stack ?? e.message)
 } finally {
