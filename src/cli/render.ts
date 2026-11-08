@@ -3,7 +3,7 @@
  * shared view models (src/shared/view): status words come only from statusText, names from runName, costs from
  * costView, decision rows from waitingItems. Untrusted strings pass through safe / safeLine before any styling.
  */
-import { RUN_KIND_LABELS, type AgentInstance, type ImageAttachment, type PendingCards, type ProjectKind, type RunPlan, type RunRecord, type RunSummary, type TranscriptEntry } from '../shared/types'
+import { RUN_KIND_LABELS, type AgentInstance, type ImageAttachment, type PendingCards, type ProjectKind, type RunEvent, type RunPlan, type RunRecord, type RunSummary, type TranscriptEntry, type TranscriptMedia, type TranscriptContentPart } from '../shared/types'
 import { costView, formatTokens, runCostInput, agentCostInput } from '../shared/view/cost'
 import { formatDateTime } from '../shared/view/dates'
 import { AGENT_LABEL_MAX, agentLabel as sharedAgentLabel } from '../shared/view/agentTree'
@@ -150,19 +150,41 @@ export function imageLabel(img: ImageLike): string {
   return n === undefined ? `[image ${safeLine(img.mediaType)}]` : `[image ${safeLine(img.mediaType)} ${n} bytes]`
 }
 
+export function mediaLabel(media: TranscriptMedia): string {
+  return media.kind === 'image' ? imageLabel(media.image) : `[unsupported media${media.mediaType ? ` ${safeLine(media.mediaType)}` : ''}${media.name ? ` ${safeLine(media.name)}` : ''}: ${safeLine(media.reason)}]`
+}
+
+export function resultPartsLabel(parts?: TranscriptContentPart[]): string {
+  return (parts ?? []).map((part) => part.type === 'media' ? mediaLabel(part.media) : safeLine(part.text)).filter(Boolean).join(' ')
+}
+
+function omittedImage(img: ImageAttachment): ImageAttachment {
+  const i = img as ImageLike
+  return { mediaType: img.mediaType, byteLength: typeof i.byteLength === 'number' ? i.byteLength : base64Bytes(img.data ?? ''), omittedBase64: true } as unknown as ImageAttachment
+}
+
 /** A record for JSON output: every image's base64 replaced by `{ mediaType, byteLength, omittedBase64: true }`. */
+export function entryWithoutImages(e: TranscriptEntry): TranscriptEntry {
+    const b = e.block
+    if (b.kind === 'user' && b.images?.length) {
+      return { ...e, block: { ...b, images: b.images.map(omittedImage) } }
+    }
+    if (b.kind === 'media' && b.media.kind === 'image') {
+      return { ...e, block: { ...b, media: { ...b.media, image: omittedImage(b.media.image) } } }
+    }
+    if (b.kind === 'tool_result' && b.parts?.some((p) => p.type === 'media' && p.media.kind === 'image')) {
+      return { ...e, block: { ...b, parts: b.parts.map((p) => p.type === 'media' && p.media.kind === 'image' ? { ...p, media: { ...p.media, image: omittedImage(p.media.image) } } : p) } }
+    }
+    return e
+}
+
+export function eventWithoutImages(event: RunEvent): RunEvent {
+  return event.type === 'transcript' ? { ...event, entry: entryWithoutImages(event.entry) } : event
+}
+
 export function recordWithoutImages(rec: RunRecord): RunRecord {
-  let changed = false
-  const transcript = rec.transcript.map((e) => {
-    if (e.block.kind !== 'user' || !e.block.images?.length) return e
-    changed = true
-    const images = e.block.images.map((img) => {
-      const i = img as ImageLike
-      return { mediaType: img.mediaType, byteLength: typeof i.byteLength === 'number' ? i.byteLength : base64Bytes(img.data ?? ''), omittedBase64: true as const }
-    })
-    return { ...e, block: { ...e.block, images: images as unknown as ImageAttachment[] } }
-  })
-  return changed ? { ...rec, transcript } : rec
+  const transcript = rec.transcript.map(entryWithoutImages)
+  return transcript.some((entry, i) => entry !== rec.transcript[i]) ? { ...rec, transcript } : rec
 }
 
 // ---------- Transcript ----------
@@ -218,10 +240,13 @@ export function transcriptLine(e: TranscriptEntry, o: TranscriptLineOpts): strin
     case 'tool_result': {
       if (!o.results && !b.isError) return null
       const row = humanizeToolResult(o.toolName?.(b.toolUseId), b.content, b.isError)
-      if (!row) return null
-      const line = `${pre}${who} ← ${safeLine(row.label)}`
-      return b.isError || row.failed ? st.red(line) : st.dim(line)
+      const parts = resultPartsLabel(b.parts)
+      if (!row && !parts) return null
+      const line = `${pre}${who} ← ${parts || safeLine(row!.label)}`
+      return b.isError || row?.failed ? st.red(line) : st.dim(line)
     }
+    case 'media':
+      return `${pre}${st.bold(`${who}:`)} ${mediaLabel(b.media)}`
     case 'user': {
       const text = safe(b.text).trim()
       const imgs = (b.images ?? []).map((i) => imageLabel(i as ImageLike))

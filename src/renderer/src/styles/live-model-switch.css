@@ -1,0 +1,45 @@
+.live-composer-region {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  max-height: 45vh;
+  overflow: auto;
+}
+
+.live-model-switch {
+  padding: var(--space-1h) var(--space-3);
+  border-top: 1px solid var(--border-default);
+  background: var(--surface-1);
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.run-body:has(.frame-tray[data-compact='true']) .live-model-switch {
+  padding-block: 0;
+}
+
+.live-model-switch__summary, .live-model-switch__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.live-model-switch__editor {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.live-model-switch__editor .select {
+  width: 100%;
+  min-width: 0;
+}
+
+.live-model-switch__error {
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}

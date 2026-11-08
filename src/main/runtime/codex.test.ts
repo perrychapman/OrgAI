@@ -143,6 +143,56 @@ describe('CodexAdapter session', () => {
   })
 
   const ctxFor = (over: Partial<RuntimeContext> = {}) => fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, ...over })
+  it('forwards MCP media parts and native imageView fallback from the app-server', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ autoContinue: false })
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('item/completed', { threadId: 'th-1', item: { type: 'mcpToolCall', id: 'media-tool', status: 'completed', result: { content: [
+      { type: 'text', text: 'Returned media' }, { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' }
+    ] } } })
+    s.push('item/completed', { threadId: 'th-1', item: { type: 'imageView', id: 'native-image', path: 'C:/private/image.png' } })
+    await vi.waitFor(() => expect(ctx.events.some(e => e.type === 'transcript' && e.entry.block.kind === 'media')).toBe(true))
+    const blocks = ctx.events.flatMap(e => e.type === 'transcript' ? [e.entry.block] : [])
+    expect(blocks).toContainEqual(expect.objectContaining({ kind: 'tool_result', toolUseId: 'media-tool', parts: [
+      { type: 'text', text: 'Returned media' }, { type: 'media', media: expect.objectContaining({ kind: 'image' }) }
+    ] }))
+    expect(blocks).toContainEqual({ kind: 'media', media: expect.objectContaining({ kind: 'unsupported' }) })
+  })
+  it('switches only subsequent root turns on the existing thread and refuses busy/cards/connections', async () => {
+    let pending = 0
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ autoContinue: false, pendingInteractions: () => pending })
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const usage = (inputTokens: number, outputTokens: number) => s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens, outputTokens, cachedInputTokens: 0 }, last: {}, modelContextWindow: null } })
+    usage(100, 20)
+    await expect(session.switchModel!({ model: 'gpt-new' })).rejects.toThrow('idle')
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(session!.settlement!()).toMatchObject({ rootIdle: true, quiescent: true }))
+    pending = 1
+    await expect(session.switchModel!({ model: 'gpt-new' })).rejects.toThrow('decision cards')
+    pending = 0
+    const before = session.settlement!()
+    await session.switchModel!({ model: 'gpt-new' })
+    expect(session.settlement!()).toEqual(before)
+    expect(s.of('thread/start')).toHaveLength(1)
+    expect(s.of('thread/resume')).toHaveLength(0)
+    await expect(session.switchModel!({ model: 'bad model' })).rejects.toThrow('Invalid model')
+    await expect(session.switchModel!({ model: 'gpt-new', connection: { connection: 'other' as never, adapter: 'codex' } })).rejects.toThrow('Switching connections')
+    await session.send('Continue with history')
+    expect(s.turnStarts('th-1').at(-1).params).toMatchObject({ threadId: 'th-1', model: 'gpt-new' })
+    usage(160, 35)
+    const root = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === ROOT_AGENT_ID).at(-1)
+    expect(root).toMatchObject({ agent: { inputTokens: 160, outputTokens: 35, usage: { models: expect.arrayContaining([
+      expect.objectContaining({ model: 'gpt-test', tokens: expect.objectContaining({ input: 100, output: 20 }) }),
+      expect.objectContaining({ model: 'gpt-new', tokens: expect.objectContaining({ input: 60, output: 15 }) })
+    ]) } } })
+    await session.stop()
+    await expect(session.switchModel!({ model: 'gpt-next' })).rejects.toThrow('not live')
+  })
   const events = (ctx: ReturnType<typeof fakeCtx>, type: RunEvent['type']) => ctx.events.filter((e) => e.type === type)
   const systemEntries = (ctx: ReturnType<typeof fakeCtx>) =>
     ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'system' ? [{ ...e.entry, block: e.entry.block }] : []))
@@ -235,6 +285,8 @@ describe('CodexAdapter session', () => {
     // Root's turn ends while the report is still running: no nudge (reports are running).
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
     expect(lastAgent(ctx, 'root')).toMatchObject({ state: 'idle', activity: 'Waiting on reports…' })
+    await expect(session.switchModel!({ model: 'gpt-new' })).rejects.toThrow('idle')
+    expect(lastAgent(ctx, 'root').model).toBe('gpt-test')
     await new Promise((r) => setTimeout(r, 30))
     expect(s.turnStarts('th-1')).toHaveLength(1)
 

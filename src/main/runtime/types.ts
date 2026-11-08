@@ -718,6 +718,8 @@ export interface SkillAssistCatalog {
 }
 
 export interface RuntimeSession {
+  /** Change only the root model at a safe boundary; refuse without changing state when unsafe. */
+  switchModel?(input: { model: string; connection?: RunConnection }): Promise<void>
   /**
    * Send a follow-up user message to the orchestrator. `images` are already validated; `text` may be
    * empty when images are present. The user transcript block records both.

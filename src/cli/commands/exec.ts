@@ -52,7 +52,7 @@ import { TUI_FLAGS, findCommand } from '../commandTable'
 import { parseFlags, type FlagSpec } from '../flags'
 import { readStdinText } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
-import { agentLabel, costText, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
+import { agentLabel, costText, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
@@ -614,10 +614,10 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
     const ev = p.event
     if (typeof p.seq !== 'number' && ev.type === 'agent.partial') {
       adopt(ev.runId)
-      if (stream) emitLine(ctx, { type: 'event', atSeq: p.atSeq, event: ev })
+      if (stream) emitLine(ctx, { type: 'event', atSeq: p.atSeq, event: eventWithoutImages(ev) })
       return
     }
-    if (stream) emitLine(ctx, { type: 'event', ...(typeof p.seq === 'number' ? { seq: p.seq } : {}), event: ev })
+    if (stream) emitLine(ctx, { type: 'event', ...(typeof p.seq === 'number' ? { seq: p.seq } : {}), event: eventWithoutImages(ev) })
     applyEvent(ev)
   }
 

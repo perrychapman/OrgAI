@@ -4,6 +4,7 @@ import { X } from 'lucide-react'
 import { IconButton } from './ui/IconButton'
 import type { ImageAttachment, ImageMediaType } from '@shared/types'
 import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES, SUPPORTED_IMAGE_TYPES } from '@shared/defaults'
+import { usableTranscriptImage } from '../lib/transcriptMedia'
 
 export const dataUrl = (img: ImageAttachment): string => `data:${img.mediaType};base64,${img.data}`
 
@@ -70,26 +71,29 @@ export function ComposerImages({ images, onRemove }: { images: ImageAttachment[]
 /** Transcript thumbnails; a thumbnail button toggles an in-flow larger view. */
 export function TranscriptImages({ images: all }: { images: ImageAttachment[] }): ReactElement | null {
   const [open, setOpen] = useState<number | null>(null)
-  // Images whose file went missing on disk arrive with empty data; skip them.
-  const images = all.filter((img) => img.data !== '')
-  if (images.length === 0) return null
+  const [failed, setFailed] = useState<number[]>([])
+  if (all.length === 0) return null
   return (
     <div className="entry-images">
       <div className="entry-thumbs">
-        {images.map((img, i) => (
+        {all.map((img, i) => !usableTranscriptImage(img) ? (
+          <span key={i} data-testid="transcript-image-unavailable">Image unavailable{img?.name ? `: ${img.name}` : ''}</span>
+        ) : (
           <button
             key={i}
             type="button"
-            className={`entry-thumb ${open === i ? 'on' : ''}`}
-            aria-pressed={open === i}
-            aria-label={`${open === i ? 'Collapse' : 'Expand'} image ${i + 1}`}
-            onClick={() => setOpen(open === i ? null : i)}
+            className={`entry-thumb ${open === i ? 'on' : ''}${failed.includes(i) ? ' unavailable' : ''}`}
+            aria-expanded={open === i}
+            aria-label={failed.includes(i) ? `Image ${i + 1} unavailable` : `${open === i ? 'Collapse' : 'Expand'} image ${i + 1}`}
+            aria-disabled={failed.includes(i) || undefined}
+            onClick={() => { if (!failed.includes(i)) setOpen(open === i ? null : i) }}
+            onKeyDown={(event) => { if (event.key === 'Escape' && open === i) { event.stopPropagation(); setOpen(null) } }}
           >
-            <img src={dataUrl(img)} alt={img.name ?? `Image ${i + 1}`} />
+            {failed.includes(i) ? <span data-testid="transcript-image-unavailable">Image unavailable</span> : <img src={dataUrl(img)} alt={img.name ?? `Image ${i + 1}`} onError={() => { setFailed((items) => [...items, i]); setOpen(null) }} />}
           </button>
         ))}
       </div>
-      {open !== null && images[open] && <img className="entry-image-large" src={dataUrl(images[open])} alt={images[open].name ?? `Image ${open + 1}`} />}
+      {open !== null && all[open] && !failed.includes(open) && <img className="entry-image-large" src={dataUrl(all[open])} alt={all[open].name ?? `Image ${open + 1}`} onError={() => { setFailed((items) => [...items, open]); setOpen(null) }} />}
     </div>
   )
 }

@@ -130,7 +130,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'app:reference', 'outputs:list', 'outputs:preview', 'outputs:deletePreview', 'outputs:versions', 'outputs:readSource', 'outputs:thumb', 'outputs:compare', 'outputs:notes', 'outputs:revisions', 'outputs:reviseOptions'
   ],
   operate: [
-    'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
+    'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:switchModel', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
     'runs:cancelAutoResume', 'setup:start', 'setup:retro', 'mcp:startAssist', 'skills:startAssist', 'usage:refresh',
     'connections:test', 'models:refresh', 'mcp:test', 'mcpLibrary:test', 'capabilities:discover', 'capabilities:recommend',
     'capabilities:cancel', 'capabilities:review', 'skills:evaluate', 'draft:orgChart', 'window:openRun', 'outputs:noteAdd', 'outputs:noteUpdate',

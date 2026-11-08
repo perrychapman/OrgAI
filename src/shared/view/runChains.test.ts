@@ -62,6 +62,19 @@ describe('runChains', () => {
     expect(canContinue([r('a', 1, { status: 'finished' })], 'a')).toBe(false)
     expect(canContinue([], 'a')).toBe(false)
   })
+  it('continues only the latest stopped chain member with a staged model after an API error without a session', () => {
+    const selection = { model: 'next-model', connection: 'custom-connection' }
+    for (const kind of ['work', 'setup', 'mcp-assist', 'skill-assist'] as const) {
+      const first = { ...r('first', 1), kind, modelSelection: selection }
+      const failed = { ...r('failed', 2, { resumedFrom: 'first', status: 'error' }), kind, modelSelection: selection }
+      const chain = [first, failed]
+      expect(canContinue(chain, 'first')).toBe(false)
+      expect(canContinue(chain, 'failed')).toBe(true)
+      expect(canContinue([first, { ...failed, modelSelection: undefined }], 'failed')).toBe(false)
+      for (const status of ['finished', 'paused'] as const) expect(canContinue([first, { ...failed, status }], 'failed')).toBe(true)
+      for (const status of ['starting', 'running', 'idle', 'stopping'] as const) expect(canContinue([first, { ...failed, status }], 'failed')).toBe(false)
+    }
+  })
   it('finds the direct predecessor of a continued run', () => {
     expect(predecessorOf(runs, 'c')?.id).toBe('b')
     expect(predecessorOf(runs, 'a')).toBeUndefined()

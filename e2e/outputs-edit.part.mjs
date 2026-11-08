@@ -63,7 +63,7 @@ export default async function (ctx) {
   if (!(await startEdit(page))) return skip('output-edit is not rendered yet (shell testid)')
   check((await page.locator('[data-testid=output-editor][data-kind=markdown]').count()) === 1, `${label}: markdown editor opens`)
   check(
-    await page.evaluate(() => document.activeElement?.matches('[data-testid=output-edit-area]') ?? false),
+    await page.waitForFunction(() => document.activeElement?.matches('[data-testid=output-edit-area]') ?? false, null, { timeout: 6000 }).then(() => true).catch(() => false),
     `${label}: focus is in the markdown source`
   )
   check((await page.locator('[data-testid=output-edit-dirty]').textContent())?.trim() === 'No changes', `${label}: bar says No changes at first`)

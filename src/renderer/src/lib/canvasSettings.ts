@@ -1,9 +1,19 @@
-import type { AppearanceSettings } from '@shared/types'
+import type { AppearanceSettings, CanvasPresentation, CanvasScenePalette } from '@shared/types'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { setAppearance } from './theme'
 
 /** Canvas settings are the `canvas` object of AppearanceSettings. */
 export type CanvasSettings = AppearanceSettings['canvas']
+
+export const PRESENTATION_OPTIONS: { value: CanvasPresentation; label: string }[] = [
+  { value: 'graph', label: 'Graph' },
+  { value: 'pocket-office', label: 'Pocket Office' }
+]
+export const SCENE_PALETTE_OPTIONS: { value: CanvasScenePalette; label: string }[] = [
+  { value: 'color', label: 'Color' },
+  { value: 'neutral', label: 'Neutral' },
+  { value: 'green', label: 'Green' }
+]
 
 /** Pure: "Canvas style: Blueprint." / "Canvas style: Custom." */
 export function canvasAnnouncement(label: string | undefined): string {

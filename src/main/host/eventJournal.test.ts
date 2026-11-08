@@ -15,6 +15,20 @@ function imageEvent(bytes: number): RunEvent {
 }
 
 describe('EventJournal', () => {
+  it('redacts standalone and tool-part images in snapshots and oversized live events without mutation', () => {
+    const image = { mediaType: 'image/png', data: Buffer.alloc(600 * 1024, 7).toString('base64') }
+    const media = { kind: 'image', image }
+    const input = { transcript: [{ block: { kind: 'media', media } }, { block: { kind: 'tool_result', parts: [{ type: 'media', media }] } }] }
+    const snapshot = JSON.stringify(scrubImages(input))
+    expect(snapshot).not.toContain(image.data)
+    expect(snapshot.match(/omittedBase64/g)).toHaveLength(2)
+    expect(JSON.stringify(input)).toContain(image.data)
+    const event = { type: 'transcript', runId: 'r', entry: { id: 'e', agentId: 'root', at: 1, block: { kind: 'media', media } } } as RunEvent
+    const journal = new EventJournal()
+    expect(journal.append(event).json).not.toContain(image.data)
+    expect(JSON.stringify(event)).toContain(image.data)
+  })
+
   it('hands out monotonic seqs from 1 and replays since a seq', () => {
     const j = new EventJournal()
     expect(j.currentSeq).toBe(0)

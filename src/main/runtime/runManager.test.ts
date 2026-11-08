@@ -11,7 +11,7 @@ import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
-import { project as makeProject, runSummary } from './testHelpers'
+import { project as makeProject, mcpSpec, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
 import { defaultConnections } from '@shared/defaults'
 import { log } from '../log'
@@ -85,6 +85,160 @@ afterEach(() => {
 })
 
 describe('RunManager stored records', () => {
+  it('refuses an unpriced live selection before adapter mutation and ignores forged model events', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p, {}, { catalog: () => [{ id: 'unpriced', label: 'Unpriced', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }] })
+    const run = await m.start({ project: p, prompt: '[mock:model-switch]' })
+    const active = Reflect.get(m, 'runs').get(run.id)
+    active.execBudget = 10
+    active.modelPriced = () => false
+    const change = vi.spyOn(active.session, 'switchModel')
+    const result = await m.switchModel({ runId: run.id, model: 'unpriced' })
+    expect(result.applied).toBe(false)
+    expect(result.reason).toContain('price')
+    expect(change).not.toHaveBeenCalled()
+    const before = m.summary(run.id)?.modelSelection
+    active.emit({ type: 'run.model', runId: run.id, selection: { model: 'forged', connection: 'openai' } })
+    expect(m.summary(run.id)?.modelSelection).toEqual(before)
+    expect(events.some((e) => e.type === 'run.model' && e.selection.model === 'forged')).toBe(false)
+    await m.stopAll()
+  })
+
+  it.each(['work', 'setup', 'mcp-assist', 'skill-assist'] as const)('continues %s across connections with transcript data, no native session id, and remaining budget', async (kind) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10, permissionMode: 'default' })
+    const catalog = [{ id: 'alternate', label: 'Alternate', connection: 'openai' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'builtin' as const }]
+    const { m, store } = manager(p, {}, { catalog: () => catalog })
+    const old = runSummary({ id: 'handoff-old', projectId: p.id, kind, status: 'error', sessionId: 'private-old-session', connection: 'anthropic', totalCostUsd: 3 })
+    store.saveRecord({ summary: old, agents: {}, transcript: [{ id: 'entry1', agentId: 'root', at: 1, block: { kind: 'user', text: 'Remember the blue notebook' } }], logs: [] })
+    store.upsert(old)
+    const staged = await m.switchModel({ runId: old.id, model: 'alternate', connection: 'openai' })
+    expect(staged.applied).toBe(false)
+    const start = vi.spyOn(m, 'start')
+    await m.continueRun(p, old.id, 'Continue the work')
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      resumeSessionId: undefined, resumedFrom: old.id,
+      project: expect.objectContaining({ maxBudgetUsd: 7, permissionMode: 'default' }),
+      modelSelection: { model: 'alternate', connection: 'openai' },
+      hiddenContext: expect.stringContaining('Remember the blue notebook')
+    }))
+    expect(start.mock.calls[0][0].hiddenContext).not.toContain('private-old-session')
+    await m.stopAll()
+  })
+
+  it('uses the successor native session on a later continuation despite unchanged project defaults', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'successor', projectId: p.id, status: 'finished', sessionId: 'new-native-session', connection: 'openai', modelAdapter: 'codex', modelSelection: { model: 'alternate', connection: 'openai' } }))
+    const start = vi.spyOn(m, 'start')
+    await m.continueRun(p, 'successor', 'Keep going')
+    expect(start.mock.calls[0][0].resumeSessionId).toBe('new-native-session')
+    expect(start.mock.calls[0][0].hiddenContext).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it.each([undefined, 0, -1])('keeps project budget %s unlimited on a provider handoff', async (maxBudgetUsd) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'unlimited', projectId: p.id, status: 'error', connection: 'anthropic', modelSelection: { model: 'alternate', connection: 'openai' } }))
+    const next = await m.continueRun(p, 'unlimited', 'Continue')
+    expect(next.conversationBudgetUsd).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it.each(['work', 'setup', 'mcp-assist', 'skill-assist'] as const)('preserves exact budgets through repeated %s handoffs and native recovery', async (kind) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10, permissionMode: 'dontAsk', mcpServers: [mcpSpec()] })
+    p.roles[0].skills = ['granted-skill']
+    p.roles[0].mcpServers = ['mcp-1']
+    const { m, store } = manager(p, {}, { catalog: () => [
+      { id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' },
+      { id: 'original', label: 'Original', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }
+    ] })
+    // Start failures can occur before native init. Recovery must work without any session id.
+    const first = runSummary({ id: 'exact-first', projectId: p.id, kind, startedAt: 1, status: 'error', connection: 'anthropic', totalCostUsd: 3,
+      overrides: { permissionMode: 'plan', maxBudgetUsd: 10 }, modelSelection: { model: 'alternate', connection: 'openai' } })
+    store.upsert(first)
+    let sequence = 1
+    const start = vi.spyOn(m, 'start').mockImplementation(async (input) => {
+      const summary = runSummary({ id: `exact-${++sequence}`, projectId: p.id, kind: input.kind, startedAt: sequence,
+        status: 'error', connection: input.modelSelection!.connection,
+        modelAdapter: input.modelSelection!.connection === 'openai' ? 'codex' : 'claude',
+        resumedFrom: input.resumedFrom, modelSelection: input.modelSelection, conversationBudgetUsd: input.conversationBudgetUsd,
+        overrides: input.overrides, totalCostUsd: sequence === 2 ? 2 : sequence === 3 ? 1 : 0 })
+      store.upsert(summary)
+      return summary
+    })
+    const second = await m.continueRun(p, first.id, 'Retry after API error')
+    expect(start.mock.calls[0][0]).toMatchObject({ project: { maxBudgetUsd: 7, permissionMode: 'dontAsk', mcpServers: p.mcpServers },
+      overrides: { maxBudgetUsd: 7, permissionMode: 'plan' }, conversationBudgetUsd: 10 })
+    expect(start.mock.calls[0][0].resumeSessionId).toBeUndefined()
+    await m.switchModel({ runId: second.id, model: 'original', connection: 'anthropic' })
+    const third = await m.continueRun(p, second.id, 'Switch back')
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBe(5)
+    expect(start.mock.calls[1][0].overrides?.maxBudgetUsd).toBe(5)
+    expect(third.conversationBudgetUsd).toBe(10)
+    // Once the new provider supplies a native session, the next continuation keeps it.
+    store.upsert({ ...third, sessionId: 'new-native-session', status: 'finished' })
+    const fourth = await m.continueRun(p, third.id, 'Continue natively')
+    expect(start.mock.calls[2][0].resumeSessionId).toBe('new-native-session')
+    expect(start.mock.calls[2][0].project.maxBudgetUsd).toBe(4)
+    expect(start.mock.calls[2][0].overrides?.maxBudgetUsd).toBe(4)
+    expect(fourth.conversationBudgetUsd).toBe(10)
+    const tightened = await m.continueRun({ ...p, maxBudgetUsd: 8 }, fourth.id, 'Use lower project limit')
+    expect(start.mock.calls[3][0].project.maxBudgetUsd).toBe(2)
+    expect(start.mock.calls[3][0].overrides?.maxBudgetUsd).toBe(2)
+    expect(tightened.conversationBudgetUsd).toBe(8)
+    const narrowed = await m.continueRun(p, tightened.id, 'Use explicit remaining allowance', undefined, { overrides: { maxBudgetUsd: 1 } })
+    expect(start.mock.calls[4][0].project.maxBudgetUsd).toBe(1)
+    expect(start.mock.calls[4][0].overrides?.maxBudgetUsd).toBe(1)
+    expect(narrowed.conversationBudgetUsd).toBe(7)
+    await expect(m.continueRun({ ...p, maxBudgetUsd: 6 }, tightened.id, 'No allowance left')).rejects.toThrow('budget is spent')
+    expect(start).toHaveBeenCalledTimes(5)
+    for (const [input] of start.mock.calls) {
+      expect(input.project.roles).toEqual(p.roles)
+      expect(input.project.mcpServers).toEqual(p.mcpServers)
+      expect(input.project.permissionMode).toBe('dontAsk')
+      expect(input.overrides?.permissionMode).toBe('plan')
+    }
+    expect(p.maxBudgetUsd).toBe(10)
+  })
+
+  it('subtracts chain spend once on a repeated handoff and subsequent native continuation', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10 })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'prior', projectId: p.id, status: 'finished', startedAt: 1, totalCostUsd: 3 }))
+    store.upsert(runSummary({ id: 'second', projectId: p.id, status: 'error', startedAt: 2, resumedFrom: 'prior', connection: 'anthropic', conversationBudgetUsd: 10, overrides: { maxBudgetUsd: 7 }, totalCostUsd: 2, modelSelection: { model: 'alternate', connection: 'openai' } }))
+    const start = vi.spyOn(m, 'start')
+    const next = await m.continueRun(p, 'second', 'Continue')
+    expect(start.mock.calls[0][0].project.maxBudgetUsd).toBe(5)
+    expect(next.conversationBudgetUsd).toBe(10)
+    await m.stopAll()
+    await m.continueRun(p, next.id, 'Keep going')
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBeLessThanOrEqual(5)
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBeGreaterThan(2)
+    await m.stopAll()
+  })
+
+  it('switches the newest ended chain member and refuses to reset a spent budget', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 2 })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'older', projectId: p.id, status: 'error', sessionId: 's1', connection: 'anthropic', startedAt: 1 }))
+    store.upsert(runSummary({ id: 'newer', projectId: p.id, status: 'paused', sessionId: 's1', connection: 'anthropic', startedAt: 2, resumedFrom: 'older', totalCostUsd: 2 }))
+    const result = await m.switchModel({ runId: 'older', model: 'alternate', connection: 'openai' })
+    expect(result.run.id).toBe('newer')
+    await expect(m.continueRun(p, 'older', 'Continue')).rejects.toThrow('budget is spent')
+  })
+
+  it('persists a model for an ended session and refuses unavailable models and connections', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'new-model', label: 'New', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'run-switch', projectId: p.id, status: 'error', sessionId: 'session-1', connection: 'anthropic' }))
+    await expect(m.switchModel({ runId: 'run-switch', model: 'missing' })).rejects.toThrow('Model is not available')
+    await expect(m.switchModel({ runId: 'run-switch', model: 'new-model', connection: 'openai' })).rejects.toThrow('Model is not available')
+    const result = await m.switchModel({ runId: 'run-switch', model: 'new-model' })
+    expect(result.applied).toBe(false)
+    expect(store.get('run-switch')?.modelSelection).toEqual({ model: 'new-model', connection: 'anthropic' })
+    expect(events).toContainEqual({ type: 'run.model', runId: 'run-switch', selection: { model: 'new-model', connection: 'anthropic' } })
+  })
   it('breaks a parent cycle in a record read from the store', () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m, store } = manager(p)
@@ -1268,6 +1422,52 @@ describe('RunManager adapter selection, connections and MCP', () => {
   }
 
   describe('adapter selection', () => {
+    it.each((['work', 'setup', 'mcp-assist', 'skill-assist'] as const).flatMap((kind) => (['priced', 'unknown', 'provider-total'] as const).map((usage) => [kind, usage] as const)))('enforces a desktop %s handoff budget after refresh on %s usage', async (kind, usage) => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'gpt-5', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const refresh = vi.fn(() => ({ project: { ...p, maxBudgetUsd: 8 } }))
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { teamFiles: { beforeRun: refresh }, catalog: () => [{ id: 'gpt-5', label: 'GPT', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'budget-source', projectId: p.id, kind, status: 'error', connection: 'anthropic', totalCostUsd: 3, modelSelection: { model: 'gpt-5', connection: 'openai' } }))
+      const run = await m.continueRun(p, 'budget-source', 'Recover')
+      expect(codex.ctxs).toHaveLength(1)
+      const ctx = codex.ctxs[0]
+      const remaining = kind === 'work' || kind === 'setup' ? 5 : 7
+      expect(ctx.project.maxBudgetUsd).toBe(remaining)
+      expect(ctx.budgetUsd).toBe(remaining)
+      expect(ctx.resumeSessionId).toBeUndefined()
+      if (kind === 'work' || kind === 'setup') expect(refresh).toHaveBeenCalledOnce()
+      const agent: AgentInstance = { id: ROOT_AGENT_ID, roleId: p.roles[0].id, roleSlug: p.roles[0].slug, name: 'Root', parentId: null, spawnToolUseId: null, state: 'idle', activity: '', model: 'gpt-5', inputTokens: 1, outputTokens: 1, costUsd: 0, startedAt: 1 }
+      setModelTokens(agent, usage === 'unknown' ? 'unexpected-unpriced-model' : 'gpt-5', { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, usage === 'unknown' ? undefined : usage === 'provider-total' ? 0 : 7)
+      ctx.emit({ type: 'agent.upsert', runId: run.id, agent })
+      if (usage === 'provider-total') ctx.emit({ type: 'run.cost', runId: run.id, totalCostUsd: 7 })
+      await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+      expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+      expect(events.some((e) => e.type === 'run.finalized' && e.runId === run.id)).toBe(false)
+    })
+
+    it('propagates a newly spent stored-project cap without starting the adapter', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'gpt-5', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { teamFiles: { beforeRun: () => ({ project: { ...p, maxBudgetUsd: 5 } }) }, catalog: () => [{ id: 'gpt-5', label: 'GPT', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'spent-source', projectId: p.id, status: 'error', connection: 'anthropic', totalCostUsd: 6, modelSelection: { model: 'gpt-5', connection: 'openai' } }))
+      await expect(m.continueRun(p, 'spent-source', 'Recover')).rejects.toThrow('budget is spent')
+      expect(codex.ctxs).toHaveLength(0)
+    })
+
+    it('refuses unpriced desktop recovery before starting Codex', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'unpriced-model', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { catalog: () => [{ id: 'unpriced-model', label: 'Unknown', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'unpriced-source', projectId: p.id, status: 'error', connection: 'anthropic', totalCostUsd: 3, modelSelection: { model: 'unpriced-model', connection: 'openai' } }))
+      const run = await m.continueRun(p, 'unpriced-source', 'Recover')
+      expect(codex.ctxs).toHaveLength(0)
+      expect(run).toMatchObject({ status: 'finished', endedBy: 'budget' })
+      expect(events.some((e) => e.type === 'log' && e.message.includes('no known price'))).toBe(true)
+    })
+
     it('picks the adapter by the root role family on LiteLLM', async () => {
       const claude = recorder('claude')
       const codex = recorder('codex')

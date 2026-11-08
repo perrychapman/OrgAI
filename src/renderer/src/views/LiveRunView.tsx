@@ -12,6 +12,9 @@ import {
 } from '@xyflow/react'
 import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
+import { OfficeScene, type OfficeSceneHandle } from '../components/canvas/office/OfficeScene'
+import { officeAgentView } from '../lib/office/agentView'
+import { withOfficeDepartments } from '../lib/office/departments'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
@@ -63,6 +66,7 @@ import { CanvasFrame, FrameStage, FrameToolbar, FrameTray } from '../components/
 import RunTabs from '../components/RunTabs'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
+import { LiveModelSwitch } from '../components/LiveModelSwitch'
 import { formatUntil, layoutCanvas } from '../lib/layout'
 import { agentLabel, normalizeParents } from '../lib/agentTree'
 
@@ -215,10 +219,13 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const liveDash = useCssVar('--canvas-edge-live-dash') || '6 4'
   const messageDash = useCssVar('--canvas-edge-message-dash') || '2 5'
   const options = useCanvasOptions()
+  const officeRef = useRef<OfficeSceneHandle>(null)
+  const officeModeRef = useRef(false)
+  officeModeRef.current = options.presentation === 'pocket-office'
   const reducedMotion = useReducedMotion()
   const nodeDims = useNodeDims()
   // The stage collapses to height 0 while an expanded proposal takes a compact frame: nothing to fit then.
-  const stageHidden = (): boolean => (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8
+  const stageHidden = (): boolean => officeModeRef.current || (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8
   const radial = options.layout === 'radial'
   const edgeType = radial ? 'radial' : EDGE_TYPE[options.edges]
   const agentSize = useMemo(() => agentNodeSize(options.nodeStyle, options.layout), [options.nodeStyle, options.layout])
@@ -435,7 +442,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const layoutKey = `${topologyKey}#${options.layout}#${options.nodeStyle}`
   const placed = useMemo(
     () =>
-      layoutCanvas(
+      options.presentation === 'pocket-office' ? { positions: {} as Record<string, { x: number; y: number }>, rings: undefined } : layoutCanvas(
         options.layout,
         [
           ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: agentSize.width, height: agentSize.height })),
@@ -444,7 +451,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         { ringStep: ringStepFor(options.nodeStyle), ...(options.nodeStyle === 'hex' ? { honeycomb: { width: HEX_TILE.width, height: HEX_TILE.height, gap: HEX_GAP } } : {}) }
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [layoutKey]
+    [layoutKey, options.presentation]
   )
   const positions = placed.positions
 
@@ -466,6 +473,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const glideSeen = useRef<string | null>(null)
   const glideUntil = useRef(0)
   useLayoutEffect(() => {
+    if (officeModeRef.current) { glideSeen.current = null; return }
     if (glideSeen.current === null) {
       glideSeen.current = layoutKey
       return
@@ -474,7 +482,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     glideSeen.current = layoutKey
     const total = beginCanvasGlide(canvasRef.current, arrivalIds.length)
     glideUntil.current = total ? Date.now() + total : 0
-  }, [layoutKey])
+  }, [layoutKey, options.presentation])
 
   const lastTopology = useRef('')
   useEffect(() => {
@@ -758,14 +766,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     const NO_CANVAS = 'Open a run on Live to use the canvas.'
     const onCanvas = (run: () => void): string | void => {
       const m = menuRef.current
-      if (m.conversation || stageHidden()) return NO_CANVAS
+      if (m.conversation || (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8) return NO_CANVAS
       run()
     }
     const offs = [
-      registerMenuHandler('canvas-zoom-in', () => onCanvas(() => zoomInCanvas({ zoomIn }, reducedRef.current))),
-      registerMenuHandler('canvas-zoom-out', () => onCanvas(() => zoomOutCanvas({ zoomOut }, reducedRef.current))),
-      registerMenuHandler('canvas-fit', () => onCanvas(() => fitCanvas({ fitView }, reducedRef.current))),
-      registerMenuHandler('toggle-hide-finished', () => onCanvas(() => menuRef.current.toggleCollapse())),
+      registerMenuHandler('canvas-zoom-in', () => onCanvas(() => officeModeRef.current ? officeRef.current?.zoomIn() : zoomInCanvas({ zoomIn }, reducedRef.current))),
+      registerMenuHandler('canvas-zoom-out', () => onCanvas(() => officeModeRef.current ? officeRef.current?.zoomOut() : zoomOutCanvas({ zoomOut }, reducedRef.current))),
+      registerMenuHandler('canvas-fit', () => onCanvas(() => officeModeRef.current ? officeRef.current?.fit() : fitCanvas({ fitView }, reducedRef.current))),
+      registerMenuHandler('toggle-hide-finished', () => officeModeRef.current ? 'All agents are shown in Pocket Office.' : onCanvas(() => menuRef.current.toggleCollapse())),
       registerMenuHandler('toggle-conversation', () => menuRef.current.toggleLayout()),
       registerMenuHandler('go-to-decision', () => {
         if (!menuRef.current.hasDecision || !bodyRef.current?.querySelector('.frame-tray')) return 'No decision is waiting on this run.'
@@ -827,7 +835,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       stageShown = shown
       if (!shown) return
       clearTimeout(t)
-      t = setTimeout(() => void fitView(fitOpts({ duration: 0 })), 100)
+      t = setTimeout(() => { if (!stageHidden()) void fitView(fitOpts({ duration: 0 })) }, 100)
     }) : null
     if (stage) so?.observe(stage)
     return () => {
@@ -1043,7 +1051,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameToolbar dense label="Canvas toolbar">
             <RunMeta run={run} project={project} agentCount={agents.length + chain.earlier.reduce((n, g) => n + g.agents.length, 0)} />
             <div className="frame-toolbar-end">
-              {!conversation && (agents.length > 1 || chain.earlier.length > 0) && (
+              {!conversation && options.presentation !== 'pocket-office' && (agents.length > 1 || chain.earlier.length > 0) && (
                 <span className="run-fold" title="Folds finished agents into one node under the agent still shown above them. Turn off to show every agent; turn on again to fold everything back.">
                   <Switch
                     checked={collapseFinished}
@@ -1058,7 +1066,17 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   </span>
                 </span>
               )}
-              {!conversation && <CanvasTools />}
+              {!conversation && (options.presentation === 'pocket-office' ? <CanvasStyleButton testId="canvas-style-button" /> : <CanvasTools />)}
+              {!conversation && options.presentation === 'pocket-office' && earlierToLoad > 0 && (
+                <Button size="sm" loading={loadingEarlier} onClick={() => {
+                  if (loadingEarlier) return
+                  setLoadingEarlier(true)
+                  void loadEarlierSessions(runId).finally(() => {
+                    setLoadingEarlier(false)
+                    requestAnimationFrame(() => bodyRef.current?.querySelector<HTMLElement>('[data-office-agent-id]')?.focus())
+                  })
+                }}>Load earlier sessions ({earlierToLoad})</Button>
+              )}
               <IconButton
                 icon={conversation ? Network : MessageSquare}
                 label={conversation ? 'Show agents' : 'Show conversation'}
@@ -1073,6 +1091,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               <div className={`conversation-stage${toggledTo === 'conversation' ? ' motion-view' : ''}`} data-testid="run-conversation">
                 <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} />
               </div>
+            ) : options.presentation === 'pocket-office' ? (
+              <OfficeScene mode="live" runId={runId} palette={options.scenePalette} controlRef={officeRef} agents={withOfficeDepartments([...agentLookup.values()].map((agent) => ({ ...officeAgentView(agent), parentId: agent.parentId, departmentContext: chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : undefined, context: [chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : 'Current session', agent.parentId ? `Reports to ${agentLookup.get(agent.parentId) ? agentLabel(agentLookup.get(agent.parentId)!) : 'lead'}` : 'Lead'].join(' · ') })))} messages={messages ?? []} selectedId={selectedAgentId ?? undefined} onSelect={selectAgent} />
             ) : (
             <ReactFlow
               nodes={nodes}
@@ -1128,6 +1148,23 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </FrameTray>
         </CanvasFrame>
 
+        <div className="live-composer-region">
+        {!successor && (
+          <LiveModelSwitch
+            key={runId}
+            run={run.summary}
+            onRunChanged={(summary) => {
+              if (summary.id !== runId) {
+                void openRun(summary.id).then(() => focusComposer())
+                return
+              }
+              useAppStore.setState((state) => {
+                const current = state.runs[summary.id]
+                return current ? { runs: { ...state.runs, [summary.id]: { ...current, summary } } } : {}
+              })
+            }}
+          />
+        )}
         {successor && newestRun && newestRun.id !== runId ? (
           <div className="composer composer-ended" data-testid="composer-superseded">
             <div className="composer-notice info">
@@ -1192,6 +1229,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         />
         )}
 
+        </div>
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} arrival={usageArrival}>
           <div className="live-panel">
             <TranscriptPanel

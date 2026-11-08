@@ -59,6 +59,16 @@ const DESKTOP_ONLY = [
 const DESKTOP = { surface: 'desktop' as const, senderId: 1 }
 const RPC: RpcInvokeContext = { surface: 'socket', grantedScopes: ['read', 'operate', 'decide', 'configure'] satisfies HostScope[] }
 
+describe('model switching dispatch', () => {
+  it('forwards the selection to the run manager', async () => {
+    const switchModel = vi.fn().mockResolvedValue({ applied: true })
+    const d = new HostDispatcher(services({ runs: { switchModel } as never }))
+    const input = { runId: 'run_1', model: 'model-a', connection: 'anthropic' }
+    await d.invoke(IPC.runsSwitchModel, [input], DESKTOP)
+    expect(switchModel).toHaveBeenCalledWith(input)
+  })
+})
+
 /** A gate that trusts its table: positional params, a scope per channel, transport and mutation flags. */
 function fakeGate(opts: { mutations?: string[]; transport?: string[] } = {}): GateFn {
   return (channel, params) => ({

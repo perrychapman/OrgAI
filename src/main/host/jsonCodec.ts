@@ -230,6 +230,7 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'runs:decide': {}, // runs.decide(runId, requestId, PermissionDecision)
   'runs:continue': { note: IMAGES_NOTE }, // runs.continueRun(project, runId, text, images)
   'runs:resumeNow': {}, // runs.resumeNow(runId)
+  'runs:switchModel': {},
   'runs:cancelAutoResume': {}, // runs.cancelAutoResume(runId)
   'runs:listLive': {}, // runs.liveRuns()
   'runs:pendingCards': { note: 'Response cards may carry SettingsProposalPayload.maxBudgetUsd: null (domain null, kept by JSON).' },

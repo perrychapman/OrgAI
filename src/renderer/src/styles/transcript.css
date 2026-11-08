@@ -51,6 +51,12 @@
 .entry-thumb.on {
   border-color: var(--accent);
 }
+.entry-thumb.unavailable {
+  min-height: var(--space-6);
+  padding: var(--space-2);
+  line-height: var(--text-caption-lh);
+  cursor: default;
+}
 .entry-thumb:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;

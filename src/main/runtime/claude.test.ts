@@ -12,6 +12,7 @@ const sdk = vi.hoisted(() => {
   class FakeQuery {
     inputs: Msg[] = []
     setMcpCalls: Record<string, unknown>[] = []
+    setModel = vi.fn(async (_model: string) => {})
     inputClosed = false
     private out: Msg[] = []
     private waiters: { resolve: (r: IteratorResult<Msg>) => void; reject: (e: Error) => void }[] = []
@@ -72,6 +73,7 @@ const sdk = vi.hoisted(() => {
     FakeQuery,
     /** A query ends as soon as its input stream ends (the CLI exits); false holds that back for a test. */
     autoEnd: true,
+    queryCreated: (_query: FakeQuery): void => {},
     queries: [] as FakeQuery[],
     status: [] as { name: string; status: string; tools?: { name: string }[] }[]
   }
@@ -84,6 +86,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
     query: (args: { prompt: AsyncIterable<Record<string, unknown>>; options: Record<string, unknown> }) => {
       const q = new sdk.FakeQuery(args.prompt, args.options)
       sdk.queries.push(q)
+      sdk.queryCreated(q)
       return q
     }
   }
@@ -768,6 +771,45 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
   const attach = (s: ClaudeSession, spec: McpServerSpec) => (s as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(spec)
   const init = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] }
   const result = { type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} }
+  it('switches the idle root in the existing query without changing transcript or continuation state', async () => {
+    const { ctx, session } = start([])
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    q.emit(init)
+    q.emit(result)
+    await vi.waitFor(() => expect(session.settlement()).toMatchObject({ rootIdle: true, quiescent: true }))
+    const before = session.settlement()
+    const roleModel = ctx.roles.find((r) => r.reportsTo === null)?.model
+    const transcriptCount = ctx.events.filter((e) => e.type === 'transcript').length
+    await session.switchModel({ model: 'sonnet' })
+    expect(q.setModel).toHaveBeenCalledWith('sonnet')
+    expect(sdk.queries).toHaveLength(1)
+    expect(session.settlement()).toEqual(before)
+    expect(ctx.events.filter((e) => e.type === 'transcript')).toHaveLength(transcriptCount)
+    expect(ctx.roles.find((r) => r.reportsTo === null)?.model).toBe(roleModel)
+    q.setModel.mockRejectedValueOnce(new Error('unsupported model'))
+    await expect(session.switchModel({ model: 'bad-model' })).rejects.toThrow('unsupported model')
+    expect(ctx.events.filter((e) => e.type === 'agent.upsert').at(-1)).toMatchObject({ agent: { model: 'sonnet' } })
+    await expect(session.switchModel({ model: 'bad model' })).rejects.toThrow('Invalid model')
+    await expect(session.switchModel({ model: 'other', connection: { connection: 'other' as never, adapter: 'claude' } })).rejects.toThrow('Switching connections')
+    await session.stop()
+    await expect(session.switchModel({ model: 'opus' })).rejects.toThrow('not live')
+  })
+
+  it('refuses a busy root or pending cards without sending a model command', async () => {
+    let pending = 0
+    const { session } = start([], { pendingInteractions: () => pending })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    q.emit(init)
+    await vi.waitFor(() => expect(session.settlement().rootIdle).toBe(false))
+    await expect(session.switchModel({ model: 'sonnet' })).rejects.toThrow('idle')
+    q.emit(result)
+    await vi.waitFor(() => expect(session.settlement().rootIdle).toBe(true))
+    pending = 1
+    await expect(session.switchModel({ model: 'sonnet' })).rejects.toThrow('decision cards')
+    expect(q.setModel).not.toHaveBeenCalled()
+  })
   const preToolUse = (q: Fake) => q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>
   const call = (tool: string, agent?: { id: string; type: string }) => ({
     hook_event_name: 'PreToolUse',
@@ -1369,6 +1411,22 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
     return sdk.queries[0]!
   }
+  it('maps assistant images and mixed tool results in source order and deduplicates replay', async () => {
+    const { ctx } = start()
+    const q = await firstQuery()
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' } }
+    const message = { type: 'assistant', message: { id: 'media-message', content: [{ type: 'text', text: 'Before' }, image, { type: 'text', text: 'After' }] } }
+    q.emit(message)
+    q.emit(message)
+    q.emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'mixed', content: [{ type: 'text', text: 'Tool before' }, image, { type: 'audio', mimeType: 'audio/wav', data: 'AAAA' }] }] } })
+    await vi.waitFor(() => expect(ctx.events.some(e => e.type === 'transcript' && e.entry.block.kind === 'tool_result')).toBe(true))
+    const blocks = ctx.events.flatMap(e => e.type === 'transcript' ? [e.entry.block] : []).filter(b => b.kind !== 'user')
+    expect(blocks.slice(0, 3)).toEqual([{ kind: 'text', text: 'Before' }, { kind: 'media', media: expect.objectContaining({ kind: 'image' }) }, { kind: 'text', text: 'After' }])
+    expect(blocks.filter(b => b.kind === 'media')).toHaveLength(1)
+    expect(blocks).toContainEqual(expect.objectContaining({ kind: 'tool_result', toolUseId: 'mixed', parts: [
+      { type: 'text', text: 'Tool before' }, { type: 'media', media: expect.objectContaining({ kind: 'image' }) }, { type: 'media', media: expect.objectContaining({ kind: 'unsupported' }) }
+    ] }))
+  })
   const bash = async (q: Fake, command: string): Promise<HookOut> =>
     (q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>)(
       { hook_event_name: 'PreToolUse', session_id: 's', transcript_path: '', cwd: '/repo', tool_name: 'Bash', tool_input: { command }, tool_use_id: `tu-${Math.random()}` },
@@ -1789,11 +1847,27 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     git('init', '-q')
     const isolation = async (over: Partial<Project>): Promise<boolean> => {
       const before = sdk.queries.length
+      let created!: (q: InstanceType<typeof sdk.FakeQuery>) => void
+      const queryCreated = new Promise<InstanceType<typeof sdk.FakeQuery>>((resolve) => { created = resolve })
+      const onQuery = vi.spyOn(sdk, 'queryCreated').mockImplementationOnce(created)
       const s = new ClaudeSession(fakeCtx({ project: project({ path: dir, ...over }), autoContinue: false }))
-      // Let the session reach its query before stopping it, so no late query leaks into the next test.
-      await vi.waitFor(() => expect(sdk.queries.length).toBe(before + 1))
-      await s.stop()
-      return (s as unknown as { isolation: boolean }).isolation
+      try {
+        // Isolated startup prepares a real git repository. Wait for the fake SDK boundary,
+        // rather than giving that filesystem work vi.waitFor's default one-second deadline.
+        const q = await Promise.race([
+          queryCreated,
+          s.finished.then(() => { throw new Error('Session finished before creating its query') })
+        ])
+        expect(sdk.queries.length).toBe(before + 1)
+        expect(sdk.queries[before]).toBe(q)
+        return (s as unknown as { isolation: boolean }).isolation
+      } finally {
+        await s.stop()
+        // stop() signals shutdown; finished drains startup and the output iterator. Do not
+        // let a failed assertion leave a late query in the next test's shared fake state.
+        await s.finished
+        onQuery.mockRestore()
+      }
     }
     expect(await isolation({ kind: 'engagement', isolateWriters: undefined })).toBe(false)
     expect(await isolation({ kind: 'engagement', isolateWriters: true })).toBe(true)
