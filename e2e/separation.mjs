@@ -29,7 +29,7 @@ import { randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { APP_DIR, DATA_DIR, check, cleanup, createProject, electronBinary, finish, launch, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
-import { privateTempDir } from './privateDir.mjs'
+import { privateTempDir, writePrivateKeyFile } from './privateDir.mjs'
 
 const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
 const posix = process.platform !== 'win32'
@@ -44,7 +44,7 @@ const C = path.join(privateTempDir('orgai-e2e-sepc-'), 'cli')
 const keyDir = privateTempDir('orgai-e2e-sepkey-')
 const KEY_FILE = path.join(keyDir, 'cli.key')
 const APP_KEY_FILE = path.join(keyDir, 'app.key')
-fs.writeFileSync(KEY_FILE, randomBytes(32), { mode: 0o600 })
+writePrivateKeyFile(KEY_FILE, randomBytes(32))
 const DIALOG_LOG = path.join(keyDir, 'dialog.log')
 // A one-hour pause between the exec-slow steps: the hold ends only when the script interrupts it.
 const HOLD_SCRIPT = path.join(keyDir, 'hold.json')
