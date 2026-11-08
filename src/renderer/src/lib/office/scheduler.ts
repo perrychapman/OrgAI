@@ -3,7 +3,7 @@ import type { AgentMessage } from '@shared/types'
 export const MAX_ACTIVE = 3
 export const MAX_QUEUED = 12
 export const MAX_AGE = 8000
-export interface Delivery { message: AgentMessage; received: number; started: number; count: number }
+export interface Delivery { message: AgentMessage; received: number; started: number; count: number; durationMs?: number }
 export interface Scheduler { seen: readonly AgentMessage[]; active: Delivery[]; queued: Delivery[] }
 
 export function baseline(messages: readonly AgentMessage[]): Scheduler {
@@ -15,7 +15,7 @@ export function ingest(state: Scheduler, messages: readonly AgentMessage[], agen
   let overlap = Math.min(state.seen.length, messages.length)
   while (overlap > 0 && !state.seen.slice(-overlap).every((message, i) => message === messages[i])) overlap--
   const fresh = messages.slice(overlap)
-  const active = visible ? state.active.filter(d => now - d.received <= MAX_AGE && agents.has(d.message.from) && !!d.message.to && agents.has(d.message.to)) : []
+  const active = visible ? state.active.filter(d => now - d.started < (d.durationMs ?? MAX_AGE) && agents.has(d.message.from) && !!d.message.to && agents.has(d.message.to)) : []
   const queued = visible ? state.queued.filter(d => now - d.received <= MAX_AGE && agents.has(d.message.from) && !!d.message.to && agents.has(d.message.to)).map(d => ({ ...d })) : []
   if (visible) for (const message of fresh) {
     if (!message.to || !agents.has(message.from) || !agents.has(message.to)) continue
@@ -32,7 +32,7 @@ export function ingest(state: Scheduler, messages: readonly AgentMessage[], agen
 }
 
 export function finish(state: Scheduler, now: number): Scheduler {
-  const active = state.active.filter(d => now - d.started < 2000 && now - d.received < MAX_AGE)
+  const active = state.active.filter(d => now - d.started < (d.durationMs ?? 2000))
   const queued = state.queued.filter(d => now - d.received < MAX_AGE)
   while (active.length < MAX_ACTIVE && queued.length) active.push({ ...queued.shift()!, started: now })
   return { ...state, active, queued }

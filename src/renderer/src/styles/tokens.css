@@ -25,6 +25,9 @@
 
   --surface-0: #0b0d12;
   --office-color-surface: #f8e8ca;
+  --office-step-duration: 120ms;
+  --office-arrival-duration: 240ms;
+  --office-delivery-max-duration: 10000ms;
   --office-color-ink: #382519;
   --office-color-border: #795038;
   --office-neutral-surface: #f2f0e9;
@@ -158,6 +161,9 @@
 
   --surface-0: #f4f5f9;
   --office-color-surface: #f8e8ca;
+  --office-step-duration: 120ms;
+  --office-arrival-duration: 240ms;
+  --office-delivery-max-duration: 10000ms;
   --office-color-ink: #382519;
   --office-color-border: #795038;
   --office-neutral-surface: #f2f0e9;
@@ -286,6 +292,9 @@
 
     --surface-0: #f4f5f9;
     --office-color-surface: #f8e8ca;
+    --office-step-duration: 120ms;
+    --office-arrival-duration: 240ms;
+    --office-delivery-max-duration: 10000ms;
     --office-color-ink: #382519;
     --office-color-border: #795038;
     --office-neutral-surface: #f2f0e9;

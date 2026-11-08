@@ -1,6 +1,8 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react'
 import type { AgentMessage } from '@shared/types'
 import { useReducedMotion } from '../../../lib/canvas'
+import { tokenMs } from '../../../lib/useExitPresence'
+import { DEFAULT_JOURNEY_TIMING, journeyDuration, routesConflict, sampleJourney, type Point, type Direction } from '../../../lib/office/motion'
 import { assignAppearances, assignDepartmentSlots, buildingBlocked, buildingDesk, buildingLayout, buildingProps, clearWorkerPath, DESKS_PER_ROOM, floorBounds, OFFICE_TILE, route } from '../../../lib/office/layout'
 import { baseline, finish, ingest } from '../../../lib/office/scheduler'
 import { consumeSceneMessages } from '../../../lib/office/messageCursor'
@@ -93,16 +95,42 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const idsKey = JSON.stringify(eligibleIds)
   const ids = useMemo(() => new Set<string>(JSON.parse(idsKey)), [idsKey])
   const scheduler = useRef(baseline(messages))
+  const journeys = useRef(new Map<AgentMessage, { path: Point[]; started: number }>())
+  const attempted = useRef(new WeakSet<AgentMessage>())
+  const pinned = useRef(new Map<string, { x: number; y: number; direction: Direction }>())
+  const rendered = useRef(new Map<string, { x: number; y: number; direction: Direction }>())
+  const timing = useMemo(() => ({ stepMs: tokenMs('--office-step-duration') || DEFAULT_JOURNEY_TIMING.stepMs, settleMs: tokenMs('--office-arrival-duration') || DEFAULT_JOURNEY_TIMING.settleMs, maxMs: tokenMs('--office-delivery-max-duration') || DEFAULT_JOURNEY_TIMING.maxMs }), [])
+  const admitJourneys = (now: number): void => {
+    const active = new Set(scheduler.current.active.map(d => d.message))
+    for (const message of journeys.current.keys()) if (!active.has(message)) journeys.current.delete(message)
+    for (const delivery of scheduler.current.active) {
+      const message = delivery.message
+      if (attempted.current.has(message)) continue
+      attempted.current.add(message)
+      if (reduced || document.hidden || mode !== 'live' || !message.to || pinned.current.has(message.from) || pinned.current.has(message.to)) continue
+      const from = visibleAgents.find(a => a.id === message.from); const to = visibleAgents.find(a => a.id === message.to)
+      if (!from || !to || [...journeys.current.keys()].some(other => [other.from, other.to].some(id => id === message.from || id === message.to))) continue
+      const blocked = buildingBlocked(rooms, visibleAgents, slots.current)
+      for (const other of visibleAgents) if (other.id !== from.id && other.id !== to.id) { const p = deskOf(other).anchor; blocked.add(`${p.x},${p.y}`) }
+      const path = clearWorkerPath(route(deskOf(from).anchor, deskOf(to).anchor, blocked, height, width), visibleAgents.filter(a => a.id !== from.id).map(a => deskOf(a).anchor))
+      const duration = journeyDuration(path, timing)
+      const pinCells = [...pinned.current.values()].map(p => ({ x: p.x / OFFICE_TILE, y: p.y / OFFICE_TILE }))
+      if (!duration || now - delivery.received >= 8000 || [...journeys.current.values()].some(journey => routesConflict(path, journey.path)) || routesConflict(path, pinCells)) continue
+      delivery.started = now
+      delivery.durationMs = duration
+      journeys.current.set(message, { path, started: now })
+    }
+  }
   const crossSeen = useRef({ runId, seen: messages as readonly AgentMessage[] })
   const [crossFloorState, setCrossFloor] = useState<AgentMessage[]>([])
   const crossFloor = crossSeen.current.runId === runId ? crossFloorState : []
   const schedulerRun = useRef(runId)
-  if (schedulerRun.current !== runId) { scheduler.current = baseline(messages); schedulerRun.current = runId }
+  if (schedulerRun.current !== runId) { scheduler.current = baseline(messages); journeys.current.clear(); pinned.current.clear(); rendered.current.clear(); schedulerRun.current = runId }
   const [, redraw] = useState(0)
   useEffect(() => {
     const incoming = consumeSceneMessages(crossSeen.current, runId, messages)
     crossSeen.current = incoming.cursor
-    if (schedulerGeometryReset.current || incoming.reset) { scheduler.current = baseline(messages); setCrossFloor([]); schedulerGeometryReset.current = false; redraw(n => n + 1); return }
+    if (schedulerGeometryReset.current || incoming.reset) { scheduler.current = baseline(messages); journeys.current.clear(); setCrossFloor([]); schedulerGeometryReset.current = false; redraw(n => n + 1); return }
     const fresh = incoming.fresh.filter(message => {
       const from = layout.rooms.find(r => r.agents.includes(message.from)); const to = layout.rooms.find(r => r.agents.includes(message.to ?? ''))
       return from && to && from.floor !== to.floor
@@ -110,10 +138,12 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     if (mode === 'live' && !document.hidden && fresh.length) setCrossFloor(previous => [...previous, ...fresh].slice(-3))
     if (mode !== 'live') setCrossFloor(previous => previous.length ? [] : previous)
     scheduler.current = mode === 'live' ? ingest(scheduler.current, messages, ids, Date.now(), !document.hidden, reduced) : baseline(messages)
+    if (reduced || mode !== 'live') journeys.current.clear()
+    admitJourneys(Date.now())
     redraw(n => n + 1)
   }, [messages, ids, mode, reduced, geometryKey, runId])
   useEffect(() => {
-    const change = () => { scheduler.current = baseline(messages); crossSeen.current = { runId, seen: messages.slice() }; setCrossFloor([]); redraw(n => n + 1) }
+    const change = () => { scheduler.current = baseline(messages); journeys.current.clear(); crossSeen.current = { runId, seen: messages.slice() }; setCrossFloor([]); redraw(n => n + 1) }
     document.addEventListener('visibilitychange', change)
     return () => document.removeEventListener('visibilitychange', change)
   }, [messages, runId])
@@ -127,7 +157,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     let handle = 0
     const frame = () => {
       if (document.hidden) { scheduler.current = baseline(messages); return }
-      const now = Date.now(); scheduler.current = finish(scheduler.current, now); setTick(now)
+      const now = Date.now(); scheduler.current = finish(scheduler.current, now); admitJourneys(now); setTick(now)
       if (scheduler.current.active.length) handle = requestAnimationFrame(frame)
     }
     handle = requestAnimationFrame(frame)
@@ -153,26 +183,20 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const workersOnFloor = visibleAgents.map(a => {
     const desk = deskOf(a)
     let x = desk.anchor.x * OFFICE_TILE; let y = desk.anchor.y * OFFICE_TILE
-    const delivery = deliveries[0]?.message.from === a.id && visibleAgents.some(other => other.id === deliveries[0].message.to) ? deliveries[0] : undefined
-    let direction = 'down'
+    const journey = [...journeys.current.entries()].find(([message]) => message.from === a.id)?.[1]
+    let direction: Direction = 'down'
+    let phase = 'rest'
     let pose = a.status === 'failed' || a.status === 'error' ? 'error' : a.status === 'finished' || a.status === 'done' ? 'done' : a.status === 'waiting' ? 'wait' : 'work'
-    if (delivery && !reduced && delivery.message.to) {
-      const target = deskOf(visibleAgents.find(other => other.id === delivery.message.to)!)
-      const blocked = buildingBlocked(rooms, visibleAgents, slots.current)
-      for (const other of visibleAgents) if (other.id !== a.id && other.id !== delivery.message.to) {
-        const p = deskOf(other).anchor; blocked.add(`${p.x},${p.y}`)
-      }
-      const path = clearWorkerPath(route(desk.anchor, target.anchor, blocked, height, width), visibleAgents.filter(other => other.id !== a.id).map(other => deskOf(other).anchor))
-      const step = Math.min(path.length - 1, Math.floor(Math.max(0, tick - delivery.started) / 2000 * path.length))
-      if (step >= 0 && path[step]) {
-        x = path[step].x * OFFICE_TILE; y = path[step].y * OFFICE_TILE
-        const next = path[Math.min(step + 1, path.length - 1)]
-        if (next) direction = next.x > path[step].x ? 'right' : next.x < path[step].x ? 'left' : next.y > path[step].y ? 'down' : 'up'
-        pose = step % 2 ? 'walk-1' : 'walk-2'
-      }
+    if (journey && !reduced) {
+      const sample = sampleJourney(journey.path, tick - journey.started, timing)
+      x = sample.x; y = sample.y; direction = sample.direction; phase = sample.phase
+      if (sample.phase !== 'done') pose = sample.pose
     }
+    const pin = pinned.current.get(a.id)
+    if (pin) { x = pin.x; y = pin.y; direction = pin.direction; phase = 'pinned' }
+    rendered.current.set(a.id, { x, y, direction })
     const frame = workerFrames[`worker.${silhouettes[appearances.current.get(a.id)!]}.${direction}.${pose}`]
-    return { agent: a, frame, x, y: y + 8 - atlas.workerFeet[1], depth: y + 8 }
+    return { agent: a, frame, x, y: y + 8 - atlas.workerFeet[1], depth: y + 8, phase }
   })
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -188,7 +212,15 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     })
     return () => cancelAnimationFrame(frame)
   }, [geometryKey, zoom])
-  return <section className="office-scene" style={{ '--office-label-width': `${4 * OFFICE_TILE * zoom - 4}px` } as CSSProperties} data-testid="office-scene" data-mode={mode} data-palette={palette} data-room={currentFloor + 1} data-floor={currentFloor + 1}>
+  return <section className="office-scene" onFocusCapture={event => {
+    const id = (event.target as HTMLElement).closest<HTMLElement>('[data-office-worker-id]')?.dataset.officeWorkerId
+    const point = id ? rendered.current.get(id) : undefined
+    if (!id || !point) return
+    pinned.current.set(id, point)
+    const cells = [{ x: point.x / OFFICE_TILE, y: point.y / OFFICE_TILE }]
+    for (const [message, journey] of journeys.current) if (message.from === id || message.to === id || routesConflict(journey.path, cells)) journeys.current.delete(message)
+    redraw(n => n + 1)
+  }} style={{ '--office-label-width': `${4 * OFFICE_TILE * zoom - 4}px` } as CSSProperties} data-testid="office-scene" data-mode={mode} data-palette={palette} data-room={currentFloor + 1} data-floor={currentFloor + 1}>
     {mode === 'team' && <p>Team layout · roles, not live activity</p>}{mode === 'sample' && <p>Sample office · example agents</p>}
     <div className="office-controls"><Button size="sm" onClick={() => setZoom(z => Math.max(1, z - 1))}>Zoom out</Button><span data-testid="office-zoom" data-zoom={zoom}>{zoom}×</span><Button size="sm" onClick={() => setZoom(z => Math.min(4, z + 1))}>Zoom in</Button><Button size="sm" onClick={fit}>Fit</Button>
       <Button size="sm" disabled={currentFloor === 0} onClick={() => setFloor(r => Math.max(0, r - 1))}>Previous floor</Button><span data-floor={currentFloor + 1}>Floor {currentFloor + 1} of {layout.floorCount}</span><Button size="sm" disabled={currentFloor >= layout.floorCount - 1} onClick={() => setFloor(r => Math.min(layout.floorCount - 1, r + 1))}>Next floor</Button></div>
@@ -203,7 +235,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
         }))}
         {rooms.flatMap(room => buildingProps(room).map(p => <i className="office-sprite" key={`${room.id}-${p.key}`} style={frameStyle(propFrames[`prop.${p.name}`], props, p.x * 16, p.y * 16, p.y * 16 + atlas.props[p.name].depthAnchor[1])} />))}
         {visibleAgents.map(a => { const desk = deskOf(a); const x = desk.furniture.x * 16; const y = desk.furniture.y * 16; const f = propFrames['prop.desk']; const crt = propFrames['prop.crt']; const chair = propFrames['prop.chair']; const depth = y + atlas.props.desk.depthAnchor[1]; return <span key={`d${a.id}`}><i className="office-sprite" style={frameStyle(chair, props, x + 2 * OFFICE_TILE, y, y + atlas.props.chair.depthAnchor[1])} /><i className="office-sprite" style={frameStyle(f, props, x, y, depth)} /><i className="office-sprite" style={frameStyle(crt, props, x, y, depth + 1)} /></span> })}
-        {workersOnFloor.map(({ agent, frame, x, y, depth }) => <i className="office-sprite office-person-art" data-office-sprite-id={agent.id} key={agent.id} style={frameStyle(frame, workers, x, y, depth)} />)}
+        {workersOnFloor.map(({ agent, frame, x, y, depth, phase }) => <i className="office-sprite office-person-art" data-office-sprite-id={agent.id} data-office-motion-phase={phase} data-office-x={x} data-office-y={y} key={agent.id} style={frameStyle(frame, workers, x, y, depth)} />)}
       </div>{rooms.map(room => <div className="office-room-label" key={room.id} data-office-department-id={JSON.parse(room.id)[0]} style={{ left: (room.x + 1) * OFFICE_TILE * zoom, top: room.y * OFFICE_TILE * zoom, maxWidth: (room.width - 2) * OFFICE_TILE * zoom }}>{room.label} · {room.agents.length}</div>)}{workersOnFloor.map(({ agent: a, x, y }) => <button type="button" className="office-person" key={a.id} data-office-worker-id={a.id} data-testid="pocket-office-agent" data-agent-id={a.id} aria-label={`${a.name}, ${a.statusLabel ?? a.status}${a.context ? `, ${a.context}` : ''}`} aria-pressed={a.id === selectedId} title={`${a.name} · ${a.statusLabel ?? a.status}${a.context ? ` · ${a.context}` : ''}`} style={{ left: x * zoom - Math.max(0, 24 - 16 * zoom) / 2, top: y * zoom, width: Math.max(24, 16 * zoom), height: 24 * zoom }} onClick={() => selectAgent(a)} onKeyDown={e => removeOnDelete(e, a)}><span className="office-person-label"><span>{a.name}</span><span>{a.statusLabel ?? a.status}</span></span></button>)}</div>
     </div>
     <div data-testid="office-deliveries" data-active={mode === 'live' && !reduced ? scheduler.current.active.length : 0} data-queued={mode === 'live' && !reduced ? scheduler.current.queued.length : 0}>{deliveries.slice(0, Math.max(0, 3 - crossFloor.length)).map((d, i) => { const from = layout.rooms.find(r => r.agents.includes(d.message.from)); const to = layout.rooms.find(r => r.agents.includes(d.message.to ?? '')); return <p key={i} data-testid="office-caption" title={d.message.text}>{agents.find(a => a.id === d.message.from)?.name ?? d.message.from} to {d.message.to ? agents.find(a => a.id === d.message.to)?.name ?? d.message.to : 'team'} · {from && to && from.floor !== to.floor && <span>Floor {from.floor + 1} to floor {to.floor + 1}: </span>}{d.message.text.length > 80 ? `${d.message.text.slice(0, 80)}…` : d.message.text}{d.count > 1 ? ` (${d.count} messages)` : ''}<span className="office-full-message"> Full available message: {d.message.text}</span></p> })}</div>

@@ -57,4 +57,10 @@ describe('office message scheduler', () => {
     const state = ingest(baseline([]), [message()], agents, 0, true, true)
     expect(finish(state, MAX_AGE).active).toHaveLength(0)
   })
+  it('keeps an admitted journey through its distance-based round trip', () => {
+    const state = ingest(baseline([]), [message()], agents, 0, true, false)
+    state.active[0].durationMs = 4200
+    expect(finish(state, 4199).active).toHaveLength(1)
+    expect(finish(state, 4200).active).toHaveLength(0)
+  })
 })
