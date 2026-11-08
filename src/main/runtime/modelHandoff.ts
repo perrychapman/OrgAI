@@ -13,6 +13,7 @@ export function modelHandoff(records: RunRecord[]): string {
       const data = block.kind === 'user'
         ? { role: 'user', text: block.text, ...(block.images?.length ? { imagesOmitted: block.images.length } : {}) }
         : block.kind === 'text' ? { role: 'assistant', text: block.text }
+          : block.kind === 'media' ? { role: 'assistant', text: '[Media omitted]' }
           : block.kind === 'tool_use' ? { role: 'tool_use', name: block.name, input: block.input }
             : { role: 'tool_result', content: block.content, isError: block.isError }
       try { rows.push(JSON.stringify({ agentId: entry.agentId, ...data })) } catch { rows.push(JSON.stringify({ agentId: entry.agentId, role: 'unserializable transcript entry' })) }

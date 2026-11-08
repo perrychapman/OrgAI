@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join, relative, isAbsolute } from 'node:path'
+import { mapTranscriptImages } from '../runtime/transcriptMedia'
+import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, QUICK_PROJECT_ID, isPermissionMode } from '@shared/types'
 import type {
@@ -273,13 +275,12 @@ export class RunStore {
   private externalizeImages(runId: string, transcript: TranscriptEntry[]): TranscriptEntry[] {
     return transcript.map((entry) => {
       const block = entry.block
-      if (block.kind !== 'user' || !block.images?.length) return entry
-      const images = block.images.map((img) => {
+      const mapped = mapTranscriptImages(block, (img) => {
         if (!img.data) return img // already a ref (or nothing to store)
         const ref = this.storeImage(runId, img)
         return ref ? { ...img, data: '', ref } : img
       })
-      return { ...entry, block: { ...block, images } }
+      return mapped === block ? entry : { ...entry, block: mapped }
     })
   }
 
@@ -288,14 +289,27 @@ export class RunStore {
     if (!Array.isArray(transcript)) return transcript
     return transcript.map((entry) => {
       const block = entry?.block
-      if (!block || block.kind !== 'user' || !Array.isArray(block.images) || !block.images.some((i) => i.ref !== undefined)) return entry
-      const images = block.images.map((img) => {
+      if (!block) return entry
+      let hydratedBytes = 0
+      let hydratedCount = 0
+      const mapped = mapTranscriptImages(block, (img) => {
         if (img.ref === undefined) return img
         const { ref, ...rest } = img
         let data = ''
         if (typeof ref === 'string' && IMAGE_REF.test(ref)) {
           try {
-            data = readFileSync(join(this.runDir(runId), 'images', ref)).toString('base64')
+            const file = join(this.runDir(runId), 'images', ref)
+            const rel = relative(realpathSync(this.recordsDir), realpathSync(file))
+            const stat = lstatSync(file)
+            if (stat.isFile() && !stat.isSymbolicLink() && !isAbsolute(rel) && !rel.startsWith('..') && stat.size <= 10 * 1024 * 1024 && hydratedCount < 8 && hydratedBytes + stat.size <= 10 * 1024 * 1024) {
+              const read = readFileSync(file).toString('base64')
+              const validated = sanitizeImages([{ ...rest, data: read }])[0]
+              if (validated && validated.mediaType === rest.mediaType) {
+                data = validated.data
+                hydratedBytes += stat.size
+                hydratedCount++
+              }
+            }
           } catch {
             /* missing or unreadable: warned below */
           }
@@ -303,7 +317,7 @@ export class RunStore {
         if (!data) console.warn(`Image ${String(ref)} of run ${runId} is missing from the image store`)
         return { ...rest, data }
       })
-      return { ...entry, block: { ...block, images } }
+      return mapped === block ? entry : { ...entry, block: mapped }
     })
   }
 
