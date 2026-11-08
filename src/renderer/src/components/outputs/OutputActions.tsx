@@ -114,9 +114,10 @@ export default function OutputActions({
   const [revising, setRevising] = useState(false)
   const title = plainTitle(output.title)
   const ref = { projectId: output.projectId, outputId: output.id }
+  // One route per message: the surface's handler when there is one (it shows and speaks it), else the detail's output-live.
   const notice = (text: string): void => {
-    onNotice?.(text)
-    ctx?.announce(text)
+    if (onNotice) onNotice(text)
+    else ctx?.announce(text)
   }
   const run = async (fn: () => Promise<void>): Promise<void> => {
     try {

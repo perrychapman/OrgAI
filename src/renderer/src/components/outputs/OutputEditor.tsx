@@ -63,7 +63,7 @@ export default function OutputEditor({ onClose }: OutputEditorProps): ReactEleme
   if (loaded.state === 'loading') {
     return (
       <div className="output-editor" data-testid="output-editor" data-kind={kindOf} data-state="loading">
-        <p className="output-preview-note" role="status">
+        <p className="output-preview-note">
           Opening the editor…
         </p>
       </div>

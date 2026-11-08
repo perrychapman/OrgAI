@@ -198,9 +198,11 @@ function Toolbar({ edit, onOpenLarger, collapsed, onNotice, onRemoved }: { edit:
   const viewer = ctx.surface === 'viewer'
   const external = externalAppName(output.kind)
   const prefix = viewer ? 'output-dialog' : 'output-detail'
+  // One route per message. In the panel the surface's notice line (role=status, it outlives a removal) shows and speaks
+  // it; in the modal viewer the page behind is inert, so the viewer's output-live speaks it and the line only shows it.
   const say = (t: string): void => {
     onNotice?.(t)
-    ctx.announce(t)
+    if (viewer) ctx.announce(t)
   }
   const open = async (): Promise<void> => {
     try {
@@ -353,6 +355,7 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
   const [guarding, setGuarding] = useState(false)
   const dirtyRef = useRef(false)
   const modeRef = useRef<OutputDetailMode>('preview')
+  const modeOpener = useRef<HTMLElement | null>(null)
   const saveRef = useRef<(() => Promise<boolean>) | null>(null)
   const guardResolve = useRef<((c: 'save' | 'discard' | 'cancel') => void) | null>(null)
   modeRef.current = mode
@@ -402,10 +405,27 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
 
   const setMode = useCallback(
     async (next: OutputDetailMode, cmp?: { a: number; b: number }): Promise<boolean> => {
-      if (modeRef.current === 'edit' && next !== 'edit' && !(await guard())) return false
+      const prev = modeRef.current
+      if (prev === 'edit' && next !== 'edit' && !(await guard())) return false
+      // Spec 14.3: leaving edit or compare gives focus back to what opened it (else Edit, else the heading), never the page.
+      if (prev === 'preview' && next !== 'preview') modeOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
       if (next === 'compare') setCompare(cmp ?? null)
       setModeState(next)
       setSelection(null)
+      if (prev !== 'preview' && next === 'preview') {
+        const opener = modeOpener.current
+        modeOpener.current = null
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const active = document.activeElement
+            if (active && active !== document.body && active.isConnected) return
+            const section = heading.current?.closest('section')
+            const target =
+              (opener?.isConnected ? opener : null) ?? section?.querySelector<HTMLElement>('[data-testid=output-edit]') ?? heading.current
+            target?.focus({ preventScroll: true })
+          })
+        )
+      }
       return true
     },
     [guard]

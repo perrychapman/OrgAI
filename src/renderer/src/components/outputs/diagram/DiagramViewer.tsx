@@ -170,12 +170,22 @@ function DiagramBody({ text, title, truncated, edit, editState, startOpen }: Dia
   const [notice, setNotice] = useState('')
   const speakTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const speak = useCallback((t: string): void => {
-    // Clear first so the same sentence twice is heard twice.
-    setLive('')
-    if (speakTimer.current) clearTimeout(speakTimer.current)
-    speakTimer.current = setTimeout(() => setLive(t), 60)
-  }, [])
+  // Inside an output detail or viewer the detail's one output-live speaks (spec 14.2); a drawing with no detail (a
+  // compare pane) keeps its own region.
+  const announce = useOutputDetail()?.announce
+  const speak = useCallback(
+    (t: string): void => {
+      if (announce) {
+        announce(t)
+        return
+      }
+      // Clear first so the same sentence twice is heard twice.
+      setLive('')
+      if (speakTimer.current) clearTimeout(speakTimer.current)
+      speakTimer.current = setTimeout(() => setLive(t), 60)
+    },
+    [announce]
+  )
   const notify = useCallback(
     (t: string): void => {
       setNotice(t)
@@ -379,9 +389,11 @@ function DiagramBody({ text, title, truncated, edit, editState, startOpen }: Dia
           </div>
         )}
       </div>
-      <p className="sr-only" role="status" data-testid="output-live">
-        {live}
-      </p>
+      {!announce && (
+        <p className="sr-only" role="status" data-testid="output-live">
+          {live}
+        </p>
+      )}
     </div>
   )
 }

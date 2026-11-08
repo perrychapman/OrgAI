@@ -566,6 +566,8 @@ interface AppState {
 }
 
 let unsubscribeEvents: (() => void) | null = null
+/** outputs:list request counter per project (loadOutputs keeps only the newest answer; a merged event invalidates older ones). */
+const outputsLoadSeq = new Map<string, number>()
 /** Bumped by every setTabNotice call; only the newest call may show or clear the notice. */
 let tabNoticeSeq = 0
 /** Runs whose real summary is being fetched after an event created a placeholder. */
@@ -1231,8 +1233,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async loadOutputs(projectId) {
     if (!projectId || isVirtualProjectId(projectId) || !window.orgai.outputs) return
+    // Every push refetches, so answers can arrive out of order: only the newest request per project may land.
+    const mine = (outputsLoadSeq.get(projectId) ?? 0) + 1
+    outputsLoadSeq.set(projectId, mine)
     try {
       const list = await window.orgai.outputs.list(projectId)
+      if (outputsLoadSeq.get(projectId) !== mine) return
       if (Array.isArray(list)) get().setOutputs(projectId, list)
     } catch (e) {
       console.warn('outputs:list failed', e)
@@ -2016,12 +2022,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       const oid = e.output?.id
       if (!pid || !oid) return
       set((s) => ({ outputTick: { ...s.outputTick, [oid]: (s.outputTick[oid] ?? 0) + 1 } }))
-      if (get().outputsByProject[pid]) set((s) => ({ outputsByProject: { ...s.outputsByProject, [pid]: mergeOutput(s.outputsByProject[pid], e.output) } }))
-      else void get().loadOutputs(pid)
+      if (get().outputsByProject[pid]) {
+        // A list requested before this event would undo the merge: drop answers to requests already in flight.
+        outputsLoadSeq.set(pid, (outputsLoadSeq.get(pid) ?? 0) + 1)
+        set((s) => ({ outputsByProject: { ...s.outputsByProject, [pid]: mergeOutput(s.outputsByProject[pid], e.output) } }))
+      } else void get().loadOutputs(pid)
       // A new version of an output this window asked the team to revise answers that request (the run's own record says
       // exactly which; RevisionStatus re-reads outputs:revisions on the tick).
       if (e.type === 'output.versioned') {
-        for (const p of Object.values(get().pendingRevisionsByRun).flat()) if (p.outputId === oid) get().removePendingRevision(p.requestId)
+        // Only an agent's version from the run that got the request answers it (the user's own save or an outside edit
+        // leaves the request waiting).
+        const byAgent = !e.output.current || e.output.current.source === 'agent'
+        if (byAgent) for (const p of Object.values(get().pendingRevisionsByRun).flat()) if (p.outputId === oid && p.runId === e.runId) get().removePendingRevision(p.requestId)
       }
       return
     }

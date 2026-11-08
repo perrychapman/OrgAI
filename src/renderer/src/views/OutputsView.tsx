@@ -211,6 +211,14 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
   const [selectMode, setSelectMode] = useState(false)
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set())
   const [busy, setBusy] = useState(false)
+  // The last bulk delete's outcome: "Deleted 3 outputs." and one line per refusal, visible until the next bulk action
+  // or 12 s pass (refusals stay until dismissed by the next action).
+  const [bulkResult, setBulkResult] = useState<{ lines: string[]; problems: boolean } | null>(null)
+  useEffect(() => {
+    if (!bulkResult || bulkResult.problems) return undefined
+    const t = window.setTimeout(() => setBulkResult(null), 12_000)
+    return () => window.clearTimeout(t)
+  }, [bulkResult])
   const selectToggle = useRef<HTMLButtonElement>(null)
   // Only what is still in the list counts as selected (a filter or a delete elsewhere can remove checked ids).
   const checkedRows = useMemo(() => all.filter((o) => checked.has(o.id)), [all, checked])
@@ -235,6 +243,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
   }
   const bulkDelete = async (): Promise<void> => {
     if (checkedRows.length === 0 || busy) return
+    setBulkResult(null)
     setBusy(true)
     try {
       const outcome = await deleteOutputs(checkedRows)
@@ -243,7 +252,8 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
       else void loadOutputs(projectId)
       const gone = new Set(outcome.deleted)
       const lines = [outcome.deleted.length > 0 ? deletedText(outcome.deleted.length, outcome.deleted.length === 1 ? checkedRows.find((o) => o.id === outcome.deleted[0])?.title : undefined) : '', ...outcome.problems].filter(Boolean)
-      announce(lines.join(' '))
+      // Shown and spoken once by the visible result region (never also through the hidden status line).
+      setBulkResult({ lines, problems: outcome.problems.length > 0 })
       setNotice('')
       if (outcome.problems.length === 0) {
         setSelectMode(false)
@@ -320,6 +330,9 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     } catch {
       /* :popover-open unsupported */
     }
+    // Esc inside an editor never jumps to the list (it would leave unsaved changes behind without asking): the editor's
+    // own Close editor asks first.
+    if (t.closest('[data-testid=output-editor], [data-testid=output-diagram-edit], [data-testid=output-edit-bar]')) return
     e.preventDefault()
     focusRow(selectedId)
   }
@@ -362,6 +375,11 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
         ) : (
           <OutputsList ref={listRef} {...listProps} indexes={indexes} now={now} />
         )}
+        <div className="outputs-bulk-result" role="status" data-testid="outputs-bulk-result" data-problems={bulkResult?.problems ? 'true' : undefined}>
+          {bulkResult?.lines.map((line, i) => (
+            <p key={i}>{line}</p>
+          ))}
+        </div>
         {selectMode && (
           <div className="outputs-bulk-bar" data-testid="outputs-bulk-bar">
             <span className="outputs-bulk-count" role="status" data-testid="outputs-bulk-count">

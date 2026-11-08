@@ -88,6 +88,13 @@ export default function SlideViewer({ size, slides, truncatedSlides }: SlideView
   }, [shown, slides])
 
   const go = (i: number): void => setIndex(Math.min(Math.max(i, 0), Math.max(count - 1, 0)))
+  // Previous / Next by button: at the first or last slide the pressed button turns disabled and would drop focus to the
+  // page, so focus moves to the stage then (spec 14.3).
+  const stepButton = (i: number): void => {
+    const to = Math.min(Math.max(i, 0), Math.max(count - 1, 0))
+    go(to)
+    if (to === 0 || to === count - 1) requestAnimationFrame(() => root.current?.querySelector<HTMLElement>('[data-testid=slide-stage]')?.focus({ preventScroll: true }))
+  }
 
   const onStageKey = (e: KeyboardEvent): void => {
     if (regionKeys(e, WHOLE)) return
@@ -130,11 +137,11 @@ export default function SlideViewer({ size, slides, truncatedSlides }: SlideView
           </SlideStage>
         </div>
         <div className="slide-bar">
-          <IconButton icon={ChevronLeft} label="Previous slide" size="sm" disabled={at === 0} onClick={() => go(at - 1)} testId="slide-prev" />
+          <IconButton icon={ChevronLeft} label="Previous slide" size="sm" disabled={at === 0} onClick={() => stepButton(at - 1)} testId="slide-prev" />
           <span className="slide-counter" role="status" data-testid="slide-counter">
             {slideCounter(slide.n, count)}
           </span>
-          <IconButton icon={ChevronRight} label="Next slide" size="sm" disabled={at >= count - 1} onClick={() => go(at + 1)} testId="slide-next" />
+          <IconButton icon={ChevronRight} label="Next slide" size="sm" disabled={at >= count - 1} onClick={() => stepButton(at + 1)} testId="slide-next" />
           <span className="slide-bar-gap" />
           {ctx ? (
             <Button

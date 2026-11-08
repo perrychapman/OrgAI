@@ -70,9 +70,11 @@ export default function SvgPreview({ text, title }: { text: string; title: strin
           </PanZoomSurface>
         </div>
       </div>
-      <p className="sr-only" role="status" data-testid="output-live">
-        {notes.live}
-      </p>
+      {!notes.routed && (
+        <p className="sr-only" role="status" data-testid="output-live">
+          {notes.live}
+        </p>
+      )}
     </div>
   )
 }

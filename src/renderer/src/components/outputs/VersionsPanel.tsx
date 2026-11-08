@@ -75,11 +75,15 @@ export default function VersionsPanel(): ReactElement | null {
   const oldest = list.length ? list[list.length - 1].n : 1
   const shown = list.slice(0, limit)
   const togglePick = (n: number): void => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n].slice(-2)))
+  // After the name field closes (Save or Esc) focus goes back to that row's Name… button (spec 14.3).
+  const refocusName = (n: number): void =>
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-testid=output-version-row][data-n="${n}"] [data-testid=output-version-name]`)?.focus({ preventScroll: true }))
   const saveName = async (v: OutputVersion): Promise<void> => {
     setError('')
     try {
       await window.orgai.outputs.update({ projectId: output.projectId, outputId: output.id, versionLabel: { n: v.n, label: label.trim() } })
       setNaming(null)
+      refocusName(v.n)
       ctx.reloadVersions()
       ctx.announce(label.trim() ? `Named version ${v.n} ${label.trim()}.` : `Cleared the name of version ${v.n}.`)
     } catch (e) {
@@ -154,6 +158,7 @@ export default function VersionsPanel(): ReactElement | null {
                     if (e.key === 'Escape') {
                       e.stopPropagation()
                       setNaming(null)
+                      refocusName(v.n)
                     }
                   }}
                 >
