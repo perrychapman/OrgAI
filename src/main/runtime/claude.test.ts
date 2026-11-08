@@ -73,6 +73,7 @@ const sdk = vi.hoisted(() => {
     FakeQuery,
     /** A query ends as soon as its input stream ends (the CLI exits); false holds that back for a test. */
     autoEnd: true,
+    queryCreated: (_query: FakeQuery): void => {},
     queries: [] as FakeQuery[],
     status: [] as { name: string; status: string; tools?: { name: string }[] }[]
   }
@@ -85,6 +86,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
     query: (args: { prompt: AsyncIterable<Record<string, unknown>>; options: Record<string, unknown> }) => {
       const q = new sdk.FakeQuery(args.prompt, args.options)
       sdk.queries.push(q)
+      sdk.queryCreated(q)
       return q
     }
   }
@@ -1845,11 +1847,27 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     git('init', '-q')
     const isolation = async (over: Partial<Project>): Promise<boolean> => {
       const before = sdk.queries.length
+      let created!: (q: InstanceType<typeof sdk.FakeQuery>) => void
+      const queryCreated = new Promise<InstanceType<typeof sdk.FakeQuery>>((resolve) => { created = resolve })
+      const onQuery = vi.spyOn(sdk, 'queryCreated').mockImplementationOnce(created)
       const s = new ClaudeSession(fakeCtx({ project: project({ path: dir, ...over }), autoContinue: false }))
-      // Let the session reach its query before stopping it, so no late query leaks into the next test.
-      await vi.waitFor(() => expect(sdk.queries.length).toBe(before + 1))
-      await s.stop()
-      return (s as unknown as { isolation: boolean }).isolation
+      try {
+        // Isolated startup prepares a real git repository. Wait for the fake SDK boundary,
+        // rather than giving that filesystem work vi.waitFor's default one-second deadline.
+        const q = await Promise.race([
+          queryCreated,
+          s.finished.then(() => { throw new Error('Session finished before creating its query') })
+        ])
+        expect(sdk.queries.length).toBe(before + 1)
+        expect(sdk.queries[before]).toBe(q)
+        return (s as unknown as { isolation: boolean }).isolation
+      } finally {
+        await s.stop()
+        // stop() signals shutdown; finished drains startup and the output iterator. Do not
+        // let a failed assertion leave a late query in the next test's shared fake state.
+        await s.finished
+        onQuery.mockRestore()
+      }
     }
     expect(await isolation({ kind: 'engagement', isolateWriters: undefined })).toBe(false)
     expect(await isolation({ kind: 'engagement', isolateWriters: true })).toBe(true)
