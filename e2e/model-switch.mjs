@@ -60,9 +60,10 @@ try {
     const other = await window.orgai.connections.createProxy({ name: 'Recovery test gateway', kind: 'openai-compatible', anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'mock-key' })
     await window.orgai.connections.connect(other.connection.id)
     const created = await window.orgai.projects.create({ path: repo, name: 'Model switch test', mock: true })
-    const project = await window.orgai.projects.save({ ...created, connection: proxy.connection.id })
+    const project = await window.orgai.projects.save({ ...created, connection: proxy.connection.id, autoContinue: false })
     return { project, primary: proxy.connection.id, alternative: other.connection.id }
   }, repo)
+  check(project.autoContinue === false, 'work fixture saves manual continuation')
   for (const kind of ['chat', 'mcp', 'skills', 'setup', 'work']) {
     let run = await start(kind, project.id, '[mock:model-switch]')
     await page.waitForFunction(async (id) => (await window.orgai.runs.get(id))?.summary.status === 'idle', run.id, { timeout: 20000 })
