@@ -142,9 +142,15 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await resizeTo(1600, 1000)
   const reflowedFloors = await scene().locator('button[data-office-agent-id]').evaluateAll(buttons => buttons.filter(button => ['root', 'office-a'].includes(button.getAttribute('data-office-agent-id'))).map(button => button.getAttribute('data-office-floor')))
   check(reflowedFloors.length === 2 && reflowedFloors[0] === reflowedFloors[1], 'responsive reflow places both actual message endpoints on the shared floor')
-  await page.waitForFunction(() => Number(document.querySelector('[data-testid=office-deliveries]')?.getAttribute('data-active')) > 0, undefined, { timeout: 15_000 })
-  check(Number(await delivery.getAttribute('data-active')) > 0, 'genuinely new messages after responsive reflow animate on the shared floor')
-  check(Number(await delivery.getAttribute('data-active')) <= 3 && Number(await delivery.getAttribute('data-queued')) <= 12, 'real message burst respects active and queued visual limits')
+  const observedDelivery = await (await page.waitForFunction(() => {
+    const delivery = document.querySelector('[data-testid=office-deliveries]')
+    if (!delivery) return false
+    const active = Number(delivery.getAttribute('data-active'))
+    const queued = Number(delivery.getAttribute('data-queued'))
+    return active > 0 && { active, queued }
+  }, undefined, { timeout: 15_000 })).jsonValue()
+  check(observedDelivery.active > 0, 'genuinely new messages after responsive reflow animate on the shared floor')
+  check(observedDelivery.active <= 3 && observedDelivery.queued <= 12, 'real message burst respects active and queued visual limits')
   check(await scene().locator('[data-testid=office-caption] script').count() === 0, 'agent-authored message markup renders as text')
   await shot('office-real-message')
   await setAppearance({ reduceMotion: 'on' })
