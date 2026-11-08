@@ -40,7 +40,7 @@ describe('corpus', () => {
       if (name === 'cli-standalone-default') continue
       expect(text, name).not.toMatch(/orgai decide/)
     }
-    expect(docs.README).not.toMatch(/Terminal access/i)
+    expect(docs.README).not.toMatch(/terminal\s+access/i)
   })
   it('leaves out the withdrawn CLI designs and embeds the new command table (no removed commands)', () => {
     const keys = Object.keys(bundledDocs())

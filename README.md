@@ -36,8 +36,8 @@ Menus and the borderless input stay still. Type `/` for searchable commands; Tab
 decisions, and Esc twice interrupts a working run from the composer. Enter sends; Alt+Enter adds a line.
 
 Folders that are not registered projects open setup choices in the same terminal flow, at the current window size. Use Up/Down and
-Enter to choose a quick run, guided setup, or the default team; the numbered shortcuts still work. Any terminal
-access limitation appears alongside those choices, without changing the permissions granted by the desktop app.
+Enter to choose a quick run, guided setup, or the default team; the numbered shortcuts still work. The orgai TUI
+answers every approval and question card itself.
 
 `--inline` keeps the conversation in terminal scrollback. `--ax-screen-reader` uses plain labels, and
 `--no-color` disables styling. Set `ORGAI_REDUCED_MOTION=1` to keep shimmer and activity indicators still. Animation also
