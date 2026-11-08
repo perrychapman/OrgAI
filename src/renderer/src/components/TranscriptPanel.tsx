@@ -25,7 +25,7 @@ import {
   XCircle,
   type LucideIcon
 } from 'lucide-react'
-import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry } from '@shared/types'
+import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry, TranscriptMedia, TranscriptContentPart } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import RunKnowledge from './knowledge/RunKnowledge'
@@ -43,6 +43,7 @@ import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
 import UsagePanel from './UsagePanel'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
+import { usableTranscriptImage } from '../lib/transcriptMedia'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
@@ -205,16 +206,28 @@ function ToolUseRow({ name, input, label, arrive }: { name: string; input: unkno
   )
 }
 
-function ToolResultRow({ toolName, content, isError, arrive }: { toolName?: string; content: string; isError: boolean; arrive?: boolean }): ReactElement | null {
+function MediaView({ media }: { media: TranscriptMedia }): ReactElement {
+  return <div data-testid="transcript-media">{media.kind === 'image' && usableTranscriptImage(media.image)
+    ? <TranscriptImages images={[media.image]} />
+    : <span data-testid="transcript-image-unavailable">{media.kind === 'unsupported' ? `Media unavailable${media.name ? `: ${media.name}` : ''}${media.mediaType ? ` (${media.mediaType})` : ''}${media.reason ? ` — ${media.reason}` : ''}` : 'Image unavailable'}</span>}</div>
+}
+
+function ToolResultRow({ toolName, content, parts, isError, arrive }: { toolName?: string; content: string; parts?: TranscriptContentPart[]; isError: boolean; arrive?: boolean }): ReactElement | null {
   const row = humanizeToolResult(toolName, content, isError)
-  if (!row) return null
-  const failed = isError || !!row.failed
+  if (!row && !parts) return null
+  const failed = isError || !!row?.failed
+  const mediaCount = parts?.filter((part) => part.type === 'media').length ?? 0
   return (
     <div className={`entry tool_result${failed ? ' error' : ''}${arriveClass(arrive)}`}>
       <Icon icon={failed ? XCircle : CheckCircle2} size="sm" />
       <div className="tool-main">
-        <div className="tool-label">{row.label}</div>
-        {row.full && (
+        <div className="tool-label">{parts ? (failed ? 'Tool failed' : 'Tool completed') : row?.label}</div>
+        {parts ? (
+          <details className="entry-detail">
+            <summary>Show output{mediaCount > 0 ? ` (${mediaCount} ${mediaCount === 1 ? 'media item' : 'media items'})` : ''}</summary>
+            <div>{parts.map((part, i) => part.type === 'text' ? <pre key={i}>{part.text}</pre> : <MediaView key={i} media={part.media} />)}</div>
+          </details>
+        ) : row?.full && (
           <details className="entry-detail">
             <summary>Show output</summary>
             <pre>{row.full}</pre>
@@ -445,7 +458,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const selfHelp = useMemo(() => collapseSelfHelp(entries, (id) => projects.find((p) => p.id === id)?.name), [entries, projects])
   const outputCalls = useMemo(() => collapseOutputCalls(entries), [entries])
   const shown = (e: TranscriptEntry): boolean =>
-    (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id) && !selfHelp.hidden.has(e.id) && !outputCalls.hidden.has(e.id)
+    (e.block.kind === 'tool_result' && !!e.block.parts?.some((part) => part.type === 'media')) || ((showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id) && !selfHelp.hidden.has(e.id) && !outputCalls.hidden.has(e.id))
   const visible = entries.filter(shown)
 
   // Arrival (motion.md 2.2, 3.11): only rows appended to the newest session while the user follows the end fade in; bursts of more than 6, chain loads, run switches and the first paint never do.
@@ -493,6 +506,8 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             <Markdown text={b.text} />
           </div>
         )
+      case 'media':
+        return <div key={e.id} className={`entry text${arriveClass(arrive(e.id))}`}><MediaView media={b.media} /></div>
       case 'thinking':
         return (
           <div key={e.id} className={`entry thinking${arriveClass(arrive(e.id))}`}>
@@ -505,9 +520,10 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         return <ToolUseRow key={e.id} arrive={arrive(e.id)} name={b.name} input={b.input} label={knowledge.labels.get(e.id) ?? selfHelp.labels.get(e.id)} />
       }
       case 'tool_result': {
+        if (b.parts?.some((part) => part.type === 'media')) return <ToolResultRow key={e.id} arrive={arrive(e.id)} toolName={toolNames.get(b.toolUseId)} content={b.content} parts={b.parts} isError={b.isError} />
         const oRow = outputCalls.rows.get(e.id)
         if (oRow) return <OutputWriteRowView key={e.id} arrive={arrive(e.id)} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
-        return <ToolResultRow key={e.id} arrive={arrive(e.id)} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
+        return <ToolResultRow key={e.id} arrive={arrive(e.id)} toolName={toolNames.get(b.toolUseId)} content={b.content} parts={b.parts} isError={b.isError} />
       }
       case 'system': {
         const peer = parsePeerNote(b.text)
