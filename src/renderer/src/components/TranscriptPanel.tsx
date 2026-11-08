@@ -209,7 +209,7 @@ function ToolUseRow({ name, input, label, arrive }: { name: string; input: unkno
 function MediaView({ media }: { media: TranscriptMedia }): ReactElement {
   return <div data-testid="transcript-media">{media.kind === 'image' && usableTranscriptImage(media.image)
     ? <TranscriptImages images={[media.image]} />
-    : <span data-testid="transcript-image-unavailable">{media.kind === 'unsupported' ? `Media unavailable${media.name ? `: ${media.name}` : ''}${media.mediaType ? ` (${media.mediaType})` : ''}${media.reason ? ` — ${media.reason}` : ''}` : 'Image unavailable'}</span>}</div>
+    : <span data-testid="transcript-image-unavailable">{media.kind === 'unsupported' ? `${media.reason || 'Media unavailable'}${media.name ? `: ${media.name}` : ''}${media.mediaType ? ` (${media.mediaType})` : ''}` : 'Image unavailable'}</span>}</div>
 }
 
 function ToolResultRow({ toolName, content, parts, isError, arrive }: { toolName?: string; content: string; parts?: TranscriptContentPart[]; isError: boolean; arrive?: boolean }): ReactElement | null {
@@ -217,6 +217,7 @@ function ToolResultRow({ toolName, content, parts, isError, arrive }: { toolName
   if (!row && !parts) return null
   const failed = isError || !!row?.failed
   const mediaCount = parts?.filter((part) => part.type === 'media').length ?? 0
+  const unavailableCount = parts?.filter((part) => part.type === 'media' && (part.media.kind === 'unsupported' || !usableTranscriptImage(part.media.image))).length ?? 0
   return (
     <div className={`entry tool_result${failed ? ' error' : ''}${arriveClass(arrive)}`}>
       <Icon icon={failed ? XCircle : CheckCircle2} size="sm" />
@@ -224,7 +225,7 @@ function ToolResultRow({ toolName, content, parts, isError, arrive }: { toolName
         <div className="tool-label">{parts ? (failed ? 'Tool failed' : 'Tool completed') : row?.label}</div>
         {parts ? (
           <details className="entry-detail">
-            <summary>Show output{mediaCount > 0 ? ` (${mediaCount} ${mediaCount === 1 ? 'media item' : 'media items'})` : ''}</summary>
+            <summary>Show output{mediaCount > 0 ? ` (${mediaCount} ${mediaCount === 1 ? 'media item' : 'media items'}${unavailableCount === mediaCount ? ' unavailable' : unavailableCount ? `, ${unavailableCount} unavailable` : ''})` : ''}</summary>
             <div>{parts.map((part, i) => part.type === 'text' ? <pre key={i}>{part.text}</pre> : <MediaView key={i} media={part.media} />)}</div>
           </details>
         ) : row?.full && (
