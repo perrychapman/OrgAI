@@ -1,234 +1,286 @@
 # `orgai` as its own app: design spec
 
-Status: draft 3, 2026-11-07. Draft 1 was reviewed by GPT Astra (12 findings, REVISE); draft 2 narrowed the first step
-to what holds up under that review and lists the rest as later phases with their blockers; draft 3 folds in the
-phase 1 code review (5 findings). Phase 1 (section 4) is
-implemented on `feat/cli-standalone-default`. Builds on `docs/design/cli-standalone.md` (Wave 7: npm CLI, Node host,
-vault) and `docs/design/cli-approvals.md` (draft: who may answer decisions from a terminal). Owner decisions are
-**S1..S6**.
+Status: draft 5, 2026-11-08. The owner's direction (2026-11-08): "mirror Claude Code and Claude Desktop... they should
+have nothing shared"; no runs behind the scenes; no answering from a second terminal; the desktop app offers to
+download the standalone CLI, the way Cursor or opencode do, without bundling it. Draft 4 was reviewed by GPT Astra
+(14 findings, REVISE); draft 5 resolves each (section 11). Owner decisions taken on 2026-11-08: remove the daemon,
+one `orgai` at a time, install button in the app. Draft 3's phase 1 (commit 9510c586, not pushed) is the starting
+point.
 
-Every fact says how it was checked: "code" = read from the repo at 7a192382, "measured" = observed on the owner's Mac
+Every fact says how it was checked: "code" = read from the repo at 9510c586, "measured" = observed on the owner's Mac
 on 2026-11-07, "unverified" = from memory, docs or typings, not checked here.
 
 ---
 
-## 1. Problem
+## 1. The model
 
-The owner's expectation: `orgai` is a separate app, the way Claude Code and Claude Desktop are separate apps. You open
-a terminal, type `orgai`, and it works: it reads the folders that terminal can read, it asks you to approve what its
-agents want to do, and nothing else needs to be installed, running or configured.
+Two products that come from one repository:
 
-What happened before this change on a machine with the desktop app or a dev checkout:
+| | OrgAI desktop app | `orgai` CLI |
+|---|---|---|
+| Installed by | the app installer | `npm i -g orgai-cli`, or the app's Install button (5.3) |
+| Data (projects, runs, connections, settings, secrets, skills and MCP libraries, logs) | `<app data>/OrgAI` (unchanged) | `<app data>/orgai-cli` (3.1) |
+| Data folder override | `ORGAI_DATA_DIR` (unchanged) | `ORGAI_CLI_DATA_DIR`, `--data-dir` (3.1) |
+| Vault key custody | `OrgAI Vault` keychain service, `ORGAI_VAULT_*` (unchanged) | `OrgAI CLI Vault`, `ORGAI_CLI_VAULT_*` (3.2) |
+| Host | the app process, no listening socket (5.1) | the `orgai` process itself (4) |
+| Approvals | the app window | the terminal running `orgai` |
+| After quitting | runs end, continuable (unchanged) | runs end, continuable |
 
-1. `orgai` (`--host auto`, the default) found no live host, `HostLauncher.locate()` found the app, and `ensureHost`
-   spawned **the Electron app headless** (`ensureHost.ts` step 4, code). The CLI was a client of a hidden app.
-2. That hidden app grants terminals `read` + `operate` only (`terminalAccessLevel` default `'operate'`,
-   `socketServer.ts` `grantScopes`, code). The TUI said "Approvals and questions are answered in the desktop app...",
-   but no window existed, so a card waited with nowhere to answer it.
-3. The hidden app outlived the terminal and kept its own build. Measured: pid 90328 `Electron
-   /Users/ryanwillen/orca/OrgAI --headless-host`, started 2026-11-06 23:00 from `out/main/index.js` built 2026-11-05
-   15:45, before fe3cf50f bumped the version; that build contains the literal `0.1.6-dev1` (measured). The CLI, rebuilt
-   2026-11-07, is 0.1.7-dev1, so every connection showed the version-skew warning (`socketServer.ts:839`, code).
-4. "OrgAI cannot read /Users/ryanwillen/Documents/Betting/desk. Check its permissions." (`scratch.ts`, code: any errno
-   from `accessSync` / `readdirSync`). The folder is `drwxr-xr-x` and a plain `node` started from a terminal lists it
-   (measured). Likely macOS privacy protection (TCC) on `~/Documents` denying the background Electron process; the TCC
-   log had no entry (cause unverified). The message hid the errno.
+Shared on purpose, as Claude Code and Claude Desktop share them:
 
-`--host inproc` already behaved as the owner expects: the CLI runs the host in its own Node process, proves itself with
-`ownerProof` and gets every scope (`inprocHost.ts`, `socketServer.ts` ownerKey, code), uses its own build, and runs
-with the terminal's privacy grants (unverified for TCC; it is the terminal's own process).
+- The user's repositories and their files (`.orgai/` project files, `CLAUDE.md`, `AGENTS.md`), git and its locks, and
+  OrgAI's repository lock `<commonDir>/orgai-repo.lock`, which guards git operations across any two processes
+  (`repoLock.ts`, code).
+- The Claude agent's own login (`~/.claude`; both products run the Claude Agent SDK as the user, code).
+- Third-party configuration both products may **read** to offer imports: home-directory skills, Claude plugins,
+  `~/.claude.json`, Cursor, Claude Desktop and Codex MCP configuration (`capabilities/paths.ts`, code). Each product
+  imports into its own library under its own data folder (unchanged, code); neither writes those sources.
+
+Not shared: everything under either data folder, including the Codex login: Codex runs with `CODEX_HOME` =
+`<dataDir>/codex` (`codexAppServer.ts`, `connections/service.ts`, code), so the CLI has its own Codex sign-in
+(`orgai connections login <id>`, code).
 
 ## 2. Goals and non-goals
 
 Goals:
 
-- G1. `orgai` never starts the desktop app, visible or hidden, unless asked (`--host daemon`, `orgai daemon start`,
-  `orgai app`).
-- G2. With no other host running, the terminal the user typed `orgai` in answers every approval and question its runs
-  raise, on macOS, Windows and Linux.
-- G3. On that path the host is the CLI's own build and process: no version skew, the terminal's folder access.
-- G4. A second `orgai` in another terminal works instead of waiting and failing.
-- G5. Every line the TUI prints about approvals names a place that exists for the host it is talking to.
+- G1. `orgai` never connects to, starts, reads or writes the desktop app's data, sockets, settings or vault.
+- G2. `orgai` hosts its runs in its own process; quitting ends them (the quit confirm, continuable later). There is
+  no background host.
+- G3. The terminal running `orgai` answers every approval and question; no other process can.
+- G4. One `orgai` host process per CLI data folder. Another command that needs a host is refused at once (4.2);
+  read-only commands keep working beside it (4.3).
+- G5. The app does not contain the CLI; it offers to install the standalone package and cleans up the old shim.
+- G6. Nothing the owner already has is lost.
 
-Non-goals for phase 1 (later phases, section 5):
+Non-goals:
 
-- Runs that keep going after the terminal that hosts them closes (needs a background host with a secure owner,
-  Astra findings 3, 6, 8).
-- Answering approvals from a second terminal (needs owner-authorised pairing or E3, Astra finding 2).
-- Being independent of an already running desktop app or background host (Astra finding 1, S1).
-- Changing `--host daemon` / `orgai daemon start` to the Node host by default (Astra findings 10, 11).
+- Parallel independent sessions like Claude Code (several processes writing one data folder; the stores assume one
+  writer, cli-spec 3.2, code). Recorded as a possible later project.
+- Import or sync between the two products.
+- The RunAsNode fuse: the app's system-certificate reader still runs the app binary as Node
+  (`systemCerts.ts`, code), so the fuse stays on.
 
-## 3. Host ladder
+## 3. Separation
 
-`ensureHost(ctx, scopes)` with `--host auto` (code after this change):
+### 3.1 Data folder and product identity
 
-0. Another command's own in-process host (not this context's, no shared marker) is waited out up to 15 s, then exit 6
-   (unchanged).
-1. A live host answers: connect (unchanged). This includes a desktop app, a hidden app an older `orgai` started, a
-   `daemon start` host, and another terminal's shared TUI host.
-2. A host is starting: wait up to 15 s (unchanged).
-3. **No live host: run in-process.** One stderr line in text mode (`INPROC_FALLBACK_NOTE`, or `INPROC_SECRETS_NOTE`
-   when environment secrets are set). `HostLauncher.locate()` is not called: an installed, dev-checkout or broken app
-   changes nothing. The terminal UI's in-process host is started with `shared: true` (`markSharedHost`, code), so
-   step 0 in other terminals attaches to it; a command's (`exec`, management) host stays its own.
+- CLI default `userDataDir`: macOS `~/Library/Application Support/orgai-cli`, Windows `%APPDATA%\orgai-cli`, Linux
+  `${XDG_CONFIG_HOME:-~/.config}/orgai-cli`; data dir `<userDataDir>/data` as today (`locate.ts`, code). Not `orgai`
+  (on a case-insensitive file system that is the app's `OrgAI`), not `~/.orgai` (every project's own folder name).
+- CLI overrides: `--data-dir`, then `ORGAI_CLI_DATA_DIR`. The CLI ignores `ORGAI_DATA_DIR`; when it is set and no CLI
+  override is, `orgai` prints once per process: "ORGAI_DATA_DIR is the OrgAI app's setting; orgai uses
+  ORGAI_CLI_DATA_DIR." The desktop app keeps `ORGAI_DATA_DIR` (`log.ts`, `index.ts`, code) and ignores the CLI's.
+- Product marker: `<userDataDir>/product.json` `{ "product": "orgai-cli" | "orgai-desktop", "version": 1 }`, written
+  0600 by whichever product creates or first opens the folder after this change.
+  - The CLI refuses (exit 2, before any read or write beyond the marker) a folder whose marker says
+    `orgai-desktop`, a folder whose canonical path (realpath of the folder and of its parent) equals the desktop's
+    default `userDataDir`, and a folder without a marker that already holds data (`data/` non-empty): "<path> belongs
+    to the OrgAI app. orgai keeps its own data; choose another folder." An empty or missing folder gets the CLI
+    marker.
+  - The desktop app refuses a folder marked `orgai-cli` with a dialog naming it and quits; a folder without a marker
+    (every existing install) gets the desktop marker on first start.
+- Every e2e and test that sets a data folder for the CLI uses `ORGAI_CLI_DATA_DIR` or `--data-dir` with a fresh temp
+  folder (`e2e/cliLib.mjs`, code: e2e already uses temp folders).
 
-`--host daemon` and `orgai daemon start` are unchanged: the app when found, else the Node host.
+### 3.2 Vault custody
 
-## 4. Phase 1 (implemented)
+The vault code is shared (`src/main/store`, code); its custody becomes product-scoped:
 
-### 4.1 Default host
+- `openSecretStore` takes `product: 'cli' | 'desktop'`. CLI: keychain service `OrgAI CLI Vault`, Secret Service
+  attributes `service orgai-cli vault <vaultId>`, label `OrgAI CLI vault`, DPAPI entropy label and key-file variable
+  `ORGAI_CLI_VAULT_KEY_FILE` (and every other `ORGAI_VAULT_*` read by the CLI becomes `ORGAI_CLI_VAULT_*`). Desktop:
+  unchanged names, so existing desktop vaults keep opening.
+- The CLI never reads `ORGAI_VAULT_*`; the app never reads `ORGAI_CLI_VAULT_*`.
+- `childEnv.ts` scrubs both families from every agent child (code: it scrubs `ORGAI_VAULT_*` today).
+- Tests: a reset or key rotation in either product leaves the other's vault and key item untouched; a key file named
+  by one product's variable is never used by the other.
 
-`src/cli/client/ensureHost.ts`: step 3 above replaces the old steps 3-4 for `auto`. Old steps 3-4 remain for
-`--host daemon` only.
+### 3.3 Messages that assumed one shared vault
 
-Why in-process and not a background Node host with an owner key (draft 1's recommendation): the review showed that
-a background owner key breaks at the first owner loss. A short management command can start the host and exit with
-the key (finding 3); the TUI and exec open second connections for `configure` (`session.ts` `withConfigure`,
-`exec.ts`, finding 4) that a first-connection-only key refuses; Terminal access stored off would leave a surviving
-host nobody can reach (finding 8, `daemon.ts` `runNodeHost` also refuses it). An in-process host has none of these:
-its owner is the process itself, and every connection that process opens carries the same proof (code).
+`VAULT_MESSAGES.pendingLegacy`, `clearRefusedLegacyOnly` and the renderer's recovery notices (`vaultTypes.ts`,
+`secretNotices.ts`, code) tell a CLI user to open the app. In the CLI there is no legacy `secrets.json` from the app
+(a fresh folder), so those states cannot arise there; the CLI's texts drop the app references, the desktop's keep
+their own recovery actions.
 
-### 4.2 Second terminal
+## 4. CLI
 
-The first workspace `orgai` TUI's host is shared. Command-scoped TUIs (assistants started by `orgai` subcommands with
-`exitWhenEnded` / `stopOnQuit`, `commands/interactive.ts`) keep their host to themselves (`launchTui(..., { shareHost:
-false })`), because they exit on their own when their run ends and would end other terminals' runs without asking
-(review 2 finding 1). A second `orgai` (TUI, exec or management command) attaches with what Terminal
-access allows (`'operate'` by default: watch and start runs, no `decide`), exactly as it would attach to the desktop
-app (code: shared hosts follow the stored level). It no longer waits 15 s and exits 6.
+### 4.1 One host kind
 
-Quitting the owning TUI ends the host and every run on it, as today. The quit confirm ("Quitting stops N live runs in
-this in-process host. Quit?", `App.tsx` `requestQuit`, code) used to count only the runs the TUI lists (its project);
-it now also asks the host (`inproc.status().handoff`: working, waiting, held and paused runs) and says how many come
-from other projects or terminals. Every quit path goes through that check, including Ctrl+C, Ctrl+D, Esc and q on the
-onboarding screen (review 2 finding 2), which reserves rows for the confirm box. Ended runs are marked "Ended when OrgAI closed" and can be continued (code). The
-second terminal sees the connection drop.
+- `--host` and `--secret-env`'s host condition go; every command that needs a host runs `inprocHost` in its own
+  process (today's `--host inproc`, code). Environment secrets (`ORGAI_SECRET_*`, `--secret-env`) keep working
+  in-process.
+- Removed modules: `nodeHost.ts` and `daemon run-node`, `sharedHost.ts`, `terminalAccessSettings.ts`, the launcher's
+  app discovery and spawn (`launcher.ts` `locate`, `spawn`, `startBackground`, `waitForReady`, `waitForGone`), and the
+  draft-3 additions `shareInproc` / `shareHost` / `decisionNotices.ts`. What `inprocHost` and the hostless reader need
+  stays.
+- The socket of an in-process host accepts only its owner: a hello without a valid memory-only `ownerProof` is refused
+  before any method runs (`not_owner`), whatever `terminalServer` / `terminalAccessLevel` say, even when
+  `daemon.secret` is readable and the claimed pid or client kind is forged. The peer check stays as defence in depth.
 
-Security: unchanged. A shared marker only decides whether other CLI processes attach or wait; scopes for them come
-from Terminal access as for any host (code). The owner proof stays in the owning process's memory.
+### 4.2 A second host process: refused at once
 
-### 4.3 Approval notices
+Ownership (`src/main/host/ownership.ts`, code) is an atomic startup mutex followed by an incumbent check with start
+time, endpoint reachability and unreadable-record handling, and today waits (up to 30 s for a starting owner, plus a
+young-record wait). New: `acquireOwnership(..., { wait: 'none' })` for the CLI.
 
-`src/cli/tui/decisionNotices.ts` picks the no-`decide` line from `hello.hostKind` (code):
+- The decision stays under the mutex; nothing before it is a lock.
+- Live incumbent (by the existing liveness rules), a starting owner, a draining owner, or an unreadable record that is
+  not provably stale: release the mutex and fail with `owned` and the record (pid, `ownerCwd` when present).
+- A provably stale record (dead pid, or differing start time): reclaim as today.
+- `daemon.json` gains `ownerCwd` (the owning process's cwd at boot), written by the CLI; absent for older records.
+- `ensureHost` maps `owned` to exit 6: "orgai is already running in another terminal (<ownerCwd>, pid <pid>). Use that
+  one, or quit it first." Without `ownerCwd`: "orgai is already running (pid <pid>)...". No waiting.
+- Tests: two processes starting at once (exactly one wins, the other gets exit 6 at once), pid reuse (differing start
+  time is stale), a corrupt record, a crash between mutex and record, release racing a new start.
 
-| hostKind | Line |
+### 4.3 Command matrix
+
+| Command | After this change |
 |---|---|
-| desktop (or missing: older host) | "Approvals and questions are answered in the desktop app. To answer here: App settings > Terminal access > ..." (unchanged) |
-| headless-host | "A hidden OrgAI app is running the host, so approvals are answered in its window (`orgai app` shows it). To run orgai on its own: `orgai daemon stop`, then start orgai again." |
-| inproc | "OrgAI's host is running in another terminal (an orgai session, or `orgai daemon start --host inproc`), so this terminal can't answer approvals. Quit that orgai (or `orgai daemon stop`), then start orgai here to answer them." (A foreground `daemon start --host inproc` owner has no approval UI, so the line does not promise one; review 2 finding 4.) |
-| node | "The background host (`orgai daemon start`) doesn't let terminals answer approvals. `orgai daemon stop`, then start orgai so it runs its own host; or, while no host runs, `orgai terminal-access on --level full`." |
+| `orgai` / `tui [run]` / `resume` / `exec` / `init` and every management command (org, team, worktrees, permissions, connections, models, mcp, skills, knowledge, notes, kit, projects create/edit, secrets init/reset/undelete) | In-process host; refused (4.2) while another `orgai` owns the folder |
+| `status`, `runs` (list, show), `projects` (list, show), `usage` (show), `secrets status`, `doctor`, `completions`, `--version`, `help` | Hostless reader from the files when another `orgai` owns the folder, with "orgai is running in another terminal; this is a saved snapshot" (no live cards). With no owner they may start a host as today or read files; either way no write. |
+| `watch`, `inbox`, `decide`, `runs message|interrupt|stop`, `attach` | Removed: live runs and their cards exist only inside the owning `orgai`, which has the same actions in its TUI. `orgai tui <run>` opens a saved run. |
+| `daemon`, `app`, `terminal-access` | Removed |
+| `exec` decision policies | `wait` policies (`--on-permission wait` and the other `wait` values, `decisionPolicy.ts`, code) are refused (exit 2): nothing else can answer. `deny`, `fail`, `allow*` and the headless defaults stay. |
 
-`hostKind` is a capability, not window presence (finding 5: a headless launch keeps `'headless-host'` after its window
-is opened, `src/main/index.ts`). The headless line therefore says how to show the window rather than claiming none
-exists. The onboarding screen uses the same line; its "Edits" suffix says "(approvals in desktop)" only for the desktop
-line, else "(approvals answered elsewhere)".
+The hostless path of each read-only command is chosen before any connect, so a `not_owner` / `owned` answer never
+reaches its fallback (`runRef.ts` today falls back only for listed reasons, code). Tests: each read-only command runs
+beside a live owner without a socket hello, store construction, migration or write.
 
-### 4.4 Secrets saved only by the app
+### 4.4 TUI
 
-An existing desktop user whose last secret change was made by the app may have secrets that the vault does not hold
-yet; Node and in-process hosts read those as unreadable with `VAULT_MESSAGES.pendingLegacy` (`secrets.ts` resolve,
-code), and `orgai doctor` already counts them (`secretsChecks.ts` `vault-pending`, code). Before, `--host auto` hid
-this by starting the app. The message now says the order that works with an in-process owner, since the app waits
-for that owner to exit (review 2 finding 3): "Saved by the OrgAI app and not yet shared with the orgai command: quit
-orgai, open the OrgAI app once, then start orgai again". Proactive detection at TUI start is a follow-up.
+- The TUI always holds every scope (owner proof). Gone: the version-skew notice, `TUI_NO_DECIDE_NOTICE`, the desktop
+  and host-kind decision lines, `DESKTOP_UNAVAILABLE_NOTICE`, read-only cards.
+- The quit confirm keeps counting host-wide live runs (draft 3) on every quit path, including onboarding.
+- First start of a new CLI data folder prints once (CLI-local, never reads the app's folder): "orgai keeps its own
+  projects and settings, separate from the OrgAI app. Projects made with an older orgai are in the OrgAI app."
 
-### 4.5 Folder access errors
+### 4.5 Help, doctor, completions
 
-`scratch.ts` `unreadableFolderMessage(text, err)` (code):
+`orgai help`, the command table, completions and doctor drop removed commands, `--host` and background-host checks;
+doctor reports the data folder, its marker, the vault custody and "another orgai is running (pid, folder)" when owned.
 
-- macOS `EPERM`: "macOS blocked OrgAI from reading <folder>. Allow it in System Settings > Privacy & Security > Files
-  and Folders (or Full Disk Access) for the program running OrgAI's host (<process.execPath>): for orgai in a
-  terminal, that terminal app."
-- `EACCES`: "You do not have permission to read <folder>. Check the folder's permissions."
-- anything else: the old text with the code in brackets.
+## 5. Desktop app
 
-### 4.6 Tests and checks changed
+### 5.1 No terminals, no socket
 
-- `ensureHost.test.ts`: auto never calls `locate()` or spawns (found and broken), TUI host shared, command host not;
-  the old app-spawn, never-ready, broken and lost-race cases now run under `--host daemon`.
-- `manage.test.ts`: the "Started the OrgAI host in the background" note under `--host daemon`.
-- `scratch.test.ts`: the three message forms. `decisionNotices.test.ts`: the line per host kind.
-- `App.test.tsx`: the quit confirm counts runs the host reports beyond the TUI's own list, also from onboarding
-  (Ctrl+C, Ctrl+D, Esc). `ensureHost.test.ts`: a command-scoped TUI's host is not shared.
-- The app's Terminal access dialog (`CliShimRow.tsx`) no longer says orgai works only with Terminal access on.
-- `scripts/verify-pack.mjs` (f) and (g): the packaged-app checks pass `--host daemon` explicitly, since `--host auto`
-  no longer starts the app (finding 12). `(e)` keeps covering in-process.
-- e2e: the `cli-*.mjs` scripts pass `--host inproc` or `--host daemon` explicitly or use `daemon start` (code), so no
-  selector changes. `cli-tui.mjs` attaches second TUIs with `--host daemon` to a shared `daemon start --host inproc`
-  host (unchanged).
+- The app acquires ownership with `listen: false` (supported today, `index.ts`, code) and never creates the socket
+  server. Second instances keep Electron's `requestSingleInstanceLock` / `second-instance` (code). Gone: the
+  `--headless-host` mode and lifecycle (`args.ts`, `hostLifecycle.ts`), handoff (`handoff.ts`, `DesktopHandoff`,
+  `waitingForHandoff`), `desktopQuit.ts` parts that only serve socket clients, the socket's terminal sessions in
+  `ShutdownCoordinator` inputs for the desktop, Terminal access settings (`terminalServer`, `terminalServerChosen`,
+  `terminalAccessLevel`, `terminalAccessLevelChosen`) and their rows.
+- Settings files with those keys keep loading; the keys are dropped on read and on the next write
+  (`src/main/store/settings.ts`, shared `AppSettings` in `src/shared/types.ts`).
+- Shared host code (`bootstrap.ts`, `socketServer.ts`, `shutdown.ts`) keeps what the CLI's in-process host needs.
 
-### 4.7 For the owner's machine now
+### 5.2 The packaged app does not contain the CLI
 
-The hidden app (pid 90328) still answers step 1, so `orgai` keeps attaching to it until it is stopped once:
-`orgai daemon stop` (it refuses while runs are working; `--force` ends them as continuable). After that, `orgai` hosts
-itself.
+- `electron-builder.yml`: `files` excludes `out/cli/**` (not only `asarUnpack`), the `bin/orgai` launchers and their
+  `extraResources` go. The desktop's own runtime dependencies (Claude Agent SDK, Codex, native modules) stay.
+- `scripts/verify-pack.mjs`: drops (c)-(g) (app-bundled CLI and CLI-spawns-app); adds "no `out/cli` in app.asar or
+  app.asar.unpacked, no `bin/orgai`", and keeps its desktop checks (certificate reader, Claude and Codex startup).
+- `scripts/verify-npm.mjs` (phase 1): calls without `--host`, its shared helpers move out of `verify-pack.mjs` into a
+  small module both import; adds "a fresh install writes `orgai-cli/product.json`" and "`ORGAI_DATA_DIR` is ignored".
 
-## 5. Later phases (not built)
+### 5.3 Install the orgai command
 
-Each has blockers from the review that must be solved first.
+App settings > Terminal: one row, replacing `CliShimRow`.
 
-### 5.1 Runs that outlive the terminal (S2)
+- Status without running anything: the existing metadata classification (`orgaiOnPath.ts`, code: inspects files,
+  never executes) extended to recognise an npm-installed `orgai-cli` (its `package.json` beside the resolved bin) and
+  the old app shim. Shows "Installed (npm, <version from package.json>)", "Old OrgAI app command (no longer works)",
+  "Another program named orgai", or "Not installed".
+- Install: main-process only, one at a time, cancellable. Resolves `npm` to an absolute path from the resolved PATH
+  (no PATH lookup by the child), cwd = the user's home, environment = the resolved login environment minus every
+  `ORGAI_*`, `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*`, `CODEX_*`, `AWS_*`, `GOOGLE_*`, `AZURE_*` variable (the user's
+  npm config and registry stay, so corporate registries work). Arguments are fixed: `install -g orgai-cli@<tag>
+  --ignore-scripts` where `<tag>` is `latest` for a stable app and `next` for a prerelease (`release.yml`, code). On
+  Windows `npm.cmd` runs through `cmd.exe /d /s /c` with that fixed, quoted argument list; nothing from the user or
+  the network reaches the command line. Output: last 200 lines, 64 KB cap, control characters stripped, shown as
+  text. Never elevated; EACCES shows npm's message and the `--prefix` hint.
+- Copy command: the same `npm install -g orgai-cli@<tag>` string.
+- No version pin and no release gate: the CLI updates through npm on its own schedule; an E404 or offline failure
+  shows npm's message.
+- Old shim cleanup: when the classification finds the app's old shim, the row offers "Remove the old orgai command"
+  (and offers it automatically after a successful install), using the existing ownership-checked removal
+  (`shimInstaller.ts` uninstall path, code), re-checking ownership right before removal, never touching a foreign
+  file, then re-classifying to show which `orgai` now wins on PATH. The install half of `shimInstaller.ts` goes.
 
-A background Node host started by `orgai` with an owner key (cli-approvals E1). Before it can be the default:
+## 6. Help and self-knowledge
 
-- Owner loss and transfer on every platform: a management command or a closed TUI must not leave a host nobody can
-  approve on (finding 3). Candidate: the host asks a surviving owner-attested terminal, or keeps `auto` in-process and
-  makes the background host an explicit `orgai --detach`.
-- Owner scopes across a process's several connections (`withConfigure`, exec's configure connection; finding 4):
-  bind the key to the process (peer pid on macOS / Linux), not to the first socket, or elevate scopes on the primary
-  connection.
-- Replacement and idle exit must use the handoff predicate (any live, held or resumable run or open card blocks;
-  `shutdown.ts` `stop` with `handoff`), not "no run is working" (finding 6). A TUI client counts as activity
-  (`attachedClientCount`, `activity.ts`), so an attached TUI never lets a host go idle (finding 7).
-- Terminal access stored off: `nodeHostRefusal` and `runNodeHost` both refuse (finding 8).
-- Windows: fd-3 key passing to a detached child, and the Node host integration tests are POSIX-only today
-  (`nodeHost.int`, `daemonNodeHost.int`, finding 12).
-- macOS TCC for a detached Node child of a terminal (unverified): measure before choosing.
+Updated in the phase that changes the behaviour, not later:
 
-### 5.2 Approvals from a second terminal (S3)
+- The runtime reference corpus (`appReference.ts`, `reference/docs.ts`, code) excludes withdrawn and superseded
+  designs (`cli-approvals.md`, the `--host` / daemon parts of `cli-spec.md` and `cli-standalone.md`); the CLI command
+  table it embeds comes from the new command table.
+- In-app text about Terminal access, `orgai daemon`, `orgai app` or a shared vault is removed or rewritten.
+- Desktop recovery actions for its own vault stay.
 
-Recommended: owner-authorised pairing. The second TUI asks; the owning TUI shows "Terminal <tty>, pid N wants to
-answer approvals. Allow? [y/N]" (cli-approvals E2 with the owner terminal in place of the desktop window). Works on
-Windows. E3 (attested tty) stays opt-in (finding 2: reparenting, descendant PTYs, claimed pids on Linux, mapping
-failures; `peerCheck.ts`).
+## 7. Security
 
-### 5.3 Independence from a running desktop app (S1)
+- No process but the owner can talk to a CLI host (4.1); the app has no socket (5.1). Terminal access, scope caps,
+  pairing and cli-approvals.md E1-E3 are withdrawn.
+- Owner proof stays the only route to `decide` / `configure`. The peer check refusing host descendants and the
+  self-control gate (agents may not run `orgai`) stay.
+- Separate custody names and variables (3.2) prevent key reuse between products; markers (3.1) prevent either product
+  from opening the other's folder.
+- Installer (5.3): no execution of unknown PATH programs; fixed argv; scrubbed environment; `--ignore-scripts`.
 
-Today step 1 attaches to any live host, including the desktop app, which then decides scopes, version and folder
-access (finding 1). Options:
+## 8. Tests and checks
 
-- (a) Keep one shared data folder; when the desktop app is running the CLI is its client and pairs for approvals
-  (E2). Projects, connections and secrets are set up once.
-- (b) The CLI gets its own data folder by default (`ORGAI_DATA_DIR` exists, code), like Claude Code and Claude
-  Desktop keep separate state, with a one-time "use the desktop app's projects?" choice and explicit import.
-- (c) The desktop app becomes a client of a CLI-owned host. Largest change.
+- Unit: `locate.test.ts` (defaults, `ORGAI_CLI_DATA_DIR`, `ORGAI_DATA_DIR` ignored), marker rules (both products,
+  aliases via symlink, non-empty unmarked folder), vault custody per product, ownership `wait: 'none'` (4.2 list),
+  socket owner-only (4.1 list), command matrix (4.3), exec `wait` policy refusal, settings key drop, installer
+  (classification, hostile PATH entry, path with spaces, `.cmd` on Windows simulated, env scrub, output cap, cancel),
+  shim cleanup.
+- Removed with their code: `daemonNodeHost.int`, `nodeHost.int`, `handoff.int`, `hostSelection.int`, `hostStop.int`
+  parts, shim install tests, `e2e/cli-host.mjs`, daemon steps in `cli-readonly.mjs`.
+- e2e (in-process only): `cli-exec`, `cli-tui` (a second `orgai` is refused at once; read-only commands work beside
+  it), `cli-connections`, `cli-mcp`, `cli-skills-kit`, `cli-org`, `cli-projects`, `cli-readonly`.
+- New e2e `separation.mjs`: the desktop app (hidden windows) on temp folder A and `orgai` on temp folder B at the same
+  time; proves separate settings, runs, approvals, secrets (vault custody names), libraries, logs; the CLI refuses A,
+  the app refuses B; quitting one leaves the other running.
+- New e2e `install-row.mjs`: the Terminal row's states with a fake npm on PATH (no network).
+- `package.json` `e2e:free`, CLAUDE.md's e2e list and `.github/workflows/ci.yml` updated in the same change.
 
-No recommendation until the owner says whether shared projects and runs between the two matter.
+## 9. Phases
 
-### 5.4 Background defaults and stale hosts (S4, S5)
+Each phase passes the local gate (typecheck, the whole unit suite, build, `npm run test:scripts`, the e2e scripts of
+its area, review) before the next.
 
-- `--host daemon` / `daemon start` default runtime `node`: needs a secret-readiness check before an Electron host's
-  data folder is served by Node (a legacy value newer than the vault is unreadable outside the app,
-  `secrets.ts`; finding 11), flag scope for `--runtime` (a daemon-command flag today, `flags.ts`; `daemon restart`
-  keeps the current runtime; finding 10), and an explicit refusal, not an in-process fallback, for the app-bundled
-  CLI.
-- Replacing a stale or hidden host automatically: needs window presence in `host.status` (finding 5), a
-  non-interactive preflight connection with `configure` (finding 7), the handoff predicate (finding 6), and a build
-  identity in hello, since equal versions can be different builds (`version.ts` reads package.json only; finding 9).
+1. **CLI separation**: 3.1 (CLI side), 3.2, 3.3 (CLI side), 4, verify-npm (5.2 last bullet), help and doctor (4.5),
+   CLI parts of 6.
+2. **App separation**: 3.1 (desktop side), 3.3 (desktop side), 5.1, 5.2, app parts of 6, `separation.mjs`.
+3. **Install row**: 5.3, `install-row.mjs`.
+4. **Docs**: CLAUDE.md (CLI & host notes, e2e list), `docs/agent-notes/cli-host.md` is the owner's uncommitted move and
+   is left to them (CLAUDE.md on dev is updated), superseded notes in `cli-spec.md` and `cli-standalone.md`,
+   `cli-approvals.md` marked withdrawn, `.orgai/ARCHITECTURE.md`.
 
-## 6. Owner decisions
+## 10. Unverified
 
-- **S1** Shared data folder with the desktop app, or the CLI's own by default (5.3).
-- **S2** Build background runs (5.1), and as default or as an explicit `--detach`.
-- **S3** Second-terminal approvals by owner pairing (recommended) or E3 opt-in (5.2).
-- **S4** `daemon start` default runtime `node` (5.4).
-- **S5** Automatic replacement of stale or hidden hosts (5.4). Until then the TUI prints the exact command (4.3).
-- **S6** None of the above blocks phase 1.
+- Windows: `npm.cmd` through `cmd.exe` with the fixed list; `orgaiOnPath` recognising an npm global bin; DPAPI label
+  change. CI on windows-latest is the first check.
+- Linux Secret Service attribute change on a real keyring.
+- That every connection kind works on a fresh CLI folder (Claude via the user's login expected; Codex needs its own
+  `orgai connections login`).
 
-## 7. Unverified
+## 11. Draft 4 review resolutions (GPT Astra)
 
-- That the owner's "cannot read" error was TCC (no TCC log entry; EPERM vs EACCES was not captured before 4.4).
-- That an in-process host under Terminal / iTerm / Orca's terminal reads `~/Documents` without a prompt (it is the
-  terminal's own process; expected, not measured).
-- Real two-terminal behaviour with a shared TUI host (unit-tested through the shared marker; no e2e drives two TUIs
-  where the first is an `auto` host).
+| Finding | Resolution |
+|---|---|
+| 1 overrides reach the app's folder | 3.1: `ORGAI_CLI_DATA_DIR`, `ORGAI_DATA_DIR` ignored, product markers, canonical-path check; migration notice is CLI-local (4.4) |
+| 2 shared vault key variables | 3.2 product-scoped custody names and variables, scrubbed from children |
+| 3 pid check is not a lock | 4.2 `wait: 'none'` inside the ownership mutex, test list |
+| 4 read-only commands start hosts | 4.3 matrix; hostless path chosen before connect |
+| 5 attach-only commands and wait policies | 4.3 removes them; `wait` policies refused |
+| 6 desktop socket claim wrong | 5.1 `listen: false`, no socket server; second instances via Electron |
+| 7 installer runs PATH programs | 5.3 metadata only; fixed argv, absolute npm, scrubbed env, Windows cmd rule, output cap |
+| 8 old shims break | 5.3 ownership-checked cleanup, re-classification |
+| 9 verify-npm uses `--host` | 5.2: phase 1 updates verify-npm, phase 2 excludes `out/cli` from `files` |
+| 10 version availability | 5.3 dist-tag by channel, no pin, Copy and Install identical |
+| 11 RunAsNode citation | 2: `systemCerts.ts` |
+| 12 Codex login, `init` | 1: Codex has its own login per product; `connections login`; `init` not cited for secrets |
+| 13 third-party sources | 1: read-only shared inputs, own libraries |
+| 14 help corpus | 6, updated per phase; `separation.mjs` two-product e2e |
