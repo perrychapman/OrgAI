@@ -73,6 +73,8 @@ import type {
   RunPlan,
   RunRecord,
   RunSummary,
+  SwitchRunModelInput,
+  SwitchRunModelResult,
   RunSurface,
   SkillUseCount,
   UserQuestion
@@ -888,6 +890,7 @@ export interface StartInput {
   resumeSessionId?: string
   /** The run being continued. */
   resumedFrom?: string
+  modelSelection?: RunSummary['modelSelection']
   /** Cost already recorded on the run being continued. */
   resumeBaseCostUsd?: number
   /** The continued run's plan; it carries over with a fresh automatic-continue count. */
@@ -1349,6 +1352,7 @@ export class RunManager {
     hiddenContext,
     scaffold,
     resumeSessionId,
+    modelSelection,
     resumedFrom,
     resumeBaseCostUsd,
     plan: carriedPlan,
@@ -1401,6 +1405,7 @@ export class RunManager {
     }
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
     const { adapter, choice } = this.choose(project, kind)
+    if (modelSelection && modelSelection.connection !== choice.connection) throw new Error('The original connection is no longer available for this session')
     const bridging = this.resolveBridged(project, choice, kind, { quick, team, buildWorkspace })
     const connection = this.options.resolveConnection?.(project, choice)
     const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
@@ -2161,6 +2166,12 @@ export class RunManager {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         }
+      }
+      const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
+      if (root && modelSelection) root.model = modelSelection.model
+      if (root && root.model !== 'inherit' && summary.connection) {
+        summary.modelSelection = { model: root.model, connection: summary.connection }
+        this.store.upsert(summary)
       }
       active.ctx = ctx
       if (exec) {
@@ -4020,6 +4031,32 @@ export class RunManager {
     return { status: 'not-found', requestId }
   }
 
+  async switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult> {
+    this.refuseWhileQuitting()
+    if (!input || typeof input.runId !== 'string' || typeof input.model !== 'string' || !input.model || input.model.length > 200 || input.model.trim() !== input.model || /[\x00-\x1f\x7f]/.test(input.model)) throw new Error('Invalid model selection')
+    const run = this.summary(input.runId)
+    if (!run) throw new Error('Run not found')
+    const connection = input.connection ?? run.modelSelection?.connection ?? run.connection
+    if (!connection || connection !== run.connection) return { run, applied: false, reason: 'Switching connections is not supported for an existing session.' }
+    const model = (this.options.catalog?.() ?? []).find((m) => m.connection === connection && m.id === input.model)
+    if (!model) throw new Error('Model is not available on this connection')
+    const active = this.runs.get(run.id)
+    if (active && model.adapter !== active.adapter) return { run, applied: false, reason: 'This model requires a different provider adapter.' }
+    const selection = { model: input.model, connection }
+    if (active && !['finished', 'error', 'paused'].includes(run.status)) {
+      if (!active.session?.switchModel) return { run, applied: false, reason: 'This session cannot switch models.' }
+      try { await active.session.switchModel({ model: input.model }) }
+      catch (error) { return { run: this.summary(run.id) ?? run, applied: false, reason: (error as Error).message } }
+      const root = active.ctx?.roles.find((r) => r.reportsTo === null) ?? active.ctx?.roles[0]
+      if (root) root.model = input.model
+    } else if (!run.sessionId) {
+      return { run, applied: false, reason: 'This run has no session to continue.' }
+    }
+    const updated = this.patchSummary(run.id, { modelSelection: selection })!
+    this.broadcast({ type: 'run.model', runId: run.id, selection })
+    return { run: updated, applied: !active || ['finished', 'error', 'paused'].includes(run.status) ? false : true, ...(!active || ['finished', 'error', 'paused'].includes(run.status) ? { reason: 'Model will be used when the run continues.' } : {}) }
+  }
+
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
     this.refuseWhileQuitting()
     const active = this.runs.get(runId)
@@ -4296,6 +4333,7 @@ export class RunManager {
       ...(target.buildWorkspace ? { buildWorkspace: target.buildWorkspace } : {}),
       ...(target.team === 'single' ? { team: target.team } : {}),
       resumeSessionId: sessionId,
+      ...(target.modelSelection ? { modelSelection: target.modelSelection } : {}),
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
       // On a proxy project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.

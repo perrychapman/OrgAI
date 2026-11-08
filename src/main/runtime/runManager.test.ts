@@ -85,6 +85,17 @@ afterEach(() => {
 })
 
 describe('RunManager stored records', () => {
+  it('persists a model for an ended session and refuses unavailable models and connections', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'new-model', label: 'New', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'run-switch', projectId: p.id, status: 'error', sessionId: 'session-1', connection: 'anthropic' }))
+    await expect(m.switchModel({ runId: 'run-switch', model: 'missing' })).rejects.toThrow('Model is not available')
+    expect((await m.switchModel({ runId: 'run-switch', model: 'new-model', connection: 'openai' })).applied).toBe(false)
+    const result = await m.switchModel({ runId: 'run-switch', model: 'new-model' })
+    expect(result.applied).toBe(false)
+    expect(store.get('run-switch')?.modelSelection).toEqual({ model: 'new-model', connection: 'anthropic' })
+    expect(events).toContainEqual({ type: 'run.model', runId: 'run-switch', selection: { model: 'new-model', connection: 'anthropic' } })
+  })
   it('breaks a parent cycle in a record read from the store', () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m, store } = manager(p)
