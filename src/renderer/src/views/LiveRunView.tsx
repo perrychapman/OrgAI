@@ -864,6 +864,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   const selectedAgent = selectedAgentId ? agentLookup.get(selectedAgentId) : undefined
   const rootAgent = useMemo(() => agents.find((a) => a.parentId === null), [agents])
+  const returnToOffice = (id: string): void => {
+    selectAgent(null)
+    requestAnimationFrame(() => {
+      const body = bodyRef.current
+      const person = body?.querySelector<HTMLElement>(`[data-office-worker-id="${CSS.escape(id)}"]`)
+      if (person) { person.focus(); return }
+      const entry = body?.querySelector<HTMLElement>(`[data-office-agent-id="${CSS.escape(id)}"]`)
+      const directory = entry?.closest('details')
+      if (directory) directory.open = true
+      ;(entry ?? body?.querySelector<HTMLElement>('[data-testid="office-stage"]'))?.focus()
+    })
+  }
   // The root's transcript is the whole conversation: every session's root entries with a divider where each
   // continuation starts (model 2). Another agent's transcript is that one session's entries.
   const feed = useMemo(
@@ -1238,7 +1250,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         </div>
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} arrival={usageArrival}>
-          <div className="live-panel">
+          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent && !conversation ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent && !conversation) { event.preventDefault(); returnToOffice(selectedAgent.id) } }}>
+            {options.presentation === 'pocket-office' && selectedAgent && !conversation && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
             <TranscriptPanel
               runId={runId}
               tagRunId={chainIds[chainIds.length - 1]}
@@ -1249,6 +1262,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               logs={run.logs ?? []}
               finished={finishedGroup}
             />
+            {options.presentation === 'pocket-office' && selectedAgent && !conversation && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" tabIndex={0} aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
           </div>
         </SidePanel>
       </div>

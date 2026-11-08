@@ -906,15 +906,18 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 }}
               />
             ) : selectedRole ? (
+              <div className={options.presentation === 'pocket-office' ? 'office-inspector' : undefined} data-office-palette={options.scenePalette}>
+              {options.presentation === 'pocket-office' && <div className="office-inspector-action"><Button size="sm" testId="office-role-back" onClick={() => { const id = selectedRole.id; selectRole(null); setPanelTab('catalog'); returnToNode(id) }}>Back to office</Button></div>}
               <RoleInspector
                 project={project}
                 role={selectedRole}
                 notice={notice && notice.roleId === selectedRole.id ? notice.text : null}
                 onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
                 onRemove={() => void requestRemove(selectedRole.id)}
-                onEscape={() => returnToNode(selectedRole.id)}
+                onEscape={() => { const id = selectedRole.id; if (options.presentation === 'pocket-office') { selectRole(null); setPanelTab('catalog') } returnToNode(id) }}
                 onAskAssistant={() => openAssistant()}
               />
+              </div>
             ) : (
               <EmptyState compact icon={MousePointerClick} title="No role selected" description="Select a role on the chart to edit what it can use." testId="team-no-role" />
             )}
