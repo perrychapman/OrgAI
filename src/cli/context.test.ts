@@ -38,7 +38,7 @@ describe('reusableInproc', () => {
 describe('buildContext', () => {
   const tmp: string[] = []
   const fresh = (): string => {
-    const d = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-ctx-')))
+    const d = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-ctx-')))
     tmp.push(d)
     return d
   }

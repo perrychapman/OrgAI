@@ -92,7 +92,7 @@ describe('orgai routing', () => {
 
   it('builds the context from the globals', async () => {
     // Real path: on Windows the runner's temp folder is an 8.3 short name (RUNNER~1) that the context resolves.
-    const ud = join(realpathSync(mkdtempSync(join(tmpdir(), 'orgai-index-'))), 'ud')
+    const ud = join(realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-index-'))), 'ud')
     await run(['--data-dir', ud, '--project', 'p1', '--no-color', 'status'])
     const ctx = calls[0].ctx
     expect(ctx.paths).toEqual({ userDataDir: ud, dataDir: join(ud, 'data') })
