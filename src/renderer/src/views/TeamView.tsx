@@ -36,6 +36,8 @@ import RoleInspector from '../components/RoleInspector'
 import { layoutCanvas } from '../lib/layout'
 import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
+import { OfficeScene } from '../components/canvas/office/OfficeScene'
+import { withOfficeDepartments } from '../lib/office/departments'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { EDGE_TYPE, HEX_GAP, HEX_TILE, beginCanvasGlide, edgeStroke, fitMs, refitMs, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
@@ -172,6 +174,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const edgeMix = useCssVar('--canvas-edge-role-mix')
   const edgeInk = useCssVar('--canvas-edge-ink')
   const options = useCanvasOptions()
+  useEffect(() => {
+    if (options.presentation === 'pocket-office') flowRef.current = null
+  }, [options.presentation])
   const reducedMotion = useReducedMotion()
   const nodeDims = useNodeDims()
   const radial = options.layout === 'radial'
@@ -505,7 +510,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
 
   const onRootKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>): void => {
     const el = e.target as HTMLElement
-    if ((e.key === 'Enter' || e.key === ' ') && el.classList.contains('react-flow__node')) {
+    if ((e.key === 'Enter' || e.key === ' ') && (el.classList.contains('react-flow__node') || el.hasAttribute('data-office-agent-id') || el.hasAttribute('data-office-worker-id'))) {
       focusWanted.current = true
       setPanelOpen(true)
       setPanelTab('role')
@@ -514,7 +519,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }
 
   const returnToNode = useCallback((roleId: string) => {
-    rootRef.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`)?.focus()
+    rootRef.current?.querySelector<HTMLElement>(`[data-office-agent-id="${CSS.escape(roleId)}"], .react-flow__node[data-id="${CSS.escape(roleId)}"]`)?.focus()
   }, [])
 
   const addRole = (): void => {
@@ -667,9 +672,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 </div>
               )}
             </Popover>
-            <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
+            {options.presentation !== 'pocket-office' && <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
               Auto-layout
-            </Button>
+            </Button>}
             {/* Beside Auto-layout, in the button row: on the wrapped row with the note a 28 px button grew the toolbar
                 at 1024x640 and took that height from the Team assistant tray. */}
             <CanvasStyleButton testId="canvas-style-button" />
@@ -805,6 +810,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         </div>
         </div>
         <FrameStage>
+          {options.presentation === 'pocket-office' ? (
+            <OfficeScene mode="team" palette={options.scenePalette} agents={withOfficeDepartments(project.roles.map((role) => ({ id: role.id, name: role.name, parentId: role.reportsTo, status: 'Role' })))} messages={[]} selectedId={selectedRoleId ?? undefined} onSelect={(id) => { setSelectedEdgeId(null); selectRole(id); setPanelOpen(true); setPanelTab('role') }} onRemove={(id) => void requestRemove(id)} />
+          ) : (
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -835,6 +843,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             <Controls showInteractive={false} position="bottom-right" />
             <CanvasMinimap ariaLabel="Org chart minimap" />
           </ReactFlow>
+          )}
         </FrameStage>
         <FrameTray label={showCard ? 'Team files approval' : 'Team assistant'}>
           {showCard && filesStatus && (
@@ -861,7 +870,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         </FrameTray>
         <FrameFooter>
           <span>
-            {options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.
+            {options.presentation === 'pocket-office' ? 'Select a role to edit it. With a role focused, Enter edits it and Delete removes it.' : <>{options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</>}
           </span>
         </FrameFooter>
       </CanvasFrame>
