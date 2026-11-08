@@ -638,7 +638,7 @@ try {
     await shot(`team-blueprint-${theme}`)
   }
   await setAppearance({ theme: 'dark' }, { pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false })
-  await checkPocketOffice({ page, name: NAME, resizeTo, setAppearance, setCanvas, noPageScroll, shot })
+  await checkPocketOffice({ page, name: NAME, resizeTo, setAppearance, setCanvas, noPageScroll, shot, scriptFile })
 } catch (e) {
   check(false, 'canvas script ran to the end', e.stack ?? e.message)
 } finally {

@@ -1,7 +1,8 @@
 // Called by canvas.mjs so Pocket Office stays on the existing token-free CI path.
 import { check, endSession, openAppSettings, openProject, openTeam, projectTab, sleep } from './lib.mjs'
+import * as fs from 'node:fs'
 
-export async function checkPocketOffice({ page, name, resizeTo, setAppearance, setCanvas, noPageScroll, shot }) {
+export async function checkPocketOffice({ page, name, resizeTo, setAppearance, setCanvas, noPageScroll, shot, scriptFile }) {
   const scene = () => page.locator('[data-testid=office-scene]').first()
   const graph = { pattern: 'blueprint', layout: 'left-right', nodeStyle: 'compact', edges: 'orthogonal', minimap: true, tint: false }
   await setCanvas({ ...graph, presentation: 'graph', scenePalette: 'neutral' })
@@ -75,6 +76,31 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await prior.click()
   await page.getByText('First half done.', { exact: true }).first().waitFor({ timeout: 10_000 })
   check(await page.getByText('First half done.', { exact: true }).count() > 0, 'selecting an earlier report opens its original transcript')
+  // Exercise genuine normalized messages through the mock runtime while the office is mounted.
+  await endSession(page)
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 180, work: [
+    { type: 'spawn', id: 'office-a', name: 'office-a', description: 'Send the findings' },
+    { type: 'spawn', id: 'office-b', name: 'office-b', description: 'Receive the findings' },
+    ...Array.from({ length: 24 }, (_, i) => ({ type: 'message', from: 'office-a', to: 'office-b', text: `Actual office message ${i}: <script>plain text</script>` })),
+    { type: 'text', text: 'Office delivery fixture complete.' }
+  ] }))
+  await setAppearance({ reduceMotion: 'system' })
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor()
+  await page.locator('.composer textarea').fill('Office messages')
+  await page.locator('.composer textarea').press('Enter')
+  await scene().locator('[data-testid=office-caption]').first().waitFor({ timeout: 20_000 })
+  const delivery = scene().locator('[data-testid=office-deliveries]')
+  check(Number(await delivery.getAttribute('data-active')) <= 3 && Number(await delivery.getAttribute('data-queued')) <= 12, 'real message burst respects active and queued visual limits')
+  check(await scene().locator('[data-testid=office-caption] script').count() === 0, 'agent-authored message markup renders as text')
+  await shot('office-real-message')
+  await setAppearance({ reduceMotion: 'on' })
+  check(await delivery.getAttribute('data-active') === '0', 'turning on reduced motion stops traversal during a real burst')
+  await page.getByText('Office delivery fixture complete.', { exact: true }).first().waitFor({ timeout: 20_000 })
+  await setCanvas({ presentation: 'graph' })
+  await setCanvas({ presentation: 'pocket-office' })
+  check(await scene().locator('[data-testid=office-caption]').count() === 0, 'reopening after real messages does not replay captions')
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 300 }))
   await setCanvas({ presentation: 'graph' })
   await sleep(200)
   const restored = await page.evaluate(async () => (await window.orgai.settings.get()).appearance.canvas)
