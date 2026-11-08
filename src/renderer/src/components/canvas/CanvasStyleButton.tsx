@@ -64,7 +64,7 @@ export function CanvasStyleButton({ testId }: { testId?: string }): ReactElement
   return (
     <Popover
       label="Canvas style"
-      placement="bottom-end"
+      placement="bottom-start"
       triggerClassName="btn ghost sm canvas-style-trigger"
       triggerLabel="Canvas style"
       triggerTitle="Canvas style"

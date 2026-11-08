@@ -33,7 +33,7 @@
 .office-inspector { border-inline-start: 2px solid var(--office-border); }
 .office-inspector-action { padding: var(--space-2); color: var(--office-ink); background: var(--office-surface); border-block: 2px solid var(--office-border); }
 .office-inspector-action .btn { color: var(--office-ink); background: var(--office-surface); border-color: var(--office-border); border-radius: 0; }
-.office-inspector-messages { flex: 0 1 30%; min-height: 0; max-height: 160px; overflow: auto; padding: var(--space-2); color: var(--office-ink); background: var(--office-surface); border-top: 2px solid var(--office-border); overflow-wrap: anywhere; }
+.office-inspector-messages { flex: 0 1 30%; box-sizing: border-box; min-height: 0; max-height: 160px; overflow: auto; padding: var(--space-2); color: var(--office-ink); background: var(--office-surface); border-top: 2px solid var(--office-border); overflow-wrap: anywhere; }
 .office-inspector-messages:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .office-sample { align-items: center; justify-content: center; gap: var(--space-1); }
 .office-sample > p { margin: 0; }

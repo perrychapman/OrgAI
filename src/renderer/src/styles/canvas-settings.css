@@ -21,6 +21,7 @@
   padding-block: var(--space-2);
   background: var(--surface-0);
 }
+.canvas-section-body:not([data-presentation='pocket-office']) .canvas-section-preview { position: sticky; top: 0; z-index: var(--z-sticky); }
 
 .settings-scroll:has(.canvas-section) {
   scroll-padding-top: calc(160px + 2px + var(--space-2) * 2 + var(--space-4));
