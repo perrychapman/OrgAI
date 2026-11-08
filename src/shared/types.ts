@@ -3201,7 +3201,9 @@ export interface SwitchRunModelInput {
 }
 
 export interface SwitchRunModelResult {
+  /** May be a successor run after an explicit provider handoff; callers must follow its id. */
   run: RunSummary
+  /** True only when the returned run is using the selection. False may also mean saved for continuation (reason explains). */
   applied: boolean
   reason?: string
 }
@@ -3209,6 +3211,8 @@ export interface SwitchRunModelResult {
 export interface RunSummary {
   /** Runtime actually used by this run, retained when selecting a different adapter for continuation. */
   modelAdapter?: ProviderId
+  /** Main-owned original desktop conversation cap for model handoff accounting (positive USD only). */
+  conversationBudgetUsd?: number
   /** Root selection; on an ended/paused run applies to its next continuation. Never alters project defaults. */
   modelSelection?: { model: string; connection: ConnectionId }
   id: string
