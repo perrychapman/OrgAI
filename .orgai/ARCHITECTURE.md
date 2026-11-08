@@ -425,6 +425,8 @@ lib/theme.ts applies AppSettings.appearance to <html>. initTheme() runs in main.
 
 ### Canvas (themes, layouts, node styles)
 
+Pocket Office (`docs/design/pocket-office.md`) is an opt-in presentation alongside Graph, shared by Live, Team and the inert settings sample. `useCanvasOptions()` exposes presentation and scene palette (Color by default, with Neutral and Green); toggling presentation preserves graph preferences, and choosing a graph preset returns to Graph. `components/canvas/office/OfficeScene.tsx` renders original local atlases with integer sprite scaling and a readable roster; pure `lib/office/` helpers derive actual reporting-branch departments, stable desk slots, bounded deliveries and collision-safe building geometry. The root occupies a central area, department overflow uses explicit floors, and earlier agents keep session context and existing inspector routing. ResizeObserver updates floor bounds and invalidates obsolete visual routes without replay. This is renderer-only illustration of existing live messages, never a delivery gate or durable message history; Team roles and sample agents are static. The Python/Pillow atlas generator is an authoring tool, not a runtime dependency. Verification is recorded in `docs/agent-notes/renderer.md`.
+
 Spec `docs/design/canvas-themes.md` (phase A: node styles card and compact; phase B: station and hex, so every preset,
 Subway and Hive included, shows, plus a renderer-only "Default" gallery entry). Every React Flow canvas (Live run, Team editor, the settings sample) reads `useCanvasOptions()` and
 nothing else, draws `CanvasBackdrop` and `CanvasMinimap` inside `<ReactFlow>`, passes `data-layout` and
