@@ -1,0 +1,29 @@
+.live-model-switch {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.live-model-switch__summary, .live-model-switch__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.live-model-switch__editor {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.live-model-switch__editor .select {
+  width: 100%;
+  min-width: 0;
+}
+
+.live-model-switch__error {
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
