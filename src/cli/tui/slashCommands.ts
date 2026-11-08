@@ -213,6 +213,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       })
   },
   {
+    // The owning orgai's own card list; not the removed `orgai inbox` command (spec 4.1).
     name: 'inbox',
     aliases: ['tray', 'decisions'],
     summary: 'Focus the Decision Tray',
