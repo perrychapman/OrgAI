@@ -2,9 +2,14 @@
 
 > **Superseded in part (2026-11-08, `docs/design/cli-standalone-default.md`):** the desktop app and the `orgai` CLI share
 > nothing. The app has no socket, no `--headless-host` mode, no handoff and no Terminal access setting; the packaged app
-> does not contain the CLI; `orgai` runs in-process on its own data folder (`orgai-cli`). Read the sections below for the
-> CLI's command surface and the shared host code only; anything about the app serving terminals, a background host,
-> the handoff, `HostKind 'headless-host'` or Terminal access is history.
+> does not contain the CLI; `orgai` runs in-process on its own data folder. The CLI's data folder is `orgai-cli`
+> (override `--data-dir` / `ORGAI_CLI_DATA_DIR`; `ORGAI_DATA_DIR` is ignored) and its vault custody is `OrgAI CLI Vault` /
+> `ORGAI_CLI_VAULT_*` (cli-standalone-default.md 3.1 and 3.2), which replaces the shared vault design and any
+> `ORGAI_DATA_DIR` / `ORGAI_VAULT_*` / "OrgAI Vault" text below. Removed commands and flags (4.1, 4.3): `--host`,
+> `daemon`, `app`, `terminal-access`, `watch`, `inbox`, `decide`, `attach`, `runs message|interrupt|stop` and the `wait`
+> decision policies. See cli-standalone-default.md 4.3 for the current command table; use the sections below for the
+> shared host code only. Anything about the app serving terminals, a background host, the handoff or Terminal access
+> is history, and `HostKind 'headless-host'` survives only as a legacy value read as `desktop` (section 13).
 
 Status: implemented on wave7/standalone-cli (not merged), 2026-11-06. Written as draft 7, 2026-11-05, revised after
 review rounds 1-5; round 6 was folded in as binding implementation rules (13) (GPT Astra, Gemini Argon; resolutions in
