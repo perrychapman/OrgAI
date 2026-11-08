@@ -602,6 +602,10 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       daemonJson(env, { hostInstanceId: id, pid: child.pid!, endpoint: socketPathFor(env.dataDir, id), processStartTime: processStartTime(child.pid!), hostKind: 'node' as never })
       const err = await acquireHostOwnership(opts(env)).catch((e: unknown) => e)
       expect(err).toBeInstanceOf(HostAlreadyRunningError)
+      expect((err as HostAlreadyRunningError).info.legacyKind).toBe('node')
+      expect((err as Error).message).toContain('older OrgAI background process')
+      expect((err as Error).message).toContain(`pid ${child.pid}`)
+      expect((err as Error).message).toContain('Task Manager')
     } finally {
       child.kill('SIGKILL')
       await exited(child)
@@ -671,7 +675,7 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     })
 
     it.each(['refused', 'enoent'] as const)(
-      'never takes over from an unconfirmed pid whose daemon.json says listening: false, endpoint %s (Terminal access off, review M9 + M11)',
+      'never takes over from an unconfirmed pid whose daemon.json says listening: false, endpoint %s (the app never listens, review M9 + M11)',
       async (answer) => {
         const env = tempEnv()
         daemonJson(env, { hostInstanceId: '0d0d0d0d0d0d', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0d0d0d0d0d0d'), hostKind: 'desktop', listening: false })
@@ -687,7 +691,7 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     it.each(['desktop'] as const)(
       'an Electron launch holding the single-instance lock takes over from an unconfirmed %s pid whose daemon.json says listening: false (review M9 follow-up)',
       async (hostKind) => {
-        // A crashed desktop host with Terminal access off; Windows reused its pid for an elevated process.
+        // A crashed desktop host (it never listens); Windows reused its pid for an elevated process.
         const env = tempEnv()
         daemonJson(env, { hostInstanceId: '0f0f0f0f0f0f', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0f0f0f0f0f0f'), hostKind, listening: false })
         warnings.length = 0
@@ -1042,6 +1046,8 @@ describe('readDaemonInfo / parseDaemonInfo', () => {
   it("reads a record of the removed 'headless-host' kind as the desktop, and reads the removed 'node' kind as inproc", () => {
     expect(parseDaemonInfo({ ...good, hostKind: 'headless-host' })).toEqual({ ...good, hostKind: 'desktop' })
     expect(parseDaemonInfo({ ...good, hostKind: 'node' })?.hostKind).toBe('inproc')
+    expect(parseDaemonInfo({ ...good, hostKind: 'node' })?.legacyKind).toBe('node')
+    expect(parseDaemonInfo({ ...good, hostKind: 'inproc' })?.legacyKind).toBeUndefined()
     expect(parseDaemonInfo({ ...good, hostKind: 'bogus' })).toBeNull()
   })
   it('keeps listening only as an explicit false (review M11)', () => {

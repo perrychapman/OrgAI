@@ -275,9 +275,10 @@ export function isAppHostKind(kind: HostKind): boolean {
 class CommitError extends Error {
   constructor(
     readonly outcome: 'clean' | 'indeterminate',
-    readonly failure: unknown
+    readonly failure: unknown,
+    msg: VaultMessages = VAULT_MESSAGES
   ) {
-    super(outcome === 'indeterminate' ? VAULT_MESSAGES.notDurable : failure instanceof Error ? failure.message : String(failure))
+    super(outcome === 'indeterminate' ? msg.notDurable : failure instanceof Error ? failure.message : String(failure))
     this.name = 'CommitError'
   }
 }
@@ -288,11 +289,11 @@ class CommitError extends Error {
  */
 class VaultSaveError extends Error {
   readonly detail: string
-  constructor(e: unknown) {
+  constructor(e: unknown, msg: VaultMessages = VAULT_MESSAGES) {
     const indeterminate = e instanceof CommitError && e.outcome === 'indeterminate'
     const failure = e instanceof CommitError ? e.failure : e
     const detail = failure instanceof Error ? failure.message : 'error'
-    super(indeterminate ? VAULT_MESSAGES.notDurable : vaultSaveFailedMessage(detail))
+    super(indeterminate ? msg.notDurable : vaultSaveFailedMessage(detail))
     this.detail = detail
     this.name = 'VaultSaveError'
   }
@@ -334,6 +335,10 @@ export class SecretStore implements SecretStoreApi {
   private readonly isApp: boolean
   private readonly product: VaultProduct
   private readonly msg: VaultMessages
+  /** This store's product sentences (the app's or the orgai command's). */
+  get messages(): VaultMessages {
+    return this.msg
+  }
   private readonly readOnly: boolean
   /** key -> plain value, memory only. */
   private readonly overlay = new Map<string, string>()
@@ -716,12 +721,12 @@ export class SecretStore implements SecretStoreApi {
         this.writeStep(step)
       } catch (e) {
         const clean = i === 0 && (!(e instanceof DurableFsError) || e.outcome === 'unchanged')
-        if (clean) throw new CommitError('clean', e)
+        if (clean) throw new CommitError('clean', e, this.msg)
         this.log(`a save may not be durable (${e instanceof Error ? e.message : 'error'}); re-reading from disk`)
         this.recoveryRequired = true
         if (this.recovering) this.reloadForRecovery()
         else this.tryRecover()
-        throw new CommitError('indeterminate', e)
+        throw new CommitError('indeterminate', e, this.msg)
       }
     }
   }
@@ -1346,7 +1351,7 @@ export class SecretStore implements SecretStoreApi {
         created
       }
       this.reload()
-      throw new VaultSaveError(new Error(fileReadFailedMessage(VAULT_FILE, onDisk.code, this.product)))
+      throw new VaultSaveError(new Error(fileReadFailedMessage(VAULT_FILE, onDisk.code, this.product)), this.msg)
     }
     if (onDisk.kind !== 'absent' || this.vstate !== 'absent') {
       zeroize(created.dek)
@@ -1389,7 +1394,7 @@ export class SecretStore implements SecretStoreApi {
         this.vault = undefined
         this.vstate = 'absent'
       } else zeroize(keep)
-      throw new VaultSaveError(e)
+      throw new VaultSaveError(e, this.msg)
     }
     zeroize(keep)
     this.vstate = 'open'
@@ -1744,7 +1749,7 @@ export class SecretStore implements SecretStoreApi {
     })
     if (moved.legacy) this.log(`secrets.json moved aside to ${moved.legacy}`)
     if (moved.vault) this.log(`vault.json moved aside to ${moved.vault}`)
-    if (!moved.durable) throw new Error(VAULT_MESSAGES.notDurable)
+    if (!moved.durable) throw new Error(this.msg.notDurable)
     return { movedTo: moved.vault, ...(moved.legacy ? { legacyMovedTo: moved.legacy } : {}), status: await this.statusReport() }
   }
 

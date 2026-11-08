@@ -37,7 +37,7 @@ import {
   type FaultMode,
   type FsBoundary
 } from './vaultTesting'
-import { VAULT_MESSAGES, type VaultFile } from './vaultTypes'
+import { CLI_VAULT_MESSAGES, VAULT_MESSAGES, type VaultFile } from './vaultTypes'
 
 let root: string
 let dataDir: string
@@ -310,6 +310,18 @@ describe('review round 2, major: an explicit clear reports a failed save (5.5 Du
       }
     }
     expect(runs).toBeGreaterThan(6)
+  })
+
+  it('an indeterminate save in the orgai command says how to check (the CLI wording), the app does not', async () => {
+    const f = faultFs()
+    const s = await app({ fs: f.fs, product: 'cli' })
+    f.arm()
+    s.set('k', 'x')
+    const at = boundaryIndex(f.events, { op: 'rename' }, 2)
+    f.arm(at, 'fail-from')
+    expect(() => s.set('k', 'y')).toThrow(CLI_VAULT_MESSAGES.notDurable)
+    expect(CLI_VAULT_MESSAGES.notDurable).toContain('orgai secrets status')
+    expect(VAULT_MESSAGES.notDurable).not.toContain('orgai secrets status')
   })
 
   it('a clear while a failed save is not reconciled yet refuses with the recovery message; a removal does not throw', async () => {

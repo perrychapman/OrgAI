@@ -353,7 +353,7 @@ describe('bootOrgAIHost', () => {
     await h.runs.stopAll({ reason: 'quit' })
   })
 
-  it('a non-forced stop (idle exit, `orgai daemon stop`) ends a run that only waits on the user, written as cut by the app before the release', async () => {
+  it('a non-forced stop (a stop request) ends a run that only waits on the user, written as cut by the app before the release', async () => {
     const own = fakeOwnership()
     const h = boot({ ownership: own, hostKind: 'inproc' })
     const atRelease: (RunSummary | null)[] = []

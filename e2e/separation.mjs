@@ -13,7 +13,7 @@
 //      held orgai exec untouched.
 //   d. Libraries: an MCP library entry added in the app is in A's mcp-library.json only; one added by the orgai command is
 //      in B's only; each product lists only its own.
-//   e. Secrets and vault custody: the app has its own key file (ORGAI_VAULT_KEY_FILE, the CLI's variable is set in its
+//   e. Secrets and vault custody (the app's own names are asserted by a unit test this script runs): the app has its own key file (ORGAI_VAULT_KEY_FILE, the CLI's variable is set in its
 //      environment too and ignored) and the CLI its own (ORGAI_CLI_VAULT_KEY_FILE); each status reports its own file and
 //      its own vault id; a secret saved by one is counted only in its own vault.json; with no key file set, the CLI's
 //      doctor names its own key store (OrgAI CLI Vault on macOS, not the app's "OrgAI Vault").
@@ -21,9 +21,10 @@
 //      at once with exit 6. The app, started on B, refuses it ("belongs to the orgai command line tool", exit 2, its
 //      dialog text recorded by e2e/dialog-stub.cjs instead of shown) before it writes anything there: B's top-level
 //      listing is the same before and after.
+//      The app also refuses a folder whose data/ is a CLI folder (its parent) and one whose data entry links into one.
 //   g. Quitting the app leaves the orgai command running and owning B; `orgai status` answers beside it; relaunching the app
 //      works; stopping the orgai command (SIGINT; skipped on Windows, where it is a hard kill) leaves the app running.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -48,6 +49,9 @@ const DIALOG_LOG = path.join(keyDir, 'dialog.log')
 // A one-hour pause between the exec-slow steps: the hold ends only when the script interrupts it.
 const HOLD_SCRIPT = path.join(keyDir, 'hold.json')
 fs.writeFileSync(HOLD_SCRIPT, JSON.stringify({ delayMs: 3_600_000 }))
+// The app is started hidden here (a local hook may also hide it; CI relies on this variable).
+process.env.ORGAI_WINDOW_HIDDEN = '1'
+const PARENT = privateTempDir('orgai-e2e-sepp-')
 const APP_PROJECT = 'SepAppProject'
 const APP_LIB = 'sep-app-lib'
 const CLI_LIB = 'sep-cli-lib'
@@ -243,6 +247,23 @@ try {
   check(nested.code === 2 && /belongs to the orgai command line tool/.test(nested.dialog), 'the app refuses a folder inside B too', `${nested.code} ${nested.dialog.slice(0, 120)}`)
   check(JSON.stringify(topLevel(path.join(B, 'data'))) === JSON.stringify(dataB) && !fs.existsSync(path.join(B, 'data', 'product.json')), 'nothing was written inside B/data (no desktop marker, same listing)')
 
+  // A CLI folder named `data` (its own data folder is data/data): the app refuses its parent, and a folder whose `data`
+  // links into it, and writes nothing in either.
+  const cliData = path.join(PARENT, 'data')
+  const made = await cli(['secrets', 'status', '--output-format', 'json'], { env: { ORGAI_CLI_DATA_DIR: cliData } })
+  check(made.code === 0 && readJson(path.join(cliData, 'product.json'))?.product === 'orgai-cli', 'the orgai command can use a folder named data', `${made.code} ${made.err.slice(0, 200)}`)
+  fs.mkdirSync(path.join(cliData, 'data'), { recursive: true })
+  const parentBefore = topLevel(PARENT)
+  const onParent = await appOn(PARENT)
+  check(onParent.code === 2 && /belongs to the orgai command line tool/.test(onParent.dialog), 'the app refuses a folder whose data/ is a CLI folder', `${onParent.code} ${onParent.dialog.slice(0, 120)}`)
+  check(JSON.stringify(topLevel(PARENT)) === JSON.stringify(parentBefore) && !fs.existsSync(path.join(PARENT, 'product.json')), 'nothing was written beside it (no desktop marker)')
+  const linkFolder = path.join(PARENT, 'link')
+  fs.mkdirSync(linkFolder)
+  fs.symlinkSync(path.join(cliData, 'data'), path.join(linkFolder, 'data'), 'junction')
+  const onLink = await appOn(linkFolder)
+  check(onLink.code === 2 && /belongs to the orgai command line tool/.test(onLink.dialog), 'the app refuses a folder whose data entry links into a CLI folder', `${onLink.code} ${onLink.dialog.slice(0, 120)}`)
+  check(!fs.existsSync(path.join(linkFolder, 'product.json')), 'and marks nothing there')
+
   // ---------- quitting one leaves the other ----------
   await session.app.close().catch(() => {})
   await sleep(1500)
@@ -291,6 +312,9 @@ try {
   const vaultA = read(path.join(A, 'data', 'vault.json'))
   const vaultB = read(path.join(B, 'data', 'vault.json'))
   check(vaultA.length > 0 && vaultB.length > 0 && vaultA !== vaultB && !vaultA.includes('cli-secret-value') && !vaultB.includes('app-secret-value'), 'each vault.json holds only its own product\'s secrets')
+  // The app's custody names (OrgAI Vault, ORGAI_VAULT_*) are asserted by the unit test, run from here so this script fails when they change.
+  const names = spawnSync(process.execPath, [path.join(APP_DIR, 'node_modules', 'vitest', 'vitest.mjs'), 'run', 'src/main/store/vaultTypes.test.ts', '-t', 'product custody names'], { cwd: APP_DIR, encoding: 'utf8' })
+  check(names.status === 0, 'the app keeps its own custody names (OrgAI Vault, ORGAI_VAULT_*) apart from the CLI\'s', (names.stdout + names.stderr).slice(-300))
   // Custody names: with no key file set, the CLI's doctor names the CLI's own key store, never the app's.
   const doctor = await cli(['doctor', '--output-format', 'json'], { env: { ORGAI_CLI_DATA_DIR: C, ORGAI_CLI_VAULT_KEY_FILE: undefined } })
   const custody = /"id":\s*"vault-custody"[^}]*?"detail":\s*"((?:[^"\\]|\\.)*)"/.exec(doctor.out)?.[1] ?? ''
@@ -302,6 +326,6 @@ try {
   await cleanup(session?.app, session?.page, APP_PROJECT)
   removeFixture(repoA)
   removeFixture(repoB)
-  for (const d of [path.dirname(B), path.dirname(C), keyDir]) fs.rmSync(d, { recursive: true, force: true })
+  for (const d of [path.dirname(B), path.dirname(C), keyDir, PARENT]) fs.rmSync(d, { recursive: true, force: true })
 }
 finish('separation')

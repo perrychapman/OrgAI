@@ -16,8 +16,12 @@
 //       main.log, and a polite quit (SIGTERM; taskkill without /F on Windows) removes daemon.json again. This is the
 //       one check that starts the app; the child env has no ORGAI_VAULT_*, ORGAI_CLI_*, ORGAI_SECRET_* or ORGAI_DAEMON_*
 //       variable and macOS gets --use-mock-keychain, so it touches nothing of the user's; it also starts the macOS certificate-reader child (RunAsNode) as any launch does.
+//   (f) the certificate reader's way of starting works: the packed binary run with ELECTRON_RUN_AS_NODE=1 (as the app
+//       starts its certificate reader child) executes a script and prints its answer
+//   (g) the bundled Claude and Codex binaries for this platform, unpacked beside app.asar, start (`--version`)
+//       Both are run directly, never through the CLI.
 // The orgai npm package has its own check, scripts/verify-npm.mjs.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -128,9 +132,69 @@ export async function bootCheck(binary, deps = {}) {
   }
 }
 
+/** The environment the probes run in: no ORGAI_* variable of the developer reaches them. */
+function probeEnv(extra = {}) {
+  const env = { ...process.env, ...extra }
+  delete env.NODE_OPTIONS
+  for (const k of Object.keys(env)) if (/^ORGAI_/.test(k)) delete env[k]
+  return env
+}
+
+/** (f): the packed binary as a plain Node (ELECTRON_RUN_AS_NODE=1), the way the certificate reader child is started. */
+export function certReaderCheck(binary, run = spawnSync) {
+  const script = "process.stdout.write('cert-reader-ok ' + typeof require('node:tls').getCACertificates)"
+  const r = run(binary, ['-e', script], { env: probeEnv({ ELECTRON_RUN_AS_NODE: '1' }), cwd: os.tmpdir(), encoding: 'utf8', timeout: 30_000, windowsHide: true })
+  const out = String(r.stdout ?? '')
+  if (r.error) return { ok: false, detail: `could not run ${binary} as Node: ${r.error.message}` }
+  if (r.status !== 0 || !out.startsWith('cert-reader-ok')) return { ok: false, detail: `exit ${r.status}${r.signal ? ` (${r.signal})` : ''}: ${(out + String(r.stderr ?? '')).trim().slice(-200)}` }
+  return { ok: true, detail: `the packed binary runs as Node (${out.trim()})` }
+}
+
+/** The unpacked Claude and Codex binaries for a platform: [{ name, file }]. Pure apart from reading folders. */
+export function agentBinaries(nodeModules, platform = process.platform, arch = process.arch) {
+  const exe = platform === 'win32' ? '.exe' : ''
+  const mine = (dir) => dir.includes(platform) && dir.includes(arch)
+  const list = (d) => {
+    try {
+      return fs.readdirSync(d)
+    } catch {
+      return []
+    }
+  }
+  const found = []
+  for (const dir of list(path.join(nodeModules, '@anthropic-ai')).filter((d) => d.startsWith('claude-agent-sdk-') && mine(d))) {
+    const file = path.join(nodeModules, '@anthropic-ai', dir, `claude${exe}`)
+    if (fs.existsSync(file)) found.push({ name: 'claude', file })
+  }
+  for (const dir of list(path.join(nodeModules, '@openai')).filter((d) => d.startsWith('codex-') && mine(d))) {
+    const vendor = path.join(nodeModules, '@openai', dir, 'vendor')
+    for (const triple of list(vendor)) {
+      const file = path.join(vendor, triple, 'bin', `codex${exe}`)
+      if (fs.existsSync(file)) found.push({ name: 'codex', file })
+    }
+  }
+  return found
+}
+
+/** (g): each bundled agent binary answers `--version`. Both must be present for this platform. */
+export function agentBinaryCheck(nodeModules, platform = process.platform, arch = process.arch, run = spawnSync) {
+  const bins = agentBinaries(nodeModules, platform, arch)
+  const problems = []
+  for (const name of ['claude', 'codex']) if (!bins.some((b) => b.name === name)) problems.push(`no ${name} binary for ${platform}-${arch} in app.asar.unpacked`)
+  const versions = []
+  for (const b of bins) {
+    const r = run(b.file, ['--version'], { env: probeEnv(), cwd: os.tmpdir(), encoding: 'utf8', timeout: 30_000, windowsHide: true })
+    const out = String(r.stdout ?? '').trim().split('\n')[0]
+    if (r.error || r.status !== 0 || !out) problems.push(`${b.name} --version failed${r.error ? ` (${r.error.message})` : ` (exit ${r.status}): ${String(r.stderr ?? '').trim().slice(-120)}`}`)
+    else versions.push(`${b.name} ${out}`)
+  }
+  return problems.length ? { ok: false, detail: problems.join('; ') } : { ok: true, detail: versions.join(', ') }
+}
+
 /** Asks the app to quit the way a user would: SIGTERM runs its shutdown; Windows has no signals, so taskkill without /F. */
 function politeQuit(child) {
-  if (process.platform === 'win32') spawn('taskkill', ['/PID', String(child.pid), '/T'], { stdio: 'ignore', windowsHide: true })
+  // The system taskkill by absolute path (no PATH or current-folder lookup), run from the temp folder.
+  if (process.platform === 'win32') spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T'], { stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() })
   else child.kill('SIGTERM')
 }
 
@@ -139,7 +203,7 @@ function politeQuit(child) {
  * listAsar (file -> entries).
  */
 export async function main(argv = process.argv.slice(2), deps = {}) {
-  const { root = ROOT, platform = process.platform, arch = process.arch, log = console.log, list = listAsar, boot = bootCheck } = deps
+  const { root = ROOT, platform = process.platform, arch = process.arch, log = console.log, list = listAsar, boot = bootCheck, certReader = certReaderCheck, agents = agentBinaryCheck } = deps
   let opts
   try {
     opts = parseArgs(argv)
@@ -192,6 +256,14 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     const r = await boot(paths.appBinary)
     report('(e) packed app boots', r.ok, r.detail)
   } else report('(e) packed app boots', false, 'skipped: no app binary')
+
+  // (f) and (g): the certificate reader's start and the bundled agent binaries, run directly
+  if (fs.existsSync(paths.appBinary)) {
+    const f = certReader(paths.appBinary)
+    report('(f) certificate reader starts', f.ok, f.detail)
+  } else report('(f) certificate reader starts', false, 'skipped: no app binary')
+  const g = agents(nodeModules, platform, arch)
+  report('(g) claude and codex start', g.ok, g.detail)
 
   const failed = results.filter((r) => !r.ok)
   log(failed.length ? `${failed.length} check(s) failed.` : 'All checks passed.')

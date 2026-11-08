@@ -242,7 +242,22 @@ export function desktopFolderRefusal(userDataDir: string, opts: DesktopFolderOpt
   if (insideCliMarkedFolder(userDataDir)) return done({ refusal: cliFolderRefusal(userDataDir) })
   if (opts.cliDefault) {
     if (isInside(realExisting(userDataDir), opts.cliDefault, platform)) return done({ refusal: cliFolderRefusal(userDataDir) })
-    if (isInside(opts.cliDefault, realExisting(userDataDir), platform)) return done({ refusal: containsCliRefusal(userDataDir) })
+    // Containing a CLI folder that does not exist is harmless (an app setup from before the CLI existed keeps working).
+    if (existsSync(opts.cliDefault) && isInside(opts.cliDefault, realExisting(userDataDir), platform)) return done({ refusal: containsCliRefusal(userDataDir) })
+  }
+  // The app's data subfolder is `<userDataDir>/data` by its real path (same rules as checkCliFolder, mirrored).
+  const dataDir = join(userDataDir, 'data')
+  if (existsSync(dataDir)) {
+    const fold = platform === 'win32' || platform === 'darwin'
+    const norm = (p: string): string => (fold ? p.toLowerCase() : p)
+    const api = platform === 'win32' ? win32 : posix
+    if (norm(real(dataDir)) !== norm(api.join(real(userDataDir), 'data'))) return done({ refusal: cliFolderRefusal(userDataDir) })
+    const dm = readProductMarker(dataDir)
+    if (dm.state === 'marked' && dm.product === 'orgai-cli') return done({ refusal: cliFolderRefusal(userDataDir) })
+    if (insideCliMarkedFolder(dataDir)) return done({ refusal: cliFolderRefusal(userDataDir) })
+    if (opts.cliDefault && (isInside(dataDir, opts.cliDefault, platform) || isInside(opts.cliDefault, dataDir, platform))) {
+      return done({ refusal: cliFolderRefusal(userDataDir) })
+    }
   }
   if (marker.state === 'invalid') {
     if (opts.isDefault) return done({ warning: `${join(userDataDir, PRODUCT_MARKER_FILE)} cannot be read or is not an OrgAI marker; it was left as it is.` })

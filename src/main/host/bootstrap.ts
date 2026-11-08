@@ -150,8 +150,7 @@ export interface BootOrgAIHostOptions {
   housekeeping?: Partial<HousekeepingSteps>
   /**
    * Called once a shutdown released ownership (Wave 7, cli-standalone.md 4.3: after the writers settled and the socket
-   * closed, or at the hard limit): the process may exit now. Desktop: quit the app; inproc: resolve `closed`; Node host:
-   * exit the process.
+   * closed, or at the hard limit): the process may exit now. Desktop: quit the app; inproc: resolve `closed`.
    */
   onDrained?: (info: ShutdownReleaseInfo) => void
   /**
@@ -162,7 +161,7 @@ export interface BootOrgAIHostOptions {
   /**
    * The shutdown's hard limit (4.3): once the host's descendants are gone, end the process (its exit hook releases
    * ownership), so no writer of this host can run after the data folder is given up. Every real entry point passes one
-   * (desktop: process.exit; inproc and Node hosts: startInprocHost's, which tells the terminal and exits);
+   * (desktop: process.exit; inproc: startInprocHost's, which tells the terminal and exits);
    * absent (tests) = release, then onDrained.
    */
   exitAtHardLimit?: () => void

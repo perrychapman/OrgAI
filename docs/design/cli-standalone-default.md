@@ -201,8 +201,9 @@ lives here and in the command table (`orgai help exec`, `orgai help tui`, `orgai
 - `scripts/verify-pack.mjs`: drops (c)-(g) (app-bundled CLI and CLI-spawns-app); adds "no `out/cli` in app.asar or
   app.asar.unpacked, no `bin/orgai`", keeps the check that the desktop's runtime packages (Claude Agent SDK, Codex, zod)
   are unpacked, and adds a token-free boot of the packed app (temp `ORGAI_DATA_DIR`, `ORGAI_MOCK=1`,
-  `ORGAI_WINDOW_HIDDEN=1`: `daemon.json` `ready`, `main.log` written, clean quit). The certificate reader child and the
-  Claude and Codex binaries are exercised only as far as that ordinary boot reaches them; they have no check of their own.
+  `ORGAI_WINDOW_HIDDEN=1`: `daemon.json` `ready`, `main.log` written, clean quit), and keeps the desktop checks directly,
+  without the CLI: the packed binary run with `ELECTRON_RUN_AS_NODE=1` executes a script (the certificate reader's
+  start), and the unpacked Claude and Codex binaries for the platform answer `--version`.
 - `scripts/verify-npm.mjs` (phase 1): calls without `--host`, its shared helpers move out of `verify-pack.mjs` into a
   small module both import; adds "a fresh install writes `orgai-cli/product.json`" and "`ORGAI_DATA_DIR` is ignored".
 
@@ -310,5 +311,5 @@ its area, review) before the next.
 
 ## 12. Changes made while implementing
 
-- 2026-11-08, phase 2 (App separation). Section 5.2 first kept the desktop's separate "certificate reader" and "Claude and Codex startup" checks in `verify-pack.mjs`. The implementation replaced them with the single token-free boot of the packed app (check (e)); the certificate reader child and the bundled Claude and Codex binaries are exercised only as far as an ordinary launch reaches them and have no check of their own (5.2 now says so). This was an implementer decision, not an owner decision, taken because the old checks ran the bundled CLI to reach those binaries. Reverting means adding checks that the packed app's certificate reader runs and that the bundled binaries start; that is open for the owner to confirm.
+- 2026-11-08, phase 2 (App separation). Section 5.2's separate "certificate reader" and "Claude and Codex startup" checks stay in `verify-pack.mjs` as checks (f) and (g), run on the packed files directly (not through the CLI), as draft 5 said.
 - The CI `pack:verify` step stays `continue-on-error` until check (e) has passed once on both runners (the Windows quit has never run).

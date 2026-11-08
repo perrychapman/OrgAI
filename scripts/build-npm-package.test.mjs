@@ -175,35 +175,6 @@ test('main refuses a stale bundle and a link in it', () => {
   }
 })
 
-test('write-install-info --electron-builder writes channel app, runs the local electron-builder, then removes it', () => {
-  const root = fakeRepo()
-  try {
-    const cli = path.join(root, 'out', 'cli')
-    fs.rmSync(path.join(cli, 'install.json'))
-    // No electron-builder installed: refused before anything is written.
-    assert.throws(() => writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--mac'], root, () => {}, {}, () => {}), /electron-builder is not installed/)
-    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false)
-    const eb = path.join(root, 'node_modules', 'electron-builder')
-    fs.mkdirSync(eb, { recursive: true })
-    fs.writeFileSync(path.join(eb, 'package.json'), JSON.stringify({ bin: { 'electron-builder': 'cli.js' } }))
-    const calls = []
-    const seen = []
-    const exec = (cmd, args, opts) => {
-      calls.push({ cmd, args, cwd: opts.cwd })
-      seen.push(JSON.parse(fs.readFileSync(path.join(cli, 'install.json'), 'utf8')))
-    }
-    writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--mac', '--arm64'], root, () => {}, { GITHUB_SHA: 'd'.repeat(40) }, exec)
-    assert.deepEqual(calls, [{ cmd: process.execPath, args: [path.join(eb, 'cli.js'), '--mac', '--arm64'], cwd: root }])
-    assert.deepEqual(seen, [{ channel: 'app', version: '9.9.9', commit: 'dddddddddddd' }], 'install.json is in place while electron-builder runs')
-    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false, 'removed afterwards')
-    // A failed build still removes it.
-    assert.throws(() => writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--win'], root, () => {}, {}, () => { throw new Error('builder failed') }), /builder failed/)
-    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false)
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
-  }
-})
-
 test('the npm run dist scripts run electron-builder directly: the app ships no CLI bundle, so no install.json', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'))
   const dist = Object.entries(pkg.scripts).filter(([k]) => k === 'dist' || k.startsWith('dist:'))

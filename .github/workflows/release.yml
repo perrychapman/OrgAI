@@ -179,7 +179,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # The npm tarball, built once from this commit's CLI bundle (the same vite.cli.config.ts the app's build uses).
+  # The npm tarball, built once from this commit's CLI bundle (vite.cli.config.ts; the desktop app's build has no CLI bundle).
   npm-package:
     needs: meta
     runs-on: ubuntu-latest

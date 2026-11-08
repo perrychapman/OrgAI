@@ -26,7 +26,7 @@ describe('appSettingValueProblem', () => {
     for (const f of APP_SETTINGS_PROPOSABLE_FIELDS) expect(APP_SETTING_FIELD_LABELS[f]).toBeTruthy()
   })
   it('refuses unknown and main-owned fields', () => {
-    for (const f of ['defaultConnection', 'proxies', 'terminalServer', 'modelPrices', 'connections', '__proto__', 42]) {
+    for (const f of ['defaultConnection', 'proxies', 'modelPrices', 'connections', '__proto__', 42]) {
       expect(appSettingValueProblem(f, 'x')).toMatch(/not a setting/)
     }
   })

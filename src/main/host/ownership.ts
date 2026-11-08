@@ -137,6 +137,11 @@ export function runDirHint(runDir: string): string {
   return `If you are sure no OrgAI (and no orgai terminal host) is running for this data folder, delete the folder ${runDir}, then start OrgAI again.`
 }
 
+/** The text for a background host of an older OrgAI version that is still alive: no window, nothing in this version can quit it. */
+export function legacyNodeHostMessage(pid: number): string {
+  return `An older OrgAI background process (pid ${pid}) is still running for this data folder. It has no window. End it (on macOS or Linux run: kill ${pid}; on Windows end the process in Task Manager), then start OrgAI again.`
+}
+
 /** A live host already owns the data dir (its daemon.json pid is live, or its endpoint answers). */
 export class HostAlreadyRunningError extends HostOwnershipError {
   constructor(
@@ -145,7 +150,9 @@ export class HostAlreadyRunningError extends HostOwnershipError {
   ) {
     super(
       'already_running',
-      `OrgAI is already running for this data folder (pid ${info.pid}, ${info.hostKind ?? 'host'} ${info.hostInstanceId}).${runDir ? ` ${runDirHint(runDir)}` : ''}`
+      info.legacyKind === 'node'
+        ? legacyNodeHostMessage(info.pid)
+        : `OrgAI is already running for this data folder (pid ${info.pid}, ${info.hostKind ?? 'host'} ${info.hostInstanceId}).${runDir ? ` ${runDirHint(runDir)}` : ''}`
     )
     this.name = 'HostAlreadyRunningError'
   }
@@ -344,6 +351,7 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
     state: state as HostState,
     startedAt,
     ...(kind !== undefined ? { hostKind: kind as HostKind } : {}),
+    ...(hostKind === 'node' ? { legacyKind: 'node' as const } : {}),
     ...(appVersion !== undefined ? { appVersion } : {}),
     ...(cwd !== undefined ? { ownerCwd: cwd } : {})
   }

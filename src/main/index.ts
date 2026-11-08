@@ -342,11 +342,13 @@ app.whenReady().then(async () => {
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     log.error(`Host ownership failed: ${message}`)
-    if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
+    if (e instanceof HostAlreadyRunningError && e.info.legacyKind === 'node') {
+      dialog.showErrorBox('An older OrgAI is still running', message)
+    } else if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
       dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI using this data folder, then start OrgAI again.`)
     } else if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable' && e.ownerPid !== undefined) {
-      // A record the app cannot read that still names a live process: another OrgAI process (an older one) holds the folder.
-      dialog.showErrorBox('OrgAI is already running', `Another OrgAI process (pid ${e.ownerPid}) holds this data folder:\n${dataDir}\n\nQuit it, then start OrgAI again.`)
+      // A record the app cannot read that names a process that may still be running (the pid may also have been reused by an unrelated program).
+      dialog.showErrorBox('OrgAI may already be running', `Another OrgAI process (pid ${e.ownerPid}) may still be running for this data folder:\n${dataDir}\n\n${message}`)
     } else {
       // Every other failure (an unsafe or unwritable run folder, a full disk) would otherwise quit with no window at all.
       dialog.showErrorBox(

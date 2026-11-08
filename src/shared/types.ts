@@ -6369,6 +6369,8 @@ export interface DaemonInfo {
   appVersion?: string
   /** The owning process's cwd at boot (written by the orgai CLI; absent for older records and the desktop). */
   ownerCwd?: string
+  /** Set when the record said hostKind 'node' (a background host of an older version, read as 'inproc'). Never written. */
+  legacyKind?: 'node'
 }
 
 /** Step 1 of the handshake: host -> client, sent immediately on socket connect. */
@@ -6981,8 +6983,7 @@ export type CustodyFailureKind = 'unavailable' | 'locked' | 'missing' | 'denied'
 
 /**
  * SecretStore.status(key) (5.4): 'set' (readable here), 'unset' (stored nowhere, or deleted), or unreadable with the
- * reason to show ("Saved by the OrgAI app and not yet shared with the orgai command: quit orgai, open the OrgAI app once, then start orgai again", "The secret
- * vault is locked: ..."). Never the value.
+ * reason to show ("This saved secret cannot be decrypted on this computer account. Enter it again", "Secure storage is locked: ..."). Never the value.
  */
 export type SecretStatus = 'set' | 'unset' | { unreadable: string }
 
@@ -7107,7 +7108,7 @@ export interface SecretsUndeleteInput {
 
 export interface SecretsUndeleteResult {
   restored: boolean
-  /** Why it was not restored ("This deleted secret was saved by the OrgAI app; open the app to restore it"). */
+  /** Why it was not restored ("This deleted secret cannot be restored here"). */
   reason?: string
 }
 
@@ -7147,7 +7148,7 @@ export type SecretsIpcChannel = (typeof SECRETS_IPC)[keyof typeof SECRETS_IPC]
 export interface UnreadableSecretSlot {
   /** The slot name (an env var or header name). Never a value. */
   name: string
-  /** SecretStatus.unreadable: "Saved by the OrgAI app and not yet shared with the orgai command: quit orgai, open the OrgAI app once, then start orgai again", ... */
+  /** SecretStatus.unreadable: "This saved secret cannot be decrypted on this computer account. Enter it again", ... */
   reason: string
 }
 

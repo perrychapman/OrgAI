@@ -28,3 +28,17 @@ describe('vault format helpers (cli-standalone.md 5.2, 5.3)', () => {
     expect(VAULT_RETIREMENT_ENABLED).toBe(false)
   })
 })
+
+describe('product custody names', () => {
+  it('the desktop keeps its own names, apart from the CLI\'s', async () => {
+    const { vaultNames } = await import('./vaultTypes')
+    const d = vaultNames('desktop')
+    const c = vaultNames('cli')
+    expect(d.keychainService).toBe('OrgAI Vault')
+    expect(d.keyFileEnv).toBe('ORGAI_VAULT_KEY_FILE')
+    expect(d.noOsKeystoreEnv).toBe('ORGAI_VAULT_NO_OS_KEYSTORE')
+    expect(c.keychainService).toBe('OrgAI CLI Vault')
+    expect(c.keyFileEnv).toBe('ORGAI_CLI_VAULT_KEY_FILE')
+    expect(c.dpapiEntropyPrefix).not.toBe(d.dpapiEntropyPrefix)
+  })
+})

@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { bareImports, isNodeBuiltin, packageOf, packagedPaths } from './lib/packLayout.mjs'
-import { bootCheck, cliEntriesInAsar, main, parseArgs } from './verify-pack.mjs'
+import { agentBinaries, agentBinaryCheck, bootCheck, certReaderCheck, cliEntriesInAsar, main, parseArgs } from './verify-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..')
 
@@ -142,7 +142,7 @@ function fakeRelease({ unpacked = ['@anthropic-ai/claude-agent-sdk', '@openai/co
 
 async function runMain(fake, list, boot = async () => ({ ok: true, detail: 'fake boot' })) {
   const lines = []
-  const code = await main(['--release', fake.release], { root: ROOT, log: (l) => lines.push(l), list, boot })
+  const code = await main(['--release', fake.release], { root: ROOT, log: (l) => lines.push(l), list, boot, certReader: () => ({ ok: true, detail: 'fake' }), agents: () => ({ ok: true, detail: 'fake' }) })
   fs.rmSync(fake.base, { recursive: true, force: true })
   return { code, out: lines.join('\n') }
 }
@@ -268,5 +268,58 @@ test('bootCheck: an app that exits at once, or never quits, fails', { skip: proc
     assert.match(stuck.detail, /did not quit cleanly/)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('main: a failing certificate reader or agent binary fails (f) / (g)', async () => {
+  const run = async (deps) => {
+    const fake = fakeRelease()
+    const lines = []
+    const code = await main(['--release', fake.release], { root: ROOT, log: (l) => lines.push(l), list: CLEAN_ASAR, boot: async () => ({ ok: true, detail: 'x' }), ...deps })
+    fs.rmSync(fake.base, { recursive: true, force: true })
+    return { code, out: lines.join('\n') }
+  }
+  const ok = () => ({ ok: true, detail: 'fake' })
+  const a = await run({ certReader: () => ({ ok: false, detail: 'exit 1' }), agents: ok })
+  assert.equal(a.code, 1)
+  assert.match(a.out, /fail {2}\(f\) certificate reader starts {2}exit 1/)
+  const b = await run({ certReader: ok, agents: () => ({ ok: false, detail: 'no codex binary' }) })
+  assert.equal(b.code, 1)
+  assert.match(b.out, /fail {2}\(g\) claude and codex start {2}no codex binary/)
+})
+
+test('certReaderCheck: runs the binary with ELECTRON_RUN_AS_NODE and reads its answer', () => {
+  let seen
+  const ok = certReaderCheck('/bin/app', (bin, args, opts) => {
+    seen = { bin, env: opts.env }
+    return { status: 0, stdout: 'cert-reader-ok function' }
+  })
+  assert.equal(ok.ok, true)
+  assert.equal(seen.env.ELECTRON_RUN_AS_NODE, '1')
+  assert.equal(certReaderCheck('/bin/app', () => ({ status: 1, stdout: '', stderr: 'boom' })).ok, false)
+  assert.equal(certReaderCheck('/bin/app', () => ({ error: new Error('ENOENT') })).ok, false)
+})
+
+test('agentBinaries / agentBinaryCheck: find this platform\'s claude and codex and run --version', () => {
+  const nm = tempDir('agents')
+  try {
+    const claudeDir = path.join(nm, '@anthropic-ai', 'claude-agent-sdk-darwin-arm64')
+    const codexBin = path.join(nm, '@openai', 'codex-darwin-arm64', 'vendor', 'aarch64-apple-darwin', 'bin')
+    fs.mkdirSync(claudeDir, { recursive: true })
+    fs.mkdirSync(codexBin, { recursive: true })
+    fs.mkdirSync(path.join(nm, '@openai', 'codex'), { recursive: true })
+    fs.mkdirSync(path.join(nm, '@anthropic-ai', 'claude-agent-sdk-linux-x64'), { recursive: true })
+    fs.writeFileSync(path.join(claudeDir, 'claude'), '')
+    fs.writeFileSync(path.join(codexBin, 'codex'), '')
+    assert.deepEqual(agentBinaries(nm, 'darwin', 'arm64').map((b) => b.name), ['claude', 'codex'])
+    assert.deepEqual(agentBinaries(nm, 'linux', 'x64'), [])
+    const run = (bin) => ({ status: 0, stdout: `${path.basename(bin)} 1.2.3\n` })
+    assert.deepEqual(agentBinaryCheck(nm, 'darwin', 'arm64', run), { ok: true, detail: 'claude claude 1.2.3, codex codex 1.2.3' })
+    assert.equal(agentBinaryCheck(nm, 'darwin', 'arm64', () => ({ status: 2, stdout: '' })).ok, false)
+    const missing = agentBinaryCheck(nm, 'linux', 'x64', run)
+    assert.equal(missing.ok, false)
+    assert.match(missing.detail, /no claude binary.*no codex binary/)
+  } finally {
+    fs.rmSync(nm, { recursive: true, force: true })
   }
 })

@@ -1,7 +1,7 @@
 /**
  * The shutdown coordinator (Wave 7, docs/design/cli-standalone.md 4.3 and round 6 items 5 and 9): one sequence for
  * every exit path (host.stop over the socket, desktop Quit and the last window closing on
- * Windows / Linux, the Node host's idle exit and signals, the inproc host's cleanup), ownership released
+ * Windows / Linux, the inproc host's cleanup and signals), ownership released
  * only once the owner's writes are done, and a process-wide registry of the child processes a host must kill when it
  * gives up at the hard limit (git under the repo lock, custodian helpers, agent CLIs).
  *
@@ -595,7 +595,7 @@ export interface ShutdownCoordinatorOptions {
   handoffFacts?: () => HostHandoffFacts
   /**
    * Called once ownership is released (normal path or hard limit): the process may exit now (desktop: app.quit;
-   * Node host: process.exit; inproc: resolve `closed`). A throw is logged.
+   * inproc: resolve `closed`). A throw is logged.
    */
   onReleased?: (info: ShutdownReleaseInfo) => void
   /**
@@ -832,7 +832,7 @@ export class ShutdownCoordinator implements ShutdownCoordinatorApi {
 }
 
 /**
- * Route SIGINT / SIGTERM (and SIGHUP on POSIX) of a background host process (the Node host, `daemon run-node`) to a
+ * Route SIGINT / SIGTERM (and SIGHUP on POSIX) of an in-process host (the orgai command) to a
  * forced shutdown; a second signal while it runs is ignored (the hard limit bounds the wait). Returns an uninstall
  * function. The process exits through the coordinator's onReleased.
  */

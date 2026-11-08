@@ -286,6 +286,28 @@ describe('desktop folder check', () => {
     expect(checkDesktopFolder(join(root, 'OrgAI'), { cliDefault }).refusal).toBeUndefined()
   })
 
+  it('refuses a folder whose data/ is a CLI folder (the parent of one) and writes nothing', () => {
+    const x = base()
+    expect(check(join(x, 'data'), join(base(), 'OrgAI'))).toBeUndefined()
+    expect(checkDesktopFolder(x, { cliDefault: join(base(), 'orgai-cli') }).refusal).toBe(cliFolderRefusal(x))
+    expect(readdirSync(x)).toEqual(['data'])
+  })
+
+  it('refuses a folder whose data entry is a link into a CLI folder', () => {
+    const cli = join(base(), 'cli')
+    expect(check(cli, join(base(), 'OrgAI'))).toBeUndefined()
+    mkdirSync(join(cli, 'data'))
+    const y = base()
+    link(join(cli, 'data'), join(y, 'data'))
+    expect(checkDesktopFolder(y).refusal).toBe(cliFolderRefusal(y))
+    expect(readdirSync(y)).toEqual(['data'])
+  })
+
+  it('allows a folder that would contain a CLI default folder that does not exist', () => {
+    const root = base()
+    expect(checkDesktopFolder(root, { cliDefault: join(root, 'orgai-cli') }).refusal).toBeUndefined()
+  })
+
   it('the read-only pass writes nothing, not even a missing folder', () => {
     const dir = join(base(), 'new', 'OrgAI')
     expect(desktopFolderRefusal(dir).refusal).toBeUndefined()

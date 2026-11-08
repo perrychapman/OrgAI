@@ -594,7 +594,7 @@ export class McpService {
       const kind = sep < 0 ? '' : rest.slice(0, sep)
       const name = sep < 0 ? rest : rest.slice(sep + 1)
       const slot = kind === 'oauth' ? (Object.hasOwn(OAUTH_SLOT_LABELS, name) ? OAUTH_SLOT_LABELS[name] : 'Its sign-in') : name
-      throw new Error(VAULT_MESSAGES.moveRefused(slot, server, st.unreadable))
+      throw new Error((this.secrets.messages ?? VAULT_MESSAGES).moveRefused(slot, server, st.unreadable))
     }
   }
 

@@ -1,4 +1,4 @@
-// Where `npm run pack` (electron-builder --dir) puts the packaged app and its orgai command (cli-spec 7, Wave 6), and
+// Where `npm run pack` (electron-builder --dir) puts the packaged desktop app (cli-spec 7, Wave 6), and
 // a small scanner for the packages a built .mjs file imports. Pure ESM, node:path and node:module only, no fs.
 //
 // src/main/host/packagedLayout.ts is the TypeScript source of the in-app paths; packLayoutParity.test.ts checks the two

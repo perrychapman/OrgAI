@@ -251,8 +251,8 @@ describe('RunManager working and busy run counts', () => {
   })
 })
 
-// Wave 7 (cli-standalone.md 4.4 step 4): the handoff predicate is stricter than busyRunCount: every live run in any
-// form, every paused run with a resume pending and every open card blocks the app's handoff.
+// Wave 7 (cli-standalone.md 4.4 step 4): the host-status run facts are stricter than busyRunCount: every live run in any
+// form, every paused run with a resume pending and every open card counts.
 describe('RunManager.handoffFacts', () => {
   const idleScript: MockScript = { delayMs: 0, work: [{ type: 'text', text: 'Done for now.' }] }
   const askScript: MockScript = { delayMs: 0, work: [{ type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true }] }
@@ -272,7 +272,7 @@ describe('RunManager.handoffFacts', () => {
     await m.stopAll()
   })
 
-  it('an idle run blocks the handoff although it keeps no host busy', async () => {
+  it('an idle run is counted although it keeps no host busy', async () => {
     const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
     const { m } = rig(p, idleScript)
     const run = await m.start({ project: p, prompt: 'Hi', kind: 'work' })
