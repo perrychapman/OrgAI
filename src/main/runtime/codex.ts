@@ -274,6 +274,7 @@ class CodexSession implements RuntimeSession {
   private harness: HarnessTool[] = []
   private harnessByCodexName = new Map<string, HarnessTool>()
   private rootThreadId = ''
+  private rootModelOverride?: string
   /** Messages the user sent before the root thread existed. */
   private earlySends: { text: string; images?: ImageAttachment[] }[] = []
   /** Rules granted with "allow for this run". */
@@ -402,6 +403,26 @@ class CodexSession implements RuntimeSession {
   async receive(message: PeerMessage): Promise<void> {
     if (this.ending) return
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
+  /** Switch only the root at an idle boundary, preserving the existing conversation and grants. */
+  async switchModel(input: { model: string; connection?: RunConnection }): Promise<void> {
+    if (this.ctx.bridgedChild) throw new Error('Only the run root can switch models.')
+    if (!validModelId(input.model)) throw new Error('Invalid model id.')
+    if (input.connection && (input.connection.adapter !== this.ctx.connection?.adapter || input.connection.connection !== this.ctx.connection?.connection)) {
+      throw new Error('Switching connections requires transporting the conversation and is not supported by this session.')
+    }
+    if (this.ending || this.ended || !this.rootThreadId) throw new Error('This session is not live; continue the run before switching models.')
+    const state = this.settlement()
+    if (!state.rootIdle || !state.quiescent || this.ctx.pendingInteractions() > 0) {
+      throw new Error('Switch models when the root is idle and all decision cards are answered.')
+    }
+    this.rootModelOverride = input.model
+    const root = this.agents.get(ROOT_AGENT_ID)
+    if (root) {
+      root.model = input.model
+      this.upsert(root)
+    }
   }
 
   /** Headless exec settlement view (cli-spec 6.2(2)). */
@@ -557,7 +578,7 @@ class CodexSession implements RuntimeSession {
           this.log('info', `Could not steer the running turn (${(e as Error).message}); starting a new one.`)
         }
       }
-      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...extra })
+      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...extra, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
       const id = parseTurnId(res)
       if (id && !this.completedTurns.has(id)) this.activeTurn.set(threadId, id)
     })

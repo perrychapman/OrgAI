@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { validModelId } from '../connections/codexAccount'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
@@ -105,6 +106,10 @@ import { buildRolePrompt } from './prompts'
  * untilInMs 1500 and the session ends (RunManager pauses the run). [mock:exec-slow] (execSlowSteps): about 30 text
  * steps one second apart, cut short by interrupt and stop. Every root turn end calls ctx.onRootTurnEnded before
  * run.status 'idle' (the auth-fail marker reports ok false with isAuthError, before its 'error' status).
+ * Model switching markers (all run kinds): [mock:model-switch] yields one root text then idle, without cards;
+ * replies echo the active root model. [mock:model-switch-limit] ends the first session at a usage limit with
+ * a reset 24 hours away (set autoResume off in the test); [mock:model-switch-error] ends it with a provider error.
+ * Both recovery markers yield the simple idle script when resumed, so recovery never repeats the failure.
  *
  * Reference folders (same as the Claude adapter): a shell step touching one always asks, never through a rule, a
  * suggestion shortcut or acceptEdits; a Read / Glob / Grep card under one carries referenceFolder and no suggestions.
@@ -589,6 +594,9 @@ export const EXEC_BLOCKED_TOKEN = '[mock:exec-blocked]'
 export const EXEC_QUESTION_TOKEN = '[mock:exec-question]'
 export const TURN_FAIL_TOKEN = '[mock:turn-fail]'
 export const RATE_LIMIT_TOKEN = '[mock:rate-limit]'
+export const MODEL_SWITCH_TOKEN = '[mock:model-switch]'
+export const MODEL_SWITCH_LIMIT_TOKEN = '[mock:model-switch-limit]'
+export const MODEL_SWITCH_ERROR_TOKEN = '[mock:model-switch-error]'
 export const EXEC_SLOW_TOKEN = '[mock:exec-slow]'
 /** The [mock:exec-question] options, in order; the first is the recommended one. */
 export const EXEC_QUESTION_OPTIONS = ['(Recommended) Keep the default', 'Change it'] as const
@@ -1195,6 +1203,7 @@ export class MockSession implements RuntimeSession {
   private agents = new Map<string, AgentInstance>()
   private rolesBySlug: Map<string, Role>
   private root: Role
+  private rootModelOverride?: string
   private isSetup: boolean
   private tools: HarnessTool[]
   private inbox: { text: string; harness: boolean }[] = []
@@ -1202,6 +1211,7 @@ export class MockSession implements RuntimeSession {
   private continuation: ContinuationDriver
   private wake: (() => void) | null = null
   private stopped = false
+  private ended = false
   private interrupted = false
   /** Root turn ends so far (RootTurnEnd.turnGen). */
   private rootTurnGen = 0
@@ -1308,6 +1318,26 @@ export class MockSession implements RuntimeSession {
     if (this.stopped) return
     this.peerMessages.push(message)
     this.deliverHarness(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
+  /** Reference switching behavior: no new turn, transcript or continuation reset. */
+  async switchModel(input: { model: string; connection?: RuntimeContext['connection'] }): Promise<void> {
+    if (this.ctx.bridgedChild) throw new Error('Only the run root can switch models.')
+    if (!validModelId(input.model)) throw new Error('Invalid model id.')
+    if (input.connection && (input.connection.adapter !== this.ctx.connection?.adapter || input.connection.connection !== this.ctx.connection?.connection)) {
+      throw new Error('Switching connections requires transporting the conversation and is not supported by this session.')
+    }
+    if (this.stopped || this.ended) throw new Error('This session is not live; continue the run before switching models.')
+    const state = this.settlement()
+    if (!state.rootIdle || !state.quiescent || this.ctx.pendingInteractions() > 0) {
+      throw new Error('Switch models when the root is idle and all decision cards are answered.')
+    }
+    this.rootModelOverride = input.model
+    const root = this.agents.get(ROOT_AGENT_ID)
+    if (root) {
+      root.model = input.model
+      this.upsert(root)
+    }
   }
 
   /** Headless exec settlement view (cli-spec 6.2(2)). The mock has no integrator or restarts. */
@@ -1460,6 +1490,8 @@ export class MockSession implements RuntimeSession {
 
   /** The model id this agent reports, by default Opus for the root and Sonnet for reports. */
   private usageModel(agentId: string): string {
+    if (agentId === ROOT_AGENT_ID && this.rootModelOverride) return this.rootModelOverride
+    if (agentId === ROOT_AGENT_ID && this.modelSwitchMarker() && this.root.model && this.root.model !== 'inherit') return this.root.model
     const prompt = this.ctx.prompt
     if (prompt.includes(NO_PRICE_TOKEN) || (agentId === UNPRICED_REPORT_ID && !prompt.includes(COMPUTED_COST_TOKEN))) return MOCK_UNPRICED_MODEL
     if (prompt.includes(COMPUTED_COST_TOKEN)) return 'claude-sonnet-4-5'
@@ -1553,6 +1585,7 @@ export class MockSession implements RuntimeSession {
       this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: first })
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
       if (this.ctx.prompt.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
+      if (this.ctx.prompt.includes(MODEL_SWITCH_ERROR_TOKEN) && !this.ctx.resumeSessionId) throw new Error('Mock provider error for model switching recovery.')
       await this.skillStep(ROOT_AGENT_ID, this.root)
       await this.turn(this.firstTurnSteps())
       while (!this.stopped) {
@@ -1563,7 +1596,7 @@ export class MockSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId, status: 'running' })
         if (next.harness) await this.turn(this.continueTurns.shift() ?? [{ type: 'text', text: 'Mock: continuing with the plan.' }])
         else if (this.answersRevisions() && isReviseMessage(next.text)) await this.turn([{ type: 'text', text: MOCK_REVISE_START }, { type: 'reviseOutput', message: next.text }])
-        else await this.turn([{ type: 'text', text: this.script.reply.replace('{text}', next.text) }])
+        else await this.turn([{ type: 'text', text: this.modelSwitchMarker() ? `Mock reply (${this.usageModel(ROOT_AGENT_ID)}): ${next.text}` : this.script.reply.replace('{text}', next.text) }])
       }
       this.emit({ type: 'run.status', runId, status: 'finished' })
     } catch (e) {
@@ -1572,6 +1605,7 @@ export class MockSession implements RuntimeSession {
       this.setState(ROOT_AGENT_ID, 'error', message.slice(0, 80))
       this.emit({ type: 'run.status', runId, status: 'error', error: message })
     } finally {
+      this.ended = true
       this.continuation.dispose()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {
@@ -1598,6 +1632,10 @@ export class MockSession implements RuntimeSession {
    * (ORGAI_MOCK_SCRIPT or MockAdapterOptions.script) runs exactly as written.
    */
   private firstTurnSteps(): MockStep[] {
+    if (this.modelSwitchMarker()) {
+      if (this.ctx.prompt.includes(MODEL_SWITCH_LIMIT_TOKEN) && !this.ctx.resumeSessionId) return [{ type: 'rateLimit', untilInMs: 24 * 60 * 60 * 1000 }]
+      return [{ type: 'text', text: `Mock root model: ${this.usageModel(ROOT_AGENT_ID)}` }]
+    }
     const bridged = this.bridgedTurnSteps()
     if (bridged) return bridged
     const library = this.ctx.mcpLibrary?.() ?? []
@@ -1732,6 +1770,10 @@ export class MockSession implements RuntimeSession {
       ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
       ...(this.ctx.bridgedChild ? { bridged: true } : {})
     })
+  }
+
+  private modelSwitchMarker(): boolean {
+    return [MODEL_SWITCH_TOKEN, MODEL_SWITCH_LIMIT_TOKEN, MODEL_SWITCH_ERROR_TOKEN].some((token) => this.ctx.prompt.includes(token))
   }
 
   /** Spawn step ids whose native spawn was refused (a bridged role); their later steps are skipped. */

@@ -27,6 +27,42 @@ vi.mock('./harnessTools', async (importOriginal) => {
 })
 
 describe('mock listModels', () => {
+  it('switches the live root without a turn, retains usage by model and refuses pending cards/ended sessions', async () => {
+    let pending = 0
+    const ctx = fakeCtx({ prompt: '[mock:model-switch]', autoContinue: false, pendingInteractions: () => pending })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx) as MockSession
+    await vi.waitFor(() => expect(session.settlement()).toMatchObject({ rootIdle: true, quiescent: true }))
+    const before = session.settlement()
+    pending = 1
+    await expect(session.switchModel({ model: 'mock-new' })).rejects.toThrow('decision cards')
+    pending = 0
+    await session.switchModel({ model: 'mock-new' })
+    expect(session.settlement()).toEqual(before)
+    await session.send('Remember our conversation')
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'text' && e.entry.block.text === 'Mock reply (mock-new): Remember our conversation')).toBe(true))
+    const latest = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === ROOT_AGENT_ID).at(-1)
+    expect(latest).toMatchObject({ agent: { model: 'mock-new', usage: { models: expect.arrayContaining([expect.objectContaining({ model: 'mock-new' })]) } } })
+    await expect(session.switchModel({ model: 'x', connection: { connection: 'other' as never, adapter: 'claude' } })).rejects.toThrow('Switching connections')
+    await session.stop()
+    await session.finished
+    await expect(session.switchModel({ model: 'mock-next' })).rejects.toThrow('not live')
+  })
+
+  it.each(['[mock:model-switch-limit]', '[mock:model-switch-error]'])('recovers %s through resume without repeating the failure', async (prompt) => {
+    const ctx = fakeCtx({ prompt, autoContinue: false })
+    const adapter = new MockAdapter({ script: { delayMs: 0 } })
+    const failed = await adapter.start(ctx) as MockSession
+    await failed.finished
+    await expect(failed.switchModel({ model: 'mock-next' })).rejects.toThrow('not live')
+    expect(ctx.events.some((e) => e.type === 'run.status' && (e.status === 'error' || e.status === 'finished'))).toBe(true)
+    const resumedCtx = fakeCtx({ prompt, autoContinue: false, resumeSessionId: 'mock-previous' })
+    const resumed = await adapter.start(resumedCtx) as MockSession
+    await vi.waitFor(() => expect(resumed.settlement()).toMatchObject({ rootIdle: true, quiescent: true }))
+    await resumed.switchModel({ model: 'mock-next' })
+    await resumed.stop()
+    await resumed.finished
+  })
+
   it('lists the builtin aliases plus an unknown family', async () => {
     const list = await new MockAdapter().listModels()
     expect(list?.map((m) => m.id)).toEqual(['fable', 'opus', 'sonnet', 'haiku', 'mock-lyric'])
