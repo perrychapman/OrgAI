@@ -1081,8 +1081,8 @@ async function secondRunChecks(label) {
   }
   await confirm.click()
   check(await until(async () => (await outputsOf()).length === n0 - 2, 10_000), `${label}: bulk delete removed two outputs`, `${n0} -> ${(await outputsOf()).length}`)
-  const status = page.locator('[data-testid=outputs-status]')
-  check(await until(async () => /Deleted 2 outputs\./.test(clean(await status.innerText())), 5000), `${label}: the status says "Deleted 2 outputs."`, clean(await status.innerText()))
+  const status = page.locator('[data-testid=outputs-bulk-result]')
+  check(await until(async () => /Deleted 2 outputs\./.test(clean(await status.innerText())), 5000), `${label}: the visible result says "Deleted 2 outputs."`, clean(await status.innerText()))
   check(await until(async () => (await page.locator('[data-testid=outputs-bulk-bar]').count()) === 0), `${label}: select mode ends after a clean delete`)
   check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-row'), `${label}: focus lands on the next row`)
   await noScroll(`${label}: after bulk delete`)
