@@ -51,6 +51,8 @@ const HOLD_SCRIPT = path.join(keyDir, 'hold.json')
 fs.writeFileSync(HOLD_SCRIPT, JSON.stringify({ delayMs: 3_600_000 }))
 // The app is started hidden here (a local hook may also hide it; CI relies on this variable).
 process.env.ORGAI_WINDOW_HIDDEN = '1'
+// The app runs the mock adapter too: without this the card test below started a real model run (flaky, spends tokens).
+process.env.ORGAI_MOCK = '1'
 const PARENT = privateTempDir('orgai-e2e-sepp-')
 const APP_PROJECT = 'SepAppProject'
 const APP_LIB = 'sep-app-lib'
@@ -242,10 +244,13 @@ try {
   check(read(path.join(B, 'product.json')) === markerB && readJson(path.join(B, 'product.json'))?.product === 'orgai-cli', 'folder B\'s marker is untouched')
   heldStillRuns('after the app\'s refusal')
   // A folder inside B is refused the same way (the app never nests in the CLI's tree).
+  // The held exec keeps writing its own files while it starts; let its run folder appear before the listing is taken.
+  await until('the exec\'s runs folder', () => fs.existsSync(path.join(B, 'data', 'runs')), 15_000)
+  await sleep(1000)
   const dataB = topLevel(path.join(B, 'data'))
   const nested = await appOn(path.join(B, 'data'))
   check(nested.code === 2 && /belongs to the orgai command line tool/.test(nested.dialog), 'the app refuses a folder inside B too', `${nested.code} ${nested.dialog.slice(0, 120)}`)
-  check(JSON.stringify(topLevel(path.join(B, 'data'))) === JSON.stringify(dataB) && !fs.existsSync(path.join(B, 'data', 'product.json')), 'nothing was written inside B/data (no desktop marker, same listing)')
+  check(JSON.stringify(topLevel(path.join(B, 'data'))) === JSON.stringify(dataB) && !fs.existsSync(path.join(B, 'data', 'product.json')), 'nothing was written inside B/data (no desktop marker, same listing)', topLevel(path.join(B, 'data')).join(',') + ' vs ' + dataB.join(','))
 
   // A CLI folder named `data` (its own data folder is data/data): the app refuses its parent, and a folder whose `data`
   // links into it, and writes nothing in either.
