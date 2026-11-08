@@ -137,8 +137,7 @@ export const NO_CIPHER: SecretCipher = {
 
 /**
  * The self-control gate's CLI folders for a chunk in `moduleDir`: it sits in out/cli (bundled) or src/cli (sources),
- * two levels below the app root either way. In a packaged app that root is `<Resources>/app.asar.unpacked`, so
- * orgaiCliRootsOf adds the unpacked bundle and `<Resources>/bin` (the launcher) too.
+ * two levels below the app root either way.
  */
 export function inprocCliRoots(moduleDir: string, platform: NodeJS.Platform = process.platform): string[] {
   const p = platform === 'win32' ? win32 : posix

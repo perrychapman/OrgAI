@@ -159,11 +159,9 @@ describe('startInprocHost', () => {
 })
 
 describe('inprocCliRoots (cli-spec 7, Wave 6)', () => {
-  it('covers the packaged layout from the unpacked bundle folder', () => {
-    const res = '/Applications/OrgAI.app/Contents/Resources'
-    const roots = inprocCliRoots(`${res}/app.asar.unpacked/out/cli`, 'darwin')
-    expect(roots).toContain(`${res}/app.asar.unpacked/out/cli`)
-    expect(roots).toContain(`${res}/bin`)
+  it('covers a bundle folder wherever it sits (no packaged app layout)', () => {
+    const roots = inprocCliRoots('/usr/lib/node_modules/orgai-cli/out/cli', 'darwin')
+    expect(roots).toEqual(['/usr/lib/node_modules/orgai-cli/out/cli', '/usr/lib/node_modules/orgai-cli/src/cli'])
     expect(new Set(roots).size).toBe(roots.length)
   })
 

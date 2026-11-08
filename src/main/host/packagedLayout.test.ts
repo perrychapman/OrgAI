@@ -6,11 +6,9 @@ import {
   cliLauncherName,
   cliShimPath,
   isOrgaiShim,
-  packagedCliRoots,
   packagedLayout,
   parseCliShim,
   renderCliShim,
-  resourcesDirOfCliBundle,
   transientInstallReason
 } from './packagedLayout'
 
@@ -52,42 +50,6 @@ describe('packagedLayout', () => {
     expect(cliLauncherName('win32')).toBe('orgai.cmd')
     expect(cliLauncherName('darwin')).toBe('orgai')
     expect(cliLauncherName('linux')).toBe('orgai')
-  })
-})
-
-describe('resourcesDirOfCliBundle', () => {
-  it('finds the resources dir of a packaged bundle', () => {
-    expect(resourcesDirOfCliBundle('/Applications/OrgAI.app/Contents/Resources/app.asar.unpacked/out/cli', 'darwin')).toBe(
-      '/Applications/OrgAI.app/Contents/Resources'
-    )
-    expect(resourcesDirOfCliBundle('/Applications/OrgAI.app/Contents/Resources/app.asar.unpacked/out/cli//', 'darwin')).toBe(
-      '/Applications/OrgAI.app/Contents/Resources'
-    )
-    expect(resourcesDirOfCliBundle('C:\\P\\OrgAI\\resources\\app.asar.unpacked\\out\\cli\\', 'win32')).toBe('C:\\P\\OrgAI\\resources')
-    expect(resourcesDirOfCliBundle('C:/P/OrgAI/resources/app.asar.unpacked/out/cli', 'win32')).toBe('C:\\P\\OrgAI\\resources')
-  })
-
-  it('is undefined for anything else', () => {
-    expect(resourcesDirOfCliBundle('/Users/me/code/project/out/cli', 'darwin')).toBeUndefined()
-    expect(resourcesDirOfCliBundle('/Users/me/OrgAI/out/cli', 'darwin')).toBeUndefined()
-    expect(resourcesDirOfCliBundle('/x/app.asar/out/cli', 'darwin')).toBeUndefined()
-    expect(resourcesDirOfCliBundle('/x/app.asar.unpacked/out', 'darwin')).toBeUndefined()
-    expect(resourcesDirOfCliBundle('', 'darwin')).toBeUndefined()
-    expect(resourcesDirOfCliBundle('C:\\code\\out\\cli', 'win32')).toBeUndefined()
-  })
-})
-
-describe('packagedCliRoots', () => {
-  it('app.asar and app.asar.unpacked give the bundle and bin folders', () => {
-    const want = ['/A/OrgAI.app/Contents/Resources/app.asar.unpacked/out/cli', '/A/OrgAI.app/Contents/Resources/bin']
-    expect(packagedCliRoots('/A/OrgAI.app/Contents/Resources/app.asar', 'darwin')).toEqual(want)
-    expect(packagedCliRoots('/A/OrgAI.app/Contents/Resources/app.asar.unpacked', 'darwin')).toEqual(want)
-    expect(packagedCliRoots('C:\\P\\resources\\app.asar', 'win32')).toEqual(['C:\\P\\resources\\app.asar.unpacked\\out\\cli', 'C:\\P\\resources\\bin'])
-  })
-
-  it('a dev root gives []', () => {
-    expect(packagedCliRoots('/Users/me/OrgAI', 'darwin')).toEqual([])
-    expect(packagedCliRoots('', 'darwin')).toEqual([])
   })
 })
 

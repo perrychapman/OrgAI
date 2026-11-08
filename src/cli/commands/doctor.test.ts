@@ -128,19 +128,14 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
   const shimText = (launcher: string): string => renderCliShim({ platform: 'darwin', launcher })
   const pathEnv = (): NodeJS.ProcessEnv => ({ PATH: `/usr/bin:${join(HOME(), '.local', 'bin')}` })
 
-  it('install: packaged, dev checkout, standalone bundle and a transient copy', () => {
+  it('install: dev checkout and standalone bundle', () => {
     packaged()
-    expect(installCheck('darwin', {})).toEqual({ id: 'install', status: 'ok', detail: `Packaged OrgAI at ${RES} (Electron 45.1.0, Node 24.22.1)` })
-    doctorProbes.bundleDir = () => '/Volumes/OrgAI/OrgAI.app/Contents/Resources/app.asar.unpacked/out/cli'
-    const transient = installCheck('darwin', {})
-    expect(transient.status).toBe('warn')
-    expect(transient.detail).toContain('Move OrgAI to your Applications folder first')
     doctorProbes.bundleDir = realProbes.bundleDir
-    const dev = installCheck('darwin', {})
+    const dev = installCheck()
     expect(dev.status).toBe('ok')
     expect(dev.detail).toMatch(/^Development checkout /)
     doctorProbes.bundleDir = () => join(HOME(), 'somewhere', 'cli')
-    expect(installCheck('linux', {})).toEqual({ id: 'install', status: 'ok', detail: `Standalone bundle ${join(HOME(), 'somewhere', 'cli')}` })
+    expect(installCheck()).toEqual({ id: 'install', status: 'ok', detail: `Standalone bundle ${join(HOME(), 'somewhere', 'cli')}` })
   })
 
   it('the node check passes on Electron 45 Node 24', async () => {
@@ -168,19 +163,16 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
   it("shim: this install's launcher on PATH is ok", () => {
     packaged()
     files.set(SHIM(), shimText(LAUNCHER))
-    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} runs this OrgAI (${LAUNCHER})` })
+    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} runs OrgAI (${LAUNCHER})` })
   })
 
-  it('shim: another install or a missing launcher warns with Open OrgAI to update it', () => {
+  it('shim: an old shim whose launcher is gone warns, one that exists is just reported', () => {
     packaged()
     const other = '/Users/me/Downloads/OrgAI.app/Contents/Resources/bin/orgai'
     files.set(other, '')
     files.set(SHIM(), shimText(other))
     const c = shimCheck('darwin', pathEnv())
-    expect(c.status).toBe('warn')
-    expect(c.detail).toContain('runs another OrgAI')
-    // OrgAI's launch refresh leaves a shim for another install that is still on disk alone.
-    expect(c.detail).toContain('npm i -g orgai-cli')
+    expect(c.status).toBe('ok')
     files.set(SHIM(), shimText('/gone/OrgAI.app/Contents/Resources/bin/orgai'))
     const gone = shimCheck('darwin', pathEnv())
     expect(gone.status).toBe('warn')
@@ -194,14 +186,11 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     const launcherText = `#!/bin/sh\n# ${PACKAGED_LAUNCHER_MARK} (cli-spec 7, Wave 6).\n`
     files.set(SHIM(), launcherText)
     doctorProbes.realpath = (p) => (p === SHIM() ? LAUNCHER : p)
-    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} (a link) runs this OrgAI (${LAUNCHER})` })
+    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} (a link) runs OrgAI (${LAUNCHER})` })
     const other = '/Users/me/Apps/OrgAI.app/Contents/Resources/bin/orgai'
     files.set(other, launcherText)
     doctorProbes.realpath = (p) => (p === SHIM() ? other : p)
-    const c = shimCheck('darwin', pathEnv())
-    expect(c.status).toBe('warn')
-    expect(c.detail).toContain('runs another OrgAI')
-    expect(c.detail).toContain('npm i -g orgai-cli')
+    expect(shimCheck('darwin', pathEnv()).status).toBe('ok')
     // A link to some other program is still foreign.
     files.set(SHIM(), '#!/bin/sh\nexec /opt/x "$@"\n')
     doctorProbes.realpath = (p) => (p === SHIM() ? '/opt/x/orgai' : p)
@@ -222,7 +211,7 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     packaged()
     const f = fakeContext({ paths: { userDataDir: dir, dataDir: join(dir, 'data') }, platform: 'darwin', env: { PATH: '/usr/bin' } })
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
-    expect(f.out()).toMatch(/^ok {4}install +Packaged OrgAI at /m)
+    expect(f.out()).toMatch(/^ok {4}install /m)
     expect(f.out()).toMatch(/^ok {4}shim +No old app command found/m)
     expect(files.size).toBe(0)
   })

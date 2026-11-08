@@ -82,37 +82,6 @@ function trimTrailing(p: PlatformPath, value: string): string {
 }
 
 /**
- * The resources dir when `bundleDir` is a packaged CLI bundle (`<res>/app.asar.unpacked/out/cli`), else undefined
- * (a dev checkout's or a project's own out/cli).
- */
-export function resourcesDirOfCliBundle(bundleDir: string, platform: NodeJS.Platform | string): string | undefined {
-  if (!bundleDir) return undefined
-  const p = pathFor(platform)
-  const dir = trimTrailing(p, bundleDir)
-  const cli = p.basename(dir)
-  const out = p.dirname(dir)
-  const unpacked = p.dirname(out)
-  if (cli !== 'cli' || p.basename(out) !== 'out' || p.basename(unpacked) !== 'app.asar.unpacked') return undefined
-  const res = p.dirname(unpacked)
-  return res === unpacked ? undefined : res
-}
-
-/**
- * The self-control gate's CLI roots for a packaged app (`app.getAppPath()` is `<res>/app.asar`, or
- * `<res>/app.asar.unpacked`): the unpacked bundle and the launcher folder. A dev root gives [].
- */
-export function packagedCliRoots(appPath: string, platform: NodeJS.Platform | string): string[] {
-  if (!appPath) return []
-  const p = pathFor(platform)
-  const dir = trimTrailing(p, appPath)
-  const base = p.basename(dir)
-  if (base !== 'app.asar' && base !== 'app.asar.unpacked') return []
-  const res = p.dirname(dir)
-  const layout = packagedLayout(platform, res)
-  return [layout.cliBundleDir, layout.binDir]
-}
-
-/**
  * Why the shim cannot point at this copy of OrgAI, as one plain sentence, or undefined. A translocated or disk-image
  * app (darwin), an AppImage (linux) and the portable build (win32) move or vanish, so a shim would break.
  */

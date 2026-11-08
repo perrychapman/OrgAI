@@ -104,7 +104,6 @@
  * keyring service name passed through a variable or built by code at run time is not seen.
  */
 import { join, posix, resolve, win32 } from 'node:path'
-import { packagedCliRoots } from '../host/packagedLayout'
 import { canonicalDeep } from '../quick/scratch'
 import { LEGACY_SECRETS_FILE, VAULT_FILE } from '../store/vaultTypes'
 import { commandControlScan, pathAtOrUnder, searchReaches, type PrefixProtection } from './referenceDirectories'
@@ -206,16 +205,13 @@ export function setOrgaiCliRoots(roots: readonly string[]): void {
 }
 
 /**
- * The CLI folders of an app root: `<root>/out/cli` (the bundle) and `<root>/src/cli` (sources, dev), plus for a
- * packaged app (`<Resources>/app.asar` or `app.asar.unpacked`) the unpacked bundle `<Resources>/app.asar.unpacked/out/cli`
- * and the launcher folder `<Resources>/bin` (packagedLayout.ts `packagedCliRoots`).
+ * The CLI folders of an app root: `<root>/out/cli` (the bundle) and `<root>/src/cli` (sources, dev).
  */
 export function orgaiCliRootsOf(appRoot: string, platform: NodeJS.Platform = process.platform): string[] {
   // The platform's own path module: the roots are compared with it (insideCliRoot), so a win32 spelling must stay
   // backslashed and a POSIX one forward-slashed whatever the host is.
   const p = platform === 'win32' ? win32 : posix
   const out = [p.join(appRoot, 'out', 'cli'), p.join(appRoot, 'src', 'cli')]
-  for (const r of packagedCliRoots(appRoot, platform)) if (!out.includes(r)) out.push(r)
   return out
 }
 

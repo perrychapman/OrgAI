@@ -650,18 +650,15 @@ describe('false positives in ordinary work (review M3)', () => {
   })
 })
 
-describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
+describe('old packaged-app CLI roots, given explicitly', () => {
   const res = '/Applications/OrgAI.app/Contents/Resources'
-  const roots = orgaiCliRootsOf(`${res}/app.asar`, 'darwin')
+  const roots = [`${res}/app.asar.unpacked/out/cli`, `${res}/bin`]
   const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: roots }
   const deny = (command: string, c: SelfControlContext = ctx): string | null => checkSelfControlDenial('Bash', { command }, c)
 
-  it('orgaiCliRootsOf(<res>/app.asar) covers the unpacked bundle and the launcher folder', () => {
-    expect(roots).toContain(`${res}/app.asar.unpacked/out/cli`)
-    expect(roots).toContain(`${res}/bin`)
-    expect(orgaiCliRootsOf(`${res}/app.asar.unpacked`, 'darwin')).toContain(`${res}/bin`)
-    // A dev root gets no packaged entries.
+  it('orgaiCliRootsOf gives only the bundle and source folders of a root', () => {
     expect(orgaiCliRootsOf('/repo', 'darwin')).toEqual(['/repo/out/cli', '/repo/src/cli'])
+    expect(orgaiCliRootsOf(`${res}/app.asar`, 'darwin')).toEqual([`${res}/app.asar/out/cli`, `${res}/app.asar/src/cli`])
   })
 
   it('denies every way of running the packaged CLI', () => {
@@ -706,7 +703,7 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
 
   it('denies cmd /c orgai.cmd on win32', () => {
     const wres = 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI\\resources'
-    const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: orgaiCliRootsOf(`${wres}\\app.asar`, 'win32') }
+    const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: [`${wres}\\app.asar.unpacked\\out\\cli`, `${wres}\\bin`] }
     expect(wctx.cliRoots).toContain(`${wres}\\bin`)
     expect(checkSelfControlDenial('PowerShell', { command: `cmd /c "${wres}\\bin\\orgai.cmd" status` }, wctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     expect(checkSelfControlDenial('Bash', { command: `cmd /c "${wres}\\bin\\orgai.cmd" status` }, { ...wctx, shell: 'bash' })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
@@ -736,7 +733,7 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
 
 describe('stdin, here-strings, substitutions, find -exec, globs, braces and escapes (Wave 6 review)', () => {
   const res = '/Applications/OrgAI.app/Contents/Resources'
-  const roots = orgaiCliRootsOf(`${res}/app.asar`, 'darwin')
+  const roots = [`${res}/app.asar.unpacked/out/cli`, `${res}/bin`]
   const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: roots, home: '/Users/me' }
   const deny = (command: string, c: SelfControlContext = ctx): string | null => checkSelfControlDenial('Bash', { command }, c)
 

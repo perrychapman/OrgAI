@@ -9,7 +9,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cliShimPath, packagedLayout, parseCliShim, resourcesDirOfCliBundle, transientInstallReason } from '../../main/host/packagedLayout'
+import { cliShimPath, parseCliShim } from '../../main/host/packagedLayout'
 import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
 import type { DaemonInfo } from '../../shared/types'
 import { readProductMarker } from '../../main/store/productMarker'
@@ -56,7 +56,7 @@ export const doctorProbes = {
     }),
   /** The Electron version when this CLI runs on the app's own binary (ELECTRON_RUN_AS_NODE), else undefined. */
   electronVersion: (): string | undefined => process.versions.electron,
-  /** Where this module sits: out/cli in a bundle (packaged: `<Resources>/app.asar.unpacked/out/cli`). */
+  /** Where this module sits: out/cli in a bundle . */
   bundleDir: (): string => {
     try {
       return dirname(fileURLToPath(import.meta.url))
@@ -82,18 +82,9 @@ export const PACKAGED_LAUNCHER_MARK = 'The orgai command of a packaged OrgAI'
 
 const SHIM_NOT_INSTALLED = 'No old app command found (nothing to remove)'
 
-/** How this CLI runs (cli-spec 7): packaged app, dev checkout or a standalone bundle; warns for a transient app copy. */
-export function installCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): DoctorCheck {
+/** How this CLI runs: a development checkout or a standalone bundle. */
+export function installCheck(): DoctorCheck {
   const bundleDir = doctorProbes.bundleDir()
-  const res = resourcesDirOfCliBundle(bundleDir, platform)
-  if (res !== undefined) {
-    const electron = doctorProbes.electronVersion()
-    const runtime = `${electron ? `Electron ${electron}, ` : ''}Node ${doctorProbes.nodeVersion()}`
-    const transient = transientInstallReason(platform, res, env)
-    return transient
-      ? { id: 'install', status: 'warn', detail: `Packaged OrgAI at ${res} (${runtime}). ${transient}` }
-      : { id: 'install', status: 'ok', detail: `Packaged OrgAI at ${res} (${runtime})` }
-  }
   const root = devCheckoutRoot(bundleDir)
   if (root) return { id: 'install', status: 'ok', detail: `Development checkout ${root}` }
   return { id: 'install', status: 'ok', detail: `Standalone bundle ${bundleDir}` }
@@ -123,10 +114,7 @@ export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Do
     if (code === 'ENOENT' || code === 'ENOTDIR') return { id: 'shim', status: 'ok', detail: SHIM_NOT_INSTALLED }
     return { id: 'shim', status: 'warn', detail: `${shim} could not be read: ${(e as Error).message}` }
   }
-  const res = resourcesDirOfCliBundle(doctorProbes.bundleDir(), platform)
-  const ownLauncher = res !== undefined ? packagedLayout(platform, res).launcher : undefined
   const fold = (p: string): string => (platform === 'win32' || platform === 'darwin' ? p.toLowerCase() : p)
-  const same = (a: string, b: string): boolean => fold(doctorProbes.realpath(a)) === fold(doctorProbes.realpath(b))
   const parsed = parseCliShim(text, platform, env)
   let target: string
   let viaLink = false
@@ -142,10 +130,6 @@ export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Do
   if (!doctorProbes.exists(target)) {
     return { id: 'shim', status: 'warn', detail: `${shim} points at an OrgAI that is gone (${target}); it is the old app command. Install the standalone one: npm i -g orgai-cli` }
   }
-  if (ownLauncher !== undefined && !same(target, ownLauncher)) {
-    const fix = viaLink ? 'Remove the link and install the standalone orgai: npm i -g orgai-cli' : 'It is the old app command; install the standalone orgai: npm i -g orgai-cli'
-    return { id: 'shim', status: 'warn', detail: `${shim} runs another OrgAI (${target}), not this one. ${fix}` }
-  }
   const dir = (platform === 'win32' ? win32 : posix).dirname(shim)
   if (!onPath(dir, env, platform)) {
     const hint =
@@ -154,7 +138,7 @@ export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Do
         : `add it to your shell profile: export PATH="${dir}:$PATH"`
     return { id: 'shim', status: 'warn', detail: `${shim} is installed, but ${dir} is not on PATH; ${hint}` }
   }
-  return { id: 'shim', status: 'ok', detail: `${shim}${viaLink ? ' (a link)' : ''} runs ${ownLauncher !== undefined ? 'this OrgAI' : 'OrgAI'} (${target})` }
+  return { id: 'shim', status: 'ok', detail: `${shim}${viaLink ? ' (a link)' : ''} runs OrgAI (${target})` }
 }
 
 /** True when `dir` is one of the PATH entries (case folded on Windows and macOS, trailing separators ignored). */
@@ -187,7 +171,7 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   add('node', major >= MIN_NODE_MAJOR ? 'ok' : 'fail', major >= MIN_NODE_MAJOR ? `Node ${nodeV}` : `Node ${nodeV}; OrgAI needs Node ${MIN_NODE_MAJOR} or later`)
 
   // How this CLI runs (packaged app, dev checkout, standalone bundle)
-  checks.push(installCheck(ctx.platform, ctx.env))
+  checks.push(installCheck())
 
   // Data folder
   const via = ctx.globals.dataDir ? '--data-dir' : ctx.env.ORGAI_CLI_DATA_DIR ? 'ORGAI_CLI_DATA_DIR' : 'the platform default'
