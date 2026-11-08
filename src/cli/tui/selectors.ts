@@ -628,8 +628,9 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
 const PLAN_WORD: Record<string, string> = { active: 'In progress', done: 'Complete', blocked: 'Blocked' }
 
 export function planView(s: TuiState): PlanView | undefined {
-  const plan = activeRun(s)?.plan
-  if (!plan || !Array.isArray(plan.steps)) return undefined
+  const run = activeRun(s)
+  const plan = run?.plan
+  if (!run || !plan || !Array.isArray(plan.steps)) return undefined
   const steps = plan.steps.map((st) => ({
     id: safeLine(st.id),
     title: safeLine(st.title),
@@ -638,6 +639,12 @@ export function planView(s: TuiState): PlanView | undefined {
     ...(st.note ? { note: safeLine(st.note) } : {})
   }))
   return {
+    runId: run.summary.id,
+    continued: !!run.summary.resumedFrom,
+    status: plan.status,
+    startedAt: run.summary.startedAt,
+    runStatus: run.summary.status,
+    waiting: decisionCount([waitRunOf(run)]) > 0,
     goal: safeLine(plan.goal),
     statusWord: PLAN_WORD[plan.status] ?? safeLine(plan.status),
     done: plan.steps.filter((st) => st.status === 'done').length,

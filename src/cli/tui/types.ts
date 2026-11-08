@@ -55,6 +55,7 @@ import type {
   Proposal,
   RpcHelloResult,
   RunPlan,
+  RunStatus,
   RunSummary,
   RunTeam,
   TranscriptEntry,
@@ -295,6 +296,12 @@ export interface PlanStepView {
 }
 
 export interface PlanView {
+  runId?: string
+  continued?: boolean
+  status?: 'active' | 'done' | 'blocked'
+  startedAt?: number
+  runStatus?: RunStatus
+  waiting?: boolean
   goal: string
   statusWord: string
   done: number

@@ -107,6 +107,54 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
 }
 
 describe('conversation-first layout', () => {
+  it.each([
+    { cols: 80, status: 'active' as const, hasSteps: true, shown: false },
+    { cols: 80, status: 'blocked' as const, hasSteps: true, shown: true },
+    { cols: 120, status: 'active' as const, hasSteps: false, shown: false }
+  ])('preserves compact screens and ignores empty checklists: %j', async ({ cols, status, hasSteps, shown }) => {
+    const run = record(summary('run1', { status: 'running' }), {
+      plan: { goal: 'Unique checklist goal', status, autoContinues: 0, updatedAt: 1,
+        steps: hasSteps ? [{ id: 'p1', title: 'Check the work', status: 'pending' }] : [] }
+    })
+    const m = mount({ cols, rows: 40, state: applyRecord(stateWith(), run) })
+    await tick()
+    expect(m.frame().includes('Unique checklist goal')).toBe(shown)
+  })
+
+  it('keeps every team member visible when focusing the roster above a plan', async () => {
+    const run = record(summary('run1', { status: 'running' }))
+    run.agents.root = { ...run.agents.root, state: 'tool', activity: '$ npm test' }
+    for (let i = 1; i <= 4; i++) run.agents[`agent${i}`] = { ...run.agents.root, id: `agent${i}`, parentId: 'root', name: `Member ${i}`, handle: `member-${i}` }
+    run.plan = { goal: 'Complete the work', status: 'active', autoContinues: 0, updatedAt: 1, steps: [{ id: 'p1', title: 'Check the result', status: 'pending' }] }
+    const m = mount({ cols: 120, rows: 40, state: applyRecord(stateWith(), run) })
+    await tick()
+    await m.send(named('tab'), named('tab'))
+    const roster = m.frame().split('Plan')[0]
+    for (let i = 1; i <= 4; i++) expect(roster).toContain(`member-${i}`)
+    expect(m.frame()).toContain('Check the result')
+  })
+
+  it.each(['active', 'blocked', 'done'] as const)('shows the %s run plan beneath the team automatically', async (status) => {
+    const state = applyRecord(stateWith(), record(summary('run1', { status: 'running' }), {
+      plan: { goal: 'Build the dashboard', status, autoContinues: 0, updatedAt: 1, steps: [
+        { id: 'p1', title: 'Inspect the project', status: 'done' },
+        { id: 'p2', title: 'Build the dashboard', status: 'in_progress' },
+        { id: 'p3', title: 'Review the result', status: 'pending' }
+      ] }
+    }))
+    const m = mount({ cols: 120, rows: 40, state })
+    await tick()
+    const lines = m.frame().split('\n')
+    const team = lines.findIndex(line => /Agents|Team/.test(line))
+    const plan = lines.findIndex(line => /Plan/.test(line))
+    expect(plan).toBeGreaterThan(team)
+    expect(plan - team).toBeLessThanOrEqual(5)
+    expect(m.frame()).toContain('1/3 done')
+    expect(m.frame()).toContain('✓ Inspect the project')
+    expect(m.frame()).toContain('◐ Build the dashboard')
+    expect(m.frame()).toContain('○ Review the result')
+  })
+
   it.each([{ cols: 120, rows: 40 }, { cols: 80, rows: 24 }])('keeps quit confirmation compact and the conversation visible at $cols columns', async ({ cols, rows }) => {
     const state = applyRecord(stateWith(), record(summary('run1', { status: 'idle' }), {
       transcript: [{ id: 'answer', agentId: 'root', at: 1, block: { kind: 'text', text: 'Keep this conversation visible.' } }]

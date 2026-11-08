@@ -210,6 +210,8 @@ describe('planView and worktreeRows', () => {
     expect(planView(s)).toMatchObject({ goal: 'Ship', statusWord: 'In progress', done: 1, total: 3 })
     expect(planView(s)?.steps[1]).toEqual({ id: 'p2', title: 'Two', status: 'in_progress', owner: 'Dev', note: 'n' })
     expect(planView(setActiveRun(s, 'none'))).toBeUndefined()
+    const continued = applyRecord(s, { ...record(summary('r2', { status: 'running', resumedFrom: 'r1', startedAt: 99_000 })), plan: s.runs.r1.plan })
+    expect(planView(setActiveRun(continued, 'r2'))).toMatchObject({ runId: 'r2', continued: true, done: 1, startedAt: 99_000 })
   })
 
   it('worktree rows carry the open merge review id', () => {

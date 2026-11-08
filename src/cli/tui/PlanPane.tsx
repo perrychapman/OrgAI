@@ -4,8 +4,9 @@
  * progress lines stay put; the steps scroll while focused (Up/Down, PageUp/PageDown, Home/End). Strings arrive
  * sanitized. A screen reader gets the step status as a word instead of a glyph.
  */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useFocusHandler, useTuiEnv } from './context'
+import { observePlan, planProgress, type PlanObservation } from './planProgress'
 import { asciiOnly } from './theme'
 import type { PlanPaneProps, PlanStepView, Tone, TuiEnv } from './types'
 import { PaneLines, paneHeading, alignSegs, cutSegs, moveIndex, navKey, type PaneLine } from './panes/lines'
@@ -56,6 +57,17 @@ export function PlanPane(props: PlanPaneProps) {
   const height = Math.max(0, Math.floor(props.height))
   const [top, setTop] = useState(0)
   const plan = props.plan
+  const [now, setNow] = useState(Date.now)
+  const observation = useRef<PlanObservation | undefined>(undefined)
+  observation.current = observePlan(plan, Date.now(), observation.current)
+  const estimating = !!plan && plan.status !== 'done' && plan.status !== 'blocked' && !plan.waiting
+    && !plan.steps.some(step => step.status === 'blocked')
+    && plan.runStatus === 'running' && width > 0 && height >= 6 && !env.screenReader
+  useEffect(() => {
+    if (!estimating) return undefined
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [estimating])
 
   const head: PaneLine[] = []
   const steps: PaneLine[] = []
@@ -63,6 +75,21 @@ export function PlanPane(props: PlanPaneProps) {
     head.push({ key: 'title', segs: paneHeading('Plan', width, props.focused, env) })
     head.push({ key: 'goal', segs: cutSegs([{ text: plan.goal || 'No goal set' }], width, env) })
     head.push({ key: 'progress', segs: cutSegs([{ text: `${plan.done}/${plan.total} done`, dim: true }, { text: plan.statusWord ? `  ${plan.statusWord}` : '' }], width, env) })
+    if (height >= 6) {
+      const progress = planProgress(plan, Math.max(now, Date.now()), observation.current)
+      const eta = asciiOnly(env) ? progress.eta.replace('…', '...') : progress.eta
+      const suffix = ` ${progress.percent}%${asciiOnly(env) ? ' | ' : ' · '}${eta}`
+      const cells = Math.max(0, Math.min(16, width - suffix.length - 2))
+      const filled = Math.round(cells * progress.percent / 100)
+      head.push({ key: 'bar', segs: cutSegs(env.screenReader
+        ? [{ text: `Progress ${progress.percent}%. ${progress.eta}` }]
+        : [
+          { text: cells ? '[' : '', dim: true },
+          { text: (asciiOnly(env) ? '#' : '━').repeat(filled), tone: progress.percent === 100 ? 'ok' : 'running' },
+          { text: (asciiOnly(env) ? '-' : '─').repeat(cells - filled), dim: true },
+          { text: `${cells ? ']' : ''}${suffix}`, dim: true }
+        ], width, env) })
+    }
     const bodyH = Math.max(0, height - head.length)
     const withNotes = plan.steps.some((s) => s.note) && plan.steps.length + plan.steps.filter((s) => s.note).length <= bodyH
     for (const step of plan.steps) {

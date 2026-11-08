@@ -30,7 +30,15 @@ Previews use the actual Ink components with simulated task events, rendered enti
 [dark](../media/tui-team-dark.gif) and [light](../media/tui-team-light.gif).
 
 Wide terminals put the conversation on the left and the agent room, plan and worktrees in a right
-sidebar capped at 42 columns. Short conversations align to the bottom, keeping the latest message
+sidebar capped at 42 columns. A nonempty run plan appears automatically in the wide sidebar, directly below the
+compact team roster, with completed/current/pending steps, a progress count, and a bar. The ETA is a rough step-pace estimate
+from elapsed run time and completed steps; tasks can differ in size and prior waits remain part of elapsed time.
+It shows "Estimating" until progress exists, and suppresses estimates while blocked, awaiting a decision,
+paused, or ended. Skipped steps fill the bar without inflating the observed work rate. Continued runs establish a fresh
+observation baseline and wait for a newly completed step before estimating; reopening the pane restarts that observation. It remains visible at
+completion; pane visibility commands can still hide it. Narrow screens auto-show only blocked plans
+to preserve conversation space. Worktrees follow the plan when they need attention.
+Short conversations align to the bottom, keeping the latest message
 near the composer; scrolling up preserves the reading position. Agent inspection replaces the
 conversation and keeps the agent room visible. Narrow terminals keep the stacked layout. The composer
 uses a single footer row for run status, notices and essential shortcuts, with no separate hint row or gap below the input. Approval choices and their command details appear inline above the composer. New requests never take typing focus. Shift+Tab from the composer or F2 from another pane selects

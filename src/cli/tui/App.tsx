@@ -60,7 +60,7 @@ import type {
   TuiSessionApi,
   TuiState
 } from './types'
-import { ESC_INTERRUPT_MS, TUI_RESOLVED_MAX, TUI_TRAFFIC_MS, type TuiNotice } from './types'
+import { SPLIT_MIN_COLS, ESC_INTERRUPT_MS, TUI_RESOLVED_MAX, TUI_TRAFFIC_MS, type TuiNotice } from './types'
 import { WorktreesPane } from './WorktreesPane'
 
 /** 128 + SIGINT: a stopOnQuit session that was quit (types.ts EXIT.sigint; not imported to keep this file pure TUI). */
@@ -318,7 +318,7 @@ export function App(props: AppProps) {
   const openedNoticeDone = useRef(false)
   const [composerRows, setComposerRows] = useState(env.bufferMode === 'inline' ? 1 : COMPOSER_ROWS)
   // Tree and transcript are on unless /tree or /transcript hide them; Plan and Worktrees follow `userPanes` when the user
-  // asked (/plan, /wt), else show only while something needs them (a blocked plan, a worktree in review or conflict).
+  // asked (/plan, /wt), else show a checklist in the sidebar and worktrees needing attention. Narrow screens auto-show only blocked plans.
   const [visible, setVisible] = useState<Record<PaneId, boolean>>({ tree: true, transcript: true, plan: true, worktrees: true })
   const [userPanes, setUserPanes] = useState<{ plan?: boolean; worktrees?: boolean }>({})
   const [size, setSize] = useState(() => terminal.size())
@@ -435,11 +435,11 @@ export function App(props: AppProps) {
   const trayRows = inlineConfirmation ? confirmationLines.length + 1 + (env.screenReader ? 0 : 2)
     : cards.length ? trayHeight(focusedCard ? [focusedCard, ...cards.filter((c) => c !== focusedCard)] : cards, size.cols, size.rows, inline, focus === 'tray', trayFocusHint) : !inline && (isWorking(activeStatus) || activeStatus === 'finished') ? 1 : 0
 
-  // Plan and Worktrees appear on their own only when something needs them.
+  // Keep the run checklist visible; worktrees appear when they need attention.
   const planData = planView(state)
   const worktreeData = worktreeRows(state)
   const activePlan = state.activeRunId ? state.runs[state.activeRunId]?.plan : undefined
-  const autoPlan = planData !== undefined && activePlan?.status === 'blocked'
+  const autoPlan = (planData?.total ?? 0) > 0 && (size.cols >= SPLIT_MIN_COLS || activePlan?.status === 'blocked')
   const autoWorktrees = worktreeData.some((w) => w.status === 'review' || w.status === 'conflict' || w.reviewId !== undefined)
   const chosen: Record<PaneId, boolean> = { ...visible, plan: userPanes.plan ?? autoPlan, worktrees: userPanes.worktrees ?? autoWorktrees }
   const effective: Record<PaneId, boolean> = maximised || welcoming ? { tree: !maximised && !!state.project?.roles?.length, transcript: true, plan: false, worktrees: false } : chosen
@@ -490,7 +490,11 @@ export function App(props: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settleDue])
 
-  const treeWanted = treeRows.length + 2 + (messages.length ? Math.min(5, messages.length * 2 + 1) : 0)
+  // Budget every optional roster line before capping it: heading/footer, earlier-session separator,
+  // focused key hint, up to one line per peer direction, and the two recent-message previews.
+  const peerLines = (selectedTreeRow?.msgIn?.length ? 1 : 0) + (selectedTreeRow?.msgOut?.length ? 1 : 0)
+  const treeWanted = treeRows.length + 2 + (treeRows.some(row => row.earlier) ? 1 : 0)
+    + (focus === 'tree' ? 1 : 0) + peerLines + Math.min(2, messages.length)
   // The inspector takes the conversation column (split) or the whole body; the layout keeps a transcript column for it.
   const layoutVisible: Record<PaneId, boolean> = inspecting ? { ...effective, transcript: true, plan: false } : effective
   const paletteWanted = focus === 'palette' ? Math.min(10, Math.max(3, Math.floor(size.rows / 3))) : 0

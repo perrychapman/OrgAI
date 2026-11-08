@@ -38,6 +38,17 @@ function checkSums(inp: LayoutInput, plan: LayoutPlan): void {
 }
 
 describe('computeLayout', () => {
+  it('puts the plan directly below a compact team, ahead of worktrees, using the remaining room', () => {
+    const inp = input({ treeRows: 6, worktreeRows: 4 })
+    const layout = computeLayout(inp)
+    const sidebar = layout.panes.filter(p => p.column === 1)
+    expect(sidebar.map(p => p.pane)).toEqual(['tree', 'plan', 'worktrees'])
+    expect(sidebar[0].height).toBe(6)
+    expect(sidebar[1].height).toBe(26)
+    expect(sidebar[2].height).toBe(4)
+    checkSums(inp, layout)
+  })
+
   it('splits at exactly SPLIT_MIN_COLS columns and stacks one column narrower', () => {
     expect(SPLIT_MIN_COLS).toBe(110)
     const split = computeLayout(input({ cols: 110 }))
@@ -80,7 +91,8 @@ describe('computeLayout', () => {
         for (let rows = 10; rows <= 100; rows += 7) {
           for (const trayRows of [0, 4]) {
             for (const bufferMode of ['fullscreen', 'inline'] as const) {
-              const inp = input({ cols, rows, visible, trayRows, bufferMode })
+              const treeRows = [undefined, 0, 2, 6, 500][(cols + rows + mask) % 5]
+              const inp = input({ cols, rows, visible, trayRows, bufferMode, treeRows })
               checkSums(inp, computeLayout(inp))
             }
           }
