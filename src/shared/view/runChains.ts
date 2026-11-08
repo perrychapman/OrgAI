@@ -6,7 +6,7 @@ import type { RunEndedBy, RunStatus, RunSummary } from '@shared/types'
  * either; only its newest member may be continued.
  */
 
-export type ChainSummary = Pick<RunSummary, 'id' | 'startedAt' | 'status'> & Partial<Pick<RunSummary, 'sessionId' | 'resumedFrom' | 'projectId'>>
+export type ChainSummary = Pick<RunSummary, 'id' | 'startedAt' | 'status'> & Partial<Pick<RunSummary, 'sessionId' | 'resumedFrom' | 'projectId' | 'modelSelection'>>
 
 const OPEN: ReadonlySet<RunStatus> = new Set<RunStatus>(['starting', 'running', 'idle', 'stopping'])
 const CONTINUABLE: ReadonlySet<RunStatus> = new Set<RunStatus>(['finished', 'error', 'paused'])
@@ -138,7 +138,7 @@ export function predecessorOf<T extends ChainSummary>(runs: readonly T[], id: st
 /** canContinue from an already computed chain (oldest first). */
 export function canContinueIn<T extends ChainSummary>(chain: readonly T[], id: string): boolean {
   const run = chain.find((r) => r.id === id)
-  if (!run || !run.sessionId || !CONTINUABLE.has(run.status)) return false
+  if (!run || (!run.sessionId && !run.modelSelection) || !CONTINUABLE.has(run.status)) return false
   return chain[chain.length - 1]?.id === id
 }
 

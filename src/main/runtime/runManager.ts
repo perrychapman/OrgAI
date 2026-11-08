@@ -121,7 +121,7 @@ import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { effectiveRunProject, execBudgetUsd } from './runOverrides'
+import { effectiveRunProject, execBudgetUsd, projectBudgetUsd } from './runOverrides'
 import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
 import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
@@ -892,6 +892,7 @@ export interface StartInput {
   /** The run being continued. */
   resumedFrom?: string
   modelSelection?: RunSummary['modelSelection']
+  conversationBudgetUsd?: number
   /** Cost already recorded on the run being continued. */
   resumeBaseCostUsd?: number
   /** The continued run's plan; it carries over with a fresh automatic-continue count. */
@@ -1354,6 +1355,7 @@ export class RunManager {
     scaffold,
     resumeSessionId,
     modelSelection,
+    conversationBudgetUsd,
     resumedFrom,
     resumeBaseCostUsd,
     plan: carriedPlan,
@@ -1438,6 +1440,7 @@ export class RunManager {
       startedAt: Date.now(),
       totalCostUsd: 0,
       modelAdapter: choice.adapter,
+      ...(conversationBudgetUsd !== undefined && conversationBudgetUsd > 0 && Number.isFinite(conversationBudgetUsd) ? { conversationBudgetUsd } : {}),
       // Labels the run's cost in the UI (CLI estimate, proxy prices, or none on a ChatGPT plan).
       connection: connection?.connection ?? choice.connection
     }
@@ -4044,7 +4047,7 @@ export class RunManager {
     if (!input || typeof input.runId !== 'string' || typeof input.model !== 'string' || !input.model || input.model.length > 200 || input.model.trim() !== input.model || /[\x00-\x1f\x7f]/.test(input.model)) throw new Error('Invalid model selection')
     let run = this.summary(input.runId)
     if (!run) throw new Error('Run not found')
-    run = this.chainOf(run).reduce((latest, item) => item.startedAt > latest.startedAt ? item : latest, run)
+    run = this.chainOf(run).reduce((latest, item) => item.startedAt > latest.startedAt || (item.startedAt === latest.startedAt && item.resumedFrom === latest.id) ? item : latest, run)
     const connection = input.connection ?? run.modelSelection?.connection ?? run.connection
     if (!connection) throw new Error('Connection is required')
     const model = (this.options.catalog?.() ?? []).find((m) => m.connection === connection && m.id === input.model)
@@ -4314,13 +4317,15 @@ export class RunManager {
     const switching = target.modelSelection && (!target.sessionId || target.modelSelection.connection !== target.connection || (selectedAdapter && selectedAdapter !== (target.modelAdapter ?? project.provider.id) && (target.modelAdapter ?? project.provider.id) !== 'mock'))
     const overrides = continuedOverrides(target.overrides ?? from.overrides, switching ? { ...opts, exec: !!target.overrides?.execMode } : opts)
     // A new provider session must not regain the conversation's already spent desktop budget.
-    if (switching && !overrides?.execMode) {
-      const cap = Math.min(project.maxBudgetUsd ?? Infinity, overrides?.maxBudgetUsd ?? Infinity)
+    let carriedBudget = target.conversationBudgetUsd
+    if ((switching || carriedBudget !== undefined) && !overrides?.execMode) {
+      const cap = carriedBudget ?? Math.min(projectBudgetUsd(project) ?? Infinity, overrides?.maxBudgetUsd ?? Infinity)
       if (Number.isFinite(cap)) {
         const spent = chain.reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0)
         if (spent >= cap) throw new Error('The conversation budget is spent; switching models does not reset it.')
         project = { ...project, maxBudgetUsd: cap - spent }
         if (overrides?.maxBudgetUsd !== undefined) overrides.maxBudgetUsd = cap - spent
+        carriedBudget = cap
       }
     }
     // A paused run is handed over to its continuation; it stays in history as finished. An exec run still waiting for
@@ -4358,6 +4363,7 @@ export class RunManager {
       ...(target.team === 'single' ? { team: target.team } : {}),
       resumeSessionId: switching ? undefined : sessionId,
       ...(target.modelSelection ? { modelSelection: target.modelSelection } : {}),
+      ...(carriedBudget !== undefined ? { conversationBudgetUsd: carriedBudget } : {}),
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
       // On a proxy project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.

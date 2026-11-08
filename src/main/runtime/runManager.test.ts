@@ -136,6 +136,31 @@ describe('RunManager stored records', () => {
     await m.stopAll()
   })
 
+  it.each([undefined, 0, -1])('keeps project budget %s unlimited on a provider handoff', async (maxBudgetUsd) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'unlimited', projectId: p.id, status: 'error', connection: 'anthropic', modelSelection: { model: 'alternate', connection: 'openai' } }))
+    const next = await m.continueRun(p, 'unlimited', 'Continue')
+    expect(next.conversationBudgetUsd).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('subtracts chain spend once on a repeated handoff and subsequent native continuation', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10 })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'prior', projectId: p.id, status: 'finished', startedAt: 1, totalCostUsd: 3 }))
+    store.upsert(runSummary({ id: 'second', projectId: p.id, status: 'error', startedAt: 2, resumedFrom: 'prior', connection: 'anthropic', conversationBudgetUsd: 10, overrides: { maxBudgetUsd: 7 }, totalCostUsd: 2, modelSelection: { model: 'alternate', connection: 'openai' } }))
+    const start = vi.spyOn(m, 'start')
+    const next = await m.continueRun(p, 'second', 'Continue')
+    expect(start.mock.calls[0][0].project.maxBudgetUsd).toBe(5)
+    expect(next.conversationBudgetUsd).toBe(10)
+    await m.stopAll()
+    await m.continueRun(p, next.id, 'Keep going')
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBeLessThanOrEqual(5)
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBeGreaterThan(2)
+    await m.stopAll()
+  })
+
   it('switches the newest ended chain member and refuses to reset a spent budget', async () => {
     const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 2 })
     const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
