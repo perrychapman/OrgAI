@@ -140,7 +140,7 @@ young-record wait). New: `acquireOwnership(..., { wait: 'none' })` for the CLI.
 |---|---|
 | `orgai` / `tui [run]` / `resume` / `exec` / `init` and every management command (org, team, worktrees, permissions, connections, models, mcp, skills, knowledge, notes, kit, projects create/edit, secrets init/reset/undelete) | In-process host; refused (4.2) while another `orgai` owns the folder |
 | `status`, `runs` (list, show), `projects` (list, show), `usage` (show), `secrets status`, `doctor`, `completions`, `--version`, `help` | Hostless reader from the files when another `orgai` owns the folder, with "orgai is running in another terminal; this is a saved snapshot" (no live cards). With no owner they may start a host as today or read files; either way no write. |
-| `watch`, `inbox`, `decide`, `runs message|interrupt|stop`, `attach` | Removed: live runs and their cards exist only inside the owning `orgai`, which has the same actions in its TUI. `orgai tui <run>` opens a saved run. |
+| `watch`, `inbox`, `decide`, `runs send|interrupt|stop`, `attach` | Removed: live runs and their cards exist only inside the owning `orgai`, which has the same actions in its TUI. `orgai tui <run>` opens a saved run. |
 | `daemon`, `app`, `terminal-access` | Removed |
 | `exec` decision policies | `wait` policies (`--on-permission wait` and the other `wait` values, `decisionPolicy.ts`, code) are refused (exit 2): nothing else can answer. `deny`, `fail`, `allow*` and the headless defaults stay. |
 

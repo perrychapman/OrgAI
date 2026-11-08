@@ -6,12 +6,12 @@
 > (override `--data-dir` / `ORGAI_CLI_DATA_DIR`; `ORGAI_DATA_DIR` is ignored) and its vault custody is `OrgAI CLI Vault` /
 > `ORGAI_CLI_VAULT_*` (cli-standalone-default.md 3.1 and 3.2), which replaces the shared vault design and any
 > `ORGAI_DATA_DIR` / `ORGAI_VAULT_*` / "OrgAI Vault" text below. Removed commands and flags (4.1, 4.3): `--host`,
-> `daemon`, `app`, `terminal-access`, `watch`, `inbox`, `decide`, `attach`, `runs message|interrupt|stop` and the `wait`
+> `daemon`, `app`, `terminal-access`, `watch`, `inbox`, `decide`, `attach`, `runs send|interrupt|stop` and the `wait`
 > decision policies. See cli-standalone-default.md 4.3 for the current command table; use the sections below for the
 > shared host code only. Anything about the app serving terminals, a background host, the handoff or Terminal access
 > is history, and `HostKind 'headless-host'` survives only as a legacy value read as `desktop` (section 13).
 
-Status: implemented on wave7/standalone-cli (not merged), 2026-11-06. Written as draft 7, 2026-11-05, revised after
+Status: implemented on wave7/standalone-cli, merged to dev via PR #24 (2026-11-07); its Node host, daemon and handoff were removed on 2026-11-08 (cli-standalone-default.md). First written 2026-11-06. Written as draft 7, 2026-11-05, revised after
 review rounds 1-5; round 6 was folded in as binding implementation rules (13) (GPT Astra, Gemini Argon; resolutions in
 section 13). Builds on `docs/design/cli-spec.md` (Waves 0-6, landed on dev; Wave 7 entry in its "Implementation
 status"). Owner decisions are marked **D1..D10**; D1 and D10 are decided (below), the rest keep their recommended default.

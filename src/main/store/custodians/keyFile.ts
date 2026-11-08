@@ -149,7 +149,7 @@ export function keyFilePathProblem(
     /** The CLI also refuses the desktop app's default folder and the file the desktop's own key-file variable names (spec 7). */
     cliAvoids?: { desktopDefault: string; desktopKeyFile?: string }
     /** The desktop refuses the CLI's default folder (spec 3.1 and 7: neither product writes into the other's folder). */
-    desktopAvoids?: { cliDefault: string }
+    desktopAvoids?: { cliDefault: string; cliKeyFile?: string }
   }
 ): string | undefined {
   const platform = opts.platform ?? process.platform
@@ -168,6 +168,10 @@ export function keyFilePathProblem(
   }
   if (opts.desktopAvoids && insideOnAnySpelling(opts.desktopAvoids.cliDefault, path, platform)) {
     return `The key file must not be inside the orgai command's data folder (${opts.desktopAvoids.cliDefault}): the two products keep separate folders.`
+  }
+  const cliKey = opts.desktopAvoids?.cliKeyFile
+  if (cliKey && insideOnAnySpelling(cliKey, path, platform) && insideOnAnySpelling(path, cliKey, platform)) {
+    return `The key file must not be the file the orgai command uses as its key (${vaultNames('cli').keyFileEnv}): the two vaults would share one key.`
   }
   const avoid = opts.cliAvoids
   if (avoid) {
@@ -713,8 +717,15 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
             }
           })()
         : undefined
+    // A refusal-only read of the other product's variable: the app never uses that key file.
+    const cliKeyFile = this.env[vaultNames('cli').keyFileEnv]?.trim()
     const desktopAvoids =
-      this.opts.product === 'cli' ? undefined : { cliDefault: cliUserDataDir(this.platform, this.env as NodeJS.ProcessEnv, this.env.HOME ?? homedir()) }
+      this.opts.product === 'cli'
+        ? undefined
+        : {
+            cliDefault: cliUserDataDir(this.platform, this.env as NodeJS.ProcessEnv, this.env.HOME ?? homedir()),
+            ...(cliKeyFile ? { cliKeyFile } : {})
+          }
     const problem = keyFilePathProblem(p, {
       userDataDir: this.opts.userDataDir,
       dataDir: this.opts.dataDir,

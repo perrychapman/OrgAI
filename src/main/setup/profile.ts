@@ -5,6 +5,7 @@ import { PROFILE_DOCUMENTS_MAX, type ProjectKind, type ProjectProfile } from '@s
 import { promptDatum } from '../mcp/assist'
 import { agentDefinitionLocations } from './import/scan'
 import { gitExecutable } from '../host/systemBinaries'
+import { scrubControlEnv } from '../runtime/childEnv'
 
 const IGNORED_DIRS = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', 'target', 'bin', 'obj', '.next', '.nuxt', '.turbo',
@@ -154,7 +155,7 @@ function gitLogLines(root: string): Promise<string[]> {
   const bin = gitExecutable()
   if (!bin) return Promise.resolve([])
   return new Promise((resolve) => {
-    execFile(bin, ['log', '--oneline', '-n', '30', '--no-decorate'], { cwd: root, timeout: 8000, windowsHide: true }, (err, stdout) => {
+    execFile(bin, ['log', '--oneline', '-n', '30', '--no-decorate'], { cwd: root, env: scrubControlEnv(process.env), timeout: 8000, windowsHide: true }, (err, stdout) => {
       if (err) resolve([])
       else resolve(stdout.split('\n').map((l) => l.trim()).filter(Boolean))
     })

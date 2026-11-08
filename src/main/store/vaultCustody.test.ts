@@ -164,6 +164,15 @@ describe('key file variables stay separate', () => {
     await expect(ok.create(ID)).rejects.not.toMatchObject({ kind: 'denied' })
   })
 
+  it('the desktop key file is refused when it is the file the CLI variable names', async () => {
+    const mk = (env: Record<string, string>, keyFile: string) =>
+      new KeyFileCustodian({ dataDir: '/home/me/app/data', userDataDir: '/home/me/app', product: 'desktop', env: { HOME: '/home/me', ...env }, platform: 'linux', keyFile })
+    const same = mk({ ORGAI_CLI_VAULT_KEY_FILE: '/keys/cli.key' }, '/keys/cli.key')
+    await expect(same.create(ID)).rejects.toMatchObject({ kind: 'denied', message: expect.stringContaining('share one key') })
+    const ok = mk({ ORGAI_CLI_VAULT_KEY_FILE: '/keys/cli.key' }, '/keys/app.key')
+    await expect(ok.create(ID)).rejects.not.toMatchObject({ kind: 'denied' })
+  })
+
   it('the factory ignores a key file named by the other product', () => {
     const factory = createCustodianFactory({ dataDir: '/d/data', userDataDir: '/d', product: 'cli', env: { ORGAI_VAULT_KEY_FILE: '/keys/app' }, platform: 'linux' })
     const c = factory('key-file', {}) as KeyFileCustodian
