@@ -2,6 +2,7 @@ import type {
   AdapterChoice,
   AgentInstance,
   AppearanceSettings,
+  NormalizedAppearanceSettings,
   AppSettings,
   ConnectionId,
   ConnectionStatus,
@@ -601,10 +602,10 @@ export function mcpServersForRole(project: Pick<Project, 'mcpServers'>, role: Pi
 }
 
 /** Default look. Theme stays 'dark' until the light theme is signed off, then becomes 'system' (plan.md section 2). */
-export const DEFAULT_APPEARANCE: AppearanceSettings = {
+export const DEFAULT_APPEARANCE: NormalizedAppearanceSettings = {
   theme: 'dark',
   accent: '#7c5cff',
-  canvas: { pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false },
+  canvas: { presentation: 'graph', scenePalette: 'neutral', pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false },
   reduceMotion: 'system'
 }
 
@@ -657,7 +658,7 @@ export const CANVAS_PRESETS: readonly CanvasPreset[] = [
   }
 ]
 
-/** The preset whose five fields all match this canvas (minimap is not part of a preset), or undefined. */
+/** The matching graph preferences, independent of presentation, scene palette and minimap, or undefined. */
 export function activeCanvasPreset(canvas: AppearanceSettings['canvas']): CanvasPresetId | undefined {
   return CANVAS_PRESETS.find(
     (p) =>
@@ -669,7 +670,7 @@ export function activeCanvasPreset(canvas: AppearanceSettings['canvas']): Canvas
   )?.id
 }
 
-/** A new canvas with the preset's five fields and the given minimap setting kept. An unknown id returns a copy unchanged. */
+/** Sets only graph preferences; preserves presentation, scene palette and minimap. Unknown ids return a copy unchanged. */
 export function applyCanvasPreset(canvas: AppearanceSettings['canvas'], id: CanvasPresetId): AppearanceSettings['canvas'] {
   const preset = CANVAS_PRESETS.find((p) => p.id === id)
   return preset ? { ...canvas, ...preset.canvas } : { ...canvas }
