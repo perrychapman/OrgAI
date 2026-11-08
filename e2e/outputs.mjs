@@ -270,6 +270,10 @@ async function largerViewChecks(label) {
   await btn.click()
   const dlg = page.locator('[data-testid=output-dialog]')
   await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  // Visibility can precede the shared dialog's entry transform; measure its final geometry.
+  await dlg.evaluate(async (el) => {
+    await Promise.all(el.getAnimations().map((animation) => animation.finished))
+  })
   const box = await dlg.evaluate((el) => {
     const r = el.getBoundingClientRect()
     return { w: r.width, h: r.height, vw: innerWidth, vh: innerHeight }
