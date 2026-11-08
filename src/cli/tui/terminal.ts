@@ -163,7 +163,7 @@ export function createTerminal(opts: {
   const onExit = (): void => restore()
   const onCrash = (err: unknown): void => {
     restore()
-    // Error text can carry external words (an MCP server's stderr under --host inproc): sanitized like every exit path.
+    // Error text can carry external words (an MCP server's stderr in the in-process host): sanitized like every exit path.
     const text = sanitizeTty(err instanceof Error ? (err.stack ?? err.message) : String(err))
     try {
       const fd = proc.stderr?.fd

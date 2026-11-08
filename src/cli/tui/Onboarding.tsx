@@ -10,7 +10,6 @@ import { PaneLines, type PaneLine } from './panes/lines'
 import { textWidth, wrapText } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import { asciiOnly, glyphs } from './theme'
-import { DESKTOP_DECISIONS_NOTICE } from './decisionNotices'
 import type { AgentImportSource, InputEvent, TuiEnv } from './types'
 
 export type OnboardingChoice =
@@ -24,7 +23,6 @@ export const QUICK_NOTE = 'No .orgai project files added; read-only start: an ed
 export const ARCHITECT_NOTE = 'The Architect is the built-in setup assistant: it interviews you and proposes a team. It uses tokens.'
 export const LEAVE_NOTE = 'Press a key to choose. Esc or q leaves without creating a project.'
 export const LEAVE_DUMB = 'Type a choice, then Enter. Esc or q leaves without creating a project.'
-export { DESKTOP_DECISIONS_NOTICE } from './decisionNotices'
 
 /** The import line's count and sources, deduplicated in scan order. */
 export function importSummary(check: ProjectPathCheck | undefined): { count: number; sources: AgentImportSource[]; labels: string[] } {
@@ -68,9 +66,6 @@ export function Onboarding(props: {
   width?: number
   height?: number
   accessNotice?: string
-  decisionsInDesktop?: boolean
-  /** The line saying where approvals are answered (decisionNotices.ts); default the desktop line. */
-  decisionsNotice?: string
   busy?: string
   checking?: boolean
   animated?: boolean
@@ -150,13 +145,10 @@ export function Onboarding(props: {
   const g = glyphs(env)
   const folder = safeInline(props.folder, 'Current folder')
   const rawNotice = safeInline(props.accessNotice, '')
-  const decisionsLine = props.decisionsNotice ?? DESKTOP_DECISIONS_NOTICE
-  const accessNotice = props.decisionsInDesktop && !rawNotice.includes(decisionsLine)
-    ? [rawNotice, decisionsLine].filter(Boolean).join(' ')
-    : rawNotice
+  const accessNotice = rawNotice
   const importText = `Import ${imp.count} detected agent definition${imp.count === 1 ? '' : 's'}${imp.labels.length ? ` (${imp.labels.join(', ')})` : ''}`
   const activity = props.busy || (props.checking ? 'Checking folder' : undefined)
-  const edits = `Edits: ${allowEdits ? 'allowed (each still asks)' : 'read-only start (an edit or command asks)'}${props.decisionsInDesktop && allowEdits ? (decisionsLine === DESKTOP_DECISIONS_NOTICE ? ' (approvals in desktop)' : ' (approvals answered elsewhere)') : ''}`
+  const edits = `Edits: ${allowEdits ? 'allowed (each still asks)' : 'read-only start (an edit or command asks)'}`
   const choices = [
     { key: '1' as const, title: 'Quick run in this folder', description: QUICK_NOTE, action: 'Start a quick run' },
     { key: '2' as const, title: 'Set up project with the Architect', description: ARCHITECT_NOTE, action: 'Meet the Architect' },

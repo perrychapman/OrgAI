@@ -15,7 +15,6 @@ import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../mai
 import { fakeCustody } from '../main/store/vaultTesting'
 import { VaultNotReady } from '../main/store/vaultTypes'
 import { connectHost } from './client/hostClient'
-import { isSharedInprocHost } from './client/sharedHost'
 import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
 import { CLI_VERSION } from './version'
@@ -42,14 +41,10 @@ const start = async (overlay: Map<string, string> = new Map(), extra: Partial<Pa
 const secretsOf = (h: InprocHost): SecretStore => (h.host.services.connections as unknown as { deps: { secrets: SecretStore } }).deps.secrets
 
 describe('startInprocHost', () => {
-  it('owns the data dir as a ready inproc host, turns terminal access on, and serves the overlay over the vault', async () => {
+  it('owns the data dir as a ready inproc host and serves the overlay over the vault', async () => {
     const h = await start(new Map([[LITELLM_KEY, 'sk-overlay']]))
     const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
     expect(daemon).toMatchObject({ hostKind: 'inproc', state: 'ready', pid: process.pid })
-    // For this session only (never saved). The level is the stored one like on any host: only the CLI process that
-    // started the host gets every scope, through its in-memory owner key (review H2).
-    expect(h.host.settings.get().terminalServer).toBe(false)
-    expect(h.host.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
     expect(h.status()).toMatchObject({ hostKind: 'inproc', state: 'ready', mock: true, dataDir })
     const secrets = secretsOf(h)
     expect(secrets.get(LITELLM_KEY)).toBe('sk-overlay')
@@ -77,19 +72,12 @@ describe('startInprocHost', () => {
     expect(secretsOf(again).get(LITELLM_KEY)).toBe('sk-stored')
   })
 
-  it('a shared host (daemon start --host inproc) carries the shared marker until it stops; a command host never does (review round 2)', async () => {
-    const own = await start()
-    expect(isSharedInprocHost(dataDir, own.status().hostInstanceId)).toBe(false)
-    await own.stop(true)
-    const h = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, shared: true })
-    started.push(h)
-    const id = h.status().hostInstanceId
-    expect(isSharedInprocHost(dataDir, id)).toBe(true)
-    await h.stop(true)
-    expect(isSharedInprocHost(dataDir, id)).toBe(false)
+  it('writes ownerCwd to daemon.json: the folder the owning process started in', async () => {
+    await start(new Map(), { cwd: '/work/some/project' })
+    expect(JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')).ownerCwd).toBe('/work/some/project')
   })
 
-  it('grants decide and configure over its socket only to the hello proven with its in-memory owner key (review H2)', async () => {
+  it('serves only its own process: a hello without the in-memory owner proof is refused not_owner (spec 4.1)', async () => {
     const h = await start()
     expect(h.ownerKey).toMatch(/^[0-9a-f]{64}$/)
     expect(h.hostInstanceId).toBe(JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')).hostInstanceId)
@@ -100,27 +88,28 @@ describe('startInprocHost', () => {
     }
     const all = ['read', 'operate', 'decide', 'configure'] as const
     const base = { dataDir, scopes: [...all], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid }
-    // Another process that read daemon.secret (an agent's shell): capped at the stored level, 'operate'.
+    // Another process that read daemon.secret (an agent's shell, a forged pid and client kind): refused before any method.
     const other = await connectHost(base)
-    if (!other.ok) throw new Error(other.message)
-    expect(other.client.hello.grantedScopes).toEqual(['read', 'operate'])
-    other.client.close()
+    expect(other).toMatchObject({ ok: false, reason: 'not_owner' })
+    const forged = await connectHost({ ...base, clientKind: 'tui', pid: 1 })
+    expect(forged).toMatchObject({ ok: false, reason: 'not_owner' })
     // The owner key only counts for the host it belongs to.
     const wrongHost = await connectHost({ ...base, ownerKey: h.ownerKey!, ownerHostInstanceId: 'ffffffffffff' })
-    if (!wrongHost.ok) throw new Error(wrongHost.message)
-    expect(wrongHost.client.hello.grantedScopes).toEqual(['read', 'operate'])
-    wrongHost.client.close()
+    expect(wrongHost).toMatchObject({ ok: false, reason: 'not_owner' })
     const owner = await connectHost({ ...base, ownerKey: h.ownerKey!, ownerHostInstanceId: h.hostInstanceId! })
     if (!owner.ok) throw new Error(owner.message)
     expect(owner.client.hello.grantedScopes).toEqual([...all])
     owner.client.close()
   })
 
-  it('a second host on the same data dir is refused with exit 6', async () => {
-    await start()
+  it('a second host on the same data dir is refused at once with exit 6, naming the owner (spec 4.2)', async () => {
+    await start(new Map(), { cwd: '/work/first' })
+    const began = Date.now()
     const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CliError)
     expect((err as CliError).exitCode).toBe(6)
+    expect((err as CliError).message).toBe(`orgai is already running in another terminal (/work/first, pid ${process.pid}). Use that one, or quit it first.`)
+    expect(Date.now() - began).toBeLessThan(2000)
   })
 
   it('stop(true) drains and releases daemon.json', async () => {

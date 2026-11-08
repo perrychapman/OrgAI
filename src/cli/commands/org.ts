@@ -5,11 +5,10 @@
  *   the effective subagent limits. Read scope.
  * - `org export`: projects:exportOrg (configure); prints the written `.orgai/org.json`.
  * - `org import [--source <id>...] [--mode merge|replace] [--yes]`: projects:scanAgents, projects:previewImport, a
- *   confirmation, then projects:applyImport with the preview's digest (configure). There is no undo: the Desktop Team
- *   tab's Undo covers only imports the Desktop made itself, so the confirmation says so and --json carries the
- *   previous chart (`previousRoles`) for a script to keep.
- * - `org retro <runRef>`: an Org retrospective (setup:retro) of a finished work run; attaches the terminal UI with a
- *   TTY, else (or with --no-attach) prints the new run's tag.
+ *   confirmation, then projects:applyImport with the preview's digest (configure). There is no undo: the confirmation
+ *   says so and --json carries the previous chart (`previousRoles`) for a script to keep.
+ * - `org retro <runRef>`: an Org retrospective (setup:retro) of a  finished work run; follows it in the terminal UI
+ *   (it needs a terminal: the run lives only inside this orgai).
  * - `org draft "<description>"`: draft:orgChart (operate); prints the drafted roles, never saves.
  * - Team assistant: `org discover`, `recommend`, `review`, `apply`, `undo`, `dismiss`, `restore` (capabilities:*).
  *
@@ -43,14 +42,12 @@ import {
 import { effectiveSubagentLimits, tierForModel } from '../../shared/defaults'
 import { servicesForRole } from '../../shared/view/roleServices'
 import { isOpenStatus } from '../../shared/view/runChains'
-import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, hostError, requireProject, runSubcommands, subscribeTopics, withHost, type SubcommandFn } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safe, safeLine, type Json } from '../output'
-import { resolveRunFromSource } from '../runRef'
+import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
 import { runInteractiveRun } from './interactive'
-import { liveSource } from './watch'
 
 /** Long-running Team assistant and drafting calls (discover, recommend, review, draft) wait at least this long. */
 export const LONG_CALL_TIMEOUT_MS = 10 * 60_000
@@ -59,7 +56,7 @@ export const LONG_CALL_TIMEOUT_MS = 10 * 60_000
 export const ARG_MAX_CHARS = 200
 
 const USAGE =
-  'org show | export | import [--source <id>...] [--mode merge|replace] [--yes] | retro <runRef> [--no-attach] | draft "<description>" [--mode replace|revise] | discover [--outside] | recommend [--outside] [--role <role>] | review [--recheck [--outside] [--model]] | apply <recommendationId> [--candidate <id>] [--role <role>...] [--access read|full] | undo <undoId> | dismiss <id> [--candidate] | restore <candidateId>'
+  'org show | export | import [--source <id>...] [--mode merge|replace] [--yes] | retro <runRef> | draft "<description>" [--mode replace|revise] | discover [--outside] | recommend [--outside] [--role <role>] | review [--recheck [--outside] [--model]] | apply <recommendationId> [--candidate <id>] [--role <role>...] [--access read|full] | undo <undoId> | dismiss <id> [--candidate] | restore <candidateId>'
 
 // ---------- Shared argument checks (team, worktrees and permissions import these) ----------
 
@@ -231,11 +228,10 @@ const orgExport: SubcommandFn = async (ctx, args) => {
 
 const STALE_IMPORT = 'The folder changed since the preview; run it again.'
 /**
- * Neither the CLI nor the Desktop can undo a CLI import: the Desktop Team tab's Undo comes from imports the renderer
- * applied itself (useAppStore.recordImport), never from a project.updated push. Shared with `team templates apply`.
+ * The CLI cannot undo an import, so the confirmation says so. Shared with `team templates apply`.
  */
 export const NO_UNDO = 'This cannot be undone.'
-export const NO_UNDO_AFTER = 'This cannot be undone from the CLI or the Desktop (--json output carries the previous chart as previousRoles).'
+export const NO_UNDO_AFTER = 'This cannot be undone from the CLI (--json output carries the previous chart as previousRoles).'
 
 function importItemLines(item: AgentImportItem): string[] {
   const flag = item.elevatedTools.length ? `  ! elevated: ${item.elevatedTools.map(safeLine).join(', ')}` : ''
@@ -329,14 +325,15 @@ const orgImport: SubcommandFn = async (ctx, args) => {
 
 const orgRetro: SubcommandFn = async (ctx, args) => {
   const { values, positionals } = parseFlags(args, {
-    'no-attach': { type: 'boolean' },
     inline: { type: 'boolean' },
     'ax-screen-reader': { type: 'boolean' }
   })
-  onlyPositionals(positionals, 1, 'org retro <runRef> [--no-attach]')
+  onlyPositionals(positionals, 1, 'org retro <runRef>')
   const ref = checkArg('run (an id or R#)', positionals[0])
-  const tty = ctx.io.stdinIsTTY && ctx.io.stdout.isTTY === true
-  const attach = tty && !values['no-attach'] && !isJsonOutput(ctx)
+  // The run lives only inside the orgai that starts it, so it needs a terminal to follow it in.
+  if (!(ctx.io.stdinIsTTY && ctx.io.stdout.isTTY === true) || isJsonOutput(ctx)) {
+    throw new CliError('An Org retrospective needs a terminal: the run lives inside this orgai, and ends with it.', EXIT.usage)
+  }
 
   const target = await withHost(ctx, ['read'], async (client) => {
     const src = liveSource(client)
@@ -352,31 +349,16 @@ const orgRetro: SubcommandFn = async (ctx, args) => {
     return { projectId: s.projectId, runId: s.id, project }
   })
 
-  if (attach) {
-    return runInteractiveRun(
-      ctx,
-      {
-        channel: 'setup:retro',
-        input: { projectId: target.projectId, runId: target.runId },
-        label: 'Org retrospective',
-        noTtyMessage: 'An Org retrospective needs a terminal to attach to. Use `orgai org retro <run> --no-attach`, then `orgai attach <tag>`.'
-      },
-      { inline: !!values.inline, screenReader: !!values['ax-screen-reader'] }
-    )
-  }
-
-  return withHost(ctx, ['read', 'operate'], async (client) => {
-    const started = await hostCall<RunSummary>(client, 'setup:retro', [{ projectId: target.projectId, runId: target.runId }])
-    const list = await hostCall<RunSummary[]>(client, 'runs:list', [target.projectId]).catch(() => [] as RunSummary[])
-    const known = Array.isArray(list) ? list : []
-    const index = runIndexMap(known.some((r) => r.id === started.id) ? known : [...known, started])
-    const tag = runTag(index.get(started.id))
-    emit(ctx, { project: projectJson(target.project), run: { id: started.id, tag, kind: started.kind, status: started.status, name: runName(started) }, attach: `orgai attach ${tag}` }, () => [
-      `Started the Org retrospective as ${tag} (${started.id}).`,
-      `Follow it with: orgai attach ${tag}`
-    ])
-    return EXIT.ok
-  })
+  return runInteractiveRun(
+    ctx,
+    {
+      channel: 'setup:retro',
+      input: { projectId: target.projectId, runId: target.runId },
+      label: 'Org retrospective',
+      noTtyMessage: 'An Org retrospective needs a terminal.'
+    },
+    { inline: !!values.inline, screenReader: !!values['ax-screen-reader'] }
+  )
 }
 
 // ---------- org draft ----------

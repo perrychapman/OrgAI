@@ -269,7 +269,7 @@ function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolea
     client: {} as never,
     hello: {} as never,
     started: false,
-    ...(opts.inproc ? { inproc: (opts.inproc === true ? {} : opts.inproc) as never } : {}),
+    inproc: (opts.inproc && opts.inproc !== true ? opts.inproc : {}) as never,
     projects: vi.fn(async () => []),
     checkPath: vi.fn(async () => ({ exists: true, isDirectory: true, isGitRepo: true, suggestedName: 'repo', empty: false })),
     createProject: vi.fn(async () => P),
@@ -531,15 +531,6 @@ describe('App quitting', () => {
     m.r.unmount()
   })
 
-  it('a daemon host quits at once and reports a live run as detached', async () => {
-    const s = fakeSession({ testLive: 1, activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } })
-    const m = mount({ session: s })
-    await m.send(ctrlKey('d'))
-    expect(m.exits).toHaveLength(1)
-    expect(m.exits[0][1]).toMatchObject({ detachedLive: true })
-    m.r.unmount()
-  })
-
   it("counts every live run on this terminal's host, also ones other terminals or projects started", async () => {
     const inproc = { status: () => ({ handoff: { workingRuns: 2, waitingRuns: 1, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 } }) }
     const m = mount({ inproc, session: fakeSession({ testLive: 1 }, 'inproc') })
@@ -562,16 +553,6 @@ describe('App quitting', () => {
       expect(m.exits.map((e) => e[0])).toEqual([0])
       m.r.unmount()
     }
-  })
-
-  it('a client of a daemon started with --host inproc (hostKind inproc) quits at once: the runs live in the daemon', async () => {
-    const s = fakeSession({ testLive: 1, activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } }, 'inproc')
-    const m = mount({ session: s })
-    await m.send(ctrlKey('d'))
-    expect(m.frame()).not.toContain('Quitting stops')
-    expect(m.exits).toHaveLength(1)
-    expect(m.exits[0][1]).toMatchObject({ detachedLive: true })
-    m.r.unmount()
   })
 })
 
@@ -649,8 +630,7 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
       s.set({ runs: { run_s: { summary: { id: 'run_s', kind: 'setup', ...patch } } } })
       await tick()
       expect(m.exits.map((e) => e[0])).toEqual([code])
-      expect(m.exits[0][1]).toMatchObject({ detachedLive: false })
-      m.r.unmount()
+        m.r.unmount()
     }
   })
 
@@ -700,7 +680,7 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
     await tick()
     expect(s.api.stop).toHaveBeenCalledTimes(1)
     expect(m.exits.map((e) => e[0])).toEqual([130])
-    expect(m.exits[0][1]).toMatchObject({ detachedLive: false, message: 'Architect setup stopped.' })
+    expect(m.exits[0][1]).toMatchObject({ message: 'Architect setup stopped.' })
     m.r.unmount()
   })
 
@@ -719,7 +699,7 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
       expect(m.exits).toEqual([]) // still waiting (bounded) for a status in case the stop landed anyway
       await vi.advanceTimersByTimeAsync(STOP_WAIT_MS + 10)
       expect(m.exits.map((e) => e[0])).toEqual([1])
-      expect(m.exits[0][1]).toMatchObject({ detachedLive: true, message: 'Could not stop Architect setup: The host refused the stop. The run keeps going.' })
+      expect(m.exits[0][1]).toMatchObject({ message: 'Could not stop Architect setup: The host refused the stop.' })
       expect((m.exits[0][1] as { message?: string }).message).not.toContain('stopped.')
       m.r.unmount()
     } finally {
@@ -758,12 +738,14 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
     m.r.unmount()
   })
 
-  it('a normal session still detaches on quit (no stop)', async () => {
-    const s = fakeSession(open('running'))
+  it('a normal session asks before quitting a live run and does not stop the run itself (the host stop ends it)', async () => {
+    const s = fakeSession({ ...open('running'), testLive: 1 })
     const m = mount({ session: s, launch: { runId: 'run_s' } })
     await m.send(ctrlKey('d'))
+    expect(m.exits).toEqual([])
+    await m.send(key('y'))
     expect(s.api.stop).not.toHaveBeenCalled()
-    expect(m.exits).toEqual([[0, expect.objectContaining({ detachedLive: true })]])
+    expect(m.exits).toEqual([[0, { session: s.api }]])
     s.set(open('finished'))
     await tick()
     expect(m.exits).toHaveLength(1)

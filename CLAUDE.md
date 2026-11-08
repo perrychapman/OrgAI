@@ -966,7 +966,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     read `commandTable.ts`; host text goes through `sanitizeTty`. The launcher hears the spawned app's 'error' and
     non-zero exit (waitForReady rejects) and filters by `hostKinds`; `orgai app` refuses (exit 6) while a `--host
     inproc` host owns the folder, and `daemon start` never spawns over a live host that refused or did not answer.
-    Unit, integration (real inproc host) and e2e (`cli-host.mjs`, `cli-readonly.mjs`) on macOS only.
+    Unit, integration (real inproc host) and e2e (`cli-readonly.mjs`) on macOS only.
   - Wave 1 (`src/main/host/`, Electron-free): `bootstrap.ts` `bootOrgAIHost` builds every store and service and runs
     housekeeping; `index.ts` is the Electron shell over it (windows, menu, notifications, quit gate). `dispatcher.ts`
     `HostDispatcher` owns every request handler (`invoke` desktop path; `invokeRpc` wire path: `registry.ts`
@@ -1354,7 +1354,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     Word, Excel, full label as title); `output-ext` badge (".docx") beside titles; search also matches the kind name,
     "word", "excel" and the extension. History rows show `history-outputs` "N outputs", which opens the run on its
     Outputs tab. Driven by `e2e/outputs.mjs`; not seen: a real SVG output, the hint in a run window.
-- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `outputs.mjs`, `usage-app.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
+- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `outputs.mjs`, `usage-app.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
   `ImportNotice.source: 'template'`), New project "Start from a template" (`setup-choice-template`,

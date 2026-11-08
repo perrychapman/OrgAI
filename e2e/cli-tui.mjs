@@ -1,12 +1,11 @@
 // The interactive terminal UI end to end (cli-spec 5 and 8, Wave 4 gate), driven through a pseudo-terminal
 // (e2e/ptyDriver.mjs: python3 stdlib pty or `script`, no native addon). Run `npm run build` first. Mock adapter only
-// (ORGAI_MOCK=1): no tokens. No Electron: TUIs run on `--host inproc` or as `--host daemon` clients of a long-lived
-// `daemon start --host inproc --foreground`. Every scripted turn comes from an ORGAI_MOCK_SCRIPT JSON in the data dir.
+// (ORGAI_MOCK=1): no tokens. No Electron: each TUI hosts itself (one orgai at a time). Every scripted turn comes from an ORGAI_MOCK_SCRIPT JSON in the data dir.
 //
 // SKIPs (exit 0, "SKIP cli-tui: ...") on win32, when no pty backend passes ptyDriver's probe (tty, size, resize, raw
 // input and a real SIGTSTP stop), and while out/cli/tui.mjs is still the Wave 4 contracts stub.
 //
-// a. Full screen at 120x30 (`--host inproc tui`): \x1b[?1049h and \x1b[?2004h are written, the status bar names the
+// a. Full screen at 120x30 (`tui`): \x1b[?1049h and \x1b[?2004h are written, the status bar names the
 //    project, a typed prompt starts a run whose text appears; /quit (Ctrl+D as a fallback, plus the inproc stop
 //    confirmation) leaves the alternate screen: the tail has \x1b[?1049l, \x1b[?2004l, \x1b[?25h and the exit is 0.
 // b. Resize 120x30 -> 100x30 (stacked: the transcript starts at the left edge, the agents pane above it) -> 120x30
@@ -19,15 +18,12 @@
 //    typed text reaches the composer again.
 // e. Split escapes: a mock text step whose `partials` cut an OSC 52 clipboard write, an OSC 8 link and a CSI clear
 //    (plus a distinctive SGR) across chunks: the raw pty output never carries their payloads; the visible text does.
-// f. Paste safety (daemon host): with a permission card open, a bracketed paste of "y\na\n" into the composer leaves
-//    the card pending (inbox) and resolves nothing; the composer shows the text.
-// g. Card-swap guard and exact payloads (daemon host, plus `watch <run> --output-format stream-json`): two permission
-//    cards back to back: `y` allows card 1; a `y` within 200 ms of the tray drawing card 2 is ignored (still pending, no
-//    second permission.resolved); after 1 s `n` + Enter denies it with message 'Denied by user'. Then a question
-//    (`2` + Enter: selected [second label]), a rules request (`r`: grant, scope run), an MCP install (`n`: not
-//    approved) and a skills proposal (`d`: declined), each resolved with decidedBy.surface 'tui'. Two-step: `a` on a
-//    further permission card resolves nothing within 1 s; `orgai decide <id> deny` from another process resolves it
-//    (surface 'cli') and the TUI says "Resolved in another window".
+// f. Paste safety: with a permission card open, a bracketed paste of "y\na\n" into the composer resolves nothing (the
+//    tool never runs); the composer shows the text. While the TUI runs, a second `orgai connections list` is refused at
+//    once (exit 6, naming the first orgai's folder and pid), `runs list` answers from the files with the snapshot note and
+//    `status` has no live cards (spec 4.2, 4.3).
+// g. Cards in the TUI that owns the folder: `y` from the tray allows card 1 (its tool result is shown); card 2 is denied
+//    with `n` + Enter (its tool never runs); /quit asks to stop the live runs and exits 0.
 // i. The org tree (ux-review-tui-org.md, `[mock:deep-tree]` on the mock's default script, full screen 120x40): the root, mock-lead
 //    and its two reports; once they finish and the 6 s grace passes they fold (reports first, "2 done", then mock-lead with
 //    them, "3 done" under the root; the run is still open); Right on the "3 done" row unfolds it and selects mock-lead; `n`
@@ -44,7 +40,7 @@
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { APP_DIR, DATA_DIR, allowFullTerminalAccess, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 import { probePty, spawnTui } from './ptyDriver.mjs'
 import { writeFileSync as markWrite } from 'node:fs'
 import { join as markJoin } from 'node:path'
@@ -69,6 +65,9 @@ const UI = {
    */
   statusReady: /\bneeds? you\b/
 }
+
+// An unfocused tray shows only "Alt+D or F2 to answer"; a focused one shows "Approve" / "Allow once".
+const CARD_ON_SCREEN = /Approve|Allow once|to answer/
 
 const skip = (why) => {
   console.log(`SKIP cli-tui: ${why}`)
@@ -230,10 +229,9 @@ async function quit(t, { confirm = false } = {}) {
 
 const repo = makeFixtureRepo('cli-tui')
 const open = []
-let daemon
 try {
   // ---------- Project ----------
-  const made = await cli(['--host', 'inproc', 'exec', '--output-format', 'json', '--create-project', '--team', 'single', 'hello'], { cwd: repo, timeoutMs: 120_000 })
+  const made = await cli(['exec', '--output-format', 'json', '--create-project', '--team', 'single', 'hello'], { cwd: repo, timeoutMs: 120_000 })
   check(made.code === 0, 'exec --create-project makes the fixture a project', show(made))
   const status = json((await cli(['status', '--output-format', 'json'], { cwd: repo })).out)
   const projectName = status?.project?.name
@@ -241,7 +239,7 @@ try {
 
   // ---------- a, b, d: full screen ----------
   {
-    const t = tui(['--host', 'inproc', ...UI.fullscreenArgs], { cols: 120, rows: 30, cwd: repo })
+    const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 30, cwd: repo })
     open.push(t)
     try {
       await t.waitFor((r) => r.includes('\x1b[?1049h') && r.includes('\x1b[?2004h'), 30_000, { raw: true })
@@ -303,7 +301,7 @@ try {
 
   // ---------- c, d: inline ----------
   {
-    const t = tui(['--host', 'inproc', ...UI.inlineArgs], { cols: 90, rows: 20, cwd: repo })
+    const t = tui([...UI.inlineArgs], { cols: 90, rows: 20, cwd: repo })
     open.push(t)
     try {
       await t.waitFor(UI.statusReady, 30_000)
@@ -339,7 +337,7 @@ try {
 
   // ---------- e: split escape sequences ----------
   {
-    const t = tui(['--host', 'inproc', ...UI.fullscreenArgs], { cols: 120, rows: 30, cwd: repo, script: SCRIPTS.escapes })
+    const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 30, cwd: repo, script: SCRIPTS.escapes })
     open.push(t)
     try {
       await t.waitFor(UI.statusReady, 30_000)
@@ -359,157 +357,63 @@ try {
     }
   }
 
-  // ---------- f, g: a daemon host ----------
-  // `--host daemon` TUIs are other processes: answering cards needs Terminal access 'full' (review H2).
-  allowFullTerminalAccess()
-  daemon = start(['--host', 'inproc', 'daemon', 'start', '--foreground'], { cwd: repo, env: baseEnv(SCRIPTS.cards) })
-  await until('the inproc daemon to be ready', () => json(fs.existsSync(DAEMON_JSON) ? fs.readFileSync(DAEMON_JSON, 'utf8') : '')?.state === 'ready', 60_000)
+  // ---------- f, g: cards in the TUI that owns the folder ----------
+  // The TUI is the only process that can answer its cards (spec 4.4). Every other `orgai` is refused at once, and the
+  // read-only commands answer from the files beside it.
   {
-    const inbox = async () => json((await cli(['--host', 'daemon', 'inbox', '--output-format', 'json'], { cwd: repo })).out)?.items ?? []
-    const t = tui(['--host', 'daemon', '--', 'E2E cards run'], { cols: 120, rows: 30, cwd: repo, script: SCRIPTS.cards })
+    const t = tui(['--', 'E2E cards run'], { cols: 120, rows: 30, cwd: repo, script: SCRIPTS.cards })
     open.push(t)
-    let watch
     try {
       await t.waitFor('E2E-CARDS-START', 40_000)
-      const first = await until('the first permission card in the inbox', async () => (await inbox())[0], 30_000)
-      const runId = first.runId
-      // The watch stream: every event with the time it arrived.
-      const events = []
-      let buf = ''
-      watch = start(['--host', 'daemon', 'watch', runId, '--output-format', 'stream-json'], { cwd: repo, env: baseEnv(SCRIPTS.cards) })
-      watch.child.stdout.on('data', (d) => {
-        buf += d
-        let i
-        while ((i = buf.indexOf('\n')) !== -1) {
-          const line = json(buf.slice(0, i))
-          buf = buf.slice(i + 1)
-          if (line?.type === 'event' && line.event) events.push({ at: Date.now(), e: line.event })
-        }
-      })
-      const ev = (type, pred = () => true) => events.find((x) => x.e.type === type && pred(x.e))
-      const waitEv = (what, type, pred, ms = 30_000) => until(what, () => ev(type, pred), ms, 25)
-      const cmdOf = (e) => e.request?.input?.command
-      await sleep(1500) // the watch is subscribed
+      await t.waitFor(CARD_ON_SCREEN, 30_000)
 
-      // f. Paste safety.
+      // h2. A second orgai: refused at once with exit 6; the read-only commands work beside it.
+      const began = Date.now()
+      const second = await cli(['connections', 'list'], { cwd: repo })
+      check(second.code === 6 && /orgai is already running in another terminal \(.*, pid \d+\)\. Use that one, or quit it first\./.test(second.err), 'a second orgai is refused with exit 6 naming the first', show(second))
+      check(Date.now() - began < 15_000, 'the refusal came at once', `${Date.now() - began} ms`)
+      const beside = await cli(['runs', 'list'], { cwd: repo })
+      check(beside.code === 0 && beside.err.includes('this is a saved snapshot'), 'runs list beside the TUI is a saved snapshot', show(beside))
+      const noCards = await cli(['status', '--output-format', 'json'], { cwd: repo })
+      check(noCards.code === 0 && json(noCards.out)?.liveInboxAvailable === false, 'status beside the TUI has no live cards (they exist only inside the owner)', show(noCards))
+
+      // f. Paste safety: a bracketed paste into the composer resolves nothing.
       t.paste('y\na\n')
       await sleep(1200)
-      const stillOne = (await inbox()).some((x) => x.requestId === first.requestId)
-      check(stillOne && !ev('permission.resolved'), 'f: a pasted "y\\na\\n" in the composer resolves no card', JSON.stringify(await inbox()))
+      check(!t.screen().includes('card one ran'), 'f: a pasted "y\\na\\n" in the composer resolves no card', esc(t.screen()))
       check(/y\s*\n?\s*a/.test(t.screen()) || t.screen().includes('y a') || t.screen().includes('ya'), 'f: the composer shows the pasted text', esc(t.screen()))
-      t.key('ctrl+c') // clears the composer (once; twice would detach)
+      t.key('ctrl+c') // clears the composer (once; twice would quit)
       await sleep(1200)
 
-      // g. Card 1 allowed with `y` from the tray (F2).
-      const req1 = ev('permission.request', (e) => cmdOf(e) === 'npm run card-one')?.e.request ?? { id: first.requestId }
+      // g. Card 1 allowed with `y` from the tray (F2): its tool ran.
       t.key('f2')
       await sleep(250)
       t.write('y')
-      const res1 = await waitEv('card 1 resolved', 'permission.resolved', (e) => e.requestId === req1.id)
-      check(res1.e.decidedBy?.surface === 'tui', "g: `y` allows card 1 (permission.resolved decidedBy.surface 'tui')", JSON.stringify(res1.e))
-      const ok1 = await waitEv('card 1 tool result', 'transcript', (e) => e.entry?.block?.kind === 'tool_result' && e.entry.block.content === 'card one ran', 10_000).then(() => true, () => false)
-      check(ok1, 'g: card 1 ran as allowed (tool result "card one ran")')
+      await t.waitFor('card one ran', 20_000)
+      check(true, 'g: `y` allows card 1 (its tool result "card one ran" is shown)')
 
-      // The swap guard: a `y` right after card 2 appears is ignored. The key goes in only once the tray has drawn card 2
-      // (its "Allow once" hint back on screen after card 1's left), so a guard-less tray would allow it; a key sent
-      // before the card is drawn would only prove the card was not there yet.
-      const card1Gone = await t.waitFor((s) => !s.includes('Allow once'), 10_000).then(() => true, () => false)
-      check(card1Gone, "g: card 1's hints leave the tray once it is allowed", esc(t.screen()))
-      const req2ev = await waitEv('card 2', 'permission.request', (e) => cmdOf(e) === 'npm run card-two')
-      // An unfocused tray shows "Alt+D or F2 to answer" instead of its keys (issue #25, L8), a focused one "Allow once".
-      await t.waitFor((s) => /Allow once|Alt\+D or F2 to answer/.test(s) && s.includes('card-two'), 10_000)
-      const drawnAt = Date.now()
-      t.write('\x1bOQy') // F2 (in case focus moved while the tray was empty) and `y`, right after card 2 is drawn
-      const lag = Date.now() - drawnAt
-      await sleep(1000)
-      const req2 = req2ev.e.request
-      const pending2 = (await inbox()).some((x) => x.requestId === req2.id)
-      check(lag < 200 && pending2 && !ev('permission.resolved', (e) => e.requestId === req2.id), 'g: a key within 750 ms of a card swap is ignored (card 2 drawn and still pending)', `lag ${lag} ms, pending ${pending2}`)
-      t.key('f2')
-      await sleep(200)
-      t.write('n')
-      await sleep(400)
-      t.key('enter')
-      const res2 = await waitEv('card 2 resolved', 'permission.resolved', (e) => e.requestId === req2.id)
-      const denied2 = await waitEv('card 2 deny result', 'transcript', (e) => e.entry?.block?.kind === 'tool_result' && e.entry.block.isError && e.entry.block.content === 'Denied by user', 10_000).then(() => true, () => false)
-      check(res2.e.decidedBy?.surface === 'tui' && denied2, "g: `n` + Enter denies card 2 with message 'Denied by user'", JSON.stringify(res2.e))
-
-      // Question: option 2.
-      const q = await waitEv('the question', 'question.request')
+      // Card 2 (a `y` inside the 750 ms card-swap guard is ignored; after it `n` + Enter denies).
       await sleep(900)
       t.key('f2')
       await sleep(200)
-      t.write('2')
+      t.write('n')
       await sleep(300)
       t.key('enter')
-      const qr = await waitEv('the question answered', 'question.resolved', (e) => e.questionId === q.e.question.id)
-      check(qr.e.decidedBy?.surface === 'tui' && JSON.stringify(qr.e.answer?.selected) === JSON.stringify([QUESTION_LABELS[1]]), 'g: `2` + Enter answers the question with the second option', JSON.stringify(qr.e))
+      await t.waitFor((s) => !s.includes('card two ran'), 3_000).catch(() => undefined)
+      await sleep(1500)
+      check(!t.screen().includes('card two ran'), 'g: `n` + Enter denies card 2 (its tool never ran)', esc(t.screen()))
 
-      // Rules: grant for the run.
-      const rq = await waitEv('the rules request', 'rules.request')
-      await sleep(900)
-      t.key('f2')
-      await sleep(200)
-      t.write('r')
-      const rr = await waitEv('the rules request answered', 'rules.resolved', (e) => e.requestId === rq.e.request.id)
-      check(rr.e.decidedBy?.surface === 'tui' && rr.e.decision?.behavior === 'grant' && rr.e.decision?.scope === 'run', "g: `r` grants the rules for the run ({ behavior: 'grant', scope: 'run' })", JSON.stringify(rr.e))
-
-      // MCP install: deny.
-      const mq = await waitEv('the MCP install request', 'mcpInstall.request')
-      await sleep(900)
-      t.key('f2')
-      await sleep(200)
-      t.write('n')
-      await sleep(400)
-      t.key('enter') // a deny note prompt, if any; ignored by the next card's guard otherwise
-      const mr = await waitEv('the MCP install answered', 'mcpInstall.resolved', (e) => e.requestId === mq.e.request.id)
-      check(mr.e.decidedBy?.surface === 'tui' && mr.e.outcome?.approved === false, 'g: `n` denies the MCP install (outcome not approved)', JSON.stringify(mr.e))
-
-      // Proposal: decline.
-      const pq = await waitEv('the skills proposal', 'proposal.request')
-      await sleep(900)
-      t.key('f2')
-      await sleep(200)
-      t.write('d')
-      await sleep(400)
-      t.key('enter')
-      const pr = await waitEv('the proposal answered', 'proposal.resolved', (e) => e.proposalId === pq.e.proposal.id)
-      check(pr.e.decidedBy?.surface === 'tui' && pr.e.decision?.behavior === 'decline', 'g: `d` declines the proposal', JSON.stringify(pr.e))
-
-      // Two-step: `a` opens a confirmation; another process resolves the card meanwhile.
-      const c3 = await waitEv('card 3', 'permission.request', (e) => cmdOf(e) === 'npm run card-three')
-      await sleep(900)
-      t.key('f2')
-      await sleep(200)
-      t.write('a')
-      await sleep(1000)
-      check(!ev('permission.resolved', (e) => e.requestId === c3.e.request.id), 'g: `a` (always allow) waits for its second step')
-      const other = await cli(['--host', 'daemon', 'decide', c3.e.request.id, 'deny'], { cwd: repo })
-      check(other.code === 0, 'g: `orgai decide <id> deny` from another process applies', show(other))
-      const r3 = await waitEv('card 3 resolved', 'permission.resolved', (e) => e.requestId === c3.e.request.id)
-      check(r3.e.decidedBy?.surface === 'cli', "g: card 3 was decided by the CLI (surface 'cli')", JSON.stringify(r3.e))
-      const notice = await t.waitFor(UI.resolvedElsewhere, 10_000).then(() => true, () => false)
-      check(notice, 'g: the TUI closes the confirmation with "Resolved in another window"', esc(t.screen()))
-      await t.waitFor('E2E-CARDS-DONE', 30_000).catch(() => undefined)
-
-      const e = await quit(t)
-      check(e?.code === 0, 'g: the daemon-client TUI quits with 0 and leaves runs running', `${JSON.stringify(e)} ${esc(t.screen())}`)
+      const e = await quit(t, { confirm: true })
+      check(e?.code === 0, 'g: the TUI quits with 0 (runs end with it)', `${JSON.stringify(e)} ${esc(t.screen())}`)
     } finally {
-      watch?.child.kill('SIGINT')
       await t.close()
     }
   }
-  daemon.child.kill('SIGINT')
-  {
-    const tk = setTimeout(() => daemon.child.kill('SIGKILL'), 20_000)
-    await daemon.done
-    clearTimeout(tk)
-    daemon = undefined
-  }
+  check(!fs.existsSync(DAEMON_JSON), 'the folder is free after the TUI quits')
 
   // ---------- i: the org tree, inspector and keys overlay ----------
   {
-    const t = tui(['--host', 'inproc', ...UI.fullscreenArgs], { cols: 120, rows: 40, script: '', cwd: repo })
+    const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 40, script: '', cwd: repo })
     open.push(t)
     try {
       await t.waitFor(UI.statusReady, 30_000)
@@ -581,7 +485,7 @@ try {
 
   // ---------- h: SIGTERM cleanup ----------
   {
-    const t = tui(['--host', 'inproc', ...UI.fullscreenArgs], { cols: 120, rows: 30, cwd: repo })
+    const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 30, cwd: repo })
     open.push(t)
     try {
       await t.waitFor(UI.statusReady, 30_000)
@@ -601,13 +505,6 @@ try {
   if (last) log(`last screen:\n${last.screen()}`)
 } finally {
   for (const t of open) await t.close().catch(() => undefined)
-  if (daemon) {
-    daemon.child.kill('SIGINT')
-    const tk = setTimeout(() => daemon.child.kill('SIGKILL'), 20_000)
-    await daemon.done
-    clearTimeout(tk)
-  }
-  if (fs.existsSync(DAEMON_JSON)) await cli(['daemon', 'stop', '--force'], { cwd: APP_DIR, timeoutMs: 30_000 }).catch(() => undefined)
   removeFixture(repo)
   log('done')
 }

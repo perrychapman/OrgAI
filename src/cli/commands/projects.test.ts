@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { resolve } from 'node:path'
 import type { HostScope, Project, ProjectPathCheck, ProjectRemoveResult } from '../../shared/types'
 import { manageDeps } from '../manage'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, rpcError, summary, type Answer } from '../testing/fakeContext'
 import { CliError, EXIT } from '../types'
 import { runProjects, setPatch } from './projects'
@@ -10,7 +9,6 @@ import { runProjects, setPatch } from './projects'
 const realDeps = { ...manageDeps }
 afterEach(() => {
   Object.assign(manageDeps, realDeps)
-  resetSkewWarning()
 })
 
 const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate', 'decide', 'configure'] }
@@ -46,9 +44,9 @@ function host(extra: Record<string, Answer> = {}, store: Project[] = [P1, E1]): 
   )
 }
 
-function run(args: string[], o: { client?: FakeHostClient; env?: NodeJS.ProcessEnv; json?: boolean; cwd?: string; tty?: boolean } = {}) {
+function run(args: string[], o: { client?: FakeHostClient; env?: NodeJS.ProcessEnv; json?: boolean; cwd?: string; tty?: boolean; saved?: Project[] } = {}) {
   const client = o.client ?? host()
-  const f = fakeContext({ connect: [client], cwd: o.cwd ?? '/work/app', env: o.env ?? {}, globals: o.json ? { outputFormat: 'json' } : {}, stdinIsTTY: o.tty === true })
+  const f = fakeContext({ connect: [client], store: { projects: o.saved ?? [P1, E1] }, cwd: o.cwd ?? '/work/app', env: o.env ?? {}, globals: o.json ? { outputFormat: 'json' } : {}, stdinIsTTY: o.tty === true })
   if (o.tty) f.ctx.io.stdout.isTTY = true
   return { f, client, done: runProjects(f.ctx, args) }
 }
@@ -56,8 +54,11 @@ function run(args: string[], o: { client?: FakeHostClient; env?: NodeJS.ProcessE
 describe('projects list / show / check', () => {
   it('lists name, kind, client, folder and id (text sanitized, virtual projects left out)', async () => {
     const quick = project('quick', '/q', { name: 'Chat' })
-    const { f, done } = run(['list'], { client: host({}, [P1, E1, quick]) })
+    const { f, client, done } = run(['list'], { saved: [P1, E1, quick] })
     expect(await done).toBe(0)
+    // Read from the saved files: no host is started or asked.
+    expect(f.inprocCalls).toEqual([])
+    expect(client.calls).toEqual([])
     const out = f.out()
     expect(out).toMatch(/NAME\s+KIND\s+CLIENT\s+FOLDER\s+ID/)
     expect(out).toContain('Engagement')
@@ -83,9 +84,10 @@ describe('projects list / show / check', () => {
     expect(a.f.out()).toContain('Subagent depth:  Automatic (2)')
     expect(a.f.out()).toContain('Concurrent:      Automatic (8)')
     expect(a.f.out()).toContain('Budget per run:  no cap')
-    expect(a.client.callsOf('projects:get')).toEqual([['p1']])
+    expect(a.f.inprocCalls).toEqual([])
+    expect(a.client.calls).toEqual([])
 
-    const b = run(['show', 'e1'], { json: true, client: host({}, [P1, { ...E1, maxSubagentDepth: 3, maxBudgetUsd: 5 } as Project]) })
+    const b = run(['show', 'e1'], { json: true, saved: [P1, { ...E1, maxSubagentDepth: 3, maxBudgetUsd: 5 } as Project] })
     expect(await b.done).toBe(0)
     const doc = JSON.parse(b.f.out())
     expect(doc.project).toMatchObject({ id: 'e1', kind: 'engagement', client: 'Acme Corp', maxBudgetUsd: 5, limits: { depth: 3, concurrency: 8, explicit: { depth: true, concurrency: false } } })

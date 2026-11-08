@@ -4,7 +4,6 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { HostScope, KitApplyResult, KitImportPreview, KitPreviewItem } from '../../shared/types'
 import { manageDeps } from '../manage'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, rpcError, type FakeContextOptions } from '../testing/fakeContext'
 import { CliError, EXIT, type CliContext } from '../types'
 import { itemOverrides, kitChoices, kitFs, kitTarget, runKit, STALE_TARGET_CLI_MESSAGE } from './kit'
@@ -19,7 +18,6 @@ beforeEach(() => {
 afterEach(() => {
   Object.assign(manageDeps, realManage)
   Object.assign(kitFs, realFs)
-  resetSkewWarning()
   rmSync(dir, { recursive: true, force: true })
 })
 

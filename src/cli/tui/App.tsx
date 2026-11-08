@@ -16,7 +16,6 @@ import { teamMessageRows, withTeamMilestones } from './collaboration'
 import { Welcome } from './Welcome'
 import { RunActivity } from './RunActivity'
 import { RunCompletion } from './RunCompletion'
-import { TUI_NO_DECIDE_NOTICE } from './session'
 import { InputBus, InputBusContext, TuiEnvContext } from './context'
 import { surfaceWords } from './cards/status'
 import { DecisionTray, GUARD_ARRIVED_NOTICE, GUARD_SWAPPED_NOTICE } from './DecisionTray'
@@ -26,7 +25,6 @@ import { computeLayout } from './layout'
 import { InspectorPane } from './InspectorPane'
 import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
 import { Onboarding, type OnboardingChoice } from './Onboarding'
-import { DECISIONS_NOTICES, decisionsNotice } from './decisionNotices'
 import { OrgTreePane } from './OrgTreePane'
 import { showInPager } from './pager'
 import { PlanPane } from './PlanPane'
@@ -88,8 +86,6 @@ export const PASTE_CUT_NOTICE = 'The paste was cut at 1 MB.'
 export interface ExitInfo {
   /** The session the App ended on (onboarding may have replaced the first one). */
   session: TuiSessionApi
-  /** The followed run was still live and keeps going (a daemon or desktop host). */
-  detachedLive: boolean
   /** One line runTui prints after restoring the terminal (exitWhenEnded / stopOnQuit sessions). */
   message?: string
 }
@@ -426,15 +422,12 @@ export function App(props: AppProps) {
   const readOnly = state.readOnlyReason !== undefined
   const welcoming = !state.activeRunId && transcriptRows(state).rows.length === 0
   const messages = teamMessageRows(state)
-  const decisionsInDesktop = conn.hello?.grantedScopes !== undefined && !conn.hello.grantedScopes.includes('decide')
   const connectionNotice = state.connection === 'gone' ? 'Connection lost. Reconnect to continue.' : state.connection === 'reconnecting' ? 'Reconnecting to the host.' : undefined
-  const decisionsLine = decisionsNotice(conn.hello?.hostKind)
-  const ordinaryNotice = state.notices.filter(n => n.text !== TUI_NO_DECIDE_NOTICE && !DECISIONS_NOTICES.has(n.text)).at(-1)?.text
+  const ordinaryNotice = state.notices.at(-1)?.text
   const accessNotice = [
     connectionNotice,
     state.readOnlyReason,
-    ordinaryNotice,
-    ...(decisionsInDesktop ? [decisionsLine] : [])
+    ordinaryNotice
   ].filter(Boolean).join(' ')
   const mode: ComposerMode = readOnly ? 'readOnly' : quickEdits !== undefined && !state.project && !state.activeRunId ? 'quick' : composerMode(state)
 
@@ -586,10 +579,7 @@ export function App(props: AppProps) {
     (code: number, message?: string) => {
       if (exiting.current) return
       exiting.current = true
-      const s = session.getState()
-      const active = s.activeRunId ? s.runs[s.activeRunId]?.summary.status : undefined
-      const inproc = conn.inproc !== undefined
-      props.onExit(code, { session, detachedLive: !inproc && isOpen(active), ...(message ? { message } : {}) })
+      props.onExit(code, { session, ...(message ? { message } : {}) })
     },
     [session, conn, props]
   )
@@ -1475,7 +1465,7 @@ export function App(props: AppProps) {
   if (onboarding) {
     body = (
       <Box flexDirection="column" width={size.cols} height={inline ? undefined : size.rows}>
-        <Onboarding folder={launch.onboarding?.folder ?? state.folder} check={check} width={size.cols} height={inline ? size.rows : Math.max(0, size.rows - onboardingConfirmRows)} checking={checkingFolder} busy={onboardingBusy} animated={!terminal.suspended} accessNotice={accessNotice} decisionsInDesktop={decisionsInDesktop} decisionsNotice={decisionsLine} onChoose={(c) => void chooseOnboarding(c)} onCancel={requestQuit} />
+        <Onboarding folder={launch.onboarding?.folder ?? state.folder} check={check} width={size.cols} height={inline ? size.rows : Math.max(0, size.rows - onboardingConfirmRows)} checking={checkingFolder} busy={onboardingBusy} animated={!terminal.suspended} accessNotice={accessNotice} onChoose={(c) => void chooseOnboarding(c)} onCancel={requestQuit} />
         {overlayNode}
       </Box>
     )

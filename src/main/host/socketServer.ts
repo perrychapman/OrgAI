@@ -161,6 +161,9 @@ export interface HostSocketServerOptions {
   ownerKey?: string
 }
 
+/** The refusal of a hello without the owner proof on an in-process host. */
+export const NOT_OWNER_MESSAGE = 'This orgai host answers only the orgai process that started it.'
+
 /** The scopes each Terminal access level grants at most (AppSettings.terminalAccessLevel). */
 export function scopesForAccessLevel(level: TerminalAccessLevel): readonly HostScope[] {
   return level === 'full' ? HOST_SCOPES : (['read', 'operate'] as const)
@@ -755,6 +758,9 @@ export class HostSocketServer {
     const handoff = raw.clientKind === 'desktop'
     // An inproc host's own CLI, proven by the in-memory owner key (a client that only read daemon.secret cannot make that proof).
     const owner = this.opts.hostKind === 'inproc' && !handoff && this.isOwnerHello(conn, raw, raw.clientProof as string)
+    // An orgai host serves its own process only (cli-standalone-default.md 4.1): without the memory-only owner proof no
+    // method runs, whatever Terminal access says and even for a peer that can read daemon.secret and forges its client.
+    if (this.opts.hostKind === 'inproc' && !owner) return fail({ code: 'not_owner', message: NOT_OWNER_MESSAGE })
     const p = raw as Record<string, unknown> & {
       clientKind: HostClientKind
       clientVersion: string

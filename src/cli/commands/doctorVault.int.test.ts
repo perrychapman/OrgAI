@@ -46,7 +46,7 @@ afterEach(() => {
 async function doctor(): Promise<{ code: number; checks: { id: string; status: string; detail: string }[] }> {
   let out = ''
   const ctx = buildContext({
-    globals: { host: 'auto', outputFormat: 'json', color: false, secretEnv: [], dataDir: root },
+    globals: { outputFormat: 'json', color: false, secretEnv: [], dataDir: root },
     env: { PATH: process.env.PATH ?? '', ORGAI_DAEMON_IDLE_MINUTES: '0' },
     cwd: root,
     platform: process.platform,

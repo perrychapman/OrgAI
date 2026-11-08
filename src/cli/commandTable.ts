@@ -20,7 +20,6 @@ import { ENTRY as USAGE_ENTRY } from './entries/usage'
 import { ENTRY as KIT_ENTRY } from './entries/kit'
 import { ENTRY as PROJECTS_ENTRY } from './entries/projects'
 import { ENTRY as SECRETS_ENTRY } from './entries/secrets'
-import { ENTRY as TERMINAL_ACCESS_ENTRY } from './entries/terminalAccess'
 
 export interface CommandFlag {
   /** Long name without the dashes. */
@@ -51,16 +50,15 @@ export interface CommandEntry {
 /** Flags valid anywhere before `--` (flags.ts splitGlobalFlags). */
 export const GLOBAL_FLAGS: readonly CommandFlag[] = [
   { name: 'data-dir', takesValue: true, summary: 'orgai CLI data folder (default: ORGAI_CLI_DATA_DIR, else the platform default)' },
-  { name: 'host', takesValue: true, values: ['auto', 'daemon', 'inproc'], summary: 'Which host to use' },
   { name: 'output-format', takesValue: true, values: ['text', 'json', 'stream-json'], summary: 'Output format' },
   { name: 'project', takesValue: true, summary: 'Project id or folder (default: the project containing the current folder)' },
   { name: 'no-color', takesValue: false, summary: 'Plain output without colour' },
-  { name: 'secret-env', takesValue: true, summary: 'With --host inproc: <owner>:<kind>:<name>=<ENV_VAR> (repeatable)' },
+  { name: 'secret-env', takesValue: true, summary: 'Use an environment variable as a secret: <owner>:<kind>:<name>=<ENV_VAR> (repeatable)' },
   { name: 'help', short: 'h', takesValue: false, summary: 'Show help' },
   { name: 'version', short: 'V', takesValue: false, summary: 'Print the version' }
 ]
 
-/** Terminal UI flags (bare `orgai`, `tui`, `attach`, `resume` without --exec). */
+/** Terminal UI flags (bare `orgai`, `tui`, `resume` without --exec). */
 export const TUI_FLAGS: readonly CommandFlag[] = [
   { name: 'inline', takesValue: false, summary: 'Draw in the normal scrollback instead of the full screen' },
   { name: 'ax-screen-reader', takesValue: false, summary: 'Screen reader mode: inline, plain text, no animation' }
@@ -84,15 +82,13 @@ const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
   { name: 'allow-peer-messages', takesValue: false, summary: 'Accept messages from other runs (message_run)' },
   { name: 'wait-for-reset', takesValue: false, summary: 'On a usage limit, wait for the reset instead of ending' },
   { name: 'stall-timeout', takesValue: true, summary: 'Seconds without progress before the run ends as stalled' },
-  { name: 'on-permission', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'Permission cards: deny (default), fail or wait' },
-  { name: 'on-rules', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'Permission rule requests: deny (default), fail or wait' },
-  { name: 'on-mcp-install', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'MCP install requests: deny (default), fail or wait' },
-  { name: 'on-question', takesValue: true, values: ['fail', 'conservative', 'wait'], summary: 'Questions: fail (default), conservative (no option picked; the agent is told to take the most cautious path) or wait' },
-  { name: 'on-proposal', takesValue: true, values: ['decline', 'fail', 'wait'], summary: 'Proposals: decline (default), fail or wait' },
-  { name: 'on-merge', takesValue: true, values: ['hold', 'fail', 'wait'], summary: 'Merge reviews: hold (default), fail or wait' },
-  { name: 'max-auto-denials', takesValue: true, summary: 'Automatic denials before the run ends as needs-decision (default 5)' },
-  { name: 'wait-timeout', takesValue: true, summary: 'Seconds a "wait" policy waits for a person (default 900)' },
-  { name: 'human-grace', takesValue: true, summary: 'Seconds to leave a card to an open app or terminal UI first (default 60)' }
+  { name: 'on-permission', takesValue: true, values: ['deny', 'fail'], summary: 'Permission cards: deny (default), fail' },
+  { name: 'on-rules', takesValue: true, values: ['deny', 'fail'], summary: 'Permission rule requests: deny (default), fail' },
+  { name: 'on-mcp-install', takesValue: true, values: ['deny', 'fail'], summary: 'MCP install requests: deny (default), fail' },
+  { name: 'on-question', takesValue: true, values: ['fail', 'conservative'], summary: 'Questions: fail (default), conservative (no option picked; the agent is told to take the most cautious path)' },
+  { name: 'on-proposal', takesValue: true, values: ['decline', 'fail'], summary: 'Proposals: decline (default), fail' },
+  { name: 'on-merge', takesValue: true, values: ['hold', 'fail'], summary: 'Merge reviews: hold (default), fail' },
+  { name: 'max-auto-denials', takesValue: true, summary: 'Automatic denials before the run ends as needs-decision (default 5)' }
 ]
 
 /**
@@ -117,17 +113,16 @@ const EXEC_START_FLAGS: readonly CommandFlag[] = [
 export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'status',
-    summary: 'Show the host, the current project and what needs you',
+    summary: 'Show the data folder, the current project and your runs',
     usage: 'status [--all-projects]',
     flags: [{ name: 'all-projects', takesValue: false, summary: 'Every project' }],
     available: true
   },
   {
     name: 'runs',
-    summary: 'List, show, message, interrupt or stop runs',
-    usage:
-      'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>] | runs send <runId-or-R#> <text|-> | runs interrupt <runId-or-R#> | runs stop <runId-or-R#>',
-    subcommands: ['list', 'show', 'send', 'interrupt', 'stop'],
+    summary: 'List or show saved runs (open one with `orgai tui <run>`)',
+    usage: 'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>]',
+    subcommands: ['list', 'show'],
     flags: [
       { name: 'all-projects', takesValue: false, summary: 'Runs of every project' },
       { name: 'status', takesValue: true, values: ['running', 'needs you', 'idle', 'paused', 'finished', 'stopped', 'ended when orgai closed', 'failed'], summary: 'Only runs with this status' },
@@ -138,51 +133,8 @@ export const COMMANDS: readonly CommandEntry[] = [
     available: true
   },
   {
-    name: 'watch',
-    summary: 'Stream a run’s events to stdout (Ctrl+C detaches)',
-    usage: 'watch <runId-or-R#> [--no-follow]',
-    flags: [{ name: 'no-follow', takesValue: false, summary: 'Do not follow continuations' }],
-    available: true
-  },
-  {
-    name: 'inbox',
-    summary: 'List pending decisions ("Needs you")',
-    usage: 'inbox [--all-projects]',
-    flags: [{ name: 'all-projects', takesValue: false, summary: 'Decisions of every project' }],
-    available: true
-  },
-  {
-    name: 'daemon',
-    summary: 'Inspect or control the background host',
-    usage:
-      'daemon status | start [--runtime app|node] [--foreground] [--timeout <s>] | stop [--force] [--timeout <s>] | restart [--force] [--runtime app|node] [--timeout <s>] | logs [-n <lines>] [-f]',
-    // `daemon run-node` (the detached Node host itself) is hidden: not listed here, so neither help nor completions show it.
-    subcommands: ['status', 'start', 'stop', 'restart', 'logs'],
-    flags: [
-      { name: 'force', takesValue: false, summary: 'Stop live runs instead of refusing' },
-      {
-        name: 'runtime',
-        takesValue: true,
-        values: ['app', 'node'],
-        summary: 'start / restart: the OrgAI app headless, or a Node background host (default: the app when one is found, else node)'
-      },
-      { name: 'foreground', takesValue: false, summary: 'start: run the host in this terminal (inproc)' },
-      { name: 'timeout', takesValue: true, summary: 'Seconds to wait' },
-      { name: 'lines', short: 'n', takesValue: true, summary: 'logs: how many lines' },
-      { name: 'follow', short: 'f', takesValue: false, summary: 'logs: keep printing new lines' }
-    ],
-    available: true
-  },
-  {
-    name: 'app',
-    summary: 'Open the OrgAI desktop app (optionally on a run)',
-    usage: 'app [--run <runId-or-R#>]',
-    flags: [{ name: 'run', takesValue: true, summary: 'Run to open' }],
-    available: true
-  },
-  {
     name: 'doctor',
-    summary: 'Check the install, data folder, host and connections',
+    summary: 'Check the install, data folder, vault and connections',
     usage: 'doctor',
     flags: [],
     available: true
@@ -224,30 +176,6 @@ export const COMMANDS: readonly CommandEntry[] = [
     available: true,
     notes: [UNTRUSTED_PROMPT_NOTE]
   },
-  {
-    name: 'attach',
-    summary: 'Attach the terminal UI to a live or ended run',
-    usage: 'attach <runId-or-R#> [--inline] [--ax-screen-reader]',
-    flags: [...TUI_FLAGS],
-    available: true
-  },
-  {
-    name: 'decide',
-    summary:
-      'Resolve a pending decision card. Verbs: permission allow | allow-session | allow-project | deny; rules grant | grant-project | deny; proposal approve | revise | decline; question answer; merge merge | hold | discard; mcpInstall allow | save-project | save-library | deny',
-    usage: 'decide <requestId> <verb> [options]',
-    flags: [
-      { name: 'revision', takesValue: true, summary: 'Refuse when the card changed since this revision' },
-      { name: 'yes', short: 'y', takesValue: false, summary: 'Do not ask for confirmation' },
-      { name: 'message', takesValue: true, summary: 'deny: the reason the agent sees' },
-      { name: 'note', takesValue: true, summary: 'proposal revise / decline, mcpInstall: a note for the agent' },
-      { name: 'secret', takesValue: true, summary: 'proposal approve / mcpInstall: NAME=ENV_VAR, read from the environment (repeatable)' },
-      { name: 'option', takesValue: true, summary: 'question answer: an option label (repeatable)' },
-      { name: 'pick', takesValue: true, summary: 'question answer: an option number, 1-based (repeatable)' },
-      { name: 'text', takesValue: true, summary: 'question answer: free text' }
-    ],
-    available: true
-  },
   INIT_ENTRY,
   ORG_ENTRY,
   TEAM_ENTRY,
@@ -262,9 +190,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   USAGE_ENTRY,
   KIT_ENTRY,
   PROJECTS_ENTRY,
-  // Wave 7 (standalone CLI): listed as "Coming later" until WP-H / WP-E build them.
-  SECRETS_ENTRY,
-  TERMINAL_ACCESS_ENTRY
+  SECRETS_ENTRY
 ]
 
 export function findCommand(name: string): CommandEntry | undefined {

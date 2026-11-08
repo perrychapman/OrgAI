@@ -5,7 +5,7 @@
  * - Flags map to RunOverrides (always `execMode: true`): --permission-mode, --no-auto-continue,
  *   --max-auto-continues, --max-budget / --max-cost (USD, finite >= 0; not both), --allow-unpriced-budget,
  *   --allow-unmerged, --allow-peer-messages, --wait-for-reset, --stall-timeout s, --on-* (decisionPolicy),
- *   --max-auto-denials, --wait-timeout s, --human-grace s. Bad values are usage errors (exit 2).
+ *   --max-auto-denials. Bad values are usage errors (exit 2); a `wait` policy is refused.
  * - The prompt is the positional, else --prompt-file <path|-> (resume: --prompt, --prompt-file), else stdin ('-', or no
  *   positional with a non-TTY stdin); at most 1 MB. Empty: exit 2. Untrusted text belongs in --prompt-file or stdin,
  *   never argv: on Windows the .cmd shim hands arguments to cmd.exe (review M12).
@@ -16,11 +16,11 @@
  *   settings (overridesWidening).
  * - The run's chain is followed (runs:subscribe, followChains) until a `run.finalized` for a followed run; the exit
  *   code is EXEC_OUTCOME_EXIT_CODE[outcome]. A snapshot that already carries summary.execOutcome ends at once.
- * - Output: text prints transcript rows and status words like `orgai watch`, then `<outcome> · <status> · <cost>`;
+ * - Output: text prints transcript rows and status words, then `<outcome> · <status> · <cost>`;
  *   json prints one document at the end; stream-json prints every event, then a `result` line.
  * - SIGINT / SIGTERM: the first calls runs:stop on the newest followed run and waits up to 10 s for run.finalized,
  *   then exits 130 / 143; a second signal exits at once.
- * - --host inproc: the in-process host is stopped (force) before the command returns.
+ * - The in-process host is stopped (force) before the command returns.
  */
 import { readFileSync, statSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
@@ -53,11 +53,10 @@ import { parseFlags, type FlagSpec } from '../flags'
 import { readStdinText } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
-import { resolveRunFromSource, warnVersionSkew } from '../runRef'
+import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
 import { runResumeTui } from './tui'
-import { liveSource } from './watch'
 
 export const EXEC_STDIN_MAX_BYTES = 1024 * 1024
 export const EXEC_STOP_WAIT_MS = 10_000
@@ -89,6 +88,8 @@ function choice(v: Values, name: string): string | undefined {
   const raw = str(v, name)
   if (raw === undefined) return undefined
   const allowed = findCommand('exec')?.flags.find((f) => f.name === name)?.values ?? findCommand('resume')?.flags.find((f) => f.name === name)?.values
+  // Nothing else can answer a card of an orgai run (cli-standalone-default.md 4.3): a policy that waits is refused.
+  if (raw === 'wait') throw usage(`--${name} wait is not available: only this terminal could answer, and exec has none. Use ${allowed?.join(', ')}.`)
   if (allowed && !allowed.includes(raw)) throw usage(`--${name} must be one of ${allowed.join(', ')}.`)
   return raw
 }
@@ -144,10 +145,6 @@ export function overridesFromFlags(v: Values): RunOverrides {
   pick('proposal', 'on-proposal')
   pick('merge', 'on-merge')
   if (str(v, 'max-auto-denials') !== undefined) policy.maxAutoDenials = intFlag('max-auto-denials', str(v, 'max-auto-denials'), 0, MAX_AUTO_DENIALS_LIMIT)
-  const wait = secondsMs('wait-timeout', str(v, 'wait-timeout'))
-  if (wait !== undefined) policy.waitTimeoutMs = wait
-  const grace = secondsMs('human-grace', str(v, 'human-grace'))
-  if (grace !== undefined) policy.humanGraceMs = grace
   // A partial policy: the host fills the missing choices with DEFAULT_HEADLESS_DECISION_POLICY.
   if (Object.keys(policy).length) o.decisionPolicy = policy as HeadlessDecisionPolicy
   return o
@@ -279,8 +276,6 @@ async function openSession(ctx: CliContext, configure: boolean): Promise<Session
   const scopes: HostScope[] = configure ? ['read', 'operate', 'configure'] : ['read', 'operate']
   const host = await ensureHost(ctx, scopes, { interactive: false })
   const session = new Session(ctx, host, scopes)
-  warnVersionSkew(ctx, host.client)
-  if (host.started && host.inproc === undefined) note(ctx, 'Started the OrgAI host in the background.')
   try {
     if (configure) session.checkGranted('configure')
   } catch (e) {

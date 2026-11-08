@@ -95,7 +95,6 @@ export function statusLines(s: SecretsStatusResult): string[] {
   if (s.counts.overlay) counts.push(`${s.counts.overlay} from the environment (never saved)`)
   lines.push(`Secrets:      ${counts.join(', ')}`)
   if (s.pendingLegacy) lines.push(`Pending:      ${s.pendingLegacy} ${s.pendingLegacy === 1 ? 'secret' : 'secrets'}: ${VAULT_MESSAGES.pendingLegacy}`)
-  lines.push(`App copy:     ${s.canWriteBack ? "kept in step by this host" : "not kept"}`)
   if (s.softDeletes.length) {
     lines.push('', 'Removed secrets (restore one with `orgai secrets undelete <key>`, or `orgai secrets keep-removed` to drop them for good):')
     for (const d of s.softDeletes) {

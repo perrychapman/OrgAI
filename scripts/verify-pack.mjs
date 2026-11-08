@@ -31,7 +31,6 @@
 // block, by the pid in the temp data folder's daemon.json only.
 //
 // Windows: the .cmd launcher runs through `cmd.exe /d /s /c` with fixed arguments only. UNVERIFIED (never run).
-import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -39,16 +38,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { bareImports, isNodeBuiltin, packagedPaths } from './lib/packLayout.mjs'
 import { NPM_PACKAGE_NAME, globalLayout, tarballName } from './lib/npmPackage.mjs'
 import { npmInvocation } from './build-npm-package.mjs'
+import { DEFAULT_CHECK_TIMEOUT_MS, baseVerifyEnv, cleanupDaemon, defaultGit, daemonJsonPath, execOutcome, launchCommand, makeFixtureRepo, parseJson, spawnRunner, versionMatches } from './lib/verifyCommon.mjs'
+
+// The helpers both checks use live in lib/verifyCommon.mjs; they are re-exported here, where verify-pack's callers and tests look.
+export { cleanupDaemon, daemonJsonPath, execOutcome, launchCommand, makeFixtureRepo, spawnRunner, versionMatches }
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-export const CHECK_TIMEOUT_MS = 90_000
+export const CHECK_TIMEOUT_MS = DEFAULT_CHECK_TIMEOUT_MS
 /** The CLI bundle files the pack must ship. */
 export const BUNDLE_FILES = ['orgai.mjs', 'tui.mjs', 'inprocHost.mjs']
 /** The launcher source word `orgai doctor` prints for a packaged app: "... (packaged)". */
 export const PACKAGED_SOURCE = 'packaged'
 export const EXEC_PROMPT = '[mock:exec-plan] verify the packaged app'
-const DROPPED_ENV = new Set(['ELECTRON_RUN_AS_NODE', 'ORGAI_ELECTRON_PATH', 'ORGAI_APP_ROOT', 'ORGAI_DATA_DIR'])
-const SECRET_PREFIX = 'ORGAI_SECRET_'
 
 /** Parses the command line; throws a plain sentence for anything else. */
 export function parseArgs(argv) {
@@ -76,56 +77,15 @@ export function parseArgs(argv) {
 
 /** The environment of every checked command. Pure. */
 export function verifyEnv(base, userDataDir) {
-  const out = {}
-  for (const [k, v] of Object.entries(base)) {
-    if (v === undefined || DROPPED_ENV.has(k) || k.startsWith(SECRET_PREFIX)) continue
-    out[k] = v
-  }
+  const out = baseVerifyEnv(base)
   out.ORGAI_DATA_DIR = userDataDir
-  out.ORGAI_MOCK = '1'
-  out.NO_COLOR = '1'
   // Never create items in the real OS keychain (a script-supplied ORGAI_VAULT_KEY_FILE still wins in the child).
   out.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
   return out
 }
 
-/**
- * How to run the launcher with `args`. POSIX: the sh script itself. win32: `cmd.exe /d /s /c ""<launcher>" args"`
- * with verbatim arguments; every argument is fixed by this script and must not carry a quote, % or ! (refused).
- * The win32 form is UNVERIFIED.
- */
-export function launchCommand(platform, launcher, args, env = {}) {
-  if (platform !== 'win32') return { command: launcher, args: [...args], windowsVerbatimArguments: false }
-  for (const a of [launcher, ...args]) {
-    if (/["%!\r\n\0]/.test(a)) throw new Error(`Refusing to pass ${JSON.stringify(a)} through cmd.exe.`)
-  }
-  const line = [launcher, ...args].map((a) => `"${a}"`).join(' ')
-  return { command: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], windowsVerbatimArguments: true }
-}
 
-function parseJson(text) {
-  const s = String(text ?? '').trim()
-  if (!s) return undefined
-  try {
-    return JSON.parse(s)
-  } catch {
-    // Anything printed before the document (a warning line) is skipped: try the last line alone.
-    const last = s.split(/\r?\n/).filter(Boolean).at(-1)
-    try {
-      return JSON.parse(last)
-    } catch {
-      return undefined
-    }
-  }
-}
 
-/** True when `--version` output names exactly this version. Pure. */
-export function versionMatches(stdout, version) {
-  return String(stdout ?? '')
-    .trim()
-    .split(/\s+/)
-    .some((w) => w === version || w === `v${version}`)
-}
 
 /** True when `--version` output names this version and the install channel (`0.1.7 channel app commit ...`). Pure. */
 export function versionChannelMatches(stdout, version, channel = 'app') {
@@ -245,12 +205,6 @@ async function checkBackgroundHost(orgai, report, prefix, stopOk) {
   report(`${prefix} daemon stop`, stopped, stopped ? stopOk : s.code === 0 ? `exit 0 but no host was stopped: ${showRun(s)}` : showRun(s))
 }
 
-/** `{ outcome, exitCode }` of an `exec --output-format json` document, or undefined. Pure. */
-export function execOutcome(stdout) {
-  const doc = parseJson(stdout)
-  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return undefined
-  return { outcome: typeof doc.outcome === 'string' ? doc.outcome : null, exitCode: typeof doc.exitCode === 'number' ? doc.exitCode : null }
-}
 
 /** The bundle's imports that are neither builtins nor unpacked: [{ file, pkg }]. `files` are { name, text }. Pure. */
 export function missingPackages(files, hasPackage) {
@@ -264,124 +218,11 @@ export function missingPackages(files, hasPackage) {
   return missing
 }
 
-/** Where a host on this userDataDir writes its daemon.json. */
-export function daemonJsonPath(userDataDir) {
-  return path.join(userDataDir, 'data', 'run', 'daemon.json')
-}
 
-function defaultAlive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    return e?.code === 'EPERM'
-  }
-}
 
-/**
- * Kills a host still alive after the checks: only the pid read from `<userDataDir>/data/run/daemon.json`, never this
- * process. SIGTERM, then SIGKILL after `graceMs`. Returns the pid it signalled, or undefined.
- */
-export async function cleanupDaemon(userDataDir, deps = {}) {
-  const {
-    readFile = (p) => fs.readFileSync(p, 'utf8'),
-    kill = (pid, sig) => process.kill(pid, sig),
-    isAlive = defaultAlive,
-    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-    graceMs = 5000,
-    log = () => {}
-  } = deps
-  let info
-  try {
-    info = JSON.parse(readFile(daemonJsonPath(userDataDir)))
-  } catch {
-    return undefined
-  }
-  const pid = info?.pid
-  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return undefined
-  if (!isAlive(pid)) return undefined
-  log(`A host (pid ${pid}) is still running on the temp data folder; stopping it.`)
-  try {
-    kill(pid, 'SIGTERM')
-  } catch {
-    return pid
-  }
-  const end = Date.now() + graceMs
-  while (Date.now() < end && isAlive(pid)) await sleep(200)
-  if (isAlive(pid)) {
-    try {
-      kill(pid, 'SIGKILL')
-    } catch {
-      // gone in between
-    }
-  }
-  return pid
-}
 
-/**
- * Runs one command with a timeout; resolves { code, signal, stdout, stderr, timedOut }, never rejects. `input`, when
- * given, is written to the child's stdin and stdin is closed (else stdin is ignored).
- */
-export function spawnRunner({ command, args, cwd, env, timeoutMs = CHECK_TIMEOUT_MS, windowsVerbatimArguments = false, input }) {
-  return new Promise((resolve) => {
-    let stdout = ''
-    let stderr = ''
-    let timedOut = false
-    let settled = false
-    let child
-    const done = (r) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      clearTimeout(closeGrace)
-      resolve({ stdout, stderr, timedOut, ...r })
-    }
-    let closeGrace
-    const timer = setTimeout(() => {
-      timedOut = true
-      try {
-        child?.kill('SIGKILL')
-      } catch {
-        // already gone
-      }
-    }, timeoutMs)
-    try {
-      child = spawn(command, args, { cwd, env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true, windowsVerbatimArguments })
-    } catch (e) {
-      done({ code: null, signal: null, stderr: String(e?.message ?? e) })
-      return
-    }
-    if (input !== undefined) {
-      child.stdin.on('error', () => {})
-      child.stdin.end(input)
-    }
-    child.stdout.on('data', (d) => (stdout += d))
-    child.stderr.on('data', (d) => (stderr += d))
-    child.on('error', (e) => done({ code: null, signal: null, stderr: stderr + String(e?.message ?? e) }))
-    // A spawned host that kept our pipes open would delay 'close'; 'exit' plus a short grace is enough.
-    child.on('exit', (code, signal) => {
-      closeGrace = setTimeout(() => done({ code, signal }), 3000)
-    })
-    child.on('close', (code, signal) => done({ code, signal }))
-  })
-}
 
-function defaultGit(cwd, args) {
-  execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: 30_000 })
-}
 
-/** A tiny git repo with one commit and a local identity (as e2e/lib.mjs makeFixtureRepo does). */
-export function makeFixtureRepo(dir, git = defaultGit) {
-  fs.writeFileSync(path.join(dir, 'README.md'), '# verify-pack fixture\n\nA throwaway repo for `npm run pack:verify`.\n')
-  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'verify-pack-fixture', version: '0.0.0', private: true }, null, 2) + '\n')
-  git(dir, ['init', '-q', '-b', 'main'])
-  git(dir, ['config', 'user.name', 'OrgAI verify-pack'])
-  git(dir, ['config', 'user.email', 'verify-pack@orgai.local'])
-  git(dir, ['config', 'core.autocrlf', 'false'])
-  git(dir, ['config', 'commit.gpgsign', 'false'])
-  git(dir, ['add', '-A'])
-  git(dir, ['commit', '-q', '-m', 'fixture'])
-}
 
 function listBundle(dir) {
   return fs

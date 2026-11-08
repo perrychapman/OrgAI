@@ -3,7 +3,7 @@ import type { CommandEntry } from '../commandTable'
 
 export const ENTRY: CommandEntry = {
   name: 'secrets',
-  summary: 'Secure storage shared by the app and the orgai command (never prints a value)',
+  summary: 'Secure storage of the orgai command (never prints a value)',
   usage: 'secrets status [--probe] | init [--key-file <path> [--import]] | reset --yes | undelete <key> | keep-removed [<key>...] [--yes]',
   subcommands: ['status', 'init', 'reset', 'undelete', 'keep-removed'],
   flags: [

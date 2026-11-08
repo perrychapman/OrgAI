@@ -1,6 +1,6 @@
 // `orgai org`, `team`, `worktrees` and `permissions` end to end (cli-spec 6.3, Wave 5). Run `npm run build` first.
-// Mock adapter only (ORGAI_MOCK=1): no tokens, no network. One `--host inproc` daemon for the whole script; the
-// project is seeded over the raw authenticated RPC client (e2e/cliLib.mjs).
+// Mock adapter only (ORGAI_MOCK=1): no tokens, no network. Every command hosts itself, one at a time; the
+// project is seeded with `projects create` (e2e/cliLib.mjs).
 //
 // Fixture: a git repo with a Claude Code agent definition (.claude/agents/backend-dev.md) and two leftover report
 // worktrees planted the way e2e/maintenance.mjs plants them (one clean, one that conflicts with main).
@@ -10,7 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { check, finish, git, gitSafe, log, makeFixtureRepo, removeFixture, writeFile } from './lib.mjs'
-import { cli, json, requireBuild, seedProject, show, startDaemon, stopDaemon } from './cliLib.mjs'
+import { cli, json, requireBuild, seedProject, show } from './cliLib.mjs'
 
 requireBuild()
 
@@ -45,9 +45,8 @@ const jsonOf = async (args) => {
 }
 
 try {
-  await startDaemon()
   const project = await seedProject(repo, { name: 'CLI org e2e' })
-  check(!!project?.id, 'project seeded over hostRpc', JSON.stringify(project).slice(0, 200))
+  check(!!project?.id, 'project seeded with projects create', JSON.stringify(project).slice(0, 200))
   const roleCount = project.roles.length
 
   // ---------- org show ----------
@@ -129,8 +128,6 @@ try {
 } catch (e) {
   check(false, 'cli-org ran to the end', e?.stack ?? String(e))
 } finally {
-  const s = await stopDaemon().catch((e) => ({ code: -1, out: '', err: String(e) }))
-  check(s.code === 0, 'daemon stop', show(s))
   removeFixture(repo)
 }
 

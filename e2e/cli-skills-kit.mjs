@@ -1,17 +1,17 @@
 // `orgai skills`, `orgai kit` and `orgai knowledge` end to end (cli-spec 6.3, 3.6; Wave 5 task W5-T5). Run `npm run
-// build` first. Mock adapter only: no tokens, no network. One `--host inproc` daemon for the whole script; an
-// engagement project seeded over the raw authenticated client (cliLib.seedProject).
+// build` first. Mock adapter only: no tokens, no network. Every command hosts itself, one at a time; an engagement
+// project seeded with `projects create` (cliLib.seedProject). The concurrent-client cases (a '../x' bundle, the stale
+// CAS apply) need two clients of one host and are covered by src/cli/commands/skillsKit.int.test.ts.
 //
-// 1. skills library add: a good folder (text and JSON), a SKILL.md with a shell-injection fence (exit 1, host message),
-//    a hand-built '../x' bundle over the socket (refused).
+// 1. skills library add: a good folder (text and JSON), a SKILL.md with a shell-injection fence (exit 1, host message).
 // 2. kit export --all-skills, export again without --force (exit 1), import --yes of the same file (every item 'same').
-// 3. The stale CAS import: preview, edit the replaced library entry through a second client, apply with replace:
-//    stale_target_digest -> exit 1 with the CLI's message, the second client's edit kept. Then a normal replace import.
+// 3. Edit the library entry, then import the kit: the item is 'different' (exit 2 without an action), and a replace
+//    import restores the kit content.
 // 4. knowledge upsert / show / search / link / retire / clear --yes in text and JSON, and a pinned stale
 //    --if-updated-at (exit 1).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { cli, hostRpc, json, requireBuild, seedProject, show, startDaemon, stopDaemon } from './cliLib.mjs'
+import { cli, json, requireBuild, seedProject, show } from './cliLib.mjs'
 import { DATA_DIR, check, finish, log } from './lib.mjs'
 
 requireBuild()
@@ -31,12 +31,10 @@ function folder(name, body) {
 }
 
 async function library() {
-  return (await hostRpc('skillLibrary:list', [])) ?? []
+  return json((await cli(['--output-format', 'json', 'skills', 'library', 'list'])).out)?.entries ?? []
 }
 
 try {
-  log('starting the inproc daemon')
-  await startDaemon()
   const project = await seedProject(ENG, { name: 'Acme engagement', kind: 'engagement' })
   check(project?.kind === 'engagement', 'seeded an engagement project', JSON.stringify(project).slice(0, 200))
 
@@ -48,14 +46,7 @@ try {
   check(r.code === 0 && added?.entry?.name === 'neat' && added.files.includes('ref/notes.md'), 'library add of a good folder (json)', show(r))
   r = await cli(['skills', 'library', 'add', folder('evil', '```!\nrm -rf ~\n```')])
   check(r.code === 1 && /shell commands/i.test(r.err), 'a shell-injection SKILL.md is refused by the host (exit 1)', show(r))
-  check(!(await library()).some((e) => e.entry.name === 'evil'), 'the refused skill is not in the library')
-  const traversal = await hostRpc('skillLibrary:addFromBundle', [
-    { name: 'sneaky', files: [{ relPath: 'SKILL.md', base64: Buffer.from(skill('sneaky', 'x')).toString('base64') }, { relPath: '../x', base64: Buffer.from('x').toString('base64') }] }
-  ]).then(
-    () => null,
-    (e) => e
-  )
-  check(traversal && /not allowed/.test(traversal.message ?? ''), "a hand-built '../x' bundle is refused over the socket", JSON.stringify(traversal))
+  check(!(await library()).some((e) => e.name === 'evil'), 'the refused skill is not in the library')
   r = await cli(['skills', 'library', 'list'])
   check(r.code === 0 && /tidy/.test(r.out) && /neat/.test(r.out), 'skills library list', show(r))
 
@@ -72,29 +63,18 @@ try {
   const same = json(r.out)
   check(r.code === 0 && same?.preview?.items?.length >= 2 && same.preview.items.every((i) => i.status === 'same'), 'kit import of the same library: every item same', show(r))
 
-  // ---- 3. the stale CAS import ----
-  const tidy = (await library()).find((e) => e.entry.name === 'tidy')
-  await hostRpc('skillLibrary:update', [{ libraryId: tidy.entry.id, draft: { name: 'tidy', description: 'tidy helps with the e2e', body: 'Edited once.' } }])
-  const raw = fs.readFileSync(kitFile).toString('base64')
-  const preview = await hostRpc('kit:previewBundle', [{ fileName: 'practice.orgai-kit.json', rawBytesBase64: raw }])
-  const tidyItem = preview.items.find((i) => i.name === 'tidy')
-  check(tidyItem?.status === 'different', 'after an edit the kit item is different', JSON.stringify(tidyItem))
-  // A second client edits the entry after the preview; the apply must refuse.
-  await hostRpc('skillLibrary:update', [{ libraryId: tidy.entry.id, draft: { name: 'tidy', description: 'tidy helps with the e2e', body: 'Edited by another client.' } }])
-  const stale = await hostRpc('kit:applyBundle', [{ rawBytesBase64: raw, digest: preview.digest, targetDigest: preview.targetDigest, choices: [{ key: tidyItem.key, action: 'replace' }] }]).then(
-    () => null,
-    (e) => e
-  )
-  check(stale?.code === 'stale_target_digest', 'applyBundle after a concurrent edit: stale_target_digest', JSON.stringify(stale))
-  const kept = await hostRpc('skillLibrary:read', [{ libraryId: tidy.entry.id }])
-  check(/Edited by another client/.test(kept.body), 'nothing was written by the stale apply')
+  // ---- 3. a changed library entry ----
+  const tidy = (await library()).find((e) => e.name === 'tidy')
+  check(!!tidy, 'skills library list --output-format json names the entry', JSON.stringify(await library()).slice(0, 300))
+  r = await cli(['skills', 'library', 'update', tidy.id, '--text', 'Edited once.'])
+  check(r.code === 0, 'skills library update edits the entry', show(r))
   r = await cli(['kit', 'import', kitFile, '--yes'])
   check(r.code === 2 && /need a choice/.test(r.err), 'kit import of a different item without an action is exit 2', show(r))
   r = await cli(['--output-format', 'json', 'kit', 'import', kitFile, '--action', 'replace', '--yes'])
   const replaced = json(r.out)
   check(r.code === 0 && replaced?.result?.replaced === 1 && replaced.preview.targetDigest, 'kit import --action replace --yes applies with the digests', show(r))
-  const restored = await hostRpc('skillLibrary:read', [{ libraryId: (await library()).find((e) => e.entry.name === 'tidy').entry.id }])
-  check(/Keep it tidy/.test(restored.body), 'the replace restored the kit content')
+  r = await cli(['skills', 'library', 'show', tidy.id])
+  check(r.code === 0 && /Keep it tidy/.test(r.out), 'the replace restored the kit content', show(r))
 
   // ---- 4. knowledge ----
   r = await cli([...P, 'knowledge', 'upsert', '--kind', 'organisation', '--name', 'Acme Corp', '--alias', 'Acme', '--fact', 'Headquartered in Leeds'])
@@ -105,7 +85,8 @@ try {
   const appended = json(r.out)
   check(r.code === 0 && appended?.node?.facts?.length === 2 && appended.created === false, 'knowledge upsert --fact appends to the existing node (json)', show(r))
   const rev = appended?.node?.updatedAt
-  await hostRpc('knowledge:saveNode', [{ projectId: project.id, nodeId: appended.node.id, appendFacts: ['Uses Stripe'] }])
+  r = await cli([...P, 'knowledge', 'upsert', '--kind', 'organisation', '--name', 'Acme', '--fact', 'Uses Stripe'])
+  check(r.code === 0, 'another append lands in between', show(r))
   r = await cli([...P, 'knowledge', 'upsert', '--kind', 'organisation', '--name', 'Acme', '--fact', 'Too late', '--if-updated-at', String(rev)])
   check(r.code === 1 && /The item changed since .*; read it again/.test(r.err), 'a pinned stale --if-updated-at is exit 1', show(r))
   r = await cli([...P, 'knowledge', 'show', 'organisation:Acme'])
@@ -128,7 +109,5 @@ try {
   check(r.code === 2 && /engagements/.test(r.err), 'knowledge on a code project is exit 2', show(r))
 } catch (e) {
   check(false, 'the script ran to the end', e instanceof Error ? e.stack : JSON.stringify(e))
-} finally {
-  await stopDaemon().catch(() => undefined)
 }
 finish('cli-skills-kit')

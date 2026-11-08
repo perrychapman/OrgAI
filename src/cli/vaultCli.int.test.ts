@@ -1,5 +1,5 @@
 /**
- * Integration (Wave 7, the flow of verify-npm step 6): the real CLI bundle, `--host inproc`, the real SecretStore and
+ * Integration (Wave 7, the flow of verify-npm step 6): the real CLI bundle, its own in-process host, the real SecretStore and
  * the real key-file custodian, a LiteLLM connection at a fake proxy on 127.0.0.1. `secrets init --key-file`, a key set
  * through stdin in one process and tested in a fresh one (connected, so the vault was read across processes), another
  * key file reading as key-mismatch, and the key cleared (disconnected). No tokens, no OS key store.
@@ -73,7 +73,7 @@ function orgai(args: string[], extra: { input?: string; env?: Record<string, str
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ORGAI_')) env[k] = v
   Object.assign(env, { ORGAI_CLI_DATA_DIR: data, ORGAI_MOCK: '1', NO_COLOR: '1', ORGAI_CLI_VAULT_KEY_FILE: join(keys, 'vault.key'), ...(extra.env ?? {}) })
   return new Promise((res) => {
-    const c = spawn(process.execPath, [bundle, '--host', 'inproc', ...args], { env })
+    const c = spawn(process.execPath, [bundle, ...args], { env })
     let stdout = ''
     let stderr = ''
     c.stdout.on('data', (d: Buffer) => (stdout += d))

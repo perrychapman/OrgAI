@@ -310,12 +310,6 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       })
   },
   {
-    name: 'app',
-    aliases: ['desktop', 'open'],
-    summary: 'Open this run in the desktop app',
-    run: (ctx) => guarded(ctx, () => ctx.session.openInDesktop(ctx.state().activeRunId))
-  },
-  {
     name: 'quit',
     aliases: ['q', 'exit'],
     summary: 'Leave the terminal UI (runs keep going)',

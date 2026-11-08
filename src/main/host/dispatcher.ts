@@ -234,6 +234,7 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'unknown_channel',
   'desktop_unavailable',
   'agent_descendant_refused',
+  'not_owner',
   'stale_target_digest',
   'stale_revision',
   'scope_denied',

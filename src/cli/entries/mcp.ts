@@ -26,7 +26,7 @@ export const ENTRY: CommandEntry = {
     { name: 'yes', short: 'y', takesValue: false, summary: 'remove / revoke: do not ask for confirmation' },
     { name: 'role', takesValue: true, summary: 'link: a role slug allowed to use it (repeatable; default every role)' },
     { name: 'copy-secrets', takesValue: false, summary: "copy: also copy the library entry's secret values" },
-    { name: 'library', takesValue: true, summary: 'auth / revoke: a library entry instead of a project server; assist: the app-wide assistant' },
+    { name: 'library', takesValue: true, summary: 'auth / revoke: a library entry instead of a project server; assist: the global assistant' },
     { name: 'client-id', takesValue: true, summary: 'auth: your own OAuth client id' },
     { name: 'client-secret-from-env', takesValue: true, summary: 'auth: read the OAuth client secret from this environment variable' },
     { name: 'client-secret-stdin', takesValue: false, summary: 'auth: read the OAuth client secret from stdin' },

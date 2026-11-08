@@ -433,10 +433,8 @@ export interface TuiState {
 export interface TuiHostConnection {
   readonly client: HostClient
   readonly hello: RpcHelloResult
-  /** Set when the TUI started a `--host inproc` host. */
-  readonly inproc?: InprocHostHandle
-  /** This TUI started the host. */
-  readonly started: boolean
+  /** The host this TUI started in its own process. */
+  readonly inproc: InprocHostHandle
   projects(): Promise<Project[]>
   checkPath(path: string): Promise<ProjectPathCheck>
   /** Reconnects with the 'configure' scope (onboarding only). */
@@ -469,7 +467,6 @@ export interface TuiSessionApi {
   listRuns(): Promise<RunSummary[]>
   /** An Org retrospective of an ended work run (setup:retro, operate scope); follows the new run. */
   startRetro(runId?: string): Promise<RunSummary>
-  openInDesktop(runId?: string): Promise<void>
   /** Re-subscribe after SIGCONT or a reconnect. */
   resync(): Promise<void>
   notify(text: string, tone?: Tone): void

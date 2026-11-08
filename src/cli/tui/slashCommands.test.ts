@@ -38,7 +38,6 @@ function fakeCtx(state: TuiState = stateWith()) {
     stop: vi.fn(async () => {}),
     listRuns: vi.fn(async () => [summary('a', { startedAt: 2, title: 'Second\x1b[31m run' }), summary('b', { startedAt: 1, status: 'finished' })]),
     worktreeDiff: vi.fn(async () => ({ stat: ' a.ts | 1 +', patch: '+x\x1b]52;c;QQ==\x07\n' })),
-    openInDesktop: vi.fn(async () => {})
   } as unknown as TuiSessionApi
   const ctx = {
     session,
@@ -158,7 +157,7 @@ describe('commands', () => {
     expect(ctx.notify).toHaveBeenCalledWith(expect.stringContaining('/run R2'), 'warn')
   })
 
-  it('/interrupt, /stop (confirmed), /app, /quit, /inbox and pane toggles', async () => {
+  it('/interrupt, /stop (confirmed), /quit, /inbox and pane toggles', async () => {
     const { ctx, session } = fakeCtx()
     await cmd('interrupt').run(ctx, '')
     expect(session.interrupt).toHaveBeenCalled()
@@ -168,8 +167,6 @@ describe('commands', () => {
     ;(ctx.confirm as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false)
     await cmd('stop').run(ctx, '')
     expect(session.stop).toHaveBeenCalledTimes(1)
-    await cmd('app').run(ctx, '')
-    expect(session.openInDesktop).toHaveBeenCalledWith('r1')
     await cmd('inbox').run(ctx, '')
     expect(ctx.setFocus).toHaveBeenCalledWith('tray')
     await cmd('tree').run(ctx, '')

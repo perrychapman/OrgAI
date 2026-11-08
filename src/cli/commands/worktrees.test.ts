@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HostScope, PendingWorktree, Project } from '../../shared/types'
 import { manageDeps } from '../manage'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, type Answer } from '../testing/fakeContext'
 import { CliError } from '../types'
 import { runWorktrees, worktreeDeps } from './worktrees'
@@ -12,7 +11,6 @@ const realWt = { ...worktreeDeps }
 afterEach(() => {
   Object.assign(manageDeps, realDeps)
   Object.assign(worktreeDeps, realWt)
-  resetSkewWarning()
 })
 
 const P = project('p1', '/work', { name: 'App' })

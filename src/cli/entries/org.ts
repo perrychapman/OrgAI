@@ -6,13 +6,12 @@ export const ENTRY: CommandEntry = {
   name: 'org',
   summary: 'Org chart and Team assistant',
   usage:
-    'org show | export | import [--source <id>...] [--mode merge|replace] [--yes] | retro <runRef> [--no-attach] | draft "<description>" [--mode replace|revise] | discover [--outside] | recommend [--outside] [--role <role>] | review [--recheck [--outside] [--model]] | apply <recommendationId> [--candidate <id>] [--role <role>...] [--access read|full] | undo <undoId> | dismiss <id> [--candidate] | restore <candidateId>',
+    'org show | export | import [--source <id>...] [--mode merge|replace] [--yes] | retro <runRef> | draft "<description>" [--mode replace|revise] | discover [--outside] | recommend [--outside] [--role <role>] | review [--recheck [--outside] [--model]] | apply <recommendationId> [--candidate <id>] [--role <role>...] [--access read|full] | undo <undoId> | dismiss <id> [--candidate] | restore <candidateId>',
   subcommands: ['show', 'import', 'export', 'retro', 'draft', 'discover', 'recommend', 'review', 'apply', 'undo', 'dismiss', 'restore'],
   flags: [
     { name: 'source', takesValue: true, values: AGENT_IMPORT_SOURCES, summary: 'import: only this source (repeatable; default every source found)' },
     { name: 'mode', takesValue: true, values: ['merge', 'replace', 'revise'], summary: 'import: merge (default) or replace the chart; draft: revise (default) or replace' },
     { name: 'yes', short: 'y', takesValue: false, summary: 'Confirm without asking' },
-    { name: 'no-attach', takesValue: false, summary: 'retro: start the run and print its tag instead of attaching' },
     { name: 'inline', takesValue: false, summary: 'retro: draw the terminal UI in the normal scrollback' },
     { name: 'ax-screen-reader', takesValue: false, summary: 'retro: screen reader mode' },
     { name: 'outside', takesValue: false, summary: 'discover / recommend / review --recheck: also search outside sources (network)' },

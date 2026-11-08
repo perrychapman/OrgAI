@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Project, RunSummary } from '../../shared/types'
 import type { TuiHostConnection, TuiLaunch } from '../tui/types'
-import { fakeContext, FakeHostClient, project, rpcError, summary, type Answer } from '../testing/fakeContext'
+import { fakeContext, fakeInproc, FakeHostClient, project, rpcError, summary, type Answer } from '../testing/fakeContext'
 import { CliError, EXIT } from '../types'
 import { interactiveDeps, prepareInteractive, runInteractiveRun, type InteractiveRunSpec } from './interactive'
 
@@ -15,7 +15,7 @@ function conn(answers: Record<string, Answer>, projects: Project[] = [project('p
   return {
     client,
     hello: client.hello,
-    started: false,
+    inproc: fakeInproc(),
     projects: async () => projects,
     checkPath: async () => ({ exists: true, isDirectory: true, isGitRepo: false, suggestedName: 'x', empty: false }),
     createProject: async () => projects[0],

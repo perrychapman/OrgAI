@@ -381,6 +381,7 @@ export const RPC_NUMERIC_CODE: Record<HostRpcErrorCode, number> = {
   unknown_channel: -32601,
   desktop_unavailable: -32000,
   agent_descendant_refused: -32000,
+  not_owner: -32000,
   stale_target_digest: -32000,
   stale_revision: -32000,
   scope_denied: -32000,

@@ -1,8 +1,8 @@
 /**
- * `orgai doctor` (cli-spec 6.1): checks of the install (how this CLI runs, the orgai shim on PATH; cli-spec 7), the
- * data folder, the host and the connections, printed as
- * ok / warn / fail lines (json: an array of { id, status, detail }). Exit 1 when any check fails, else 0. Never
- * prints a secret: auth and connection checks report states and labels only.
+ * `orgai doctor` (cli-spec 6.1; cli-standalone-default.md 4.5): checks of the install (how this CLI runs, the orgai
+ * command on PATH), the data folder and its product marker, whether another orgai owns the folder, the agent runtimes
+ * and the vault custody, printed as ok / warn / fail lines (json: an array of { id, status, detail }). Hostless: it reads
+ * files and never starts or talks to a host. Exit 1 when any check fails, else 0. Never prints a secret.
  */
 import { execFile } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
@@ -11,15 +11,15 @@ import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cliShimPath, packagedLayout, parseCliShim, resourcesDirOfCliBundle, transientInstallReason } from '../../main/host/packagedLayout'
 import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
-import { isProxyConnection, type AuthStatusResult, type ConnectionInfo, type DaemonInfo } from '../../shared/types'
-import { devAppRoot } from '../client/launcher'
+import type { DaemonInfo } from '../../shared/types'
+import { readProductMarker } from '../../main/store/productMarker'
 import { installChecks } from '../doctor/installChecks'
 import { runtimeChecks } from '../doctor/runtimeChecks'
 import { secretsChecks } from '../doctor/secretsChecks'
 import type { DoctorCheckGroup } from '../doctor/types'
 import { parseFlags } from '../flags'
 import { emit, safeLine, styleFor } from '../output'
-import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type ConnectResult } from '../types'
+import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
 
 export type CheckStatus = 'ok' | 'warn' | 'fail'
 
@@ -80,10 +80,7 @@ export const doctorProbes = {
 /** A line of the packaged launcher (build/bin/orgai): a file at the shim path that reads through to it is a link to one. */
 export const PACKAGED_LAUNCHER_MARK = 'The orgai command of a packaged OrgAI'
 
-/** The launcher line when no OrgAI app is found (not a failure: `--host auto` runs the host in-process). */
-export const LAUNCHER_ABSENT_DETAIL = 'No OrgAI app found; commands run the host inside the command (`orgai daemon start` keeps one running)'
-
-const SHIM_NOT_INSTALLED = 'The orgai command is not installed (App settings > General > Advanced settings > Terminal)'
+const SHIM_NOT_INSTALLED = 'The orgai command is not installed on PATH (npm i -g orgai-cli)'
 
 /** How this CLI runs (cli-spec 7): packaged app, dev checkout or a standalone bundle; warns for a transient app copy. */
 export function installCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): DoctorCheck {
@@ -97,9 +94,19 @@ export function installCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv):
       ? { id: 'install', status: 'warn', detail: `Packaged OrgAI at ${res} (${runtime}). ${transient}` }
       : { id: 'install', status: 'ok', detail: `Packaged OrgAI at ${res} (${runtime})` }
   }
-  const root = devAppRoot(bundleDir)
+  const root = devCheckoutRoot(bundleDir)
   if (root) return { id: 'install', status: 'ok', detail: `Development checkout ${root}` }
   return { id: 'install', status: 'ok', detail: `Standalone bundle ${bundleDir}` }
+}
+
+/** The checkout root when this bundle sits in out/cli (or src/cli/<dir>) of an OrgAI source checkout, else undefined. */
+function devCheckoutRoot(bundleDir: string): string | undefined {
+  for (const up of [['..', '..'], ['..', '..', '..']]) {
+    const root = resolve(bundleDir, ...up)
+    if (root.split(/[\\/]+/).includes('node_modules')) continue
+    if (existsSync(join(root, 'electron.vite.config.ts'))) return root
+  }
+  return undefined
 }
 
 /**
@@ -133,10 +140,10 @@ export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Do
     viaLink = true
   }
   if (!doctorProbes.exists(target)) {
-    return { id: 'shim', status: 'warn', detail: `${shim} points at an OrgAI that is gone (${target}). Open OrgAI to update it` }
+    return { id: 'shim', status: 'warn', detail: `${shim} points at an OrgAI that is gone (${target}); it is the old app command. Install the standalone one: npm i -g orgai-cli` }
   }
   if (ownLauncher !== undefined && !same(target, ownLauncher)) {
-    const fix = viaLink ? 'Point the link at this OrgAI, or remove it and install the orgai command from App settings' : 'Install the orgai command again from App settings to use this one'
+    const fix = viaLink ? 'Remove the link and install the standalone orgai: npm i -g orgai-cli' : 'It is the old app command; install the standalone orgai: npm i -g orgai-cli'
     return { id: 'shim', status: 'warn', detail: `${shim} runs another OrgAI (${target}), not this one. ${fix}` }
   }
   const dir = (platform === 'win32' ? win32 : posix).dirname(shim)
@@ -165,7 +172,6 @@ function onPath(dir: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform):
 }
 
 const MIN_NODE_MAJOR = 22
-const CONNECTION_NAMES: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 
 export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { positionals } = parseFlags(args, {})
@@ -191,7 +197,13 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   } catch {
     dataExists = false
   }
-  add('data-dir', dataExists ? 'ok' : 'warn', `${ctx.paths.dataDir} (from ${via})${dataExists ? '' : ': does not exist yet (OrgAI creates it on first start)'}`)
+  add('data-dir', dataExists ? 'ok' : 'warn', `${ctx.paths.dataDir} (from ${via})${dataExists ? '' : ': does not exist yet (orgai creates it on first start)'}`)
+  const marker = readProductMarker(ctx.paths.userDataDir)
+  add(
+    'product',
+    marker.state === 'marked' && marker.product === 'orgai-cli' ? 'ok' : marker.state === 'absent' ? 'ok' : 'fail',
+    marker.state === 'marked' ? `${ctx.paths.userDataDir} is marked ${marker.product}` : marker.state === 'absent' ? `${ctx.paths.userDataDir} has no product marker yet (orgai writes it on first start)` : `${ctx.paths.userDataDir}/product.json is not readable`
+  )
 
   // run/ directory
   const runDir = join(ctx.paths.dataDir, 'run')
@@ -209,7 +221,7 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
     runDirOk = problems.length === 0
     add('run-dir', runDirOk ? 'ok' : 'fail', runDirOk ? `${runDir} is private to you` : `${runDir} ${problems.join(', ')}`)
   } catch {
-    add('run-dir', 'ok', `${runDir} does not exist (no host has started on this data folder yet)`)
+    add('run-dir', 'ok', `${runDir} does not exist (orgai has not run on this data folder yet)`)
   }
 
   // daemon.json
@@ -226,39 +238,11 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
     if (!parsed || typeof parsed !== 'object' || typeof parsed.pid !== 'number' || typeof parsed.hostInstanceId !== 'string') throw new Error('unexpected shape')
     daemon = parsed
     daemonAlive = doctorProbes.pidAlive(parsed.pid)
-    add('daemon-json', daemonAlive ? 'ok' : 'warn', daemonAlive ? `Host ${parsed.hostInstanceId} (pid ${parsed.pid}, ${parsed.hostKind ?? 'unknown kind'}) is ${parsed.state}` : `daemon.json names pid ${parsed.pid}, which is not running (a stale file; the next host replaces it)`)
+    add('daemon-json', daemonAlive ? 'ok' : 'warn', daemonAlive ? `Another orgai is running (pid ${parsed.pid}${parsed.ownerCwd ? `, started in ${safeLine(parsed.ownerCwd)}` : ''}, ${parsed.state}); commands that need a host are refused until it quits` : `daemon.json names pid ${parsed.pid}, which is not running (a stale file; the next orgai replaces it)`)
   } catch (e) {
     const missing = (e as NodeJS.ErrnoException).code === 'ENOENT'
-    add('daemon-json', missing ? 'ok' : 'fail', missing ? 'No host is running' : `daemon.json could not be read: ${(e as Error).message}`)
+    add('daemon-json', missing ? 'ok' : 'fail', missing ? 'No other orgai is running on this folder' : `daemon.json could not be read: ${(e as Error).message}`)
   }
-
-  // Socket, handshake, terminal access, version skew
-  let conn: ConnectResult | undefined
-  if (daemon && daemonAlive) {
-    conn = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS }).catch((e: unknown) => ({ ok: false, reason: 'unreachable', message: e instanceof Error ? e.message : String(e) }) as ConnectResult)
-    if (conn.ok) {
-      add('socket', 'ok', `Connected and verified the host (hostProof ok, ${conn.client.hello.hostKind})`)
-      add('terminal-access', 'ok', 'Terminal access is on')
-      const skew = conn.client.hello.versionSkewWarning
-      add('version', skew ? 'warn' : 'ok', skew ? skew : `CLI ${ctx.version} matches OrgAI ${conn.client.hello.appVersion}`)
-    } else if (conn.reason === 'disabled') {
-      add('socket', 'ok', 'Connected; the host refused terminal clients')
-      add('terminal-access', 'warn', conn.message || 'Terminal access is turned off in OrgAI (App settings)')
-    } else if (conn.reason === 'starting') {
-      add('socket', 'warn', 'The host is still starting')
-    } else {
-      add('socket', conn.reason === 'no_host' ? 'warn' : 'fail', `${conn.reason}: ${conn.message}`)
-    }
-  } else {
-    add('socket', 'ok', 'Skipped: no host is running')
-  }
-
-  // Launcher (Wave 7, cli-standalone.md 4.1 step 3): an app found, none (commands then run the host in-process), or a
-  // broken install naming its path.
-  const app = ctx.launcher.locate()
-  if (app.status === 'found') add('launcher', 'ok', `${app.command}${app.args.length ? ` ${app.args.join(' ')}` : ''} (${app.source})`)
-  else if (app.status === 'broken') add('launcher', 'fail', app.message)
-  else add('launcher', 'ok', LAUNCHER_ABSENT_DETAIL)
 
   // The orgai command on PATH (read only)
   checks.push(shimCheck(ctx.platform, ctx.env))
@@ -272,40 +256,16 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
 
   // Mock mode
   const mock = ctx.env.ORGAI_MOCK === '1'
-  const hostMock = conn?.ok ? conn.client.hello.mock : undefined
-  add('mock', 'ok', mock || hostMock ? `Mock mode${hostMock ? ' (the host runs the mock adapter)' : ''}: no tokens are spent` : 'Off')
+  add('mock', 'ok', mock ? 'Mock mode: no tokens are spent' : 'Off')
 
   // Wave 7 groups (src/cli/doctor): install channel and PATH, agent runtimes, secure storage. Each never throws.
   const groups: DoctorCheckGroup[] = [installChecks, runtimeChecks, secretsChecks]
   for (const group of groups) {
     try {
-      checks.push(...(await group({ ctx, ...(conn?.ok ? { client: conn.client } : {}) })))
+      checks.push(...(await group({ ctx })))
     } catch (e) {
       add('doctor', 'warn', `A check failed to run: ${(e as Error)?.message ?? String(e)}`)
     }
-  }
-
-  // Auth and connections (read scope; states only)
-  if (conn?.ok) {
-    const client = conn.client
-    try {
-      const auth = await client.call<AuthStatusResult>('auth:status', [])
-      add('auth', auth.loggedIn ? 'ok' : 'warn', auth.loggedIn ? `Signed in (${auth.mode}${auth.method ? `, ${auth.method}` : ''})` : `Not signed in (${auth.mode})${auth.detail ? `: ${auth.detail}` : ''}`)
-    } catch (e) {
-      add('auth', 'warn', `Could not read the sign-in status: ${(e as Error).message}`)
-    }
-    try {
-      const list = await client.call<ConnectionInfo[]>('connections:list', [])
-      const parts = (Array.isArray(list) ? list : []).map((c) => {
-        const name = isProxyConnection(c.connection) ? c.connection.name : (CONNECTION_NAMES[c.connection.id] ?? c.connection.id)
-        return `${name} ${c.connection.enabled === false ? 'off' : c.status.state}${c.isDefault ? ' (default)' : ''}`
-      })
-      const anyConnected = (Array.isArray(list) ? list : []).some((c) => c.status.state === 'connected')
-      add('connections', anyConnected || mock ? 'ok' : 'warn', parts.join(', ') || 'No connections')
-    } catch (e) {
-      add('connections', 'warn', `Could not list connections: ${(e as Error).message}`)
-    }
-    client.close()
   }
 
   const failed = checks.some((c) => c.status === 'fail')

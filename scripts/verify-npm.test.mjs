@@ -302,7 +302,7 @@ test('main: a matching install passes, vault and codex skip, temp dirs removed',
   try {
     const r = await runMain(fake)
     assert.equal(r.code, 0, r.out)
-    for (const id of ['(1) install', '(1b) --ignore-scripts', '(2) --version', '(3) doctor', '(4) claude runtime', '(5) exec auto', '(8) data folder']) assert.match(r.out, new RegExp(`ok +${id.replace(/[()]/g, '\\$&')}`), id)
+    for (const id of ['(1) install', '(1b) --ignore-scripts', '(2) --version', '(3) doctor', '(4) claude runtime', '(5) exec', '(8) data folder']) assert.match(r.out, new RegExp(`ok +${id.replace(/[()]/g, '\\$&')}`), id)
     assert.match(r.out, /skip +\(6\) vault/)
     assert.match(r.out, /skip +\(7\) codex/)
     assert.deepEqual(r.leftovers, [])
@@ -311,7 +311,8 @@ test('main: a matching install passes, vault and codex skip, temp dirs removed',
     assert.ok(installs[0].args.includes(`orgai-cli@${VERSION}`) && installs[0].args.includes('--registry'))
     assert.ok(installs[1].args.includes('--ignore-scripts'))
     const exec = r.calls.find((c) => c.args.includes('exec'))
-    assert.ok(exec.args.includes('auto'))
+    // No --host anywhere: every command hosts itself (cli-standalone-default.md 4.1).
+    assert.ok(!r.calls.some((c) => c.args.some((a) => a === '--host')), 'no call passes --host')
     assert.equal(exec.env.ORGAI_MOCK, '1')
     assert.equal(exec.env.ORGAI_SECRET_X, undefined)
     assert.equal(exec.env.ORGAI_VAULT_KEY_FILE, undefined)
@@ -330,7 +331,7 @@ test('main: an unlisted install script, a wrong version and a failed exec each f
     const r = await runMain(fake, { script: true, exec: { code: 1, stdout: '', stderr: 'no app' } })
     assert.equal(r.code, 1)
     assert.match(r.out, /fail +\(1\) install +a@1\.0\.0 runs postinstall at install/)
-    assert.match(r.out, /fail +\(5\) exec auto/)
+    assert.match(r.out, /fail +\(5\) exec\b/)
     fake.sw.packages['node_modules/a'].version = '1.0.1'
     fs.writeFileSync(path.join(fake.root, 'release', 'npm', `orgai-cli-${VERSION}.tgz`), makeTgz({ 'package/package.json': JSON.stringify(fake.pkg), 'package/npm-shrinkwrap.json': '{}' }))
     const w = await runMain(fake)

@@ -1,16 +1,15 @@
 /**
  * Builds the one CliContext a command runs with (cli-spec 6): resolved data dirs, the host client, the read-only store
- * reader, project resolution, the launcher, the `--host inproc` entry and signal listeners. Electron-free.
+ * reader, project resolution, the in-process host entry and signal listeners. Electron-free.
  */
 import { homedir } from 'node:os'
 import { connectHost } from './client/hostClient'
-import { createLauncher } from './client/launcher'
-import { checkCliFolder } from '../main/store/productMarker'
-import { DESKTOP_DATA_DIR_NOTE, ignoresDesktopDataDir, platformUserDataDir, resolveDataDirs, userChoseDataDir } from './client/locate'
+import { checkCliFolder, readProductMarker } from '../main/store/productMarker'
+import { DESKTOP_DATA_DIR_NOTE, ignoresDesktopDataDir, platformUserDataDir, resolveDataDirs } from './client/locate'
 import { readOnlySnapshot } from './client/readOnlyStore'
 import { resolveProject } from './client/resolveProject'
 import type { SecretOverlay } from './secretOverlay'
-import { CliError, EXIT, type CliContext, type CliGlobals, type CliIo, type InprocHostHandle, type InprocStartOptions, type SecretEnvUse } from './types'
+import { CliError, EXIT, type CliContext, type CliGlobals, type CliIo, type InprocHostHandle, type InprocStartOptions } from './types'
 import { CLI_VERSION } from './version'
 
 export interface BuildContextInput {
@@ -21,8 +20,6 @@ export interface BuildContextInput {
   io: CliIo
   /** The environment secret overlay (collected and scrubbed by index.ts prepareContext). */
   overlay?: SecretOverlay['overlay']
-  /** Environment secrets under --host auto (index.ts planSecretEnv), for ensureHost. */
-  secretEnv?: SecretEnvUse
   /** Where SIGINT / SIGTERM come from (process by default). */
   signalSource?: Pick<NodeJS.Process, 'on' | 'off'>
   pid?: number
@@ -30,16 +27,20 @@ export interface BuildContextInput {
   home?: string
 }
 
+/** Printed once, the first time orgai opens a new data folder (cli-standalone-default.md 4.4). Never reads the app's folder. */
+export const FIRST_START_NOTE =
+  'orgai keeps its own projects and settings, separate from the OrgAI app. Projects made with an older orgai are in the OrgAI app.'
+
 /** NO_COLOR (any non-empty value), --no-color and a non-TTY stdout all turn colour off. */
 export function colorEnabled(globals: CliGlobals, env: NodeJS.ProcessEnv, io: CliIo): boolean {
   return globals.color && io.stdout.isTTY === true && !env.NO_COLOR
 }
 
-/** Contexts whose `--host inproc` host must keep the terminal clean (the TUI owns the screen). */
+/** Contexts whose host must keep the terminal clean (the TUI owns the screen). */
 const quietContexts = new WeakSet<CliContext>()
 
 /**
- * The terminal UI owns the screen: a `--host inproc` host this context starts later logs to its file only (console
+ * The terminal UI owns the screen: the host this context starts later logs to its file only (console
  * output never reaches the terminal). Call before the host starts; a no-op for a host already running.
  */
 export function quietInproc(ctx: CliContext): void {
@@ -79,21 +80,16 @@ export function buildContext(input: BuildContextInput): CliContext {
   const home = input.home ?? homedir()
   const paths = resolveDataDirs({ flag: globals.dataDir, env, platform, cwd, home })
   // First, before anything reads or writes the folder: it must be the CLI's own (spec 3.1).
+  const firstStart = readProductMarker(paths.userDataDir).state === 'absent'
   const refusal = checkCliFolder({ ...paths, desktopDefault: platformUserDataDir(platform, env, home), platform })
   if (refusal) throw new CliError(refusal, EXIT.usage)
+  if (firstStart && globals.outputFormat === 'text') io.stderr.write(`${FIRST_START_NOTE}\n`)
   if (!desktopEnvNoted && ignoresDesktopDataDir({ flag: globals.dataDir, env })) {
     desktopEnvNoted = true
     io.stderr.write(`${DESKTOP_DATA_DIR_NOTE}\n`)
   }
   const signalSource = input.signalSource ?? process
   const pid = input.pid ?? process.pid
-  const launcher = createLauncher({
-    dataDir: paths.dataDir,
-    userDataDir: paths.userDataDir,
-    userChoseDataDir: userChoseDataDir({ flag: globals.dataDir, env }),
-    env
-  })
-
   // The started in-process host's owner key (memory only): connect() proves ownership of that host with it.
   let owner: { key: string; hostInstanceId: string } | undefined
   const startInproc = reusableInproc((opts) =>
@@ -105,9 +101,7 @@ export function buildContext(input: BuildContextInput): CliContext {
         mock: env.ORGAI_MOCK === '1',
         overlay: input.overlay ?? new Map(),
         ...(opts.background ? { background: opts.background } : {}),
-        ...(opts.shared ? { shared: true } : {}),
-        // The detached Node host (daemon run-node) writes to main.log only; its stdio file keeps what escapes that.
-        ...(opts.hostKind === 'node' ? { hostKind: 'node' as const, quiet: true } : {}),
+        cwd,
         ...(quietContexts.has(ctx) ? { quiet: true } : {})
       })
     ).then((h) => {
@@ -137,9 +131,7 @@ export function buildContext(input: BuildContextInput): CliContext {
       }),
     readStore: () => readOnlySnapshot({ dataDir: paths.dataDir }),
     resolveProject: (projects) => resolveProject(projects, { flag: globals.project, cwd, platform }),
-    launcher,
     startInproc,
-    ...(input.secretEnv ? { secretEnv: input.secretEnv } : {}),
     signals: {
       onInterrupt(fn) {
         const onInt = (): void => fn('SIGINT')

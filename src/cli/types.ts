@@ -53,22 +53,7 @@ export class CliError extends Error {
 /** `schemaVersion` of every --output-format json / stream-json document. */
 export const CLI_JSON_SCHEMA_VERSION = 1
 
-/**
- * --host: 'auto' connects to a running host or starts a headless one; 'daemon' only connects (or starts) the shared
- * host and never runs in-process; 'inproc' runs a pure-Node host inside the CLI process.
- */
-export type HostMode = 'auto' | 'daemon' | 'inproc'
-
-/**
- * `orgai daemon start --runtime` (Wave 7, cli-standalone.md 4.2): 'app' starts the OrgAI app headless, 'node' a
- * detached pure-Node host (HostKind 'node'). Default 'app' when HostLauncher finds an app, else 'node'.
- */
-export type DaemonRuntime = 'app' | 'node'
-
-/**
- * How long a 'starting' host is waited for (Wave 7, cli-standalone.md 5.6): ensureHost, daemon.ts, doctor.ts and
- * exec.ts grow from 2 s to this, to cover the 10 s custodian timeout while a host opens its vault.
- */
+/** How long a 'starting' host is waited for when connecting to this process's own host (the vault open can take 10 s). */
 export const HOST_STARTING_WAIT_MS = 15_000
 
 /** --output-format. 'stream-json' is one JSON document per line. */
@@ -78,18 +63,13 @@ export type OutputFormat = 'text' | 'json' | 'stream-json'
 export interface CliGlobals {
   /** --data-dir: the userDataDir (absolute after resolution; dataDir is `<userDataDir>/data`). */
   dataDir?: string
-  /** --host, default 'auto'. */
-  host: HostMode
   /** --output-format, default 'text'. */
   outputFormat: OutputFormat
   /** --project <id-or-path>: overrides cwd-based project resolution. */
   project?: string
   /** false with --no-color (or NO_COLOR / a non-TTY stdout, decided by index.ts). */
   color: boolean
-  /**
-   * Repeated --secret-env `<owner>:<kind>:<name>=<ENV_VAR>` specs: used by an in-process host (--host inproc, or --host
-   * auto with no live host), refused by any command that would attach to a live host (cli-standalone.md 4.1).
-   */
+  /** Repeated --secret-env `<owner>:<kind>:<name>=<ENV_VAR>` specs: used by this process's own host. */
   secretEnv: string[]
 }
 
@@ -126,15 +106,15 @@ export interface HostClient {
 
 /**
  * CliContext.connect's answer. On failure `reason` says why: no daemon.json / dead pid ('no_host'), host_starting past
- * waitStartingMs ('starting'), host_draining ('draining'), terminal_server_disabled ('disabled'), any other refusal
- * ('refused'), a failed proof either way ('auth_failed'), protocol_mismatch, or the endpoint did not answer
- * ('unreachable'). `daemon` is the daemon.json read, when there was one.
+ * waitStartingMs ('starting'), host_draining ('draining'), not_owner ('not_owner': the hello carried no valid owner
+ * proof), any other refusal ('refused'), a failed proof either way ('auth_failed'), protocol_mismatch, or the endpoint
+ * did not answer ('unreachable'). `daemon` is the daemon.json read, when there was one.
  */
 export type ConnectResult =
   | { ok: true; client: HostClient }
   | {
       ok: false
-      reason: 'no_host' | 'starting' | 'draining' | 'disabled' | 'refused' | 'auth_failed' | 'protocol_mismatch' | 'unreachable'
+      reason: 'no_host' | 'starting' | 'draining' | 'not_owner' | 'refused' | 'auth_failed' | 'protocol_mismatch' | 'unreachable'
       message: string
       daemon?: DaemonInfo
     }
@@ -163,71 +143,7 @@ export interface ProjectResolution {
   error?: string
 }
 
-/**
- * HostLauncher.locate (Wave 7, cli-standalone.md 4.1 step 3). 'found': an app to spawn ('installed' is the new
- * /Applications, ~/Applications or Program Files discovery). 'absent': nothing anywhere; `--host auto` then runs an
- * in-process host. 'broken': found, but its binary or app.asar is missing; an error naming `path`, never a fallback.
- */
-export type HostLauncherResolution =
-  | ({ status: 'found' } & HostLauncherFound)
-  | { status: 'absent'; message: string }
-  | { status: 'broken'; path: string; message: string }
-
-/** An app HostLauncher can spawn: resolve()'s success and locate()'s 'found'. */
-export interface HostLauncherFound {
-  command: string
-  args: string[]
-  source: 'env' | 'packaged' | 'dev' | 'installed'
-}
-
-/** Finds and starts the OrgAI app as a host (src/cli/launcher.ts, W2-T4). */
-export interface HostLauncher {
-  /**
-   * The app binary, in this order: ORGAI_ELECTRON_PATH ('env'); the packaged app next to this bundle ('packaged': the
-   * bundle sits in `<Resources>/app.asar.unpacked/out/cli`), only when install.json says 'app'; the dev checkout's
-   * electron + out/main ('dev'), only without any install.json and with the checkout markers (electron.vite.config.ts,
-   * electron in devDependencies); an installed app ('installed': /Applications or ~/Applications on macOS,
-   * %LOCALAPPDATA%\Programs or %ProgramFiles% on Windows, none on Linux). Errors carry the path they are about.
-   */
-  resolve(): HostLauncherFound | { error: string; path?: string }
-  /**
-   * Wave 7: the same lookup as found / absent / broken (HostLauncherResolution): APP_NOT_FOUND is 'absent', any other
-   * error 'broken' with the error's `path` (a missing packaged binary, an unbuilt checkout or one without its electron
-   * binary, an incomplete installed app).
-   */
-  locate(): HostLauncherResolution
-  /**
-   * Spawn it detached: `--headless-host` when headless, else a desktop window; `run` focuses that run id. `app`: the
-   * app locate() found, so the lookup that decided and the spawn cannot disagree; without it spawn() resolves again.
-   */
-  spawn(opts: { headless: boolean; run?: string; app?: HostLauncherFound }): { pid?: number }
-  /** The daemon.json of the live host that owns the data folder (any state), else null. */
-  current(): DaemonInfo | null
-  /**
-   * Poll daemon.json until a host is 'ready' (with notInstanceId, a different one; with hostKinds, one of those kinds).
-   * null on timeout. Rejects with the reason when the app this launcher spawned could not start or exited non-zero
-   * before a matching host was ready (exit 0 is a hand-off to a running OrgAI, so polling goes on).
-   */
-  waitForReady(opts: { timeoutMs: number; notInstanceId?: string; hostKinds?: readonly HostKind[] }): Promise<DaemonInfo | null>
-  /** Poll until no host (or not that hostInstanceId) advertises. false on timeout. */
-  waitForGone(opts: { timeoutMs: number; hostInstanceId?: string }): Promise<boolean>
-  /**
-   * Wave 7 (cli-standalone.md 4.2, WP-E): start a background host of this runtime, detached. 'app': the app headless
-   * (as spawn({ headless: true, app })). 'node': `process.execPath <orgai.mjs> daemon run-node`, detached (setsid on
-   * POSIX, windowsHide on Windows), stdio to `<userDataDir>/logs/node-host.log`; throws when this CLI runs on Electron
-   * (no real Node) or the orgai.mjs bundle is not found. `hostKinds`: what waitForReady should wait for. A failed spawn
-   * or early exit makes the next waitForReady reject, as for spawn(). Optional so test fakes may leave it out.
-   */
-  startBackground?(runtime: DaemonRuntime, opts?: { app?: HostLauncherFound }): { pid?: number; hostKinds: readonly HostKind[] }
-  /**
-   * Why startBackground(runtime) would throw before spawning (no app; on Electron or no orgai.mjs for 'node'), else
-   * undefined. Starters check it before they ask or store anything and before `daemon restart` stops the running host
-   * (review round 2). Optional like startBackground.
-   */
-  checkBackground?(runtime: DaemonRuntime): string | undefined
-}
-
-/** A pure-Node host running inside the CLI (`--host inproc`, src/cli/inprocHost.ts, W2-T4). */
+/** The pure-Node host running inside the CLI process (src/cli/inprocHost.ts). */
 export interface InprocHostHandle {
   status(): HostStatusResult
   /** Drain (force: stop live runs) and release ownership. */
@@ -236,45 +152,20 @@ export interface InprocHostHandle {
   readonly closed: Promise<void>
   /**
    * The host's in-memory owner key and instance id (inprocHost.ts): CliContext.connect proves with them that it is the
-   * process that started the host, which alone gets decide / configure past Terminal access (review H2). Never on disk.
+   * process that started the host; the socket serves nobody else. Never on disk.
    */
   readonly ownerKey?: string
   readonly hostInstanceId?: string
 }
 
-/** How an in-process host starts (ensureHost / withHost pass it to CliContext.startInproc). */
+/** How the in-process host starts (ensureHost / withHost pass it to CliContext.startInproc). */
 export interface InprocStartOptions {
   /**
-   * bootOrgAIHost's background work (cli-standalone.md 4.1 step 4): management commands keep connection probes and
+   * bootOrgAIHost's background work: management commands keep connection probes and
    * turn model discovery, community prices and the usage monitor off. Default: all on. The first start in a process
    * decides; a later call while that host is still running reuses it.
    */
   background?: HostBackgroundOptions
-  /**
-   * The host serves other terminals until stopped (`orgai daemon start --host inproc`): it is marked shared
-   * (client/sharedHost.ts), so other terminals' ensureHost attaches to it. Without it the host is the command's own and
-   * other terminals wait for it to end (WP-B review round 2). Default false.
-   */
-  shared?: boolean
-  /** Wave 7 (cli-standalone.md 4.2): `orgai daemon run-node` only; starts the host as the detached Node host. */
-  hostKind?: 'inproc' | 'node'
-}
-
-/**
- * Environment secrets this command carries under `--host auto` (cli-standalone.md 4.1, round 6 item 8), set by
- * index.ts prepareContext after collecting and scrubbing them. Absent when there are none (and under --host inproc,
- * where the secrets always go to the command's own host).
- */
-export interface SecretEnvUse {
-  /** --secret-env flags were given: refused (exit 2) when the command attaches to a live host. */
-  explicit: boolean
-  /** ORGAI_SECRET_* variables were set. */
-  ambient: boolean
-  /**
-   * The command would use a secret on a live host (runs, Architect, assistants, credential probes, model calls): an
-   * ambient secret is then refused against a live host too; otherwise it is ignored with one warning.
-   */
-  usesSecrets: boolean
 }
 
 /** Everything a command may use. Built once per process by index.ts; tests build fakes. */
@@ -289,23 +180,19 @@ export interface CliContext {
   /** CLI_VERSION. */
   version: string
   /**
-   * Connect and authenticate to the running host with these scopes (clientKind default 'cli'). With waitStartingMs a
-   * 'host_starting' answer is retried until that long has passed. Never starts a host.
+   * Connect and authenticate to this process's own host with these scopes (clientKind default 'cli'), proving ownership
+   * with the in-memory owner key. Never starts a host.
    */
   connect(scopes: HostScope[], opts?: { clientKind?: HostClientKind; waitStartingMs?: number }): Promise<ConnectResult>
   /** The read-only store view (no host needed). */
   readStore(): Promise<ReadOnlySnapshot>
   /** cli-spec 4 resolution over these projects (globals.project, then cwd). */
   resolveProject(projects: Project[]): ProjectResolution
-  launcher: HostLauncher
   /**
-   * Start an in-process host (lazy-loads the inprocHost chunk): `--host inproc`, or `--host auto` when no host is live
-   * and no app was found or environment secrets are set. One per process at a time; a call after that host closed
-   * starts a new one (init's Architect after its withHost).
+   * Start this process's host (lazy-loads the inprocHost chunk). One per process at a time; a call after that host
+   * closed starts a new one (init's Architect after its withHost). Throws exit 6 while another orgai owns the folder.
    */
   startInproc(opts?: InprocStartOptions): Promise<InprocHostHandle>
-  /** Environment secrets under `--host auto` (see SecretEnvUse); undefined when there are none. */
-  secretEnv?: SecretEnvUse
   /** SIGINT / SIGTERM listeners; returns an unsubscribe function. */
   signals: { onInterrupt(fn: (sig: 'SIGINT' | 'SIGTERM') => void): () => void }
 }

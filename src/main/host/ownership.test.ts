@@ -324,6 +324,66 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(leftovers(env.runDir)).toEqual([])
   })
 
+  describe("wait: 'none' (the orgai CLI, cli-standalone-default.md 4.2)", () => {
+    const never = (): Promise<void> => {
+      throw new Error('slept: wait none must not wait')
+    }
+
+    it('refuses a live startup.mkdir owner at once, without sleeping, and leaves its mutex alone', async () => {
+      const env = tempEnv()
+      const child = spawnSleeper()
+      const startup = join(env.runDir, 'startup.mkdir')
+      mkdirSync(startup, { recursive: true, mode: 0o700 })
+      writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: child.pid, processStartTime: processStartTime(child.pid!), hostInstanceId: 'cccccccccccc', createdAt: Date.now() }))
+      const began = Date.now()
+      const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostStartingOrBusyError)
+      expect((err as HostStartingOrBusyError).ownerPid).toBe(child.pid)
+      expect(Date.now() - began).toBeLessThan(1500)
+      expect(JSON.parse(readFileSync(join(startup, 'owner.json'), 'utf8')).pid).toBe(child.pid)
+      child.kill('SIGKILL')
+      await exited(child)
+      // A dead owner's mutex is provably stale: reclaimed as always.
+      const own = await acquire(env, { wait: 'none', sleep: never })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
+    it('refuses a young startup.mkdir with no owner.json at once, and reclaims an old one', async () => {
+      const env = tempEnv()
+      const startup = join(env.runDir, 'startup.mkdir')
+      mkdirSync(startup, { recursive: true, mode: 0o700 })
+      const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostStartingOrBusyError)
+      utimesSync(startup, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+      const own = await acquire(env, { wait: 'none', sleep: never })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
+    it('refuses a live incumbent with its record, and ownerCwd is written to daemon.json and parsed back', async () => {
+      const env = tempEnv()
+      const own = await acquire(env, { wait: 'none', ownerCwd: '/work/first' })
+      expect(readDaemonInfo(env.dataDir)?.ownerCwd).toBe('/work/first')
+      expect(own.markReady()).toBe(true)
+      expect(readDaemonInfo(env.dataDir)?.ownerCwd).toBe('/work/first')
+      const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never, ownerCwd: '/work/second' })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostAlreadyRunningError)
+      expect((err as HostAlreadyRunningError).info).toMatchObject({ pid: process.pid, ownerCwd: '/work/first' })
+      own.release()
+    })
+
+    it('a corrupt record is refused, and a record without ownerCwd still parses', async () => {
+      const env = tempEnv()
+      const first = await acquire(env, { wait: 'none' })
+      expect(readDaemonInfo(env.dataDir)?.ownerCwd).toBeUndefined()
+      first.release()
+      mkdirSync(env.runDir, { recursive: true })
+      writeFileSync(join(env.runDir, 'daemon.json'), '{ not json')
+      const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostOwnershipError)
+      expect((err as HostOwnershipError).code).toBe('daemon_json_unreadable')
+    })
+  })
+
   it('waits on a young startup.mkdir with no owner.json and reclaims it only after startupYoungMs', async () => {
     const env = tempEnv()
     const startup = join(env.runDir, 'startup.mkdir')

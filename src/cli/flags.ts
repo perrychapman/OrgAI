@@ -2,7 +2,7 @@
  * Argument parsing for the CLI (cli-spec 6.1). No dependency: a small strict parser. Unknown flags are usage errors
  * (exit 2); `--` ends flag parsing and everything after it is positional (a prompt may start with '-').
  */
-import { CliError, EXIT, type CliGlobals, type HostMode, type OutputFormat } from './types'
+import { CliError, EXIT, type CliGlobals, type OutputFormat } from './types'
 
 export interface FlagDef {
   type: 'string' | 'boolean'
@@ -83,19 +83,18 @@ export function parseFlags<S extends FlagSpec>(args: readonly string[], spec: S)
   return { values: values as FlagValues<S>, positionals }
 }
 
-const HOST_MODES: readonly HostMode[] = ['auto', 'daemon', 'inproc']
 const OUTPUT_FORMATS: readonly OutputFormat[] = ['text', 'json', 'stream-json']
 
 /** Global flags that take a value. */
-const GLOBAL_VALUE_FLAGS = new Set(['--data-dir', '--host', '--output-format', '--project', '--secret-env'])
+const GLOBAL_VALUE_FLAGS = new Set(['--data-dir', '--output-format', '--project', '--secret-env'])
 
 /**
- * Pull the global flags (--data-dir <dir>, --host auto|daemon|inproc, --output-format text|json|stream-json,
+ * Pull the global flags (--data-dir <dir>, --output-format text|json|stream-json,
  * --project <id-or-path>, --no-color, repeated --secret-env <spec>) out of `argv` from anywhere before `--`; `rest`
  * keeps everything else in order, including `--` and what follows it. Bad values throw CliError(exit 2).
  */
 export function splitGlobalFlags(argv: readonly string[]): { globals: CliGlobals; rest: string[] } {
-  const globals: CliGlobals = { host: 'auto', outputFormat: 'text', color: true, secretEnv: [] }
+  const globals: CliGlobals = { outputFormat: 'text', color: true, secretEnv: [] }
   const rest: string[] = []
   const seen = new Set<string>()
   for (let i = 0; i < argv.length; i++) {
@@ -110,6 +109,7 @@ export function splitGlobalFlags(argv: readonly string[]): { globals: CliGlobals
     }
     const eq = arg.indexOf('=')
     const flag = arg.startsWith('--') && eq !== -1 ? arg.slice(0, eq) : arg
+    if (flag === '--host') throw usage('Option --host is gone: orgai always runs its own host in this process.')
     if (!GLOBAL_VALUE_FLAGS.has(flag)) {
       rest.push(arg)
       continue
@@ -128,10 +128,6 @@ export function splitGlobalFlags(argv: readonly string[]): { globals: CliGlobals
       case '--data-dir':
         if (!value) throw usage('Option --data-dir needs a folder.')
         globals.dataDir = value
-        break
-      case '--host':
-        if (!(HOST_MODES as readonly string[]).includes(value)) throw usage(`Option --host must be one of ${HOST_MODES.join(', ')}.`)
-        globals.host = value as HostMode
         break
       case '--output-format':
         if (!(OUTPUT_FORMATS as readonly string[]).includes(value)) throw usage(`Option --output-format must be one of ${OUTPUT_FORMATS.join(', ')}.`)

@@ -1,5 +1,5 @@
 /**
- * `orgai skills` (cli-spec 6.3, Wave 5): project skills, the repo import, the skill evaluation, the app-wide skill
+ * `orgai skills` (cli-spec 6.3, Wave 5): project skills, the repo import, the skill evaluation, the global skill
  * library (with `library add <folder>` through the host-validated skillLibrary:addFromBundle, cli-spec 3.6 item 1) and
  * the Skill assistant (`skills assist`, cli-spec 6.3(2), through runInteractiveRun).
  *
@@ -577,7 +577,7 @@ const assist: SubcommandFn = async (ctx, args) => {
   if (values.library) input = { scope: 'library', ...(instruction ? { instruction } : {}) }
   else {
     const project = await withHost(ctx, READ, (client) => requireProject(ctx, client)).catch((e: unknown) => {
-      if (e instanceof CliError && e.exitCode === EXIT.usage) throw usage(`${e.message} Pass --library to work on the app-wide skill library.`)
+      if (e instanceof CliError && e.exitCode === EXIT.usage) throw usage(`${e.message} Pass --library to work on the global skill library.`)
       throw e
     })
     input = { projectId: project.id, scope: 'project', ...(instruction ? { instruction } : {}) }

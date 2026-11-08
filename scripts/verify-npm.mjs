@@ -22,20 +22,22 @@
 //   (3)  `orgai --output-format json doctor`: install channel npm; a Claude runtime check, when doctor has one, is ok;
 //        no check failed; the vault check is reported when doctor has one
 //   (4)  the Claude runtime answers `--version` (token-free)
-//   (5)  `ORGAI_MOCK=1 orgai --host auto exec --create-project` on a temp git repo: exit 0, outcome 'completed'
-//        (the auto -> in-process fallback, no app)
+//   (5)  `ORGAI_MOCK=1 orgai exec --create-project` on a temp git repo: exit 0, outcome 'completed'
+//        (the command hosts itself; no app, no background host)
 //   (6)  vault across processes: `secrets init --key-file`, a LiteLLM connection at a local fake proxy (127.0.0.1,
 //        answers /v1/models only for a synthetic bearer that is never printed), `connections set-secret litellm
 //        --stdin` in one process and `connections test litellm` in a fresh one (connected); another valid key file
 //        through ORGAI_CLI_VAULT_KEY_FILE reads as key-mismatch; after `set-secret --clear` the test says disconnected.
 //        SKIP only when the build has no `orgai secrets` (exit 2 "not available in this build"); the vault is merged, so
 //        it runs. The flow was driven by hand against the built bundle with a throwaway data folder (Wave 7 integration).
+//   (8)  the CLI's own data folder: a fresh install writes `product.json` marking it orgai-cli, and a decoy ORGAI_DATA_DIR
+//        (the app's variable) stays empty: the CLI ignores it
 //   (7)  Codex, when `codex` is on PATH or ORGAI_CODEX_PATH names it: `--version` and an app-server `initialize`
 //        handshake on a temp CODEX_HOME (token-free per the Codex schema; UNVERIFIED until run). SKIP otherwise.
 //
 // Writes only its temp folders (outside the checkout; removed at the end unless --keep). npm downloads the pinned
-// dependencies from the registry (the user's npm config and cache apply). A host left behind is stopped by the pid in
-// the temp data folder's daemon.json only. Windows: orgai.cmd runs through `cmd.exe /d /s /c` with fixed arguments.
+// dependencies from the registry (the user's npm config and cache apply). A host left behind (there should be none: the
+// CLI's host ends with its command) is stopped by the pid in the temp data folder's daemon.json only. Windows: orgai.cmd runs through `cmd.exe /d /s /c` with fixed arguments.
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -66,7 +68,7 @@ function writeRestrictedKeyFile(file, bytes) {
   const r = spawnSync('icacls.exe', [file, '/inheritance:r', '/grant:r', `*${sid}:F`, '/remove:g', '*S-1-5-18', '*S-1-5-32-544'], { encoding: 'utf8' })
   if (r.status !== 0) throw new Error(`icacls failed: ${r.stdout} ${r.stderr}`)
 }
-import { cleanupDaemon, execOutcome, launchCommand, makeFixtureRepo, spawnRunner, verifyEnv, versionMatches } from './verify-pack.mjs'
+import { baseVerifyEnv, cleanupDaemon, execOutcome, launchCommand, makeFixtureRepo, spawnRunner, versionMatches } from './lib/verifyCommon.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const ALLOWLIST_FILE = path.join('scripts', 'npm-install-scripts-allowlist.json')
@@ -115,7 +117,7 @@ export function npmEnv(base, prefix) {
 }
 
 /**
- * The orgai children's environment on top of verify-pack's verifyEnv: an ambient vault key file or Claude path of the
+ * The orgai children's environment on top of verifyCommon's baseVerifyEnv: an ambient vault key file or Claude path of the
  * person running the check never reaches the installed CLI (step 4 checks the installed runtime, step 6 its own key
  * file). Pure.
  */
@@ -547,7 +549,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   // A decoy ORGAI_DATA_DIR (the app's variable) rides along: the CLI must ignore it and keep to ORGAI_CLI_DATA_DIR.
   const decoyAppDir = path.join(work, 'app-data-decoy')
   fs.mkdirSync(decoyAppDir)
-  const childEnv = { ...withNodeFirst(npmCliEnv(verifyEnv(env, userDataDir), userDataDir), nodeDir, platform), ORGAI_DATA_DIR: decoyAppDir }
+  const childEnv = { ...withNodeFirst(npmCliEnv(baseVerifyEnv(env), userDataDir), nodeDir, platform), ORGAI_DATA_DIR: decoyAppDir }
   const orgaiAt = (bin, args, cwd, extra = {}) => {
     const cmd = launchCommand(platform, bin, args, env)
     return run({ ...cmd, cwd, env: { ...childEnv, ...(extra.env ?? {}) }, timeoutMs: CHECK_TIMEOUT_MS, ...(extra.input !== undefined ? { input: extra.input } : {}) })
@@ -571,7 +573,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     const installed = inst.code === 0 && fs.existsSync(layout.bin) && fs.existsSync(layout.packageDir)
     if (!installed) {
       report('(1) install', 'fail', `npm install -g failed: ${showRun(inst)}`)
-      for (const id of ['(2) --version', '(3) doctor', '(4) claude runtime', '(5) exec auto', '(6) vault', '(7) codex', '(8) data folder']) report(id, 'skip', 'skipped: the install failed')
+      for (const id of ['(2) --version', '(3) doctor', '(4) claude runtime', '(5) exec', '(6) vault', '(7) codex', '(8) data folder']) report(id, 'skip', 'skipped: the install failed')
       return finish()
     }
     const problems1 = []
@@ -663,7 +665,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       report('(4) claude runtime', ok ? 'ok' : 'fail', ok ? `${path.relative(layout.packageDir, exe)} --version: ${r.stdout.trim()}` : showRun(r))
     }
 
-    // (5) exec through --host auto with no app
+    // (5) exec: the command hosts itself, no app
     const repo = path.join(work, 'repo')
     fs.mkdirSync(repo)
     let repoOk = true
@@ -671,18 +673,18 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       makeFixtureRepo(repo, git)
     } catch (e) {
       repoOk = false
-      report('(5) exec auto', 'fail', `could not make the fixture git repo: ${e.message}`)
+      report('(5) exec', 'fail', `could not make the fixture git repo: ${e.message}`)
     }
     if (repoOk) {
-      const r = await orgai(['--host', 'auto', 'exec', '--create-project', '--output-format', 'json', EXEC_PROMPT], repo)
+      const r = await orgai(['exec', '--create-project', '--output-format', 'json', EXEC_PROMPT], repo)
       const o = execOutcome(r.stdout)
       const ok = r.code === 0 && o?.outcome === 'completed'
-      report('(5) exec auto', ok ? 'ok' : 'fail', ok ? "exit 0, outcome 'completed' with no app installed" : `expected exit 0 and 'completed', got ${o?.outcome ?? 'none'}: ${showRun(r)}`)
+      report('(5) exec', ok ? 'ok' : 'fail', ok ? "exit 0, outcome 'completed' with no app installed" : `expected exit 0 and 'completed', got ${o?.outcome ?? 'none'}: ${showRun(r)}`)
       await cleanupDaemon(userDataDir, { log }).catch(() => {})
     }
 
     // (6) vault across processes
-    const s0 = await orgai(['--host', 'inproc', '--output-format', 'json', 'secrets', 'status'])
+    const s0 = await orgai(['--output-format', 'json', 'secrets', 'status'])
     if (vaultNotBuilt(s0)) report('(6) vault', 'skip', '`orgai secrets` is not in this build yet (the vault work package is not merged)')
     else {
       const problems6 = []
@@ -694,7 +696,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const outputs = [s0]
       const step = async (label, args, extra) => {
         // A mock inproc host uses no OS key store without a key file (Wave 7 review), so every call names this one.
-        const r = await orgai(['--host', 'inproc', ...args], userDataDir, { ...extra, env: { ORGAI_CLI_VAULT_KEY_FILE: keyFile, ...(extra?.env ?? {}) } })
+        const r = await orgai([...args], userDataDir, { ...extra, env: { ORGAI_CLI_VAULT_KEY_FILE: keyFile, ...(extra?.env ?? {}) } })
         outputs.push(r)
         if (r.code !== 0) problems6.push(`${label}: ${showRun(r)}`)
         return r
@@ -714,7 +716,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       }
       await step('set-secret', ['connections', 'set-secret', proxyId, '--stdin'], { input: `${synthetic}\n` })
       const testState = async () => {
-        const r = await orgai(['--host', 'inproc', '--output-format', 'json', 'connections', 'test', proxyId], userDataDir, { env: { ORGAI_CLI_VAULT_KEY_FILE: keyFile } })
+        const r = await orgai(['--output-format', 'json', 'connections', 'test', proxyId], userDataDir, { env: { ORGAI_CLI_VAULT_KEY_FILE: keyFile } })
         outputs.push(r)
         return connectionTestState(r.stdout)
       }
@@ -722,7 +724,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       if (connected !== 'connected') problems6.push(`a fresh process reads the stored key: expected connected, got ${connected ?? 'no answer'}`)
       const otherKey = path.join(keyDir, 'other.key')
       writeRestrictedKeyFile(otherKey, randomBytes(32))
-      const mm = await orgai(['--host', 'inproc', '--output-format', 'json', 'secrets', 'status'], userDataDir, { env: { ORGAI_CLI_VAULT_KEY_FILE: otherKey } })
+      const mm = await orgai(['--output-format', 'json', 'secrets', 'status'], userDataDir, { env: { ORGAI_CLI_VAULT_KEY_FILE: otherKey } })
       outputs.push(mm)
       const mmState = vaultState(mm.stdout)
       if (mmState !== 'key-mismatch') problems6.push(`another key file: expected key-mismatch, got ${mmState ?? showRun(mm)}`)

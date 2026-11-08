@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HostScope, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, Project } from '../../shared/types'
 import { manageDeps } from '../manage'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, rpcError, type FakeContextOptions } from '../testing/fakeContext'
 import { CliError, EXIT, type CliContext } from '../types'
 import { findNode, runKnowledge } from './knowledge'
@@ -10,7 +9,6 @@ const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate',
 const realManage = { ...manageDeps }
 afterEach(() => {
   Object.assign(manageDeps, realManage)
-  resetSkewWarning()
 })
 
 const ENG: Project = project('e1', '/work', { name: 'Acme engagement', kind: 'engagement' } as Partial<Project>)

@@ -6407,6 +6407,8 @@ export interface DaemonInfo {
   startedAt: number
   hostKind?: HostKind
   appVersion?: string
+  /** The owning process's cwd at boot (written by the orgai CLI; absent for older records and the desktop). */
+  ownerCwd?: string
 }
 
 /** Step 1 of the handshake: host -> client, sent immediately on socket connect. */
@@ -6490,6 +6492,8 @@ export type HostRpcErrorCode =
   | 'unknown_channel'
   | 'desktop_unavailable'
   | 'agent_descendant_refused'
+  /** host.hello: an in-process (orgai CLI) host serves only the process that started it; no valid owner proof. */
+  | 'not_owner'
   | 'stale_target_digest'
   | 'stale_revision'
   | 'scope_denied'

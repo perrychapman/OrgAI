@@ -45,18 +45,17 @@ describe('parseFlags', () => {
 
 describe('splitGlobalFlags', () => {
   it('defaults', () => {
-    expect(splitGlobalFlags([])).toEqual({ globals: { host: 'auto', outputFormat: 'text', color: true, secretEnv: [] }, rest: [] })
+    expect(splitGlobalFlags([])).toEqual({ globals: { outputFormat: 'text', color: true, secretEnv: [] }, rest: [] })
   })
 
   it('pulls global flags from anywhere before --', () => {
-    const r = splitGlobalFlags(['runs', '--data-dir', '/d', 'list', '--host=inproc', '--limit', '3', '--output-format', 'json', '--no-color', '--project', 'p1'])
-    expect(r.globals).toEqual({ dataDir: '/d', host: 'inproc', outputFormat: 'json', color: false, project: 'p1', secretEnv: [] })
+    const r = splitGlobalFlags(['runs', '--data-dir', '/d', 'list', '--limit', '3', '--output-format', 'json', '--no-color', '--project', 'p1'])
+    expect(r.globals).toEqual({ dataDir: '/d', outputFormat: 'json', color: false, project: 'p1', secretEnv: [] })
     expect(r.rest).toEqual(['runs', 'list', '--limit', '3'])
   })
 
   it('leaves everything after -- alone', () => {
     const r = splitGlobalFlags(['exec', '--', '--host', 'daemon', '--no-color'])
-    expect(r.globals.host).toBe('auto')
     expect(r.globals.color).toBe(true)
     expect(r.rest).toEqual(['exec', '--', '--host', 'daemon', '--no-color'])
   })
@@ -68,10 +67,11 @@ describe('splitGlobalFlags', () => {
   })
 
   it('refuses bad values, missing values and repeats with exit 2', () => {
-    usageError(() => splitGlobalFlags(['--host', 'cloud']))
+    usageError(() => splitGlobalFlags(['--host', 'inproc']))
+    usageError(() => splitGlobalFlags(['--host=daemon']))
     usageError(() => splitGlobalFlags(['--output-format', 'yaml']))
     usageError(() => splitGlobalFlags(['--data-dir']))
     usageError(() => splitGlobalFlags(['--project=']))
-    usageError(() => splitGlobalFlags(['--host', 'auto', '--host', 'inproc']))
+    usageError(() => splitGlobalFlags(['--data-dir', '/a', '--data-dir', '/b']))
   })
 })

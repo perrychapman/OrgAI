@@ -230,6 +230,14 @@ export interface OwnershipOptions {
   retryMs?: number
   /** Longest wait on a live startup.mkdir owner (default 30000). */
   liveWaitMs?: number
+  /**
+   * 'none' (the orgai CLI): never wait. A live startup.mkdir owner, a young mutex with no readable owner and a live
+   * incumbent are refused at once (HostStartingOrBusyError / HostAlreadyRunningError); a provably stale mutex or record
+   * is reclaimed as always. Default 'wait'.
+   */
+  wait?: 'none' | 'wait'
+  /** The owning process's cwd, written to daemon.json as `ownerCwd` (the CLI). */
+  ownerCwd?: string
   /** Connection probe of the incumbent's endpoint (default 1500). */
   probeTimeoutMs?: number
   /** Crash injection (tests only). */
@@ -322,7 +330,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 /** A validated DaemonInfo, or null for anything else (unknown fields dropped). */
 export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
   if (!isObject(raw)) return null
-  const { hostInstanceId, pid, processStartTime: start, endpoint, listening, state, startedAt, hostKind, appVersion } = raw
+  const { hostInstanceId, pid, processStartTime: start, endpoint, listening, state, startedAt, hostKind, appVersion, ownerCwd } = raw
   if (typeof hostInstanceId !== 'string' || !HOST_INSTANCE_ID_RE.test(hostInstanceId)) return null
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null
   if (typeof endpoint !== 'string' || !endpoint || endpoint.length > 1024 || endpoint.includes('\0')) return null
@@ -331,6 +339,7 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
   if (start !== undefined && (typeof start !== 'string' || start.length > 200)) return null
   if (hostKind !== undefined && (typeof hostKind !== 'string' || !HOST_KINDS.includes(hostKind as HostKind))) return null
   if (appVersion !== undefined && (typeof appVersion !== 'string' || appVersion.length > 200)) return null
+  const cwd = typeof ownerCwd === 'string' && ownerCwd.length > 0 && ownerCwd.length <= 4096 && !ownerCwd.includes('\0') ? ownerCwd : undefined
   return {
     hostInstanceId,
     pid,
@@ -341,7 +350,8 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
     state: state as HostState,
     startedAt,
     ...(hostKind !== undefined ? { hostKind: hostKind as HostKind } : {}),
-    ...(appVersion !== undefined ? { appVersion } : {})
+    ...(appVersion !== undefined ? { appVersion } : {}),
+    ...(cwd !== undefined ? { ownerCwd: cwd } : {})
   }
 }
 
@@ -522,6 +532,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
   const startupYoungMs = opts.startupYoungMs ?? 2000
   const retryMs = opts.retryMs ?? 100
   const liveWaitMs = opts.liveWaitMs ?? 30_000
+  const noWait = opts.wait === 'none'
   const probeTimeoutMs = opts.probeTimeoutMs ?? 1500
   const runtimeBase = opts.runtimeBase ?? defaultRuntimeBase()
   const fault = (b: OwnershipBoundary | ReleaseBoundary): void => {
@@ -628,7 +639,8 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       state: 'starting',
       startedAt: now(),
       hostKind: opts.hostKind,
-      appVersion: opts.appVersion
+      appVersion: opts.appVersion,
+      ...(opts.ownerCwd ? { ownerCwd: opts.ownerCwd } : {})
     }
     writeAtomic(daemonPath, JSON.stringify(info, null, 2), 0o600, id, () => fault('after-daemon-tmp'))
     published = true
@@ -680,7 +692,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
           if (state !== 'dead') {
             // Never steal from a live owner, however long it takes; give up after liveWaitMs.
             liveSince ??= now()
-            if (now() - liveSince >= liveWaitMs) throw new HostStartingOrBusyError(owner.pid, runDir)
+            if (noWait || now() - liveSince >= liveWaitMs) throw new HostStartingOrBusyError(owner.pid, runDir)
             await sleep(retryMs)
             continue
           }
@@ -696,6 +708,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
           throw err
         }
         if (now() - mtime < startupYoungMs) {
+          if (noWait) throw new HostStartingOrBusyError(undefined, runDir)
           await sleep(retryMs)
           continue
         }

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { buildContext, resetDesktopEnvNote, reusableInproc } from './context'
+import { buildContext, FIRST_START_NOTE, resetDesktopEnvNote, reusableInproc } from './context'
 import { fakeInproc } from './testing/fakeContext'
 import { CliError, EXIT, type CliIo, type InprocStartOptions } from './types'
 
@@ -50,18 +50,21 @@ describe('buildContext', () => {
     return { io: { stdout: { write: () => true }, stderr: { write: (c: string) => ((err += c), true) }, stdinIsTTY: false } as unknown as CliIo, err: () => err }
   }
   const baseFor = (dir: string, extraEnv: NodeJS.ProcessEnv = {}, io: CliIo = sink().io) => ({
-    globals: { host: 'auto' as const, outputFormat: 'text' as const, color: false, secretEnv: [] },
+    globals: { outputFormat: 'text' as const, color: false, secretEnv: [] },
     env: { ORGAI_CLI_DATA_DIR: dir, ...extraEnv },
     cwd: dir,
     platform: 'linux' as const,
     io
   })
 
-  it('carries the environment secret facts for ensureHost, only when given', () => {
-    const base = baseFor(join(fresh(), 'cli'))
-    expect(buildContext(base).secretEnv).toBeUndefined()
-    const use = { explicit: false, ambient: true, usesSecrets: true }
-    expect(buildContext({ ...base, secretEnv: use }).secretEnv).toEqual(use)
+  it('prints the first-start note once: a new folder says orgai is separate from the app, an existing one is quiet', () => {
+    const dir = join(fresh(), 'cli')
+    const first = sink()
+    buildContext(baseFor(dir, {}, first.io))
+    expect(first.err()).toBe(`${FIRST_START_NOTE}\n`)
+    const second = sink()
+    buildContext(baseFor(dir, {}, second.io))
+    expect(second.err()).toBe('')
   })
 
   it('marks a fresh folder for the CLI (0600) and keeps a CLI folder usable', () => {
@@ -101,11 +104,12 @@ describe('buildContext', () => {
     const a = sink()
     buildContext(noOverride(a.io))
     buildContext(noOverride(a.io))
-    expect(a.err()).toBe("ORGAI_DATA_DIR is the OrgAI app's setting; orgai uses ORGAI_CLI_DATA_DIR.\n")
+    expect(a.err().split("ORGAI_DATA_DIR is the OrgAI app's setting; orgai uses ORGAI_CLI_DATA_DIR.\n")).toHaveLength(2)
+    expect(a.err()).toContain(FIRST_START_NOTE)
     expect(existsSync(join(home, '.config', 'orgai-cli', 'product.json'))).toBe(true)
     resetDesktopEnvNote()
     const b = sink()
     buildContext({ ...baseFor(join(home, 'other'), { ORGAI_DATA_DIR: '/app' }, b.io), home })
-    expect(b.err()).toBe('')
+    expect(b.err()).not.toContain('ORGAI_DATA_DIR')
   })
 })

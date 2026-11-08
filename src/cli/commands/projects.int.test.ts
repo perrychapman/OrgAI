@@ -1,15 +1,13 @@
 /**
  * Integration: `orgai projects` against a real in-process host over its real socket (cli-spec Wave 5, W5-T1). A
- * `--host inproc daemon start` host owns a temp data dir; every command goes through `main(argv)` with process.stdout /
- * stderr captured and connects to that host as a normal CLI client. Mock adapter only; no tokens.
+ * Every command goes through `main(argv)` with process.stdout / stderr captured and starts its own host on a temp data
+ * dir (one orgai at a time). Mock adapter only; no tokens.
  */
 import { writeProductMarker } from '../../main/store/productMarker'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { allowFullTerminalAccess } from '../testing/terminalAccess'
-import type { DaemonInfo } from '../../shared/types'
 
 type Main = (argv: string[]) => Promise<number>
 
@@ -18,7 +16,6 @@ describe('orgai projects against a real inproc host', () => {
   let codeDir: string
   let engDir: string
   let main: Main
-  let hostDone: Promise<number>
   const saved = { mock: process.env.ORGAI_MOCK, data: process.env.ORGAI_CLI_DATA_DIR }
   let out = ''
   let err = ''
@@ -40,14 +37,6 @@ describe('orgai projects against a real inproc host', () => {
     return { code: r.code, doc, err: r.err }
   }
 
-  const daemonInfo = (): DaemonInfo | null => {
-    try {
-      return JSON.parse(readFileSync(join(userDataDir, 'data', 'run', 'daemon.json'), 'utf8')) as DaemonInfo
-    } catch {
-      return null
-    }
-  }
-
   beforeAll(async () => {
     userDataDir = mkdtempSync(join(realpathSync(tmpdir()), 'orgai-projects-int-'))
     codeDir = join(userDataDir, 'code-repo')
@@ -59,20 +48,10 @@ describe('orgai projects against a real inproc host', () => {
     vi.spyOn(process.stdout, 'write').mockImplementation(((s: string | Uint8Array) => ((out += String(s)), true)) as typeof process.stdout.write)
     vi.spyOn(process.stderr, 'write').mockImplementation(((s: string | Uint8Array) => ((err += String(s)), true)) as typeof process.stderr.write)
     main = ((await import('../index')) as unknown as { main: Main }).main
-    // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
     writeProductMarker(userDataDir, 'orgai-cli')
-    allowFullTerminalAccess(join(userDataDir, 'data'))
-    hostDone = main(['--data-dir', userDataDir, '--host', 'inproc', 'daemon', 'start'])
-    const end = Date.now() + 30_000
-    while (daemonInfo()?.state !== 'ready') {
-      if (Date.now() > end) throw new Error('the inproc daemon did not become ready')
-      await new Promise((r) => setTimeout(r, 100))
-    }
   }, 60_000)
 
   afterAll(async () => {
-    await cli(['daemon', 'stop', '--force']).catch(() => undefined)
-    await hostDone?.catch(() => undefined)
     vi.restoreAllMocks()
     process.env.ORGAI_MOCK = saved.mock
     process.env.ORGAI_CLI_DATA_DIR = saved.data

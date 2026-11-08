@@ -1,7 +1,7 @@
 /**
  * The install channel (Wave 7, docs/design/cli-standalone.md 3.5): `out/cli/install.json` =
  * `{ "channel": "npm" | "app" | "archive", "version", "commit" }`, written by each builder next to the CLI bundle.
- * Absent means 'dev' (a checkout or a hand-made bundle). `--version`, doctor and HostLauncher read it.
+ * Absent means 'dev' (a checkout or a hand-made bundle). `--version` and doctor read it.
  *
  * A file that exists but cannot be read or does not validate reads as channel 'dev' with `source: 'invalid'`, which
  * HostLauncher must never treat as a dev checkout (only `source: 'absent'` allows that, 4.1 step 3). Never throws.

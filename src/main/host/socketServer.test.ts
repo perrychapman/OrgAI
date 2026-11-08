@@ -374,25 +374,25 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect((await d.response(6)).error.data.code).toBe('scope_denied')
   })
 
-  it('an in-process host grants every scope only to the hello proven with its in-memory owner key (review H2)', async () => {
+  it('an in-process host serves only the hello proven with its in-memory owner key; every other hello is refused not_owner (cli-standalone-default.md 4.1)', async () => {
     st.accessLevel = undefined
     st.result = (method) => ({ method })
     const KEY = 'cd'.repeat(32)
     await start({ hostKind: 'inproc', ownerKey: KEY })
-    // A client that holds daemon.secret but not the owner key (an agent that read the run folder) is capped.
+    // A client that holds daemon.secret but not the owner key (an agent that read the run folder), forged pid and kind included.
     const other = await client()
-    expect((await hello(other, { scopes: ['read', 'operate', 'decide', 'configure'] })).res.result.grantedScopes).toEqual(['read', 'operate'])
-    other.send(rpcRequest(2, 'runs:decide', [{}]))
-    expect((await other.response(2)).error.data.code).toBe('scope_denied')
-    other.send(rpcRequest(3, 'permissions:add', [{}]))
-    expect((await other.response(3)).error.data.code).toBe('scope_denied')
-    // A wrong key, a garbled proof, or a proof replayed from another hello: capped too.
+    expect((await hello(other, { scopes: ['read'] })).res.error.data).toMatchObject({ code: 'not_owner' })
+    await other.waitClosed()
+    // (a second client of the same secret, as a forged peer would be)
+    const forged = await client()
+    expect((await hello(forged, { scopes: ['read', 'operate'] })).res.error.data.code).toBe('not_owner')
+    // A wrong key, a garbled proof, or a proof replayed from another hello: refused too.
     for (const o of [
       { ownerKey: 'ef'.repeat(32) },
       { ownerKey: KEY, mutate: (p: Msg) => (p.ownerProof = 'zz') },
       { ownerKey: KEY, mutate: (p: Msg) => (p.ownerProof = ownerProof(KEY, { hostInstanceId: HOST_ID, hostNonce: newNonce(), clientNonce: p.clientNonce, clientProof: p.clientProof })) }
     ]) {
-      expect((await hello(await client(), { scopes: ['read', 'decide'], ...o })).res.result.grantedScopes).toEqual(['read'])
+      expect((await hello(await client(), { scopes: ['read', 'decide'], ...o })).res.error.data.code).toBe('not_owner')
     }
     // The owner (the CLI process that started the host) gets everything it asks for.
     const owner = await client()
@@ -407,38 +407,28 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect(logs.join('\n')).toContain('in-process owner')
   })
 
-  it("an in-process host accepts its owner whatever Terminal access says; other clients are refused (cli-standalone.md 13.12)", async () => {
+  it('an in-process host accepts its owner whatever Terminal access says, and never closes it; others are refused not_owner whatever Terminal access says', async () => {
     st.terminalServer = false
     const KEY = 'cd'.repeat(32)
     const { events } = await start({ hostKind: 'inproc', ownerKey: KEY })
     const other = await client()
-    expect((await hello(other, { scopes: ['read'] })).res.error.data).toMatchObject({ code: 'terminal_server_disabled' })
+    expect((await hello(other, { scopes: ['read'] })).res.error.data).toMatchObject({ code: 'not_owner' })
     const owner = await client()
     expect((await hello(owner, { scopes: ['read', 'decide', 'configure'], ownerKey: KEY })).res.result.grantedScopes).toEqual(['read', 'decide', 'configure'])
-    // Turning access off (again) never closes the owner.
     events.emit('settings:changed', { terminalServer: false } as never)
     await new Promise((r) => setTimeout(r, 50))
     expect(owner.closed).toBe(false)
+    st.terminalServer = true
+    st.accessLevel = 'full'
+    const again = await client()
+    expect((await hello(again, { scopes: ['read'] })).res.error.data.code).toBe('not_owner')
   })
 
-  it('a server without an owner key ignores an ownerProof', async () => {
+  it('an in-process server without an owner key serves nobody: an ownerProof cannot be checked', async () => {
     st.accessLevel = undefined
     await start({ hostKind: 'inproc' })
     const { res } = await hello(await client(), { scopes: ['read', 'decide', 'configure'], ownerKey: 'cd'.repeat(32) })
-    expect(res.result.grantedScopes).toEqual(['read'])
-  })
-
-  it("an in-process host follows a 'full' level for other clients, and narrowing never closes the owner", async () => {
-    const KEY = 'cd'.repeat(32)
-    const { events } = await start({ hostKind: 'inproc', ownerKey: KEY })
-    const owner = await client()
-    expect((await hello(owner, { scopes: ['read', 'decide'], ownerKey: KEY })).res.result.grantedScopes).toEqual(['read', 'decide'])
-    const other = await client()
-    expect((await hello(other, { scopes: ['read', 'decide'] })).res.result.grantedScopes).toEqual(['read', 'decide'])
-    st.accessLevel = undefined
-    events.emit('settings:changed', { terminalServer: true } as never)
-    await other.waitClosed()
-    expect(owner.closed).toBe(false)
+    expect(res.error.data.code).toBe('not_owner')
   })
 
   it('reads OrgAIHost.terminalAccess when the host has it (session-only Terminal access)', async () => {

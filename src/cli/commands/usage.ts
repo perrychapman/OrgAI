@@ -168,7 +168,7 @@ function statsLines(ctx: CliContext, project: Project, stats: UsageStats, f: Usa
   if (stats.trend.length) {
     lines.push('', ...table([{ header: 'FROM', min: 10 }, { header: 'RUNS', align: 'right', min: 4 }, { header: 'TOKENS', align: 'right', min: 6 }, { header: 'COST', align: 'right', min: 6 }], stats.trend.map((p) => [p.bucket, String(p.runs), tokensText(p.tokens), costText(pointCost(p))]), w, st))
   }
-  if ([t, ...stats.roles].some((c) => costView(c).kind === 'partial' || costView(c).kind === 'unknown')) lines.push(st.dim('A cost with + is a lower bound: some models have no known price. Set prices with `orgai models prices` and the app.'))
+  if ([t, ...stats.roles].some((c) => costView(c).kind === 'partial' || costView(c).kind === 'unknown')) lines.push(st.dim('A cost with + is a lower bound: some models have no known price. See `orgai models prices`.'))
   return lines
 }
 

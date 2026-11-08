@@ -1,4 +1,8 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { writeProductMarker } from '../main/store/productMarker'
 import type { CliContext } from './types'
 
 const calls: { name: string; args: string[]; ctx: CliContext }[] = []
@@ -10,10 +14,6 @@ const stub = (name: string) =>
 
 vi.mock('./commands/status', () => ({ runStatus: stub('status') }))
 vi.mock('./commands/runs', () => ({ runRuns: stub('runs') }))
-vi.mock('./commands/watch', () => ({ runWatch: stub('watch') }))
-vi.mock('./commands/inbox', () => ({ runInbox: stub('inbox') }))
-vi.mock('./commands/daemon', () => ({ runDaemon: stub('daemon') }))
-vi.mock('./commands/app', () => ({ runApp: stub('app') }))
 let doctorError = 'boom'
 vi.mock('./commands/doctor', () => ({
   runDoctor: vi.fn(async () => {
@@ -31,11 +31,9 @@ vi.mock('./inprocHost', () => ({
   })
 }))
 vi.mock('./commands/exec', () => ({ runExec: stub('exec'), runResume: stub('resume') }))
-vi.mock('./commands/decide', () => ({ runDecide: stub('decide') }))
 vi.mock('./commands/tui', () => ({
   PROMPT_HINT: 'To start the terminal UI with a prompt: orgai -- "<prompt>"',
   runTuiCommand: stub('tui'),
-  runAttach: stub('attach'),
   defaultTuiPrintsHelp: vi.fn(() => false),
   runDefaultTui: vi.fn(async (ctx: CliContext, args: string[], opts?: { help?: () => string }) => {
     calls.push({ name: 'default', args, ctx })
@@ -61,9 +59,12 @@ function io() {
   }
 }
 
+// One marked data folder for the file, so a test never touches the real one and sees no first-start note.
+const dataDir = mkdtempSync(join(tmpdir(), 'orgai-index-'))
+writeProductMarker(dataDir, 'orgai-cli')
 const run = async (argv: string[], env: NodeJS.ProcessEnv = {}) => {
   const t = io()
-  const code = await main(argv, { env, cwd: '/tmp', platform: 'linux', io: t.io })
+  const code = await main(argv.includes('--data-dir') ? argv : ['--data-dir', dataDir, ...argv], { env, cwd: '/tmp', platform: 'linux', io: t.io })
   return { code, ...t.o }
 }
 
@@ -78,10 +79,6 @@ describe('orgai routing', () => {
       [['status'], 'status', []],
       [['runs', 'list', '--limit', '3'], 'runs', ['list', '--limit', '3']],
       [['--project', 'p1', 'runs', 'show', 'R2'], 'runs', ['show', 'R2']],
-      [['watch', 'R1'], 'watch', ['R1']],
-      [['inbox', '--all-projects'], 'inbox', ['--all-projects']],
-      [['daemon', 'stop', '--force'], 'daemon', ['stop', '--force']],
-      [['app', '--run', 'R1'], 'app', ['--run', 'R1']],
       [['completions', 'zsh'], 'completions', ['zsh']]
     ] as const) {
       calls.length = 0
@@ -94,10 +91,11 @@ describe('orgai routing', () => {
   })
 
   it('builds the context from the globals', async () => {
-    await run(['--data-dir', '/d/ud', '--project', 'p1', '--no-color', 'status'])
+    const ud = join(mkdtempSync(join(tmpdir(), 'orgai-index-')), 'ud')
+    await run(['--data-dir', ud, '--project', 'p1', '--no-color', 'status'])
     const ctx = calls[0].ctx
-    expect(ctx.paths).toEqual({ userDataDir: '/d/ud', dataDir: '/d/ud/data' })
-    expect(ctx.globals).toMatchObject({ project: 'p1', color: false, host: 'auto' })
+    expect(ctx.paths).toEqual({ userDataDir: ud, dataDir: join(ud, 'data') })
+    expect(ctx.globals).toMatchObject({ project: 'p1', color: false })
     expect(ctx.version).toBe(CLI_VERSION)
     await run(['status'], { NO_COLOR: '1' })
     expect(calls[1].ctx.globals.color).toBe(false)
@@ -123,12 +121,9 @@ describe('orgai routing', () => {
     expect((await run(['runs', '--help'])).out).toContain('--all-projects')
     // Every flag the Wave 2 commands parse is in their help (review L).
     const helpOf = async (c: string) => (await run(['help', c])).out
-    expect(await helpOf('watch')).toContain('--no-follow')
     for (const f of ['--status', '--transcript', '--tail']) expect(await helpOf('runs')).toContain(f)
-    for (const f of ['--force', '--foreground', '--timeout', '--lines', '--follow']) expect(await helpOf('daemon')).toContain(f)
     expect(await helpOf('status')).toContain('--all-projects')
     for (const f of ['--run', '--inline', '--ax-screen-reader']) expect(await helpOf('tui')).toContain(f)
-    expect(await helpOf('attach')).toContain('--inline')
     expect(await helpOf('resume')).toContain('resume [runId-or-R#] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]]')
     expect(calls).toHaveLength(0)
   })
@@ -151,14 +146,15 @@ describe('orgai routing', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('the general help names the terminal UI flags and lists tui and attach as commands, not as coming later', () => {
+  it('the general help names the terminal UI flags and lists tui as a command, not as coming later; the removed commands and --host are gone', () => {
     const h = generalHelp()
     expect(h).toContain('Usage: orgai [options] [--] [prompt]')
     for (const f of ['--inline', '--ax-screen-reader', '--team']) expect(h).toContain(f)
     const later = h.split('\n').find((l) => l.startsWith('Coming later')) ?? ''
-    expect(later).not.toMatch(/\btui\b|\battach\b/)
+    expect(later).not.toMatch(/\btui\b/)
     expect(h).toMatch(/^ {2}tui\s/m)
-    expect(h).toMatch(/^ {2}attach\s/m)
+    for (const gone of ['attach', 'watch', 'inbox', 'decide', 'daemon', 'app', 'terminal-access']) expect(h, gone).not.toMatch(new RegExp(`^ {2}${gone}\\s`, 'm'))
+    expect(h).not.toContain('--host')
   })
 
   it.each(COMMANDS.filter((c) => !c.available).map((c) => c.name))('an unavailable command (%s) exits 2 before routing', async (name) => {
@@ -186,10 +182,9 @@ describe('orgai routing', () => {
     }
   })
 
-  it('routes tui and attach, and prompts to the terminal UI', async () => {
+  it('routes tui, and prompts to the terminal UI', async () => {
     for (const [argv, name, args] of [
       [['tui', '--run', 'R1'], 'tui', ['--run', 'R1']],
-      [['attach', 'R2', '--inline'], 'attach', ['R2', '--inline']],
       [['--', 'fix', 'the', 'bug'], 'default', ['--', 'fix', 'the', 'bug']],
       [['fix the bug'], 'default', ['fix the bug']],
       [['--inline', 'fix the bug'], 'default', ['--inline', 'fix the bug']],
@@ -218,14 +213,13 @@ describe('orgai routing', () => {
     expect(calls.map((c) => c.name)).toEqual(['exec'])
   })
 
-  it('exec, -p / --print, resume and decide route to their Wave 3 commands with their arguments', async () => {
+  it('exec, -p / --print and resume route to their commands with their arguments', async () => {
     for (const [argv, name, args] of [
       [['exec', 'hi'], 'exec', ['hi']],
       [['-p', 'hi'], 'exec', ['hi']],
       [['--print', 'hi'], 'exec', ['hi']],
       [['--project', 'p1', '-p', 'hi'], 'exec', ['hi']],
-      [['resume', 'R1', '--exec'], 'resume', ['R1', '--exec']],
-      [['decide', 'perm_1', 'allow'], 'decide', ['perm_1', 'allow']]
+      [['resume', 'R1', '--exec'], 'resume', ['R1', '--exec']]
     ] as const) {
       calls.length = 0
       const r = await run([...argv])
@@ -236,7 +230,6 @@ describe('orgai routing', () => {
     const h = await run(['-p', '--help'])
     expect(h.code).toBe(0)
     expect(h.out).toContain('Usage: orgai exec')
-    expect((await run(['help', 'decide'])).out).toContain('allow-session')
     expect((await run(['help', 'resume'])).out).toContain('--exec')
   })
 
@@ -247,135 +240,57 @@ describe('orgai routing', () => {
     const far = await run(['zzzzzzzz'])
     expect(far.code).toBe(2)
     expect(far.err).not.toContain('Did you mean')
-    expect(editDistance('daemn', 'daemon')).toBe(1)
+    expect(editDistance('stauts', 'status')).toBe(2)
   })
 
-  it('secret overrides (4.1, round 6 item 8): --host daemon refuses any; auto refuses an explicit one on commands that never run in-process and warns about an ambient one', async () => {
-    // --host daemon: refused, explicit or ambient (unchanged).
-    const d = await run(['--host', 'daemon', 'status'], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
-    expect(d.code).toBe(2)
-    expect(d.err).toContain(SECRET_ENV_REFUSAL)
-    expect(calls).toHaveLength(0)
-    // auto, explicit --secret-env, a hostless or attach-only command, daemon start: refused before anything runs.
-    for (const argv of [['runs', 'list'], ['status'], ['decide', 'x'], ['daemon', 'start'], ['daemon', 'restart'], ['app'], ['watch']]) {
+  it('environment secrets: a read-only command refuses an explicit --secret-env and ignores an ambient one with one warning', async () => {
+    for (const argv of [['runs', 'list'], ['status'], ['doctor'], ['projects', 'list'], ['projects', 'show', 'p1'], ['completions', 'bash']]) {
       const r = await run(['--secret-env', 'mcp:p:s:env:X=V', ...argv], { V: 'v' })
       expect(r.code, argv.join(' ')).toBe(2)
       expect(r.err).toContain(SECRET_ENV_REFUSAL)
     }
     expect(calls).toHaveLength(0)
-    // auto, ambient only: one warning, scrubbed, and the command goes on (daemon start too).
-    for (const argv of [['status'], ['runs', 'stop', 'R1'], ['daemon', 'start']]) {
+    for (const argv of [['status'], ['runs', 'list']]) {
       const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', PATH: '/bin' }
       const r = await run(argv, env)
       expect(r.code, argv.join(' ')).toBe(0)
-      expect(r.err).toBe('ORGAI_SECRET_* ignored: a running OrgAI host keeps its own secrets\n')
+      expect(r.err).toBe('ORGAI_SECRET_* ignored: this command does not start a host\n')
       expect(env).toEqual({ PATH: '/bin' })
-      expect(calls.at(-1)?.ctx.secretEnv).toBeUndefined()
     }
-    expect((await run(['completions', 'bash'], { ORGAI_SECRET_X: '1' })).code).toBe(0)
+    // Completions leaves an ambient variable alone, as it always did.
+    const env: NodeJS.ProcessEnv = { ORGAI_SECRET_X: '1' }
+    expect((await run(['completions', 'bash'], env)).code).toBe(0)
   })
 
-  it('an ignored ambient secret never reaches an in-process host the command starts (daemon start --foreground; review round 1)', async () => {
+  it('an ignored ambient secret never reaches a host: the overlay is dropped', async () => {
     const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', PATH: '/bin' }
-    const r = await run(['daemon', 'start', '--foreground'], env)
-    expect(r.code).toBe(0)
-    expect(r.err).toBe('ORGAI_SECRET_* ignored: a running OrgAI host keeps its own secrets\n')
-    expect(env).toEqual({ PATH: '/bin' })
+    await run(['status'], env)
     await calls.at(-1)!.ctx.startInproc()
     expect(inprocStarts).toHaveLength(1)
     expect([...inprocStarts[0].overlay]).toEqual([])
-    // Under --host inproc the same command uses them (cli-spec 3.5, unchanged).
-    await run(['--host', 'inproc', 'daemon', 'start', '--foreground'], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
-    await calls.at(-1)!.ctx.startInproc()
-    expect([...inprocStarts[1].overlay]).toEqual([['connection:litellm:apiKey', 'sk']])
   })
 
-  it('completions refuses an explicit --secret-env (a hostless command, 4.1) and leaves an ambient one alone', async () => {
-    const r = await run(['--secret-env', 'mcp:p:s:env:X=V', 'completions', 'bash'], { V: 'v' })
-    expect(r.code).toBe(2)
-    expect(r.err).toContain(SECRET_ENV_REFUSAL)
-    expect(calls).toHaveLength(0)
-    const env: NodeJS.ProcessEnv = { ORGAI_SECRET_X: '1' }
-    const ok = await run(['completions', 'bash'], env)
-    expect(ok.code).toBe(0)
-    expect(ok.err).toBe('')
-    expect(env).toEqual({ ORGAI_SECRET_X: '1' })
-  })
-
-  it('projects list|show: an explicit --secret-env is refused; an ambient one is handed to ensureHost like any host-backed command (round 6 item 8)', async () => {
-    for (const argv of [['projects', 'list'], ['projects', 'show', 'p1']]) {
-      const r = await run(['--secret-env', 'mcp:p:s:env:X=V', ...argv], { V: 'v' })
-      expect(r.code, argv.join(' ')).toBe(2)
-      expect(r.err).toContain(SECRET_ENV_REFUSAL)
-    }
-    expect(calls).toHaveLength(0)
-    const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', PATH: '/bin' }
-    const r = await run(['projects', 'list'], env)
-    expect(r.code).toBe(0)
-    expect(r.err).toBe('')
-    expect(env).toEqual({ PATH: '/bin' })
-    expect(calls.at(-1)).toMatchObject({ name: 'projects', ctx: { secretEnv: { explicit: false, ambient: true, usesSecrets: false } } })
-    await calls.at(-1)!.ctx.startInproc()
-    expect([...inprocStarts[0].overlay]).toEqual([['connection:litellm:apiKey', 'sk']])
-  })
-
-  it('projects list with an ambient secret, an app found and no live host: runs in-process with the overlay and never spawns the app (round 6 item 8; review round 2)', async () => {
-    const projects = await import('./commands/projects')
-    const { withHost } = await import('./manage')
-    const { INPROC_SECRETS_NOTE } = await import('./client/ensureHost')
-    const spawns: unknown[] = []
-    const client = {
-      hello: { protocolVersion: 1, hostInstanceId: 'aaaaaaaaaaaa', hostKind: 'inproc', appVersion: CLI_VERSION, dataDir: '/d', mock: true, grantedScopes: ['read', 'operate', 'decide', 'configure'], hostProof: '' },
-      daemon: { hostInstanceId: 'aaaaaaaaaaaa', pid: 1, endpoint: '/x', state: 'ready', startedAt: 1 },
-      call: async () => [],
-      onNotification: () => () => undefined,
-      onClose: () => () => undefined,
-      close: () => undefined
-    }
-    vi.mocked(projects.runProjects).mockImplementationOnce(async (ctx: CliContext, args: string[]) => {
-      calls.push({ name: 'projects', args, ctx })
-      // The real ensureHost path (withHost) with only the edges faked: an installed app, no live host until the
-      // in-process host this command starts.
-      ctx.launcher = {
-        ...ctx.launcher,
-        locate: () => ({ status: 'found', command: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', args: [], source: 'installed' }),
-        spawn: (o) => (spawns.push(o), { pid: 1 }),
-        waitForReady: async () => {
-          throw new Error('never waits for a spawned app')
-        }
-      }
-      ctx.connect = async () => (inprocStarts.length ? ({ ok: true, client } as never) : { ok: false, reason: 'no_host', message: 'No OrgAI host is running.' })
-      return withHost(ctx, ['read'], async () => 0)
-    })
-    const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', PATH: '/bin' }
-    const r = await run(['projects', 'list'], env)
-    expect(r.code).toBe(0)
-    expect(spawns).toEqual([])
-    expect(inprocStarts).toHaveLength(1)
-    expect([...inprocStarts[0].overlay]).toEqual([['connection:litellm:apiKey', 'sk']])
-    expect(r.err).toBe(`${INPROC_SECRETS_NOTE}\n`)
-    expect(env).toEqual({ PATH: '/bin' })
-  })
-
-  it('auto: commands that may run in-process collect and scrub the secrets and hand ensureHost what it needs', async () => {
+  it('a command that runs a host collects and scrubs the secrets and gives its host the overlay', async () => {
     const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', TOKEN: 't', PATH: '/bin' }
     const r = await run(['--secret-env', 'mcp:p:s:env:X=TOKEN', 'exec', 'hello'], env)
     expect(r.code).toBe(0)
     expect(r.err).toBe('')
     expect(env).toEqual({ PATH: '/bin' })
-    expect(calls.at(-1)).toMatchObject({ name: 'exec', ctx: { secretEnv: { explicit: true, ambient: true, usesSecrets: true } } })
-    await run(['tui'], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
-    expect(calls.at(-1)).toMatchObject({ name: 'tui', ctx: { secretEnv: { explicit: false, ambient: true, usesSecrets: true } } })
-    await run(['--', 'fix the bug'], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
-    expect(calls.at(-1)).toMatchObject({ name: 'default', ctx: { secretEnv: { usesSecrets: true } } })
-    // No secrets: nothing set.
-    await run(['exec', 'hello'], { PATH: '/bin' })
-    expect(calls.at(-1)?.ctx.secretEnv).toBeUndefined()
+    await calls.at(-1)!.ctx.startInproc()
+    expect([...inprocStarts[0].overlay]).toEqual([['connection:litellm:apiKey', 'sk'], ['mcp:p:s:env:X', 't']])
     // A --secret-env naming an unset variable is still a usage error.
     expect((await run(['--secret-env', 'mcp:p:s:env:X=NOPE', 'exec', 'hello'], {})).code).toBe(2)
+    // The same for the terminal UI and a bare prompt.
+    for (const argv of [['tui'], ['--', 'fix the bug'], ['connections', 'list']]) {
+      const e: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', PATH: '/bin' }
+      calls.length = 0
+      inprocStarts.length = 0
+      await run(argv, e)
+      expect(e, argv.join(' ')).toEqual({ PATH: '/bin' })
+    }
   })
 
-  it('bare orgai that only prints help (no terminal) does so before the secret refusal and the inproc scrub', async () => {
+  it('bare orgai that only prints help (no terminal) does so before the secret refusal and the scrub', async () => {
     const tui = await import('./commands/tui')
     vi.mocked(tui.defaultTuiPrintsHelp).mockReturnValue(true)
     try {
@@ -383,24 +298,15 @@ describe('orgai routing', () => {
       expect(r.code).toBe(0)
       expect(r.out).toContain('orgai <command> [options]')
       expect(calls).toHaveLength(0)
-      const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk' }
-      expect((await run(['--host', 'inproc'], env)).code).toBe(0)
-      expect(env).toEqual({ ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
     } finally {
       vi.mocked(tui.defaultTuiPrintsHelp).mockReturnValue(false)
     }
   })
 
-  it('with --host inproc, collects and scrubs the secrets', async () => {
-    const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', TOKEN: 't', PATH: '/bin' }
-    const r = await run(['--host', 'inproc', '--secret-env', 'mcp:p:s:env:X=TOKEN', 'status'], env)
-    expect(r.code).toBe(0)
-    expect(env).toEqual({ PATH: '/bin' })
-    expect((await run(['--host', 'inproc', '--secret-env', 'mcp:p:s:env:X=MISSING', 'status'], {})).code).toBe(2)
-  })
-
   it('a usage error in the global flags exits 2; a plain error exits 1 without a stack', async () => {
-    expect((await run(['--host', 'nope', 'status'])).code).toBe(2)
+    const gone = await run(['--host', 'inproc', 'status'])
+    expect(gone.code).toBe(2)
+    expect(gone.err).toContain('--host is gone')
     const r = await run(['doctor'])
     expect(r.code).toBe(1)
     expect(r.err).toBe('orgai: boom\n')

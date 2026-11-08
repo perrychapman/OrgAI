@@ -206,11 +206,11 @@ describe('connectHost', () => {
     expect(t).toBeGreaterThanOrEqual(500)
   })
 
-  it('terminal_server_disabled is disabled with the host message', async () => {
+  it('not_owner is not_owner with the host message (a hello without the owner proof)', async () => {
     const endpoint = writeDaemon()
     writeSecret()
-    await fakeHost(endpoint, { helloError: { code: 'terminal_server_disabled', message: 'Turn on terminal access.' } })
-    expect(await connectHost(base())).toMatchObject({ ok: false, reason: 'disabled', message: 'Turn on terminal access.' })
+    await fakeHost(endpoint, { helloError: { code: 'not_owner', message: 'This orgai host answers only the orgai process that started it.' } })
+    expect(await connectHost(base())).toMatchObject({ ok: false, reason: 'not_owner', message: 'This orgai host answers only the orgai process that started it.' })
   })
 
   it('host_draining answers and a draining daemon.json are draining', async () => {
@@ -240,11 +240,10 @@ describe('connectHost', () => {
     expect(await connectHost(base())).toMatchObject({ ok: false, reason: 'unreachable' })
   })
 
-  it('a daemon.json that says listening: false is disabled without connecting (review M11)', async () => {
+  it('a daemon.json that says listening: false is refused without connecting', async () => {
     writeDaemon({ listening: false })
     const res = await connectHost(base())
-    expect(res).toMatchObject({ ok: false, reason: 'disabled' })
-    expect(res.ok === false && res.message).toMatch(/Terminal access is off/)
+    expect(res).toMatchObject({ ok: false, reason: 'refused' })
     // A dead pid is still no_host.
     expect(await connectHost({ ...base(), isLive: () => false })).toMatchObject({ ok: false, reason: 'no_host' })
   })
