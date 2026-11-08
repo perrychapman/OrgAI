@@ -96,6 +96,10 @@
 .frame-grid:has(> .frame-tray .decision-card[data-inline='true']) {
   --stage-min: 36cqh;
 }
+/* In a short frame, keep all question choices above the card's action footer. */
+.frame-grid:has(> .frame-tray[data-compact='true'] .decision-card[data-inline='true']) {
+  --stage-min: 25cqh;
+}
 /* A proposal lists what changes (servers, roles, skills): while one is the shown card the tray may take about 60%. */
 .frame-grid:has(> .frame-tray:not([data-compact='true']) .decision-card.kind-proposal) {
   --stage-min: 40cqh;

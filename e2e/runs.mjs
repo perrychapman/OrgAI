@@ -311,7 +311,9 @@ try {
     const chips = [...document.querySelectorAll('.decision-chip')]
     const card = document.querySelector('section.frame-tray article.decision-card')
     const tray = box('section.frame-tray')
-    const radios = card ? [...card.querySelectorAll('input[type=radio]')].map((r) => { const b = r.getBoundingClientRect(); return { t: b.top, b: b.bottom } }) : []
+    const radios = card ? [...card.querySelectorAll('input[type=radio]')].map((r) => { const b = (r.closest('label') ?? r).getBoundingClientRect(); return { t: b.top, b: b.bottom } }) : []
+    const body = card?.querySelector('.decision-body')?.getBoundingClientRect()
+    const footer = card?.querySelector('.decision-footer')?.getBoundingClientRect()
     const submit = card?.querySelector('.decision-footer .btn.primary')?.getBoundingClientRect()
     const end = [...document.querySelectorAll('.run-actions button')].find((b) => /End session/.test(b.getAttribute('aria-label') ?? ''))
     const label = end?.querySelector('.run-act-label')?.getBoundingClientRect()
@@ -324,7 +326,8 @@ try {
       overlap: chips.some((c, i) => i > 0 && c.getBoundingClientRect().left < chips[i - 1].getBoundingClientRect().right - 0.5),
       tray,
       stage: box('.frame-stage'),
-      radiosInside: radios.length >= 3 && tray ? radios.every((r) => r.t >= tray.t && r.b <= tray.b) : false,
+      radios, body: body && { t: body.top, b: body.bottom }, footer: footer && { t: footer.top, b: footer.bottom },
+      radiosInside: radios.length >= 3 && tray && body && footer ? radios.every((r) => r.t >= Math.max(tray.t, body.top) - 0.5 && r.b <= Math.min(tray.b, body.bottom, footer.top) + 0.5) : false,
       submitInside: !!submit && !!tray && submit.bottom <= tray.b - 1 && submit.top >= tray.t,
       endLabelW: label ? label.width : 0,
       composerH: document.querySelector('.composer')?.getBoundingClientRect().height ?? 0
@@ -366,7 +369,7 @@ try {
       panel: Math.round(document.querySelector('.side-panel')?.getBoundingClientRect().width ?? 0),
       stage: Math.round(document.querySelector('.frame-stage')?.getBoundingClientRect().width ?? 0),
       gap: Math.round((document.querySelector('.side-panel')?.getBoundingClientRect().left ?? 0) - (document.querySelector('.run-body .react-flow')?.getBoundingClientRect().right ?? 0)),
-      composerInPanel: (() => { const c = document.querySelector('.run-body > .run-composer-slot')?.getBoundingClientRect(); const p = document.querySelector('.side-panel')?.getBoundingClientRect(); return !!c && !!p && c.left >= p.left - 1 && c.top >= p.bottom - 1 })(),
+      composerInPanel: (() => { const c = document.querySelector('.run-body > .live-composer-region')?.getBoundingClientRect(); const p = document.querySelector('.side-panel')?.getBoundingClientRect(); return !!c && !!p && c.left >= p.left - 1 && c.top >= p.bottom - 1 })(),
       sidebar: Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0)
     }))
     check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ explicitSidebarChoice: await page.evaluate(() => localStorage.getItem('orgai.sidebar')), ...(await geo()), ...(await envDiag()) }))
