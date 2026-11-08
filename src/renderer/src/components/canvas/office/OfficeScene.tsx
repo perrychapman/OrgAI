@@ -4,6 +4,7 @@ import { useReducedMotion } from '../../../lib/canvas'
 import { assignDesks, blockedCells, deskForSlot, OFFICE_TILE, ROOM_HEIGHT, ROOM_PROPS, ROOM_WIDTH, route } from '../../../lib/office/layout'
 import { baseline, finish, ingest } from '../../../lib/office/scheduler'
 import { Button } from '../../ui/Button'
+import { useFrameAnnounce } from '../../layout/CanvasFrame'
 import atlas from '../../../assets/pocket-office/atlas.json'
 import tilesNeutral from '../../../assets/pocket-office/tiles-neutral.png'
 import tilesGreen from '../../../assets/pocket-office/tiles-green.png'
@@ -13,7 +14,7 @@ import workersNeutral from '../../../assets/pocket-office/workers-neutral.png'
 import workersGreen from '../../../assets/pocket-office/workers-green.png'
 import '../../../styles/office.css'
 
-export interface OfficeAgent { id: string; name: string; status: string; activity?: string; context?: string }
+export interface OfficeAgent { id: string; name: string; status: string; statusLabel?: string; activity?: string; context?: string }
 export interface OfficeSceneHandle { zoomIn(): void; zoomOut(): void; fit(): void }
 export interface OfficeSceneProps {
   agents: OfficeAgent[]; messages: AgentMessage[]; onSelect(id: string): void; onRemove?(id: string): void
@@ -29,6 +30,7 @@ function frameStyle(frame: Frame, url: string, x: number, y: number, depth: numb
 
 export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, mode, runId, palette = 'neutral', controlRef }: OfficeSceneProps) {
   const reduced = useReducedMotion()
+  const announce = useFrameAnnounce()
   const [room, setRoom] = useState(0)
   const [zoom, setZoom] = useState(1)
   const [tick, setTick] = useState(Date.now())
@@ -40,6 +42,11 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
   const maxRoom = Math.max(0, ...agents.map(a => deskForSlot(slots.current.get(a.id)!).room))
   const currentRoom = Math.min(room, maxRoom)
   const visibleAgents = agents.filter(a => deskForSlot(slots.current.get(a.id)!).room === currentRoom)
+  const selectAgent = (a: OfficeAgent) => {
+    setRoom(deskForSlot(slots.current.get(a.id)!).room)
+    onSelect(a.id)
+    announce?.(`${a.name}, ${a.statusLabel ?? a.status}${a.context ? `, ${a.context}` : ''}, selected`)
+  }
   const eligibleIds = agents.filter(a => !['finished', 'done', 'failed', 'error'].includes(a.status.toLowerCase()) && deskForSlot(slots.current.get(a.id)!).room === currentRoom).map(a => a.id)
   const idsKey = JSON.stringify(eligibleIds)
   const ids = useMemo(() => new Set<string>(JSON.parse(idsKey)), [idsKey])
@@ -90,10 +97,10 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
     <div className="office-controls"><Button size="sm" onClick={() => setZoom(z => Math.max(1, z - 1))}>Zoom out</Button><span>{zoom}×</span><Button size="sm" onClick={() => setZoom(z => Math.min(4, z + 1))}>Zoom in</Button><Button size="sm" onClick={fit}>Fit</Button>
       <Button size="sm" disabled={currentRoom === 0} onClick={() => setRoom(r => Math.max(0, r - 1))}>Previous room</Button><span>Room {currentRoom + 1} of {maxRoom + 1}</span><Button size="sm" disabled={currentRoom >= maxRoom} onClick={() => setRoom(r => Math.min(maxRoom, r + 1))}>Next room</Button></div>
     <div className="office-stage" ref={stage} tabIndex={0} aria-label="Office scene, scroll to pan">
-      <div className="office-map" style={{ width: ROOM_WIDTH * OFFICE_TILE * zoom, height: ROOM_HEIGHT * OFFICE_TILE * zoom }} aria-hidden="true"><div className="office-pixels" style={{ width: ROOM_WIDTH * OFFICE_TILE, height: ROOM_HEIGHT * OFFICE_TILE, transform: `scale(${zoom})` }}>
+      <div className="office-map" style={{ width: ROOM_WIDTH * OFFICE_TILE * zoom, height: ROOM_HEIGHT * OFFICE_TILE * zoom }}><div className="office-pixels" aria-hidden="true" style={{ width: ROOM_WIDTH * OFFICE_TILE, height: ROOM_HEIGHT * OFFICE_TILE, transform: `scale(${zoom})` }}>
         {Array.from({ length: ROOM_WIDTH * ROOM_HEIGHT }, (_, i) => { const x = i % ROOM_WIDTH; const y = Math.floor(i / ROOM_WIDTH); const f = tileFrames[y === 0 ? 'tile.08' : 'tile.00']; return <i className="office-sprite" key={`t${i}`} style={frameStyle(f, tiles, x * 16, y * 16, 0)} /> })}
         {ROOM_PROPS.map(p => <i className="office-sprite" key={p.name} style={frameStyle(propFrames[`prop.${p.name}`], props, p.x * 16, p.y * 16, p.y * 16 + atlas.props[p.name].depthAnchor[1])} />)}
-        {visibleAgents.map(a => { const desk = deskForSlot(slots.current.get(a.id)!); const x = desk.furniture.x * 16; const y = desk.furniture.y * 16; const f = propFrames['prop.desk']; const crt = propFrames['prop.crt']; const depth = y + atlas.props.desk.depthAnchor[1]; return <span key={`d${a.id}`}><i className="office-sprite" style={frameStyle(f, props, x, y, depth)} /><i className="office-sprite" style={frameStyle(crt, props, x, y, depth + 1)} /></span> })}
+        {visibleAgents.map(a => { const desk = deskForSlot(slots.current.get(a.id)!); const x = desk.furniture.x * 16; const y = desk.furniture.y * 16; const f = propFrames['prop.desk']; const crt = propFrames['prop.crt']; const chair = propFrames['prop.chair']; const depth = y + atlas.props.desk.depthAnchor[1]; return <span key={`d${a.id}`}><i className="office-sprite" style={frameStyle(chair, props, x, y, y + atlas.props.chair.depthAnchor[1] - 1)} /><i className="office-sprite" style={frameStyle(f, props, x, y, depth)} /><i className="office-sprite" style={frameStyle(crt, props, x, y, depth + 1)} /></span> })}
         {visibleAgents.map(a => {
           const desk = deskForSlot(slots.current.get(a.id)!)
           let x = desk.anchor.x * 16; let y = desk.anchor.y * 16
@@ -119,9 +126,9 @@ export function OfficeScene({ agents, messages, onSelect, onRemove, selectedId, 
           const f = workerFrames[`worker.${silhouettes[identity(a.id) % silhouettes.length]}.${direction}.${pose}`]
           return <i className="office-sprite" key={a.id} style={frameStyle(f, workers, x, y - 8, y - 8 + atlas.workerFeet[1])} />
         })}
-      </div></div>
+      </div>{visibleAgents.map(a => { const desk = deskForSlot(slots.current.get(a.id)!); return <button type="button" className="office-nameplate" key={a.id} data-office-worker-id={a.id} aria-pressed={a.id === selectedId} style={{ left: (desk.anchor.x * OFFICE_TILE + OFFICE_TILE / 2) * zoom, top: (desk.anchor.y * OFFICE_TILE + OFFICE_TILE) * zoom }} onClick={() => selectAgent(a)}><span>{a.name}</span><span>{a.statusLabel ?? a.status}</span></button> })}</div>
     </div>
     <div data-testid="office-deliveries" data-active={mode === 'live' && !reduced ? scheduler.current.active.length : 0} data-queued={mode === 'live' && !reduced ? scheduler.current.queued.length : 0}>{deliveries.map((d, i) => <p key={i} data-testid="office-caption" title={d.message.text}>{d.message.text.length > 80 ? `${d.message.text.slice(0, 80)}…` : d.message.text}{d.count > 1 ? ` (${d.count} messages)` : ''}<span className="office-full-message"> Full available message: {d.message.text}</span></p>)}</div>
-    <div className="office-roster" aria-label="Agents" role="region"><strong>Agents ({agents.length})</strong>{agents.map(a => <button type="button" key={a.id} data-office-agent-id={a.id} data-office-agent-context={a.context} aria-pressed={a.id === selectedId} onClick={() => { setRoom(deskForSlot(slots.current.get(a.id)!).room); onSelect(a.id) }} onKeyDown={e => { if (e.key === 'Delete' && onRemove) { e.preventDefault(); onRemove(a.id) } }}><span>{a.name}</span> <span>{a.status}</span>{a.context && <span> · {a.context}</span>}{a.activity && <span> · {a.activity}</span>}</button>)}</div>
+    <div className="office-roster" aria-label="Agents" role="region"><strong>Agents ({agents.length})</strong>{agents.map(a => <button type="button" key={a.id} data-office-agent-id={a.id} data-office-agent-context={a.context} aria-pressed={a.id === selectedId} onClick={() => selectAgent(a)} onKeyDown={e => { if (e.key === 'Delete' && onRemove) { e.preventDefault(); onRemove(a.id) } }}><span>{a.name}</span> <span>{a.statusLabel ?? a.status}</span>{a.context && <span> · {a.context}</span>}{a.activity && <span> · {a.activity}</span>}</button>)}</div>
   </section>
 }
