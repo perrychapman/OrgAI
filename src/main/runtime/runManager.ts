@@ -1531,7 +1531,7 @@ export class RunManager {
 
     const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
-      if (raw.type === 'run.usage') return
+      if (raw.type === 'run.usage' || raw.type === 'run.model') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       let e = raw
       // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
@@ -4044,11 +4044,15 @@ export class RunManager {
     if (active && model.adapter !== active.adapter) return { run, applied: false, reason: 'This model requires a different provider adapter.' }
     const selection = { model: input.model, connection }
     if (active && !['finished', 'error', 'paused'].includes(run.status)) {
+      if (active.execBudget !== undefined && !run.overrides?.allowUnpricedBudget && active.modelPriced && !active.modelPriced(input.model)) {
+        return { run, applied: false, reason: 'This model has no known price, so the budget cannot be enforced.' }
+      }
       if (!active.session?.switchModel) return { run, applied: false, reason: 'This session cannot switch models.' }
       try { await active.session.switchModel({ model: input.model }) }
       catch (error) { return { run: this.summary(run.id) ?? run, applied: false, reason: (error as Error).message } }
       const root = active.ctx?.roles.find((r) => r.reportsTo === null) ?? active.ctx?.roles[0]
       if (root) root.model = input.model
+      active.priceChecked.clear()
     } else if (!run.sessionId) {
       return { run, applied: false, reason: 'This run has no session to continue.' }
     }
