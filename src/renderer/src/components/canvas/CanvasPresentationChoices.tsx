@@ -46,7 +46,7 @@ export function CanvasPresentationChoices({ canvas, onPresentation, onPalette }:
       <legend>Presentation</legend>
       <div className="canvas-choices">
         {PRESENTATION_OPTIONS.map(option => <label className="canvas-choice" key={option.value} data-testid="canvas-presentation-choice" data-presentation={option.value}>
-          <input type="radio" name={presentationName} value={option.value} checked={presentation === option.value} onChange={() => onPresentation(option.value)} />
+          <input type="radio" data-testid={`canvas-presentation-${option.value}`} name={presentationName} value={option.value} checked={presentation === option.value} onChange={() => onPresentation(option.value)} />
           {option.value === 'graph' ? <CanvasThumb spec={canvas} /> : <OfficeThumb palette={palette} />}
           <span><strong>{option.label}</strong><span className="canvas-choice-description">{option.value === 'graph' ? 'A connected view of your team' : 'A spatial view of your team'}</span></span>
           {presentation === option.value && <span className="canvas-choice-check" aria-hidden="true"><Icon icon={Check} size="sm" /></span>}
@@ -57,7 +57,7 @@ export function CanvasPresentationChoices({ canvas, onPresentation, onPalette }:
       <legend>Office palette</legend>
       <div className="canvas-choices canvas-palette-choices">
         {SCENE_PALETTE_OPTIONS.map(option => <label className="canvas-choice" key={option.value} data-testid="canvas-palette-choice" data-palette={option.value}>
-          <input type="radio" name={paletteName} value={option.value} checked={palette === option.value} onChange={() => onPalette(option.value)} />
+          <input type="radio" data-testid={`canvas-office-palette-${option.value}`} name={paletteName} value={option.value} checked={palette === option.value} onChange={() => onPalette(option.value)} />
           <OfficeThumb palette={option.value} />
           <strong>{option.label}</strong>
           {palette === option.value && <span className="canvas-choice-check" aria-hidden="true"><Icon icon={Check} size="sm" /></span>}

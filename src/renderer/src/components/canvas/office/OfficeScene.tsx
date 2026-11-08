@@ -188,7 +188,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     })
     return () => cancelAnimationFrame(frame)
   }, [geometryKey, zoom])
-  return <section className="office-scene" data-testid="office-scene" data-mode={mode} data-palette={palette} data-room={currentFloor + 1} data-floor={currentFloor + 1}>
+  return <section className="office-scene" style={{ '--office-label-width': `${4 * OFFICE_TILE * zoom - 4}px` } as CSSProperties} data-testid="office-scene" data-mode={mode} data-palette={palette} data-room={currentFloor + 1} data-floor={currentFloor + 1}>
     {mode === 'team' && <p>Team layout · roles, not live activity</p>}{mode === 'sample' && <p>Sample office · example agents</p>}
     <div className="office-controls"><Button size="sm" onClick={() => setZoom(z => Math.max(1, z - 1))}>Zoom out</Button><span data-testid="office-zoom" data-zoom={zoom}>{zoom}×</span><Button size="sm" onClick={() => setZoom(z => Math.min(4, z + 1))}>Zoom in</Button><Button size="sm" onClick={fit}>Fit</Button>
       <Button size="sm" disabled={currentFloor === 0} onClick={() => setFloor(r => Math.max(0, r - 1))}>Previous floor</Button><span data-floor={currentFloor + 1}>Floor {currentFloor + 1} of {layout.floorCount}</span><Button size="sm" disabled={currentFloor >= layout.floorCount - 1} onClick={() => setFloor(r => Math.min(layout.floorCount - 1, r + 1))}>Next floor</Button></div>
