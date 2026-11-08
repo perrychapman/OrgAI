@@ -1,5 +1,10 @@
 /* ---------- Team tab: side panel (Role | Catalog), assistant tray, catalog ---------- */
 
+/* The Team pane owns scrolling; the shared side wrapper must not scroll too. */
+.editor > .side-panel:has(.team-panel) {
+  overflow: hidden;
+}
+
 .team-panel {
   flex: 1;
   min-height: 0;

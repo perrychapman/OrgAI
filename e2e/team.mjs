@@ -642,6 +642,31 @@ const { app, page, shot } = await launch({ shotPrefix: 'team' })
 try {
   await createProject(page, { path: repo, name: NAME })
   await openTeam(page)
+  for (const [w, h] of SIZES) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    for (const theme of THEMES) {
+      await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      await teamPanelTab(page, 'Catalog').click()
+      await page.locator('[data-testid=team-catalog]').waitFor()
+      const scroll = await page.evaluate(() => {
+        const pane = document.querySelector('.team-panel-pane')
+        const side = pane.closest('.side-panel')
+        const tabs = document.querySelector('.team-panel-tabs')
+        const top = tabs.getBoundingClientRect().top
+        pane.scrollTop = pane.scrollHeight
+        return {
+          outerScrollable: /auto|scroll/.test(getComputedStyle(side).overflowY),
+          moved: pane.scrollTop > 0,
+          atBottom: Math.abs(pane.scrollHeight - pane.clientHeight - pane.scrollTop) <= 1,
+          tabsFixed: tabs.getBoundingClientRect().top === top
+        }
+      })
+      check(!scroll.outerScrollable, `Team has no outer scrollbar at ${w}x${h} ${theme}`, JSON.stringify(scroll))
+      check(scroll.moved && scroll.atBottom && scroll.tabsFixed, `Catalog scrolls to the end with fixed tabs at ${w}x${h} ${theme}`, JSON.stringify(scroll))
+      await shot(`catalog-scroll-${w}x${h}-${theme}`)
+    }
+  }
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
   await sectionFirstConnection(page, shot)
   await seed(page)
   await sectionBlock(page)
