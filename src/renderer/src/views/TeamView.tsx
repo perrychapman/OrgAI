@@ -906,7 +906,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 }}
               />
             ) : selectedRole ? (
-              <div className={options.presentation === 'pocket-office' ? 'office-inspector' : undefined}>
+              <div className={options.presentation === 'pocket-office' ? 'office-inspector' : undefined} data-office-palette={options.scenePalette}>
               {options.presentation === 'pocket-office' && <div className="office-inspector-action"><Button size="sm" testId="office-role-back" onClick={() => { const id = selectedRole.id; selectRole(null); setPanelTab('catalog'); returnToNode(id) }}>Back to office</Button></div>}
               <RoleInspector
                 project={project}

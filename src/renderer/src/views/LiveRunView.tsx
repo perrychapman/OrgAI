@@ -1250,7 +1250,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         </div>
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} arrival={usageArrival}>
-          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent && !conversation ? ' office-inspector' : ''}`} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent && !conversation) { event.preventDefault(); returnToOffice(selectedAgent.id) } }}>
+          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent && !conversation ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent && !conversation) { event.preventDefault(); returnToOffice(selectedAgent.id) } }}>
             {options.presentation === 'pocket-office' && selectedAgent && !conversation && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
             <TranscriptPanel
               runId={runId}

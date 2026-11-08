@@ -24,6 +24,15 @@
   color-scheme: dark;
 
   --surface-0: #0b0d12;
+  --office-color-surface: #f8e8ca;
+  --office-color-ink: #382519;
+  --office-color-border: #795038;
+  --office-neutral-surface: #f2f0e9;
+  --office-neutral-ink: #252725;
+  --office-neutral-border: #666963;
+  --office-green-surface: #e1f2df;
+  --office-green-ink: #183a2a;
+  --office-green-border: #42755a;
   --surface-1: #12161f;
   --surface-2: #181c27;
   --surface-3: #20263a;
@@ -148,6 +157,15 @@
   color-scheme: light;
 
   --surface-0: #f4f5f9;
+  --office-color-surface: #f8e8ca;
+  --office-color-ink: #382519;
+  --office-color-border: #795038;
+  --office-neutral-surface: #f2f0e9;
+  --office-neutral-ink: #252725;
+  --office-neutral-border: #666963;
+  --office-green-surface: #e1f2df;
+  --office-green-ink: #183a2a;
+  --office-green-border: #42755a;
   --surface-1: #fafbfd;
   --surface-2: #ffffff;
   --surface-3: #e9ecf4;
@@ -267,6 +285,15 @@
     color-scheme: light;
 
     --surface-0: #f4f5f9;
+    --office-color-surface: #f8e8ca;
+    --office-color-ink: #382519;
+    --office-color-border: #795038;
+    --office-neutral-surface: #f2f0e9;
+    --office-neutral-ink: #252725;
+    --office-neutral-border: #666963;
+    --office-green-surface: #e1f2df;
+    --office-green-ink: #183a2a;
+    --office-green-border: #42755a;
     --surface-1: #fafbfd;
     --surface-2: #ffffff;
     --surface-3: #e9ecf4;

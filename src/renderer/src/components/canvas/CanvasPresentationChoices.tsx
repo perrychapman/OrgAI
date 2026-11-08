@@ -32,6 +32,24 @@ function OfficeThumb({ palette }: { palette: CanvasScenePalette }): ReactElement
   </span>
 }
 
+/** A deliberately framed, inert room rather than a cropped viewport of the live building. */
+export function OfficeSample({ palette }: { palette: CanvasScenePalette }): ReactElement {
+  const [tiles, props, workers] = sheets[palette]
+  const frameStyle = (sheet: string, frame: { x: number; y: number; w: number; h: number }, left: number, top: number): CSSProperties => ({
+    left, top, width: frame.w, height: frame.h, backgroundImage: `url(${sheet})`, backgroundPosition: `-${frame.x}px -${frame.y}px`
+  })
+  const furnishings = [['window', 96, 12], ['shelf', 16, 16], ['desk', 40, 48], ['chair', 72, 48], ['crt', 40, 48], ['sofa', 112, 56], ['plant', 16, 64]] as const
+  return <div className="office-scene office-sample" data-testid="office-scene" data-mode="sample" data-palette={palette}>
+    <p>Sample office · example agents</p>
+    <div className="office-sample-frame" aria-hidden="true"><div className="office-sample-art">
+      {Array.from({ length: 60 }, (_, i) => <i key={i} style={frameStyle(tiles, atlas.sheets.tiles.frames[i < 10 || i % 10 === 0 || i % 10 === 9 ? 'tile.08' : 'tile.00'], i % 10 * 16, Math.floor(i / 10) * 16)} />)}
+      {furnishings.map(([name, x, y]) => <i key={name} style={frameStyle(props, atlas.sheets.props.frames[`prop.${name}`], x, y)} />)}
+      <i style={frameStyle(workers, atlas.sheets.workers.frames['worker.crop.down.idle'], 67, 67)} />
+    </div></div>
+    <p className="office-sample-label">Alex · Sample</p>
+  </div>
+}
+
 export function CanvasPresentationChoices({ canvas, onPresentation, onPalette }: {
   canvas: CanvasSettings
   onPresentation: (value: CanvasPresentation) => void
