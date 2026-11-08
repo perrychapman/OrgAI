@@ -241,7 +241,7 @@ function fakeSession(initial: Partial<TestState> = {}, hostKind: 'daemon' | 'inp
   return { api, set, state: () => state }
 }
 
-function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolean; inproc?: boolean; onboarding?: boolean; now?: () => number; launch?: import('./types').TuiLaunch } = {}) {
+function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolean; inproc?: boolean | object; onboarding?: boolean; now?: () => number; launch?: import('./types').TuiLaunch } = {}) {
   const s = opts.session ?? fakeSession()
   const listeners = new Set<(e: Ev) => void>()
   const input = { subscribe: (fn: (e: Ev) => void) => (listeners.add(fn), () => void listeners.delete(fn)) }
@@ -269,7 +269,7 @@ function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolea
     client: {} as never,
     hello: {} as never,
     started: false,
-    ...(opts.inproc ? { inproc: {} as never } : {}),
+    ...(opts.inproc ? { inproc: (opts.inproc === true ? {} : opts.inproc) as never } : {}),
     projects: vi.fn(async () => []),
     checkPath: vi.fn(async () => ({ exists: true, isDirectory: true, isGitRepo: true, suggestedName: 'repo', empty: false })),
     createProject: vi.fn(async () => P),
@@ -538,6 +538,30 @@ describe('App quitting', () => {
     expect(m.exits).toHaveLength(1)
     expect(m.exits[0][1]).toMatchObject({ detachedLive: true })
     m.r.unmount()
+  })
+
+  it("counts every live run on this terminal's host, also ones other terminals or projects started", async () => {
+    const inproc = { status: () => ({ handoff: { workingRuns: 2, waitingRuns: 1, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 } }) }
+    const m = mount({ inproc, session: fakeSession({ testLive: 1 }, 'inproc') })
+    await m.send(ctrlKey('d'))
+    expect(m.frame()).toContain('Quitting stops 3 live runs in this in-process host, 2 of them from other projects or terminals')
+    await m.send(key('n'))
+    m.r.unmount()
+  })
+
+  it('onboarding: Ctrl+C, Ctrl+D and Esc ask first when other terminals have runs on this host, none listed here', async () => {
+    const inproc = { status: () => ({ handoff: { workingRuns: 1, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 } }) }
+    for (const [label, quit] of [['ctrl+c', ctrlKey('c')], ['ctrl+d', ctrlKey('d')], ['esc', named('escape')]] as const) {
+      const m = mount({ inproc, onboarding: true, session: fakeSession({}, 'inproc') })
+      await tick()
+      await m.send(quit)
+      const flat = m.frame().replace(/[│|]/g, ' ').replace(/\s+/g, ' ')
+      expect(flat, label).toContain('Quitting stops 1 live run in this in-process host, 1 of them from other projects or terminals')
+      expect(m.exits).toEqual([])
+      await m.send(key('y'))
+      expect(m.exits.map((e) => e[0])).toEqual([0])
+      m.r.unmount()
+    }
   })
 
   it('a client of a daemon started with --host inproc (hostKind inproc) quits at once: the runs live in the daemon', async () => {

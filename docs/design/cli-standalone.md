@@ -161,7 +161,7 @@ same outcome without those costs.
      app-server `initialize` handshake (token-free per the Codex schema; unverified until run).
 - Packaged integration (the `pack:verify` job on macOS, later Windows): install the verified npm tarball into a temp
   prefix beside the freshly packed app, point discovery at it (`ORGAI_ELECTRON_PATH` for the unpacked pack), and run
-  `ORGAI_MOCK=1 orgai --host auto exec` on a fixture: the npm CLI must find the packaged app, start it headless, run
+  `ORGAI_MOCK=1 orgai --host daemon exec` (was `--host auto`; see cli-standalone-default.md) on a fixture: the npm CLI must find the packaged app, start it headless, run
   the mock to completion and stop it with `orgai daemon stop`. This stays after the fuse change (9), where it is the
   only check of npm CLI -> packaged app.
 - Lockstep: same tag, same version, same commit as the app. `-devN` versions publish to `next` only when the owner
@@ -178,6 +178,10 @@ absent = `dev`. `--version` and `doctor` print it. `HostLauncher` uses it (4.1).
 ## 4. Hosts without the app
 
 ### 4.1 `--host auto` and `--host daemon`
+
+> Superseded for `--host auto` by `docs/design/cli-standalone-default.md` (2026-11-07): with no live host, `auto`
+> always runs in-process and never starts the app (step 3 below no longer applies to `auto`; it still describes
+> `--host daemon`). The packaged-integration checks pass `--host daemon` explicitly.
 
 `--host auto`:
 

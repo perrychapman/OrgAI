@@ -25,7 +25,8 @@ import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
 import { InspectorPane } from './InspectorPane'
 import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
-import { Onboarding, DESKTOP_DECISIONS_NOTICE, type OnboardingChoice } from './Onboarding'
+import { Onboarding, type OnboardingChoice } from './Onboarding'
+import { DECISIONS_NOTICES, decisionsNotice } from './decisionNotices'
 import { OrgTreePane } from './OrgTreePane'
 import { showInPager } from './pager'
 import { PlanPane } from './PlanPane'
@@ -282,6 +283,16 @@ export function startLaunchRun(session: TuiSessionApi, launch: Pick<TuiLaunch, '
   session.submitPrompt(launch.prompt, launch.team ? { team: launch.team } : undefined).catch((e: unknown) => session.notify(errText(e), 'danger'))
 }
 
+/** Live runs on an in-process host by its own count (working, waiting, held, paused with a resume due); undefined when unknown. */
+function hostLiveRuns(inproc: { status?: () => { handoff?: { workingRuns: number; waitingRuns: number; heldRuns: number; pausedRuns: number } } } | undefined): number | undefined {
+  try {
+    const h = typeof inproc?.status === 'function' ? inproc.status().handoff : undefined
+    return h ? h.workingRuns + h.waitingRuns + h.heldRuns + h.pausedRuns : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function App(props: AppProps) {
   const { terminal, env, launch, conn } = props
   const processEnv = props.processEnv ?? process.env
@@ -417,12 +428,13 @@ export function App(props: AppProps) {
   const messages = teamMessageRows(state)
   const decisionsInDesktop = conn.hello?.grantedScopes !== undefined && !conn.hello.grantedScopes.includes('decide')
   const connectionNotice = state.connection === 'gone' ? 'Connection lost. Reconnect to continue.' : state.connection === 'reconnecting' ? 'Reconnecting to the host.' : undefined
-  const ordinaryNotice = state.notices.filter(n => n.text !== TUI_NO_DECIDE_NOTICE).at(-1)?.text
+  const decisionsLine = decisionsNotice(conn.hello?.hostKind)
+  const ordinaryNotice = state.notices.filter(n => n.text !== TUI_NO_DECIDE_NOTICE && !DECISIONS_NOTICES.has(n.text)).at(-1)?.text
   const accessNotice = [
     connectionNotice,
     state.readOnlyReason,
     ordinaryNotice,
-    ...(decisionsInDesktop ? [DESKTOP_DECISIONS_NOTICE] : [])
+    ...(decisionsInDesktop ? [decisionsLine] : [])
   ].filter(Boolean).join(' ')
   const mode: ComposerMode = readOnly ? 'readOnly' : quickEdits !== undefined && !state.project && !state.activeRunId ? 'quick' : composerMode(state)
 
@@ -655,9 +667,15 @@ export function App(props: AppProps) {
       }
     }
     const inproc = conn.inproc !== undefined
-    const live = statusSummary(session.getState()).liveRuns
+    const shown = statusSummary(session.getState()).liveRuns
+    // This terminal's host also serves other terminals and projects (cli-standalone-default.md 4.2): count every live
+    // run on it, not only the ones this view lists.
+    const onHost = inproc ? hostLiveRuns(conn.inproc) : undefined
+    const live = Math.max(shown, onHost ?? 0)
     if (inproc && live > 0) {
-      void confirm(`Quitting stops ${live} live run${live === 1 ? '' : 's'} in this in-process host. Quit?`).then((yes) => {
+      const elsewhere = live - shown
+      const more = elsewhere > 0 ? `, ${elsewhere} of them from other projects or terminals` : ''
+      void confirm(`Quitting stops ${live} live run${live === 1 ? '' : 's'} in this in-process host${more}. Quit?`).then((yes) => {
         if (yes) doExit(0)
       })
       return
@@ -1100,7 +1118,8 @@ export function App(props: AppProps) {
     }
     if (focus === 'onboarding') {
       if (ctrl(e, 'c') || ctrl(e, 'd')) {
-        doExit(0)
+        // Through the quit check: another terminal may have runs on this terminal's shared host.
+        requestQuit()
         return
       }
       bus.dispatch(e, 'onboarding')
@@ -1449,11 +1468,14 @@ export function App(props: AppProps) {
     )
   ) : null
 
+  // A confirm over onboarding (the quit check) gets its own rows: the onboarding screen fills the terminal, so without
+  // them the confirm box is squeezed and its lines overlap.
+  const onboardingConfirmRows = onboarding && overlay?.kind === 'confirm' ? 3 + wrapText(sanitizeTty(overlay.question), Math.max(1, size.cols - 4)).length : 0
   let body
   if (onboarding) {
     body = (
       <Box flexDirection="column" width={size.cols} height={inline ? undefined : size.rows}>
-        <Onboarding folder={launch.onboarding?.folder ?? state.folder} check={check} width={size.cols} height={size.rows} checking={checkingFolder} busy={onboardingBusy} animated={!terminal.suspended} accessNotice={accessNotice} decisionsInDesktop={decisionsInDesktop} onChoose={(c) => void chooseOnboarding(c)} onCancel={() => doExit(0)} />
+        <Onboarding folder={launch.onboarding?.folder ?? state.folder} check={check} width={size.cols} height={inline ? size.rows : Math.max(0, size.rows - onboardingConfirmRows)} checking={checkingFolder} busy={onboardingBusy} animated={!terminal.suspended} accessNotice={accessNotice} decisionsInDesktop={decisionsInDesktop} decisionsNotice={decisionsLine} onChoose={(c) => void chooseOnboarding(c)} onCancel={requestQuit} />
         {overlayNode}
       </Box>
     )

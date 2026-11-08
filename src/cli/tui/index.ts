@@ -34,6 +34,8 @@ export interface TuiFlags {
 export interface RunTuiOptions {
   /** Resolve what to open once connected (run refs, onboarding); commands/tui.ts supplies it. */
   prepare?(conn: TuiHostConnection): Promise<TuiLaunch>
+  /** Share an in-process host this TUI starts with other terminals (connectTuiHost shareHost). Default true. */
+  shareHost?: boolean
   stdin?: NodeJS.ReadStream
   stdout?: NodeJS.WriteStream
   stderr?: { write(s: string): unknown }
@@ -121,7 +123,7 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
   const env = tuiEnvFor(ctx, flags, bufferMode)
 
   // Connect before the alternate screen: refusals and errors print as usual.
-  const conn = await connectTuiHost(ctx)
+  const conn = await connectTuiHost(ctx, { shareHost: opts.shareHost !== false })
   const stopInproc = conn.inproc !== undefined
   let session
   let resolved: TuiLaunch

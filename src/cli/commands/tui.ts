@@ -64,10 +64,10 @@ function refuseManaged(ctx: CliContext): void {
 }
 
 /** Hand off to the lazily loaded TUI (quietInproc first). Shared with commands/interactive.ts. */
-export async function launchTui(ctx: CliContext, flags: TuiFlags, prepare: (conn: TuiHostConnection) => Promise<TuiLaunch>): Promise<number> {
+export async function launchTui(ctx: CliContext, flags: TuiFlags, prepare: (conn: TuiHostConnection) => Promise<TuiLaunch>, opts: { shareHost?: boolean } = {}): Promise<number> {
   quietInproc(ctx)
   const { runTui } = await import('../tui/index')
-  return runTui(ctx, {}, flags, { prepare })
+  return runTui(ctx, {}, flags, { prepare, shareHost: opts.shareHost !== false })
 }
 
 /** The folder's project, else onboarding (no run asked for). */

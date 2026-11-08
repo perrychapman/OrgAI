@@ -117,9 +117,9 @@ describe('withHost', () => {
     expect(e.exitCode).toBe(1)
   })
 
-  it('notes a headless host it started', async () => {
+  it('notes a headless host it started (--host daemon)', async () => {
     const client = new FakeHostClient({}, { hello: ALL })
-    const f = fakeContext({ connect: [noHost(), client], launcher: { waitForReady: async () => client.daemon } })
+    const f = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), client], launcher: { waitForReady: async () => client.daemon } })
     await withHost(f.ctx, ['read'], async () => undefined)
     expect(f.err()).toContain('Started the OrgAI host in the background.')
   })

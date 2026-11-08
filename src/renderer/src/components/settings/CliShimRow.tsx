@@ -111,7 +111,7 @@ export function CliShimRow({
       title: 'Turn on Terminal access?',
       body: (
         <>
-          <p>The orgai command works only while Terminal access is on.</p>
+          <p>Terminal access lets the orgai command use OrgAI while this app is running. When the app is closed, orgai runs on its own.</p>
           <p>{TERMINAL_ACCESS_TRUST}</p>
         </>
       ),

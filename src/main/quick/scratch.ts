@@ -231,6 +231,22 @@ export interface QuickFolderCheck {
 }
 
 /**
+ * Why a folder could not be read, by errno (cli-standalone-default.md 4.4). On macOS EPERM is the privacy protection
+ * (TCC) on Documents, Desktop, Downloads, removable volumes and the like: Unix permissions allow it, but the process
+ * running OrgAI's host was not granted that folder. EACCES is the folder's own permissions. The host's executable is
+ * named because that is the program the user grants access to (Terminal for an orgai that hosts itself, the OrgAI app
+ * otherwise).
+ */
+export function unreadableFolderMessage(text: string, err: unknown, platform: NodeJS.Platform = process.platform, execPath: string = process.execPath): string {
+  const code = typeof err === 'object' && err !== null && typeof (err as { code?: unknown }).code === 'string' ? (err as { code: string }).code : undefined
+  if (code === 'EPERM' && platform === 'darwin') {
+    return `macOS blocked OrgAI from reading ${text}. Allow it in System Settings > Privacy & Security > Files and Folders (or Full Disk Access) for the program running OrgAI's host (${execPath}): for orgai in a terminal, that terminal app.`
+  }
+  if (code === 'EACCES') return `You do not have permission to read ${text}. Check the folder's permissions.`
+  return `OrgAI cannot read ${text}${code ? ` (${code})` : ''}. Check its permissions.`
+}
+
+/**
  * Validate a user-chosen folder for a Chat run, in the main process only. Throws a readable message for: a
  * non-string or empty value, a relative path, a UNC or device path (`\\server\share`, `\\?\`, `\\.\`, also when the
  * real path of a mapped drive turns out to be one), a missing folder, a file, the data dir, anything under it or a folder that contains it,
@@ -282,8 +298,8 @@ export function validateQuickFolder(raw: unknown, dataDir: string): QuickFolderC
   try {
     accessSync(real, constants.R_OK)
     entries = readdirSync(real)
-  } catch {
-    throw new Error(`OrgAI cannot read ${text}. Check its permissions.`)
+  } catch (e) {
+    throw new Error(unreadableFolderMessage(text, e))
   }
   return { folder: real, gitRepo: entries.includes('.git') || existsSync(join(real, '.git')) }
 }

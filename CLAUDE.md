@@ -725,9 +725,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     no Linux leg: Linux is covered only by verify-npm. `pack:verify` checks (f) and (g) now also require `daemon status` to
     report a running 'headless-host' and `daemon stop` to answer `stopped: true` ((g) is the only check that the npm CLI
     drives the packaged app). The RunAsNode fuse is NOT changed (phase D not built); the app-bundled CLI is not retired.
-  - Host selection (`src/cli/client/ensureHost.ts`, `launcher.ts`, `sharedHost.ts`): `--host auto` falls back to an
-    in-process host (one stderr line) when `HostLauncher.resolve()` finds no app (`absent`); a found-but-missing binary is
-    `broken` and an error naming the path, as is a dev checkout (both markers) without `out/main/index.js` or its electron
+  - Host selection (`src/cli/client/ensureHost.ts`, `launcher.ts`, `sharedHost.ts`): `--host auto` with no live host
+    always runs in-process (one stderr line, `INPROC_FALLBACK_NOTE`) and never starts the app, found or not
+    (docs/design/cli-standalone-default.md 4.1, 2026-11-07); the terminal UI's in-process host is shared (marker), a
+    command's is not. The TUI's no-decide line follows `hello.hostKind` (`tui/decisionNotices.ts`); folder read errors
+    name EPERM (macOS privacy) vs EACCES (`scratch.ts` `unreadableFolderMessage`). Under `--host daemon`, a
+    found-but-missing binary is `broken` and an error naming the path, as is a dev checkout (both markers) without `out/main/index.js` or its electron
     binary. Installed-app discovery: `/Applications/OrgAI.app`, `~/Applications`, NSIS per-user / per-machine paths; Linux none. `--host daemon` never runs a
     host in-process: with none live it starts the app, else a Node host (`BACKGROUND_HOST_KINDS` desktop, headless-host,
     node). Step 0 (review): under auto and daemon an 'inproc' host that is neither the context's own nor shared is never

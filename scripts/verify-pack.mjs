@@ -15,12 +15,13 @@
 //   (c) `orgai --version` prints package.json's version and `channel app`
 //   (d) `orgai --output-format json doctor`: launcher ok from the packaged app, node ok, no check failed
 //   (e) `orgai --host inproc exec --create-project` with [mock:exec-plan] in a temp git repo: exit 0, 'completed'
-//   (f) the same exec with the default host (the packaged app spawned with --headless-host), then `orgai daemon status`
+//   (f) the same exec with `--host daemon` (the packaged app spawned with --headless-host; `--host auto` no longer
+//       starts the app, cli-standalone-default.md 4.1), then `orgai daemon status`
 //       must name a running headless-host and `orgai daemon stop` must answer `stopped: true` (exit 0 alone is not
 //       enough: stop also exits 0 when no host was running)
 //   (g) only with --npm / --npm-tarball (Wave 7, cli-standalone.md 3.4 "Packaged integration"): the npm tarball
 //       installed into a temp prefix (`npm i -g <tgz>`, so a shrinkwrap is not applied: this checks discovery, not the
-//       tree), then that npm `orgai --host auto exec` with ORGAI_ELECTRON_PATH at the packed app's binary on its own
+//       tree), then that npm `orgai --host daemon exec` with ORGAI_ELECTRON_PATH at the packed app's binary on its own
 //       temp data folder: the npm CLI must start the packaged app headless and finish the mock run; then its
 //       `orgai daemon status` (a running headless-host) and `daemon stop` (`stopped: true`), as in (f). Needs npm and the registry (the dependencies are downloaded).
 //
@@ -515,7 +516,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       if (repoOk) {
         await execCase('(e) exec inproc', ['--host', 'inproc'])
         if (!opts.skipHost) {
-          await execCase('(f) exec host', [])
+          await execCase('(f) exec host', ['--host', 'daemon'])
           await checkBackgroundHost((args) => orgai(args, repo), report, '(f)', 'the background app stopped')
         }
       }
@@ -559,7 +560,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
           if (repoOk) {
             const npmEnv = withNode({ ...verifyEnv(env, npmData), ORGAI_ELECTRON_PATH: paths.appBinary })
             const npmOrgai = (args) => run({ ...launchCommand(platform, bin, args, env), cwd: npmRepo, env: npmEnv, timeoutMs: CHECK_TIMEOUT_MS })
-            const r = await npmOrgai(['--host', 'auto', 'exec', '--create-project', '--output-format', 'json', EXEC_PROMPT])
+            const r = await npmOrgai(['--host', 'daemon', 'exec', '--create-project', '--output-format', 'json', EXEC_PROMPT])
             const o = execOutcome(r.stdout)
             const ok = r.code === 0 && o?.outcome === 'completed'
             report('(g) npm exec host', ok, ok ? "exit 0, outcome 'completed'" : `expected exit 0 and 'completed', got outcome ${o?.outcome ?? 'none'}: ${showRun(r)}`)

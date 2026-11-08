@@ -257,7 +257,7 @@ export function vaultStateForFailure(kind: CustodyFailureKind): Extract<VaultSta
 
 /** The fixed sentences of 5.4 - 5.6, shared by the store (G), the services that show status (H) and the CLI (H). */
 export const VAULT_MESSAGES = {
-  pendingLegacy: 'Saved by the OrgAI app and not yet shared with the orgai command: open the app once',
+  pendingLegacy: 'Saved by the OrgAI app and not yet shared with the orgai command: quit orgai, open the OrgAI app once, then start orgai again',
   locked: (reason: string): string => `Secure storage is locked: ${reason}`,
   missingKey: "The key for this secure storage is not available for this user on this computer. Sign in to the account that created it or restore its key file. `orgai secrets reset` starts over",
   keyMismatch: 'The key does not match this secure storage, or it is damaged. Restore the matching key file. `orgai secrets reset` starts over',

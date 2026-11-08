@@ -42,25 +42,38 @@ describe('ensureHost', () => {
     expect(f.launcherCalls).toEqual([])
   })
 
-  it('no host, app found: spawns that app headless, waits for a background host, then connects', async () => {
-    const h = new FakeHostClient()
-    const f = fakeContext({ connect: [noHost(), h], launcher: { locate: () => found, waitForReady: async () => ready } })
-    const r = await ensureHost(f.ctx, ['read', 'operate'], { interactive: false })
-    expect(r.client).toBe(h)
-    expect(r.started).toBe(true)
-    expect(f.launcherCalls).toEqual([
-      { method: 'spawn', args: { headless: true, app: { command: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', args: [], source: 'installed' } } },
-      { method: 'waitForReady', args: { timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: BACKGROUND } }
-    ])
-    expect(f.connectCalls).toHaveLength(2)
-    expect(f.inprocCalls).toEqual([])
-    expect(f.err()).toBe('')
+  it('--host auto never starts the app (installed, dev checkout or broken): no live host runs in-process (standalone default 4.1)', async () => {
+    for (const app of [found, { status: 'broken', path: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', message: 'incomplete' } as HostLauncherResolution]) {
+      const inproc = fakeInproc()
+      const h = new FakeHostClient()
+      const f = fakeContext({ connect: [noHost(), h], launcher: { locate: () => app }, inproc: async () => inproc })
+      const r = await ensureHost(f.ctx, ['read', 'operate'], { interactive: false })
+      expect(r).toEqual({ client: h, inproc, started: true })
+      expect(f.launcherCalls).toEqual([])
+      expect(f.inprocCalls).toEqual([undefined])
+      expect(f.err()).toBe(`${INPROC_FALLBACK_NOTE}\n`)
+    }
   })
 
-  it('no host and the app never gets ready: exit 6; broken: exit 1 naming the path, never in-process; a failed start: exit 1', async () => {
-    const f = fakeContext({ connect: [noHost()], launcher: { waitForReady: async () => null } })
+  it("the terminal UI's own host is shared so other terminals attach to it; a command's host is not", async () => {
+    const h = new FakeHostClient()
+    const f = fakeContext({ connect: [noHost(), h], launcher: { locate: () => found }, inproc: async () => fakeInproc() })
+    await ensureHost(f.ctx, ['read', 'operate', 'decide'], { clientKind: 'tui', shareInproc: true })
+    expect(f.inprocCalls).toEqual([{ shared: true }])
+    // A command-scoped TUI (an assistant that exits when its run ends) keeps its host to itself.
+    const a = fakeContext({ connect: [noHost(), h], inproc: async () => fakeInproc() })
+    await ensureHost(a.ctx, ['read', 'operate', 'decide'], { clientKind: 'tui' })
+    expect(a.inprocCalls).toEqual([undefined])
+    const g = fakeContext({ connect: [noHost(), h], inproc: async () => fakeInproc() })
+    await ensureHost(g.ctx, ['read'], { inproc: MANAGEMENT_INPROC })
+    expect(g.inprocCalls).toEqual([MANAGEMENT_INPROC])
+  })
+
+  it('--host daemon, no host and the app never gets ready: exit 6; broken: exit 1 naming the path, never in-process; a failed start: exit 1', async () => {
+    const f = fakeContext({ globals: { host: 'daemon' }, connect: [noHost()], launcher: { waitForReady: async () => null } })
     await expect(ensureHost(f.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.hostBusy })
     const g = fakeContext({
+      globals: { host: 'daemon' },
       connect: [noHost()],
       launcher: { locate: () => ({ status: 'broken', path: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', message: 'The OrgAI app at /Applications/OrgAI.app is incomplete' }) },
       inproc: async () => fakeInproc()
@@ -69,6 +82,7 @@ describe('ensureHost', () => {
     expect(g.inprocCalls).toEqual([])
     expect(g.launcherCalls).toEqual([])
     const k = fakeContext({
+      globals: { host: 'daemon' },
       connect: [noHost()],
       launcher: {
         waitForReady: async () => {
@@ -377,10 +391,10 @@ describe("ensureHost: another command's own in-process host (WP-B review round 2
     expect(await ensureHost(f.ctx, ['read'])).toEqual({ client: h, started: false })
     // The app path too.
     const k = new FakeHostClient()
-    const g = fakeContext({ connect: [noHost(), k], launcher: { waitForReady: taken } })
+    const g = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), k], launcher: { waitForReady: taken } })
     expect(await ensureHost(g.ctx, ['read'])).toEqual({ client: k, started: false })
     // That host refusing this terminal is the usual connect failure.
-    const r = fakeContext({ connect: [noHost(), { ok: false, reason: 'disabled', message: '' }], launcher: { waitForReady: taken } })
+    const r = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), { ok: false, reason: 'disabled', message: '' }], launcher: { waitForReady: taken } })
     await expect(ensureHost(r.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('Terminal access') })
   })
 

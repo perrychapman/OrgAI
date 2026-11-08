@@ -31,6 +31,7 @@ import { safeLine } from '../output'
 import { recordWithoutImages } from '../render'
 import { CliError, EXIT, type CliContext, type ConnectResult, type HostCallError, type HostClient, type InprocHostHandle } from '../types'
 import { composerMode, offersRetro } from './selectors'
+import { decisionsNotice } from './decisionNotices'
 import {
   addNotice,
   applyEvent,
@@ -85,6 +86,11 @@ const codeOf = (e: unknown): string | undefined => (e as Partial<HostCallError> 
 export interface ConnectTuiOptions {
   /** Called once with the host's version-skew warning (the session also shows it as a notice). */
   warn?: (message: string) => void
+  /**
+   * An in-process host started for this TUI serves other terminals (cli-standalone-default.md 4.2). True for the
+   * workspace TUI; false for command-scoped TUIs whose host must end with them (assistants with exitWhenEnded).
+   */
+  shareHost?: boolean
 }
 
 class TuiConnection implements TuiHostConnection {
@@ -194,7 +200,7 @@ class TuiConnection implements TuiHostConnection {
 }
 
 export async function connectTuiHost(ctx: CliContext, opts: ConnectTuiOptions = {}): Promise<TuiHostConnection> {
-  const host = await ensureHost(ctx, [...TUI_SCOPES], { clientKind: 'tui' })
+  const host = await ensureHost(ctx, [...TUI_SCOPES], { clientKind: 'tui', shareInproc: opts.shareHost === true })
   const conn = new TuiConnection(ctx, host)
   const skew = host.client.hello.versionSkewWarning
   if (skew && opts.warn) opts.warn(safeLine(skew))
@@ -262,7 +268,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
   // Review H2: the default Terminal access level grants read + operate only; say so up front instead of letting the
   // first card answer fail with scope_denied.
   if (Array.isArray(conn.hello.grantedScopes) && !conn.hello.grantedScopes.includes('decide')) {
-    state = addNotice(state, TUI_NO_DECIDE_NOTICE, 'warn', now())
+    state = addNotice(state, conn.hello.hostKind === undefined || conn.hello.hostKind === 'desktop' ? TUI_NO_DECIDE_NOTICE : decisionsNotice(conn.hello.hostKind), 'warn', now())
   }
 
   const fire = (): void => {

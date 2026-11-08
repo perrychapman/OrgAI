@@ -24,7 +24,9 @@ export interface InteractiveRunSpec {
 
 /** Swappable in tests: the TUI launch (commands/tui.ts launchTui). */
 export const interactiveDeps = {
-  launchTui: (ctx: CliContext, flags: { inline: boolean; screenReader: boolean }, prepare: (conn: TuiHostConnection) => Promise<TuiLaunch>): Promise<number> => launchTui(ctx, flags, prepare)
+  // Command-scoped: the TUI exits when its run ends and stops it on quit, so its in-process host is never shared with
+  // other terminals (cli-standalone-default.md 4.2).
+  launchTui: (ctx: CliContext, flags: { inline: boolean; screenReader: boolean }, prepare: (conn: TuiHostConnection) => Promise<TuiLaunch>): Promise<number> => launchTui(ctx, flags, prepare, { shareHost: false })
 }
 
 /**

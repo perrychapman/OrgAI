@@ -12,10 +12,12 @@
  *      explicit --secret-env, or an ambient ORGAI_SECRET_* on a command that would use it, is refused (exit 2); any other
  *      ambient one is ignored with one warning.
  *   2. A host is starting: wait up to HOST_STARTING_WAIT_MS (15 s), as connect does.
- *   3. No live host and environment secrets present: run in-process so they are used (never spawn the app).
- *   4. Else HostLauncher.locate(): 'found' spawns the app headless and waits up to 30 s for a background host
- *      (BACKGROUND_HOST_KINDS); 'broken' is an error naming the path; 'absent' runs in-process with one stderr note in
- *      text mode.
+ *   3. No live host: run in-process (cli-standalone-default.md 4.1). `--host auto` never starts the desktop app, visible
+ *      or hidden: the command hosts itself, so its host is its own build, runs with the terminal's own folder access,
+ *      and the terminal that started it answers its approvals (ownerProof). One stderr note in text mode. The terminal
+ *      UI's host (shareInproc) is shared (client/sharedHost.ts) so `orgai` in another terminal attaches to it instead of
+ *      waiting; command-scoped TUIs (assistants) and other commands keep theirs.
+ *      The headless app is only started on request: `--host daemon`, `orgai daemon start`, `orgai app`.
  * - `--host daemon`: never in-process (cli-spec 3.2(3)); step 0 applies too. With no live host it starts a background host: the app when
  *   locate() finds one, else a Node host through `launcher.startBackground('node')` when this build has it, else an
  *   error; then it waits for any BACKGROUND_HOST_KINDS host.
@@ -42,7 +44,7 @@ export const ENSURE_HOST_READY_TIMEOUT_MS = 30_000
 export const ENSURE_HOST_STARTING_WAIT_MS = HOST_STARTING_WAIT_MS
 
 /** The one stderr line (text mode) when `--host auto` finds neither a host nor an app (4.1 step 4). */
-export const INPROC_FALLBACK_NOTE = 'No OrgAI app or background host is running, so this command runs its own. `orgai daemon start` keeps one running.'
+export const INPROC_FALLBACK_NOTE = 'No OrgAI host is running, so this command runs its own. `orgai daemon start` keeps one running in the background.'
 
 /** The stderr line (text mode) when environment secrets keep `--host auto` in-process (round 6 item 8). */
 export const INPROC_SECRETS_NOTE = 'Environment secrets are set; running the host inside this command so they are used.'
@@ -118,6 +120,12 @@ export interface EnsureHostOptions {
   clientKind?: HostClientKind
   /** How an in-process host this call starts boots (withHost passes MANAGEMENT_INPROC). Default: everything on. */
   inproc?: InprocStartOptions
+  /**
+   * `--host auto` only: an in-process host this call starts serves other terminals (marked shared). The workspace
+   * terminal UI passes true; command-scoped TUIs (assistants that exit when their run ends and stop on quit) and every
+   * other command leave it off, so their host ends with them and other terminals wait it out (step 0).
+   */
+  shareInproc?: boolean
 }
 
 /** Contexts that already printed a one-time line (the secret warning, an in-process note); several calls per command. */
@@ -260,19 +268,19 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
   }
   if (first.reason !== 'no_host') throw connectFailure(first)
 
-  if (mode === 'auto' && (ctx.secretEnv?.explicit || ctx.secretEnv?.ambient)) {
-    if (once(ctx, INPROC_SECRETS_NOTE)) note(ctx, INPROC_SECRETS_NOTE)
-    return inprocHost(ctx, connect, opts.inproc)
+  if (mode === 'auto') {
+    const line = ctx.secretEnv?.explicit || ctx.secretEnv?.ambient ? INPROC_SECRETS_NOTE : INPROC_FALLBACK_NOTE
+    if (once(ctx, line)) note(ctx, line)
+    // The workspace terminal UI's host serves other terminals too (they attach with what Terminal access allows); a
+    // command's host ends with that command, so other terminals wait it out (step 0).
+    const inprocOpts: InprocStartOptions | undefined = opts.shareInproc === true ? { ...opts.inproc, shared: true } : opts.inproc
+    return inprocHost(ctx, connect, inprocOpts)
   }
 
   let outcome: 'ready' | 'taken'
   const app = ctx.launcher.locate()
   if (app.status === 'broken') throw new CliError(app.message, EXIT.failure)
   if (app.status === 'absent') {
-    if (mode === 'auto') {
-      if (once(ctx, INPROC_FALLBACK_NOTE)) note(ctx, INPROC_FALLBACK_NOTE)
-      return inprocHost(ctx, connect, opts.inproc)
-    }
     // --host daemon: a Node background host when this build can start one, never in-process.
     const startNode = ctx.launcher.startBackground?.bind(ctx.launcher)
     if (!startNode) throw new CliError(NO_BACKGROUND_HOST_MESSAGE, EXIT.failure)

@@ -7062,7 +7062,7 @@ export type CustodyFailureKind = 'unavailable' | 'locked' | 'missing' | 'denied'
 
 /**
  * SecretStore.status(key) (5.4): 'set' (readable here), 'unset' (stored nowhere, or deleted), or unreadable with the
- * reason to show ("Saved by the OrgAI app and not yet shared with the orgai command: open the app once", "The secret
+ * reason to show ("Saved by the OrgAI app and not yet shared with the orgai command: quit orgai, open the OrgAI app once, then start orgai again", "The secret
  * vault is locked: ..."). Never the value.
  */
 export type SecretStatus = 'set' | 'unset' | { unreadable: string }
@@ -7228,7 +7228,7 @@ export type SecretsIpcChannel = (typeof SECRETS_IPC)[keyof typeof SECRETS_IPC]
 export interface UnreadableSecretSlot {
   /** The slot name (an env var or header name). Never a value. */
   name: string
-  /** SecretStatus.unreadable: "Saved by the OrgAI app and not yet shared with the orgai command: open the app once", ... */
+  /** SecretStatus.unreadable: "Saved by the OrgAI app and not yet shared with the orgai command: quit orgai, open the OrgAI app once, then start orgai again", ... */
   reason: string
 }
 
