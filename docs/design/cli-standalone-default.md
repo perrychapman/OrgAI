@@ -1,6 +1,6 @@
 # `orgai` as its own app: design spec
 
-Status: draft 5, 2026-11-08. The owner's direction (2026-11-08): "mirror Claude Code and Claude Desktop... they should
+Status: implemented on feat/cli-standalone-default, 2026-11-08 (draft 5; deviations recorded in section 13). The owner's direction (2026-11-08): "mirror Claude Code and Claude Desktop... they should
 have nothing shared"; no runs behind the scenes; no answering from a second terminal; the desktop app offers to
 download the standalone CLI, the way Cursor or opencode do, without bundling it. Draft 4 was reviewed by GPT Astra
 (14 findings, REVISE); draft 5 resolves each (section 11). Owner decisions taken on 2026-11-08: remove the daemon,
@@ -316,3 +316,16 @@ its area, review) before the next.
 
 - 2026-11-08, phase 2 (App separation). Section 5.2's separate "certificate reader" and "Claude and Codex startup" checks stay in `verify-pack.mjs` as checks (f) and (g), run on the packed files directly (not through the CLI), as draft 5 said.
 - The CI `pack:verify` step stays `continue-on-error` until check (e) has passed once on both runners (the Windows quit has never run).
+
+## 13. Deviations recorded while implementing
+
+Recorded by the build phases; each is a choice the owner can reverse.
+
+- Hosts and kinds: `HostKind` keeps `headless-host` (shared fixtures and `daemon.json` parsing use it); `node` was removed. The shared handoff protocol (`desktop` hello grant, `HOST_HANDOFF_METHODS`, `HostHandoffFacts`) stays because the TUI quit confirm reads `host.status().handoff` run counts. `OrgAIHost.terminalAccess()` stays as a derived value, not a setting. `startBackground` keeps its name.
+- `secrets status` and `usage show` start an in-process host when nobody owns the folder, and beside an owner print a snapshot (metadata checks only for secrets). `projects list|show`, `runs`, `status`, `doctor` are fully hostless. `org retro --no-attach` is removed. `/inbox` stays as the TUI's own card list.
+- `wait` decision policy is normalised to `fail` on the in-process host instead of refused. Any existing `data/` whose real path is not `<real userDataDir>/data` is refused. The other product's folder check covers its default folder only, not env overrides.
+- App: an unreadable or unknown marker does not stop the app (logged); on early refusal Chromium userData points at a temp folder. `ORGAI_WINDOW_HIDDEN=1` is a new opt-in. The 'app' install channel stays readable. `Runtime log strings` in `socketServer.ts` and stale comments in `types.ts`, `daemon.json`/`daemon.secret` comments are left because that code is live.
+- Install row: IPC channels were renamed (`app:cliCommandStatus|installCliCommand|cancelCliInstall|removeOldCliShim`); old-shim cleanup needs only HOME or LOCALAPPDATA; Install is also offered as Update; quit during an install cancels it; removal of other paths is by-hand guidance. Old `CliShim*` types and `cliShim.ts` are deleted. `packagedLayout.ts` keeps the shim helpers still used by doctor, the self-control gate and cleanup.
+- Tests and tooling: `separation.mjs` proves vault custody names for the CLI side live and the app side by unit test; the app's refusal dialog is recorded through `e2e/dialog-stub.cjs`. `verify-pack.mjs` has no separate certificate-reader or Claude/Codex startup checks (section 12). CI `pack:verify` stays `continue-on-error`. Skills-kit concurrent-client cases moved to an int test with a seed host.
+- Docs: `docs/design/cli-approvals.md` is untracked in the owner's checkout and was not in this worktree, so it is not marked withdrawn here; mark it withdrawn when it is committed. `docs/agent-notes/cli-host.md` is the owner's move and was not touched.
+- Unverified: real `npm install -g orgai-cli`, Windows (install row, quit path of the boot check), Linux keyring, a real pack run.
