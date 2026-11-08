@@ -118,7 +118,7 @@ describe('conversation-first layout', () => {
     })
     const m = mount({ cols, rows: 40, state: applyRecord(stateWith(), run) })
     await tick()
-    expect(m.frame().includes('Unique checklist goal')).toBe(shown)
+    expect(m.frame().includes('Tasks')).toBe(shown)
   })
 
   it('keeps every team member visible when focusing the roster above a plan', async () => {
@@ -129,7 +129,7 @@ describe('conversation-first layout', () => {
     const m = mount({ cols: 120, rows: 40, state: applyRecord(stateWith(), run) })
     await tick()
     await m.send(named('tab'), named('tab'))
-    const roster = m.frame().split('Plan')[0]
+    const roster = m.frame().split('Tasks')[0]
     for (let i = 1; i <= 4; i++) expect(roster).toContain(`member-${i}`)
     expect(m.frame()).toContain('Check the result')
   })
@@ -146,7 +146,7 @@ describe('conversation-first layout', () => {
     await tick()
     const lines = m.frame().split('\n')
     const team = lines.findIndex(line => /Agents|Team/.test(line))
-    const plan = lines.findIndex(line => /Plan/.test(line))
+    const plan = lines.findIndex(line => /Tasks/.test(line))
     expect(plan).toBeGreaterThan(team)
     expect(plan - team).toBeLessThanOrEqual(5)
     expect(m.frame()).toContain('1/3 done')

@@ -1,15 +1,11 @@
-/**
- * The plan pane (W4-T3). Pure display plus its own scroll state: the goal, "done/total" with the plan's status word,
- * then one line per step (status glyph, title, owner) with its note dim underneath when every note fits. The goal and
- * progress lines stay put; the steps scroll while focused (Up/Down, PageUp/PageDown, Home/End). Strings arrive
- * sanitized. A screen reader gets the step status as a word instead of a glyph.
- */
+/** Compact run checklist: pinned progress/ETA and up to five one-line tasks. */
 import { useEffect, useRef, useState } from 'react'
 import { useFocusHandler, useTuiEnv } from './context'
 import { observePlan, planProgress, type PlanObservation } from './planProgress'
 import { asciiOnly } from './theme'
+import { textWidth, truncateEnd } from './panes/text'
 import type { PlanPaneProps, PlanStepView, Tone, TuiEnv } from './types'
-import { PaneLines, paneHeading, alignSegs, cutSegs, moveIndex, navKey, type PaneLine } from './panes/lines'
+import { PaneLines, alignSegs, cutSegs, moveIndex, navKey, type PaneLine } from './panes/lines'
 
 type StepStatus = PlanStepView['status']
 
@@ -51,65 +47,82 @@ export function stepMarker(status: StepStatus, env: TuiEnv): string {
   return (asciiOnly(env) ? STEP_ASCII : STEP_UNICODE)[status] ?? '?'
 }
 
+/** Display a short phrase, preserving an ellipsis whenever detail was omitted. */
+export function taskLabel(title: string, width: number, env: TuiEnv): string {
+  const text = title.replace(/\s+/g, ' ').trim()
+  const first = text.split(/[;,](?=\s)/)[0]!
+  const phrase = first.length >= 12 ? first : text
+  const ellipsis = asciiOnly(env) ? '...' : '…'
+  const limit = Math.max(0, Math.min(30, width))
+  if (phrase === text && textWidth(text) <= limit) return text
+  const words = phrase.split(' ')
+  let short = ''
+  for (const word of words) {
+    const next = short ? `${short} ${word}` : word
+    if (textWidth(next + ellipsis) > limit) break
+    short = next
+  }
+  return short ? short + ellipsis : truncateEnd(phrase, limit, ellipsis)
+}
+
 export function PlanPane(props: PlanPaneProps) {
   const env = useTuiEnv()
   const width = Math.max(0, Math.floor(props.width))
   const height = Math.max(0, Math.floor(props.height))
-  const [top, setTop] = useState(0)
+  const [top, setTop] = useState<number | undefined>(undefined)
   const plan = props.plan
+  useEffect(() => setTop(undefined), [props.focused, plan?.runId, plan?.goal])
   const [now, setNow] = useState(Date.now)
   const observation = useRef<PlanObservation | undefined>(undefined)
   observation.current = observePlan(plan, Date.now(), observation.current)
   const estimating = !!plan && plan.status !== 'done' && plan.status !== 'blocked' && !plan.waiting
     && !plan.steps.some(step => step.status === 'blocked')
-    && plan.runStatus === 'running' && width > 0 && height >= 6 && !env.screenReader
+    && plan.runStatus === 'running' && width > 0 && height >= 2 && !env.screenReader
   useEffect(() => {
     if (!estimating) return undefined
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [estimating])
 
-  const head: PaneLine[] = []
+  const head: PaneLine[] = [{ key: 'title', segs: alignSegs(
+    [{ text: 'Tasks', bold: true, tone: props.focused ? 'accent' : undefined }],
+    plan ? { text: `${plan.done}/${plan.total} done`, dim: true } : undefined, width, env
+  ) }]
   const steps: PaneLine[] = []
   if (plan) {
-    head.push({ key: 'title', segs: paneHeading('Plan', width, props.focused, env) })
-    head.push({ key: 'goal', segs: cutSegs([{ text: plan.goal || 'No goal set' }], width, env) })
-    head.push({ key: 'progress', segs: cutSegs([{ text: `${plan.done}/${plan.total} done`, dim: true }, { text: plan.statusWord ? `  ${plan.statusWord}` : '' }], width, env) })
-    if (height >= 6) {
-      const progress = planProgress(plan, Math.max(now, Date.now()), observation.current)
-      const eta = asciiOnly(env) ? progress.eta.replace('…', '...') : progress.eta
-      const suffix = ` ${progress.percent}%${asciiOnly(env) ? ' | ' : ' · '}${eta}`
-      const cells = Math.max(0, Math.min(16, width - suffix.length - 2))
-      const filled = Math.round(cells * progress.percent / 100)
-      head.push({ key: 'bar', segs: cutSegs(env.screenReader
-        ? [{ text: `Progress ${progress.percent}%. ${progress.eta}` }]
-        : [
-          { text: cells ? '[' : '', dim: true },
-          { text: (asciiOnly(env) ? '#' : '━').repeat(filled), tone: progress.percent === 100 ? 'ok' : 'running' },
-          { text: (asciiOnly(env) ? '-' : '─').repeat(cells - filled), dim: true },
-          { text: `${cells ? ']' : ''}${suffix}`, dim: true }
-        ], width, env) })
-    }
-    const bodyH = Math.max(0, height - head.length)
-    const withNotes = plan.steps.some((s) => s.note) && plan.steps.length + plan.steps.filter((s) => s.note).length <= bodyH
+    const progress = planProgress(plan, Math.max(now, Date.now()), observation.current)
+    const stopped = ['Blocked', 'Paused', 'Waiting for you', 'Idle', 'Stopping', 'Run ended', 'Run failed'].includes(progress.eta)
+    let eta = stopped ? `${progress.eta === 'Waiting for you' ? 'Waiting' : progress.eta} · ${env.screenReader ? 'ETA unavailable' : 'ETA —'}` : progress.eta
+    if (asciiOnly(env)) eta = eta.replace('…', '...').replace('·', '|').replace('—', '-')
+    const suffix = ` ${progress.percent}%${asciiOnly(env) ? ' | ' : ' · '}${eta}`
+    const cells = Math.max(0, Math.min(8, width - textWidth(suffix) - 2))
+    const filled = Math.round(cells * progress.percent / 100)
+    head.push({ key: 'bar', segs: cutSegs(env.screenReader
+      ? [{ text: `Progress ${progress.percent}%. ${eta}` }]
+      : [
+        { text: cells ? '[' : '', dim: true },
+        { text: (asciiOnly(env) ? '#' : '━').repeat(filled), tone: progress.percent === 100 ? 'ok' : 'running' },
+        { text: (asciiOnly(env) ? '-' : '─').repeat(cells - filled), dim: true },
+        { text: `${cells ? ']' : ''}${suffix}`, dim: true }
+      ], width, env) })
     for (const step of plan.steps) {
-      const tone = STEP_TONE[step.status]
-      const left = [
-        { text: `${stepMarker(step.status, env)} `, tone },
-        { text: step.title, dim: step.status === 'skipped' }
-      ]
-      const owner = step.owner ? { text: step.owner, dim: true } : undefined
-      steps.push({ key: `step:${step.id}`, segs: alignSegs(left, owner, width, env) })
-      if (withNotes && step.note) steps.push({ key: `note:${step.id}`, segs: cutSegs([{ text: `    ${step.note}`, dim: true }], width, env) })
+      const marker = `${stepMarker(step.status, env)} `
+      steps.push({ key: `step:${step.id}`, segs: cutSegs([
+        { text: marker, tone: STEP_TONE[step.status] },
+        { text: taskLabel(step.title, width - textWidth(marker), env), dim: step.status === 'skipped' }
+      ], width, env) })
     }
-  } else {
-    head.push({ key: 'title', segs: paneHeading('Plan', width, props.focused, env) })
-    head.push({ key: 'empty', segs: cutSegs([{ text: 'No plan yet', dim: true }], width, env) })
-  }
+  } else head.push({ key: 'empty', segs: cutSegs([{ text: 'No plan yet', dim: true }], width, env) })
 
-  const bodyH = Math.max(0, height - head.length)
+  const room = Math.max(0, height - head.length)
+  const overflow = steps.length > Math.min(5, room) && room >= 2
+  const bodyH = Math.min(5, Math.max(0, room - (overflow ? 1 : 0)))
   const maxTop = Math.max(0, steps.length - bodyH)
-  const shownTop = Math.min(top, maxTop)
+  const current = plan?.steps.findIndex(step => step.status === 'blocked') ?? -1
+  const active = plan?.steps.findIndex(step => step.status === 'in_progress') ?? -1
+  const working = current >= 0 ? current : active >= 0 ? active : plan?.steps.findIndex(step => step.status === 'pending') ?? -1
+  const autoTop = Math.min(maxTop, Math.max(0, working - (bodyH > 1 ? 1 : 0)))
+  const shownTop = props.focused && top !== undefined ? Math.min(top, maxTop) : autoTop
   const topRef = useRef(shownTop)
   topRef.current = shownTop
 
@@ -118,7 +131,7 @@ export function PlanPane(props: PlanPaneProps) {
     (e) => {
       const k = navKey(e)
       if (!k) return false
-      // Scrolling moves the first visible step line; End shows the last page.
+      // Progress stays pinned while only the compact task window scrolls.
       const next = k === 'end' ? maxTop : moveIndex(topRef.current, k, maxTop + 1, Math.max(1, bodyH - 1))
       topRef.current = next
       setTop(next)
@@ -128,5 +141,6 @@ export function PlanPane(props: PlanPaneProps) {
   )
 
   const lines = [...head, ...steps.slice(shownTop, shownTop + bodyH)]
+  if (overflow) lines.push({ key: 'more', segs: cutSegs([{ text: `${shownTop + 1}${asciiOnly(env) ? '-' : '–'}${Math.min(steps.length, shownTop + bodyH)} of ${steps.length}${asciiOnly(env) ? ' | ' : ' · '}${props.focused ? 'Up/Down scroll' : 'Tab to view'}`, dim: true }], width, env) })
   return <PaneLines width={width} height={height} lines={lines} env={env} />
 }

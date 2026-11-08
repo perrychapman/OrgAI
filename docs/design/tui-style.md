@@ -31,7 +31,10 @@ Previews use the actual Ink components with simulated task events, rendered enti
 
 Wide terminals put the conversation on the left and the agent room, plan and worktrees in a right
 sidebar capped at 42 columns. A nonempty run plan appears automatically in the wide sidebar, directly below the
-compact team roster, with completed/current/pending steps, a progress count, and a bar. The ETA is a rough step-pace estimate
+compact team roster, with a task count and one pinned progress/ETA line, even in short panes. The checklist shows at most five
+one-line task labels, without the goal paragraph, notes, or owners. Labels use a short leading phrase
+and mark omitted detail with an ellipsis. Long lists keep the active/blocked task visible; focus the pane
+to scroll the list. The ETA is a rough step-pace estimate
 from elapsed run time and completed steps; tasks can differ in size and prior waits remain part of elapsed time.
 It shows "Estimating" until progress exists, and suppresses estimates while blocked, awaiting a decision,
 paused, or ended. Skipped steps fill the bar without inflating the observed work rate. Continued runs establish a fresh
