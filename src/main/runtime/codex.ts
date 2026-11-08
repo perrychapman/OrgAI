@@ -275,6 +275,8 @@ class CodexSession implements RuntimeSession {
   private harnessByCodexName = new Map<string, HarnessTool>()
   private rootThreadId = ''
   private rootModelOverride?: string
+  /** App-server usage totals are cumulative for the thread, including turns on earlier models. */
+  private rootTokenTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
   /** Messages the user sent before the root thread existed. */
   private earlySends: { text: string; images?: ImageAttachment[] }[] = []
   /** Rules granted with "allow for this run". */
@@ -893,13 +895,32 @@ class CodexSession implements RuntimeSession {
         if (agent) {
           agent.inputTokens = u.input
           agent.outputTokens = u.output
-          setModelTokens(agent, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model ?? 'unknown', {
+          const model = agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model ?? 'unknown'
+          let tokens = {
             input: Math.max(0, u.input - u.cachedInput),
             output: u.output,
             cacheRead: Math.min(u.cachedInput, u.input),
             cacheWrite: 0
-          })
-          const cost = this.estimateCost(agent, u)
+          }
+          if (agentId === ROOT_AGENT_ID) {
+            const previous = agent.usage?.models.find((m) => m.model === model)?.tokens
+            const total = tokens
+            tokens = {
+              input: (previous?.input ?? 0) + Math.max(0, total.input - this.rootTokenTotals.input),
+              output: (previous?.output ?? 0) + Math.max(0, total.output - this.rootTokenTotals.output),
+              cacheRead: (previous?.cacheRead ?? 0) + Math.max(0, total.cacheRead - this.rootTokenTotals.cacheRead),
+              cacheWrite: 0
+            }
+            this.rootTokenTotals = total
+          }
+          setModelTokens(agent, model, tokens)
+          const conn = this.ctx.connection
+          const cost = agentId === ROOT_AGENT_ID && this.rootModelOverride && conn?.pricing && !isBuiltinConnectionId(conn.connection)
+            ? agent.usage?.models.reduce((sum, m) => {
+              const price = priceFor(conn.pricing!, m.model)
+              return sum + (price ? costFromPrice({ input: m.tokens.input, output: m.tokens.output, cacheRead: m.tokens.cacheRead, cacheCreation: m.tokens.cacheWrite }, price) : 0)
+            }, 0)
+            : this.estimateCost(agent, u)
           const moved = cost !== undefined && Math.abs(cost - agent.costUsd) > 1e-12
           if (moved) agent.costUsd = cost
           this.upsert(agent)
