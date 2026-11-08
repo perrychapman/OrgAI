@@ -139,7 +139,14 @@ async function select(title) {
 /** Read-only checks on the two-version project, at each size and theme. */
 async function versionChecks(label, wide) {
   await select('Project plan')
+  const planId = (await outputsOf()).find((o) => o.title === 'Project plan')?.id
   const sel = detail().locator('[data-testid=output-version-select]')
+  await sel.waitFor({ state: 'visible', timeout: 8000 })
+  await page.waitForFunction((id) => {
+    const detail = document.querySelector('[data-testid=outputs-detail] [data-testid=output-detail]')
+    return !!id && detail?.getAttribute('data-id') === id &&
+      detail.querySelectorAll('[data-testid=output-version-select] option').length === 2
+  }, planId, { timeout: 8000 })
   check((await sel.count()) === 1, `${label}: a two-version output has a version select`)
   const opts = (await sel.locator('option').allInnerTexts()).map(clean)
   check(opts.length === 2 && /^v2 · now, .+ · \d+ \w+$/.test(opts[0]) && /^v1 · .+ · \d+ \w+$/.test(opts[1]), `${label}: the select lists "v2 · now, <who> · <date>" then v1`, JSON.stringify(opts))
@@ -197,6 +204,7 @@ async function versionChecks(label, wide) {
   await detail().locator('[data-testid=output-detail-expand]').click()
   const dlg = page.locator('[data-testid=output-dialog]')
   await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  await dlg.locator('[data-testid=output-version-select]').waitFor({ state: 'visible', timeout: 8000 })
   check((await dlg.locator('[data-testid=output-version-select]').count()) === 1, `${label}: the Larger view has the version select`)
   check((await dlg.locator('[data-testid=output-notes-toggle]').count()) === 1, `${label}: the Larger view has the notes toggle`)
   check((await live().count()) === 1, `${label}: only one output-live region while the Larger view is open`)
