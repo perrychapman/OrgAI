@@ -215,10 +215,12 @@ App settings > Terminal: one row, replacing `CliShimRow`.
   never executes) extended to recognise an npm-installed `orgai-cli` (its `package.json` beside the resolved bin) and
   the old app shim. Shows "Installed (npm, <version from package.json>)", "Old OrgAI app command (no longer works)",
   "Another program named orgai", or "Not installed".
-- Install: main-process only, one at a time, cancellable. Resolves `npm` to an absolute path from the resolved PATH
-  (no PATH lookup by the child), cwd = the user's home, environment = the resolved login environment minus every
+- Install: main-process only, one at a time, cancellable. Resolves `npm` to an absolute path from the login shell's PATH
+  (the same PATH the status uses; the child gets only absolute PATH entries with npm's folder first, and on Windows
+  `NoDefaultCurrentDirectoryInExePath=1`), cwd = the user's home, environment = the app's process environment (only
+  PATH comes from the login shell; npm settings belong in `.npmrc`) minus every
   `ORGAI_*`, `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*`, `CODEX_*`, `AWS_*`, `GOOGLE_*`, `AZURE_*` variable (the user's
-  npm config and registry stay, so corporate registries work). Arguments are fixed: `install -g orgai-cli@<tag>
+  `.npmrc` and registry stay, so corporate registries work). Arguments are fixed: `install -g orgai-cli@<tag>
   --ignore-scripts` where `<tag>` is `latest` for a stable app and `next` for a prerelease (`release.yml`, code). On
   Windows `npm.cmd` runs through `cmd.exe /d /s /c` with that fixed, quoted argument list; nothing from the user or
   the network reaches the command line. Output: last 200 lines, 64 KB cap, control characters stripped, shown as

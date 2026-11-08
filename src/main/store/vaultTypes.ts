@@ -10,7 +10,7 @@
  * | HostKindCapabilities, HOST_KIND_CAPABILITIES, hostCanOpenWindows | src/shared/types.ts | done (registry gate); E uses inProcess |
  * | InstallChannel, INSTALL_CHANNELS, INSTALL_INFO_FILE, InstallInfo | src/shared/types.ts | A (builders write it; --version, doctor) |
  * | readInstallInfo | src/cli/installInfo.ts | done (reader); A (writers), B (launcher uses it) |
- * | CliShimStatus.otherCli | src/shared/types.ts | A (PATH lookup in shimInstaller), app Terminal row |
+ * | CliShimStatus.otherCli | src/shared/types.ts | superseded: removed; the app Terminal row reads CliCommandStatus from cliInstaller.ts status() (cli-standalone-default.md 5.3) |
  * | VaultState, VAULT_STATES, VaultCustodyScheme, VAULT_CUSTODY_SCHEMES, CustodyFailureKind, SecretStatus, LegacySecretsFileState | src/shared/types.ts | G |
  * | SecretsStatusResult, SecretsSoftDelete, SecretsOrphanVault, SecretsInit/Reset/Undelete/ConfirmDelete Input and Result | src/shared/types.ts | G (store side), H (channels, CLI), app notice "Restore / Keep removed" (H) |
  * | SECRETS_IPC (secrets:status / init / reset / undelete / confirmDelete), SecretsIpcChannel | src/shared/types.ts | H (handlers are stubs) |

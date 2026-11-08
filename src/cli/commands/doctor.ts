@@ -7,7 +7,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, posix, resolve, win32 } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cliShimPath, parseCliShim } from '../../main/host/packagedLayout'
 import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
@@ -130,29 +130,8 @@ export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Do
   if (!doctorProbes.exists(target)) {
     return { id: 'shim', status: 'warn', detail: `${shim} points at an OrgAI that is gone (${target}); it is the old app command. Install the standalone one: npm i -g orgai-cli` }
   }
-  const dir = (platform === 'win32' ? win32 : posix).dirname(shim)
-  if (!onPath(dir, env, platform)) {
-    const hint =
-      platform === 'win32'
-        ? `add ${dir} to your user Path (Settings > System > About > Advanced system settings > Environment Variables)`
-        : `add it to your shell profile: export PATH="${dir}:$PATH"`
-    return { id: 'shim', status: 'warn', detail: `${shim} is installed, but ${dir} is not on PATH; ${hint}` }
-  }
-  return { id: 'shim', status: 'ok', detail: `${shim}${viaLink ? ' (a link)' : ''} runs OrgAI (${target})` }
-}
-
-/** True when `dir` is one of the PATH entries (case folded on Windows and macOS, trailing separators ignored). */
-function onPath(dir: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
-  const p = platform === 'win32' ? win32 : posix
-  const raw = platform === 'win32' ? (env.Path ?? env.PATH ?? Object.entries(env).find(([k]) => k.toLowerCase() === 'path')?.[1]) : env.PATH
-  if (!raw) return false
-  const norm = (v: string): string => {
-    let out = p.normalize(v.replace(/^"(.*)"$/, '$1'))
-    while (out.length > 1 && /[\\/]$/.test(out) && !/^[A-Za-z]:\\$/.test(out)) out = out.slice(0, -1)
-    return platform === 'win32' || platform === 'darwin' ? out.toLowerCase() : out
-  }
-  const want = norm(dir)
-  return raw.split(platform === 'win32' ? ';' : ':').some((entry) => entry.trim() !== '' && norm(entry.trim()) === want)
+  // Any live shim is the old app command: it is withdrawn, so it is never advised onto PATH.
+  return { id: 'shim', status: 'warn', detail: `${shim}${viaLink ? ' (a link)' : ''} is the old OrgAI app command (no longer supported); remove it (App settings > Terminal, or delete the file) and install the standalone one: npm i -g orgai-cli` }
 }
 
 const MIN_NODE_MAJOR = 22

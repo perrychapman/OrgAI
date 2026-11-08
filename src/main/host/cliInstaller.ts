@@ -2,7 +2,7 @@
  * Install the orgai command from the app (docs/design/cli-standalone-default.md 5.3). Main process only.
  *
  * Status reads file metadata (orgaiOnPath.ts) and never runs a PATH candidate. Install runs one fixed command:
- * the absolute npm found on the login PATH, `install -g orgai-cli@<tag> --ignore-scripts`, cwd = home, environment =
+ * the absolute npm found on the login PATH (the child gets absolute PATH entries only, npm's folder first), `install -g orgai-cli@<tag> --ignore-scripts`, cwd = home, environment =
  * the login environment without ORGAI_*, ANTHROPIC_*, OPENAI_*, CLAUDE_*, CODEX_*, AWS_*, GOOGLE_* and AZURE_*. On
  * Windows npm.cmd runs through `cmd.exe /d /s /c` with a fixed, quoted command line. Never elevated. No electron
  * import: index.ts passes the facts in.
@@ -38,6 +38,34 @@ export function scrubEnv(env: Readonly<Record<string, string | undefined>>): Rec
     if (typeof v !== 'string' || SCRUBBED_ENV.test(k)) continue
     out[k] = v
   }
+  return out
+}
+
+/**
+ * The environment for the npm child: scrubEnv, and a PATH of absolute entries only with npm's own folder first, so
+ * `env node` (POSIX) and npm.cmd (Windows) find the node that came with that npm and never a relative entry or a file
+ * in the working folder. On Windows cmd.exe also skips the current directory.
+ */
+export function npmChildEnv(platform: NodeJS.Platform | string, env: Readonly<Record<string, string | undefined>>, npmPath: string, extraPath?: string): Record<string, string> {
+  const out = scrubEnv(env)
+  const p = platform === 'win32' ? win32 : posix
+  const sep = platform === 'win32' ? ';' : ':'
+  const seen = new Set<string>()
+  const dirs: string[] = []
+  const add = (raw: string): void => {
+    let d = raw.trim()
+    if (platform === 'win32' && d.length >= 2 && d.startsWith('"') && d.endsWith('"')) d = d.slice(1, -1)
+    if (!d || !p.isAbsolute(d) || isNetworkPathFor(platform, d) || d.includes(sep) || /[\r\n\0]/.test(d)) return
+    const key = platform === 'win32' ? d.toLowerCase() : d
+    if (seen.has(key)) return
+    seen.add(key)
+    dirs.push(d)
+  }
+  add(p.dirname(npmPath))
+  for (const list of [extraPath, env.PATH ?? env.Path]) for (const d of (list ?? '').split(sep).slice(0, 256)) add(d)
+  for (const k of Object.keys(out)) if (k.toLowerCase() === 'path') delete out[k]
+  out[platform === 'win32' ? 'Path' : 'PATH'] = dirs.join(sep)
+  if (platform === 'win32') out.NoDefaultCurrentDirectoryInExePath = '1'
   return out
 }
 
@@ -86,11 +114,11 @@ export function systemExe(env: Readonly<Record<string, string | undefined>>, nam
 }
 
 /** The fixed command. Nothing but the npm path (checked by resolveNpm) and the tag (latest or next) is in it. */
-export function buildNpmCommand(platform: NodeJS.Platform | string, npmPath: string, tag: 'latest' | 'next', comspec?: string, systemRoot?: Readonly<Record<string, string | undefined>>): NpmCommand {
+export function buildNpmCommand(platform: NodeJS.Platform | string, npmPath: string, tag: 'latest' | 'next', systemRoot?: Readonly<Record<string, string | undefined>>): NpmCommand {
   const fixed = ['install', '-g', `orgai-cli@${tag}`, '--ignore-scripts']
   if (platform !== 'win32') return { file: npmPath, args: fixed, verbatim: false }
   // cmd /s /c strips the outer quote pair, so the whole line is wrapped once more.
-  return { file: comspec && win32.isAbsolute(comspec) && !isNetworkPathFor('win32', comspec) ? comspec : systemExe(systemRoot ?? {}, 'cmd.exe'), args: ['/d', '/s', '/c', `""${npmPath}" ${fixed.join(' ')}"`], verbatim: true }
+  return { file: systemExe(systemRoot ?? {}, 'cmd.exe'), args: ['/d', '/s', '/c', `""${npmPath}" ${fixed.join(' ')}"`], verbatim: true }
 }
 
 /** Removes control characters (ANSI escapes included); a carriage return ends a line; tabs become a space. */
@@ -105,14 +133,15 @@ export function cleanOutput(text: string): string {
 
 /** Keeps the tail of npm's output: at most OUTPUT_MAX_LINES lines and OUTPUT_MAX_BYTES bytes. */
 export class OutputTail {
-  private text = ''
+  private raw = ''
+  /** Raw decoded text; cleaning happens once in value(), so an escape or a CR LF split across chunks stays whole. */
   push(chunk: string): void {
-    this.text += cleanOutput(chunk)
+    this.raw += chunk
     // Bound the working text so a flood cannot grow memory.
-    if (this.text.length > OUTPUT_MAX_BYTES * 4) this.text = this.text.slice(-OUTPUT_MAX_BYTES * 2)
+    if (this.raw.length > OUTPUT_MAX_BYTES * 4) this.raw = this.raw.slice(-OUTPUT_MAX_BYTES * 2)
   }
   value(): string {
-    let lines = this.text.replace(/\n+$/, '').split('\n')
+    let lines = cleanOutput(this.raw).replace(/\n+$/, '').split('\n')
     if (lines.length > OUTPUT_MAX_LINES) lines = lines.slice(-OUTPUT_MAX_LINES)
     let out = lines.join('\n')
     if (Buffer.byteLength(out) > OUTPUT_MAX_BYTES) {
@@ -125,6 +154,22 @@ export class OutputTail {
     }
     return out.trim()
   }
+}
+
+/**
+ * The line to show in the notice: npm's `npm error code X` plus the next `npm error <message>` line; without a code
+ * line, the last line that is not the "complete log" pointer.
+ */
+export function npmErrorSummary(text: string): string | undefined {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  const prefix = /^npm (?:error|ERR!)\s?/
+  const codeAt = lines.findIndex((l) => /^npm (?:error|ERR!) code \S+/.test(l))
+  if (codeAt >= 0) {
+    const code = lines[codeAt].replace(prefix, '').replace(/^code /, '')
+    const next = lines.slice(codeAt + 1).find((l) => prefix.test(l) && !/A complete log of this run/.test(l) && !/^npm (?:error|ERR!)\s*$/.test(l))
+    return next ? `${code}: ${next.replace(prefix, '')}` : code
+  }
+  return lines.filter((l) => !/A complete log of this run/.test(l)).slice(-1)[0]
 }
 
 /** The `--prefix` advice for a permission failure. */
@@ -182,7 +227,8 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
   const envPath = (): string | undefined => deps.env.PATH ?? deps.env.Path
   // The login shell's PATH; when it is unknown (empty), the process PATH, which holds the login additions already.
   const loginPath = (): string | undefined => (deps.loginPath ? deps.loginPath : envPath())
-  const npmPath = (): string | undefined => resolveNpm(platform, envPath(), deps.fs)
+  // Same PATH as status(), so Install uses the npm the user's terminal uses.
+  const npmPath = (): string | undefined => resolveNpm(platform, loginPath(), deps.fs)
   let running: { child: ChildProcess; cancelled: boolean } | undefined
 
   function oldShimNow(): boolean {
@@ -224,7 +270,20 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
       if (platform === 'win32' && child.pid) {
         const killer = spawn(systemExe(deps.env, 'taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { cwd: deps.home, env: scrubEnv(deps.env), windowsHide: true, windowsVerbatimArguments: false, stdio: ['ignore', 'pipe', 'pipe'] })
         // A spawn failure must not become an uncaught exception.
-        killer.on?.('error', (e) => log.warn(`orgai command: taskkill failed: ${errorText(e)}`))
+        const fallback = (): void => {
+          try {
+            child.kill()
+          } catch {
+            /* gone */
+          }
+        }
+        killer.on?.('error', (e) => {
+          log.warn(`orgai command: taskkill failed: ${errorText(e)}`)
+          fallback()
+        })
+        killer.on?.('close', (code) => {
+          if (code !== 0) fallback()
+        })
       } else {
         child.kill('SIGTERM')
         const t = setTimeout(() => {
@@ -251,7 +310,7 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
         status: status()
       }
     }
-    const cmd = buildNpmCommand(platform, npm, tag, deps.env.ComSpec ?? deps.env.COMSPEC, deps.env)
+    const cmd = buildNpmCommand(platform, npm, tag, deps.env)
     const out = new OutputTail()
     log.info(`orgai command: running ${command} with ${npm}`)
     return await new Promise<CliCommandResult>((resolve) => {
@@ -269,13 +328,16 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
       }
       let child: ChildProcess
       try {
-        child = spawn(cmd.file, cmd.args, { cwd: deps.home, env: scrubEnv(deps.env), windowsHide: true, windowsVerbatimArguments: cmd.verbatim, stdio: ['ignore', 'pipe', 'pipe'] })
+        child = spawn(cmd.file, cmd.args, { cwd: deps.home, env: npmChildEnv(platform, deps.env, npm, deps.loginPath), windowsHide: true, windowsVerbatimArguments: cmd.verbatim, stdio: ['ignore', 'pipe', 'pipe'] })
       } catch (e) {
         resolve({ ok: false, message: `OrgAI could not start npm: ${errorText(e)}`, status: status() })
         return
       }
       const mine = { child, cancelled: false }
       running = mine
+      // setEncoding keeps a multi-byte character split across chunks whole.
+      child.stdout?.setEncoding?.('utf8')
+      child.stderr?.setEncoding?.('utf8')
       child.stdout?.on('data', (d: Buffer | string) => out.push(String(d)))
       child.stderr?.on('data', (d: Buffer | string) => out.push(String(d)))
       const limit = deps.timeoutMs ?? INSTALL_TIMEOUT_MS
@@ -291,7 +353,7 @@ export function createCliInstallService(deps: CliInstallDeps): CliInstallService
         if (code === 0) return finish({ ok: true, message: 'Installed orgai-cli. Open a new terminal and run orgai.' })
         const text = out.value()
         const denied = /EACCES|EPERM|permission denied/i.test(text)
-        const last = text.split('\n').filter((l) => l.trim()).slice(-1)[0]
+        const last = npmErrorSummary(text)
         finish({
           ok: false,
           message: denied ? `npm was not allowed to write to its global folder${last ? `: ${last}` : '.'}` : `npm failed${typeof code === 'number' ? ` (exit ${code})` : ''}${last ? `: ${last}` : '.'}`,

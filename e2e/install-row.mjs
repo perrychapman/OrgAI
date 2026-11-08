@@ -212,10 +212,17 @@ try {
   check(await page.locator('[data-testid=cli-command-install]').isVisible(), 'Install is back after cancel')
 
   // 8. A reload remounts the row while npm runs: main still reports the install, so Cancel stays, Install is not offered.
+  const firstPid = pid
+  fs.rmSync(pidFile, { force: true })
   await page.locator('[data-testid=cli-command-install]').click()
   await cancel.waitFor({ timeout: 15_000 })
-  await sleep(500)
+  const t1 = Date.now()
+  while (Date.now() - t1 < 15_000) {
+    if (fs.existsSync(pidFile) && /^\d+\s*$/.test(fs.readFileSync(pidFile, 'utf8'))) break
+    await sleep(100)
+  }
   pid = Number(fs.readFileSync(pidFile, 'utf8'))
+  check(Number.isInteger(pid) && pid > 0 && pid !== firstPid, 'the second install wrote its own pid', `pid ${pid}, first ${firstPid}`)
   await page.reload()
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'General', exact: true }).click().catch(() => {})

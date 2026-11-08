@@ -2,7 +2,7 @@
  * Every `orgai` on a PATH, in the order a shell finds them (Wave 7, docs/design/cli-standalone.md 8.2), with the
  * install channel, version and commit each one runs, read from the install.json beside the bundle it reaches
  * (src/cli/installInfo.ts). Used by `orgai doctor` (src/cli/doctor/installChecks.ts) and by the app's Terminal row
- * (shimInstaller.ts `otherCli`).
+ * (cliInstaller.ts `status()`).
  *
  * Read only and bounded: network folders (UNC, /net) are skipped untouched; one lstat / stat per PATH entry and candidate name, at most SHIM_TEXT_MAX_BYTES read from a
  * candidate, at most ORGAI_PATH_MAX_ENTRIES PATH entries. Nothing is executed. Electron-free; injectable fs for tests.

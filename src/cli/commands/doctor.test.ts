@@ -170,7 +170,11 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
   it("shim: this install's launcher on PATH is ok", () => {
     packaged()
     files.set(SHIM(), shimText(LAUNCHER))
-    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} runs OrgAI (${LAUNCHER})` })
+    {
+      const c = shimCheck('darwin', pathEnv())
+      expect(c.status).toBe('warn')
+      expect(c.detail).toContain('old OrgAI app command')
+    }
   })
 
   it('shim: an old shim whose launcher is gone warns, one that exists is just reported', () => {
@@ -179,7 +183,8 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     files.set(other, '')
     files.set(SHIM(), shimText(other))
     const c = shimCheck('darwin', pathEnv())
-    expect(c.status).toBe('ok')
+    expect(c.status).toBe('warn')
+    expect(c.detail).toContain('old OrgAI app command')
     files.set(SHIM(), shimText('/gone/OrgAI.app/Contents/Resources/bin/orgai'))
     const gone = shimCheck('darwin', pathEnv())
     expect(gone.status).toBe('warn')
@@ -193,25 +198,27 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     const launcherText = `#!/bin/sh\n# ${PACKAGED_LAUNCHER_MARK} (cli-spec 7, Wave 6).\n`
     files.set(SHIM(), launcherText)
     doctorProbes.realpath = (p) => (p === SHIM() ? LAUNCHER : p)
-    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} (a link) runs OrgAI (${LAUNCHER})` })
+    expect(shimCheck('darwin', pathEnv())).toMatchObject({ status: 'warn', detail: expect.stringContaining('(a link) is the old OrgAI app command') })
     const other = '/Users/me/Apps/OrgAI.app/Contents/Resources/bin/orgai'
     files.set(other, launcherText)
     doctorProbes.realpath = (p) => (p === SHIM() ? other : p)
-    expect(shimCheck('darwin', pathEnv()).status).toBe('ok')
+    expect(shimCheck('darwin', pathEnv()).status).toBe('warn')
     // A link to some other program is still foreign.
     files.set(SHIM(), '#!/bin/sh\nexec /opt/x "$@"\n')
     doctorProbes.realpath = (p) => (p === SHIM() ? '/opt/x/orgai' : p)
     expect(shimCheck('darwin', pathEnv()).detail).toContain('not an OrgAI shim')
   })
 
-  it('shim: a folder that is not on PATH warns with the export hint (never edits a profile)', () => {
+  it('shim: a live shim warns, suggests removal and npm, and never advises adding it to PATH', () => {
     packaged()
     files.set(SHIM(), shimText(LAUNCHER))
-    const c = shimCheck('darwin', { PATH: '/usr/bin:/bin' })
-    expect(c.status).toBe('warn')
-    expect(c.detail).toContain(`export PATH="${join(HOME(), '.local', 'bin')}:$PATH"`)
-    // A trailing slash on the PATH entry still counts.
-    expect(shimCheck('darwin', { PATH: `${join(HOME(), '.local', 'bin')}/` }).status).toBe('ok')
+    for (const env of [{ PATH: '/usr/bin:/bin' }, { PATH: `${join(HOME(), '.local', 'bin')}/` }]) {
+      const c = shimCheck('darwin', env)
+      expect(c.status).toBe('warn')
+      expect(c.detail).toContain('remove it')
+      expect(c.detail).toContain('npm i -g orgai-cli')
+      expect(c.detail).not.toContain('export PATH')
+    }
   })
 
   it('doctor lists the shim check and never writes the shim', async () => {

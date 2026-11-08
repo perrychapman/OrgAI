@@ -8,6 +8,8 @@ import {
   OUTPUT_MAX_LINES,
   OutputTail,
   buildNpmCommand,
+  npmChildEnv,
+  npmErrorSummary,
   cleanOutput,
   createCliInstallService,
   installCommandText,
@@ -70,7 +72,7 @@ function make(over: Partial<CliInstallDeps> = {}) {
     platform: 'darwin',
     home: '/h',
     env: { PATH: '/n/bin:/usr/bin' },
-    loginPath: '/usr/bin',
+    loginPath: '/n/bin:/usr/bin',
     appVersion: '0.2.0',
     oldShim: shim,
     fs: { stat: (p) => ({ isFile: () => p === '/n/bin/npm', mode: 0o755 }) },
@@ -147,14 +149,14 @@ describe('buildNpmCommand', () => {
     })
   })
   it('Windows: npm.cmd through cmd.exe /d /s /c with one quoted command line', () => {
-    const c = buildNpmCommand('win32', 'C:\\Program Files\\nodejs\\npm.cmd', 'next', 'C:\\Windows\\System32\\cmd.exe')
+    const c = buildNpmCommand('win32', 'C:\\Program Files\\nodejs\\npm.cmd', 'next')
     expect(c.file).toBe('C:\\Windows\\System32\\cmd.exe')
     expect(c.verbatim).toBe(true)
     expect(c.args).toEqual(['/d', '/s', '/c', '""C:\\Program Files\\nodejs\\npm.cmd" install -g orgai-cli@next --ignore-scripts"'])
-    // A ComSpec that is not absolute is ignored.
-    expect(buildNpmCommand('win32', 'C:\\n\\npm.cmd', 'latest', 'cmd.exe & calc', { SystemRoot: 'D:\\Win' }).file).toBe('D:\\Win\\System32\\cmd.exe')
+    // The login environment's ComSpec is never run.
+    expect(buildNpmCommand('win32', 'C:\\n\\npm.cmd', 'latest', { SystemRoot: 'D:\\Win', ComSpec: 'C:\\evil\\cmd.exe' }).file).toBe('D:\\Win\\System32\\cmd.exe')
     // No usable SystemRoot (missing, relative, network): the fixed C:\\Windows.
-    expect(buildNpmCommand('win32', 'C:\\n\\npm.cmd', 'latest', undefined, {}).file).toBe('C:\\Windows\\System32\\cmd.exe')
+    expect(buildNpmCommand('win32', 'C:\\n\\npm.cmd', 'latest', {}).file).toBe('C:\\Windows\\System32\\cmd.exe')
     expect(systemExe({ SystemRoot: '\\\\evil\\share' }, 'taskkill.exe')).toBe('C:\\Windows\\System32\\taskkill.exe')
     expect(systemExe({ SystemRoot: 'win' }, 'taskkill.exe')).toBe('C:\\Windows\\System32\\taskkill.exe')
   })
@@ -230,7 +232,7 @@ describe('install', () => {
   })
 
   it('says where to get npm when none is on PATH, and runs nothing', async () => {
-    const { svc, calls } = make({ env: { PATH: '/usr/bin' } })
+    const { svc, calls } = make({ env: { PATH: '/usr/bin' }, loginPath: '/usr/bin' })
     const r = await svc.install()
     expect(r.ok).toBe(false)
     expect(r.message).toMatch(/could not find npm/)
@@ -281,14 +283,46 @@ describe('install', () => {
     await p
   })
 
-  it('another failure shows npm last line', async () => {
+  it('another failure shows npm code and message', async () => {
     const { svc, children } = make()
     const p = svc.install()
     children[0].stderr.emit('data', 'npm error code E404\nnpm error 404 Not Found - orgai-cli\n')
     children[0].emit('close', 1)
     const r = await p
-    expect(r.message).toBe('npm failed (exit 1): npm error 404 Not Found - orgai-cli')
+    expect(r.message).toBe('npm failed (exit 1): E404: 404 Not Found - orgai-cli')
     expect(r.hint).toBeUndefined()
+  })
+
+  it('Install resolves npm from the login PATH, the one status uses', async () => {
+    const { svc, calls } = make({ env: { PATH: '/n/bin:/usr/bin' }, loginPath: '/usr/bin' })
+    expect((await svc.install()).ok).toBe(false)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('the child gets an absolute PATH with npm first', async () => {
+    const { svc, calls, children } = make({ env: { PATH: '.:/usr/bin' }, loginPath: '/n/bin:rel:/usr/bin' })
+    const p = svc.install()
+    expect(calls[0].opts.env.PATH).toBe('/n/bin:/usr/bin')
+    children[0].emit('close', 0)
+    await p
+  })
+
+  it('Windows: a failing taskkill falls back to killing the child', async () => {
+    const { svc, children } = make({
+      platform: 'win32',
+      home: 'C:\\Users\\me',
+      env: { Path: 'C:\\nodejs' },
+      loginPath: 'C:\\nodejs',
+      fs: { stat: (p) => ({ isFile: () => p === 'C:\\nodejs\\npm.cmd' }) }
+    })
+    const p = svc.install()
+    const kill = vi.fn()
+    ;(children[0] as unknown as { kill: unknown }).kill = kill
+    svc.cancel()
+    children[1].emit('close', 1)
+    expect(kill).toHaveBeenCalled()
+    children[0].emit('close', 1)
+    await p
   })
 
   it('a spawn that throws or errors is a plain failure', async () => {
@@ -434,5 +468,51 @@ describe('status never runs a PATH candidate', () => {
     })
     expect(svc.status()).toMatchObject({ state: 'other', path: join(bin, 'orgai') })
     expect(existsSync(mark)).toBe(false)
+  })
+})
+
+describe('npmErrorSummary', () => {
+  const log = 'npm error A complete log of this run can be found in: /home/me/.npm/_logs/2026-11-08T10_00_00_000Z-debug-0.log\n'
+  it('real npm 10 EACCES: the code and the first message line, not the log pointer', () => {
+    const text = `npm error code EACCES\nnpm error syscall mkdir\nnpm error path /usr/local/lib/node_modules/orgai-cli\nnpm error errno -13\n${log}`
+    expect(npmErrorSummary(text)).toBe('EACCES: syscall mkdir')
+  })
+  it('real npm 10 E404', () => {
+    const text = `npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/orgai-cli - Not found\nnpm error 404\n${log}`
+    expect(npmErrorSummary(text)).toBe('E404: 404 Not Found - GET https://registry.npmjs.org/orgai-cli - Not found')
+  })
+  it('npm 8 style prefix, and no code line falls back to the last real line', () => {
+    expect(npmErrorSummary('npm ERR! code ENOTFOUND\nnpm ERR! network request failed\n')).toBe('ENOTFOUND: network request failed')
+    expect(npmErrorSummary(`something broke\n${log}`)).toBe('something broke')
+  })
+})
+
+describe('npmChildEnv', () => {
+  it('POSIX: absolute entries only, npm folder first', () => {
+    const e = npmChildEnv('darwin', { PATH: '.:bin:/usr/bin:/x/bin', ANTHROPIC_API_KEY: 'k' }, '/n/bin/npm', '/n/bin:/usr/bin:rel')
+    expect(e.PATH).toBe('/n/bin:/usr/bin:/x/bin')
+    expect(e.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(e.NoDefaultCurrentDirectoryInExePath).toBeUndefined()
+  })
+  it('Windows: skips relative entries, npm folder first, no current directory search', () => {
+    const e = npmChildEnv('win32', { Path: '.;tools;C:\\Windows;C:\\nodejs' }, 'C:\\nodejs\\npm.cmd')
+    expect(e.Path).toBe('C:\\nodejs;C:\\Windows')
+    expect(e.NoDefaultCurrentDirectoryInExePath).toBe('1')
+  })
+})
+
+describe('output split across chunks', () => {
+  it('an escape, a CR LF and a UTF-8 character split between chunks stay whole', () => {
+    const t = new OutputTail()
+    t.push('\x1b[3')
+    t.push('1mred\x1b[0m\r')
+    t.push('\nnext\n')
+    expect(t.value()).toBe('red\nnext')
+    const bytes = Buffer.from('caf\u00e9\n')
+    const dec = new (require('node:string_decoder').StringDecoder)('utf8')
+    const u = new OutputTail()
+    u.push(dec.write(bytes.subarray(0, 4)))
+    u.push(dec.write(bytes.subarray(4)))
+    expect(u.value()).toBe('caf\u00e9')
   })
 })
