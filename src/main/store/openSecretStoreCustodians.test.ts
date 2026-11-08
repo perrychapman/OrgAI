@@ -32,7 +32,7 @@ afterEach(() => {
 
 const env = (): NodeJS.ProcessEnv => ({ [VAULT_KEY_FILE_ENV]: keyFile })
 const open = (hostKind: 'node' | 'inproc' | 'desktop', extra: Record<string, unknown> = {}) =>
-  openSecretStore({ dataDir, userDataDir: root, hostKind, cipher: hostKind === 'desktop' ? fakeCipher() : noCipher, env: env(), log: () => undefined, retryMs: 0, ...extra })
+  openSecretStore({ dataDir, userDataDir: root, hostKind, product: 'desktop', cipher: hostKind === 'desktop' ? fakeCipher() : noCipher, env: env(), log: () => undefined, retryMs: 0, ...extra })
 const vaultJson = (): VaultFile => JSON.parse(readFileSync(join(dataDir, 'vault.json'), 'utf8')) as VaultFile
 
 describe('openSecretStore with its default (real) custodians', () => {

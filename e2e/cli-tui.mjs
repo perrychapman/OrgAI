@@ -46,6 +46,10 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { APP_DIR, DATA_DIR, allowFullTerminalAccess, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 import { probePty, spawnTui } from './ptyDriver.mjs'
+import { writeFileSync as markWrite } from 'node:fs'
+import { join as markJoin } from 'node:path'
+// The CLI marks its own data folder (spec 3.1); this script seeds files before the first command, so it marks it itself.
+markWrite(markJoin(DATA_DIR, 'product.json'), `${JSON.stringify({ product: 'orgai-cli', version: 1 })}\n`, { mode: 0o600 })
 
 const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
 const TUI_BUNDLE = path.join(APP_DIR, 'out', 'cli', 'tui.mjs')
@@ -142,7 +146,7 @@ const SCRIPTS = { simple: scriptFile('simple', SIMPLE), escapes: scriptFile('esc
 // ---------- Processes ----------
 
 const baseEnv = (script) => {
-  const env = { ...process.env, ORGAI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1', TERM: 'xterm-256color', ORGAI_MOCK_SCRIPT: script, LANG: 'en_US.UTF-8' }
+  const env = { ...process.env, ORGAI_CLI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1', TERM: 'xterm-256color', ORGAI_MOCK_SCRIPT: script, LANG: 'en_US.UTF-8' }
   // No script: the mock's default script, which understands the [mock:deep-tree] marker in the prompt.
   if (!script) delete env.ORGAI_MOCK_SCRIPT
   delete env.ELECTRON_RUN_AS_NODE

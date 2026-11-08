@@ -2,13 +2,15 @@
  * Builds the one CliContext a command runs with (cli-spec 6): resolved data dirs, the host client, the read-only store
  * reader, project resolution, the launcher, the `--host inproc` entry and signal listeners. Electron-free.
  */
+import { homedir } from 'node:os'
 import { connectHost } from './client/hostClient'
 import { createLauncher } from './client/launcher'
-import { resolveDataDirs, userChoseDataDir } from './client/locate'
+import { checkCliFolder } from '../main/store/productMarker'
+import { DESKTOP_DATA_DIR_NOTE, ignoresDesktopDataDir, platformUserDataDir, resolveDataDirs, userChoseDataDir } from './client/locate'
 import { readOnlySnapshot } from './client/readOnlyStore'
 import { resolveProject } from './client/resolveProject'
 import type { SecretOverlay } from './secretOverlay'
-import type { CliContext, CliGlobals, CliIo, InprocHostHandle, InprocStartOptions, SecretEnvUse } from './types'
+import { CliError, EXIT, type CliContext, type CliGlobals, type CliIo, type InprocHostHandle, type InprocStartOptions, type SecretEnvUse } from './types'
 import { CLI_VERSION } from './version'
 
 export interface BuildContextInput {
@@ -24,6 +26,8 @@ export interface BuildContextInput {
   /** Where SIGINT / SIGTERM come from (process by default). */
   signalSource?: Pick<NodeJS.Process, 'on' | 'off'>
   pid?: number
+  /** The home folder (default os.homedir()); tests. */
+  home?: string
 }
 
 /** NO_COLOR (any non-empty value), --no-color and a non-TTY stdout all turn colour off. */
@@ -61,10 +65,26 @@ export function reusableInproc(start: (opts: InprocStartOptions) => Promise<Inpr
   }
 }
 
+/** The note about ORGAI_DATA_DIR is printed once per process. */
+let desktopEnvNoted = false
+
+/** Tests: forget that the note was printed. */
+export function resetDesktopEnvNote(): void {
+  desktopEnvNoted = false
+}
+
 export function buildContext(input: BuildContextInput): CliContext {
   const { env, cwd, platform, io } = input
   const globals: CliGlobals = { ...input.globals, color: colorEnabled(input.globals, env, io) }
-  const paths = resolveDataDirs({ flag: globals.dataDir, env, platform, cwd })
+  const home = input.home ?? homedir()
+  const paths = resolveDataDirs({ flag: globals.dataDir, env, platform, cwd, home })
+  // First, before anything reads or writes the folder: it must be the CLI's own (spec 3.1).
+  const refusal = checkCliFolder({ ...paths, desktopDefault: platformUserDataDir(platform, env, home), platform })
+  if (refusal) throw new CliError(refusal, EXIT.usage)
+  if (!desktopEnvNoted && ignoresDesktopDataDir({ flag: globals.dataDir, env })) {
+    desktopEnvNoted = true
+    io.stderr.write(`${DESKTOP_DATA_DIR_NOTE}\n`)
+  }
   const signalSource = input.signalSource ?? process
   const pid = input.pid ?? process.pid
   const launcher = createLauncher({

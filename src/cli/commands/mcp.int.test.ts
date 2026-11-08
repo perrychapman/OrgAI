@@ -3,6 +3,7 @@
  * gets a fake key custodian and an open vault (Wave 7: a `--host inproc` host stores secrets in vault.json once a
  * custodian works), so set-secret and the mock OAuth sign-in can be checked end to end. No tokens, no network.
  */
+import { writeProductMarker } from '../../main/store/productMarker'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -67,6 +68,7 @@ describe('orgai mcp against a real inproc host', () => {
     projectDir = join(userDataDir, 'project')
     mkdirSync(projectDir)
     // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
+    writeProductMarker(userDataDir, 'orgai-cli')
     allowFullTerminalAccess(join(userDataDir, 'data'))
     host = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, shared: true })
     const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })

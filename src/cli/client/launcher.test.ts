@@ -128,6 +128,7 @@ describe('launcher', () => {
     chosen.spawn({ headless: false })
     expect(calls[1].args).toEqual([])
     expect(calls[1].options.env?.ORGAI_DATA_DIR).toBe('/ud')
+    expect(calls[1].options.env?.ORGAI_CLI_DATA_DIR).toBe('/ud')
     // Wave 7: spawn the app locate() found, without resolving again.
     chosen.spawn({ headless: true, app: { command: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', args: [], source: 'installed' } })
     expect(calls[2].command).toBe('/Applications/OrgAI.app/Contents/MacOS/OrgAI')
@@ -141,9 +142,9 @@ describe('launcher', () => {
     expect(hostSpawnCwd('./electron', { home: '/home/me', isDir: () => true })).toBe('/home/me')
   })
 
-  it('hostSpawnEnv drops an inherited ORGAI_DATA_DIR unless chosen', () => {
-    expect(hostSpawnEnv({ ORGAI_DATA_DIR: '/x' }, { userDataDir: '/y', userChoseDataDir: false })).toEqual({})
-    expect(hostSpawnEnv({ ORGAI_DATA_DIR: '/x' }, { userDataDir: '/y', userChoseDataDir: true })).toEqual({ ORGAI_DATA_DIR: '/y' })
+  it('hostSpawnEnv drops an inherited ORGAI_DATA_DIR / ORGAI_CLI_DATA_DIR and passes the CLI one only when chosen', () => {
+    expect(hostSpawnEnv({ ORGAI_DATA_DIR: '/x', ORGAI_CLI_DATA_DIR: '/z' }, { userDataDir: '/y', userChoseDataDir: false })).toEqual({})
+    expect(hostSpawnEnv({ ORGAI_DATA_DIR: '/x' }, { userDataDir: '/y', userChoseDataDir: true })).toEqual({ ORGAI_CLI_DATA_DIR: '/y', ORGAI_DATA_DIR: '/y' })
   })
 
   it('waitForReady waits for a ready, live, different host', async () => {
@@ -267,7 +268,7 @@ describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
     expect(existsSync(log)).toBe(true)
     if (process.platform !== 'win32') expect(statSync(log).mode & 0o777).toBe(0o600)
     // The host environment: no secrets, no ELECTRON_RUN_AS_NODE, the chosen data folder, the idle setting kept.
-    expect(o.env).toEqual({ PATH: '/bin', ORGAI_DAEMON_IDLE_MINUTES: '5', ORGAI_DATA_DIR: userDataDir })
+    expect(o.env).toEqual({ PATH: '/bin', ORGAI_DAEMON_IDLE_MINUTES: '5', ORGAI_CLI_DATA_DIR: userDataDir, ORGAI_DATA_DIR: userDataDir })
     expect(o.cwd).toBe(dirname(nodeExe))
   })
 

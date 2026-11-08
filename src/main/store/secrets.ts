@@ -41,7 +41,8 @@ import {
   VAULT_DUAL_WRITE,
   VAULT_FILE,
   VAULT_FORMAT,
-  VAULT_KEY_FILE_ENV,
+  vaultMessages,
+  vaultNames,
   VAULT_MESSAGES,
   VAULT_RESET_SUFFIX,
   VAULT_RETIREMENT_ENABLED,
@@ -58,11 +59,15 @@ import {
   type VaultCustody,
   type VaultEntry,
   type VaultFile,
+  type VaultMessages,
+  type VaultProduct,
   type VaultTombstone
 } from './vaultTypes'
 
 /** Set to '1' by the unit test runner (vitest.config.ts): the OS key stores report 'unavailable' to openSecretStore's default factory. */
 export const NO_OS_KEYSTORE_ENV = 'ORGAI_VAULT_NO_OS_KEYSTORE'
+/** The same switch for the CLI's vault (ORGAI_CLI_VAULT_NO_OS_KEYSTORE). */
+export const CLI_NO_OS_KEYSTORE_ENV = vaultNames('cli').noOsKeystoreEnv
 
 /**
  * Encrypted secrets (the LiteLLM key, MCP server env vars and headers, OAuth client secrets and tokens), Wave 7
@@ -171,7 +176,9 @@ export interface SecretStoreOptions {
   userDataDir?: string
   /** The custodian of a scheme (default: unavailableCustodianFactory until the platform custodians land). */
   custodian?: CustodianFactory
-  /** ORGAI_VAULT_KEY_FILE is read from here. Default process.env. */
+  /** Whose key-file variable and message wording the store uses. Default 'desktop'. */
+  product?: VaultProduct
+  /** The product's key-file variable is read from here. Default process.env. */
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   log?: (m: string) => void
@@ -233,6 +240,9 @@ export const LEGACY_MOVE_FAILED_MESSAGE = 'The damaged secrets.json could not be
 
 export const NOTHING_TO_RESTORE_MESSAGE = 'No deleted value is kept for this secret.'
 export const NO_CUSTODIAN_MESSAGE = 'No key store is available on this system; set ORGAI_VAULT_KEY_FILE or run `orgai secrets init --key-file <path>`.'
+/** NO_CUSTODIAN_MESSAGE naming the product's own variable. */
+export const noCustodianMessage = (product: VaultProduct = 'desktop'): string =>
+  `No key store is available on this system; set ${vaultNames(product).keyFileEnv} or run \`orgai secrets init --key-file <path>\`.`
 export const KEY_FILE_INSIDE_DATA_MESSAGE = "The key file must be outside OrgAI's data folder."
 export const VAULT_NOT_OPENED_MESSAGE = 'Secure storage has not been opened yet.'
 export const keyFileSchemeConflict = (scheme: VaultCustodyScheme): string =>
@@ -312,6 +322,8 @@ export class SecretStore implements SecretStoreApi {
   private readonly legacyPath: string
   private readonly hostKind: HostKind
   private readonly isApp: boolean
+  private readonly product: VaultProduct
+  private readonly msg: VaultMessages
   private readonly readOnly: boolean
   /** key -> plain value, memory only. */
   private readonly overlay = new Map<string, string>()
@@ -373,6 +385,8 @@ export class SecretStore implements SecretStoreApi {
     this.vaultPath = join(dataDir, VAULT_FILE)
     this.legacyPath = join(dataDir, LEGACY_SECRETS_FILE)
     this.hostKind = opts.hostKind ?? 'desktop'
+    this.product = opts.product ?? 'desktop'
+    this.msg = vaultMessages(this.product)
     this.isApp = isAppHostKind(this.hostKind)
     this.readOnly = opts.readOnly === true
     for (const [k, v] of opts.overlay ?? []) if (typeof k === 'string' && typeof v === 'string' && v !== '') this.overlay.set(k, v)
@@ -431,7 +445,7 @@ export class SecretStore implements SecretStoreApi {
       this.dropKey()
       this.vault = undefined
       this.vstate = read.kind
-      this.reason = read.kind === 'corrupt' ? VAULT_MESSAGES.corrupt : undefined
+      this.reason = read.kind === 'corrupt' ? this.msg.corrupt : undefined
       return
     }
     this.vault = read.vault
@@ -538,18 +552,18 @@ export class SecretStore implements SecretStoreApi {
 
   private notOpenReason(): string {
     if (this.vaultReadError) return VAULT_MESSAGES.locked(this.vaultReadError)
-    if (this.vstate === 'corrupt') return VAULT_MESSAGES.corrupt
-    if (this.vstate === 'missing-key') return VAULT_MESSAGES.missingKey
-    if (this.vstate === 'key-mismatch') return VAULT_MESSAGES.keyMismatch
+    if (this.vstate === 'corrupt') return this.msg.corrupt
+    if (this.vstate === 'missing-key') return this.msg.missingKey
+    if (this.vstate === 'key-mismatch') return this.msg.keyMismatch
     return VAULT_MESSAGES.locked(this.reason ?? VAULT_NOT_OPENED_MESSAGE)
   }
 
   private envKeyFile(): string | undefined {
-    const v = this.env[VAULT_KEY_FILE_ENV]
+    const v = this.env[vaultNames(this.product).keyFileEnv]
     return typeof v === 'string' && v.trim() !== '' ? v : undefined
   }
 
-  /** The scheme a new vault would use: key-file when ORGAI_VAULT_KEY_FILE is set, else the platform's OS scheme. */
+  /** The scheme a new vault would use: key-file when the product's key-file variable is set, else the platform's OS scheme. */
   private newScheme(): VaultCustodyScheme | null {
     return this.envKeyFile() ? 'key-file' : platformVaultScheme(this.platform)
   }
@@ -583,7 +597,7 @@ export class SecretStore implements SecretStoreApi {
     const capable = this.isApp
     // A secrets.json value newer than the vault (rows 3 and 4, or no vault at all): the app reads it, others cannot.
     if (l !== undefined && legacyIsNewer(this.vault, key, this.H(key))) {
-      return capable ? { k: 'legacy', value: l } : { k: 'unreadable', reason: VAULT_MESSAGES.pendingLegacy }
+      return capable ? { k: 'legacy', value: l } : { k: 'unreadable', reason: this.msg.pendingLegacy }
     }
     const v = this.vault
     if (!v) return { k: 'unset' }
@@ -1032,8 +1046,8 @@ export class SecretStore implements SecretStoreApi {
     if (this.vaultReadError) return VAULT_MESSAGES.locked(this.vaultReadError)
     if (this.legacyReadError) return this.legacyReadError
     if (this.L(key) === undefined) return undefined
-    if (this.vstate === 'corrupt') return VAULT_MESSAGES.clearRefusedCorrupt
-    if (!this.isApp && this.vstate === 'absent') return VAULT_MESSAGES.clearRefusedLegacyOnly
+    if (this.vstate === 'corrupt') return this.msg.clearRefusedCorrupt
+    if (!this.isApp && this.vstate === 'absent') return this.msg.clearRefusedLegacyOnly
     return undefined
   }
 
@@ -1258,8 +1272,8 @@ export class SecretStore implements SecretStoreApi {
       zeroize(dek)
       if (this.vault?.vaultId === vaultId) {
         this.vstate = 'key-mismatch'
-        this.reason = VAULT_MESSAGES.keyMismatch
-        this.lastFailure = { kind: 'missing', reason: VAULT_MESSAGES.keyMismatch }
+        this.reason = this.msg.keyMismatch
+        this.lastFailure = { kind: 'missing', reason: this.msg.keyMismatch }
         this.logRepeated('open:mismatch', 'the key does not match this secure storage')
       }
       return false
@@ -1286,7 +1300,7 @@ export class SecretStore implements SecretStoreApi {
    */
   private async createVault(request?: CustodianRequest): Promise<'created' | 'opened'> {
     const scheme: VaultCustodyScheme | null = request?.keyFile ? 'key-file' : this.newScheme()
-    if (!scheme) throw new CustodyError('unavailable', NO_CUSTODIAN_MESSAGE)
+    if (!scheme) throw new CustodyError('unavailable', noCustodianMessage(this.product))
     const req: CustodianRequest = scheme === 'key-file' ? { keyFile: request?.keyFile ?? this.envKeyFile(), ...(request?.importKeyFile ? { importKeyFile: true } : {}) } : {}
     if (scheme === 'key-file') {
       const problem = req.keyFile ? this.keyFileProblem(req.keyFile) : 'No key file was named.'
@@ -1761,7 +1775,7 @@ export class SecretStore implements SecretStoreApi {
     const t = v && Object.hasOwn(v.tombstones, key) ? v.tombstones[key] : undefined
     const kept = t ? this.softDeletes().find((s) => s.key === key) : undefined
     if (!v || !t || !kept) return { restored: false, reason: NOTHING_TO_RESTORE_MESSAGE }
-    if (!t.prev && !this.isApp) return { restored: false, reason: VAULT_MESSAGES.undeleteAppOnly }
+    if (!t.prev && !this.isApp) return { restored: false, reason: this.msg.undeleteAppOnly }
     if (this.vstate !== 'open' || !this.dek) return { restored: false, reason: this.notOpenReason() }
     let plain: string
     if (t.prev) {
@@ -1828,7 +1842,9 @@ export interface OpenSecretStoreOptions {
   custodian?: CustodianFactory
   /** The CLI's ORGAI_SECRET_* / --secret-env values (inproc only); they win over stored values and are never saved. */
   overlay?: ReadonlyMap<string, string>
-  /** ORGAI_VAULT_KEY_FILE is read from here. Default process.env. */
+  /** Whose custody this store uses: 'cli' (ORGAI_CLI_VAULT_*, "OrgAI CLI Vault") or 'desktop' (ORGAI_VAULT_*, "OrgAI Vault"). */
+  product: VaultProduct
+  /** The product's key-file variable is read from here. Default process.env. */
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   log?: (m: string) => void
@@ -1854,6 +1870,7 @@ export async function openSecretStore(opts: OpenSecretStoreOptions): Promise<Sec
   const real = createCustodianFactory({
     dataDir: opts.dataDir,
     userDataDir: opts.userDataDir,
+    product: opts.product,
     ...(opts.env ? { env: opts.env } : {}),
     ...(opts.platform ? { platform: opts.platform } : {}),
     currentCustody: () => store?.currentCustody() ?? null
@@ -1862,10 +1879,11 @@ export async function openSecretStore(opts: OpenSecretStoreOptions): Promise<Sec
   // write a real keychain / DPAPI / Secret Service item, so the default OS schemes answer 'unavailable'. Key files work.
   const custodian: CustodianFactory =
     opts.custodian ??
-    ((scheme, request) => (scheme !== 'key-file' && process.env[NO_OS_KEYSTORE_ENV] === '1' ? unavailableCustodian(scheme) : real(scheme, request)))
+    ((scheme, request) => (scheme !== 'key-file' && process.env[vaultNames(opts.product).noOsKeystoreEnv] === '1' ? unavailableCustodian(scheme) : real(scheme, request)))
   store = new SecretStore(opts.dataDir, opts.cipher, {
     hostKind: opts.hostKind,
     userDataDir: opts.userDataDir,
+    product: opts.product,
     custodian,
     ...(opts.overlay ? { overlay: opts.overlay } : {}),
     ...(opts.env ? { env: opts.env } : {}),

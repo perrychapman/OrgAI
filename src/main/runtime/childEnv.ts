@@ -97,7 +97,7 @@ const PROXY_DROPPED = new Set(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REF
  * turns the OrgAI binary into a Node runtime that could load the CLI). No agent or MCP child may see them, whoever set
  * them (the inherited env, a connection or an MCP spec). Names compare case-insensitively. ORGAI_MOCK, ORGAI_CLAUDE_PATH and ORGAI_CODEX_PATH are not one of them (not secrets).
  */
-export const ORGAI_CONTROL_ENV_PATTERNS: readonly RegExp[] = [/^ORGAI_DATA_DIR$/i, /^ORGAI_DAEMON_/i, /^ORGAI_SECRET_/i, /^ORGAI_VAULT_/i, /^ELECTRON_RUN_AS_NODE$/i]
+export const ORGAI_CONTROL_ENV_PATTERNS: readonly RegExp[] = [/^ORGAI_DATA_DIR$/i, /^ORGAI_CLI_DATA_DIR$/i, /^ORGAI_CLI_VAULT_/i, /^ORGAI_DAEMON_/i, /^ORGAI_SECRET_/i, /^ORGAI_VAULT_/i, /^ELECTRON_RUN_AS_NODE$/i]
 
 /** True for a name scrubControlEnv drops. */
 export function isControlEnvVar(name: string): boolean {

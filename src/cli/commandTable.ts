@@ -50,7 +50,7 @@ export interface CommandEntry {
 
 /** Flags valid anywhere before `--` (flags.ts splitGlobalFlags). */
 export const GLOBAL_FLAGS: readonly CommandFlag[] = [
-  { name: 'data-dir', takesValue: true, summary: 'OrgAI user data folder (default: ORGAI_DATA_DIR, else the platform default)' },
+  { name: 'data-dir', takesValue: true, summary: 'orgai CLI data folder (default: ORGAI_CLI_DATA_DIR, else the platform default)' },
   { name: 'host', takesValue: true, values: ['auto', 'daemon', 'inproc'], summary: 'Which host to use' },
   { name: 'output-format', takesValue: true, values: ['text', 'json', 'stream-json'], summary: 'Output format' },
   { name: 'project', takesValue: true, summary: 'Project id or folder (default: the project containing the current folder)' },

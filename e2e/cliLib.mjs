@@ -14,6 +14,9 @@ import { APP_DIR, DATA_DIR, allowFullTerminalAccess, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 
+// The CLI marks its own data folder (spec 3.1); a script that seeds files first marks it itself.
+fs.writeFileSync(path.join(DATA_DIR, 'product.json'), `${JSON.stringify({ product: 'orgai-cli', version: 1 })}\n`, { mode: 0o600 })
+
 /** A key file only its owner can read. Windows gives a new file inherited entries (SYSTEM, Administrators) that the key-file custodian refuses, so restrict the DACL to this user as its error message says. */
 export function writeRestrictedKeyFile(file, bytes) {
   fs.writeFileSync(file, bytes, { mode: 0o600 })
@@ -31,13 +34,13 @@ export const HOST_DATA_DIR = path.join(DATA_DIR, 'data')
 export const DAEMON_JSON = path.join(HOST_DATA_DIR, 'run', 'daemon.json')
 export const DAEMON_SECRET = path.join(HOST_DATA_DIR, 'run', 'daemon.secret')
 
-export const ENV = { ...process.env, ORGAI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' }
+export const ENV = { ...process.env, ORGAI_CLI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' }
 delete ENV.ELECTRON_RUN_AS_NODE
 // A mock inproc host never touches an OS key store (a throwaway data folder must not leave keychain items); the
 // vault key comes from a throwaway key file instead.
 const KEY_DIR = privateTempDir('orgai-e2e-key-')
 writeRestrictedKeyFile(path.join(KEY_DIR, 'vault.key'), randomBytes(32))
-ENV.ORGAI_VAULT_KEY_FILE = path.join(KEY_DIR, 'vault.key')
+ENV.ORGAI_CLI_VAULT_KEY_FILE = path.join(KEY_DIR, 'vault.key')
 process.on('exit', () => fs.rmSync(KEY_DIR, { recursive: true, force: true }))
 
 const PACKAGE_VERSION = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version

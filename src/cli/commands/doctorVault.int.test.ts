@@ -8,14 +8,15 @@ import { tmpdir } from 'node:os'
 import { privateTempDir } from '../../main/testSupport/privateTempDir'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { writeProductMarker } from '../../main/store/productMarker'
 import { openSecretStore } from '../../main/store/secrets'
 import { noCipher } from '../../main/store/vaultTesting'
-import { VAULT_KEY_FILE_ENV } from '../../main/store/vaultTypes'
 import { buildContext } from '../context'
 import { runtimeCheckProbes } from '../doctor/runtimeChecks'
 import { EXIT } from '../types'
 import { doctorProbes, runDoctor } from './doctor'
 
+const CLI_KEY_FILE_ENV = 'ORGAI_CLI_VAULT_KEY_FILE'
 const realProbes = { ...doctorProbes }
 const realRuntimeProbes = { ...runtimeCheckProbes }
 let root: string
@@ -28,6 +29,7 @@ beforeEach(() => {
   chmodSync(keyDir, 0o700)
   dataDir = join(root, 'data')
   mkdirSync(dataDir, { recursive: true })
+  writeProductMarker(root, 'orgai-cli')
   doctorProbes.gitVersion = async () => 'git version 2.50.0'
   doctorProbes.homeDir = () => root
   runtimeCheckProbes.claude = () => ({ ok: true, path: '/fake/claude', source: 'sdk' })
@@ -65,7 +67,7 @@ describe('orgai doctor with the real groups', () => {
   })
 
   it('reports the vault the real store made, without opening it', async () => {
-    const store = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'node', cipher: noCipher, env: { [VAULT_KEY_FILE_ENV]: join(keyDir, 'k') }, log: () => undefined, retryMs: 0 })
+    const store = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'node', product: 'cli', cipher: noCipher, env: { [CLI_KEY_FILE_ENV]: join(keyDir, 'k') }, log: () => undefined, retryMs: 0 })
     await store.prepareWrite()
     store.set('litellm.apiKey', 'sk-doctor-secret')
     store.dispose()

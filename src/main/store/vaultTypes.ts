@@ -96,6 +96,44 @@ export const KEYCHAIN_SERVICE = 'OrgAI Vault'
 /** Linux Secret Service attributes: `service orgai vault <vaultId>`; label "OrgAI vault". */
 export const SECRET_SERVICE_ATTRIBUTE = 'orgai'
 export const SECRET_SERVICE_LABEL = 'OrgAI vault'
+
+/** Which product owns a vault's custody (standalone spec 3.2): the CLI and the desktop app share no names or variables. */
+export type VaultProduct = 'cli' | 'desktop'
+
+export interface VaultNames {
+  /** The environment variable naming a key file. */
+  keyFileEnv: string
+  /** The variable that turns the OS key stores off (tests, verify scripts). */
+  noOsKeystoreEnv: string
+  keychainService: string
+  secretServiceAttribute: string
+  secretServiceLabel: string
+  /** DPAPI entropy prefix: `<prefix>:<vaultId>`. */
+  dpapiEntropyPrefix: string
+}
+
+const DESKTOP_NAMES: VaultNames = {
+  keyFileEnv: VAULT_KEY_FILE_ENV,
+  noOsKeystoreEnv: 'ORGAI_VAULT_NO_OS_KEYSTORE',
+  keychainService: KEYCHAIN_SERVICE,
+  secretServiceAttribute: SECRET_SERVICE_ATTRIBUTE,
+  secretServiceLabel: SECRET_SERVICE_LABEL,
+  dpapiEntropyPrefix: 'orgai.vault/1'
+}
+
+const CLI_NAMES: VaultNames = {
+  keyFileEnv: 'ORGAI_CLI_VAULT_KEY_FILE',
+  noOsKeystoreEnv: 'ORGAI_CLI_VAULT_NO_OS_KEYSTORE',
+  keychainService: 'OrgAI CLI Vault',
+  secretServiceAttribute: 'orgai-cli',
+  secretServiceLabel: 'OrgAI CLI vault',
+  dpapiEntropyPrefix: 'orgai-cli.vault/1'
+}
+
+/** The custody names of a product. The desktop's are the ones existing vaults already use. */
+export function vaultNames(product: VaultProduct = 'desktop'): VaultNames {
+  return product === 'cli' ? CLI_NAMES : DESKTOP_NAMES
+}
 /** Prefix of a moved-aside vault (`vault.json.reset-<time>`, `vault.json.corrupt-<time>`). */
 export const VAULT_RESET_SUFFIX = '.reset-'
 export const VAULT_CORRUPT_SUFFIX = '.corrupt-'
@@ -175,9 +213,9 @@ export function vaultCheckAad(vaultId: string): string {
   return `${VAULT_FORMAT}\u0000${vaultId}\u0000\u0000check`
 }
 
-/** DPAPI entropy (UTF-8): `orgai.vault/1:<vaultId>`. */
-export function dpapiEntropy(vaultId: string): string {
-  return `${VAULT_FORMAT}:${vaultId}`
+/** DPAPI entropy (UTF-8): `orgai.vault/1:<vaultId>` (desktop), `orgai-cli.vault/1:<vaultId>` (CLI). */
+export function dpapiEntropy(vaultId: string, product: VaultProduct = 'desktop'): string {
+  return `${vaultNames(product).dpapiEntropyPrefix}:${vaultId}`
 }
 
 // ---------- Custody (5.3) ----------
@@ -271,8 +309,29 @@ export const VAULT_MESSAGES = {
   resetWarning: "Secrets saved only through the orgai command are lost. The OrgAI app's older copies, which may be outdated, are used instead.",
   legacyRemovedNotice: (n: number): string => `${n} saved secret${n === 1 ? ' was' : 's were'} removed by an older version of OrgAI.`,
   moveRefused: (slot: string, server: string, reason: string): string =>
-    `${slot} of ${server} cannot be read here (${reason}). Open the OrgAI app once, or unlock secure storage (\`orgai secrets status\` shows how) and try again.`
+    `${slot} of ${server} cannot be read here (${reason}). Unlock secure storage (\`orgai secrets status\` shows how) and try again.`
 } as const
+
+/**
+ * The orgai CLI's wording (standalone spec 3.3): its folder starts empty, so no secret was ever saved by the app and the
+ * texts that send a user to the app are gone.
+ */
+export type VaultMessages = { readonly [K in keyof typeof VAULT_MESSAGES]: (typeof VAULT_MESSAGES)[K] extends string ? string : (typeof VAULT_MESSAGES)[K] }
+
+export const CLI_VAULT_MESSAGES: VaultMessages = {
+  ...VAULT_MESSAGES,
+  pendingLegacy: 'This saved secret cannot be read by orgai',
+  corrupt: 'Secure storage is damaged. Run `orgai secrets reset` to start over',
+  clearRefusedCorrupt: 'Secure storage is damaged. Reset it first with `orgai secrets reset`',
+  clearRefusedLegacyOnly: 'Run `orgai secrets init` first',
+  undeleteAppOnly: 'This deleted secret cannot be restored here',
+  resetWarning: 'Every secret saved in orgai is lost.'
+}
+
+/** The sentences of a product's store. */
+export function vaultMessages(product: VaultProduct = 'desktop'): VaultMessages {
+  return product === 'cli' ? CLI_VAULT_MESSAGES : VAULT_MESSAGES
+}
 
 /** set() with a value on an 'absent' vault in a Node or inproc host: prepareWrite() was not awaited first (a bug trap, 5.6). */
 export class VaultNotReady extends Error {

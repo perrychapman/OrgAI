@@ -27,7 +27,7 @@
 //   (6)  vault across processes: `secrets init --key-file`, a LiteLLM connection at a local fake proxy (127.0.0.1,
 //        answers /v1/models only for a synthetic bearer that is never printed), `connections set-secret litellm
 //        --stdin` in one process and `connections test litellm` in a fresh one (connected); another valid key file
-//        through ORGAI_VAULT_KEY_FILE reads as key-mismatch; after `set-secret --clear` the test says disconnected.
+//        through ORGAI_CLI_VAULT_KEY_FILE reads as key-mismatch; after `set-secret --clear` the test says disconnected.
 //        SKIP only when the build has no `orgai secrets` (exit 2 "not available in this build"); the vault is merged, so
 //        it runs. The flow was driven by hand against the built bundle with a throwaway data folder (Wave 7 integration).
 //   (7)  Codex, when `codex` is on PATH or ORGAI_CODEX_PATH names it: `--version` and an app-server `initialize`
@@ -119,11 +119,16 @@ export function npmEnv(base, prefix) {
  * person running the check never reaches the installed CLI (step 4 checks the installed runtime, step 6 its own key
  * file). Pure.
  */
-export function npmCliEnv(base) {
+export function npmCliEnv(base, cliDataDir) {
   const out = {}
-  for (const [k, v] of Object.entries(base)) if (!/^ORGAI_VAULT_/i.test(k) && k.toUpperCase() !== 'ORGAI_CLAUDE_PATH') out[k] = v
+  for (const [k, v] of Object.entries(base)) if (!/^ORGAI_(CLI_)?VAULT_/i.test(k) && k.toUpperCase() !== 'ORGAI_CLAUDE_PATH') out[k] = v
+  // The CLI has its own data folder variable; the app's ORGAI_DATA_DIR is not its setting and must change nothing.
+  if (cliDataDir !== undefined) {
+    out.ORGAI_CLI_DATA_DIR = cliDataDir
+    delete out.ORGAI_DATA_DIR
+  }
   // Whatever the person had, an installed CLI must never reach the real OS keychain: keep (or set) the isolation flag.
-  out.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
+  out.ORGAI_CLI_VAULT_NO_OS_KEYSTORE = '1'
   return out
 }
 
@@ -539,7 +544,10 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       timeoutMs: INSTALL_TIMEOUT_MS
     })
   const layout = globalLayout(platform, prefix)
-  const childEnv = withNodeFirst(npmCliEnv(verifyEnv(env, userDataDir)), nodeDir, platform)
+  // A decoy ORGAI_DATA_DIR (the app's variable) rides along: the CLI must ignore it and keep to ORGAI_CLI_DATA_DIR.
+  const decoyAppDir = path.join(work, 'app-data-decoy')
+  fs.mkdirSync(decoyAppDir)
+  const childEnv = { ...withNodeFirst(npmCliEnv(verifyEnv(env, userDataDir), userDataDir), nodeDir, platform), ORGAI_DATA_DIR: decoyAppDir }
   const orgaiAt = (bin, args, cwd, extra = {}) => {
     const cmd = launchCommand(platform, bin, args, env)
     return run({ ...cmd, cwd, env: { ...childEnv, ...(extra.env ?? {}) }, timeoutMs: CHECK_TIMEOUT_MS, ...(extra.input !== undefined ? { input: extra.input } : {}) })
@@ -563,7 +571,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     const installed = inst.code === 0 && fs.existsSync(layout.bin) && fs.existsSync(layout.packageDir)
     if (!installed) {
       report('(1) install', 'fail', `npm install -g failed: ${showRun(inst)}`)
-      for (const id of ['(2) --version', '(3) doctor', '(4) claude runtime', '(5) exec auto', '(6) vault', '(7) codex']) report(id, 'skip', 'skipped: the install failed')
+      for (const id of ['(2) --version', '(3) doctor', '(4) claude runtime', '(5) exec auto', '(6) vault', '(7) codex', '(8) data folder']) report(id, 'skip', 'skipped: the install failed')
       return finish()
     }
     const problems1 = []
@@ -686,7 +694,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const outputs = [s0]
       const step = async (label, args, extra) => {
         // A mock inproc host uses no OS key store without a key file (Wave 7 review), so every call names this one.
-        const r = await orgai(['--host', 'inproc', ...args], userDataDir, { ...extra, env: { ORGAI_VAULT_KEY_FILE: keyFile, ...(extra?.env ?? {}) } })
+        const r = await orgai(['--host', 'inproc', ...args], userDataDir, { ...extra, env: { ORGAI_CLI_VAULT_KEY_FILE: keyFile, ...(extra?.env ?? {}) } })
         outputs.push(r)
         if (r.code !== 0) problems6.push(`${label}: ${showRun(r)}`)
         return r
@@ -706,7 +714,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       }
       await step('set-secret', ['connections', 'set-secret', proxyId, '--stdin'], { input: `${synthetic}\n` })
       const testState = async () => {
-        const r = await orgai(['--host', 'inproc', '--output-format', 'json', 'connections', 'test', proxyId], userDataDir, { env: { ORGAI_VAULT_KEY_FILE: keyFile } })
+        const r = await orgai(['--host', 'inproc', '--output-format', 'json', 'connections', 'test', proxyId], userDataDir, { env: { ORGAI_CLI_VAULT_KEY_FILE: keyFile } })
         outputs.push(r)
         return connectionTestState(r.stdout)
       }
@@ -714,7 +722,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       if (connected !== 'connected') problems6.push(`a fresh process reads the stored key: expected connected, got ${connected ?? 'no answer'}`)
       const otherKey = path.join(keyDir, 'other.key')
       writeRestrictedKeyFile(otherKey, randomBytes(32))
-      const mm = await orgai(['--host', 'inproc', '--output-format', 'json', 'secrets', 'status'], userDataDir, { env: { ORGAI_VAULT_KEY_FILE: otherKey } })
+      const mm = await orgai(['--host', 'inproc', '--output-format', 'json', 'secrets', 'status'], userDataDir, { env: { ORGAI_CLI_VAULT_KEY_FILE: otherKey } })
       outputs.push(mm)
       const mmState = vaultState(mm.stdout)
       if (mmState !== 'key-mismatch') problems6.push(`another key file: expected key-mismatch, got ${mmState ?? showRun(mm)}`)
@@ -727,6 +735,19 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         problems6.push('the synthetic key was printed by an orgai command')
       }
       report('(6) vault', problems6.length === 0 ? 'ok' : 'fail', problems6.length ? problems6.join('; ') : `key file vault: stored in one process, read in another (proxy saw ${proxy.hits.authorized} authorized request(s)); key-mismatch and delete as expected`)
+    }
+
+    // (8) the CLI's own data folder: a fresh install marks it for the CLI; the app's ORGAI_DATA_DIR changed nothing
+    {
+      const problems8 = []
+      try {
+        const marker = JSON.parse(fs.readFileSync(path.join(userDataDir, 'product.json'), 'utf8'))
+        if (marker.product !== 'orgai-cli') problems8.push(`product.json says ${JSON.stringify(marker.product)}, expected "orgai-cli"`)
+      } catch (e) {
+        problems8.push(`no readable product.json in the CLI data folder (${e.code ?? e.message})`)
+      }
+      if (fs.readdirSync(decoyAppDir).length > 0) problems8.push(`ORGAI_DATA_DIR was not ignored: ${decoyAppDir} holds ${fs.readdirSync(decoyAppDir).join(', ')}`)
+      report('(8) data folder', problems8.length === 0 ? 'ok' : 'fail', problems8.length ? problems8.join('; ') : 'product.json marks the CLI folder (orgai-cli); ORGAI_DATA_DIR was ignored')
     }
 
     // (7) Codex, bring-your-own

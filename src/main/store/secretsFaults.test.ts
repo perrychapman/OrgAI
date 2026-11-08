@@ -36,6 +36,7 @@ afterEach(() => rmSync(root, { recursive: true, force: true }))
 const isApp = (k: HostKind): boolean => k === 'desktop' || k === 'headless-host'
 function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Promise<SecretStore> {
   return openSecretStore({
+    product: 'desktop',
     dataDir,
     userDataDir: root,
     hostKind: kind,

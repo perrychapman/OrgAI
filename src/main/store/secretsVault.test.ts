@@ -39,6 +39,7 @@ afterEach(() => {
 const isApp = (k: HostKind): boolean => k === 'desktop' || k === 'headless-host'
 function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Promise<SecretStore> {
   return openSecretStore({
+    product: 'desktop',
     dataDir,
     userDataDir: root,
     hostKind: kind,
@@ -220,7 +221,7 @@ describe('opening and creating (cli-standalone.md 5.6)', () => {
     expect(a.state()).toBe('absent')
     a.set('k', 'v')
     expect(olderApp(dataDir).get('k')).toBe('v')
-    const n = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'inproc', cipher: noCipher, platform: 'darwin', env: {}, log: () => undefined, custodian: unavailableCustodianFactory })
+    const n = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'inproc', product: 'desktop', cipher: noCipher, platform: 'darwin', env: {}, log: () => undefined, custodian: unavailableCustodianFactory })
     await expect(n.prepareWrite()).rejects.toThrow(custodianUnavailableReason('keychain'))
     expect(() => n.set('x', 'y')).toThrow(VaultNotReady)
     expect((await n.statusReport({ probe: true })).probe).toEqual({ ok: false, kind: 'unavailable', reason: custodianUnavailableReason('keychain') })

@@ -17,7 +17,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { posix } from 'node:path'
 import { findOnPath } from '../../host/systemBinaries'
-import { CustodyError, SECRET_SERVICE_ATTRIBUTE, SECRET_SERVICE_LABEL, VAULT_DEK_BYTES, type CustodianCreated, type CustodianProbe, type CustodyFailureKind, type VaultCustody } from '../vaultTypes'
+import { CustodyError, VAULT_DEK_BYTES, vaultNames, type CustodianCreated, type CustodianProbe, type CustodyFailureKind, type VaultCustody } from '../vaultTypes'
 import { randomBytes } from 'node:crypto'
 import { BAD_ITEM_REASON, BAD_VAULT_ID_REASON, EXISTS_REASON, KEY_FILE_HINT, sameKey, wrongPlatform, type HelperCustodianOptions, type RemovableKeyCustodian } from './common'
 import { custodianEnvFor } from './env'
@@ -64,9 +64,11 @@ export class SecretServiceCustodian implements RemovableKeyCustodian {
   private readonly env: Record<string, string>
   private readonly platform: NodeJS.Platform
   private readonly opts: SecretServiceCustodianOptions
+  private readonly names: ReturnType<typeof vaultNames>
 
   constructor(opts: SecretServiceCustodianOptions = {}) {
     this.opts = opts
+    this.names = vaultNames(opts.product)
     this.platform = opts.platform ?? process.platform
     this.hostEnv = opts.env ?? process.env
     this.env = custodianEnvFor('secret-service', this.hostEnv, this.platform)
@@ -121,7 +123,7 @@ export class SecretServiceCustodian implements RemovableKeyCustodian {
   }
 
   private attrs(vaultId: string): string[] {
-    return ['service', SECRET_SERVICE_ATTRIBUTE, 'vault', vaultId]
+    return ['service', this.names.secretServiceAttribute, 'vault', vaultId]
   }
 
   async probe(): Promise<CustodianProbe> {
@@ -164,7 +166,7 @@ export class SecretServiceCustodian implements RemovableKeyCustodian {
       throw new CustodyError('denied', EXISTS_REASON)
     }
     const dek = randomBytes(VAULT_DEK_BYTES)
-    const stored = classifySecretTool(await this.run(pre.file, ['store', `--label=${SECRET_SERVICE_LABEL}`, ...this.attrs(vaultId)], dek.toString('base64')), 'store')
+    const stored = classifySecretTool(await this.run(pre.file, ['store', `--label=${this.names.secretServiceLabel}`, ...this.attrs(vaultId)], dek.toString('base64')), 'store')
     if (stored) {
       dek.fill(0)
       throw new CustodyError(stored.kind, stored.reason)

@@ -3,6 +3,7 @@
  * (cli-spec 6.3, Wave 5). The host runs in this process (startInprocHost); every command goes through `main(argv)` with
  * `--host daemon`, so it connects as a real CLI client would. Mock adapter only; no tokens, no network.
  */
+import { writeProductMarker } from '../../main/store/productMarker'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,6 +29,7 @@ beforeAll(async () => {
   projectDir = join(userDataDir, 'repo')
   mkdirSync(projectDir)
   // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
+  writeProductMarker(userDataDir, 'orgai-cli')
   allowFullTerminalAccess(join(userDataDir, 'data'))
   host = await startInprocHost({ userDataDir, dataDir, env: { ...env }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, shared: true })
   const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })

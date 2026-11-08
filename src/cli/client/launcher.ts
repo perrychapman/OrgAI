@@ -370,16 +370,20 @@ export function resetConsumedSecretEnv(): void {
 
 /**
  * The environment a spawned host gets: no ORGAI_SECRET_*, no variable a secret was read from (consumeSecretEnv), no
- * ELECTRON_RUN_AS_NODE, ORGAI_DATA_DIR only when chosen.
+ * ELECTRON_RUN_AS_NODE, ORGAI_CLI_DATA_DIR (and the app's ORGAI_DATA_DIR) only when chosen.
  */
 export function hostSpawnEnv(env: NodeJS.ProcessEnv, opts: { userDataDir: string; userChoseDataDir: boolean }): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(env)) {
-    if (v === undefined || k.startsWith(SECRET_ENV_PREFIX) || k === 'ELECTRON_RUN_AS_NODE' || k === 'ORGAI_DATA_DIR') continue
+    if (v === undefined || k.startsWith(SECRET_ENV_PREFIX) || k === 'ELECTRON_RUN_AS_NODE' || k === 'ORGAI_DATA_DIR' || k === 'ORGAI_CLI_DATA_DIR') continue
     if (consumedSecretVars.has(k)) continue
     out[k] = v
   }
-  if (opts.userChoseDataDir) out.ORGAI_DATA_DIR = opts.userDataDir
+  // The CLI's own host reads ORGAI_CLI_DATA_DIR; the app this launcher can still spawn reads ORGAI_DATA_DIR.
+  if (opts.userChoseDataDir) {
+    out.ORGAI_CLI_DATA_DIR = opts.userDataDir
+    out.ORGAI_DATA_DIR = opts.userDataDir
+  }
   return out
 }
 

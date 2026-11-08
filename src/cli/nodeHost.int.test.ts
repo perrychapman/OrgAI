@@ -8,6 +8,7 @@
  * into a failure instead of a skip. A stale bundle tests the old code. POSIX only (Windows named pipes and detached
  * spawns are not exercised here).
  */
+import { writeProductMarker } from '../main/store/productMarker'
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -70,6 +71,7 @@ function launcher(extra: Record<string, string>): ReturnType<typeof createLaunch
 beforeEach(() => {
   // Short: the host's d-<id>.sock must stay under the 100-byte socket path limit.
   userDataDir = realpathSync(mkdtempSync(join(posix ? '/tmp' : tmpdir(), 'wpe-')))
+  writeProductMarker(userDataDir, 'orgai-cli')
   dataDir = join(userDataDir, 'data')
 })
 

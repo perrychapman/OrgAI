@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SecretsStatusResult } from '../../shared/types'
-import { VAULT_MESSAGES } from '../../main/store/vaultTypes'
+import { CLI_VAULT_MESSAGES as VAULT_MESSAGES } from '../../main/store/vaultTypes'
 import { fakeContext, FakeHostClient, rpcError } from '../testing/fakeContext'
 import { hostSecretsChecks, offlineSecretsChecks, pendingLegacyCount, secretsChecks } from './secretsChecks'
 
@@ -36,7 +36,7 @@ describe('doctor: secure storage through the host', () => {
     const c = byId(hostSecretsChecks(status({ probe: { ok: true } })))
     expect(c.vault).toMatchObject({ status: 'ok', detail: 'Open (macOS keychain); 2 secrets in it' })
     expect(c['vault-key-store']).toMatchObject({ status: 'ok' })
-    expect(c['legacy-secrets']).toMatchObject({ status: 'ok', detail: "secrets.json (the app's copy): 1 key" })
+    expect(c['legacy-secrets']).toMatchObject({ status: 'ok', detail: "secrets.json (an older copy): 1 key" })
   })
 
   it('locked, pending, unreadable, legacy removals and orphans warn; corrupt fails; never a value', () => {
@@ -57,7 +57,7 @@ describe('doctor: secure storage through the host', () => {
     )
     expect(locked.vault).toMatchObject({ status: 'warn', detail: 'locked (macOS keychain): Secure storage is locked: unlock it' })
     expect(locked['vault-key-store']).toMatchObject({ status: 'warn', detail: 'macOS keychain: locked: Run security unlock-keychain' })
-    expect(locked['vault-pending']).toMatchObject({ status: 'warn', detail: `2 secrets not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+    expect(locked['vault-pending']).toMatchObject({ status: 'warn', detail: `2 secrets not readable by the orgai command. ${VAULT_MESSAGES.pendingLegacy}` })
     expect(locked['vault-unreadable']).toMatchObject({ status: 'warn' })
     expect(locked['vault-removed']).toMatchObject({ status: 'warn', detail: expect.stringContaining('1 removed by an older OrgAI') })
     expect(locked['vault-orphans']).toMatchObject({ status: 'warn' })
@@ -110,8 +110,8 @@ const ENTRY = { ...CT, at: 1, lc: true }
 describe('doctor: secure storage without a host (metadata only)', () => {
   it('no files: nothing created yet, no legacy copy', () => {
     expect(offlineSecretsChecks(dir).map((c) => [c.id, c.status, c.detail])).toEqual([
-      ['vault', 'ok', 'Not created yet; the first saved secret (or the app) creates it'],
-      ['legacy-secrets', 'ok', "secrets.json (the app's copy): none"]
+      ['vault', 'ok', 'Not created yet; the first saved secret creates it'],
+      ['legacy-secrets', 'ok', "secrets.json (an older copy): none"]
     ])
   })
 
@@ -130,7 +130,7 @@ describe('doctor: secure storage without a host (metadata only)', () => {
     writeFileSync(join(dir, 'secrets.json'), JSON.stringify({ version: 1, secrets: { x: 'Y2lwaGVy', y: 'Y2lwaGVy' } }))
     const c = byId(offlineSecretsChecks(dir))
     expect(c.vault).toMatchObject({ status: 'ok', detail: 'Present (key file): 2 secrets, 1 removed secret kept; not opened (no host is running)' })
-    expect(c['legacy-secrets'].detail).toBe("secrets.json (the app's copy): 2 keys")
+    expect(c['legacy-secrets'].detail).toBe("secrets.json (an older copy): 2 keys")
     writeFileSync(join(dir, 'vault.json'), '{nope')
     writeFileSync(join(dir, 'secrets.json'), '[]')
     const d = byId(offlineSecretsChecks(dir))
@@ -154,21 +154,21 @@ describe('doctor: secure storage without a host (metadata only)', () => {
   it('counts pending-legacy secrets from hashes alone, with the open-the-app hint (5.4, 5.5 rows 3 and 4)', () => {
     // No vault: every key in secrets.json is pending on a Node or inproc host.
     writeFileSync(join(dir, 'secrets.json'), JSON.stringify({ version: 1, secrets: { a: 'QQ==', b: 'Qg==', c: 'Qw==', d: 'RA==' } }))
-    expect(byId(offlineSecretsChecks(dir))['vault-pending']).toMatchObject({ status: 'warn', detail: `4 secrets not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+    expect(byId(offlineSecretsChecks(dir))['vault-pending']).toMatchObject({ status: 'warn', detail: `4 secrets not readable by the orgai command. ${VAULT_MESSAGES.pendingLegacy}` })
     // A vault: a = baseline (reconciled), b = changed since, c = never reconciled, d = a vault delete of exactly that value.
     writeFileSync(
       join(dir, 'vault.json'),
       JSON.stringify(vaultWith({ entries: { a: ENTRY, b: ENTRY }, legacy: { a: sha('QQ=='), b: sha('old'), d: sha('RA==') }, tombstones: { d: { at: 1, by: 'vault', legacyHash: sha('RA==') } } }))
     )
     const c = byId(offlineSecretsChecks(dir))
-    expect(c['vault-pending']).toMatchObject({ status: 'warn', detail: `2 secrets not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+    expect(c['vault-pending']).toMatchObject({ status: 'warn', detail: `2 secrets not readable by the orgai command. ${VAULT_MESSAGES.pendingLegacy}` })
     expect(JSON.stringify(offlineSecretsChecks(dir))).not.toContain('QQ==')
     // Everything reconciled: no pending line.
     writeFileSync(join(dir, 'secrets.json'), JSON.stringify({ version: 1, secrets: { a: 'QQ==' } }))
     expect(byId(offlineSecretsChecks(dir))['vault-pending']).toBeUndefined()
     // After retirement the retired baseline is the only one (round 6 item 1).
     writeFileSync(join(dir, 'vault.json'), JSON.stringify(vaultWith({ legacy: { a: sha('QQ==') }, legacyRetired: { at: 1, digest: 'a'.repeat(64), keys: { a: sha('other') } } })))
-    expect(byId(offlineSecretsChecks(dir))['vault-pending']).toMatchObject({ detail: expect.stringMatching(/^1 secret not shared/) })
+    expect(byId(offlineSecretsChecks(dir))['vault-pending']).toMatchObject({ detail: expect.stringMatching(/^1 secret not readable/) })
     // A damaged vault reads nothing from the legacy copy: no pending count.
     writeFileSync(join(dir, 'vault.json'), '{nope')
     expect(byId(offlineSecretsChecks(dir))['vault-pending']).toBeUndefined()

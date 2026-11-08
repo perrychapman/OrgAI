@@ -3,6 +3,7 @@
  * `--host inproc daemon start` host owns a temp data dir; every command goes through `main(argv)` with process.stdout /
  * stderr captured and connects to that host as a normal CLI client. Mock adapter only; no tokens.
  */
+import { writeProductMarker } from '../../main/store/productMarker'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,7 +19,7 @@ describe('orgai projects against a real inproc host', () => {
   let engDir: string
   let main: Main
   let hostDone: Promise<number>
-  const saved = { mock: process.env.ORGAI_MOCK, data: process.env.ORGAI_DATA_DIR }
+  const saved = { mock: process.env.ORGAI_MOCK, data: process.env.ORGAI_CLI_DATA_DIR }
   let out = ''
   let err = ''
 
@@ -54,11 +55,12 @@ describe('orgai projects against a real inproc host', () => {
     mkdirSync(codeDir)
     mkdirSync(engDir)
     process.env.ORGAI_MOCK = '1'
-    process.env.ORGAI_DATA_DIR = userDataDir
+    process.env.ORGAI_CLI_DATA_DIR = userDataDir
     vi.spyOn(process.stdout, 'write').mockImplementation(((s: string | Uint8Array) => ((out += String(s)), true)) as typeof process.stdout.write)
     vi.spyOn(process.stderr, 'write').mockImplementation(((s: string | Uint8Array) => ((err += String(s)), true)) as typeof process.stderr.write)
     main = ((await import('../index')) as unknown as { main: Main }).main
     // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
+    writeProductMarker(userDataDir, 'orgai-cli')
     allowFullTerminalAccess(join(userDataDir, 'data'))
     hostDone = main(['--data-dir', userDataDir, '--host', 'inproc', 'daemon', 'start'])
     const end = Date.now() + 30_000
@@ -73,9 +75,9 @@ describe('orgai projects against a real inproc host', () => {
     await hostDone?.catch(() => undefined)
     vi.restoreAllMocks()
     process.env.ORGAI_MOCK = saved.mock
-    process.env.ORGAI_DATA_DIR = saved.data
+    process.env.ORGAI_CLI_DATA_DIR = saved.data
     if (saved.mock === undefined) delete process.env.ORGAI_MOCK
-    if (saved.data === undefined) delete process.env.ORGAI_DATA_DIR
+    if (saved.data === undefined) delete process.env.ORGAI_CLI_DATA_DIR
     rmSync(userDataDir, { recursive: true, force: true })
   }, 30_000)
 

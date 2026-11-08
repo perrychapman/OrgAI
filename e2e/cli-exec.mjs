@@ -24,6 +24,10 @@ import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { APP_DIR, DATA_DIR, allowFullTerminalAccess, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { writeFileSync as markWrite } from 'node:fs'
+import { join as markJoin } from 'node:path'
+// The CLI marks its own data folder (spec 3.1); this script seeds files before the first command, so it marks it itself.
+markWrite(markJoin(DATA_DIR, 'product.json'), `${JSON.stringify({ product: 'orgai-cli', version: 1 })}\n`, { mode: 0o600 })
 
 process.env.ORGAI_MOCK = '1'
 const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
@@ -34,7 +38,7 @@ if (!fs.existsSync(CLI)) {
   process.exit(1)
 }
 
-const ENV = { ...process.env, ORGAI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' }
+const ENV = { ...process.env, ORGAI_CLI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' }
 delete ENV.ELECTRON_RUN_AS_NODE
 
 /** Start the CLI; returns { child, done } where done resolves { code, signal, out, err }. */

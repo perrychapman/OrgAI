@@ -36,7 +36,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, posix, win32 } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { system32Path } from '../../host/systemBinaries'
-import { CustodyError, VAULT_DEK_BYTES, VAULT_KEY_FILE_ENV, type CustodianCreated, type CustodianProbe, type VaultCustody } from '../vaultTypes'
+import { CustodyError, VAULT_DEK_BYTES, vaultNames, type CustodianCreated, type CustodianProbe, type VaultCustody, type VaultProduct } from '../vaultTypes'
 import type { RemovableKeyCustodian } from './common'
 import { custodianEnvFor } from './env'
 import { decodeKeyBase64, defaultSpawner, runHelper, stdoutText, type CustodianSpawner } from './run'
@@ -46,7 +46,7 @@ type Env = Readonly<Record<string, string | undefined>>
 /** The largest file read as a key (a base64 key with CRLF is 46 bytes). */
 const KEY_FILE_READ_MAX = 4096
 
-export const KEY_FILE_NOT_CONFIGURED = `No key file is configured: set ${VAULT_KEY_FILE_ENV} or run \`orgai secrets init --key-file <path>\`.`
+export const keyFileNotConfigured = (product?: VaultProduct): string => `No key file is configured: set ${vaultNames(product).keyFileEnv} or run \`orgai secrets init --key-file <path>\`.`
 /** A new key file was asked for where a file already exists (names the exact import command). */
 export function keyFileExistsReason(path: string): string {
   return `A file already exists at ${path}; OrgAI never overwrites a key file. To use it as the vault's key, run \`orgai secrets init --key-file "${path}" --import\`.`
@@ -77,6 +77,8 @@ export interface KeyFileCustodianOptions {
   timeoutMs?: number
   /** process.getuid() stand-in (tests). */
   uid?: number
+  /** Whose key-file variable is read (default 'desktop'). */
+  product?: VaultProduct
 }
 
 // ---------- Paths ----------
@@ -651,7 +653,7 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
 
   /** The path to use: the one asked for now, else ORGAI_VAULT_KEY_FILE, else the recorded custody.keyFile. */
   configuredPath(custody?: VaultCustody): string | undefined {
-    const envPath = this.env[VAULT_KEY_FILE_ENV]?.trim()
+    const envPath = this.env[vaultNames(this.opts.product).keyFileEnv]?.trim()
     const p = this.opts.keyFile ?? (envPath ? envPath : undefined) ?? custody?.keyFile ?? this.opts.recordedKeyFile
     return typeof p === 'string' && p !== '' ? p : undefined
   }
@@ -673,7 +675,7 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
   /** The usable path, or a CustodyError (`unconfigured` decides the kind when nothing is configured). */
   private checkedPath(unconfigured: 'unavailable' | 'missing', custody?: VaultCustody): string {
     const p = this.configuredPath(custody)
-    if (p === undefined) throw new CustodyError(unconfigured, KEY_FILE_NOT_CONFIGURED)
+    if (p === undefined) throw new CustodyError(unconfigured, keyFileNotConfigured(this.opts.product))
     const problem = keyFilePathProblem(p, { userDataDir: this.opts.userDataDir, dataDir: this.opts.dataDir, platform: this.platform })
     if (problem) throw new CustodyError('denied', problem)
     return p

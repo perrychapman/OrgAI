@@ -256,11 +256,12 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       dataDir,
       userDataDir,
       hostKind,
+      product: 'cli',
       cipher: NO_CIPHER,
       overlay: opts.overlay,
       env: opts.env,
       // A mock host (e2e, verify-pack) never writes an OS key item for a throwaway data folder unless a key file is named.
-      ...(opts.custodian ? { custodian: opts.custodian } : opts.mock && !((opts.env?.ORGAI_VAULT_KEY_FILE ?? '').trim()) ? { custodian: unavailableCustodianFactory } : {}),
+      ...(opts.custodian ? { custodian: opts.custodian } : opts.mock && !((opts.env?.ORGAI_CLI_VAULT_KEY_FILE ?? '').trim()) ? { custodian: unavailableCustodianFactory } : {}),
       log: (m) => log.info(m)
     })
     host = bootOrgAIHost({

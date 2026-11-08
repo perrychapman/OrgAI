@@ -581,7 +581,7 @@ async function daemonRestart(ctx: CliContext, args: string[]): Promise<number> {
  * Node host's stdio) and, on macOS with the default data folder, the app's `~/Library/Logs/OrgAI/main.log`.
  */
 export function logCandidates(ctx: CliContext): string[] {
-  const chosen = !!ctx.globals.dataDir || !!ctx.env.ORGAI_DATA_DIR
+  const chosen = !!ctx.globals.dataDir || !!ctx.env.ORGAI_CLI_DATA_DIR
   const out = [join(ctx.paths.userDataDir, 'logs', 'main.log'), join(ctx.paths.userDataDir, 'logs', NODE_HOST_LOG)]
   if (ctx.platform === 'darwin' && !chosen) out.push(join(ctx.env.HOME || homedir(), 'Library', 'Logs', 'OrgAI', 'main.log'))
   return out

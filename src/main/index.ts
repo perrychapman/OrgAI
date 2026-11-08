@@ -445,6 +445,7 @@ app.whenReady().then(async () => {
     dataDir,
     userDataDir,
     hostKind,
+    product: 'desktop',
     cipher: safeStorage,
     log: (m) => log.info(m),
     ...(process.env.ORGAI_MOCK === '1' && !(process.env.ORGAI_VAULT_KEY_FILE ?? '').trim() ? { custodian: unavailableCustodianFactory } : {})

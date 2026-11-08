@@ -73,7 +73,8 @@ test('environment helpers', () => {
   assert.equal(e.npm_config_registry, 'r')
   assert.equal(e.HOME, '/h')
   assert.equal('x' in e, false)
-  assert.deepEqual(npmCliEnv({ ORGAI_VAULT_KEY_FILE: '/k', ORGAI_CLAUDE_PATH: '/c', ORGAI_MOCK: '1' }), { ORGAI_MOCK: '1', ORGAI_VAULT_NO_OS_KEYSTORE: '1' }, 'the OS keychain stays off')
+  assert.deepEqual(npmCliEnv({ ORGAI_VAULT_KEY_FILE: '/k', ORGAI_CLI_VAULT_KEY_FILE: '/ck', ORGAI_CLAUDE_PATH: '/c', ORGAI_MOCK: '1' }), { ORGAI_MOCK: '1', ORGAI_CLI_VAULT_NO_OS_KEYSTORE: '1' }, 'the OS keychain stays off')
+  assert.deepEqual(npmCliEnv({ ORGAI_DATA_DIR: '/app', ORGAI_CLI_DATA_DIR: '/old' }, '/cli'), { ORGAI_CLI_DATA_DIR: '/cli', ORGAI_CLI_VAULT_NO_OS_KEYSTORE: '1' }, 'the CLI folder comes from ORGAI_CLI_DATA_DIR')
 })
 
 test('output readers', () => {
@@ -264,6 +265,8 @@ function fakeRun(calls, { pkg, sw }, answers = {}) {
       fs.writeFileSync(bin, '')
       return { code: 0, stdout: '', stderr: '' }
     }
+    // The CLI marks its folder on first use (spec 3.1).
+    if (cmd.env?.ORGAI_CLI_DATA_DIR && !fs.existsSync(path.join(cmd.env.ORGAI_CLI_DATA_DIR, 'product.json'))) fs.writeFileSync(path.join(cmd.env.ORGAI_CLI_DATA_DIR, 'product.json'), JSON.stringify({ product: 'orgai-cli', version: 1 }))
     if (a.includes('--version') && /claude(\.exe)?$/.test(cmd.command)) return { code: 0, stdout: '2.1.312 (Claude Code)\n', stderr: '' }
     if (a.includes('--version')) return { code: 0, stdout: `${VERSION} channel npm commit abc\n`, stderr: '' }
     if (a.includes('doctor')) return { code: 0, stdout: JSON.stringify({ ok: true, checks: [{ id: 'install-channel', status: 'ok', detail: 'channel npm' }] }), stderr: '' }
@@ -299,7 +302,7 @@ test('main: a matching install passes, vault and codex skip, temp dirs removed',
   try {
     const r = await runMain(fake)
     assert.equal(r.code, 0, r.out)
-    for (const id of ['(1) install', '(1b) --ignore-scripts', '(2) --version', '(3) doctor', '(4) claude runtime', '(5) exec auto']) assert.match(r.out, new RegExp(`ok +${id.replace(/[()]/g, '\\$&')}`), id)
+    for (const id of ['(1) install', '(1b) --ignore-scripts', '(2) --version', '(3) doctor', '(4) claude runtime', '(5) exec auto', '(8) data folder']) assert.match(r.out, new RegExp(`ok +${id.replace(/[()]/g, '\\$&')}`), id)
     assert.match(r.out, /skip +\(6\) vault/)
     assert.match(r.out, /skip +\(7\) codex/)
     assert.deepEqual(r.leftovers, [])
@@ -312,7 +315,9 @@ test('main: a matching install passes, vault and codex skip, temp dirs removed',
     assert.equal(exec.env.ORGAI_MOCK, '1')
     assert.equal(exec.env.ORGAI_SECRET_X, undefined)
     assert.equal(exec.env.ORGAI_VAULT_KEY_FILE, undefined)
-    assert.equal(exec.env.ORGAI_VAULT_NO_OS_KEYSTORE, '1', 'no child may reach the real OS keychain')
+    assert.equal(exec.env.ORGAI_VAULT_NO_OS_KEYSTORE, undefined, 'the CLI never reads the app vault variables')
+    assert.equal(exec.env.ORGAI_CLI_VAULT_NO_OS_KEYSTORE, '1', 'no child may reach the real OS keychain')
+    assert.ok(exec.env.ORGAI_CLI_DATA_DIR && exec.env.ORGAI_DATA_DIR !== exec.env.ORGAI_CLI_DATA_DIR, 'the CLI folder is not the app variable')
     assert.ok(exec.env.PATH.startsWith(path.dirname(process.execPath)))
   } finally {
     fs.rmSync(fake.root, { recursive: true, force: true })
@@ -377,7 +382,7 @@ test('main: a missing tarball or an unknown argument exits 2', async () => {
 
 /**
  * A fake vault behind `orgai secrets` / `connections`: one stored LiteLLM key shared across "processes" (calls), a
- * key-mismatch answer when ORGAI_VAULT_KEY_FILE names another key file, and the shapes of the real commands
+ * key-mismatch answer when ORGAI_CLI_VAULT_KEY_FILE names another key file, and the shapes of the real commands
  * (connections.ts runTest: `{ id, status, ok }`; SecretsStatusResult: `{ state, ... }`). `leak` prints the key.
  */
 function fakeVault({ leak = false, staleAfterClear = false } = {}) {
@@ -389,7 +394,7 @@ function fakeVault({ leak = false, staleAfterClear = false } = {}) {
     if (has('secrets')) st.cmds.push(a.slice(a.indexOf('secrets')).join(' '))
     if (has('connections')) st.cmds.push(a.slice(a.indexOf('connections')).join(' '))
     if (has('secrets', 'status')) {
-      const other = cmd.env.ORGAI_VAULT_KEY_FILE
+      const other = cmd.env.ORGAI_CLI_VAULT_KEY_FILE
       const state = other && st.keyFile && other !== st.keyFile ? 'key-mismatch' : st.keyFile ? 'open' : 'absent'
       return { code: 0, stdout: JSON.stringify({ state, scheme: 'key-file', counts: { vault: st.key ? 1 : 0, legacy: 0, unreadable: 0, overlay: 0 } }), stderr: '' }
     }

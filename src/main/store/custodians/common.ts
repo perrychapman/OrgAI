@@ -3,7 +3,7 @@
  * and the sentences every scheme shares. Relative imports only.
  */
 import { timingSafeEqual } from 'node:crypto'
-import { CustodyError, VAULT_KEY_FILE_ENV, type KeyCustodian, type VaultCustody } from '../vaultTypes'
+import { CustodyError, VAULT_KEY_FILE_ENV, type KeyCustodian, type VaultCustody, type VaultProduct } from '../vaultTypes'
 import type { CustodianSpawner } from './run'
 
 type Env = Readonly<Record<string, string | undefined>>
@@ -17,6 +17,8 @@ export interface HelperCustodianOptions {
   spawner?: CustodianSpawner
   /** Default CUSTODIAN_TIMEOUT_MS. */
   timeoutMs?: number
+  /** Whose custody names to use (default 'desktop'). */
+  product?: VaultProduct
 }
 
 /**

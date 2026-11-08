@@ -6,6 +6,7 @@
  * Skipped here: connections test / connect / login (they spawn `claude auth status` or the Codex app-server) and
  * usage refresh (the Claude usage probe spawns the CLI). No tokens.
  */
+import { writeProductMarker } from '../../main/store/productMarker'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,6 +41,7 @@ describe('connections, models, usage and notes against a real inproc host', () =
     engDir = join(userDataDir, 'engagement')
     mkdirSync(engDir)
     // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
+    writeProductMarker(userDataDir, 'orgai-cli')
     allowFullTerminalAccess(join(userDataDir, 'data'))
     host = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, shared: true })
     const res = await connectHost({ dataDir, scopes: ['read', 'operate', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })

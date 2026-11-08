@@ -184,7 +184,7 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   checks.push(installCheck(ctx.platform, ctx.env))
 
   // Data folder
-  const via = ctx.globals.dataDir ? '--data-dir' : ctx.env.ORGAI_DATA_DIR ? 'ORGAI_DATA_DIR' : 'the platform default'
+  const via = ctx.globals.dataDir ? '--data-dir' : ctx.env.ORGAI_CLI_DATA_DIR ? 'ORGAI_CLI_DATA_DIR' : 'the platform default'
   let dataExists = false
   try {
     dataExists = lstatSync(ctx.paths.dataDir).isDirectory()

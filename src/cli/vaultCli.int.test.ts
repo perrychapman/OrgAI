@@ -71,7 +71,7 @@ interface Ran {
 function orgai(args: string[], extra: { input?: string; env?: Record<string, string> } = {}): Promise<Ran> {
   const env: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ORGAI_')) env[k] = v
-  Object.assign(env, { ORGAI_DATA_DIR: data, ORGAI_MOCK: '1', NO_COLOR: '1', ORGAI_VAULT_KEY_FILE: join(keys, 'vault.key'), ...(extra.env ?? {}) })
+  Object.assign(env, { ORGAI_CLI_DATA_DIR: data, ORGAI_MOCK: '1', NO_COLOR: '1', ORGAI_CLI_VAULT_KEY_FILE: join(keys, 'vault.key'), ...(extra.env ?? {}) })
   return new Promise((res) => {
     const c = spawn(process.execPath, [bundle, '--host', 'inproc', ...args], { env })
     let stdout = ''
@@ -123,7 +123,7 @@ describe.skipIf(!posix || !existsSync(bundle))('the vault across CLI processes (
     const otherKey = join(keys, 'other.key')
     writeFileSync(otherKey, randomBytes(32), { mode: 0o600 })
     chmodSync(otherKey, 0o600)
-    const mismatch = await step(['--output-format', 'json', 'secrets', 'status'], { env: { ORGAI_VAULT_KEY_FILE: otherKey } })
+    const mismatch = await step(['--output-format', 'json', 'secrets', 'status'], { env: { ORGAI_CLI_VAULT_KEY_FILE: otherKey } })
     expect((json(mismatch).secrets as { state: string }).state).toBe('key-mismatch')
 
     expect((await step(['connections', 'set-secret', proxyId, '--clear'])).code).toBe(0)

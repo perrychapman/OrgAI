@@ -1,5 +1,5 @@
 /**
- * `orgai secrets` (Wave 7, cli-standalone.md 5.6, 5.7): secure storage shared by the app and the orgai command, over
+ * `orgai secrets` (Wave 7, cli-standalone.md 5.6, 5.7): secure storage of the orgai command, over
  * the secrets:* host channels. No subcommand ever prints a value: key names, counts, states, paths and reasons only.
  *
  *   secrets status [--probe]                       read: state, scheme, counts, pending, soft deletes, orphans
@@ -14,7 +14,7 @@
 import * as path from 'node:path'
 import type { SecretsConfirmDeleteResult, SecretsInitInput, SecretsInitResult, SecretsResetResult, SecretsSoftDelete, SecretsStatusResult, SecretsUndeleteResult } from '../../shared/types'
 import { formatDateTime } from '../../shared/view/dates'
-import { VAULT_MESSAGES } from '../../main/store/vaultTypes'
+import { CLI_VAULT_MESSAGES as VAULT_MESSAGES } from '../../main/store/vaultTypes'
 import { parseFlags } from '../flags'
 import { confirm, runSubcommands, withHost } from '../manage'
 import { emit, printText, safeLine, warn, type Json } from '../output'
@@ -81,7 +81,7 @@ export function statusJson(s: SecretsStatusResult): Json {
   }
 }
 
-const RESTORE_TEXT: Record<SecretsSoftDelete['restorable'], string> = { here: 'restorable', app: 'restorable in the OrgAI app only', none: 'nothing kept' }
+const RESTORE_TEXT: Record<SecretsSoftDelete['restorable'], string> = { here: 'restorable', app: 'not restorable here', none: 'nothing kept' }
 
 /** Text lines of a status (names, counts and reasons; never a value). */
 export function statusLines(s: SecretsStatusResult): string[] {
@@ -90,12 +90,12 @@ export function statusLines(s: SecretsStatusResult): string[] {
   if (s.probe) lines.push(`Key store:    ${s.probe.ok ? 'reachable' : `${s.probe.kind}: ${safeLine(s.probe.reason)}`}`)
   if (s.keyFile) lines.push(`Key file:     ${safeLine(s.keyFile)}`)
   if (s.vaultId) lines.push(`Storage id:   ${safeLine(s.vaultId)}`)
-  const counts = [`${s.counts.vault} in secure storage`, `${s.counts.legacy} in the app's older secrets.json (${LEGACY_TEXT[s.legacyFile]})`]
+  const counts = [`${s.counts.vault} in secure storage`, `${s.counts.legacy} in the older secrets.json (${LEGACY_TEXT[s.legacyFile]})`]
   if (s.counts.unreadable) counts.push(`${s.counts.unreadable} unreadable here`)
   if (s.counts.overlay) counts.push(`${s.counts.overlay} from the environment (never saved)`)
   lines.push(`Secrets:      ${counts.join(', ')}`)
   if (s.pendingLegacy) lines.push(`Pending:      ${s.pendingLegacy} ${s.pendingLegacy === 1 ? 'secret' : 'secrets'}: ${VAULT_MESSAGES.pendingLegacy}`)
-  lines.push(`App copy:     ${s.canWriteBack ? "kept in step by this host" : "not updated from here; secrets saved here reach the OrgAI app after it next opens"}`)
+  lines.push(`App copy:     ${s.canWriteBack ? "kept in step by this host" : "not kept"}`)
   if (s.softDeletes.length) {
     lines.push('', 'Removed secrets (restore one with `orgai secrets undelete <key>`, or `orgai secrets keep-removed` to drop them for good):')
     for (const d of s.softDeletes) {
@@ -154,7 +154,7 @@ const runInit = async (ctx: CliContext, args: string[]): Promise<number> => {
     emit(ctx, { action: r.action, secrets: statusJson(r.status), ...(keyFile ? { warning: KEY_FILE_BACKUP_WARNING } : {}) }, () => [
       `${INIT_TEXT[r.action]} (${schemeText(r.status.scheme)}${r.status.keyFile ? `: ${safeLine(r.status.keyFile)}` : ''}).`,
       ...(keyFile ? [KEY_FILE_BACKUP_WARNING] : []),
-      ...(r.status.pendingLegacy ? [`${r.status.pendingLegacy} ${r.status.pendingLegacy === 1 ? 'secret' : 'secrets'} saved by the OrgAI app ${r.status.pendingLegacy === 1 ? 'is' : 'are'} not shared yet: ${VAULT_MESSAGES.pendingLegacy}.`] : [])
+      ...(r.status.pendingLegacy ? [`${r.status.pendingLegacy} ${r.status.pendingLegacy === 1 ? 'secret' : 'secrets'} ${r.status.pendingLegacy === 1 ? 'is' : 'are'} not readable: ${VAULT_MESSAGES.pendingLegacy}.`] : [])
     ])
     return EXIT.ok
   })

@@ -6,6 +6,7 @@
  * skips itself. It drives everything through `main(argv)` with process.stdout / stderr captured, so it relies only on
  * the contracts (CommandFn names, flags, the wire protocol), not on T4's internals. Mock adapter only; no tokens.
  */
+import { writeProductMarker } from '../../main/store/productMarker'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { connect as netConnect, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -104,7 +105,7 @@ describe.skipIf(!wave2Merged)('orgai read-only commands against a real inproc ho
   let seed: SeedClient
   let project: Project
   let run: RunSummary
-  const saved = { mock: process.env.ORGAI_MOCK, data: process.env.ORGAI_DATA_DIR }
+  const saved = { mock: process.env.ORGAI_MOCK, data: process.env.ORGAI_CLI_DATA_DIR }
   let out = ''
   let err = ''
 
@@ -139,11 +140,12 @@ describe.skipIf(!wave2Merged)('orgai read-only commands against a real inproc ho
     projectDir = join(userDataDir, 'project')
     mkdirSync(projectDir)
     process.env.ORGAI_MOCK = '1'
-    process.env.ORGAI_DATA_DIR = userDataDir
+    process.env.ORGAI_CLI_DATA_DIR = userDataDir
     vi.spyOn(process.stdout, 'write').mockImplementation(((s: string | Uint8Array) => ((out += String(s)), true)) as typeof process.stdout.write)
     vi.spyOn(process.stderr, 'write').mockImplementation(((s: string | Uint8Array) => ((err += String(s)), true)) as typeof process.stderr.write)
     main = ((await import('../index')) as unknown as { main: Main }).main
     // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
+    writeProductMarker(userDataDir, 'orgai-cli')
     allowFullTerminalAccess(join(userDataDir, 'data'))
     hostDone = main(['--data-dir', userDataDir, '--host', 'inproc', 'daemon', 'start'])
     const info = await until('daemon.json ready', () => {
@@ -160,9 +162,9 @@ describe.skipIf(!wave2Merged)('orgai read-only commands against a real inproc ho
     seed?.close()
     vi.restoreAllMocks()
     process.env.ORGAI_MOCK = saved.mock
-    process.env.ORGAI_DATA_DIR = saved.data
+    process.env.ORGAI_CLI_DATA_DIR = saved.data
     if (saved.mock === undefined) delete process.env.ORGAI_MOCK
-    if (saved.data === undefined) delete process.env.ORGAI_DATA_DIR
+    if (saved.data === undefined) delete process.env.ORGAI_CLI_DATA_DIR
     rmSync(userDataDir, { recursive: true, force: true })
   })
 

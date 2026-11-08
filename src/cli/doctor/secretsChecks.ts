@@ -11,7 +11,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SecretsStatusResult } from '../../shared/types'
 import { readVaultMetadata } from '../../main/store/vaultMetadata'
-import { LEGACY_SECRETS_FILE, VAULT_FILE, VAULT_MESSAGES } from '../../main/store/vaultTypes'
+import { CLI_VAULT_MESSAGES as VAULT_MESSAGES, LEGACY_SECRETS_FILE, VAULT_FILE } from '../../main/store/vaultTypes'
 import type { DoctorCheck } from '../commands/doctor'
 import { schemeText, STATE_TEXT } from '../commands/secrets'
 import type { DoctorCheckGroup } from './types'
@@ -40,7 +40,7 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
         checks.push({
           id: 'vault',
           status: 'warn',
-          detail: `Not created (${scheme})${why ? `: ${why}` : ''}; the OrgAI app keeps its secrets to itself until it can create the vault. Run \`orgai secrets init\` to try again`
+          detail: `Not created (${scheme})${why ? `: ${why}` : ''}; run \`orgai secrets init\` to try again`
         })
       } else {
         checks.push({ id: 'vault', status: 'ok', detail: `Not created yet (${scheme}); the first saved secret creates it` })
@@ -61,7 +61,7 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
   }
   checks.push(legacyCheck(s.legacyFile, s.counts.legacy))
   if (s.pendingLegacy > 0) {
-    checks.push({ id: 'vault-pending', status: 'warn', detail: `${plural(s.pendingLegacy, 'secret')} not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+    checks.push({ id: 'vault-pending', status: 'warn', detail: `${plural(s.pendingLegacy, 'secret')} not readable by the orgai command. ${VAULT_MESSAGES.pendingLegacy}` })
   }
   if (s.counts.unreadable > s.pendingLegacy) {
     checks.push({ id: 'vault-unreadable', status: 'warn', detail: `${plural(s.counts.unreadable - s.pendingLegacy, 'secret')} cannot be read on this host; \`orgai secrets status\` says why` })
@@ -71,7 +71,7 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
     checks.push({
       id: 'vault-removed',
       status: legacy ? 'warn' : 'ok',
-      detail: `${plural(s.softDeletes.length, 'removed secret')} kept for undelete${legacy ? ` (${legacy} removed by an older OrgAI)` : ''}; see them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\` (the app's Dashboard has both buttons)`
+      detail: `${plural(s.softDeletes.length, 'removed secret')} kept for undelete${legacy ? ` (${legacy} removed by an older OrgAI)` : ''}; see them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\``
     })
   }
   if (s.orphanedKeys || s.orphanedVaults.length) {
@@ -87,13 +87,13 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
 function legacyCheck(state: SecretsStatusResult['legacyFile'], keys: number): DoctorCheck {
   switch (state) {
     case 'ok':
-      return { id: 'legacy-secrets', status: 'ok', detail: `secrets.json (the app's copy): ${plural(keys, 'key')}` }
+      return { id: 'legacy-secrets', status: 'ok', detail: `secrets.json (an older copy): ${plural(keys, 'key')}` }
     case 'missing':
-      return { id: 'legacy-secrets', status: 'ok', detail: "secrets.json (the app's copy): none" }
+      return { id: 'legacy-secrets', status: 'ok', detail: "secrets.json (an older copy): none" }
     case 'retired':
       return { id: 'legacy-secrets', status: 'ok', detail: 'secrets.json was retired; secure storage holds every secret' }
     default:
-      return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; `orgai secrets reset` starts over (the OrgAI app shows a notice with Start over)" }
+      return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; `orgai secrets reset` starts over" }
   }
 }
 
@@ -187,7 +187,7 @@ export function pendingLegacyCount(values: Readonly<Record<string, string>>, vau
 export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
   const meta = readVaultMetadata(dataDir)
   const checks: DoctorCheck[] = []
-  if (meta.state === 'absent') checks.push({ id: 'vault', status: 'ok', detail: 'Not created yet; the first saved secret (or the app) creates it' })
+  if (meta.state === 'absent') checks.push({ id: 'vault', status: 'ok', detail: 'Not created yet; the first saved secret creates it' })
   else if (meta.state === 'corrupt') checks.push({ id: 'vault', status: 'fail', detail: VAULT_MESSAGES.corrupt })
   else {
     const tomb = meta.tombstones ? `, ${plural(meta.tombstones, 'removed secret')} kept` : ''
@@ -201,7 +201,7 @@ export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
   if (legacy.values && meta.state !== 'corrupt' && (meta.state === 'absent' || view)) {
     const pending = pendingLegacyCount(legacy.values, view)
     if (pending > 0) {
-      checks.push({ id: 'vault-pending', status: 'warn', detail: `${plural(pending, 'secret')} not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+      checks.push({ id: 'vault-pending', status: 'warn', detail: `${plural(pending, 'secret')} not readable by the orgai command. ${VAULT_MESSAGES.pendingLegacy}` })
     }
   }
   // The guard notice of 5.5: secrets an older OrgAI removed, kept until the user restores them or keeps them removed.
@@ -210,7 +210,7 @@ export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
     checks.push({
       id: 'vault-removed',
       status: 'warn',
-      detail: `${VAULT_MESSAGES.legacyRemovedNotice(removedByOlder)} See them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\` (the app's Dashboard has both buttons)`
+      detail: `${VAULT_MESSAGES.legacyRemovedNotice(removedByOlder)} See them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\``
     })
   }
   return checks

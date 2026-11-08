@@ -1,0 +1,117 @@
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { checkCliFolder, folderRefusal, readProductMarker, writeProductMarker } from './productMarker'
+
+const dirs: string[] = []
+const base = (): string => {
+  const d = realpathSync.native(mkdtempSync(join(tmpdir(), 'pmark-')))
+  dirs.push(d)
+  return d
+}
+afterEach(() => {
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+})
+
+const check = (userDataDir: string, desktopDefault: string): string | undefined => checkCliFolder({ userDataDir, dataDir: join(userDataDir, 'data'), desktopDefault })
+const marker = (dir: string, product: string): void => {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'product.json'), JSON.stringify({ product, version: 1 }))
+}
+const link = (target: string, at: string): void => symlinkSync(target, at, 'junction')
+
+describe('product marker', () => {
+  it('a missing folder is created with a 0600 CLI marker', () => {
+    const dir = join(base(), 'orgai-cli')
+    expect(check(dir, join(base(), 'OrgAI'))).toBeUndefined()
+    expect(JSON.parse(readFileSync(join(dir, 'product.json'), 'utf8'))).toEqual({ product: 'orgai-cli', version: 1 })
+    if (process.platform !== 'win32') expect(statSync(join(dir, 'product.json')).mode & 0o777).toBe(0o600)
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-cli' })
+  })
+
+  it('an existing but empty folder (also an empty data/) gets the marker', () => {
+    const dir = base()
+    mkdirSync(join(dir, 'data'))
+    expect(check(dir, join(base(), 'OrgAI'))).toBeUndefined()
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-cli' })
+  })
+
+  it('a CLI-marked folder with data stays usable and is not rewritten', () => {
+    const dir = base()
+    marker(dir, 'orgai-cli')
+    mkdirSync(join(dir, 'data'))
+    writeFileSync(join(dir, 'data', 'projects.json'), '[]')
+    const before = readFileSync(join(dir, 'product.json'), 'utf8')
+    expect(check(dir, join(base(), 'OrgAI'))).toBeUndefined()
+    expect(readFileSync(join(dir, 'product.json'), 'utf8')).toBe(before)
+  })
+
+  it('refuses a folder marked for the desktop app, writing nothing', () => {
+    const dir = base()
+    marker(dir, 'orgai-desktop')
+    expect(check(dir, join(base(), 'OrgAI'))).toBe(folderRefusal(dir))
+    expect(folderRefusal(dir)).toBe(`${dir} belongs to the OrgAI app. orgai keeps its own data; choose another folder.`)
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-desktop' })
+  })
+
+  it('refuses an unmarked folder whose data/ is not empty, and does not mark it', () => {
+    const dir = base()
+    mkdirSync(join(dir, 'data'))
+    writeFileSync(join(dir, 'data', 'settings.json'), '{}')
+    expect(check(dir, join(base(), 'OrgAI'))).toBe(folderRefusal(dir))
+    expect(readProductMarker(dir)).toEqual({ state: 'absent' })
+  })
+
+  it('treats a damaged marker like no marker', () => {
+    const dir = base()
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'product.json'), '{nope')
+    expect(readProductMarker(dir)).toEqual({ state: 'invalid' })
+    expect(check(dir, join(base(), 'OrgAI'))).toBeUndefined()
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-cli' })
+    writeFileSync(join(dir, 'product.json'), JSON.stringify({ product: 'something', version: 1 }))
+    expect(readProductMarker(dir)).toEqual({ state: 'invalid' })
+  })
+
+  it('refuses the desktop default folder itself, even unmarked and empty', () => {
+    const app = join(base(), 'OrgAI')
+    mkdirSync(app)
+    expect(check(app, app)).toBe(folderRefusal(app))
+    expect(readProductMarker(app)).toEqual({ state: 'absent' })
+  })
+
+  it('refuses the desktop default when it does not exist yet (same parent and name)', () => {
+    const app = join(base(), 'OrgAI')
+    expect(check(app, app)).toBe(folderRefusal(app))
+  })
+
+  it('refuses a symlink alias of the desktop default folder', () => {
+    const root = base()
+    const app = join(root, 'OrgAI')
+    mkdirSync(app)
+    const alias = join(root, 'alias')
+    link(app, alias)
+    expect(check(alias, app)).toBe(folderRefusal(alias))
+    expect(readProductMarker(app)).toEqual({ state: 'absent' })
+  })
+
+  it('refuses the default reached through a symlinked parent folder', () => {
+    const root = base()
+    const parent = join(root, 'Support')
+    mkdirSync(parent)
+    const app = join(parent, 'OrgAI')
+    const viaLink = join(root, 'Shortcut')
+    link(parent, viaLink)
+    // The folder does not exist yet: only the parent resolves.
+    expect(check(join(viaLink, 'OrgAI'), app)).toBe(folderRefusal(join(viaLink, 'OrgAI')))
+    mkdirSync(app)
+    expect(check(join(viaLink, 'OrgAI'), app)).toBe(folderRefusal(join(viaLink, 'OrgAI')))
+  })
+
+  it('writeProductMarker reports failure instead of throwing', () => {
+    const root = base()
+    writeFileSync(join(root, 'file'), 'x')
+    expect(writeProductMarker(join(root, 'file', 'sub'), 'orgai-cli')).toBe(false)
+  })
+})
