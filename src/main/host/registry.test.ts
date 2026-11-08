@@ -306,11 +306,10 @@ describe('gateRequest', () => {
     }
   })
 
-  it('window:openRun: desktop_unavailable under inproc and node (no windows), passes under headless-host with operate', () => {
+  it('window:openRun: desktop_unavailable under inproc (no windows), passes under the desktop with operate', () => {
     const target = { projectId: 'p_1', runId: 'r_1' }
     expect(failure(() => gateRequest('window:openRun', [target], only(['operate'], 'inproc'))).code).toBe('desktop_unavailable')
     expect(failure(() => gateRequest('window:openRun', [target], only(['operate'], 'inproc'))).message).toContain('runs inside the CLI')
-    expect(failure(() => gateRequest('window:openRun', [target], only(['operate'], 'node'))).code).toBe('desktop_unavailable')
     const ok = gateRequest('window:openRun', [target], only(['operate'], 'desktop'))
     expect(ok.args).toEqual([target])
     expect(ok.mutation).toBe(true)

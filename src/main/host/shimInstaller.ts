@@ -130,6 +130,9 @@ export function dirOnPath(dir: string, pathList: string | undefined, platform: N
   return pathList.split(sep).some((e) => e && pathEntryKey(e, platform, home) === want)
 }
 
+/** Said by install() (and shown by the row) while this install ships no orgai launcher. */
+export const NO_LAUNCHER_REASON = 'The OrgAI app no longer installs the orgai command. Install it with `npm i -g orgai-cli`.'
+
 export function createCliShimService(deps: CliShimDeps): CliShimService {
   const fs: CliShimFs = { ...defaultFs, ...(deps.fs ?? {}) }
   const log = deps.log ?? appLog
@@ -144,10 +147,17 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
     userDataDir?: string
   }
 
+  /** Why the old shim cannot even be looked at or removed from this launch, or undefined. */
+  function cleanupUnavailableReason(): string | undefined {
+    if (!deps.isPackaged) return CLI_SHIM_UNAVAILABLE.reason
+    if (deps.dataDirOverride) return 'OrgAI was started with ORGAI_DATA_DIR; manage the orgai command from a normal launch.'
+    return undefined
+  }
+
   /** Why the shim cannot be written from this launch, or undefined. */
   function unavailableReason(): string | undefined {
-    if (!deps.isPackaged) return CLI_SHIM_UNAVAILABLE.reason
-    if (deps.dataDirOverride) return 'OrgAI was started with ORGAI_DATA_DIR; install the orgai command from a normal launch.'
+    const common = cleanupUnavailableReason()
+    if (common) return common
     const transient = transientInstallReason(platform, deps.resourcesPath, deps.env)
     if (transient) return transient
     const { launcher } = packagedLayout(platform, deps.resourcesPath)
@@ -157,7 +167,7 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
     } catch {
       regular = false
     }
-    if (!regular) return `This OrgAI install has no orgai launcher (${launcher}).`
+    if (!regular) return NO_LAUNCHER_REASON
     return undefined
   }
 
@@ -187,6 +197,15 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
 
   function ready(): Ready | { reason: string } {
     const reason = unavailableReason()
+    if (reason) return { reason }
+    const path = cliShimPath(platform, deps.env, deps.home)
+    const userDataDir = embeddedUserDataDir()
+    return { path, binDir: p.dirname(path), launcher: packagedLayout(platform, deps.resourcesPath).launcher, ...(userDataDir ? { userDataDir } : {}) }
+  }
+
+  /** Status and removal need no launcher: an old shim can be classified and removed even though the app ships none. */
+  function cleanupReady(): Ready | { reason: string } {
+    const reason = cleanupUnavailableReason()
     if (reason) return { reason }
     const path = cliShimPath(platform, deps.env, deps.home)
     const userDataDir = embeddedUserDataDir()
@@ -282,21 +301,23 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
     const path = onPath(r.binDir)
     const withPath = path === undefined ? {} : { onPath: path }
     const found = inspect(r.path)
-    if (found.kind === 'none') return { state: 'not-installed', ...base, ...withPath }
+    const noLauncher = !launcherExists(r.launcher)
+    if (found.kind === 'none') return { state: 'not-installed', ...base, ...withPath, ...(noLauncher ? { installable: false as const } : {}) }
     if (found.kind === 'foreign') {
       // npm's (or the archive's) own orgai at the shim path: say so (8.2) instead of asking the user to remove it.
       const atShim = other !== undefined && (other.channel === 'npm' || other.channel === 'archive') && samePathKey(platform, other.path) === samePathKey(platform, r.path)
       return { state: 'foreign', ...base, ...withPath, reason: atShim ? userCliReason(other, r.path) : foreignReason(r.path) }
     }
     const parsed = parseCliShim(found.text, platform, deps.env)
-    if (parsed && parsed.launcher === r.launcher && parsed.userDataDir === r.userDataDir) {
+    // No launcher ships with this install: a shim of ours runs something this app cannot offer, so it is old whatever it names.
+    if (!noLauncher && parsed && parsed.launcher === r.launcher && parsed.userDataDir === r.userDataDir) {
       return { state: 'installed', ...base, target: parsed.launcher, ...withPath }
     }
-    return { state: 'outdated', ...base, ...(parsed ? { target: parsed.launcher } : {}), ...withPath }
+    return { state: 'outdated', ...base, ...(parsed ? { target: parsed.launcher } : {}), ...withPath, ...(noLauncher ? { installable: false as const } : {}) }
   }
 
   function status(): CliShimStatus {
-    const r = ready()
+    const r = cleanupReady()
     if ('reason' in r) return { ...CLI_SHIM_UNAVAILABLE, reason: r.reason }
     return statusOf(r)
   }
@@ -355,7 +376,7 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
   }
 
   async function uninstall(): Promise<CliShimResult> {
-    const r = ready()
+    const r = cleanupReady()
     if ('reason' in r) {
       const s = { ...CLI_SHIM_UNAVAILABLE, reason: r.reason }
       return { ok: false, message: r.reason, status: s }

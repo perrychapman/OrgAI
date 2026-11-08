@@ -355,7 +355,7 @@ describe('bootOrgAIHost', () => {
 
   it('a non-forced stop (idle exit, `orgai daemon stop`) ends a run that only waits on the user, written as cut by the app before the release', async () => {
     const own = fakeOwnership()
-    const h = boot({ ownership: own, hostKind: 'node' })
+    const h = boot({ ownership: own, hostKind: 'inproc' })
     const atRelease: (RunSummary | null)[] = []
     let runId = ''
     own.release.mockImplementation(() => {
@@ -426,12 +426,6 @@ describe('bootOrgAIHost', () => {
     expect(armIdle).not.toHaveBeenCalled()
   })
 
-  it('arms idle exit for a non-desktop host', () => {
-    const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
-    boot({ hostKind: 'node' })
-    expect(armIdle).toHaveBeenCalledTimes(1)
-  })
-
   it('never arms idle exit for an inproc host (it lives until Ctrl+C)', () => {
     const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
     boot({ hostKind: 'inproc' })
@@ -442,7 +436,7 @@ describe('bootOrgAIHost', () => {
     const desktop = boot({ hostKind: 'desktop' })
     expect(desktop.terminalAccess()).toEqual({ enabled: false, level: 'operate' })
     desktop.dispose()
-    for (const hostKind of ['inproc', 'node'] as const) {
+    for (const hostKind of ['inproc'] as const) {
       const h = boot({ hostKind })
       expect(h.terminalAccess(), hostKind).toEqual({ enabled: true, level: 'full' })
       // An old settings file's removed keys change nothing.

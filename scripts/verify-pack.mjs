@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Checks a local `npm run pack` of the desktop app (cli-standalone-default.md 5.2). The packaged app does not contain the
-// orgai CLI, so this only proves the app is a plain desktop package: nothing from the CLI is in it, and nothing here
-// starts the app or spends a token.
+// orgai CLI, so this proves the app is a plain desktop package: nothing from the CLI is in it, and the packed app
+// still boots on the mock adapter (no token is spent, no window is shown).
 //
 //   npm run pack:verify                                  check release/<unpacked> of this platform
 //   node scripts/verify-pack.mjs --release <dir>         check another release folder
@@ -11,8 +11,14 @@
 //   (b) no `out/cli` inside app.asar and none in app.asar.unpacked
 //   (c) no `bin/orgai` or `bin/orgai.cmd` launcher in the app's resources
 //   (d) the desktop's own runtime packages (Claude Agent SDK, Codex, zod) are unpacked beside app.asar
+//   (e) the packed app boots: started on a temp ORGAI_DATA_DIR with ORGAI_MOCK=1 and ORGAI_WINDOW_HIDDEN=1 it writes
+//       run/daemon.json in state 'ready' (main loads from app.asar, the preload and renderer are found), writes
+//       main.log, and a polite quit (SIGTERM; taskkill without /F on Windows) removes daemon.json again. This is the
+//       one check that starts the app; it also starts the macOS certificate-reader child (RunAsNode) as any launch does.
 // The orgai npm package has its own check, scripts/verify-npm.mjs.
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -51,12 +57,84 @@ export function listAsar(file) {
   return asar.listPackage(file, { isPack: false })
 }
 
+/** How long (e) waits for the packed app to become ready, and then to quit. */
+export const BOOT_TIMEOUT_MS = 60_000
+export const QUIT_TIMEOUT_MS = 20_000
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+function readDaemon(dataDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dataDir, 'data', 'run', 'daemon.json'), 'utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+async function waitFor(fn, ms) {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (fn()) return true
+    await sleep(150)
+  }
+  return fn()
+}
+
+/**
+ * (e): boots the packed app on a temp data folder with the mock adapter and hidden windows, waits for daemon.json
+ * 'ready', then asks it to quit and waits for daemon.json to go. Returns { ok, detail }. `spawnApp(binary, args, opts)`
+ * and `quit(child)` are for tests.
+ */
+export async function bootCheck(binary, deps = {}) {
+  const { spawnApp = spawn, quit = politeQuit, bootMs = BOOT_TIMEOUT_MS, quitMs = QUIT_TIMEOUT_MS } = deps
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-verify-pack-'))
+  let child
+  let exited = false
+  let output = ''
+  try {
+    const env = { ...process.env, ORGAI_DATA_DIR: dataDir, ORGAI_MOCK: '1', ORGAI_WINDOW_HIDDEN: '1' }
+    delete env.ELECTRON_RUN_AS_NODE
+    delete env.NODE_OPTIONS
+    child = spawnApp(binary, [], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    child.stdout?.on('data', (d) => (output += d))
+    child.stderr?.on('data', (d) => (output += d))
+    child.on('exit', () => (exited = true))
+    child.on('error', (e) => ((output += `spawn error: ${e.message}`), (exited = true)))
+    const ready = await waitFor(() => readDaemon(dataDir)?.state === 'ready' || exited, bootMs)
+    const daemon = readDaemon(dataDir)
+    if (!ready || daemon?.state !== 'ready') {
+      return { ok: false, detail: `${exited ? 'the app exited' : 'no ready daemon.json'} within ${Math.round(bootMs / 1000)} s${output ? `: ${output.trim().slice(-300)}` : ''}` }
+    }
+    if (daemon.hostKind !== 'desktop') return { ok: false, detail: `daemon.json says hostKind ${daemon.hostKind}, not desktop` }
+    const logOk = fs.existsSync(path.join(dataDir, 'logs', 'main.log'))
+    quit(child)
+    const gone = await waitFor(() => exited && !readDaemon(dataDir), quitMs)
+    if (!gone) return { ok: false, detail: 'the app did not quit cleanly (daemon.json stayed or the process kept running)' }
+    return logOk ? { ok: true, detail: 'booted on the mock adapter, wrote main.log, and quit cleanly' } : { ok: false, detail: 'booted but wrote no logs/main.log' }
+  } finally {
+    if (child && !exited) {
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // already gone
+      }
+    }
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+}
+
+/** Asks the app to quit the way a user would: SIGTERM runs its shutdown; Windows has no signals, so taskkill without /F. */
+function politeQuit(child) {
+  if (process.platform === 'win32') spawn('taskkill', ['/PID', String(child.pid), '/T'], { stdio: 'ignore', windowsHide: true })
+  else child.kill('SIGTERM')
+}
+
 /**
  * Runs every check; returns the exit code (0 only when all pass). `deps` are for tests: root, platform, arch, log,
  * listAsar (file -> entries).
  */
 export async function main(argv = process.argv.slice(2), deps = {}) {
-  const { root = ROOT, platform = process.platform, arch = process.arch, log = console.log, list = listAsar } = deps
+  const { root = ROOT, platform = process.platform, arch = process.arch, log = console.log, list = listAsar, boot = bootCheck } = deps
   let opts
   try {
     opts = parseArgs(argv)
@@ -103,6 +181,12 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const nodeModules = path.join(paths.resourcesDir, 'app.asar.unpacked', 'node_modules')
   const missing = DESKTOP_UNPACKED_PACKAGES.filter((pkg) => !fs.existsSync(path.join(nodeModules, ...pkg.split('/'), 'package.json')))
   report('(d) desktop packages', missing.length === 0, missing.length ? `not unpacked from app.asar: ${missing.join(', ')}` : `${DESKTOP_UNPACKED_PACKAGES.join(', ')} are unpacked`)
+
+  // (e) the packed app boots (only when the earlier checks found a binary: otherwise nothing could start)
+  if (fs.existsSync(paths.appBinary)) {
+    const r = await boot(paths.appBinary)
+    report('(e) packed app boots', r.ok, r.detail)
+  } else report('(e) packed app boots', false, 'skipped: no app binary')
 
   const failed = results.filter((r) => !r.ok)
   log(failed.length ? `${failed.length} check(s) failed.` : 'All checks passed.')

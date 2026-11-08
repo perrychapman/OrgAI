@@ -2,7 +2,7 @@ import { readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { checkCliFolder, checkDesktopFolder, cliFolderRefusal, containsAppRefusal, folderRefusal, markerUnreadableRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
+import { checkCliFolder, checkDesktopFolder, cliFolderRefusal, containsAppRefusal, containsCliRefusal, desktopFolderRefusal, desktopMarkerUnreadableRefusal, folderRefusal, markerUnreadableRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
 
 const dirs: string[] = []
 const base = (): string => {
@@ -218,9 +218,64 @@ describe('desktop folder check', () => {
     expect(checkDesktopFolder(a)).toEqual({})
     const b = base()
     writeFileSync(join(b, 'product.json'), '{nope')
-    const r = checkDesktopFolder(b)
+    const r = checkDesktopFolder(b, { isDefault: true })
     expect(r.refusal).toBeUndefined()
     expect(r.warning).toBeTruthy()
     expect(readFileSync(join(b, 'product.json'), 'utf8')).toBe('{nope')
+  })
+
+  it('refuses an unreadable or unknown marker in an ORGAI_DATA_DIR folder and leaves it alone', () => {
+    const b = base()
+    writeFileSync(join(b, 'product.json'), JSON.stringify({ product: 'orgai-future', version: 9 }))
+    const r = checkDesktopFolder(b, { isDefault: false })
+    expect(r.refusal).toBe(desktopMarkerUnreadableRefusal(b))
+    expect(readFileSync(join(b, 'product.json'), 'utf8')).toContain('orgai-future')
+    // The app's own default folder keeps starting.
+    expect(checkDesktopFolder(b, { isDefault: true }).refusal).toBeUndefined()
+  })
+
+  it('refuses a folder inside a CLI-marked folder (an ancestor carries the marker) and writes nothing', () => {
+    const cli = base()
+    marker(cli, 'orgai-cli')
+    for (const inner of [join(cli, 'data'), join(cli, 'a', 'b')]) {
+      expect(checkDesktopFolder(inner).refusal).toBe(cliFolderRefusal(inner))
+      expect(readdirSync(cli).sort()).toEqual(['product.json'])
+    }
+  })
+
+  it('refuses a symlinked alias into a CLI folder', () => {
+    const cli = base()
+    marker(cli, 'orgai-cli')
+    mkdirSync(join(cli, 'data'))
+    const alias = join(base(), 'alias')
+    link(join(cli, 'data'), alias)
+    expect(checkDesktopFolder(alias).refusal).toBe(cliFolderRefusal(alias))
+    expect(readdirSync(join(cli, 'data'))).toEqual([])
+    const aliasRoot = join(base(), 'aliasRoot')
+    link(cli, aliasRoot)
+    expect(checkDesktopFolder(join(aliasRoot, 'x')).refusal).toBeDefined()
+    expect(readdirSync(cli).sort()).toEqual(['data', 'product.json'])
+  })
+
+  it('refuses the CLI default folder, a folder inside it and a folder that contains it', () => {
+    const root = base()
+    const cliDefault = join(root, 'orgai-cli')
+    mkdirSync(join(cliDefault, 'data'), { recursive: true })
+    expect(checkDesktopFolder(cliDefault, { cliDefault }).refusal).toBe(cliFolderRefusal(cliDefault))
+    const inner = join(cliDefault, 'data')
+    expect(checkDesktopFolder(inner, { cliDefault }).refusal).toBe(cliFolderRefusal(inner))
+    expect(checkDesktopFolder(root, { cliDefault }).refusal).toBe(containsCliRefusal(root))
+    const alias = join(base(), 'alias')
+    link(cliDefault, alias)
+    expect(checkDesktopFolder(alias, { cliDefault }).refusal).toBe(cliFolderRefusal(alias))
+    expect(readdirSync(cliDefault)).toEqual(['data'])
+    // A sibling of the CLI default is fine.
+    expect(checkDesktopFolder(join(root, 'OrgAI'), { cliDefault }).refusal).toBeUndefined()
+  })
+
+  it('the read-only pass writes nothing, not even a missing folder', () => {
+    const dir = join(base(), 'new', 'OrgAI')
+    expect(desktopFolderRefusal(dir).refusal).toBeUndefined()
+    expect(() => statSync(dir)).toThrow()
   })
 })

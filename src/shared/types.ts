@@ -5717,6 +5717,8 @@ export interface CliShimStatus {
    * then says "The orgai command from npm (<version>) is on your PATH" and offers no Install.
    */
   otherCli?: { path: string; channel?: InstallChannel; version?: string }
+  /** false when this install ships no orgai launcher (every packaged app now): only an existing old shim can be removed. */
+  installable?: false
 }
 
 /** The answer of app:installCliShim / app:uninstallCliShim. Never a rejection: failures are ok: false. */
@@ -6343,10 +6345,9 @@ export type HostClientKind = 'tui' | 'cli'
 
 /**
  * 'desktop': the Electron app with a window (it owns its data folder but serves no socket). 'inproc': pure Node inside
- * the CLI command that started it. 'node': a pure-Node host without windows. Capabilities per kind:
- * HOST_KIND_CAPABILITIES.
+ * the CLI command that started it. Capabilities per kind: HOST_KIND_CAPABILITIES.
  */
-export type HostKind = 'desktop' | 'inproc' | 'node'
+export type HostKind = 'desktop' | 'inproc'
 
 export type HostState = 'starting' | 'ready' | 'draining'
 
@@ -6360,8 +6361,8 @@ export interface DaemonInfo {
   /** Socket path (unix) or pipe name (win32). */
   endpoint: string
   /**
-   * false while the host binds no listener and has no daemon.secret (Terminal access off, review M11): clients answer
-   * "Terminal access is off" without connecting. Absent = listening.
+   * false while the host binds no listener and has no daemon.secret (the desktop app never listens): clients do not
+   * connect to it. Absent = listening.
    */
   listening?: false
   state: HostState
@@ -6891,16 +6892,10 @@ export const DEFAULT_DAEMON_IDLE_MINUTES = 30
 // the key custodians and the SecretStore API live in src/main/store/vaultTypes.ts (main only).
 
 /** Every HostKind, in a stable order (ownership.ts parseDaemonInfo, hostClient.ts parseHelloResult). */
-export const HOST_KINDS: readonly HostKind[] = ['desktop', 'inproc', 'node']
+export const HOST_KINDS: readonly HostKind[] = ['desktop', 'inproc']
 
 /** Every HostClientKind (socketServer.ts helloProblem). */
 export const HOST_CLIENT_KINDS: readonly HostClientKind[] = ['cli', 'tui']
-
-/**
- * Hosts that run in the background, detached from the command that asked for them (cli-standalone.md 4.1): what
- * an app-side launcher waits for. Never 'inproc', whose daemon.json belongs to the CLI command that started it.
- */
-export const BACKGROUND_HOST_KINDS: readonly HostKind[] = ['desktop', 'node']
 
 /** What a host kind can do (cli-standalone.md 4.2): replaces `hostKind === 'inproc'` checks. */
 export interface HostKindCapabilities {
@@ -6912,8 +6907,7 @@ export interface HostKindCapabilities {
 
 export const HOST_KIND_CAPABILITIES: Readonly<Record<HostKind, HostKindCapabilities>> = {
   desktop: { canOpenWindows: true, inProcess: false },
-  inproc: { canOpenWindows: false, inProcess: true },
-  node: { canOpenWindows: false, inProcess: false }
+  inproc: { canOpenWindows: false, inProcess: true }
 }
 
 /** HOST_KIND_CAPABILITIES[kind].canOpenWindows; false for an unknown value. */

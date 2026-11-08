@@ -22,7 +22,6 @@ import {
   DEFAULT_HEADLESS_DECISION_POLICY,
   EXEC_OUTCOMES,
   EXEC_OUTCOME_EXIT_CODE,
-  BACKGROUND_HOST_KINDS,
   HOST_CLIENT_KINDS,
   HOST_IPC,
   HOST_KINDS,
@@ -257,13 +256,12 @@ describe('Wave 7 (standalone CLI) contracts', () => {
     for (const n of names) expect(taken.has(n), n).toBe(false)
   })
 
-  it('host kinds: every kind has capabilities; only desktop opens windows; background never inproc', () => {
+  it('host kinds: every kind has capabilities; only desktop opens windows', () => {
     expect([...HOST_KINDS].sort()).toEqual(Object.keys(HOST_KIND_CAPABILITIES).sort())
-    expect(HOST_KINDS).toContain('node')
+    expect([...HOST_KINDS]).toEqual(['desktop', 'inproc'])
     expect(HOST_KINDS.filter((k) => hostCanOpenWindows(k)).sort()).toEqual(['desktop'])
     expect(HOST_KINDS.filter((k) => HOST_KIND_CAPABILITIES[k].inProcess)).toEqual(['inproc'])
     expect(hostCanOpenWindows('__proto__' as never)).toBe(false)
-    expect([...BACKGROUND_HOST_KINDS].sort()).toEqual(['desktop', 'node'])
     expect(HOST_CLIENT_KINDS).toEqual(['cli', 'tui'])
   })
 

@@ -1223,8 +1223,8 @@ export class McpService {
 
   /**
    * The host is shutting down (activity quiesce, cli-standalone.md round 6 item 9): abort every interactive
-   * authorization (each resolves 'Authorization was cancelled.' without saving anything), so Quit and the app's handoff
-   * never wait on a browser the user never finished. New authorizations are refused from now on. Idempotent.
+   * authorization (each resolves 'Authorization was cancelled.' without saving anything), so Quit
+   * never waits on a browser the user never finished. New authorizations are refused from now on. Idempotent.
    */
   dispose(): void {
     this.disposed = true

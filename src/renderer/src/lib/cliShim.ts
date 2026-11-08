@@ -11,6 +11,8 @@ export interface CliShimView {
 }
 
 export const CLI_SHIM_UNAVAILABLE = 'Available in the installed OrgAI app, not in a development build.'
+/** Said while this install ships no orgai launcher (every packaged app now): the command comes from npm. */
+export const CLI_SHIM_NPM = 'The OrgAI app no longer installs the orgai command. Install it with `npm i -g orgai-cli`.'
 export const CLI_SHIM_CHECKING = 'Checking…'
 /** Said when the status could not be read and no earlier status is known. */
 export const CLI_SHIM_LOAD_FAILED = 'OrgAI could not check the orgai command. Open App settings again to retry.'
@@ -93,6 +95,7 @@ export function cliShimView(status: CliShimStatus, platform: string, home?: stri
   const also = other ? ` ${otherCliLine(other, platform, home, true)}` : ''
   switch (status.state) {
     case 'not-installed':
+      if (status.installable === false) return { line: other ? otherCliLine(other, platform, home) : CLI_SHIM_NPM, remove: false }
       if (other && blocking) return { line: otherCliLine(other, platform, home), remove: false }
       return {
         line: `${binDir ? `Not installed. Adds a small orgai command in ${binDir}.` : 'Not installed. Adds a small orgai command.'}${also}`,
@@ -102,6 +105,10 @@ export function cliShimView(status: CliShimStatus, platform: string, home?: stri
     case 'installed':
       return { line: `Installed at ${path}.${also}`, remove: true, ...hint }
     case 'outdated':
+      // No launcher ships with this app: an old shim can only be removed, never updated.
+      if (status.installable === false) {
+        return { line: `An older OrgAI app put an orgai command at ${path}. It runs a launcher this app no longer ships. Remove it, then install orgai with \`npm i -g orgai-cli\`.${also}`, remove: true, ...hint }
+      }
       if (blocking) return { line: `Installed at ${path}, but it runs another copy of OrgAI.${also}`, remove: true, ...hint }
       return {
         line: `Installed at ${path}, but it runs another copy of OrgAI.${also}`,

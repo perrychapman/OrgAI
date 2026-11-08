@@ -170,15 +170,74 @@ export interface DesktopFolderCheck {
   warning?: string
 }
 
+export interface DesktopFolderOptions {
+  /** The orgai CLI's default userDataDir on this platform: never an app folder, and an app folder never holds it. */
+  cliDefault?: string
+  /** True when the folder is the app's own default userData (no ORGAI_DATA_DIR): an unreadable marker there does not stop an existing install. */
+  isDefault?: boolean
+  platform?: NodeJS.Platform
+}
+
+/** The refusal for a folder that holds the orgai CLI's default data folder. */
+export const containsCliRefusal = (userDataDir: string): string =>
+  `${userDataDir} contains the orgai command line tool's data folder. The OrgAI app keeps its own data; choose another folder (ORGAI_DATA_DIR).`
+
+/** The refusal for an override folder whose marker cannot be read or is not an OrgAI marker. */
+export const desktopMarkerUnreadableRefusal = (userDataDir: string): string =>
+  `${join(userDataDir, PRODUCT_MARKER_FILE)} cannot be read or is not an OrgAI marker, so the OrgAI app will not use ${userDataDir}; choose another folder (ORGAI_DATA_DIR) or remove that file.`
+
+/** The nearest existing ancestor's real path with the missing tail joined back on (a folder that does not exist yet). */
+function realExisting(p: string): string {
+  const tail: string[] = []
+  let dir = p
+  while (!existsSync(dir) && dirname(dir) !== dir) {
+    tail.unshift(basename(dir))
+    dir = dirname(dir)
+  }
+  return join(real(dir), ...tail)
+}
+
+/** True when a strict ancestor of `folder` carries the CLI marker (the folder sits inside a CLI folder). */
+function insideCliMarkedFolder(folder: string): boolean {
+  for (let dir = dirname(realExisting(folder)); ; dir = dirname(dir)) {
+    const m = readProductMarker(dir)
+    if (m.state === 'marked' && m.product === 'orgai-cli') return true
+    if (dirname(dir) === dir) return false
+  }
+}
+
 /**
- * Decides whether the desktop app may use its folder (standalone spec 3.1): a folder marked orgai-cli is refused; a
- * folder without a marker (every install made before the marker existed, or a new one) gets the desktop marker.
- * An unreadable marker is left alone and does not stop an existing install from starting.
+ * The read-only half of the desktop check: decides from what is on disk and writes nothing, so the app can refuse a
+ * folder before it creates, logs into or locks it (index.ts runs this first).
  */
-export function checkDesktopFolder(userDataDir: string): DesktopFolderCheck {
+export function desktopFolderRefusal(userDataDir: string, opts: DesktopFolderOptions = {}): DesktopFolderCheck & { marker: MarkerRead } {
+  const platform = opts.platform ?? process.platform
   const marker = readProductMarker(userDataDir)
-  if (marker.state === 'marked') return marker.product === 'orgai-cli' ? { refusal: cliFolderRefusal(userDataDir) } : {}
-  if (marker.state === 'invalid') return { warning: `${join(userDataDir, PRODUCT_MARKER_FILE)} cannot be read or is not an OrgAI marker; it was left as it is.` }
+  const done = (r: DesktopFolderCheck): DesktopFolderCheck & { marker: MarkerRead } => ({ ...r, marker })
+  if (marker.state === 'marked' && marker.product === 'orgai-cli') return done({ refusal: cliFolderRefusal(userDataDir) })
+  // Inside a CLI folder (an ancestor carries its marker), or around the CLI's default folder: both would mix the two trees.
+  if (insideCliMarkedFolder(userDataDir)) return done({ refusal: cliFolderRefusal(userDataDir) })
+  if (opts.cliDefault) {
+    if (isInside(realExisting(userDataDir), opts.cliDefault, platform)) return done({ refusal: cliFolderRefusal(userDataDir) })
+    if (isInside(opts.cliDefault, realExisting(userDataDir), platform)) return done({ refusal: containsCliRefusal(userDataDir) })
+  }
+  if (marker.state === 'invalid') {
+    if (opts.isDefault) return done({ warning: `${join(userDataDir, PRODUCT_MARKER_FILE)} cannot be read or is not an OrgAI marker; it was left as it is.` })
+    return done({ refusal: desktopMarkerUnreadableRefusal(userDataDir) })
+  }
+  return done({})
+}
+
+/**
+ * Decides whether the desktop app may use its folder (standalone spec 3.1): a folder marked orgai-cli, inside one, or
+ * around the CLI's default folder is refused; a folder without a marker (every install made before the marker existed,
+ * or a new one) gets the desktop marker. An unreadable marker in the app's own default folder is left alone and does not
+ * stop an existing install from starting; in an ORGAI_DATA_DIR folder it refuses, as the CLI does.
+ */
+export function checkDesktopFolder(userDataDir: string, opts: DesktopFolderOptions = {}): DesktopFolderCheck {
+  const { marker, ...r } = desktopFolderRefusal(userDataDir, opts)
+  if (r.refusal || r.warning) return r
+  if (marker.state === 'marked') return {}
   if (!writeProductMarker(userDataDir, 'orgai-desktop')) return { warning: `Could not write ${PRODUCT_MARKER_FILE} in ${userDataDir}.` }
   return {}
 }

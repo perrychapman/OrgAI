@@ -172,7 +172,7 @@ export interface BootOrgAIHostOptions {
   shutdownExcludePids?: () => number[]
   /** The shutdown's hard limit and its tree-kill waits; production uses the defaults (tests shorten them). */
   shutdownLimits?: { hardLimitMs?: number; kill?: { termGraceMs?: number; waitMs?: number; stepMs?: number } }
-  /** Authenticated terminal sessions (HostSocketServer.terminalSessionCount), for host.status `handoff`. Absent = 0. */
+  /** Authenticated terminal sessions (HostSocketServer.terminalSessionCount), for the host.status counts. Absent = 0. */
   terminalSessions?: () => number
   /**
    * More background work the drain stops at once (after the host's own: Team assistant, OAuth flows, skill evaluation),
@@ -250,9 +250,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
 
   const runStore = new RunStore(dataDir)
   const secrets = opts.secretStore ?? new SecretStore(dataDir, opts.safeStorage, opts.secrets)
-  // Socket access is fixed by the host kind (no setting): the orgai process's in-process host answers its own process
-  // through the owner proof (every scope), so a non-desktop host grants every scope; the desktop opens no socket at all.
-  const terminalAccess = (): HostTerminalAccess => ({ enabled: hostKind !== 'desktop', level: hostKind === 'desktop' ? 'operate' : 'full' })
+  // Socket access is fixed by the host kind (no setting): only the orgai process's in-process host answers a socket, and
+  // only its own process through the owner proof (every scope); the desktop opens no socket at all.
+  const terminalAccess = (): HostTerminalAccess => ({ enabled: hostKind === 'inproc', level: hostKind === 'inproc' ? 'full' : 'operate' })
   // `adapters` is declared below and only read when discovery runs.
   let adapters: { claude: ClaudeAdapter; codex: CodexAdapter; mock?: MockAdapter }
   const connections = new ConnectionService({
@@ -668,7 +668,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       }
     },
     forceStop: () => rm.stopAll({ reason: 'quit' }),
-    // Every live run, waiting ones included: a non-forced drain (idle exit, `orgai daemon stop`) ends those too, as cut
+    // Every live run, waiting ones included: a non-forced drain ends those too, as cut
     // by the app ("Ended when OrgAI closed", continuable), before the writers settle and ownership is released.
     liveRuns: () => rm.liveRunCount(),
     // Auth probe children (abortProbes at quiesce) are awaited in the settle phase only: never a stop refusal.
@@ -700,13 +700,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       pid: ownership.info.pid,
       startedAt: ownership.info.startedAt,
       activity: activity.snapshot(),
-      // Wave 7 (4.4 step 4): what a handoff stop would wait for, for the app's waiting window.
+      // The run counts the TUI's quit confirm shows (host.status).
       ...((): { handoff?: HostStatusResult['handoff'] } => {
         const facts = shutdown.handoffFacts()
         return facts ? { handoff: facts } : {}
       })()
     }),
-    // host.stop (and the app's handoff stop) through the coordinator: the handoff predicate, then the drain.
+    // host.stop through the coordinator: the drain.
     stop: (input) => shutdown.stop(input)
   }
 
@@ -749,9 +749,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
 
   // Stores built, probes started, housekeeping done: advertise the host as ready.
   ownership.markReady()
-  // Background hosts exit when idle; the desktop host lives as long as its windows, and an inproc host (the shared
-  // in-terminal host, 'Press Ctrl+C to stop') as long as its terminal: an idle drain would end runs waiting on the user.
-  if (hostKind !== 'desktop' && hostKind !== 'inproc') activity.armIdleExit()
+  // No host arms an idle exit: the desktop host lives as long as its windows, and an inproc host as long as its terminal
+  // command ('Press Ctrl+C to stop'); an idle drain would end runs waiting on the user.
 
   const dispose = (): void => {
     if (disposed) return

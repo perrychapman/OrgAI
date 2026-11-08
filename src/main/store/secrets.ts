@@ -208,7 +208,7 @@ export const UNDECRYPTABLE_REASON = VAULT_MESSAGES.undecryptable
 export const LEGACY_CORRUPT_MESSAGE = VAULT_MESSAGES.legacyCorrupt
 
 /** Mutations refused until the reconcile after a failed save succeeds (5.5 Durability and failures). */
-export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not check the saved secrets again yet; try again, or check with `orgai secrets status`.'
+export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not check the saved secrets again yet; try again in a moment.'
 
 /** A custodian failure that is not a classified CustodyFailure (a helper bug, an unexpected throw). */
 export const KEY_STORE_UNREACHABLE_MESSAGE = 'The key store could not be reached.'
@@ -221,7 +221,7 @@ export const vaultSaveFailedMessage = (detail: string): string => `OrgAI could n
  * it again on the next save, prepareWrite, retry, secrets:init and secrets:status (review round 2).
  */
 export const fileReadFailedMessage = (file: string, code: string): string =>
-  `${file} could not be read (${code}); OrgAI reads it again on the next save or \`orgai secrets status\``
+  `${file} could not be read (${code}); OrgAI reads it again on the next save`
 
 /** secrets:reset refuses while a file cannot be read: a healthy file is never moved aside as damaged (review round 2). */
 export const resetReadFailedMessage = (file: string, code: string): string =>

@@ -53,7 +53,7 @@ function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Prom
   })
 }
 const app = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('desktop', extra)
-const node = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('node', extra)
+const node = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('inproc', extra)
 const vaultJson = (): VaultFile => JSON.parse(readFileSync(join(dataDir, 'vault.json'), 'utf8')) as VaultFile
 const legacyKeys = (): string[] => olderApp(dataDir).keys().sort()
 const locked = { kind: 'locked' as const, reason: 'Keychain locked over SSH' }
@@ -491,7 +491,7 @@ describe('deletes (5.5 Deletes)', () => {
       s.set('k', 'v')
       if (fail === 'mismatch') custody.items.set(vaultJson().vaultId, Buffer.alloc(32, 3))
       else custody.fail(fail)
-      for (const kind of ['desktop', 'node'] as const) {
+      for (const kind of ['desktop', 'inproc'] as const) {
         const h = await host(kind)
         expect(h.state()).not.toBe('open')
         h.set('k', null)

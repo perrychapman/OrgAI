@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Writes or removes out/cli/install.json (Wave 7, docs/design/cli-standalone.md 3.5): `{ channel, version, commit }`
-// beside the CLI bundle, read by src/cli/installInfo.ts. The app's bundle carries channel 'app': pack-local.mjs and
-// the release workflow write it after the CLI build and before electron-builder (electron-builder.yml unpacks
-// out/cli/**). The npm package's copy is written by build-npm-package.mjs into its own folder, never into out/cli.
+// beside the CLI bundle, read by src/cli/installInfo.ts. The desktop app ships no CLI bundle any more
+// (electron-builder.yml excludes out/cli/**), so nothing in the app's build writes it. The npm package's copy is written by build-npm-package.mjs into its own folder, never into out/cli.
 //
 //   node scripts/write-install-info.mjs --channel app     write out/cli/install.json (version from package.json)
 //   node scripts/write-install-info.mjs --remove          remove it again (a checkout reads as channel 'dev')

@@ -44,7 +44,7 @@ import { restrictDaemonSecretAcl } from './protocol'
  * another user's process, or a pid reused quickly) is 'unconfirmed' (review M9): with a dead endpoint it is reclaimed
  * only when daemon.json says the endpoint is bound (no `listening: false`; a listening host publishes daemon.json only
  * after it listens and writes `listening: false` before it closes, so a published listening host with no listener is
- * gone). An unconfirmed pid whose daemon.json says `listening: false` (an Electron host with Terminal access off,
+ * gone). An unconfirmed pid whose daemon.json says `listening: false` (the Electron app, which never listens,
  * review M11) is a running host whatever the probe says: only a 'dead' pid is reclaimed then, unless the incumbent is
  * an Electron host and this launch holds Electron's single-instance lock (`singleInstanceLockHeld`; review M9
  * follow-up: the lock proves no Electron host runs here, so a crash record is never a lockout). An unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
@@ -186,8 +186,7 @@ export interface OwnershipOptions {
    * The caller holds Electron's single-instance lock (`app.requestSingleInstanceLock()`, keyed by userData, and dataDir
    * is `<userData>/data`): no other Electron host (desktop) runs on this data folder. An Electron
    * incumbent whose pid is 'unconfirmed', whose daemon.json says `listening: false` and whose endpoint does not
-   * answer is then known to be stale and is reclaimed (review M9 follow-up: a crashed desktop host with Terminal access
-   * off whose pid Windows reused for an elevated process). Only the Electron hosts pass it; `--host inproc` takes no
+   * answer is then known to be stale and is reclaimed (review M9 follow-up: a crashed desktop host whose pid Windows reused for an elevated process). Only the Electron hosts pass it; `--host inproc` takes no
    * such lock and keeps the conservative refusal.
    */
   singleInstanceLockHeld?: boolean
@@ -247,8 +246,7 @@ export interface OwnershipOptions {
   /** Platform override (tests only; the win32 pipe path is UNVERIFIED and not exercised live). */
   platform?: NodeJS.Platform
   /**
-   * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron hosts, whose
-   * Terminal access may be off): neither exists until setListening(true); daemon.json carries `listening: false` and
+   * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron app, which never listens): neither exists until setListening(true); daemon.json carries `listening: false` and
    * the endpoint the listener will use.
    */
   listen?: boolean
@@ -271,7 +269,7 @@ export interface HostOwnership {
   readonly listening: boolean
   /**
    * Bind the listener and write daemon.secret (on), or close the listener and remove daemon.secret (off), then rewrite
-   * daemon.json's `listening` (review M11: only while Terminal access is on). Calls run one at a time in call order; a
+   * daemon.json's `listening` (review M11). Calls run one at a time in call order; a
    * call that matches the current state does nothing. The secret keeps its value for this host instance. Rejects when
    * the bind (or, on Windows, the secret's ACL) fails; the listener is then off. After release() it does nothing.
    */
@@ -339,7 +337,9 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
   if (typeof state !== 'string' || !HOST_STATES.includes(state as HostState)) return null
   if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return null
   if (start !== undefined && (typeof start !== 'string' || start.length > 200)) return null
-  if (hostKind !== undefined && (typeof hostKind !== 'string' || !HOST_KINDS.includes(hostKind as HostKind))) return null
+  // A record left by a crashed pre-upgrade `--headless-host` was the app itself: read it as 'desktop' so the single-instance lock can still reclaim it.
+  const kind = hostKind === 'headless-host' ? 'desktop' : hostKind
+  if (kind !== undefined && (typeof kind !== 'string' || !HOST_KINDS.includes(kind as HostKind))) return null
   if (appVersion !== undefined && (typeof appVersion !== 'string' || appVersion.length > 200)) return null
   const cwd = typeof ownerCwd === 'string' && ownerCwd.length > 0 && ownerCwd.length <= 4096 && !ownerCwd.includes('\0') ? ownerCwd : undefined
   return {
@@ -351,7 +351,7 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
     ...(listening === false ? { listening: false as const } : {}),
     state: state as HostState,
     startedAt,
-    ...(hostKind !== undefined ? { hostKind: hostKind as HostKind } : {}),
+    ...(kind !== undefined ? { hostKind: kind as HostKind } : {}),
     ...(appVersion !== undefined ? { appVersion } : {}),
     ...(cwd !== undefined ? { ownerCwd: cwd } : {})
   }
@@ -501,7 +501,7 @@ export type StartupMutexOptions = Omit<OwnershipOptions, 'hostKind' | 'appVersio
 
 /**
  * Run `fn` while holding `<dataDir>/run/startup.mkdir` and while no live host owns the data folder (Wave 7,
- * cli-standalone.md round 6 item 11: `orgai terminal-access` writes settings this way). The same steps as
+ * cli-standalone.md round 6 item 11). The same steps as
  * {@link acquireHostOwnership} up to the incumbent check (the mutex, then daemon.json re-checked inside it; a live host
  * throws HostAlreadyRunningError, a mutex held past liveWaitMs HostStartingOrBusyError), then `fn` instead of
  * publishing: no daemon.json, no secret, no listener. A host starting meanwhile waits on the mutex and boots after `fn`
@@ -577,7 +577,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       // A dead pid with a dead endpoint is reclaimed, and so is an unconfirmed pid (it may be a stranger that reused
       // the pid, review M9) with a dead endpoint that daemon.json says is bound. A confirmed live pid, or an endpoint
       // that answers, is a running host. So is an unconfirmed pid whose daemon.json says `listening: false` (review
-      // M11: an Electron host with Terminal access off has no listener at all, so a dead endpoint proves nothing; a
+      // M11: the Electron app has no listener at all, so a dead endpoint proves nothing; a
       // slow or unreadable start time must never let a second host write the same data folder).
       // Unless this launch holds Electron's single-instance lock and the incumbent is an Electron host: the lock
       // proves no Electron host runs on this data folder, so the record is stale (review M9 follow-up).
@@ -944,7 +944,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
   function ownershipHandle(info: DaemonInfo, initialServer: Server | undefined, rtDir: string | undefined, aclWarning: string | undefined): HostOwnership {
     let current = info
     let released = false
-    /** The bound listener; undefined while Terminal access is off (review M11). */
+    /** The bound listener; undefined while the host does not listen (review M11). */
     let srv = initialServer
     /** setListening calls, one at a time. */
     let listenChain: Promise<void> = Promise.resolve()
@@ -979,7 +979,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       if (released || srv) return
       let bound: Awaited<ReturnType<typeof bindListener>>
       try {
-        // Terminal access is being turned on: an ACL failure keeps the listener off (never a fatal launch, review M8).
+        // The listener is being turned on: an ACL failure keeps the listener off (never a fatal launch, review M8).
         await writeSecret('required')
         bound = await bindListener()
       } catch (e) {
@@ -999,7 +999,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       if (released || !srv) return
       const closing = srv
       srv = undefined
-      // daemon.json first, so a client from now on reads "Terminal access is off" instead of a dead socket.
+      // daemon.json first, so a client from now on sees the host is not listening instead of a dead socket.
       write(withListening(false))
       removeSecretIfOurs()
       await new Promise<void>((r) => closing.close(() => r()))
@@ -1137,7 +1137,7 @@ export interface ProtectSecretOptions {
  * (the socket server runs none and refuses hellos while secretAclWarning is set). A failure (whoami or icacls missing or refusing: a junctioned profile, FAT / exFAT,
  * a network drive) throws HostOwnershipError('secret_acl_failed') in 'required' mode; in 'best-effort' mode it is
  * logged and returned as a warning sentence (review M8), and the secret is written regardless. Same-user programs are
- * not kept out by any ACL: the Terminal access level and the self-control gate are for those.
+ * not kept out by any ACL: the self-control gate is for those.
  * UNVERIFIED: never run on Windows from this code.
  */
 export async function protectSecretOnWindows(runDir: string, write: () => void, opts: ProtectSecretOptions): Promise<string | undefined> {
@@ -1156,7 +1156,7 @@ export async function protectSecretOnWindows(runDir: string, write: () => void, 
   if (!problem) return undefined
   const sentence = `Could not restrict daemon.secret to the current Windows user: ${problem}`
   if (opts.mode === 'required') throw new HostOwnershipError('secret_acl_failed', sentence)
-  const warning = `${sentence} Terminal access should stay off for this data folder (${dirname(runDir)}) until it is on a disk that keeps file permissions.`
+  const warning = `${sentence} The host should not listen on this data folder (${dirname(runDir)}) until it is on a disk that keeps file permissions.`
   ;(opts.warn ?? ((m: string) => console.warn(m)))(`OrgAI host ownership: ${warning}`)
   return warning
 }

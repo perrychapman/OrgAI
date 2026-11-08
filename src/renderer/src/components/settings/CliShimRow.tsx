@@ -26,8 +26,8 @@ function guessPlatform(): string {
 }
 
 /**
- * App settings > General > Advanced settings > Terminal: install, update or remove the orgai command shim
- * (cli-spec 7(3)). Main owns the file; this row only shows the status and asks. Hidden when the API is missing.
+ * App settings > General > Advanced settings > Terminal: remove the orgai command shim an older app put on PATH
+ * (cli-spec 7(3); this app ships no launcher, so there is nothing to install). Main owns the file; this row only shows the status and asks. Hidden when the API is missing.
  */
 export function CliShimRow(): ReactElement | null {
   const api = typeof window === 'undefined' ? undefined : window.orgai?.app
@@ -118,10 +118,10 @@ export function CliShimRow(): ReactElement | null {
     <div className="cli-shim" data-testid="cli-shim-row" aria-busy={busy || undefined}>
       <SettingRow
         id={ROW_ID}
-        title="orgai command"
+        title="Old orgai command"
         description={
           <>
-            Puts the orgai command on your PATH for use in a terminal.
+            The orgai command now comes from npm, not from this app. This row removes the one an older OrgAI app put on your PATH.
             {/* A live region: "Checking…" turning into the status (or a load failure) is announced (review Low). */}
             <span
               className="cli-shim-status"

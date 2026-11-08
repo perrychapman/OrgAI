@@ -24,8 +24,7 @@
  * `bun test`, vitest) given test files or folders of this install's own `src/cli` is not the CLI. The scanner's other
  * fail-closed answers (untrackable cds, UNC words) give null so the normal permission flow decides. Running the CLI by
  * interpreter is matched on an `orgai` / `orgai.mjs` / `orgai.js` argument, or on an argument inside this install's
- * own CLI folders (setOrgaiCliRoots: `<app>/out/cli`, `<app>/src/cli`, and in a packaged app
- * `<Resources>/app.asar.unpacked/out/cli` and `<Resources>/bin`), never on any project's `src/cli`; sh / bash / zsh /
+ * own CLI folders (setOrgaiCliRoots: `<app>/out/cli` and `<app>/src/cli`; a packaged app ships no CLI), never on any project's `src/cli`; sh / bash / zsh /
  * dash / ksh given such a file (or an `orgai`-named one) as their script count the same way (every word that may be
  * an option's value is checked too: `bash -O extglob <launcher>`, `bash --rcfile F <launcher>`), as do an input
  * redirect of such a file into a shell or interpreter and `.` / `source` of one; `env -S '<text>'` is read as a

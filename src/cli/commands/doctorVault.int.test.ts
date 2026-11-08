@@ -67,7 +67,7 @@ describe('orgai doctor with the real groups', () => {
   })
 
   it('reports the vault the real store made, without opening it', async () => {
-    const store = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'node', product: 'cli', cipher: noCipher, env: { [CLI_KEY_FILE_ENV]: join(keyDir, 'k') }, log: () => undefined, retryMs: 0 })
+    const store = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'inproc', product: 'cli', cipher: noCipher, env: { [CLI_KEY_FILE_ENV]: join(keyDir, 'k') }, log: () => undefined, retryMs: 0 })
     await store.prepareWrite()
     store.set('litellm.apiKey', 'sk-doctor-secret')
     store.dispose()

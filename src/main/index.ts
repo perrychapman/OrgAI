@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, screen, shell } from 'electron'
-import { parseLargerThanScreen, parseWindowInactive, windowPlacement } from './windowPlacement'
-import { mkdirSync, realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { parseLargerThanScreen, parseWindowHidden, parseWindowInactive, windowPlacement } from './windowPlacement'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, FocusRunTarget, RunEvent } from '@shared/types'
@@ -18,7 +18,7 @@ import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError,
 import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
 import { openSecretStore } from './store/secrets'
 import { unavailableCustodianFactory } from './store/unavailableCustodian'
-import { checkDesktopFolder } from './store/productMarker'
+import { checkDesktopFolder, desktopFolderRefusal } from './store/productMarker'
 import {
   CLOSE_PROMPT_BUTTONS,
   CLOSE_PROMPT_CANCEL_ID,
@@ -43,12 +43,29 @@ if (process.env.ELECTRON_RUN_AS_NODE) process.exit(0)
 // folder is canonicalized (realpath) so the single-instance lock, the data dir and the host's run/ folder always
 // name it one way (macOS /var vs /private/var, a symlinked profile).
 const dataOverride = dataDirOverride()
-const userDataDir = canonicalUserData(dataOverride?.userData ?? app.getPath('userData'))
-app.setPath('userData', userDataDir)
-if (dataOverride) {
-  const overrideLogs = join(userDataDir, 'logs')
-  mkdirSync(overrideLogs, { recursive: true })
-  app.setAppLogsPath(overrideLogs)
+const candidateUserData = dataOverride?.userData ?? app.getPath('userData')
+// The product marker (standalone spec 3.1), read-only and first: a folder the orgai CLI owns (marked, inside one or around
+// its default folder) is refused before the app creates it, sets it as userData, logs into it or takes Chromium's
+// single-instance lock there. A dialog is allowed before ready; nothing in the folder is touched.
+const cliDefaultDir = join(app.getPath('appData'), 'orgai-cli')
+const earlyFolder = desktopFolderRefusal(candidateUserData, { cliDefault: cliDefaultDir, isDefault: !dataOverride })
+const earlyRefusal = earlyFolder.refusal
+if (earlyRefusal) {
+  // Chromium must not start its profile in the refused folder or in the real default one: point it at a throwaway folder.
+  const scratch = mkdtempSync(join(tmpdir(), 'orgai-refused-'))
+  app.setPath('userData', scratch)
+  process.on('exit', () => rmSync(scratch, { recursive: true, force: true }))
+  dialog.showErrorBox('OrgAI cannot use this folder', earlyRefusal)
+  app.exit(2)
+}
+const userDataDir = earlyRefusal ? candidateUserData : canonicalUserData(candidateUserData)
+if (!earlyRefusal) {
+  app.setPath('userData', userDataDir)
+  if (dataOverride) {
+    const overrideLogs = join(userDataDir, 'logs')
+    mkdirSync(overrideLogs, { recursive: true })
+    app.setAppLogsPath(overrideLogs)
+  }
 }
 
 function canonicalUserData(dir: string): string {
@@ -102,11 +119,11 @@ app.on('activate', () => {
 // The lock is keyed by userData, so it is taken after setPath. An unpackaged dev build ('orgai') and the packaged
 // 'OrgAI' share one userData folder on case-insensitive macOS, so the lock correctly makes them exclusive. The losing
 // process exits at once, without touching <dataDir>/run.
-const gotLock = app.requestSingleInstanceLock()
-if (!gotLock) app.exit(0)
-// The product marker (standalone spec 3.1): a folder the orgai CLI marked is refused (a dialog below, nothing else
-// written there); an unmarked one gets the desktop marker.
-const folderCheck = gotLock ? checkDesktopFolder(userDataDir) : {}
+const gotLock = earlyRefusal ? false : app.requestSingleInstanceLock()
+if (!gotLock && !earlyRefusal) app.exit(0)
+// The marker is written here, after the lock (a folder already refused above never gets this far). The checks run again
+// in case the folder changed since the read-only pass.
+const folderCheck = gotLock ? checkDesktopFolder(userDataDir, { cliDefault: cliDefaultDir, isDefault: !dataOverride }) : {}
 const folderRefused = folderCheck.refusal !== undefined
 
 // Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
@@ -211,6 +228,8 @@ function openRunWindow(target: FocusRunTarget): void {
 // test and walkthrough windows open on another monitor without taking focus. Unset = the default behaviour.
 const WINDOW_DISPLAY = process.env.ORGAI_WINDOW_DISPLAY
 const WINDOW_INACTIVE = parseWindowInactive(process.env.ORGAI_WINDOW_INACTIVE)
+// ORGAI_WINDOW_HIDDEN=1: windows load but are never shown (scripts/verify-pack.mjs boots the packed app this way).
+const WINDOW_HIDDEN = parseWindowHidden(process.env.ORGAI_WINDOW_HIDDEN)
 // ORGAI_WINDOW_LARGER_THAN_SCREEN=1 (CI only, macOS): lets e2e windows exceed a small work area (constructor-only,
 // ignored off macOS). Unset = unchanged.
 const WINDOW_LARGER_THAN_SCREEN = parseLargerThanScreen(process.env.ORGAI_WINDOW_LARGER_THAN_SCREEN)
@@ -271,7 +290,11 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     windowScopes.delete(win)
     host?.services.outputWatcher?.dropOwner(`window:${webContentsId}`)
   })
-  win.on('ready-to-show', () => (WINDOW_INACTIVE ? win.showInactive() : win.show()))
+  win.on('ready-to-show', () => {
+    if (WINDOW_HIDDEN) return
+    if (WINDOW_INACTIVE) win.showInactive()
+    else win.show()
+  })
   notifier?.attach(win)
   // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
   // (file:, custom protocols, javascript:) is refused.
@@ -485,18 +508,12 @@ app.whenReady().then(async () => {
   booted = true
   // SIGINT / SIGTERM (and SIGHUP) end the host through the same sequence as Quit (forced: runs end continuable).
   installShutdownSignals(h.shutdown, { log: (m) => log.info(m) })
-  // cli-spec 7(3): point an existing orgai command shim at this install when it runs an older form of this launcher or
-  // a launcher that is gone (an app move or update); a newer or other-install shim stays. Never blocks boot, never creates a shim, never touches a foreign file.
-  if (app.isPackaged && !process.env.ORGAI_DATA_DIR) {
-    void cliShim
-      .refreshOnLaunch()
-      .then((outcome) => log.info(`orgai command shim at launch: ${outcome}`))
-      .catch((e: unknown) => log.warn(`orgai command shim refresh failed: ${e instanceof Error ? e.message : String(e)}`))
-  }
+  // No launch refresh of the old orgai command shim: this app ships no launcher, so there is nothing to point it at.
+  // Settings can still remove the old shim.
 })
 
 /**
- * The orgai command shim service (cli-spec 7(3)); phase 3 of the standalone spec replaces it with the installer.
+ * The old orgai command shim service (cli-spec 7(3)): status and removal only, since the app ships no launcher; phase 3 of the standalone spec replaces it.
  */
 function buildCliShim(): CliShimService {
   const shellPath = shellPathResult?.shellPath ?? []

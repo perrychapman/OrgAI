@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { bareImports, isNodeBuiltin, packageOf, packagedPaths } from './lib/packLayout.mjs'
-import { cliEntriesInAsar, main, parseArgs } from './verify-pack.mjs'
+import { bootCheck, cliEntriesInAsar, main, parseArgs } from './verify-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..')
 
@@ -140,9 +140,9 @@ function fakeRelease({ unpacked = ['@anthropic-ai/claude-agent-sdk', '@openai/co
   return { base, release }
 }
 
-async function runMain(fake, list) {
+async function runMain(fake, list, boot = async () => ({ ok: true, detail: 'fake boot' })) {
   const lines = []
-  const code = await main(['--release', fake.release], { root: ROOT, log: (l) => lines.push(l), list })
+  const code = await main(['--release', fake.release], { root: ROOT, log: (l) => lines.push(l), list, boot })
   fs.rmSync(fake.base, { recursive: true, force: true })
   return { code, out: lines.join('\n') }
 }
@@ -198,4 +198,56 @@ test('main: an unknown argument exits 2, a missing release exits 2', async () =>
   const lines = []
   assert.equal(await main(['--nope'], { log: (l) => lines.push(l) }), 2)
   assert.equal(await main(['--release', path.join(os.tmpdir(), 'orgai-vp-nothing-here')], { log: (l) => lines.push(l) }), 2)
+})
+
+test('main: a packed app that does not boot fails (e) and names why', async () => {
+  const r = await runMain(fakeRelease(), CLEAN_ASAR, async () => ({ ok: false, detail: 'no ready daemon.json within 60 s' }))
+  assert.equal(r.code, 1)
+  assert.match(r.out, /fail {2}\(e\) packed app boots {2}no ready daemon\.json/)
+})
+
+/** A stand-in "packed app": a node script that writes run/daemon.json under ORGAI_DATA_DIR and removes it on SIGTERM. */
+function fakeApp(dir, { crash = false, stayOnQuit = false } = {}) {
+  const file = path.join(dir, 'fake-app.js')
+  fs.writeFileSync(
+    file,
+    `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path')
+if (process.env.ORGAI_MOCK !== '1' || process.env.ORGAI_WINDOW_HIDDEN !== '1') process.exit(3)
+if (${crash}) process.exit(1)
+const run = path.join(process.env.ORGAI_DATA_DIR, 'data', 'run')
+fs.mkdirSync(run, { recursive: true })
+fs.mkdirSync(path.join(process.env.ORGAI_DATA_DIR, 'logs'), { recursive: true })
+fs.writeFileSync(path.join(process.env.ORGAI_DATA_DIR, 'logs', 'main.log'), 'x')
+fs.writeFileSync(path.join(run, 'daemon.json'), JSON.stringify({ state: 'ready', hostKind: 'desktop' }))
+process.on('SIGTERM', () => { if (${stayOnQuit}) return; fs.rmSync(path.join(run, 'daemon.json')); process.exit(0) })
+setInterval(() => {}, 1000)
+`,
+    { mode: 0o755 }
+  )
+  return file
+}
+
+test('bootCheck: ready, then a clean quit passes', { skip: process.platform === 'win32' && 'needs POSIX signals' }, async () => {
+  const dir = tempDir('app')
+  try {
+    const r = await bootCheck(fakeApp(dir), { bootMs: 10_000, quitMs: 10_000 })
+    assert.equal(r.ok, true, r.detail)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('bootCheck: an app that exits at once, or never quits, fails', { skip: process.platform === 'win32' && 'needs POSIX signals' }, async () => {
+  const dir = tempDir('app')
+  try {
+    const crashed = await bootCheck(fakeApp(dir, { crash: true }), { bootMs: 5_000, quitMs: 2_000 })
+    assert.equal(crashed.ok, false)
+    assert.match(crashed.detail, /exited/)
+    const stuck = await bootCheck(fakeApp(dir, { stayOnQuit: true }), { bootMs: 5_000, quitMs: 1_500 })
+    assert.equal(stuck.ok, false)
+    assert.match(stuck.detail, /did not quit cleanly/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

@@ -9,7 +9,7 @@ describe('secret notice wording', () => {
     for (const n of [1, 2, 7]) expect(removedSentence(n)).toBe(VAULT_MESSAGES.legacyRemovedNotice(n))
   })
 
-  it('maps every main-process vault sentence so no app text names a terminal command', () => {
+  it('no desktop vault sentence names a terminal command, and the app text passes them through', () => {
     const sentences = [
       VAULT_MESSAGES.pendingLegacy,
       VAULT_MESSAGES.locked('The keychain is locked.'),
@@ -27,7 +27,11 @@ describe('secret notice wording', () => {
       VAULT_MESSAGES.moveRefused('TOKEN', 'GitHub', 'Secure storage is locked: x'),
       VAULT_MESSAGES.moveRefused('TOKEN', 'GitHub', VAULT_MESSAGES.pendingLegacy)
     )
-    for (const s of sentences) expect(appSecretReason(s), s).not.toMatch(/`|orgai (secrets|command)/)
+    for (const s of sentences) {
+      expect(s, s).not.toMatch(/`|orgai|Terminal/)
+      expect(appSecretReason(s), s).not.toMatch(/`|orgai (secrets|command)/)
+      if (!s.includes('Secure storage is locked')) expect(appSecretReason(s)).toBe(s)
+    }
     expect(appSecretReason(VAULT_MESSAGES.locked('The keychain is locked.'))).toContain('Try again')
     expect(appSecretReason('Something else went wrong.')).toBe('Something else went wrong.')
   })

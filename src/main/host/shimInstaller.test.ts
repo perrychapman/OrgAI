@@ -3,7 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os'
 import type { Stats } from 'node:fs'
 import { join as nodeJoin } from 'node:path'
-import { createCliShimService, dirOnPath, type CliShimDeps } from './shimInstaller'
+import { createCliShimService, dirOnPath, NO_LAUNCHER_REASON, type CliShimDeps } from './shimInstaller'
 import { CLI_SHIM_MARKER, packagedLayout, parseCliShim, renderCliShim } from './packagedLayout'
 
 // These tests drive the service with an injected 'darwin' platform, which uses POSIX path rules (absolute = leading '/').
@@ -63,31 +63,45 @@ describe('availability', () => {
   })
   it('is unavailable with a data-dir override', () => {
     const s = createCliShimService(deps({ dataDirOverride: true })).status()
-    expect(s.reason).toBe('OrgAI was started with ORGAI_DATA_DIR; install the orgai command from a normal launch.')
+    expect(s.reason).toBe('OrgAI was started with ORGAI_DATA_DIR; manage the orgai command from a normal launch.')
   })
-  it('is unavailable when translocated or on a disk image', () => {
+  it('cannot install when translocated or on a disk image', async () => {
     for (const res of ['/private/var/folders/x/AppTranslocation/ABC/d/OrgAI.app/Contents/Resources', '/Volumes/OrgAI/OrgAI.app/Contents/Resources']) {
-      const s = createCliShimService(deps({ resourcesPath: res })).status()
-      expect(s.state).toBe('unavailable')
-      expect(s.reason).toMatch(/Applications folder/)
+      const r = await createCliShimService(deps({ resourcesPath: res })).install()
+      expect(r.ok).toBe(false)
+      expect(r.status.state).toBe('unavailable')
+      expect(r.message).toMatch(/Applications folder/)
     }
   })
-  it('is unavailable from an AppImage or the portable build', () => {
-    expect(createCliShimService(deps({ platform: 'linux', env: { APPIMAGE: '/x/OrgAI.AppImage' } })).status().reason).toMatch(/AppImage/)
-    expect(createCliShimService(deps({ platform: 'win32', env: { PORTABLE_EXECUTABLE_DIR: 'C:\\p' } })).status().reason).toMatch(/portable/)
+  it('cannot install from an AppImage or the portable build', async () => {
+    expect((await createCliShimService(deps({ platform: 'linux', env: { APPIMAGE: '/x/OrgAI.AppImage' } })).install()).message).toMatch(/AppImage/)
+    expect((await createCliShimService(deps({ platform: 'win32', env: { PORTABLE_EXECUTABLE_DIR: 'C:\\p' } })).install()).message).toMatch(/portable/)
   })
-  it('is unavailable without a launcher file', async () => {
+  it('cannot install without a launcher file (an app that ships none): says where the command comes from', async () => {
     rmSync(launcher)
     const svc = createCliShimService(deps())
-    expect(svc.status().reason).toBe(`This OrgAI install has no orgai launcher (${launcher}).`)
+    expect(svc.status()).toMatchObject({ state: 'not-installed', installable: false })
     const r = await svc.install()
     expect(r.ok).toBe(false)
+    expect(r.message).toBe(NO_LAUNCHER_REASON)
     expect(existsSync(shim)).toBe(false)
   })
-  it('a launcher that is a folder does not count', () => {
+  it('a launcher that is a folder does not count', async () => {
     rmSync(launcher)
     mkdirSync(launcher)
-    expect(createCliShimService(deps()).status().state).toBe('unavailable')
+    expect((await createCliShimService(deps()).install()).status.state).toBe('unavailable')
+  })
+  it('an old shim is still classified and removed when the app ships no launcher; a foreign file is not', async () => {
+    const svc = createCliShimService(deps())
+    expect((await svc.install()).ok).toBe(true)
+    rmSync(launcher)
+    expect(svc.status()).toMatchObject({ state: 'outdated', installable: false })
+    const r = await svc.uninstall()
+    expect(r.ok).toBe(true)
+    expect(existsSync(shim)).toBe(false)
+    writeFileSync(shim, '#!/bin/sh\necho mine\n')
+    expect((await svc.uninstall()).ok).toBe(false)
+    expect(existsSync(shim)).toBe(true)
   })
 })
 

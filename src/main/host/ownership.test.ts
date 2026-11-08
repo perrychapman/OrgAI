@@ -867,7 +867,7 @@ describe.skipIf(!posix)('withStartupMutex (Wave 7, round 6 item 11)', () => {
 
   it('refuses while a live host owns the folder, without calling fn', async () => {
     const env = tempEnv()
-    await acquire(env, { hostKind: 'node' })
+    await acquire(env, { hostKind: 'inproc' })
     let called = false
     await expect(
       withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, () => {
@@ -923,7 +923,7 @@ describe('withStartupMutex, platform-neutral (fake liveness and probe)', () => {
   const plats = [...new Set<NodeJS.Platform>([process.platform, 'win32'])]
   const daemonJson = (env: Env, pid: number, endpoint: string): void => {
     mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
-    writeFileSync(join(env.runDir, 'daemon.json'), JSON.stringify({ hostInstanceId: '0123456789ab', pid, endpoint, state: 'ready', startedAt: 1, hostKind: 'node' }))
+    writeFileSync(join(env.runDir, 'daemon.json'), JSON.stringify({ hostInstanceId: '0123456789ab', pid, endpoint, state: 'ready', startedAt: 1, hostKind: 'inproc' }))
   }
   const endpointFor = (platform: NodeJS.Platform, env: Env): string => (platform === 'win32' ? pipeNameFor(env.dataDir, '0123456789ab', 'win32') : join(env.runDir, 'd-0123456789ab.sock'))
 
@@ -1037,7 +1037,7 @@ describe('protectSecretOnWindows (review M8, H1, H2 (3); UNVERIFIED on Windows)'
     const warned: string[] = []
     const w = await protectSecretOnWindows('D:\\data\\run', () => void wrote++, { mode: 'best-effort', restrict, warn: (m) => void warned.push(m) })
     expect(w).toMatch(/Could not restrict daemon\.secret to the current Windows user: icacls failed: No mapping/)
-    expect(w).toMatch(/Terminal access should stay off/)
+    expect(w).toMatch(/should not listen on this data folder/)
     expect(warned).toHaveLength(1)
     expect(wrote).toBe(1)
     // A throwing stand-in counts as a failure too.
@@ -1072,6 +1072,10 @@ describe('readDaemonInfo / parseDaemonInfo', () => {
   const good = { hostInstanceId: '0123456789ab', pid: 42, endpoint: '/x/d.sock', state: 'ready', startedAt: 1 }
   it('accepts a valid record and drops unknown fields', () => {
     expect(parseDaemonInfo({ ...good, extra: 1, hostKind: 'desktop', appVersion: '1' })).toEqual({ ...good, hostKind: 'desktop', appVersion: '1' })
+  })
+  it("reads a record of the removed 'headless-host' kind as the desktop, and refuses a 'node' kind", () => {
+    expect(parseDaemonInfo({ ...good, hostKind: 'headless-host' })).toEqual({ ...good, hostKind: 'desktop' })
+    expect(parseDaemonInfo({ ...good, hostKind: 'node' })).toBeNull()
   })
   it('keeps listening only as an explicit false (review M11)', () => {
     expect(parseDaemonInfo({ ...good, listening: false })).toEqual({ ...good, listening: false })

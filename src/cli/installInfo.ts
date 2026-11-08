@@ -15,7 +15,7 @@ import { INSTALL_INFO_FILE, type InstallChannel, type InstallInfo } from '../sha
 /** The largest install.json read (a builder writes well under 1 KB). */
 export const INSTALL_INFO_MAX_BYTES = 4 * 1024
 
-/** Channels a builder may write (absent = 'dev'; 'dev' is never written). */
+/** Channels an install.json may name (absent = 'dev'; 'dev' is never written). 'app' is only read, from an older app's bundle: nothing writes it now. */
 const WRITTEN_CHANNELS: readonly InstallChannel[] = ['npm', 'app', 'archive']
 
 /** A short printable token: versions like 0.1.6-dev1 and commit shas. */

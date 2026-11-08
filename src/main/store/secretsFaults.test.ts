@@ -116,7 +116,7 @@ async function exhaust(
 }
 
 const app = (fs?: VaultFs, extra: Partial<OpenSecretStoreOptions> = {}): Promise<SecretStore> => host('desktop', { ...(fs ? { fs } : {}), ...extra })
-const node = (fs?: VaultFs, extra: Partial<OpenSecretStoreOptions> = {}): Promise<SecretStore> => host('node', { ...(fs ? { fs } : {}), ...extra })
+const node = (fs?: VaultFs, extra: Partial<OpenSecretStoreOptions> = {}): Promise<SecretStore> => host('inproc', { ...(fs ? { fs } : {}), ...extra })
 const locked = { kind: 'locked' as const, reason: 'locked' }
 const older = (): ReturnType<typeof olderApp> => olderApp(dataDir)
 
@@ -215,7 +215,7 @@ describe('fault injection: writes', () => {
 })
 
 describe('fault injection: deletes (every step interrupted: no notice, converges to deleted)', () => {
-  const deleteChecks = async (r: Run, kinds: HostKind[] = ['desktop', 'node']): Promise<void> => {
+  const deleteChecks = async (r: Run, kinds: HostKind[] = ['desktop', 'inproc']): Promise<void> => {
     // removals never throw
     expect(r.error, `${r.mode} at ${r.at}`).toBeUndefined()
     custody.fail(undefined)

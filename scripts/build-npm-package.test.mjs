@@ -204,13 +204,13 @@ test('write-install-info --electron-builder writes channel app, runs the local e
   }
 })
 
-test('every npm run dist script writes install.json channel app around electron-builder', () => {
+test('the npm run dist scripts run electron-builder directly: the app ships no CLI bundle, so no install.json', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'))
   const dist = Object.entries(pkg.scripts).filter(([k]) => k === 'dist' || k.startsWith('dist:'))
   assert.ok(dist.length >= 7)
   for (const [name, cmd] of dist) {
-    assert.match(cmd, /node scripts\/write-install-info\.mjs --channel app --electron-builder /, name)
-    assert.doesNotMatch(cmd.replace('--electron-builder', ''), /electron-builder/, `${name} runs electron-builder only through write-install-info`)
+    assert.match(cmd, /electron-builder /, name)
+    assert.doesNotMatch(cmd, /write-install-info/, `${name} writes no install.json`)
   }
 })
 

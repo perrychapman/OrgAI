@@ -199,7 +199,10 @@ lives here and in the command table (`orgai help exec`, `orgai help tui`, `orgai
 - `electron-builder.yml`: `files` excludes `out/cli/**` (not only `asarUnpack`), the `bin/orgai` launchers and their
   `extraResources` go. The desktop's own runtime dependencies (Claude Agent SDK, Codex, native modules) stay.
 - `scripts/verify-pack.mjs`: drops (c)-(g) (app-bundled CLI and CLI-spawns-app); adds "no `out/cli` in app.asar or
-  app.asar.unpacked, no `bin/orgai`", and keeps its desktop checks (certificate reader, Claude and Codex startup).
+  app.asar.unpacked, no `bin/orgai`", keeps the check that the desktop's runtime packages (Claude Agent SDK, Codex, zod)
+  are unpacked, and adds a token-free boot of the packed app (temp `ORGAI_DATA_DIR`, `ORGAI_MOCK=1`,
+  `ORGAI_WINDOW_HIDDEN=1`: `daemon.json` `ready`, `main.log` written, clean quit). The certificate reader child and the
+  Claude and Codex binaries are exercised only as far as that ordinary boot reaches them; they have no check of their own.
 - `scripts/verify-npm.mjs` (phase 1): calls without `--host`, its shared helpers move out of `verify-pack.mjs` into a
   small module both import; adds "a fresh install writes `orgai-cli/product.json`" and "`ORGAI_DATA_DIR` is ignored".
 

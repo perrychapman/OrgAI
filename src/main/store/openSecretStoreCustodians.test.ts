@@ -31,13 +31,13 @@ afterEach(() => {
 })
 
 const env = (): NodeJS.ProcessEnv => ({ [VAULT_KEY_FILE_ENV]: keyFile })
-const open = (hostKind: 'node' | 'inproc' | 'desktop', extra: Record<string, unknown> = {}) =>
+const open = (hostKind: 'inproc' | 'desktop', extra: Record<string, unknown> = {}) =>
   openSecretStore({ dataDir, userDataDir: root, hostKind, product: 'desktop', cipher: hostKind === 'desktop' ? fakeCipher() : noCipher, env: env(), log: () => undefined, retryMs: 0, ...extra })
 const vaultJson = (): VaultFile => JSON.parse(readFileSync(join(dataDir, 'vault.json'), 'utf8')) as VaultFile
 
 describe('openSecretStore with its default (real) custodians', () => {
   it('a background host creates a key-file vault on the first value and a later host reads it back', async () => {
-    const node = await open('node')
+    const node = await open('inproc')
     expect(node.state()).toBe('absent')
     expect(existsSync(keyFile)).toBe(false)
     await node.prepareWrite()
@@ -59,7 +59,7 @@ describe('openSecretStore with its default (real) custodians', () => {
     expect(app.state()).toBe('open')
     app.set('mcplib:x', 'v1')
     app.dispose()
-    const later = await open('node', { env: {} })
+    const later = await open('inproc', { env: {} })
     expect(later.state()).toBe('open')
     expect(later.get('mcplib:x')).toBe('v1')
     later.dispose()
@@ -67,7 +67,7 @@ describe('openSecretStore with its default (real) custodians', () => {
 
   it('secrets init --key-file creates a new key file on a background host (the request reaches the custodian)', async () => {
     const asked = join(keyDir, 'asked.key')
-    const node = await open('node', { env: {} })
+    const node = await open('inproc', { env: {} })
     const r = await node.initVault({ keyFile: asked })
     expect(r.action).toBe('created')
     expect(existsSync(asked)).toBe(true)
@@ -76,7 +76,7 @@ describe('openSecretStore with its default (real) custodians', () => {
   })
 
   it('a key file inside the data folder is refused', async () => {
-    const node = await open('node', { env: { [VAULT_KEY_FILE_ENV]: join(dataDir, 'k') } })
+    const node = await open('inproc', { env: { [VAULT_KEY_FILE_ENV]: join(dataDir, 'k') } })
     await expect(node.prepareWrite()).rejects.toThrow()
     expect(existsSync(join(dataDir, 'vault.json'))).toBe(false)
     node.dispose()

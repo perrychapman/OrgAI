@@ -249,3 +249,19 @@ describe('singleFlight', () => {
     expect(f.busy()).toBe(false)
   })
 })
+
+describe('an app that ships no orgai launcher (installable: false)', () => {
+  const base = { path: '/home/u/.local/bin/orgai', binDir: '/home/u/.local/bin' }
+  it('not-installed points at npm and offers no Install', () => {
+    const v = cliShimView({ state: 'not-installed', ...base, installable: false }, 'linux')
+    expect(v.primary).toBeUndefined()
+    expect(v.remove).toBe(false)
+    expect(v.line).toContain('npm i -g orgai-cli')
+  })
+  it('an old shim can only be removed, never updated', () => {
+    const v = cliShimView({ state: 'outdated', ...base, target: '/gone/orgai', installable: false }, 'linux')
+    expect(v.primary).toBeUndefined()
+    expect(v.remove).toBe(true)
+    expect(v.line).toMatch(/older OrgAI app/)
+  })
+})

@@ -3262,7 +3262,7 @@ export class RunManager {
   }
 
   /**
-   * Wave 7 (cli-standalone.md 4.4 step 4): what a `host.stop({ handoff: true })` waits for, stricter than
+   * The run counts host.status reports (the TUI's quit confirm), stricter than
    * busyRunCount: every live run in any form counts (working or ending, waiting on the user, held), every paused run
    * with an auto-resume pending (armed or firing), and every open card. terminalSessions is the socket server's; the
    * caller fills it.
