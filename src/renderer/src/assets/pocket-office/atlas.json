@@ -13,13 +13,20 @@
       "#496b47",
       "#91ac70",
       "#d8e5b5"
+    ],
+    "color": [
+      "#30283a",
+      "#a86845",
+      "#dfb67c",
+      "#f5e4bc"
     ]
   },
   "sheets": {
     "tiles": {
       "files": {
         "neutral": "tiles-neutral.png",
-        "green": "tiles-green.png"
+        "green": "tiles-green.png",
+        "color": "tiles-color.png"
       },
       "frames": {
         "tile.00": {
@@ -315,7 +322,8 @@
     "props": {
       "files": {
         "neutral": "props-neutral.png",
-        "green": "props-green.png"
+        "green": "props-green.png",
+        "color": "props-color.png"
       },
       "frames": {
         "prop.desk": {
@@ -407,7 +415,8 @@
     "workers": {
       "files": {
         "neutral": "workers-neutral.png",
-        "green": "workers-green.png"
+        "green": "workers-green.png",
+        "color": "workers-color.png"
       },
       "frames": {
         "worker.crop.down.idle": {
