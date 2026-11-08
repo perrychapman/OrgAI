@@ -447,3 +447,130 @@ export function noteTextProblem(text: string): string | null {
   if (hasHidden(text)) return 'Remove the hidden characters from the note first.'
   return null
 }
+
+// ---------- keyboard block cursor (docs/design/outputs-2.md 11.2: selecting without a mouse) ----------
+
+export interface Span {
+  start: number
+  end: number
+}
+
+/** Each line of `text` as [start, end) without its line break (blank lines have start === end). */
+export function lineSpans(text: string): Span[] {
+  const out: Span[] = []
+  let at = 0
+  for (;;) {
+    const nl = text.indexOf('\n', at)
+    if (nl < 0) {
+      out.push({ start: at, end: text.length })
+      return out
+    }
+    out.push({ start: at, end: nl })
+    at = nl + 1
+  }
+}
+
+/**
+ * The offsets covered by items lo..hi (inclusive) of `spans`, leaving out blank items at either end (a note on "a paragraph"
+ * should not start with a line break); null when they hold no characters.
+ */
+export function spanRange(spans: readonly Span[], lo: number, hi: number): Span | null {
+  let from = Math.min(lo, hi)
+  let to = Math.max(lo, hi)
+  while (from <= to && spans[from] && spans[from].end <= spans[from].start) from++
+  while (to >= from && spans[to] && spans[to].end <= spans[to].start) to--
+  const a = spans[from]
+  const b = spans[to]
+  if (!a || !b || from > to) return null
+  return { start: a.start, end: b.end }
+}
+
+/** "Line 4 selected" / "Lines 4 to 6 selected" (the indexes are 0-based). */
+export function itemsSentence(one: string, many: string, lo: number, hi: number): string {
+  const a = Math.min(lo, hi) + 1
+  const b = Math.max(lo, hi) + 1
+  return a === b ? `${one} ${a} selected` : `${many} ${a} to ${b} selected`
+}
+
+/** Where the cursor goes for a key (null = the key does not move it). `cur` is null before the first move. */
+export function moveCursor(key: string, cur: number | null, count: number, page = 10): number | null {
+  if (count <= 0) return null
+  const last = count - 1
+  const clamp = (n: number): number => Math.max(0, Math.min(last, n))
+  switch (key) {
+    case 'ArrowDown':
+      return cur === null ? 0 : clamp(cur + 1)
+    case 'ArrowUp':
+      return cur === null ? 0 : clamp(cur - 1)
+    case 'PageDown':
+      return cur === null ? clamp(page - 1) : clamp(cur + page)
+    case 'PageUp':
+      return cur === null ? 0 : clamp(cur - page)
+    case 'Home':
+      return 0
+    case 'End':
+      return last
+    default:
+      return null
+  }
+}
+
+/**
+ * The source range of rendered Markdown blocks lo..hi: each block's text is mapped to the source (mapRenderedToSource) and
+ * the range runs from the first mapped start to the last mapped end. Null when none of the blocks can be placed.
+ */
+export function renderedBlocksRange(source: string, texts: readonly string[], lo: number, hi: number): Span | null {
+  const from = Math.min(lo, hi)
+  const to = Math.max(lo, hi)
+  let start = Infinity
+  let end = -Infinity
+  for (let i = from; i <= to; i++) {
+    const r = mapRenderedToSource(source, texts[i] ?? '')
+    if (!r || r.end <= r.start) continue
+    start = Math.min(start, r.start)
+    end = Math.max(end, r.end)
+  }
+  return end > start ? { start, end } : null
+}
+
+/** One keyboard-selectable piece of a Word preview: a paragraph, heading or code block whole, each list item and each table cell. */
+export interface DocItem {
+  block: number
+  /** Range inside blockText(block). */
+  start: number
+  end: number
+  label: string
+}
+
+export function docItems(blocks: readonly DocumentBlock[]): DocItem[] {
+  const out: DocItem[] = []
+  blocks.forEach((b, i) => {
+    const n = i + 1
+    const len = blockText(b).length
+    if (b.type === 'heading') out.push({ block: i, start: 0, end: len, label: `Heading ${n}` })
+    else if (b.type === 'paragraph') out.push({ block: i, start: 0, end: len, label: `Paragraph ${n}` })
+    else if (b.type === 'code') out.push({ block: i, start: 0, end: len, label: `Code block ${n}` })
+    else if (b.type === 'list') {
+      const offs = blockPartOffsets(b)
+      b.items.forEach((it, j) => out.push({ block: i, start: offs[j], end: offs[j] + runText(it).length, label: `List item ${j + 1} of block ${n}` }))
+    } else if (b.type === 'table') {
+      const offs = blockPartOffsets(b)
+      let k = 0
+      for (const row of b.rows) {
+        for (const c of row) {
+          out.push({ block: i, start: offs[k], end: offs[k] + runText(c).length, label: `Cell ${k + 1} of block ${n}` })
+          k++
+        }
+      }
+    }
+  })
+  return out
+}
+
+/** The block anchor range of document items lo..hi, which must sit in one block (null otherwise or when empty). */
+export function docItemsRange(items: readonly DocItem[], lo: number, hi: number): { index: number; start: number; end: number } | null {
+  const a = items[Math.min(lo, hi)]
+  const b = items[Math.max(lo, hi)]
+  if (!a || !b || a.block !== b.block || b.end <= a.start) return null
+  return { index: a.block, start: a.start, end: b.end }
+}
