@@ -2319,7 +2319,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { projectId, kind, prompt, startedAt, resumedFrom, surface } = record.summary
         // Keep live fields (status, cost) from events; take identity fields from the main process.
         const title = run.summary.title ?? record.summary.title
-        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt,
+          connection: record.summary.connection,
+          modelAdapter: record.summary.modelAdapter,
+          modelSelection: run.summary.modelSelection ?? record.summary.modelSelection,
+          ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]

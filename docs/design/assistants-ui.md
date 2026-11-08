@@ -252,6 +252,14 @@ CLAUDE.md "Chat asks"). The renderer follows the walk's "What the ask path shoul
   without a working folder), a folder Chat card's location by e2e, the Needs-you Chat captions and the Save as project
   note by eye, screen reader output, macOS and Linux. No UX re-walk yet.
 
+## Live conversation model selection implementation (2026-11-08)
+
+`LiveModelSwitch` sits with the composer in a shared, scrollable grid region for Chat, setup (including Team Design), MCP assistant, Skill assistant and work runs. One-shot recommendations and drafts have no run-backed model switch. The picker lists concrete models on connected connections and applies only to this conversation's root; defaults and other agents stay unchanged. Pending choices are labelled until applied. Ended selections say "Next message" and take effect when the composer sends a continuation.
+
+While replying, Interrupt current reply provides the safe idle boundary. A different connection offers End session, then Apply model and composer Send; the handoff explanation distinguishes retained conversation text from provider session memory. The draft stays mounted throughout. Opening focuses the editor introduction, closing or applying restores Change model, and feedback uses a stable status region.
+
+Verification: `lib/liveModelSwitch.test.ts` checks concrete connection-bound options and labels. `e2e/model-switch.mjs` passes with normal login state and a fresh empty `CLAUDE_CONFIG_DIR`: all five run kinds at 1024x640 and 1600x1000 in dark and light, focus restoration, draft/transcript retention, next-reply models, keyboard Interrupt/Apply and End session/Apply/Send, and paused/error recovery. Fixtures route mock starts through a saved continuation on a connected gateway so ambient login/catalog state cannot determine coverage. This caught and fixed `fillSummary` dropping connection/model selection from event-created continuation rows; hydration now retains those fields while preserving newer model events. The mock UX walk verified Chat in both sizes/themes and keyboard apply/cancel focus; narrow editors explain "Your draft is saved below", and applied confirmation avoids stale next-message wording. Live providers and screen-reader speech remain unverified.
+
 ## Open items
 
 - M5 (runtime): chats still get the plan nudge ("Continuing: asked the orchestrator to write a plan...", "Mock:

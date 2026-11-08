@@ -78,7 +78,7 @@ export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunC
         } else setError(`${result.reason || 'The model could not be changed.'} ${connection !== run.connection ? 'End this session, then apply the selection and send your next message to continue.' : 'Wait until the current reply ends, or interrupt it, then retry. You can also choose another model.'}`)
       } else {
         setOpen(false)
-        setStatus(`Model changed to ${liveModelLabel(model, connection)} for the next message.`)
+        setStatus(`Model changed to ${liveModelLabel(model, connection)}.`)
       }
     } catch (e: unknown) {
       setError(`Could not change model: ${message(e)} Try again or choose another model.`)
@@ -98,6 +98,7 @@ export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunC
       </div>
       {open && <div className="live-model-switch__editor">
         <p ref={editorHeading} tabIndex={-1}>Use the selected model for the next message in this conversation. Other agents and defaults stay the same.</p>
+        <span>Your draft is saved below.</span>
         {connection && connection !== (applied?.connection ?? run.connection) && <span>Changing connections starts a new session with a transcript handoff. Earlier conversation stays here; provider session memory does not transfer.</span>}
         <div data-testid="live-model-connection">
           <label htmlFor={connectionId}>Connection</label>
