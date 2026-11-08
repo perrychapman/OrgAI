@@ -25,6 +25,9 @@ const npmLog = path.join(root, 'npm-calls.jsonl')
 const ranMark = path.join(root, 'foreign-ran')
 const pidFile = path.join(root, 'npm.pid')
 for (const d of [home, localAppData, otherBin, prefixBin, npmBin, shimBin]) fs.mkdirSync(d, { recursive: true })
+// Windows expands the known folders from %USERPROFILE% (User Shell Folders: %USERPROFILE%\AppData\Roaming), and this
+// script points USERPROFILE at the temp home, so Electron's app.getPath('appData') fails unless those folders exist.
+if (win) for (const d of [path.join(home, 'AppData', 'Roaming'), path.join(home, 'AppData', 'Local')]) fs.mkdirSync(d, { recursive: true })
 
 // The fake npm: a node script behind an npm (POSIX) or npm.cmd (Windows) wrapper.
 const fakeScript = path.join(npmBin, 'fake-npm.mjs')
@@ -163,7 +166,7 @@ try {
   check(calls1.length === 1, 'npm ran once', String(calls1.length))
   const c = calls1[0]
   check(JSON.stringify(c?.args) === JSON.stringify(['install', '-g', `orgai-cli@${tag}`, '--ignore-scripts']), 'npm got the fixed arguments', JSON.stringify(c?.args))
-  check(c && fs.realpathSync(c.cwd) === fs.realpathSync(home), 'npm ran with the home folder as cwd', c?.cwd)
+  check(c && fs.realpathSync.native(c.cwd) === fs.realpathSync.native(home), 'npm ran with the home folder as cwd', c?.cwd)
   check(c && c.env.ORGAI_DATA_DIR === false && c.env.ANTHROPIC_API_KEY === false && c.env.CODEX_HOME === false, 'ORGAI_*, ANTHROPIC_* and CODEX_* were scrubbed from npm env', JSON.stringify(c?.env))
   check(c?.env.npm_config_registry === 'https://registry.invalid.example/', "the user's npm registry setting stays", String(c?.env.npm_config_registry))
   check(fs.existsSync(shimFile), 'a failed install leaves the old shim alone')
@@ -196,8 +199,13 @@ try {
   const cancel = page.locator('[data-testid=cli-command-cancel]')
   await cancel.waitFor({ timeout: 15_000 })
   const t0 = Date.now()
-  while (!fs.existsSync(pidFile) && Date.now() - t0 < 10_000) await sleep(100)
+  // Wait for a whole pid: on Windows the file can be seen before its write lands.
+  while (Date.now() - t0 < 10_000) {
+    if (fs.existsSync(pidFile) && /^\d+\s*$/.test(fs.readFileSync(pidFile, 'utf8'))) break
+    await sleep(100)
+  }
   let pid = Number(fs.readFileSync(pidFile, 'utf8'))
+  check(Number.isInteger(pid) && pid > 0, 'the hanging npm wrote its pid', `pid ${pid}`)
   check((await page.locator('[data-testid=cli-command-install]').count()) === 0, 'while installing, Install is replaced by Cancel (one at a time)')
   await cancel.click()
   await page.locator('[data-testid=cli-command-notice]:has-text("cancelled")').waitFor({ timeout: 15_000 })
@@ -244,7 +252,12 @@ try {
   check(false, 'install-row script ran to the end', e.stack ?? String(e))
 } finally {
   await app.close().catch(() => {})
-  fs.rmSync(root, { recursive: true, force: true })
+  // Windows can hold a handle on a just-killed child's files for a moment; cleanup must never skip finish().
+  try {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  } catch (e) {
+    log(`could not remove ${root}: ${e.message}`)
+  }
   finish('install-row')
 }
 void os
