@@ -20,14 +20,14 @@ describe('canvas presets', () => {
     }
   })
 
-  it('defaults to the graph presentation and neutral scene palette', () => {
-    expect(DEFAULT_APPEARANCE.canvas).toMatchObject({ presentation: 'graph', scenePalette: 'neutral' })
+  it('defaults to the graph presentation and full color scene palette', () => {
+    expect(DEFAULT_APPEARANCE.canvas).toMatchObject({ presentation: 'graph', scenePalette: 'color' })
   })
 
   it('preserves scene preferences and minimap for every graph preset', () => {
     for (const p of CANVAS_PRESETS) {
       for (const presentation of ['graph', 'pocket-office'] as const) {
-        for (const scenePalette of ['neutral', 'green'] as const) {
+        for (const scenePalette of ['color', 'neutral', 'green'] as const) {
           for (const minimap of [true, false]) {
             const canvas = { ...DEFAULT_APPEARANCE.canvas, presentation, scenePalette, minimap }
             const next = applyCanvasPreset(canvas, p.id)
