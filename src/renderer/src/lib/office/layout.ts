@@ -7,6 +7,7 @@ export interface Desk { slot: number; room: number; furniture: Point; anchor: Po
 export const DESKS_PER_ROOM = 8
 export const ROOM_WIDTH = 18
 export const ROOM_HEIGHT = 13
+// Layout coordinates are expressed in whole atlas tiles.
 export const ROOM_PROPS = [{ name: 'plant', x: 0, y: 11 }, { name: 'shelf', x: 7, y: 11 }, { name: 'coffee-station', x: 15, y: 11 }] as const
 
 export function roomHeight(slots: readonly number[]): number {
