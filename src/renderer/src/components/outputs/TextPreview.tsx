@@ -68,7 +68,7 @@ function Pre({ display, raw, title, testId, what }: { display: string; raw: stri
   })
   useScrollToShown(ref, findNoted, ranges)
   return (
-    <pre ref={ref} className="output-scroll output-pre" data-testid={testId} role="region" aria-label={`${title} ${what}`} tabIndex={0} onKeyDown={cursor.onKeyDown}>
+    <pre ref={ref} className="output-scroll output-pre" data-testid={testId} role="group" aria-label={`${title} ${what}`} tabIndex={0} onKeyDown={cursor.onKeyDown}>
       {lines.map((line, i) => <span data-line="" key={i}><MarkedText text={display.slice(line.start, line.end)} ranges={ranges.filter((r) => r.start < line.end && r.end > line.start).map((r) => ({ ...r, start: Math.max(0, r.start - line.start), end: Math.min(line.end - line.start, r.end - line.start) }))} />{i < lines.length - 1 ? '\n' : ''}</span>)}
     </pre>
   )
@@ -83,6 +83,7 @@ function CsvTable({ rows, more, title }: { rows: string[][]; more: boolean; titl
   const cell = (r: number, c: number): Record<string, unknown> => {
     const nc = grid.noted.get(`${r},${c}`)
     return {
+      id: grid.cellId(r, c),
       'aria-selected': grid.range ? inRange(grid.range, r, c) : false,
       'data-note-state': nc?.state,
       'data-notes': nc?.ids.join(' '),
@@ -98,7 +99,7 @@ function CsvTable({ rows, more, title }: { rows: string[][]; more: boolean; titl
   }
   return (
     <>
-      <div ref={scroller} className="output-scroll output-sheet-region" role="region" aria-label={`${title} table`} tabIndex={0} onKeyDown={grid.onKeyDown}>
+      <div ref={scroller} className="output-scroll output-sheet-region" role="group" aria-label={`${title} table`} tabIndex={0} onKeyDown={grid.onKeyDown} aria-activedescendant={grid.cur ? grid.cellId(grid.cur.r, grid.cur.c) : undefined}>
         <table className="output-sheet-table output-csv-table" data-testid="output-csv-table" role="grid" aria-readonly="true" aria-multiselectable="true">
           <caption className="sr-only">{title}</caption>
           <thead>
@@ -201,7 +202,7 @@ function useRenderedMarks(rootRef: React.RefObject<HTMLElement | null>, text: st
 
 function RenderedMarkdown({ text, title }: { text: string; title: string }): ReactElement {
   const ref = useRef<HTMLDivElement>(null)
-  const selector = ':scope > *'
+  const selector = ':scope > .md > *'
   const cursor = useBlockCursor({ rootRef: ref, itemSelector: selector, resetKey: text, select: (lo, hi) => {
     const texts = Array.from(ref.current?.querySelectorAll<HTMLElement>(selector) ?? [], (el) => el.textContent ?? '')
     const r = renderedBlocksRange(text, texts, lo, hi)
@@ -214,7 +215,7 @@ function RenderedMarkdown({ text, title }: { text: string; title: string }): Rea
     return r && r.end > r.start ? textSelection(text, r.start, r.end) : null
   })
   return (
-    <div ref={ref} className="output-scroll output-md" data-testid="output-md-rendered" role="region" aria-label={`${title} text`} tabIndex={0} onKeyDown={cursor.onKeyDown}>
+    <div ref={ref} className="output-scroll output-md" data-testid="output-md-rendered" role="group" aria-label={`${title} text`} tabIndex={0} onKeyDown={cursor.onKeyDown}>
       <Markdown text={text} />
     </div>
   )

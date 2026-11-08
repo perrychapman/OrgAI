@@ -238,7 +238,7 @@ export default function DocumentView({ blocks, truncated, title }: { blocks: Doc
   return (
     <div className="output-doc" data-testid="output-doc">
       <p className="output-preview-lead">Simplified preview. Open the file for the exact layout.</p>
-      <div ref={ref} className="output-scroll output-doc-body" role="region" aria-label={`${title} text`} tabIndex={0} onKeyDown={cursor.onKeyDown}>
+      <div ref={ref} className="output-scroll output-doc-body" role="group" aria-label={`${title} text`} tabIndex={0} onKeyDown={cursor.onKeyDown}>
         {blocks.map((b, i) => (
           <div key={i} className="output-doc-block" data-block={i} data-doc-item={b.type === 'heading' || b.type === 'paragraph' || b.type === 'code' ? '' : undefined}>
             <Block block={b} ranges={byBlock.get(i) ?? []} />

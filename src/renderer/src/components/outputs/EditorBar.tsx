@@ -84,6 +84,7 @@ export function useEditSession({ output, baseText, block, onClose, restoreDraft 
 
   const setText = useCallback(
     (t: string): void => {
+      textRef.current = t
       setTextState(t)
       setError('')
       const d = isDirty(baseRef.current, t)
@@ -124,6 +125,13 @@ export function useEditSession({ output, baseText, block, onClose, restoreDraft 
           setBase(sent)
           baseRef.current = sent
           baseVersion.current = r.version
+          if (textRef.current !== sent) {
+            setOutputDraft(output.id, { baseVersion: r.version, text: textRef.current })
+            c.setDirty(true)
+            c.announce(`${r.text} Newer changes are not saved.`)
+            c.reloadVersions()
+            return false
+          }
           setOutputDraft(output.id, null)
           c.setDirty(false)
           c.announce(r.text)

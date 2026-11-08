@@ -52,7 +52,11 @@ export function useBlockCursor(opts: BlockCursorOptions): { onKeyDown(e: Keyboar
     if (timer.current) clearTimeout(timer.current)
     if (!root) return
     root.removeAttribute('aria-activedescendant')
-    for (const el of Array.from(root.querySelectorAll<HTMLElement>('[data-cursor]'))) el.removeAttribute('data-cursor')
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('[data-cursor]'))) {
+      el.removeAttribute('data-cursor')
+      el.style.removeProperty('background-color')
+      el.style.removeProperty('outline')
+    }
   }, [])
 
   const paint = (list: HTMLElement[], lo: number, hi: number, cur: number): void => {
@@ -62,6 +66,8 @@ export function useBlockCursor(opts: BlockCursorOptions): { onKeyDown(e: Keyboar
       if (i === cur) el.setAttribute('data-cursor', 'active')
       else if (i >= lo && i <= hi) el.setAttribute('data-cursor', 'in')
       else el.removeAttribute('data-cursor')
+      el.style.backgroundColor = i >= lo && i <= hi ? 'var(--accent-soft)' : ''
+      el.style.outline = i === cur ? '2px solid var(--focus-ring)' : ''
     })
     if (root && list[cur]) root.setAttribute('aria-activedescendant', list[cur].id)
   }

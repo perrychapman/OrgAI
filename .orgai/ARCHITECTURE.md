@@ -1,5 +1,7 @@
 # OrgAI architecture
 
+Outputs Phase C keyboard follow-up: `useBlockCursor` connects source lines, rendered Markdown blocks and document items to note selection; sheet and CSV previews expose their active cell and debounce range announcements. See `docs/design/outputs-2.md` Phase C notes and `node e2e/outputs-notes.mjs` after `npm run build`.
+
 OrgAI is an Electron app built with electron-vite and three processes. The main process (src/main) holds the runtime adapters, run manager, connections and model catalog, MCP servers and secrets, usage tracking, setup service, worktrees and JSON stores. The preload (src/preload) exposes window.orgai. The renderer (src/renderer) uses React 19 with React Flow and zustand. IPC types live in src/shared/types.ts. Two provider adapters exist: Claude (Claude Agent SDK) and Codex (`codex app-server`). They are reached through three connections: Anthropic, OpenAI and LiteLLM.
 
 The UI overhaul's shell pass and its parallel restyles have landed (docs/design/plan.md, spec.md). The shell is built on native elements with container queries: components/layout, components/ui primitives, top-level project tabs, and a theme layer driven by AppSettings.appearance. Radix Primitives and react-resizable-panels were not adopted (Role.skills has since landed through the skills runtime, #11). plan.md still lists them, so they remain a possible later step. Items below marked PLANNED do not exist in the code.

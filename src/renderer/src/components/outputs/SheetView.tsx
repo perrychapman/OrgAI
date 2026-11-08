@@ -56,6 +56,8 @@ export function useGridNotes(sheetName: string, rowCount: number, colCount: numb
   const key = range ? `${range.r1},${range.c1},${range.r2},${range.c2}` : ''
   const pushed = useRef(false)
   const prevSel = useRef(ctx?.selection ?? null)
+  const id = `cell-${useId().replace(/:/g, '')}`
+  const cellId = (r: number, c: number): string => `${id}-${r}-${c}`
 
   useEffect(() => {
     const c = ctxRef.current
@@ -68,6 +70,12 @@ export function useGridNotes(sheetName: string, rowCount: number, colCount: numb
       if (c.selection?.anchor.type === 'cells') c.setSelection(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, sheetName])
+
+  useEffect(() => {
+    if (!range) return undefined
+    const timer = setTimeout(() => ctxRef.current?.announce(`${cellsDescription(sheetName, range)} selected`), 300)
+    return () => clearTimeout(timer)
   }, [key, sheetName])
 
   // The composer clears the selection after a note is added: the grid lets go of its range too.
@@ -96,15 +104,15 @@ export function useGridNotes(sheetName: string, rowCount: number, colCount: numb
       return
     }
     const d = e.key === 'ArrowLeft' ? [0, -1] : e.key === 'ArrowRight' ? [0, 1] : e.key === 'ArrowUp' ? [-1, 0] : e.key === 'ArrowDown' ? [1, 0] : null
-    if (!d || rowCount === 0 || colCount === 0 || (!cur && !e.shiftKey)) return
+    if (!d || rowCount === 0 || colCount === 0) return
     e.preventDefault()
     const base = cur ?? { r: 0, c: 0 }
-    const next = { r: Math.max(0, Math.min(rowCount - 1, base.r + d[0])), c: Math.max(0, Math.min(colCount - 1, base.c + d[1])) }
+    const next = cur ? { r: Math.max(0, Math.min(rowCount - 1, base.r + d[0])), c: Math.max(0, Math.min(colCount - 1, base.c + d[1])) } : base
     setCur(next)
     setAnc(e.shiftKey ? (anc ?? base) : next)
   }
 
-  return { range, noted, choose, onKeyDown }
+  return { range, noted, choose, onKeyDown, cur, cellId }
 }
 
 function SheetTable({ sheet }: { sheet: SheetPreview }): ReactElement {
@@ -120,7 +128,7 @@ function SheetTable({ sheet }: { sheet: SheetPreview }): ReactElement {
           Shown as text. OrgAI does not calculate formulas.
         </p>
       ) : null}
-      <div ref={scroller} className="output-scroll output-sheet-region" role="region" aria-label={`${sheet.name} cells`} tabIndex={0} data-testid="output-sheet-region" onKeyDown={grid.onKeyDown}>
+      <div ref={scroller} className="output-scroll output-sheet-region" role="group" aria-label={`${sheet.name} cells`} tabIndex={0} data-testid="output-sheet-region" onKeyDown={grid.onKeyDown} aria-activedescendant={grid.cur ? grid.cellId(grid.cur.r, grid.cur.c) : undefined}>
         <table className="output-sheet-table" data-testid="output-sheet-table" role="grid" aria-readonly="true" aria-multiselectable="true">
           <caption className="sr-only">{sheet.name}</caption>
           <thead>
@@ -144,6 +152,7 @@ function SheetTable({ sheet }: { sheet: SheetPreview }): ReactElement {
                   return (
                     <td
                       key={c}
+                      id={grid.cellId(r, c)}
                       data-num={isNumericCell(cell) ? '' : undefined}
                       title={cell?.f ? formulaText(cell.f) : undefined}
                       aria-selected={grid.range ? inRange(grid.range, r, c) : false}

@@ -895,6 +895,8 @@ SHORTCUTS table (a `src/shared/view` edit).
 
 ## Phase C implementation notes (2026-11-07)
 
+Keyboard follow-up: source lines, rendered Markdown blocks and document items use the block cursor; sheet and CSV ranges expose an active cell and announce selection after a short delay. Escape clears the selection. A save that finishes after further typing retains the newer draft and keeps the editor open.
+
 Built renderer-only on the Phase B contracts (dev 5cccee02, then dev merged in at 1a4afa6f with the mock markers and the motion system).
 Seven UI Engineers on disjoint files (versions shell, compare, editors, slides, notes, revise, project tab), integrated by the UI Lead.
 

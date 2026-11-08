@@ -153,7 +153,7 @@ function Panel({ ctx, variant }: { ctx: OutputDetailValue; variant: 'tab' | 'dra
               <p className="output-note-help">{problem ?? `${draftText.length.toLocaleString('en-US')} of ${OUTPUT_NOTE_TEXT_MAX.toLocaleString('en-US')}`}</p>
             )}
             <div className="output-note-actions">
-              <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+              <Button size="sm" variant="ghost" onClick={() => { setEditing(null); window.setTimeout(() => document.querySelector<HTMLElement>(`[data-id="${n.id}"] [data-testid="output-note-edit"]`)?.focus(), 0) }}>
                 Cancel
               </Button>
               <Button size="sm" variant="primary" testId="output-note-edit-save" inert={!draftText.trim() || Boolean(problem)} onClick={() => void saveEdit(n)}>
@@ -188,7 +188,7 @@ function Panel({ ctx, variant }: { ctx: OutputDetailValue; variant: 'tab' | 'dra
               size="sm"
               variant="ghost"
               testId="output-note-resolve"
-              onClick={() => void call(() => api!.noteUpdate({ ...ref, noteId: n.id, status: resolved ? 'open' : 'resolved' }), resolved ? 'Note reopened.' : 'Note resolved.', 'The note could not be changed.')}
+              onClick={() => void call(() => api!.noteUpdate({ ...ref, noteId: n.id, status: resolved ? 'open' : 'resolved' }), resolved ? 'Note reopened.' : 'Note resolved.', 'The note could not be changed.').then((ok) => { if (ok && filter !== 'all') heading.current?.focus() })}
             >
               {resolved ? 'Reopen' : 'Resolve'}
             </Button>
