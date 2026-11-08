@@ -37,6 +37,7 @@ import { layoutCanvas } from '../lib/layout'
 import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { OfficeScene } from '../components/canvas/office/OfficeScene'
+import { withOfficeDepartments } from '../lib/office/departments'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { EDGE_TYPE, HEX_GAP, HEX_TILE, beginCanvasGlide, edgeStroke, fitMs, refitMs, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
@@ -810,7 +811,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         </div>
         <FrameStage>
           {options.presentation === 'pocket-office' ? (
-            <OfficeScene mode="team" palette={options.scenePalette} agents={project.roles.map((role) => ({ id: role.id, name: role.name, status: 'Role' }))} messages={[]} selectedId={selectedRoleId ?? undefined} onSelect={(id) => { setSelectedEdgeId(null); selectRole(id); setPanelOpen(true); setPanelTab('role') }} onRemove={(id) => void requestRemove(id)} />
+            <OfficeScene mode="team" palette={options.scenePalette} agents={withOfficeDepartments(project.roles.map((role) => ({ id: role.id, name: role.name, parentId: role.reportsTo, status: 'Role' })))} messages={[]} selectedId={selectedRoleId ?? undefined} onSelect={(id) => { setSelectedEdgeId(null); selectRole(id); setPanelOpen(true); setPanelTab('role') }} onRemove={(id) => void requestRemove(id)} />
           ) : (
           <ReactFlow
             nodes={nodes}

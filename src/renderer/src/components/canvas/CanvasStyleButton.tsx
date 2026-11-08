@@ -41,7 +41,7 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
       {canvas.presentation === 'pocket-office' && <div data-testid="canvas-scene-palette">
         <SegmentedControl label="Office palette" value={canvas.scenePalette} options={SCENE_PALETTE_OPTIONS} onChange={(scenePalette) => {
           void saveCanvas((c) => ({ ...c, scenePalette })).catch(() => undefined)
-          announce?.(`Office palette: ${scenePalette === 'neutral' ? 'Neutral' : 'Green'}.`)
+          announce?.(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`)
         }} />
       </div>}
       <p>Applies to Live, Team and the sample preview.</p>
