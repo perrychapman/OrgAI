@@ -510,7 +510,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
 
   const onRootKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>): void => {
     const el = e.target as HTMLElement
-    if ((e.key === 'Enter' || e.key === ' ') && (el.classList.contains('react-flow__node') || el.hasAttribute('data-office-agent-id'))) {
+    if ((e.key === 'Enter' || e.key === ' ') && (el.classList.contains('react-flow__node') || el.hasAttribute('data-office-agent-id') || el.hasAttribute('data-office-worker-id'))) {
       focusWanted.current = true
       setPanelOpen(true)
       setPanelTab('role')
@@ -870,7 +870,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         </FrameTray>
         <FrameFooter>
           <span>
-            {options.presentation === 'pocket-office' ? 'Sample office. Select a role to edit it. With a role focused, Enter edits it and Delete removes it.' : <>{options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</>}
+            {options.presentation === 'pocket-office' ? 'Select a role to edit it. With a role focused, Enter edits it and Delete removes it.' : <>{options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</>}
           </span>
         </FrameFooter>
       </CanvasFrame>
