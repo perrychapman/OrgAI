@@ -14,7 +14,7 @@ import { runName, runTag } from '../../shared/view/runLabels'
 import { settleEndedAgents, type RunTone } from '../../shared/view/runStatus'
 import { humanizeToolResult, humanizeToolUse, mergeChainFeed } from '../../shared/view/transcriptRows'
 import { safe, safeLine } from '../output'
-import { agentLabel, imageLabel, pendingItems, statusViewOf, toolNamesOf } from '../render'
+import { agentLabel, imageLabel, mediaLabel, pendingItems, resultPartsLabel, statusViewOf, toolNamesOf } from '../render'
 import { statusText } from '../../shared/view/runStatus'
 import { CARD_BUCKETS, cardArrivalSeq } from './state'
 import {
@@ -492,10 +492,13 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
       return { ...base, kind: 'tool', toolUseId: b.id, text: safeLine(humanizeToolUse(b.name, b.input).label), tone: 'dim' }
     case 'tool_result': {
       const row = humanizeToolResult(toolName(b.toolUseId), b.content, b.isError)
-      if (!row) return null
-      const failed = b.isError || !!row.failed
-      return { ...base, kind: failed ? 'error' : 'result', toolUseId: b.toolUseId, text: safeLine(row.label), tone: failed ? 'danger' : 'dim' }
+      const parts = resultPartsLabel(b.parts)
+      if (!row && !parts) return null
+      const failed = b.isError || !!row?.failed
+      return { ...base, kind: failed ? 'error' : 'result', toolUseId: b.toolUseId, text: parts || safeLine(row!.label), tone: failed ? 'danger' : 'dim' }
     }
+    case 'media':
+      return { ...base, kind: harness ? 'harness' : 'text', text: mediaLabel(b.media), ...(harness ? { tone: 'dim' as const } : {}) }
     case 'user': {
       const text = safe(b.text).trim()
       const imgs = (b.images ?? []).map((i) => imageLabel(i))

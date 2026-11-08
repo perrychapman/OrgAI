@@ -23,7 +23,7 @@ import { statusText } from '../../shared/view/runStatus'
 import { RUN_STREAM_RECONNECT_WINDOW_MS, RunStream, type SnapshotResult } from '../client/runStream'
 import { parseFlags } from '../flags'
 import { emitLine, isJsonOutput, printText, safeLine, styleFor, styleStatus, warn } from '../output'
-import { agentLabel, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, tailRows, transcriptLine } from '../render'
+import { agentLabel, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, tailRows, transcriptLine } from '../render'
 import { hostlessNote, resolveRunFromSource, warnVersionSkew, type HostlessReason } from '../runRef'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostClient, type ProjectResolution } from '../types'
 
@@ -206,12 +206,12 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
 
   const onRunsEvent = (p: RunsEventParams): void => {
     if (typeof p.seq === 'number') {
-      if (json) emitLine(ctx, { type: 'event', seq: p.seq, event: p.event })
+      if (json) emitLine(ctx, { type: 'event', seq: p.seq, event: eventWithoutImages(p.event) })
     } else if (p.event.type === 'agent.partial') {
       if (follow) adopt(p.event.runId)
-      if (json && followed.has(p.event.runId)) emitLine(ctx, { type: 'event', atSeq: p.atSeq, event: p.event })
+      if (json && followed.has(p.event.runId)) emitLine(ctx, { type: 'event', atSeq: p.atSeq, event: eventWithoutImages(p.event) })
       return
-    } else if (json) emitLine(ctx, { type: 'event', event: p.event })
+    } else if (json) emitLine(ctx, { type: 'event', event: eventWithoutImages(p.event) })
     applyEvent(p.event)
   }
 
