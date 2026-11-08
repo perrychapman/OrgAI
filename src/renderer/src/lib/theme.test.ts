@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
-import { accentVars, normalizeHex, onAccent, resolveTheme } from './theme'
+import { accentVars, applyAppearance, normalizeHex, onAccent, resolveTheme } from './theme'
 
 describe('theme', () => {
+  it('writes scene attributes and defaults legacy canvas settings', () => {
+    const root = { dataset: {}, style: { removeProperty: () => {}, setProperty: () => {} } } as unknown as HTMLElement
+    applyAppearance({ ...DEFAULT_APPEARANCE, canvas: { ...DEFAULT_APPEARANCE.canvas, presentation: 'pocket-office', scenePalette: 'green' } }, true, root)
+    expect(root.dataset).toMatchObject({ canvasPresentation: 'pocket-office', canvasScenePalette: 'green' })
+    applyAppearance({ ...DEFAULT_APPEARANCE, canvas: { ...DEFAULT_APPEARANCE.canvas, presentation: undefined, scenePalette: undefined } }, false, root)
+    expect(root.dataset).toMatchObject({ canvasPresentation: 'graph', canvasScenePalette: 'neutral' })
+  })
   it('resolves system with the OS preference', () => {
     expect(resolveTheme('system', true)).toBe('dark')
     expect(resolveTheme('system', false)).toBe('light')

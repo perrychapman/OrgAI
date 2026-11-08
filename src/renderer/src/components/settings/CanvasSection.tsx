@@ -4,7 +4,7 @@ import { ChevronRight } from 'lucide-react'
 import type { CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_PATTERNS } from '@shared/types'
 import { AVAILABLE_NODE_STYLES, applyCanvasStyle, effectiveNodeStyle, shownStyle, styleLabel, type CanvasStyleId } from '../../lib/canvas'
-import { canvasAnnouncement, type CanvasSettings } from '../../lib/canvasSettings'
+import { canvasAnnouncement, PRESENTATION_OPTIONS, SCENE_PALETTE_OPTIONS, type CanvasSettings } from '../../lib/canvasSettings'
 import { CanvasPresetGroup } from '../canvas/CanvasPresetGroup'
 import { CanvasPreview } from '../canvas/CanvasPreview'
 import { Icon } from '../ui/Icon'
@@ -99,6 +99,14 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
             <CanvasPreview />
           </div>
           <div className="canvas-section-main">
+            <SettingsCard>
+              <SettingRow title="Presentation" description="Choose how agents appear on the canvas." width="select" control={
+                <div data-testid="canvas-presentation"><SegmentedControl label="Canvas presentation" value={canvas.presentation ?? 'graph'} options={PRESENTATION_OPTIONS} onChange={(presentation) => change({ presentation })} /></div>
+              } />
+              <SettingRow title="Office palette" description="Choose the colours of the Pocket Office scene." width="select" control={
+                <div data-testid="canvas-scene-palette"><SegmentedControl label="Office palette" value={canvas.scenePalette ?? 'neutral'} options={SCENE_PALETTE_OPTIONS} onChange={(scenePalette) => change({ scenePalette })} /></div>
+              } />
+            </SettingsCard>
             <CanvasPresetGroup canvas={canvas} onPick={pick} variant="gallery" groupRef={groupRef} />
             <div className="canvas-customise">
               <button type="button" className="canvas-customise-toggle" data-testid="canvas-customise" aria-expanded={open} aria-controls={bodyId} onClick={toggle}>
