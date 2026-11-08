@@ -1422,6 +1422,52 @@ describe('RunManager adapter selection, connections and MCP', () => {
   }
 
   describe('adapter selection', () => {
+    it.each((['work', 'setup', 'mcp-assist', 'skill-assist'] as const).flatMap((kind) => (['priced', 'unknown', 'provider-total'] as const).map((usage) => [kind, usage] as const)))('enforces a desktop %s handoff budget after refresh on %s usage', async (kind, usage) => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'gpt-5', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const refresh = vi.fn(() => ({ project: { ...p, maxBudgetUsd: 8 } }))
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { teamFiles: { beforeRun: refresh }, catalog: () => [{ id: 'gpt-5', label: 'GPT', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'budget-source', projectId: p.id, kind, status: 'error', connection: 'anthropic', totalCostUsd: 3, modelSelection: { model: 'gpt-5', connection: 'openai' } }))
+      const run = await m.continueRun(p, 'budget-source', 'Recover')
+      expect(codex.ctxs).toHaveLength(1)
+      const ctx = codex.ctxs[0]
+      const remaining = kind === 'work' || kind === 'setup' ? 5 : 7
+      expect(ctx.project.maxBudgetUsd).toBe(remaining)
+      expect(ctx.budgetUsd).toBe(remaining)
+      expect(ctx.resumeSessionId).toBeUndefined()
+      if (kind === 'work' || kind === 'setup') expect(refresh).toHaveBeenCalledOnce()
+      const agent: AgentInstance = { id: ROOT_AGENT_ID, roleId: p.roles[0].id, roleSlug: p.roles[0].slug, name: 'Root', parentId: null, spawnToolUseId: null, state: 'idle', activity: '', model: 'gpt-5', inputTokens: 1, outputTokens: 1, costUsd: 0, startedAt: 1 }
+      setModelTokens(agent, usage === 'unknown' ? 'unexpected-unpriced-model' : 'gpt-5', { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, usage === 'unknown' ? undefined : usage === 'provider-total' ? 0 : 7)
+      ctx.emit({ type: 'agent.upsert', runId: run.id, agent })
+      if (usage === 'provider-total') ctx.emit({ type: 'run.cost', runId: run.id, totalCostUsd: 7 })
+      await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+      expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+      expect(events.some((e) => e.type === 'run.finalized' && e.runId === run.id)).toBe(false)
+    })
+
+    it('propagates a newly spent stored-project cap without starting the adapter', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'gpt-5', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { teamFiles: { beforeRun: () => ({ project: { ...p, maxBudgetUsd: 5 } }) }, catalog: () => [{ id: 'gpt-5', label: 'GPT', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'spent-source', projectId: p.id, status: 'error', connection: 'anthropic', totalCostUsd: 6, modelSelection: { model: 'gpt-5', connection: 'openai' } }))
+      await expect(m.continueRun(p, 'spent-source', 'Recover')).rejects.toThrow('budget is spent')
+      expect(codex.ctxs).toHaveLength(0)
+    })
+
+    it('refuses unpriced desktop recovery before starting Codex', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'unpriced-model', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { catalog: () => [{ id: 'unpriced-model', label: 'Unknown', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'unpriced-source', projectId: p.id, status: 'error', connection: 'anthropic', totalCostUsd: 3, modelSelection: { model: 'unpriced-model', connection: 'openai' } }))
+      const run = await m.continueRun(p, 'unpriced-source', 'Recover')
+      expect(codex.ctxs).toHaveLength(0)
+      expect(run).toMatchObject({ status: 'finished', endedBy: 'budget' })
+      expect(events.some((e) => e.type === 'log' && e.message.includes('no known price'))).toBe(true)
+    })
+
     it('picks the adapter by the root role family on LiteLLM', async () => {
       const claude = recorder('claude')
       const codex = recorder('codex')

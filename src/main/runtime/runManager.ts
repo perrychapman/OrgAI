@@ -1372,7 +1372,7 @@ export class RunManager {
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
-    const continuationBudget = conversationBudgetUsd !== undefined ? projectBudgetUsd(project) : undefined
+    let continuationBudget = conversationBudgetUsd !== undefined ? projectBudgetUsd(project) : undefined
     // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
     const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
     if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
@@ -1391,13 +1391,23 @@ export class RunManager {
     if (this.options.teamFiles && (kind === 'work' || kind === 'setup') && !isVirtualProjectId(project.id) && !quick && !buildWorkspace) {
       try {
         const fresh = this.options.teamFiles.beforeRun(project)
-        if (fresh.project?.id === project.id) project = fresh.project
+        if (fresh.project?.id === project.id) {
+          if (continuationBudget !== undefined && fresh.project !== project && conversationBudgetUsd !== undefined) {
+            const totalCap = Math.min(conversationBudgetUsd, projectBudgetUsd(fresh.project) ?? Infinity)
+            const prior = resumedFrom ? this.summary(resumedFrom) : null
+            const spent = prior ? this.chainOf(prior).reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0) : 0
+            continuationBudget = Math.min(continuationBudget, totalCap - spent)
+            conversationBudgetUsd = totalCap
+          }
+          project = fresh.project
+        }
         teamWarning = fresh.warning
       } catch (e) {
         log.warn(`Team files could not be checked before the run: ${(e as Error).message}`)
       }
     }
     // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
+    if (continuationBudget !== undefined && continuationBudget <= 0) throw new Error('The conversation budget is spent; switching models does not reset it.')
     project = this.options.mcp?.withLibrary?.(project) ?? project
     // Team/library refreshes return stored projects, whose cap has not had conversation spend deducted.
     if (continuationBudget !== undefined) project = { ...project, maxBudgetUsd: Math.min(continuationBudget, projectBudgetUsd(project) ?? Infinity) }
@@ -2286,7 +2296,7 @@ export class RunManager {
         return
       }
     }
-    const cost = a.summary.usage?.costUsd ?? 0
+    const cost = Math.max(a.summary.usage?.costUsd ?? 0, a.summary.usage?.providerCostUsd ?? 0)
     if (a.chainPriorCostUsd + cost >= budget) {
       a.emit({ type: 'log', runId, level: 'warn', message: `The budget of $${budget.toFixed(2)} is reached ($${(a.chainPriorCostUsd + cost).toFixed(2)} estimated); the run ends.` })
       void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
