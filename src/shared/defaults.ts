@@ -605,7 +605,7 @@ export function mcpServersForRole(project: Pick<Project, 'mcpServers'>, role: Pi
 export const DEFAULT_APPEARANCE: NormalizedAppearanceSettings = {
   theme: 'dark',
   accent: '#7c5cff',
-  canvas: { presentation: 'graph', scenePalette: 'neutral', pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false },
+  canvas: { presentation: 'graph', scenePalette: 'color', pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false },
   reduceMotion: 'system'
 }
 

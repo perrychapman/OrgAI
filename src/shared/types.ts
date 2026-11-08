@@ -1819,8 +1819,8 @@ export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthog
 /** Presentation is independent of the saved graph layout, pattern and node preferences. */
 export type CanvasPresentation = 'graph' | 'pocket-office'
 export const CANVAS_PRESENTATIONS: readonly CanvasPresentation[] = ['graph', 'pocket-office']
-export type CanvasScenePalette = 'neutral' | 'green'
-export const CANVAS_SCENE_PALETTES: readonly CanvasScenePalette[] = ['neutral', 'green']
+export type CanvasScenePalette = 'color' | 'neutral' | 'green'
+export const CANVAS_SCENE_PALETTES: readonly CanvasScenePalette[] = ['color', 'neutral', 'green']
 
 /** App-wide look. Main applies `theme` to nativeTheme.themeSource at startup and on every settings:set. */
 export interface AppearanceSettings {
@@ -1831,7 +1831,7 @@ export interface AppearanceSettings {
   canvas: {
     /** Missing on legacy inputs; normalization fills 'graph' without changing graph preferences. */
     presentation?: CanvasPresentation
-    /** Scene artwork palette, independent of app theme. Normalization fills 'neutral'. */
+    /** Scene artwork palette, independent of app theme. Normalization fills full 'color'. */
     scenePalette?: CanvasScenePalette
     pattern: CanvasPattern
     /** Tint the canvas background with the accent. */
