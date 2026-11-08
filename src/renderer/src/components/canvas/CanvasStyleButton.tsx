@@ -2,13 +2,14 @@ import type { ReactElement } from 'react'
 import { useEffect, useRef } from 'react'
 import { Palette } from 'lucide-react'
 import { applyCanvasStyle, styleLabel, useCanvasOptions, type CanvasStyleId } from '../../lib/canvas'
-import { canvasAnnouncement, saveCanvas } from '../../lib/canvasSettings'
+import { canvasAnnouncement, saveCanvas, PRESENTATION_OPTIONS, SCENE_PALETTE_OPTIONS } from '../../lib/canvasSettings'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { useAppStore } from '../../store/useAppStore'
 import { useFrameAnnounce } from '../layout/CanvasFrame'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
+import { SegmentedControl } from '../ui/SegmentedControl'
 import '../../styles/canvas-settings.css'
 import { CanvasPresetGroup, focusCheckedPreset } from './CanvasPresetGroup'
 
@@ -37,6 +38,18 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
   return (
     <div className="canvas-style-popover-body" ref={root}>
       <h3 className="canvas-style-popover-heading">Canvas style</h3>
+      <div data-testid="canvas-presentation">
+        <SegmentedControl label="Canvas presentation" value={canvas.presentation} options={PRESENTATION_OPTIONS} onChange={(presentation) => {
+          void saveCanvas((c) => ({ ...c, presentation })).catch(() => undefined)
+          announce?.(`Canvas presentation: ${presentation === 'graph' ? 'Graph' : 'Pocket Office'}.`)
+        }} />
+      </div>
+      <div data-testid="canvas-scene-palette">
+        <SegmentedControl label="Office palette" value={canvas.scenePalette} options={SCENE_PALETTE_OPTIONS} onChange={(scenePalette) => {
+          void saveCanvas((c) => ({ ...c, scenePalette })).catch(() => undefined)
+          announce?.(`Office palette: ${scenePalette === 'neutral' ? 'Neutral' : 'Green'}.`)
+        }} />
+      </div>
       <CanvasPresetGroup canvas={canvas} onPick={pick} variant="compact" />
       <div className="canvas-style-popover-foot">
         <Button

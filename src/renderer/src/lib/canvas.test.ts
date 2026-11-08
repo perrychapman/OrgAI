@@ -24,11 +24,13 @@ import {
 describe('readCanvasOptions', () => {
   it('falls back to the defaults for missing and unknown values', () => {
     const d = DEFAULT_APPEARANCE.canvas
-    expect(readCanvasOptions(() => null)).toEqual({ pattern: d.pattern, edges: d.edges, layout: d.layout, nodeStyle: 'card', tint: d.tint, minimap: d.minimap })
+    expect(readCanvasOptions(() => null)).toEqual({ presentation: 'graph', scenePalette: 'neutral', pattern: d.pattern, edges: d.edges, layout: d.layout, nodeStyle: 'card', tint: d.tint, minimap: d.minimap })
     expect(readCanvasOptions((n) => (n === 'data-canvas-pattern' ? 'nope' : null)).pattern).toBe(d.pattern)
   })
   it('reads each attribute', () => {
     const attrs: Record<string, string> = {
+      'data-canvas-presentation': 'pocket-office',
+      'data-canvas-scene-palette': 'green',
       'data-canvas-pattern': 'blueprint',
       'data-canvas-edges': 'straight',
       'data-canvas-layout': 'radial',
@@ -36,7 +38,8 @@ describe('readCanvasOptions', () => {
       'data-canvas-tint': 'off',
       'data-canvas-minimap': 'on'
     }
-    expect(readCanvasOptions((n) => attrs[n] ?? null)).toEqual({ pattern: 'blueprint', edges: 'straight', layout: 'radial', nodeStyle: 'compact', tint: false, minimap: true })
+    expect(readCanvasOptions((n) => attrs[n] ?? null)).toEqual({ presentation: 'pocket-office', scenePalette: 'green', pattern: 'blueprint', edges: 'straight', layout: 'radial', nodeStyle: 'compact', tint: false, minimap: true })
+    expect(readCanvasOptions(() => 'invalid')).toMatchObject({ presentation: 'graph', scenePalette: 'neutral' })
   })
 })
 
@@ -82,6 +85,7 @@ describe('the Default gallery entry', () => {
     expect(shownStyle(back)).toBe('default')
     expect(applyCanvasStyle(blueprint, 'default')).toEqual(back)
     expect(applyCanvasStyle(base, 'hive')).toEqual(applyCanvasPreset(base, 'hive'))
+    expect(applyCanvasStyle({ ...base, presentation: 'pocket-office', scenePalette: 'green' }, 'hive')).toMatchObject({ presentation: 'graph', scenePalette: 'green' })
   })
   it('names the entries', () => {
     expect(styleLabel('default')).toBe('Default')
