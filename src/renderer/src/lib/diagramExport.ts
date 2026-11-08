@@ -133,6 +133,25 @@ export function downloadName(title: string, ext: string): string {
   return `${base}.${ext.replace(/^\./, '')}`
 }
 
+/** Bytes as base64 for outputs:saveImage (chunked, so a large picture never overflows the argument limit). */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  return btoa(bin)
+}
+
+/** A text (an SVG file) as UTF-8 base64. */
+export function textToBase64(text: string): string {
+  return bytesToBase64(new TextEncoder().encode(text))
+}
+
+/** What outputs:saveImage's answer says to the user: where it went, or that nothing was written. */
+export function savedImageNotice(result: { path: string } | { cancelled: true }, extra = ''): string {
+  if ('path' in result) return `Saved a copy to ${result.path}.${extra ? ` ${extra}` : ''}`
+  return 'Nothing was saved.'
+}
+
 export type MermaidTheme = 'default' | 'dark'
 
 /** The Mermaid theme for the viewer: the app's, unless the user asked for a light drawing. */

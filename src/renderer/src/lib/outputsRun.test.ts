@@ -145,3 +145,11 @@ describe('announceText', () => {
     expect(announceText(['a', 'b', 'c'])).toBe('Produced 3 outputs')
   })
 })
+
+describe("new version rows", () => {
+  it("reads Updated rows", () => {
+    const row = harness("Updated Project plan to version 3")
+    const c = collapseOutputCalls([row])
+    expect(c.rows.get(row.id)).toMatchObject({ state: "updated", text: "Updated Project plan to version 3", title: "Project plan" })
+  })
+})

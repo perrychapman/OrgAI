@@ -3,13 +3,15 @@ import { useCallback, useId, useImperativeHandle, useLayoutEffect, useMemo, useR
 import type { RunOutput } from '@shared/types'
 import { runTag } from '@shared/view/runLabels'
 import { isTypeAheadKey, nextTypeAhead, type TypeAhead } from '../../lib/knowledgeList'
-import { outputMetaLine, provenanceLine } from '../../lib/outputs'
-import { OUTPUTS_PAGE, dayGroups, titleTypeAhead } from '../../lib/outputsList'
+import { Check } from 'lucide-react'
+import { OUTPUTS_PAGE, currentProvenance, dayGroups, isNewVersion, rowMetaLine, titleTypeAhead } from '../../lib/outputsList'
 import { showHidden } from '../../lib/hiddenChars'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
-import OutputKindIcon from './OutputKindIcon'
+import { Icon } from '../ui/Icon'
 import ExtBadge from './ExtBadge'
+import { OutputBadges, OutputThumb } from './OutputThumb'
+import { useOutputThumb } from './useOutputThumb'
 
 export interface OutputsListHandle {
   /** Focus the row (growing the shown page when it is past it); falls back to the current row. */
@@ -28,6 +30,10 @@ export function OutputsList({
   indexes,
   now,
   selectedId,
+  seen,
+  selectMode = false,
+  checked,
+  onToggle,
   onSelect,
   onOpen
 }: {
@@ -36,11 +42,19 @@ export function OutputsList({
   indexes: ReadonlyMap<string, number>
   now: number
   selectedId: string | null
+  /** The version the user last saw per output (drives "New"). */
+  seen: Readonly<Record<string, number>>
+  /** Select mode: Space and a click toggle `checked` instead of showing the item. */
+  selectMode?: boolean
+  checked?: ReadonlySet<string>
+  onToggle?: (id: string) => void
   /** Space: show the item without moving focus. */
   onSelect: (id: string) => void
   /** Enter or a click: select, open the pane and move focus to its heading. */
   onOpen: (id: string) => void
 }): ReactElement {
+  const tagFor = useCallback((runId: string): string | undefined => (indexes.has(runId) ? runTag(indexes.get(runId)) : undefined), [indexes])
+  const onClick = (id: string): void => (selectMode ? onToggle?.(id) : onOpen(id))
   const uid = useId()
   const listRef = useRef<HTMLUListElement>(null)
   const [limit, setLimit] = useState(OUTPUTS_PAGE)
@@ -121,7 +135,8 @@ export function OutputsList({
     }
     if (e.key === ' ') {
       e.preventDefault()
-      onSelect(id)
+      if (selectMode) onToggle?.(id)
+      else onSelect(id)
       return
     }
     if (isTypeAheadKey(e)) {
@@ -148,7 +163,7 @@ export function OutputsList({
   const more = Math.min(OUTPUTS_PAGE, rows.length - shownCount)
   return (
     <div className="outputs-list-wrap">
-      <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Outputs" data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus}>
+      <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Outputs" aria-multiselectable={selectMode || undefined} data-select={selectMode ? 'true' : undefined} data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus}>
         {groups.map((g) => (
           <li key={g.key} role="presentation" className="outputs-group" data-testid="outputs-group">
             {/* Hidden from the tree (a listbox owns options and groups only); aria-labelledby still reads it as the group's name. */}
@@ -157,7 +172,17 @@ export function OutputsList({
             </h2>
             <ul role="group" aria-labelledby={`${uid}-g-${g.key}`} className="outputs-group-rows">
               {g.items.map((o) => (
-                <OutputRow key={o.id} output={o} runLabel={runTag(indexes.get(o.runId))} selected={o.id === selectedId} domId={rowDomId(o.id)} onOpen={onOpen} />
+                <OutputRow
+                  key={o.id}
+                  output={o}
+                  tagFor={tagFor}
+                  shown={o.id === selectedId}
+                  isNew={isNewVersion(o, seen)}
+                  selectMode={selectMode}
+                  checked={checked?.has(o.id) ?? false}
+                  domId={rowDomId(o.id)}
+                  onClick={onClick}
+                />
               ))}
             </ul>
           </li>
@@ -174,9 +199,28 @@ export function OutputsList({
   )
 }
 
-function OutputRow({ output, runLabel, selected, domId, onOpen }: { output: RunOutput; runLabel: string; selected: boolean; domId: string; onOpen: (id: string) => void }): ReactElement {
-  const meta = outputMetaLine(output)
-  const prov = provenanceLine(output, runLabel)
+function OutputRow({
+  output,
+  tagFor,
+  shown,
+  isNew,
+  selectMode,
+  checked,
+  domId,
+  onClick
+}: {
+  output: RunOutput
+  tagFor: (runId: string) => string | undefined
+  shown: boolean
+  isNew: boolean
+  selectMode: boolean
+  checked: boolean
+  domId: string
+  onClick: (id: string) => void
+}): ReactElement {
+  const meta = rowMetaLine(output)
+  const prov = currentProvenance(output, tagFor)
+  const { ref, thumb } = useOutputThumb(output)
   return (
     <li
       id={domId}
@@ -186,12 +230,14 @@ function OutputRow({ output, runLabel, selected, domId, onOpen }: { output: RunO
       data-id={output.id}
       data-kind={output.kind}
       data-missing={output.missing ? 'true' : 'false'}
-      aria-selected={selected}
+      data-shown={shown ? 'true' : undefined}
+      aria-selected={selectMode ? checked : shown}
       tabIndex={-1}
-      onClick={() => onOpen(output.id)}
+      onClick={() => onClick(output.id)}
     >
-      <span className="outputs-row-icon">
-        <OutputKindIcon kind={output.kind} />
+      {selectMode && <SelectBox checked={checked} />}
+      <span className="outputs-row-thumb" ref={ref}>
+        <OutputThumb thumb={thumb} kind={output.kind} size="row" />
       </span>
       <span className="outputs-row-body">
         <span className="outputs-row-head">
@@ -200,6 +246,7 @@ function OutputRow({ output, runLabel, selected, domId, onOpen }: { output: RunO
           </span>
           <ExtBadge fileName={output.fileName} />
           {output.missing && <Badge tone="attention">Missing</Badge>}
+          <OutputBadges openNotes={output.openNoteCount ?? 0} isNew={isNew} />
         </span>
         <span className="outputs-row-meta" title={meta}>
           {meta}
@@ -209,5 +256,14 @@ function OutputRow({ output, runLabel, selected, domId, onOpen }: { output: RunO
         </span>
       </span>
     </li>
+  )
+}
+
+/** The visual checkbox of select mode: the option itself is the control (aria-selected carries the state). */
+export function SelectBox({ checked }: { checked: boolean }): ReactElement {
+  return (
+    <span className="output-select" data-testid="output-select" data-checked={checked ? 'true' : 'false'} aria-hidden="true">
+      {checked && <Icon icon={Check} size="sm" />}
+    </span>
   )
 }
