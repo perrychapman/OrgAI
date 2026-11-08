@@ -432,20 +432,6 @@ describe('bootOrgAIHost', () => {
     expect(armIdle).not.toHaveBeenCalled()
   })
 
-  it('socket access is fixed by the host kind; no setting changes it', () => {
-    const desktop = boot({ hostKind: 'desktop' })
-    expect(desktop.terminalAccess()).toEqual({ enabled: false, level: 'operate' })
-    desktop.dispose()
-    for (const hostKind of ['inproc'] as const) {
-      const h = boot({ hostKind })
-      expect(h.terminalAccess(), hostKind).toEqual({ enabled: true, level: 'full' })
-      // An old settings file's removed keys change nothing.
-      h.settings.set({ ...h.settings.get(), ...({ terminalServer: false, terminalAccessLevel: 'full' } as object) })
-      expect(h.terminalAccess(), hostKind).toEqual({ enabled: true, level: 'full' })
-      h.dispose()
-    }
-  })
-
   it('dispose() is idempotent and leaves no timers behind', () => {
     vi.useFakeTimers()
     const h = boot()

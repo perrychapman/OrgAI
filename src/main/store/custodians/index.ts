@@ -87,6 +87,11 @@ export function createCustodian(scheme: VaultCustodyScheme, opts: CustodianFacto
 
 const CLI_TEXT_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bORGAI_VAULT_/g, 'ORGAI_CLI_VAULT_'],
+  [/(ORGAI_CLI_VAULT_KEY_FILE) to a 32-byte key file/g, '$1 to a key file (see `orgai secrets init --key-file`)'],
+  [
+    /A file already exists at (.*?); OrgAI never overwrites a key file\. Choose another path, or use this file only if it is already this vault's key\./gs,
+    'A file already exists at $1; OrgAI never overwrites a key file. To use it as the vault\'s key, run `orgai secrets init --key-file "$1" --import`.'
+  ],
   [/OrgAI Vault item/g, 'OrgAI CLI Vault item'],
   [/OrgAI vault item/g, 'OrgAI CLI vault item']
 ]

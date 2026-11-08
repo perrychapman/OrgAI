@@ -11,11 +11,7 @@ import { gateRequest } from './registry'
 import {
   HostSocketServer,
   SECRET_ACL_MESSAGE,
-  TERMINAL_ACCESS_LEVEL_MESSAGE,
-  TERMINAL_ACCESS_OFF_MESSAGE,
   authorizeKey,
-  grantScopes,
-  scopesForAccessLevel,
   type HostSocketServerOptions
 } from './socketServer'
 
@@ -102,9 +98,11 @@ interface HelloOpts {
   mutate?: (p: Msg) => void
   /** Before the proof is computed (a well-proven but malformed hello). */
   shape?: (p: Msg) => void
-  /** Add an ownerProof made with this key (an in-process host's own CLI). */
+  /** The ownerProof key; default OWNER_KEY (the host's own CLI). '' sends no proof. */
   ownerKey?: string
 }
+
+const OWNER_KEY = 'ab'.repeat(32)
 
 async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; challenge: Msg; params: Msg }> {
   const challenge = await c.next((m) => m.method === 'host.challenge')
@@ -129,8 +127,9 @@ async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; chal
     cwd: params.cwd,
     requestedScopes: params.requestedScopes
   })
-  if (o.ownerKey) {
-    params.ownerProof = ownerProof(o.ownerKey, {
+  const ownerKey = o.ownerKey ?? OWNER_KEY
+  if (ownerKey) {
+    params.ownerProof = ownerProof(ownerKey, {
       hostInstanceId: challenge.params.hostInstanceId,
       hostNonce: challenge.params.hostNonce,
       clientNonce: params.clientNonce,
@@ -146,8 +145,6 @@ async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; chal
 
 interface FakeHostState {
   state: HostState
-  terminalServer: boolean
-  accessLevel?: 'operate' | 'full'
   sources: Array<() => number>
   calls: { method: string; ctx: Msg }[]
   /** Pending dispatcher calls resolve when released. */
@@ -172,7 +169,6 @@ function fakeHost(st: FakeHostState): { host: OrgAIHost; events: HostEventBus; r
     runs,
     services: { projects: { list: () => [] } },
     settings: { get: () => ({}) },
-    terminalAccess: () => ({ enabled: st.terminalServer, level: st.accessLevel ?? 'operate' }),
     activity: {
       state: () => st.state,
       addSource: (_k: string, f: () => number) => {
@@ -206,13 +202,14 @@ let clients: TestClient[]
 let logs: string[]
 
 function newState(): FakeHostState {
-  return { state: 'ready', terminalServer: true, accessLevel: 'full', sources: [], calls: [], hold: false, release: [], result: () => ({ ok: true }) }
+  return { state: 'ready', sources: [], calls: [], hold: false, release: [], result: () => ({ ok: true }) }
 }
 
 async function start(over: Partial<HostSocketServerOptions> = {}, attach = true): Promise<ReturnType<typeof fakeHost>> {
   server = new HostSocketServer({
     dataDir,
-    hostKind: 'desktop',
+    hostKind: 'inproc',
+    ownerKey: OWNER_KEY,
     hostInstanceId: HOST_ID,
     appVersion: '1.0.0',
     mock: true,
@@ -261,14 +258,14 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     const { res, challenge, params } = await hello(c, { scopes: ['read', 'operate', 'read'] })
     expect(challenge.params).toMatchObject({ protocolVersion: 1, hostInstanceId: HOST_ID })
     expect(challenge.params.hostNonce).toMatch(/^[0-9a-f]{64}$/)
-    expect(res.result).toMatchObject({ protocolVersion: 1, hostInstanceId: HOST_ID, hostKind: 'desktop', appVersion: '1.0.0', dataDir, mock: true, grantedScopes: ['read', 'operate'] })
+    expect(res.result).toMatchObject({ protocolVersion: 1, hostInstanceId: HOST_ID, hostKind: 'inproc', appVersion: '1.0.0', dataDir, mock: true, grantedScopes: ['read', 'operate'] })
     expect(res.result.versionSkewWarning).toBeUndefined()
     const expected = hostProof(SECRET, {
       protocolVersion: 1,
       hostInstanceId: HOST_ID,
       clientNonce: params.clientNonce,
       hostNonce: challenge.params.hostNonce,
-      hostKind: 'desktop',
+      hostKind: 'inproc',
       appVersion: '1.0.0',
       dataDir,
       mock: true,
@@ -328,49 +325,7 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect((await hello(d, { mutate: (p) => (p.clientKind = 'desktop') })).res.error.data.code).toBe('auth_failed')
   })
 
-  it("grants at most read and operate unless Terminal access is 'full' (review H2)", async () => {
-    st.accessLevel = undefined
-    st.result = (method) => ({ method })
-    await start()
-    const c = await client()
-    const { res, challenge, params } = await hello(c, { scopes: ['read', 'operate', 'decide', 'configure'] })
-    expect(res.result.grantedScopes).toEqual(['read', 'operate'])
-    // The host proof binds what was really granted.
-    const expected = hostProof(SECRET, {
-      protocolVersion: 1,
-      hostInstanceId: HOST_ID,
-      clientNonce: params.clientNonce,
-      hostNonce: challenge.params.hostNonce,
-      hostKind: 'desktop',
-      appVersion: '1.0.0',
-      dataDir,
-      mock: true,
-      grantedScopes: ['read', 'operate']
-    })
-    expect(proofMatches(expected, res.result.hostProof)).toBe(true)
-    c.send(rpcRequest(2, 'runs:decide', [{}]))
-    const denied = await c.response(2)
-    expect(denied.error.data.code).toBe('scope_denied')
-    expect(denied.error.data.message).toContain(TERMINAL_ACCESS_LEVEL_MESSAGE)
-    c.send(rpcRequest(3, 'settings:set', [{}]))
-    expect((await c.response(3)).error.data.message).toContain("'configure'")
-    c.send(rpcRequest(4, 'runs:stop', ['r1']))
-    expect((await c.response(4)).result).toEqual({ method: 'runs:stop' })
-    // host.stop still works for a client that asked for configure (daemon stop): a same-user kill could do as much.
-    c.send(rpcRequest(5, 'host.stop', [{ force: false }]))
-    expect((await c.response(5)).result).toEqual({ method: 'host.stop' })
-    expect(st.calls.map((x) => x.method)).toEqual(['runs:stop', 'host.stop'])
-    expect(st.calls[1].ctx.grantedScopes).toEqual(['read', 'operate', 'configure'])
-    expect(logs.join('\n')).toContain("withheld by the host's access level: decide, configure")
-    // A client that never asked for configure does not get host.stop.
-    const d = await client()
-    await hello(d, { scopes: ['read'] })
-    d.send(rpcRequest(6, 'host.stop', [{ force: false }]))
-    expect((await d.response(6)).error.data.code).toBe('scope_denied')
-  })
-
   it('an in-process host serves only the hello proven with its in-memory owner key; every other hello is refused not_owner (cli-standalone-default.md 4.1)', async () => {
-    st.accessLevel = undefined
     st.result = (method) => ({ method })
     const KEY = 'cd'.repeat(32)
     await start({ hostKind: 'inproc', ownerKey: KEY })
@@ -403,7 +358,6 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
   })
 
   it('an in-process host accepts its owner whatever Terminal access says, and never closes it; others are refused not_owner whatever Terminal access says', async () => {
-    st.terminalServer = false
     const KEY = 'cd'.repeat(32)
     await start({ hostKind: 'inproc', ownerKey: KEY })
     const other = await client()
@@ -411,30 +365,14 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     const owner = await client()
     expect((await hello(owner, { scopes: ['read', 'decide', 'configure'], ownerKey: KEY })).res.result.grantedScopes).toEqual(['read', 'decide', 'configure'])
     expect(owner.closed).toBe(false)
-    st.terminalServer = true
-    st.accessLevel = 'full'
     const again = await client()
     expect((await hello(again, { scopes: ['read'] })).res.error.data.code).toBe('not_owner')
   })
 
   it('an in-process server without an owner key serves nobody: an ownerProof cannot be checked', async () => {
-    st.accessLevel = undefined
     await start({ hostKind: 'inproc' })
     const { res } = await hello(await client(), { scopes: ['read', 'decide', 'configure'], ownerKey: 'cd'.repeat(32) })
     expect(res.error.data.code).toBe('not_owner')
-  })
-
-  it('reads OrgAIHost.terminalAccess when the host has it (session-only Terminal access)', async () => {
-    st.terminalServer = false
-    st.accessLevel = undefined
-    const fake = await start({}, false)
-    let access = { enabled: true, level: 'operate' as 'operate' | 'full' }
-    ;(fake.host as unknown as { terminalAccess: () => typeof access }).terminalAccess = () => access
-    server.attach(fake.host)
-    const { res } = await hello(await client(), { scopes: ['read', 'decide'] })
-    expect(res.result.grantedScopes).toEqual(['read'])
-    access = { enabled: false, level: 'full' }
-    expect((await hello(await client())).res.error.data.code).toBe('terminal_server_disabled')
   })
 
   it('refuses every hello while the owner reports an unprotected daemon.secret, and runs no ACL step of its own (review follow-up)', async () => {
@@ -474,23 +412,7 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect(res.error.data).toMatchObject({ code: 'host_starting', retryAfterMs: 250 })
   })
 
-  it('terminal_server_disabled with the settings path', async () => {
-    st.terminalServer = false
-    await start()
-    const { res } = await hello(await client())
-    expect(res.error.data).toMatchObject({ code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE })
-  })
-
-  it('does not journal run events while the host serves no sockets and nobody is connected (review L)', async () => {
-    st.terminalServer = false
-    const { events } = await start()
-    const journal = (server as unknown as { journal: { size: number } }).journal
-    events.emit('runs:event', { type: 'log', runId: 'r1', level: 'info', message: 'off' })
-    expect(journal.size).toBe(0)
-  })
-
   it('journals run events while the host serves sockets', async () => {
-    st.terminalServer = true
     const { events } = await start()
     const journal = (server as unknown as { journal: { size: number } }).journal
     events.emit('runs:event', { type: 'log', runId: 'r1', level: 'info', message: 'on' })
@@ -786,13 +708,6 @@ describe.runIf(posix)('HostSocketServer subscriptions', () => {
 })
 
 describe('scope helpers', () => {
-  it('grantScopes caps by level, keeps order and dedupes', () => {
-    expect(scopesForAccessLevel('operate')).toEqual(['read', 'operate'])
-    expect(scopesForAccessLevel('full')).toEqual(['read', 'operate', 'decide', 'configure'])
-    expect(grantScopes(['configure', 'read', 'read', 'decide'], 'operate')).toEqual({ granted: ['read'], withheld: ['configure', 'decide'] })
-    expect(grantScopes(['configure', 'read'], 'full')).toEqual({ granted: ['configure', 'read'], withheld: [] })
-  })
-
   it('authorizeKey names a library entry or a project server, nothing else', () => {
     expect(authorizeKey({ libraryId: 'a', announceUrl: true })).toBe(authorizeKey({ libraryId: 'a' }))
     expect(authorizeKey({ projectId: 'p', serverId: 's' })).not.toBe(authorizeKey({ libraryId: 'p' }))
@@ -804,8 +719,6 @@ describe('scope helpers', () => {
 describe.runIf(posix)('HostSocketServer: the app is not a socket client', () => {
   for (const hostKind of ['inproc', 'desktop'] as const) {
     it(`a 'desktop' hello on a ${hostKind} host is refused and nothing is stopped`, async () => {
-      st.terminalServer = true
-      st.accessLevel = 'full'
       await start({ hostKind })
       const c = await client()
       const { res } = await hello(c, { kind: 'desktop' as never, scopes: ['read', 'configure'] })

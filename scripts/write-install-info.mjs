@@ -3,7 +3,7 @@
 // beside the CLI bundle, read by src/cli/installInfo.ts. The desktop app ships no CLI bundle any more
 // (electron-builder.yml excludes out/cli/**), so nothing in the app's build writes it. The npm package's copy is written by build-npm-package.mjs into its own folder, never into out/cli.
 //
-//   node scripts/write-install-info.mjs --channel app     write out/cli/install.json (version from package.json)
+//   node scripts/write-install-info.mjs --channel app     tests only: write out/cli/install.json (version from package.json)
 //   node scripts/write-install-info.mjs --remove          remove it again (a checkout reads as channel 'dev')
 //   node scripts/write-install-info.mjs --channel app --electron-builder <args...>
 //                                                          write it, run the local electron-builder with <args>, then

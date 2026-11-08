@@ -771,16 +771,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     targets. `HostDispatcher.invoke` leases every mutating channel and ipc.ts wraps every mutating desktop-only channel the
     same way (`ipcLeases.test.ts`); `mcp:authorize` leases only its final commit (`COMMIT_LEASED_CHANNELS`); quiesce aborts OAuth
     flows (`McpService.dispose`), repository clones, Team assistant / evaluation model calls and `draft:orgChart`
-    (`draftOrgChart` takes an AbortSignal). Handoff (`src/main/handoff.ts` `DesktopHandoff`, `index.ts` `waitingForHandoff`): an
-    interactive launch whose folder a Node host owns sends `host.stop({ force: false, handoff: true })` over a 'desktop'
-    connection (D8: `host.status` / `host.stop` only, whatever Terminal access is); the wait window shows after
-    `HANDOFF_WINDOW_DELAY_MS` (1 s), lists `handoffBlockers` / `refusedBecause` and offers "Open when they finish" (retry 5 s),
-    "Stop them and open" (forced; once sent, a timeout or closed connection counts as stopping) and Quit; empty blockers means the
-    host could not read its run state (fails closed). An inproc owner is never stopped ("Open when it ends" / Quit). The app takes
-    the folder only after the owner process exited (`ownerExitCheck`: signal probe per 250 ms poll, start time re-read every
-    `HANDOFF_START_TIME_RECHECK_MS` 30 s); no answer or an owner older than Wave 7 shows the busy-folder dialog with the
-    `orgai daemon stop --force` hint and exits 6; a headless launch never hands over. `orgai app` with a node / inproc owner
-    returns 0 with `HANDOFF_OPENED_MESSAGE`. Peer check (`peerCheck.ts`): the self-pid shortcut now follows the macOS OS mapping
+    (`draftOrgChart` takes an AbortSignal). (Removed: the desktop's handoff from a Node host (`src/main/handoff.ts` `DesktopHandoff`, `index.ts` `waitingForHandoff`, the wait window, `ownerExitCheck`) went with the Node host and the shared folder.) Peer check (`peerCheck.ts`): the self-pid shortcut now follows the macOS OS mapping
     (Round 6 item 6). Unit tests, real owner-process integration tests (`shutdown.int`, `handoff.int`, `inprocShutdown.int`) on macOS;
     the desktop Quit through a real Electron before-quit and the window parts are not driven.
   - Vault (`src/main/store/`: `secrets.ts` `SecretStore`, `vaultTypes.ts`, `vaultCrypto.ts`, `vaultFile.ts`, `vaultMetadata.ts`,
@@ -919,7 +910,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     parse) and `host/shimInstaller.ts` (PATH shim, never over a foreign file or symlink; launch refresh only for an
     older-format shim of this install or a vanished launcher); Linux AppImage cannot install the shim;
     `npm run pack:verify` (`scripts/verify-pack.mjs`, CI pack job) checks a local unpacked pack token-free: the
-    packaged app holds no `out/cli` (asar or unpacked) and no `bin/orgai` launcher, and keeps its own unpacked runtime packages (the app no longer contains the CLI). Desktop-only IPC `app:cliShimStatus` / `installCliShim` / `uninstallCliShim`
+    packaged app holds no `out/cli` (asar or unpacked) and no `bin/orgai` launcher, keeps its own unpacked runtime packages (the app no longer contains the CLI), and (check (e)) boots hidden on the mock adapter with a temp `ORGAI_DATA_DIR` (vault, CLI, secret and daemon variables removed, `--use-mock-keychain` on macOS), writes a ready `daemon.json` and `logs/main.log`, and quits cleanly (the CI step is `continue-on-error` until (e) has passed once on both runners). Desktop-only IPC `app:cliShimStatus` / `installCliShim` / `uninstallCliShim`
     (`CliShimStatus` / `CliShimResult`, never reject, refused over the socket); App settings > General > Advanced >
     Terminal `CliShimRow` (`cli-shim-row`, `-status[data-state]` (a live region), `-path-hint` (named by the buttons'
     aria-describedby), `-notice`; `lib/cliShim.ts`); an install never turns Terminal access on by itself (review H2):
@@ -1959,8 +1950,7 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     'macos-14-arm64-us-default' is not supported"; the same jobs passed at 18:25 UTC that day), so CI and release moved
     to macos-15 (unrun: the first macos-15 CI run has not happened). Nothing in CI spends tokens. A push that changes only `docs/**` or Markdown
     files does not trigger it (`paths-ignore`); pull requests always run.
-  - Local builds: `npm run pack` (`scripts/pack-local.mjs`, `--dry-run` prints the plan; builds the CLI bundle too, and
-    on macOS never signs: `CSC_IDENTITY_AUTO_DISCOVERY=false` unless set) keeps only `release/<unpacked>` (win-unpacked,
+  - Local builds: `npm run pack` (`scripts/pack-local.mjs`, `--dry-run` prints the plan; on macOS never signs: `CSC_IDENTITY_AUTO_DISCOVERY=false` unless set) keeps only `release/<unpacked>` (win-unpacked,
     mac-arm64 / mac, linux-unpacked; current, `release/BUILD.txt`: version, short sha, time) and `release/previous` (the build before); never create
     other `release-*` folders, and delete old ones rather than archive them. The real pack was not run by its author;
     the dry run and the rotation on a fake build were.

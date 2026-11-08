@@ -238,6 +238,25 @@ test('bootCheck: ready, then a clean quit passes', { skip: process.platform === 
   }
 })
 
+test('bootCheck: the child gets no vault, CLI, secret or daemon variable', async () => {
+  const keep = { ORGAI_VAULT_KEY_FILE: '/real/key', ORGAI_CLI_DATA_DIR: '/x', ORGAI_SECRET_X: '1', ORGAI_DAEMON_Y: '1' }
+  const saved = Object.fromEntries(Object.keys(keep).map((k) => [k, process.env[k]]))
+  Object.assign(process.env, keep)
+  let seen
+  try {
+    const spawnApp = (_bin, args, opts) => {
+      seen = { args, env: opts.env }
+      throw new Error('stop')
+    }
+    await assert.rejects(() => bootCheck('/none', { spawnApp }), /stop/)
+  } finally {
+    for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v)
+  }
+  for (const k of Object.keys(keep)) assert.equal(seen.env[k], undefined, k)
+  assert.equal(seen.env.ORGAI_MOCK, '1')
+  assert.deepEqual(seen.args, process.platform === 'darwin' ? ['--use-mock-keychain'] : [])
+})
+
 test('bootCheck: an app that exits at once, or never quits, fails', { skip: process.platform === 'win32' && 'needs POSIX signals' }, async () => {
   const dir = tempDir('app')
   try {

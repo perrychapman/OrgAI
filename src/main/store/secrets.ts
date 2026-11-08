@@ -209,6 +209,11 @@ export const LEGACY_CORRUPT_MESSAGE = VAULT_MESSAGES.legacyCorrupt
 
 /** Mutations refused until the reconcile after a failed save succeeds (5.5 Durability and failures). */
 export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not check the saved secrets again yet; try again in a moment.'
+/** The recovery sentence in a product's words (the CLI's points at `orgai secrets status`). */
+export const vaultRecoveryMessage = (product: VaultProduct = 'desktop'): string =>
+  product === 'cli'
+    ? 'A save did not finish and orgai could not check the saved secrets again yet; try again, or check with `orgai secrets status`.'
+    : VAULT_RECOVERY_MESSAGE
 
 /** A custodian failure that is not a classified CustodyFailure (a helper bug, an unexpected throw). */
 export const KEY_STORE_UNREACHABLE_MESSAGE = 'The key store could not be reached.'
@@ -220,8 +225,10 @@ export const vaultSaveFailedMessage = (detail: string): string => `OrgAI could n
  * vault.json or secrets.json could not be read (an I/O error such as EIO, EACCES or EBUSY; not damage). The store reads
  * it again on the next save, prepareWrite, retry, secrets:init and secrets:status (review round 2).
  */
-export const fileReadFailedMessage = (file: string, code: string): string =>
-  `${file} could not be read (${code}); OrgAI reads it again on the next save`
+export const fileReadFailedMessage = (file: string, code: string, product: VaultProduct = 'desktop'): string =>
+  product === 'cli'
+    ? `${file} could not be read (${code}); orgai reads it again on the next save or \`orgai secrets status\``
+    : `${file} could not be read (${code}); OrgAI reads it again on the next save`
 
 /** secrets:reset refuses while a file cannot be read: a healthy file is never moved aside as damaged (review round 2). */
 export const resetReadFailedMessage = (file: string, code: string): string =>
@@ -238,14 +245,18 @@ export const VAULT_MOVE_FAILED_MESSAGE = 'vault.json could not be moved aside.'
 export const LEGACY_MOVE_FAILED_MESSAGE = 'The damaged secrets.json could not be moved aside.'
 
 export const NOTHING_TO_RESTORE_MESSAGE = 'No deleted value is kept for this secret.'
-export const NO_CUSTODIAN_MESSAGE = 'No key store is available on this system; set ORGAI_VAULT_KEY_FILE or run `orgai secrets init --key-file <path>`.'
-/** NO_CUSTODIAN_MESSAGE naming the product's own variable. */
+/** The product's own variable; only the CLI's text names a command (the desktop's names none). */
 export const noCustodianMessage = (product: VaultProduct = 'desktop'): string =>
-  `No key store is available on this system; set ${vaultNames(product).keyFileEnv} or run \`orgai secrets init --key-file <path>\`.`
+  product === 'cli'
+    ? `No key store is available on this system; set ${vaultNames(product).keyFileEnv} or run \`orgai secrets init --key-file <path>\`.`
+    : `No key store is available on this system; set ${vaultNames(product).keyFileEnv} to a 32-byte key file.`
+export const NO_CUSTODIAN_MESSAGE = noCustodianMessage('desktop')
 export const KEY_FILE_INSIDE_DATA_MESSAGE = "The key file must be outside OrgAI's data folder."
 export const VAULT_NOT_OPENED_MESSAGE = 'Secure storage has not been opened yet.'
-export const keyFileSchemeConflict = (scheme: VaultCustodyScheme): string =>
-  `This vault keeps its key in ${scheme}; run \`orgai secrets reset\` before starting a vault with a key file.`
+export const keyFileSchemeConflict = (scheme: VaultCustodyScheme, product: VaultProduct = 'desktop'): string =>
+  product === 'cli'
+    ? `This vault keeps its key in ${scheme}; run \`orgai secrets reset\` before starting a vault with a key file.`
+    : `This vault keeps its key in ${scheme}; choose Start over in the Dashboard notice before starting a vault with a key file.`
 
 /** The OS scheme a new vault uses on a platform (5.3), or null where there is none. */
 export function platformVaultScheme(platform: NodeJS.Platform): VaultCustodyScheme | null {
@@ -423,7 +434,7 @@ export class SecretStore implements SecretStoreApi {
     if (legacy.state === 'unreadable') {
       // Never written while it cannot be read (the corrupt rules), and read again later.
       this.legacy = { state: 'corrupt' }
-      this.legacyReadError = fileReadFailedMessage(LEGACY_SECRETS_FILE, legacy.code)
+      this.legacyReadError = fileReadFailedMessage(LEGACY_SECRETS_FILE, legacy.code, this.product)
     } else {
       this.legacy = legacy
       this.legacyReadError = undefined
@@ -435,7 +446,7 @@ export class SecretStore implements SecretStoreApi {
       this.dropKey()
       this.vault = undefined
       this.vstate = 'corrupt'
-      this.vaultReadError = fileReadFailedMessage(VAULT_FILE, read.code)
+      this.vaultReadError = fileReadFailedMessage(VAULT_FILE, read.code, this.product)
       this.reason = this.vaultReadError
       return
     }
@@ -791,7 +802,7 @@ export class SecretStore implements SecretStoreApi {
 
   /** Before a mutation: finish the recovery a failed save left, or refuse. */
   private ensureRecovered(): void {
-    if (this.recoveryRequired && !this.tryRecover()) throw new Error(VAULT_RECOVERY_MESSAGE)
+    if (this.recoveryRequired && !this.tryRecover()) throw new Error(vaultRecoveryMessage(this.product))
   }
 
   /** The ciphers reconciliation may use: only an app host that can write back, with the vault open. */
@@ -1335,7 +1346,7 @@ export class SecretStore implements SecretStoreApi {
         created
       }
       this.reload()
-      throw new VaultSaveError(new Error(fileReadFailedMessage(VAULT_FILE, onDisk.code)))
+      throw new VaultSaveError(new Error(fileReadFailedMessage(VAULT_FILE, onDisk.code, this.product)))
     }
     if (onDisk.kind !== 'absent' || this.vstate !== 'absent') {
       zeroize(created.dek)
@@ -1659,7 +1670,7 @@ export class SecretStore implements SecretStoreApi {
     const action = await this.runExclusive('init', async (): Promise<SecretsInitResult['action']> => {
       this.retryRead()
       if (this.vstate === 'corrupt') throw new Error(this.notOpenReason())
-      if (this.vault && request && this.vault.custody.scheme !== 'key-file') throw new Error(keyFileSchemeConflict(this.vault.custody.scheme))
+      if (this.vault && request && this.vault.custody.scheme !== 'key-file') throw new Error(keyFileSchemeConflict(this.vault.custody.scheme, this.product))
       if (this.vstate === 'open') return 'unchanged'
       if (this.vstate === 'absent') {
         try {

@@ -307,3 +307,8 @@ its area, review) before the next.
 | 12 Codex login, `init` | 1: Codex has its own login per product; `connections login`; `init` not cited for secrets |
 | 13 third-party sources | 1: read-only shared inputs, own libraries |
 | 14 help corpus | 6, updated per phase; `separation.mjs` two-product e2e |
+
+## 12. Changes made while implementing
+
+- 2026-11-08, phase 2 (App separation). Section 5.2 first kept the desktop's separate "certificate reader" and "Claude and Codex startup" checks in `verify-pack.mjs`. The implementation replaced them with the single token-free boot of the packed app (check (e)); the certificate reader child and the bundled Claude and Codex binaries are exercised only as far as an ordinary launch reaches them and have no check of their own (5.2 now says so). This was an implementer decision, not an owner decision, taken because the old checks ran the bundled CLI to reach those binaries. Reverting means adding checks that the packed app's certificate reader runs and that the bundled binaries start; that is open for the owner to confirm.
+- The CI `pack:verify` step stays `continue-on-error` until check (e) has passed once on both runners (the Windows quit has never run).

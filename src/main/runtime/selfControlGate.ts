@@ -138,14 +138,26 @@ export interface ControlProtectedExtras {
    * rule live in checkSelfControlDenial.
    */
   vaultKeyFiles?: readonly string[]
+  /**
+   * The other product's data folders (the CLI's `<userData>/data` for the app, the app's for the CLI): their control
+   * files are protected too, since an agent of one product must not change the other's connections, sign-in or vault.
+   */
+  otherProductDataDirs?: readonly string[]
 }
+
+/** The control entries of a data folder. */
+const CONTROL_ENTRIES = ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd'] as const
 
 /**
  * The paths the gate protects, each in its lexical (path.resolve) and canonical (canonicalDeep: real path of the
  * nearest existing ancestor plus the rest) spelling, deduped, in a stable order.
  */
 export function controlProtectedPaths(dataDir: string, runtimeSocketDir?: string, extras: ControlProtectedExtras = {}): string[] {
-  const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex'), join(dataDir, 'settings.json'), join(dataDir, 'auth-cwd')]
+  const roots = CONTROL_ENTRIES.map((e) => join(dataDir, e))
+  for (const other of extras.otherProductDataDirs ?? []) {
+    if (typeof other !== 'string' || other === '' || resolve(other) === resolve(dataDir)) continue
+    for (const e of [...CONTROL_ENTRIES, 'vault.json']) roots.push(join(other, e))
+  }
   if (runtimeSocketDir) roots.push(runtimeSocketDir)
   for (const f of extras.vaultKeyFiles ?? []) if (typeof f === 'string' && f !== '') roots.push(f)
   const out: string[] = []

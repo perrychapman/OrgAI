@@ -9,9 +9,8 @@
  * Honest limits (UNVERIFIED / deferred):
  * - The pid is client-asserted (host.hello params.pid). An agent can claim any pid, and a process that double-forks
  *   (reparented to init / launchd) is no longer a descendant. This check is defence in depth only; the real gates are
- *   the host's access level (a client gets
- *   read and operate only unless it is the in-process host's own CLI; socketServer.ts grantScopes) and the self-control denial gate
- *   (checkSelfControlDenial).
+ *   the host's owner proof (only the CLI process that started the in-process host can make it; socketServer.ts) and
+ *   the self-control denial gate (checkSelfControlDenial).
  * - Socket-to-PID mapping (macOS only): with the accepted socket's fd, one `lsof -nP -U -F pfdn` (same 150 ms budget,
  *   run beside ps) finds the kernel address of the host's end of the socket (`d0x...` on that fd) and every process
  *   holding the other end (`n->0x...` naming that address). Those are the real peers; the ancestry walk then runs on

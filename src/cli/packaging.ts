@@ -1,8 +1,8 @@
 /**
  * What the CLI bundle (vite.cli.config.ts, out/cli) leaves as bare imports (cli-spec 7, Wave 6). Pure: node:module
  * only. Everything else (ink, react, react/jsx-runtime, react-reconciler, chalk, ...) is bundled into out/cli, so a
- * packaged app needs to unpack only `out/cli/**` plus CLI_RUNTIME_PACKAGES from app.asar (electron-builder.yml
- * asarUnpack; packaging.test.ts keeps the two in step).
+ * npm package keeps these as its dependencies (CLI_RUNTIME_PACKAGES; scripts/lib/npmPackage.mjs). The desktop app
+ * contains no CLI and has its own unpack list (electron-builder.yml asarUnpack; scripts/verify-pack.mjs).
  *
  * Why these stay external: the Claude Agent SDK and Codex spawn per-platform native binaries that resolve next to
  * their own package (`@anthropic-ai/claude-agent-sdk-<platform>`, `@openai/codex-<platform>`), and zod is the SDK's
@@ -10,7 +10,7 @@
  */
 import { builtinModules } from 'node:module'
 
-/** Packages the CLI bundle imports at run time; electron-builder unpacks each one (asarUnpack). */
+/** Packages the CLI bundle imports at run time; the npm package depends on each one. */
 export const CLI_RUNTIME_PACKAGES = ['@anthropic-ai/claude-agent-sdk', '@openai/codex', 'zod'] as const
 
 /** Per-platform native packages of the runtime packages (optional dependencies, unpacked too). */

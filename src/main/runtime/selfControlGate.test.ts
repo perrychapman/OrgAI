@@ -52,6 +52,29 @@ describe('controlProtectedPaths', () => {
     expect(controlProtectedPaths(data, undefined, { vaultKeyFiles: [] })).toEqual(controlProtectedPaths(data))
   })
 
+  it('protects the other product\'s control files, in both directions', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
+    dirs.push(base)
+    const app = join(base, 'OrgAI', 'data')
+    const cli = join(base, 'orgai-cli', 'data')
+    mkdirSync(app, { recursive: true })
+    mkdirSync(cli, { recursive: true })
+    for (const [own, other] of [
+      [app, cli],
+      [cli, app]
+    ] as const) {
+      const paths = controlProtectedPaths(own, undefined, { otherProductDataDirs: [other, ''] })
+      for (const e of ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd', 'vault.json']) expect(paths).toContain(join(other, e))
+      const ctx: SelfControlContext = { protectedPaths: paths, cwd: base, home: base }
+      expect(checkSelfControlDenial('Read', { file_path: join(other, 'codex', 'auth.json') }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Write', { file_path: join(other, 'settings.json'), content: '{}' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Bash', { command: `cat ${join(other, 'settings.json')}` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      // Without the extra, the other folder is open (the old one-product list).
+      const bare: SelfControlContext = { protectedPaths: controlProtectedPaths(own), cwd: base, home: base }
+      expect(checkSelfControlDenial('Read', { file_path: join(other, 'codex', 'auth.json') }, bare)).toBeNull()
+    }
+  })
+
   it('carries both spellings through a dir symlink, deduped', () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
     dirs.push(base)

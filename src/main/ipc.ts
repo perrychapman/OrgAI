@@ -166,9 +166,8 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
 }
 
 /**
- * A refusal on its way to a window: secure storage's sentences name the orgai command, which an app-only user may not
- * have, so they are put in the app's words (src/shared/view/secretNotices.ts appSecretReason). Any other error is
- * returned as it is.
+ * A refusal on its way to a window: the desktop's secure-storage sentences already name no command, so only the locked
+ * one gets its way to act added (src/shared/view/secretNotices.ts appSecretReason). Any other error is returned as it is.
  */
 export function appFacingError(err: unknown): unknown {
   if (!(err instanceof Error)) return err

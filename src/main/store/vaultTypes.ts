@@ -328,6 +328,9 @@ export const CLI_VAULT_MESSAGES: VaultMessages = {
   clearRefusedLegacyOnly: 'Run `orgai secrets init` first',
   undeleteAppOnly: 'This deleted secret cannot be restored here',
   undecryptable: 'This saved secret cannot be read here',
+  notDurable: 'The secret may or may not have been saved. Set it again to be sure (`orgai secrets status` shows the vault state)',
+  moveRefused: (slot: string, server: string, reason: string): string =>
+    `${slot} of ${server} cannot be read here (${reason}). Unlock secure storage (\`orgai secrets status\` shows how) and try again.`,
   legacyCorrupt: 'The secrets file (secrets.json) in this folder is damaged, so orgai does not change it; `orgai secrets reset` moves it aside (and starts secure storage over).',
   resetWarning: 'Every secret saved in orgai is lost.'
 }

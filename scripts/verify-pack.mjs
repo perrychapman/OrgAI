@@ -14,7 +14,8 @@
 //   (e) the packed app boots: started on a temp ORGAI_DATA_DIR with ORGAI_MOCK=1 and ORGAI_WINDOW_HIDDEN=1 it writes
 //       run/daemon.json in state 'ready' (main loads from app.asar, the preload and renderer are found), writes
 //       main.log, and a polite quit (SIGTERM; taskkill without /F on Windows) removes daemon.json again. This is the
-//       one check that starts the app; it also starts the macOS certificate-reader child (RunAsNode) as any launch does.
+//       one check that starts the app; the child env has no ORGAI_VAULT_*, ORGAI_CLI_*, ORGAI_SECRET_* or ORGAI_DAEMON_*
+//       variable and macOS gets --use-mock-keychain, so it touches nothing of the user's; it also starts the macOS certificate-reader child (RunAsNode) as any launch does.
 // The orgai npm package has its own check, scripts/verify-npm.mjs.
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -95,7 +96,11 @@ export async function bootCheck(binary, deps = {}) {
     const env = { ...process.env, ORGAI_DATA_DIR: dataDir, ORGAI_MOCK: '1', ORGAI_WINDOW_HIDDEN: '1' }
     delete env.ELECTRON_RUN_AS_NODE
     delete env.NODE_OPTIONS
-    child = spawnApp(binary, [], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    // Nothing of the developer's vault, CLI or daemon setup reaches the packed app (it would open their real key file).
+    for (const k of Object.keys(env)) if (/^ORGAI_(VAULT|CLI|SECRET|DAEMON)_/.test(k)) delete env[k]
+    // macOS: Chromium's cookie encryption and safeStorage use a mock keychain, never the installed app's login-keychain item.
+    const args = process.platform === 'darwin' ? ['--use-mock-keychain'] : []
+    child = spawnApp(binary, args, { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     child.stdout?.on('data', (d) => (output += d))
     child.stderr?.on('data', (d) => (output += d))
     child.on('exit', () => (exited = true))

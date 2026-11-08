@@ -209,8 +209,7 @@ export interface OwnershipOptions {
    * win32: what an icacls failure on daemon.secret does when the listener is bound at once (listen not false).
    * 'required' throws HostOwnershipError('secret_acl_failed'); 'best-effort' warns, goes on and sets
    * HostOwnership.secretAclWarning. Default: 'best-effort' for the desktop host, 'required' for inproc
-   * hosts, which exist to serve the orgai command. setListening(true) is always 'required' (a failure keeps the
-   * listener off; the Electron hosts acquire with listen: false, so a desktop launch never fails on it, review M8).
+   * hosts, which exist to serve the orgai command.
    */
   secretAcl?: 'required' | 'best-effort'
   /** Where warnings go (default console.warn). */
@@ -246,7 +245,7 @@ export interface OwnershipOptions {
   /** Platform override (tests only; the win32 pipe path is UNVERIFIED and not exercised live). */
   platform?: NodeJS.Platform
   /**
-   * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron app, which never listens): neither exists until setListening(true); daemon.json carries `listening: false` and
+   * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron app, which never listens): neither exists; daemon.json carries `listening: false` and
    * the endpoint the listener will use.
    */
   listen?: boolean
@@ -261,19 +260,11 @@ export interface HostOwnership {
   readonly runtimeDir?: string
   /**
    * win32: why daemon.secret could not be given a current-user-only DACL when acquireHostOwnership bound the listener
-   * at once in best-effort mode (review M8); undefined when it was protected. setListening(true) never sets it: there
-   * an ACL failure rejects and the listener stays off.
+   * at once in best-effort mode (review M8); undefined when it was protected.
    */
   readonly secretAclWarning?: string
   /** True while daemon.secret exists and the listener is bound. */
   readonly listening: boolean
-  /**
-   * Bind the listener and write daemon.secret (on), or close the listener and remove daemon.secret (off), then rewrite
-   * daemon.json's `listening` (review M11). Calls run one at a time in call order; a
-   * call that matches the current state does nothing. The secret keeps its value for this host instance. Rejects when
-   * the bind (or, on Windows, the secret's ACL) fails; the listener is then off. After release() it does nothing.
-   */
-  setListening(on: boolean): Promise<void>
   /** Rewrite daemon.json with state 'ready' (only while it still carries our hostInstanceId). True when written. */
   markReady(): boolean
   /** Rewrite daemon.json with state 'draining' (same rule). */
@@ -338,7 +329,8 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
   if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return null
   if (start !== undefined && (typeof start !== 'string' || start.length > 200)) return null
   // A record left by a crashed pre-upgrade `--headless-host` was the app itself: read it as 'desktop' so the single-instance lock can still reclaim it.
-  const kind = hostKind === 'headless-host' ? 'desktop' : hostKind
+  // A record of a removed Node background host ('node') is read as an in-process host: it is never reclaimable, so a live pid is "already running".
+  const kind = hostKind === 'headless-host' ? 'desktop' : hostKind === 'node' ? 'inproc' : hostKind
   if (kind !== undefined && (typeof kind !== 'string' || !HOST_KINDS.includes(kind as HostKind))) return null
   if (appVersion !== undefined && (typeof appVersion !== 'string' || appVersion.length > 200)) return null
   const cwd = typeof ownerCwd === 'string' && ownerCwd.length > 0 && ownerCwd.length <= 4096 && !ownerCwd.includes('\0') ? ownerCwd : undefined
@@ -626,7 +618,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       runtimeDir = bound.runtimeDir
       fault('after-listen')
     } else {
-      // Review M11: no secret and no listener until setListening(true); daemon.json names the endpoint it will use.
+      // Review M11: no secret and no listener; daemon.json names the endpoint a listener would use.
       const planned = plannedEndpoint()
       endpoint = planned.endpoint
       runtimeDir = planned.runtimeDir
@@ -946,8 +938,6 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
     let released = false
     /** The bound listener; undefined while the host does not listen (review M11). */
     let srv = initialServer
-    /** setListening calls, one at a time. */
-    let listenChain: Promise<void> = Promise.resolve()
     const write = (next: DaemonInfo): boolean => {
       if (released) return false
       if (readDaemonInfo(dataDir)?.hostInstanceId !== id) return false
@@ -956,10 +946,6 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       return true
     }
     const rewrite = (state: HostState): boolean => write({ ...current, state })
-    const withListening = (on: boolean): DaemonInfo => {
-      const { listening: _was, ...rest } = current
-      return on ? rest : { ...rest, listening: false }
-    }
     const removeSecretIfOurs = (): void => {
       try {
         if (readDaemonInfo(dataDir)?.hostInstanceId === id) rmSync(secretPath, { force: true })
@@ -975,36 +961,6 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
         /* best effort */
       }
     }
-    async function openListener(): Promise<void> {
-      if (released || srv) return
-      let bound: Awaited<ReturnType<typeof bindListener>>
-      try {
-        // The listener is being turned on: an ACL failure keeps the listener off (never a fatal launch, review M8).
-        await writeSecret('required')
-        bound = await bindListener()
-      } catch (e) {
-        removeSecretIfOurs()
-        throw e
-      }
-      if (released) {
-        // Released while binding: undo it.
-        await new Promise<void>((r) => bound.server.close(() => r()))
-        removeEndpointFiles()
-        return
-      }
-      srv = bound.server
-      write(withListening(true))
-    }
-    async function closeListener(): Promise<void> {
-      if (released || !srv) return
-      const closing = srv
-      srv = undefined
-      // daemon.json first, so a client from now on sees the host is not listening instead of a dead socket.
-      write(withListening(false))
-      removeSecretIfOurs()
-      await new Promise<void>((r) => closing.close(() => r()))
-      removeEndpointFiles()
-    }
     return {
       get info() {
         return current
@@ -1015,11 +971,6 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       ...(aclWarning ? { secretAclWarning: aclWarning } : {}),
       get listening() {
         return !!srv && !released
-      },
-      setListening(on: boolean) {
-        const step = listenChain.then(() => (on ? openListener() : closeListener()))
-        listenChain = step.catch(() => {})
-        return step
       },
       markReady() {
         const wrote = rewrite('ready')

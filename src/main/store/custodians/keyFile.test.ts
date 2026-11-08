@@ -84,6 +84,10 @@ describe('keyFilePathProblem (5.3.1 location)', () => {
     expect(keyFilePathProblem(userDataDir, { userDataDir, dataDir, platform: process.platform })).toMatch(/data folder/)
     expect(keyFilePathProblem(join(outside, 'orgai.key'), { userDataDir, dataDir, platform: process.platform })).toBeUndefined()
     expect(keyFilePathProblem(join(outside, 'a\nb'), { userDataDir, dataDir, platform: process.platform })).toMatch(/control/)
+    // The desktop refuses a path inside the CLI's default folder.
+    const cliDefault = join(outside, 'orgai-cli')
+    expect(keyFilePathProblem(join(cliDefault, 'app.key'), { userDataDir, dataDir, platform: process.platform, desktopAvoids: { cliDefault } })).toMatch(/orgai command's data folder/)
+    expect(keyFilePathProblem(join(outside, 'app.key'), { userDataDir, dataDir, platform: process.platform, desktopAvoids: { cliDefault } })).toBeUndefined()
   })
 
   posixOnly('refuses a path that reaches the data folder through a link (canonical spelling)', () => {
@@ -226,14 +230,14 @@ describe('KeyFileCustodian on POSIX (5.3.1)', () => {
     expect((await failure(custodian().open(ID, { scheme: 'key-file', keyFile: gone }))).kind).toBe('missing')
   })
 
-  posixOnly('probe of `init --key-file` on an existing file names the --import command', async () => {
+  posixOnly('probe of `init --key-file` on an existing file names no command (the CLI wrapper adds --import)', async () => {
     const path = join(outside, 'there.key')
     writeFileSync(path, Buffer.alloc(32, 3), { mode: 0o600 })
     const p = await custodian({ keyFile: path }).probe()
     expect(p).toMatchObject({ ok: false, kind: 'denied' })
-    expect((p as { reason: string }).reason).toContain(`orgai secrets init --key-file "${path}" --import`)
+    expect((p as { reason: string }).reason).toContain('Choose another path')
     const e = await failure(custodian({ keyFile: path }).create(ID))
-    expect(e.reason).toContain(`orgai secrets init --key-file "${path}" --import`)
+    expect(e.reason).toContain('Choose another path')
   })
 
   posixOnly('a new vault takes an existing file named by ORGAI_VAULT_KEY_FILE as an import, never overwriting it (review round 1)', async () => {
@@ -448,7 +452,7 @@ describe('Windows key file DACL steps (5.3.1; fake whoami / icacls)', () => {
     const f = fakeWin(path, OWNER_ONLY)
     const e = await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: f.spawner }))
     expect(e.kind).toBe('denied')
-    expect(e.reason).toContain('--import')
+    expect(e.reason).toContain('Choose another path')
     expect(readFileSync(path, 'utf8')).toBe('old')
     expect(f.calls).toHaveLength(0)
   })

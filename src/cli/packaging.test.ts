@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { CLI_RUNTIME_PACKAGES, isCliExternal } from './packaging'
+import { isCliExternal } from './packaging'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const posixOnly = process.platform === 'win32' ? it.skip : it
@@ -78,7 +78,8 @@ describe('electron-builder.yml', () => {
   it('unpacks every runtime package the desktop loads (and keeps the native entries), but not out/cli', () => {
     const unpack = topList('asarUnpack')
     expect(unpack).not.toContain('out/cli/**')
-    for (const p of CLI_RUNTIME_PACKAGES) expect(unpack, p).toContain(`node_modules/${p}/**`)
+    // The desktop's own list (scripts/verify-pack.mjs DESKTOP_UNPACKED_PACKAGES says the same), not the npm bundle's.
+    for (const p of ['@anthropic-ai/claude-agent-sdk', '@openai/codex', 'zod']) expect(unpack, p).toContain(`node_modules/${p}/**`)
     expect(unpack).toContain('node_modules/@anthropic-ai/claude-agent-sdk-*/**')
     expect(unpack).toContain('node_modules/@openai/codex-*/**')
   })

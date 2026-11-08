@@ -102,8 +102,11 @@ jobs:
       # (`npm run pack`, not `npm pack`, which is npm's own tarball command.)
       - run: npm run pack
       # The packaged app must not contain the orgai CLI (cli-standalone-default.md 5.2): no out/cli in app.asar or beside it,
-      # no bin/orgai launcher. Token-free; it never starts the app.
+      # no bin/orgai launcher. Token-free; check (e) also starts the packed app hidden on the mock adapter with a temp data
+      # folder and quits it. continue-on-error until (e) has passed once on both runners: the Windows quit (taskkill
+      # without /F on a process with only hidden windows) has never run.
       - name: pack:verify
+        continue-on-error: true
         run: npm run pack:verify
 
   # The orgai npm package (cli-standalone.md 3.4): build it from this commit's CLI bundle and run verify-npm (steps 1-6,

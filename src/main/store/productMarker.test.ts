@@ -140,6 +140,19 @@ describe('product marker', () => {
     expect(check(join(viaLink, 'OrgAI'), app)).toBe(folderRefusal(join(viaLink, 'OrgAI')))
   })
 
+  it('a marker that appears between the read and the write is never overwritten', () => {
+    const dir = join(base(), 'shared')
+    expect(readProductMarker(dir)).toEqual({ state: 'absent' })
+    const written = writeProductMarker(dir, 'orgai-cli', () => marker(dir, 'orgai-desktop'))
+    expect(written).toBe(false)
+    expect(readProductMarker(dir)).toEqual({ state: 'marked', product: 'orgai-desktop' })
+    expect(readdirSync(dir)).toEqual(['product.json'])
+    // The same product's marker appearing first counts as written.
+    const dir2 = join(base(), 'same')
+    expect(writeProductMarker(dir2, 'orgai-cli', () => marker(dir2, 'orgai-cli'))).toBe(true)
+    expect(readdirSync(dir2)).toEqual(['product.json'])
+  })
+
   it('writeProductMarker reports failure instead of throwing', () => {
     const root = base()
     writeFileSync(join(root, 'file'), 'x')

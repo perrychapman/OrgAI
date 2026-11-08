@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { appSecretReason, removedSentence } from '../../shared/view/secretNotices'
-import { LEGACY_CORRUPT_MESSAGE, VAULT_RECOVERY_MESSAGE } from './secrets'
+import { DPAPI_ADDTYPE_REASON, DPAPI_CLM_REASON } from './custodians/dpapi'
+import { cliWording } from './custodians'
+import { KEY_FILE_HINT } from './custodians/common'
+import { keyFileExistsReason, keyFileNotConfigured } from './custodians/keyFile'
+import { NO_SESSION_BUS_REASON, SECRET_TOOL_MISSING_REASON } from './custodians/secretService'
+import { LEGACY_CORRUPT_MESSAGE, VAULT_RECOVERY_MESSAGE, keyFileSchemeConflict, noCustodianMessage } from './secrets'
 import { VAULT_MESSAGES } from './vaultTypes'
 
 // The app's words (src/shared/view/secretNotices.ts) must follow the main-process sentences they stand in for.
@@ -34,5 +39,26 @@ describe('secret notice wording', () => {
     }
     expect(appSecretReason(VAULT_MESSAGES.locked('The keychain is locked.'))).toContain('Try again')
     expect(appSecretReason('Something else went wrong.')).toBe('Something else went wrong.')
+  })
+
+  it('desktop custodian reasons, locked in the app, name no orgai command; the CLI keeps its own', () => {
+    const reasons = [
+      `The macOS keychain tool failed (exit 1); ${KEY_FILE_HINT}.`,
+      DPAPI_ADDTYPE_REASON,
+      DPAPI_CLM_REASON,
+      SECRET_TOOL_MISSING_REASON,
+      NO_SESSION_BUS_REASON,
+      keyFileNotConfigured('desktop'),
+      keyFileExistsReason('/k/app.key'),
+      noCustodianMessage('desktop'),
+      keyFileSchemeConflict('keychain', 'desktop')
+    ]
+    for (const r of reasons) {
+      const text = appSecretReason(VAULT_MESSAGES.locked(r))
+      expect(text, r).not.toMatch(/orgai (secrets|command)|`/)
+      expect(text).toContain('Try again')
+    }
+    expect(cliWording(`x ${KEY_FILE_HINT}.`)).toContain('ORGAI_CLI_VAULT_KEY_FILE to a key file (see `orgai secrets init --key-file`)')
+    expect(cliWording(keyFileExistsReason('/k/app.key'))).toContain('`orgai secrets init --key-file "/k/app.key" --import`')
   })
 })

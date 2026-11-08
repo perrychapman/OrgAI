@@ -14,7 +14,7 @@ import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
 import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
 import { installElectronLogHooks } from './electronLogHooks'
-import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
+import { acquireHostOwnership, HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
 import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
 import { openSecretStore } from './store/secrets'
 import { unavailableCustodianFactory } from './store/unavailableCustodian'
@@ -344,6 +344,9 @@ app.whenReady().then(async () => {
     log.error(`Host ownership failed: ${message}`)
     if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
       dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI using this data folder, then start OrgAI again.`)
+    } else if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable' && e.ownerPid !== undefined) {
+      // A record the app cannot read that still names a live process: another OrgAI process (an older one) holds the folder.
+      dialog.showErrorBox('OrgAI is already running', `Another OrgAI process (pid ${e.ownerPid}) holds this data folder:\n${dataDir}\n\nQuit it, then start OrgAI again.`)
     } else {
       // Every other failure (an unsafe or unwritable run folder, a full disk) would otherwise quit with no window at all.
       dialog.showErrorBox(

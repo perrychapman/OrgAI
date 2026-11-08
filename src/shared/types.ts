@@ -6337,9 +6337,6 @@ export const HOST_PROTOCOL_VERSION = 1
 export type HostScope = 'read' | 'operate' | 'decide' | 'configure'
 export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
 
-/** The most a socket client may be granted: 'operate' is read + operate, 'full' every scope. */
-export type TerminalAccessLevel = 'operate' | 'full'
-
 /** Who says host.hello: the orgai command ('tui' counts as interactive). The OrgAI app is never a socket client. */
 export type HostClientKind = 'tui' | 'cli'
 
@@ -6886,8 +6883,8 @@ export const DEFAULT_DAEMON_IDLE_MINUTES = 30
 
 // ---------- Wave 7 (standalone CLI) ----------
 //
-// Contracts of docs/design/cli-standalone.md (cli-spec Wave 7): the Node background host, host capabilities, the
-// app's handoff from a Node host, the install channel and secure storage's host channels. Everything here is
+// Contracts of docs/design/cli-standalone.md (cli-spec Wave 7): host capabilities, the install channel and secure
+// storage's host channels (the Node background host and the app's handoff from it are gone). Everything here is
 // structured-clone and JSON safe; no secret value or data key ever appears in these shapes. The vault file format,
 // the key custodians and the SecretStore API live in src/main/store/vaultTypes.ts (main only).
 

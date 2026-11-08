@@ -3,7 +3,7 @@
  * "version": 1 }`, written 0600 by whichever product creates or first opens a folder. Each product refuses a folder
  * marked for the other. Electron-free; relative imports only (the CLI bundle uses it).
  */
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, win32, posix } from 'node:path'
 
 export type ProductId = 'orgai-cli' | 'orgai-desktop'
@@ -31,12 +31,17 @@ export function readProductMarker(userDataDir: string): MarkerRead {
   return { state: 'invalid' }
 }
 
-/** Writes the marker (0600), creating the folder (0700) when it is missing. Returns false when it could not be written. */
-export function writeProductMarker(userDataDir: string, product: ProductId): boolean {
+/**
+ * Writes the marker (0600), creating the folder (0700) when it is missing. The marker is created exclusively (the temp
+ * file is linked to product.json, which fails when a marker is already there), so two products starting on one fresh
+ * folder cannot overwrite each other. Returns false when it could not be written, or when another marker is already
+ * there and is not this product's (the caller reads the marker again to tell the two apart). `beforeLink` is a test hook.
+ */
+export function writeProductMarker(userDataDir: string, product: ProductId, beforeLink?: () => void): boolean {
   try {
     mkdirSync(userDataDir, { recursive: true, mode: 0o700 })
     const file = join(userDataDir, PRODUCT_MARKER_FILE)
-    // Temp file then rename, so a crash never leaves a half-written marker.
+    // Temp file then link, so a crash never leaves a half-written marker.
     const tmp = `${file}.${process.pid}.tmp`
     try {
       writeFileSync(tmp, `${JSON.stringify({ product, version: 1 })}\n`, { mode: 0o600 })
@@ -45,7 +50,20 @@ export function writeProductMarker(userDataDir: string, product: ProductId): boo
       } catch {
         // Windows ignores modes.
       }
-      renameSync(tmp, file)
+      beforeLink?.()
+      try {
+        linkSync(tmp, file)
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code
+        if (code === 'EEXIST') {
+          const now = readProductMarker(userDataDir)
+          rmSync(tmp, { force: true })
+          return now.state === 'marked' && now.product === product
+        }
+        // A file system without hard links: create-only write of the final file.
+        writeFileSync(file, `${JSON.stringify({ product, version: 1 })}\n`, { mode: 0o600, flag: 'wx' })
+      }
+      rmSync(tmp, { force: true })
     } catch (e) {
       rmSync(tmp, { force: true })
       throw e
@@ -155,7 +173,12 @@ export function checkCliFolder(c: CliFolderCheck): string | undefined {
   // A marker that exists but cannot be read, or that this version does not know, is not an empty folder: leave it alone.
   if (marker.state === 'invalid') return markerUnreadableRefusal(c.userDataDir)
   if (dataFolderHoldsFiles(c.dataDir)) return folderRefusal(c.userDataDir)
-  if (!writeProductMarker(c.userDataDir, 'orgai-cli')) return markerWriteRefusal(c.userDataDir)
+  if (!writeProductMarker(c.userDataDir, 'orgai-cli')) {
+    // The desktop may have marked the folder between the read and the write.
+    const now = readProductMarker(c.userDataDir)
+    if (now.state === 'marked' && now.product === 'orgai-desktop') return folderRefusal(c.userDataDir)
+    return markerWriteRefusal(c.userDataDir)
+  }
   return undefined
 }
 
@@ -238,6 +261,10 @@ export function checkDesktopFolder(userDataDir: string, opts: DesktopFolderOptio
   const { marker, ...r } = desktopFolderRefusal(userDataDir, opts)
   if (r.refusal || r.warning) return r
   if (marker.state === 'marked') return {}
-  if (!writeProductMarker(userDataDir, 'orgai-desktop')) return { warning: `Could not write ${PRODUCT_MARKER_FILE} in ${userDataDir}.` }
+  if (!writeProductMarker(userDataDir, 'orgai-desktop')) {
+    const now = readProductMarker(userDataDir)
+    if (now.state === 'marked' && now.product === 'orgai-cli') return { refusal: cliFolderRefusal(userDataDir) }
+    return { warning: `Could not write ${PRODUCT_MARKER_FILE} in ${userDataDir}.` }
+  }
   return {}
 }

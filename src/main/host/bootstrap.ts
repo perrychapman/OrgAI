@@ -11,7 +11,7 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
+import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary } from '../../shared/types'
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
 import { connectionConfigured, connectionIds } from '../../shared/defaults'
 import { buildSettingsInfo } from '../appInfo'
@@ -35,6 +35,7 @@ import { MockAdapter } from '../runtime/mock'
 import { repoLockActivity } from '../runtime/repoLock'
 import { RunManager, outputScopeOf } from '../runtime/runManager'
 import { controlProtectedPaths } from '../runtime/selfControlGate'
+import { cliUserDataDir, platformUserDataDir } from '../../cli/client/locate'
 import type { RunConnection, RuntimeAdapter } from '../runtime/types'
 import { AgentImportService } from '../setup/import/importer'
 import { SetupService } from '../setup/service'
@@ -196,19 +197,8 @@ export interface OrgAIHost {
    * (desktop Quit, signals, inproc cleanup) go through it; ownership is released only after the writers settled.
    */
   shutdown: ShutdownCoordinator
-  /**
-   * Whether host.hello accepts terminal clients and the most it grants (socketServer.ts). Fixed by the host kind; an
-   * in-process host's own CLI proves itself with the owner key and gets every scope regardless.
-   */
-  terminalAccess(): HostTerminalAccess
   /** Stop background timers and probes (before-quit). Idempotent. */
   dispose(): void
-}
-
-/** OrgAIHost.terminalAccess(). */
-export interface HostTerminalAccess {
-  enabled: boolean
-  level: TerminalAccessLevel
 }
 
 /**
@@ -219,6 +209,12 @@ export interface HostTerminalAccess {
 export function applyAppSettingsPayload(settings: Pick<SettingsStore, 'get' | 'set'>, payload: AppSettingsProposalPayload): void {
   const stored = settings.get()
   settings.set(settingsSetArgs(withAppSettingChanges(stored, payload.changes), stored))
+}
+
+/** The other product's default data folder: the CLI's for the app, the app's for the CLI (the gate protects its control files). */
+function otherProductDataDir(hostKind: HostKind): string {
+  const dir = hostKind === 'desktop' ? cliUserDataDir : platformUserDataDir
+  return join(dir(process.platform, process.env, homedir()), 'data')
 }
 
 export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
@@ -252,7 +248,6 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const secrets = opts.secretStore ?? new SecretStore(dataDir, opts.safeStorage, opts.secrets)
   // Socket access is fixed by the host kind (no setting): only the orgai process's in-process host answers a socket, and
   // only its own process through the owner proof (every scope); the desktop opens no socket at all.
-  const terminalAccess = (): HostTerminalAccess => ({ enabled: hostKind === 'inproc', level: hostKind === 'inproc' ? 'full' : 'operate' })
   // `adapters` is declared below and only read when discovery runs.
   let adapters: { claude: ClaudeAdapter; codex: CodexAdapter; mock?: MockAdapter }
   const connections = new ConnectionService({
@@ -446,7 +441,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     // Wave 7: plus the vault's key file, re-read per call (the vault may change; cli-standalone.md 8.4).
-    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles() }),
+    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles(), otherProductDataDirs: [otherProductDataDir(hostKind)] }),
     // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
     // attachedClientCount, which leaves non-interactive CLI exec sockets out). `activity` is created further down;
     // before that (never during a run) there is nobody to count.
@@ -768,5 +763,5 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     secrets.dispose()
   }
 
-  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, terminalAccess, dispose }
+  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, dispose }
 }

@@ -570,8 +570,8 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(readdirSync(env.runDir)).toEqual([])
   })
 
-  // Review M11: Electron hosts bind and write the secret only while Terminal access is on.
-  it('listen: false writes no secret and binds nothing; setListening toggles both and daemon.json says so', async () => {
+  // Review M11: a host with listen: false writes no secret and binds nothing.
+  it('listen: false writes no secret and binds nothing, and daemon.json says so', async () => {
     const env = tempEnv()
     let got = 0
     const own = await acquire(env, {
@@ -590,49 +590,22 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     // A second host still sees a running one (live pid) and is refused.
     expect(await acquireHostOwnership(opts(env)).catch((e: unknown) => e)).toBeInstanceOf(HostAlreadyRunningError)
 
-    await own.setListening(true)
-    expect(own.listening).toBe(true)
-    expect(mode(secretPath)).toBe(0o600)
-    const secret = readFileSync(secretPath, 'utf8')
-    expect(secret).toMatch(/^[0-9a-f]{64}$/)
-    expect(mode(own.endpoint)).toBe(0o600)
-    expect(readDaemonInfo(env.dataDir)?.listening).toBeUndefined()
-    expect(await canConnect(own.endpoint)).toBe(true)
-    await new Promise((r) => setTimeout(r, 20))
-    expect(got).toBe(1)
-    // markReady keeps the listening state.
-    own.markReady()
-    expect(readDaemonInfo(env.dataDir)).toMatchObject({ state: 'ready' })
-    expect(readDaemonInfo(env.dataDir)?.listening).toBeUndefined()
-
-    await own.setListening(false)
-    expect(own.listening).toBe(false)
-    expect(existsSync(secretPath)).toBe(false)
-    expect(existsSync(own.endpoint)).toBe(false)
-    expect(await canConnect(own.endpoint)).toBe(false)
-    expect(readDaemonInfo(env.dataDir)).toMatchObject({ state: 'ready', listening: false })
-
-    // Back on: the same secret for this host instance (the socket server caches it).
-    await own.setListening(true)
-    expect(readFileSync(secretPath, 'utf8')).toBe(secret)
-    expect(await canConnect(own.endpoint)).toBe(true)
     own.release()
-    expect(readdirSync(env.runDir)).toEqual([])
-    expect(own.listening).toBe(false)
-    // After release it does nothing.
-    await own.setListening(true)
     expect(readdirSync(env.runDir)).toEqual([])
   })
 
-  it('setListening calls run in order and end in the last requested state; a repeat is a no-op', async () => {
+  it("a live host of the removed 'node' kind is reported as already running, with its pid", async () => {
     const env = tempEnv()
-    const own = await acquire(env, { listen: false })
-    await Promise.all([own.setListening(true), own.setListening(false), own.setListening(true), own.setListening(true)])
-    expect(own.listening).toBe(true)
-    expect(await canConnect(own.endpoint)).toBe(true)
-    await Promise.all([own.setListening(false), own.setListening(false)])
-    expect(own.listening).toBe(false)
-    expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+    const child = spawnSleeper()
+    try {
+      const id = newHostInstanceId()
+      daemonJson(env, { hostInstanceId: id, pid: child.pid!, endpoint: socketPathFor(env.dataDir, id), processStartTime: processStartTime(child.pid!), hostKind: 'node' as never })
+      const err = await acquireHostOwnership(opts(env)).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostAlreadyRunningError)
+    } finally {
+      child.kill('SIGKILL')
+      await exited(child)
+    }
   })
 
   it('a host whose listener is off and whose pid is dead is replaced', async () => {
@@ -647,7 +620,7 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
   })
 
-  it('listen: false with a long socket path names the runtime dir but creates it only when listening', async () => {
+  it('listen: false with a long socket path names the runtime dir and creates nothing', async () => {
     const env = tempEnv('y'.repeat(90))
     const id = newHostInstanceId()
     const own = await acquire(env, { hostInstanceId: id, listen: false })
@@ -655,13 +628,6 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(own.runtimeDir).toBe(rt)
     expect(own.endpoint).toBe(join(rt, 'd.sock'))
     expect(existsSync(rt)).toBe(false)
-    await own.setListening(true)
-    expect(mode(rt)).toBe(0o700)
-    expect(await canConnect(own.endpoint)).toBe(true)
-    await own.setListening(false)
-    expect(existsSync(rt)).toBe(false)
-    await own.setListening(true)
-    expect(await canConnect(own.endpoint)).toBe(true)
     own.release()
     expect(existsSync(rt)).toBe(false)
   })
@@ -1073,9 +1039,10 @@ describe('readDaemonInfo / parseDaemonInfo', () => {
   it('accepts a valid record and drops unknown fields', () => {
     expect(parseDaemonInfo({ ...good, extra: 1, hostKind: 'desktop', appVersion: '1' })).toEqual({ ...good, hostKind: 'desktop', appVersion: '1' })
   })
-  it("reads a record of the removed 'headless-host' kind as the desktop, and refuses a 'node' kind", () => {
+  it("reads a record of the removed 'headless-host' kind as the desktop, and reads the removed 'node' kind as inproc", () => {
     expect(parseDaemonInfo({ ...good, hostKind: 'headless-host' })).toEqual({ ...good, hostKind: 'desktop' })
-    expect(parseDaemonInfo({ ...good, hostKind: 'node' })).toBeNull()
+    expect(parseDaemonInfo({ ...good, hostKind: 'node' })?.hostKind).toBe('inproc')
+    expect(parseDaemonInfo({ ...good, hostKind: 'bogus' })).toBeNull()
   })
   it('keeps listening only as an explicit false (review M11)', () => {
     expect(parseDaemonInfo({ ...good, listening: false })).toEqual({ ...good, listening: false })

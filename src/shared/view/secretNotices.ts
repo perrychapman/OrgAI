@@ -125,8 +125,9 @@ export function secretNotices(s: SecretsStatusResult, names: KeyNames = {}): Sec
 
 /**
  * A slot's "cannot be read here" reason (McpServerInfo.unreadableSecrets, a connection's status detail) in the app's
- * words. The desktop's vault sentences (VAULT_MESSAGES) already name the Dashboard notice and no command, so only the
- * locked sentence gets its way to act added; any other text is returned as it is.
+ * words. The desktop's vault sentences (VAULT_MESSAGES) and its custodian reasons name the Dashboard notice or an
+ * environment variable and no command, so only the locked sentence gets its way to act added; any other text is
+ * returned as it is.
  */
 export function appSecretReason(reason: string): string {
   const t = reason.trim()

@@ -35,7 +35,7 @@ import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, 
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, posix, win32 } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { platformUserDataDir } from '../../../cli/client/locate'
+import { cliUserDataDir, platformUserDataDir } from '../../../cli/client/locate'
 import { system32Path } from '../../host/systemBinaries'
 import { CustodyError, VAULT_DEK_BYTES, vaultNames, type CustodianCreated, type CustodianProbe, type VaultCustody, type VaultProduct } from '../vaultTypes'
 import type { RemovableKeyCustodian } from './common'
@@ -47,10 +47,13 @@ type Env = Readonly<Record<string, string | undefined>>
 /** The largest file read as a key (a base64 key with CRLF is 46 bytes). */
 const KEY_FILE_READ_MAX = 4096
 
-export const keyFileNotConfigured = (product?: VaultProduct): string => `No key file is configured: set ${vaultNames(product).keyFileEnv} or run \`orgai secrets init --key-file <path>\`.`
-/** A new key file was asked for where a file already exists (names the exact import command). */
+export const keyFileNotConfigured = (product?: VaultProduct): string =>
+  product === 'cli'
+    ? `No key file is configured: set ${vaultNames(product).keyFileEnv} or run \`orgai secrets init --key-file <path>\`.`
+    : `No key file is configured: set ${vaultNames(product).keyFileEnv} to a 32-byte key file.`
+/** A new key file was asked for where a file already exists. The desktop's text names no command; the CLI's wrapper (custodians/index.ts cliWording) adds its import command. */
 export function keyFileExistsReason(path: string): string {
-  return `A file already exists at ${path}; OrgAI never overwrites a key file. To use it as the vault's key, run \`orgai secrets init --key-file "${path}" --import\`.`
+  return `A file already exists at ${path}; OrgAI never overwrites a key file. Choose another path, or use this file only if it is already this vault's key.`
 }
 export const KEY_FILE_BAD_CONTENT = 'The key file must hold exactly 32 bytes, or base64 text of 32 bytes (for example from `openssl rand -base64 32`).'
 
@@ -145,6 +148,8 @@ export function keyFilePathProblem(
     platform?: NodeJS.Platform
     /** The CLI also refuses the desktop app's default folder and the file the desktop's own key-file variable names (spec 7). */
     cliAvoids?: { desktopDefault: string; desktopKeyFile?: string }
+    /** The desktop refuses the CLI's default folder (spec 3.1 and 7: neither product writes into the other's folder). */
+    desktopAvoids?: { cliDefault: string }
   }
 ): string | undefined {
   const platform = opts.platform ?? process.platform
@@ -160,6 +165,9 @@ export function keyFilePathProblem(
     if (folder && insideOnAnySpelling(folder, path, platform)) {
       return `The key file must not be inside OrgAI's data folder (${folder}): a backup or sync of that folder would then hold both the vault and its key.`
     }
+  }
+  if (opts.desktopAvoids && insideOnAnySpelling(opts.desktopAvoids.cliDefault, path, platform)) {
+    return `The key file must not be inside the orgai command's data folder (${opts.desktopAvoids.cliDefault}): the two products keep separate folders.`
   }
   const avoid = opts.cliAvoids
   if (avoid) {
@@ -705,7 +713,15 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
             }
           })()
         : undefined
-    const problem = keyFilePathProblem(p, { userDataDir: this.opts.userDataDir, dataDir: this.opts.dataDir, platform: this.platform, ...(cliAvoids ? { cliAvoids } : {}) })
+    const desktopAvoids =
+      this.opts.product === 'cli' ? undefined : { cliDefault: cliUserDataDir(this.platform, this.env as NodeJS.ProcessEnv, this.env.HOME ?? homedir()) }
+    const problem = keyFilePathProblem(p, {
+      userDataDir: this.opts.userDataDir,
+      dataDir: this.opts.dataDir,
+      platform: this.platform,
+      ...(cliAvoids ? { cliAvoids } : {}),
+      ...(desktopAvoids ? { desktopAvoids } : {})
+    })
     if (problem) throw new CustodyError('denied', problem)
     return p
   }

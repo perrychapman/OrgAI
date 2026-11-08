@@ -71,8 +71,7 @@ export interface ConnectHostOptions {
   callTimeoutMs?: number
   /**
    * The in-memory owner key of the in-process host this process started (InprocHostHandle.ownerKey): the hello
-   * then carries an ownerProof, the only way to get decide / configure from an in-process host past its Terminal
-   * access level. Sent only to a host whose hostInstanceId equals `ownerHostInstanceId`.
+   * then carries an ownerProof, the only way to be served by an in-process host. Sent only to a host whose hostInstanceId equals `ownerHostInstanceId`.
    */
   ownerKey?: string
   ownerHostInstanceId?: string

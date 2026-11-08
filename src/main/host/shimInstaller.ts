@@ -49,8 +49,7 @@ export interface CliShimDeps {
    */
   loginPath?: string
   /**
-   * Called after a successful install; its errors are logged, never fatal. It must not turn Terminal access on (review
-   * H2): the App settings row asks the user instead (index.ts only logs).
+   * Called after a successful install; its errors are logged, never fatal.
    */
   onInstalled?: () => void | Promise<void>
   /** Defaults to node:fs. */
