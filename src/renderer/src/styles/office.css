@@ -9,6 +9,8 @@
 .office-roster { display: flex; flex-direction: column; gap: var(--space-1); overflow: auto; max-height: 35%; min-height: 70px; padding: var(--space-2); }
 .office-roster button { min-height: 24px; text-align: left; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border-default); font: inherit; }
 .office-roster button[aria-pressed='true'], .office-nameplate[aria-pressed='true'] { border: 3px double var(--text-primary); font-weight: var(--font-weight-semibold, 600); }
-.office-nameplate { position: absolute; transform: translateX(-50%); display: flex; flex-direction: column; width: 64px; min-height: 24px; overflow: hidden; padding: var(--space-1); color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border-default); font: inherit; text-align: center; line-height: 1.2; }
+.office-nameplates { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1); max-height: 20%; overflow: auto; }
+.office-nameplate { display: flex; flex-direction: column; min-width: 96px; min-height: 24px; overflow: hidden; padding: var(--space-1); color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border-default); font: inherit; text-align: left; }
+.office-room-label { position: absolute; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: var(--space-1); color: var(--text-primary); background: var(--surface-1); font: inherit; pointer-events: none; }
 .office-nameplate span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .office-full-message { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
