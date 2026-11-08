@@ -178,7 +178,7 @@ export class CodexEventMapper {
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: fileChangeResult(item), isError: item.status === 'failed' || item.status === 'declined' }]
       case 'mcpToolCall': {
         const error = isRec(item.error) ? str(item.error.message) : undefined
-        const result = isRec(item.result) ? normalizeTranscriptContent(item.result.content) : { content: '' }
+        const result = isRec(item.result) && item.result.content != null ? normalizeTranscriptContent(item.result.content) : { content: '' }
         if (!result.parts?.some(p => p.type === 'media')) delete result.parts
         if (!result.content && !result.parts && isRec(item.result) && item.result.structuredContent) result.content = clip(safeJson(item.result.structuredContent))
         return [{ type: 'toolResult', threadId, toolUseId: item.id, ...(error ? { content: clip(error) } : result), isError: !!error || item.status === 'failed' }]
