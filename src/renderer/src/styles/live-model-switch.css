@@ -1,4 +1,16 @@
+.live-composer-region {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  max-height: 45vh;
+  overflow: auto;
+}
+
 .live-model-switch {
+  padding: var(--space-1h) var(--space-3);
+  border-top: 1px solid var(--border-default);
+  background: var(--surface-1);
   min-width: 0;
   display: grid;
   gap: var(--space-2);

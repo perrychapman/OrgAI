@@ -378,7 +378,7 @@
 .run-body[data-side-wide='true'] > .side-panel {
   grid-row: 1;
 }
-.run-body[data-side-wide='true'] > .composer {
+.run-body[data-side-wide='true'] > .live-composer-region {
   grid-column: 2;
   border-left: 1px solid var(--border-default);
 }
