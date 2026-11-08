@@ -2996,11 +2996,22 @@ export interface ImageAttachment {
   ref?: string
 }
 
+/** Returned media is data only: raster bytes or a bounded explanation; never a fetchable URL/path. */
+export type TranscriptMedia =
+  | { kind: 'image'; image: ImageAttachment }
+  | { kind: 'unsupported'; mediaType?: string; name?: string; reason: string }
+
+/** Ordered provider output. `content` remains the text fallback for older transcript readers. */
+export type TranscriptContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'media'; media: TranscriptMedia }
+
 export type TranscriptBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool_use'; id: string; name: string; input: unknown }
-  | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean }
+  | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean; parts?: TranscriptContentPart[] }
+  | { kind: 'media'; media: TranscriptMedia }
   /** `text` may be empty when the message is only images. */
   | { kind: 'user'; text: string; images?: ImageAttachment[] }
   /**
