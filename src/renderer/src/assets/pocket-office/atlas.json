@@ -1,0 +1,2018 @@
+{
+  "version": 1,
+  "tileSize": 16,
+  "palettes": {
+    "neutral": [
+      "#242a2a",
+      "#65706c",
+      "#aab4a4",
+      "#e4ead5"
+    ],
+    "green": [
+      "#203c31",
+      "#496b47",
+      "#91ac70",
+      "#d8e5b5"
+    ]
+  },
+  "sheets": {
+    "tiles": {
+      "files": {
+        "neutral": "tiles-neutral.png",
+        "green": "tiles-green.png"
+      },
+      "frames": {
+        "tile.00": {
+          "x": 0,
+          "y": 0,
+          "w": 16,
+          "h": 16
+        },
+        "tile.01": {
+          "x": 16,
+          "y": 0,
+          "w": 16,
+          "h": 16
+        },
+        "tile.02": {
+          "x": 32,
+          "y": 0,
+          "w": 16,
+          "h": 16
+        },
+        "tile.03": {
+          "x": 48,
+          "y": 0,
+          "w": 16,
+          "h": 16
+        },
+        "tile.04": {
+          "x": 64,
+          "y": 0,
+          "w": 16,
+          "h": 16
+        },
+        "tile.05": {
+          "x": 80,
+          "y": 0,
+          "w": 16,
+          "h": 16
+        },
+        "tile.06": {
+          "x": 96,
+          "y": 0,
+          "w": 16,
+          "h": 16
+        },
+        "tile.07": {
+          "x": 112,
+          "y": 0,
+          "w": 16,
+          "h": 16
+        },
+        "tile.08": {
+          "x": 0,
+          "y": 16,
+          "w": 16,
+          "h": 16
+        },
+        "tile.09": {
+          "x": 16,
+          "y": 16,
+          "w": 16,
+          "h": 16
+        },
+        "tile.10": {
+          "x": 32,
+          "y": 16,
+          "w": 16,
+          "h": 16
+        },
+        "tile.11": {
+          "x": 48,
+          "y": 16,
+          "w": 16,
+          "h": 16
+        },
+        "tile.12": {
+          "x": 64,
+          "y": 16,
+          "w": 16,
+          "h": 16
+        },
+        "tile.13": {
+          "x": 80,
+          "y": 16,
+          "w": 16,
+          "h": 16
+        },
+        "tile.14": {
+          "x": 96,
+          "y": 16,
+          "w": 16,
+          "h": 16
+        },
+        "tile.15": {
+          "x": 112,
+          "y": 16,
+          "w": 16,
+          "h": 16
+        },
+        "tile.16": {
+          "x": 0,
+          "y": 32,
+          "w": 16,
+          "h": 16
+        },
+        "tile.17": {
+          "x": 16,
+          "y": 32,
+          "w": 16,
+          "h": 16
+        },
+        "tile.18": {
+          "x": 32,
+          "y": 32,
+          "w": 16,
+          "h": 16
+        },
+        "tile.19": {
+          "x": 48,
+          "y": 32,
+          "w": 16,
+          "h": 16
+        },
+        "tile.20": {
+          "x": 64,
+          "y": 32,
+          "w": 16,
+          "h": 16
+        },
+        "tile.21": {
+          "x": 80,
+          "y": 32,
+          "w": 16,
+          "h": 16
+        },
+        "tile.22": {
+          "x": 96,
+          "y": 32,
+          "w": 16,
+          "h": 16
+        },
+        "tile.23": {
+          "x": 112,
+          "y": 32,
+          "w": 16,
+          "h": 16
+        },
+        "tile.24": {
+          "x": 0,
+          "y": 48,
+          "w": 16,
+          "h": 16
+        },
+        "tile.25": {
+          "x": 16,
+          "y": 48,
+          "w": 16,
+          "h": 16
+        },
+        "tile.26": {
+          "x": 32,
+          "y": 48,
+          "w": 16,
+          "h": 16
+        },
+        "tile.27": {
+          "x": 48,
+          "y": 48,
+          "w": 16,
+          "h": 16
+        },
+        "tile.28": {
+          "x": 64,
+          "y": 48,
+          "w": 16,
+          "h": 16
+        },
+        "tile.29": {
+          "x": 80,
+          "y": 48,
+          "w": 16,
+          "h": 16
+        },
+        "tile.30": {
+          "x": 96,
+          "y": 48,
+          "w": 16,
+          "h": 16
+        },
+        "tile.31": {
+          "x": 112,
+          "y": 48,
+          "w": 16,
+          "h": 16
+        },
+        "tile.32": {
+          "x": 0,
+          "y": 64,
+          "w": 16,
+          "h": 16
+        },
+        "tile.33": {
+          "x": 16,
+          "y": 64,
+          "w": 16,
+          "h": 16
+        },
+        "tile.34": {
+          "x": 32,
+          "y": 64,
+          "w": 16,
+          "h": 16
+        },
+        "tile.35": {
+          "x": 48,
+          "y": 64,
+          "w": 16,
+          "h": 16
+        },
+        "tile.36": {
+          "x": 64,
+          "y": 64,
+          "w": 16,
+          "h": 16
+        },
+        "tile.37": {
+          "x": 80,
+          "y": 64,
+          "w": 16,
+          "h": 16
+        },
+        "tile.38": {
+          "x": 96,
+          "y": 64,
+          "w": 16,
+          "h": 16
+        },
+        "tile.39": {
+          "x": 112,
+          "y": 64,
+          "w": 16,
+          "h": 16
+        },
+        "tile.40": {
+          "x": 0,
+          "y": 80,
+          "w": 16,
+          "h": 16
+        },
+        "tile.41": {
+          "x": 16,
+          "y": 80,
+          "w": 16,
+          "h": 16
+        },
+        "tile.42": {
+          "x": 32,
+          "y": 80,
+          "w": 16,
+          "h": 16
+        },
+        "tile.43": {
+          "x": 48,
+          "y": 80,
+          "w": 16,
+          "h": 16
+        },
+        "tile.44": {
+          "x": 64,
+          "y": 80,
+          "w": 16,
+          "h": 16
+        },
+        "tile.45": {
+          "x": 80,
+          "y": 80,
+          "w": 16,
+          "h": 16
+        },
+        "tile.46": {
+          "x": 96,
+          "y": 80,
+          "w": 16,
+          "h": 16
+        },
+        "tile.47": {
+          "x": 112,
+          "y": 80,
+          "w": 16,
+          "h": 16
+        }
+      }
+    },
+    "props": {
+      "files": {
+        "neutral": "props-neutral.png",
+        "green": "props-green.png"
+      },
+      "frames": {
+        "prop.desk": {
+          "x": 0,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "prop.desk-wide": {
+          "x": 32,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "prop.crt": {
+          "x": 64,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "prop.crt-side": {
+          "x": 96,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "prop.chair": {
+          "x": 0,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "prop.chair-side": {
+          "x": 32,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "prop.shelf": {
+          "x": 64,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "prop.cabinet": {
+          "x": 96,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "prop.plant": {
+          "x": 0,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "prop.plant-tall": {
+          "x": 32,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "prop.meeting-table": {
+          "x": 64,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "prop.coffee-station": {
+          "x": 96,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "prop.mug": {
+          "x": 0,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "prop.partition": {
+          "x": 32,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        }
+      }
+    },
+    "workers": {
+      "files": {
+        "neutral": "workers-neutral.png",
+        "green": "workers-green.png"
+      },
+      "frames": {
+        "worker.crop.down.idle": {
+          "x": 0,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.down.walk-1": {
+          "x": 16,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.down.walk-2": {
+          "x": 32,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.down.work": {
+          "x": 48,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.down.wait": {
+          "x": 64,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.down.done": {
+          "x": 80,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.down.error": {
+          "x": 96,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.idle": {
+          "x": 0,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.walk-1": {
+          "x": 16,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.walk-2": {
+          "x": 32,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.work": {
+          "x": 48,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.wait": {
+          "x": 64,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.done": {
+          "x": 80,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.error": {
+          "x": 96,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.right.idle": {
+          "x": 0,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.right.walk-1": {
+          "x": 16,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.right.walk-2": {
+          "x": 32,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.right.work": {
+          "x": 48,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.right.wait": {
+          "x": 64,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.right.done": {
+          "x": 80,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.right.error": {
+          "x": 96,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.idle": {
+          "x": 0,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.walk-1": {
+          "x": 16,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.walk-2": {
+          "x": 32,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.work": {
+          "x": 48,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.wait": {
+          "x": 64,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.done": {
+          "x": 80,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.error": {
+          "x": 96,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.down.idle": {
+          "x": 0,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.down.walk-1": {
+          "x": 16,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.down.walk-2": {
+          "x": 32,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.down.work": {
+          "x": 48,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.down.wait": {
+          "x": 64,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.down.done": {
+          "x": 80,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.down.error": {
+          "x": 96,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.idle": {
+          "x": 0,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.walk-1": {
+          "x": 16,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.walk-2": {
+          "x": 32,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.work": {
+          "x": 48,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.wait": {
+          "x": 64,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.done": {
+          "x": 80,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.error": {
+          "x": 96,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.right.idle": {
+          "x": 0,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.right.walk-1": {
+          "x": 16,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.right.walk-2": {
+          "x": 32,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.right.work": {
+          "x": 48,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.right.wait": {
+          "x": 64,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.right.done": {
+          "x": 80,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.right.error": {
+          "x": 96,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.idle": {
+          "x": 0,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.walk-1": {
+          "x": 16,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.walk-2": {
+          "x": 32,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.work": {
+          "x": 48,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.wait": {
+          "x": 64,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.done": {
+          "x": 80,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.error": {
+          "x": 96,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.down.idle": {
+          "x": 0,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.down.walk-1": {
+          "x": 16,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.down.walk-2": {
+          "x": 32,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.down.work": {
+          "x": 48,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.down.wait": {
+          "x": 64,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.down.done": {
+          "x": 80,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.down.error": {
+          "x": 96,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.idle": {
+          "x": 0,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.walk-1": {
+          "x": 16,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.walk-2": {
+          "x": 32,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.work": {
+          "x": 48,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.wait": {
+          "x": 64,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.done": {
+          "x": 80,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.error": {
+          "x": 96,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.right.idle": {
+          "x": 0,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.right.walk-1": {
+          "x": 16,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.right.walk-2": {
+          "x": 32,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.right.work": {
+          "x": 48,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.right.wait": {
+          "x": 64,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.right.done": {
+          "x": 80,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.right.error": {
+          "x": 96,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.idle": {
+          "x": 0,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.walk-1": {
+          "x": 16,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.walk-2": {
+          "x": 32,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.work": {
+          "x": 48,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.wait": {
+          "x": 64,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.done": {
+          "x": 80,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.error": {
+          "x": 96,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.down.idle": {
+          "x": 0,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.down.walk-1": {
+          "x": 16,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.down.walk-2": {
+          "x": 32,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.down.work": {
+          "x": 48,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.down.wait": {
+          "x": 64,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.down.done": {
+          "x": 80,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.down.error": {
+          "x": 96,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.idle": {
+          "x": 0,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.walk-1": {
+          "x": 16,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.walk-2": {
+          "x": 32,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.work": {
+          "x": 48,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.wait": {
+          "x": 64,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.done": {
+          "x": 80,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.error": {
+          "x": 96,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.right.idle": {
+          "x": 0,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.right.walk-1": {
+          "x": 16,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.right.walk-2": {
+          "x": 32,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.right.work": {
+          "x": 48,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.right.wait": {
+          "x": 64,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.right.done": {
+          "x": 80,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.right.error": {
+          "x": 96,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.idle": {
+          "x": 0,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.walk-1": {
+          "x": 16,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.walk-2": {
+          "x": 32,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.work": {
+          "x": 48,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.wait": {
+          "x": 64,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.done": {
+          "x": 80,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.error": {
+          "x": 96,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.down.idle": {
+          "x": 0,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.down.walk-1": {
+          "x": 16,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.down.walk-2": {
+          "x": 32,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.down.work": {
+          "x": 48,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.down.wait": {
+          "x": 64,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.down.done": {
+          "x": 80,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.down.error": {
+          "x": 96,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.idle": {
+          "x": 0,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.walk-1": {
+          "x": 16,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.walk-2": {
+          "x": 32,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.work": {
+          "x": 48,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.wait": {
+          "x": 64,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.done": {
+          "x": 80,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.error": {
+          "x": 96,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.right.idle": {
+          "x": 0,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.right.walk-1": {
+          "x": 16,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.right.walk-2": {
+          "x": 32,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.right.work": {
+          "x": 48,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.right.wait": {
+          "x": 64,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.right.done": {
+          "x": 80,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.right.error": {
+          "x": 96,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.idle": {
+          "x": 0,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.walk-1": {
+          "x": 16,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.walk-2": {
+          "x": 32,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.work": {
+          "x": 48,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.wait": {
+          "x": 64,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.done": {
+          "x": 80,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.error": {
+          "x": 96,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.down.idle": {
+          "x": 0,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.down.walk-1": {
+          "x": 16,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.down.walk-2": {
+          "x": 32,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.down.work": {
+          "x": 48,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.down.wait": {
+          "x": 64,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.down.done": {
+          "x": 80,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.down.error": {
+          "x": 96,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.idle": {
+          "x": 0,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.walk-1": {
+          "x": 16,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.walk-2": {
+          "x": 32,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.work": {
+          "x": 48,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.wait": {
+          "x": 64,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.done": {
+          "x": 80,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.error": {
+          "x": 96,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.right.idle": {
+          "x": 0,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.right.walk-1": {
+          "x": 16,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.right.walk-2": {
+          "x": 32,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.right.work": {
+          "x": 48,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.right.wait": {
+          "x": 64,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.right.done": {
+          "x": 80,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.right.error": {
+          "x": 96,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.idle": {
+          "x": 0,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.walk-1": {
+          "x": 16,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.walk-2": {
+          "x": 32,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.work": {
+          "x": 48,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.wait": {
+          "x": 64,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.done": {
+          "x": 80,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.error": {
+          "x": 96,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        }
+      }
+    }
+  },
+  "workerFeet": [
+    8,
+    23
+  ],
+  "props": {
+    "desk": {
+      "frame": "prop.desk",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "desk-wide": {
+      "frame": "prop.desk-wide",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "crt": {
+      "frame": "prop.crt",
+      "placement": "tabletop",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "crt-side": {
+      "frame": "prop.crt-side",
+      "placement": "tabletop",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "chair": {
+      "frame": "prop.chair",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "chair-side": {
+      "frame": "prop.chair-side",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "shelf": {
+      "frame": "prop.shelf",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "cabinet": {
+      "frame": "prop.cabinet",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "plant": {
+      "frame": "prop.plant",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "plant-tall": {
+      "frame": "prop.plant-tall",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "meeting-table": {
+      "frame": "prop.meeting-table",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "coffee-station": {
+      "frame": "prop.coffee-station",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "mug": {
+      "frame": "prop.mug",
+      "placement": "tabletop",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "partition": {
+      "frame": "prop.partition",
+      "placement": "floor",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    }
+  }
+}
