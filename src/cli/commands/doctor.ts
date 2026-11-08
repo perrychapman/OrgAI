@@ -10,6 +10,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cliShimPath, parseCliShim } from '../../main/host/packagedLayout'
+import { scrubControlEnv } from '../../main/runtime/childEnv'
 import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
 import type { DaemonInfo } from '../../shared/types'
 import { readProductMarker } from '../../main/store/productMarker'
@@ -52,7 +53,7 @@ export const doctorProbes = {
         reject(new Error('git.exe was not found on PATH'))
         return
       }
-      execFile(bin, ['--version'], { timeout: 5000, windowsHide: true, cwd: neutralCwd() }, (err, stdout) => (err ? reject(err) : resolve(String(stdout).trim())))
+      execFile(bin, ['--version'], { timeout: 5000, windowsHide: true, cwd: neutralCwd(), env: scrubControlEnv(process.env) }, (err, stdout) => (err ? reject(err) : resolve(String(stdout).trim())))
     }),
   /** The Electron version when this CLI runs on the app's own binary (ELECTRON_RUN_AS_NODE), else undefined. */
   electronVersion: (): string | undefined => process.versions.electron,

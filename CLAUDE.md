@@ -701,8 +701,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   - Package and channel: npm package `orgai-cli` (bin `orgai`; owner decision D1 2026-11-06, npm refused `orgai`), built by
     `scripts/build-npm-package.mjs` (`--dry-run`, `--shrinkwrap` (default: none); pure parts in `scripts/lib/npmPackage.mjs`) into
     `release/npm/package` + `orgai-<v>.tgz` from `out/cli` plus `out/cli/install.json` (`{ channel: 'npm'|'app'|'archive',
-    version, commit }`, written and removed by `scripts/write-install-info.mjs`; `withInstallInfoCleanup` removes it after
-    electron-builder, also on SIGINT / SIGTERM / SIGHUP, not SIGKILL; absent = 'dev'; a file that is present but invalid
+    version, commit }`, written by `scripts/write-install-info.mjs` for the npm package and tests only; `npm run pack` writes none
+    (cli-standalone-default.md 5.2), `withInstallInfoCleanup` is now used only by its test; absent = 'dev'; a file that is present but invalid
     reads as 'dev' with `source: 'invalid'` and is never treated as a checkout; `src/cli/installInfo.ts`, `--version` and
     doctor print it). Dependencies are pinned exactly; `engines.node` is `>=22.19.0 <23 || >=24.5.0` (from the typings and
     memory of the Node changelog, UNVERIFIED); no lifecycle scripts in our package, and `scripts/npm-install-scripts-allowlist.json`
@@ -740,7 +740,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     (a failed save throws and the record is not changed, integration review). Approved MCP proposals use one slot rule (`mcp/proposalSecrets.ts`
     `proposalTypedSlots`); secrets are stored before any record changes (`storeFirst`, `commitOAuth`) and rolled back with
     `status()` priors (a key unreadable before keeps the new value, warning logged); `ProposalSecretsNotSaved` keeps the card open. Integration review fixes: on the Claude adapter secret MCP env values, secret headers and the OAuth bearer leave the `claude` child's argv
-    (placeholders in `--mcp-config`, real values in `options.env`; `setMcpServers` keeps real values as a control message); host git (`scrubControlEnv` on every git spawn)
+    (placeholders in `--mcp-config`, real values in `options.env`; `setMcpServers` keeps real values as a control message); host git, the desktop clone's git and gh (`gitEnv` / `ghEnv`) and doctor's `git --version` (`scrubControlEnv` on every git spawn)
     no longer inherits `ORGAI_SECRET_*` / `ORGAI_VAULT_*` / `ORGAI_CLI_VAULT_*`; the mock inproc host never uses an OS key store without a key file (e2e
     `cliLib` names a throwaway one); an inproc host has no idle exit.
     `secrets:reset` refuses while a predicate-prepared write, a sign-in or a refresh is in flight (`setResetBusyCheck`).
@@ -789,7 +789,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     session; `codex --version` / app-server children untrack from `host/shutdown.ts` on 'error' and 'close' as well as 'exit'.
     Unit-tested with fake file systems and fake servers only; no real claude or codex binary was resolved through these paths.
   - Doctor (`src/cli/doctor/`): installChecks (channel, every `orgai` on PATH, shadowed newer one), runtimeChecks, secretsChecks (vault
-    state 'absent' is ok on the in-process host, a warning on the app where creation failed; reads `vault.json` metadata only
+    state 'absent' is ok on the CLI's in-process host (doctor never reaches an app host); reads `vault.json` metadata only
     without a host and never decrypts). `shimInstaller` `otherCli` prefers an npm or archive `orgai` anywhere on PATH; the shim path
     counts as this install's own only while an OrgAI shim sits there, so npm's link in `~/.local/bin` is named "The orgai command from
     npm (<v>) is on your PATH at <path>. OrgAI leaves it alone." and Install is refused (`CliShimRow`, `lib/cliShim.ts`; SUPERSEDED, removed).
@@ -886,7 +886,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     pushes (the shell forwards them to windows; `app:focusRun` / `menu:action` / `projects:cloneProgress` stay window-only). `activity.ts`
     `HostActivityTracker`: `ACTIVITY_LEASE_KINDS` leases and polled sources (RunManager `activeResumeTimerCount` /
     `inFlightResumeCount`, MCP / connection OAuth flows, Team assistant and skill evaluation in-flight counts, repo
-    locks), idle exit (`ORGAI_DAEMON_IDLE_MINUTES`, default 30, 0 = never) never armed on the desktop host; one shared
+    locks), idle exit (`ORGAI_DAEMON_IDLE_MINUTES`, default 30, 0 = never) armed only by the desktop's 'Keep working in the background' mode (`goBackground` in index.ts), never by the inproc CLI host; one shared
     drain: 'draining' at once, quiesce (CapabilityService.dispose), forced: RunManager.stopAll quit within 3 s else
     `markQuit`, then up to 10 s for writers, then `ownership.release()`. Unit-tested only (registry, params, args,
     dispatcher, activity, events, bootstrap, ipcAdapter, runManagerActivity, a booted mock host over `invokeRpc`).
@@ -921,7 +921,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     keeps the refusal), or an unconfirmed startup.mkdir owner past
     60 s, is reclaimed; an unreadable daemon.json refuses
     (`daemon_json_unreadable`) unless it names a dead pid; refusals name `<data>/run`; renames retry transient win32
-    EPERM / EBUSY / EACCES (`host/fsRetry.ts`); icacls is fatal only for headless / inproc and for setListening(true)
+    EPERM / EBUSY / EACCES (`host/fsRetry.ts`); icacls is fatal for inproc (and for setListening(true))
     (`secretAcl`; a best-effort desktop acquire gets `secretAclWarning`, which the socket server reads at every hello
     through `secretAclProblem` and refuses while set, never cached; the server runs no icacls of its own); system programs run by absolute path from the temp dir and git through
     `host/systemBinaries.ts` `gitExecutable` (never a cwd); the repo lock also counts a fresh heartbeat as live; win32
