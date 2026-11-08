@@ -32,7 +32,7 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
     }}>
       <h3 className="canvas-style-popover-heading">Canvas style</h3>
       <CanvasPresentationChoices canvas={canvas} onPresentation={(presentation) => {
-        void saveCanvas((c) => ({ ...c, presentation })).then(() => announce?.(`Canvas presentation: ${presentation === 'graph' ? 'Graph' : 'Office'}.`), () => announce?.('Could not save canvas presentation.'))
+        void saveCanvas((c) => ({ ...c, presentation })).then(() => announce?.(`Canvas presentation: ${presentation === 'graph' ? 'Graph' : 'Pocket Office'}.`), () => announce?.('Could not save canvas presentation.'))
       }} onPalette={(scenePalette) => {
         void saveCanvas((c) => ({ ...c, scenePalette })).then(() => announce?.(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`), () => announce?.('Could not save office palette.'))
       }} />

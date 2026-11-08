@@ -96,9 +96,9 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
     >
       <div className="canvas-section">
         <SettingsCard>
-          <CanvasPresentationChoices canvas={canvas} onPresentation={(presentation) => { change({ presentation }); setSaid(`Canvas presentation: ${presentation === 'graph' ? 'Graph' : 'Office'}.`) }} onPalette={(scenePalette) => { change({ scenePalette }); setSaid(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`) }} />
+          <CanvasPresentationChoices canvas={canvas} onPresentation={(presentation) => { change({ presentation }); setSaid(`Canvas presentation: ${presentation === 'graph' ? 'Graph' : 'Pocket Office'}.`) }} onPalette={(scenePalette) => { change({ scenePalette }); setSaid(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`) }} />
         </SettingsCard>
-        <div className="canvas-section-body">
+        <div className="canvas-section-body" data-presentation={canvas.presentation}>
           <div className="canvas-section-preview">
             <CanvasPreview />
           </div>
