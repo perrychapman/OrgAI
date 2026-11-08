@@ -150,6 +150,8 @@ describe('CodexAdapter session', () => {
     session = await adapter.start(ctx)
     const s = servers[0]!
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const usage = (inputTokens: number, outputTokens: number) => s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens, outputTokens, cachedInputTokens: 0 }, last: {}, modelContextWindow: null } })
+    usage(100, 20)
     await expect(session.switchModel!({ model: 'gpt-new' })).rejects.toThrow('idle')
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
     await vi.waitFor(() => expect(session!.settlement!()).toMatchObject({ rootIdle: true, quiescent: true }))
@@ -165,6 +167,12 @@ describe('CodexAdapter session', () => {
     await expect(session.switchModel!({ model: 'gpt-new', connection: { connection: 'other' as never, adapter: 'codex' } })).rejects.toThrow('Switching connections')
     await session.send('Continue with history')
     expect(s.turnStarts('th-1').at(-1).params).toMatchObject({ threadId: 'th-1', model: 'gpt-new' })
+    usage(160, 35)
+    const root = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === ROOT_AGENT_ID).at(-1)
+    expect(root).toMatchObject({ agent: { inputTokens: 160, outputTokens: 35, usage: { models: expect.arrayContaining([
+      expect.objectContaining({ model: 'gpt-test', tokens: expect.objectContaining({ input: 100, output: 20 }) }),
+      expect.objectContaining({ model: 'gpt-new', tokens: expect.objectContaining({ input: 60, output: 15 }) })
+    ]) } } })
     await session.stop()
     await expect(session.switchModel!({ model: 'gpt-next' })).rejects.toThrow('not live')
   })
