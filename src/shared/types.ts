@@ -7878,7 +7878,7 @@ export type AppNavigateOutcome = { ok: true; path: string } | { ok: false; refus
 
 /**
  * AppSettings fields an agent may propose (propose_app_settings), as dotted paths into AppSettings. Never main-owned
- * fields, connections, proxies, auth, terminal access, model prices or the default connection (change those in App
+ * fields, connections, proxies, auth, model prices or the default connection (change those in App
  * settings). Each path's top-level key has `proposable: true` in APP_SETTING_DOCS (atlas.test.ts checks).
  */
 export const APP_SETTINGS_PROPOSABLE_FIELDS = [

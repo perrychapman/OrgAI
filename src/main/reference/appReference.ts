@@ -349,7 +349,7 @@ export interface ReferenceStatusDeps {
   platform: string
   dataDir: string
   mock: boolean
-  /** Terminal access means nothing on an in-process host (its only client is its own process): the status line leaves it out. */
+  /** The kind of host running this reference (the CLI runs in process; the desktop app is its own host). */
   hostKind?: HostKind
   settings(): AppSettings
   connections(): ConnectionInfo[] | Promise<ConnectionInfo[]>

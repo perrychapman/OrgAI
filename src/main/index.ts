@@ -181,8 +181,8 @@ function showDockIcon(): void {
 
 /**
  * No windows, and the app keeps working in the background: the user chose "Keep working in the background" (review
- * H3: never without that answer). The idle exit then quits once nothing keeps the host busy for
- * ORGAI_DAEMON_IDLE_MINUTES.
+ * H3: never without that answer). The idle exit then quits once nothing keeps the app busy
+ * (ORGAI_DAEMON_IDLE_MINUTES, default 30).
  */
 function goBackground(): void {
   windowScopes.clear()

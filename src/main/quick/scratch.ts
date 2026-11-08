@@ -233,9 +233,8 @@ export interface QuickFolderCheck {
 /**
  * Why a folder could not be read, by errno (cli-standalone-default.md 4.4). On macOS EPERM is the privacy protection
  * (TCC) on Documents, Desktop, Downloads, removable volumes and the like: Unix permissions allow it, but the process
- * running OrgAI's host was not granted that folder. EACCES is the folder's own permissions. The host's executable is
- * named because that is the program the user grants access to (Terminal for an orgai that hosts itself, the OrgAI app
- * otherwise).
+ * running OrgAI's host was not granted that folder. EACCES is the folder's own permissions. The executable is named because
+ * that is the program the user grants access to (the OrgAI app, or the program that started orgai).
  */
 export function unreadableFolderMessage(text: string, err: unknown, platform: NodeJS.Platform = process.platform, execPath: string = process.execPath): string {
   const code = typeof err === 'object' && err !== null && typeof (err as { code?: unknown }).code === 'string' ? (err as { code: string }).code : undefined
