@@ -246,7 +246,7 @@ describe('appearance', () => {
   it('keeps valid values and falls back field by field', () => {
     expect(
       normalizeAppearance({ theme: 'light', accent: '#22C58B', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
-    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', minimap: true }, reduceMotion: 'on' })
+    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { presentation: 'graph', scenePalette: 'neutral', pattern: 'grid', tint: false, edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', minimap: true }, reduceMotion: 'on' })
     expect(normalizeAppearance({ theme: 'sepia', accent: 'purple', canvas: { pattern: 'stars', tint: 'yes', edges: 3, layout: 'spiral', nodeStyle: 'blob' }, reduceMotion: 'always' })).toEqual(DEFAULT_APPEARANCE)
     expect(normalizeAppearance({ theme: 'system', accent: '#AbC' })).toMatchObject({ theme: 'system', accent: '#aabbcc' })
     expect(normalizeAppearance('nonsense')).toEqual(DEFAULT_APPEARANCE)
@@ -254,7 +254,27 @@ describe('appearance', () => {
 
   it('loads a canvas saved before layout and nodeStyle existed with their defaults', () => {
     const a = normalizeAppearance({ canvas: { pattern: 'grid', tint: false, edges: 'straight', minimap: true } })
-    expect(a.canvas).toEqual({ pattern: 'grid', tint: false, edges: 'straight', layout: 'top-down', nodeStyle: 'card', minimap: true })
+    expect(a.canvas).toEqual({ presentation: 'graph', scenePalette: 'neutral', pattern: 'grid', tint: false, edges: 'straight', layout: 'top-down', nodeStyle: 'card', minimap: true })
+  })
+
+  it('defaults missing and unknown scene preferences independently', () => {
+    for (const value of [undefined, null, '', 'future-scene', 7, {}, []]) {
+      expect(normalizeAppearance({ canvas: { presentation: value, scenePalette: value } }).canvas)
+        .toMatchObject({ presentation: 'graph', scenePalette: 'neutral' })
+    }
+    expect(normalizeAppearance({ canvas: { presentation: 'pocket-office', scenePalette: 'invalid' } }).canvas)
+      .toMatchObject({ presentation: 'pocket-office', scenePalette: 'neutral' })
+    expect(normalizeAppearance({ canvas: { presentation: 'invalid', scenePalette: 'green' } }).canvas)
+      .toMatchObject({ presentation: 'graph', scenePalette: 'green' })
+  })
+
+  it('round-trips scene selection without losing any graph preference or palette', () => {
+    const graph = normalizeAppearance({ canvas: { pattern: 'circuit', tint: false, edges: 'straight', layout: 'left-right', nodeStyle: 'station', minimap: true, scenePalette: 'green' } })
+    const scene = normalizeAppearance({ ...graph, canvas: { ...graph.canvas, presentation: 'pocket-office' } })
+    expect(scene.canvas).toEqual({ ...graph.canvas, presentation: 'pocket-office' })
+    const saved = normalizeAppearance(JSON.parse(JSON.stringify(scene)))
+    expect(saved).toEqual(scene)
+    expect(normalizeAppearance({ ...saved, canvas: { ...saved.canvas, presentation: 'graph' } })).toEqual(graph)
   })
 
   it('keeps the new themed values and drops junk for pattern, layout and nodeStyle', () => {
