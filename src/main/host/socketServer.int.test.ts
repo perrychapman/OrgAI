@@ -147,10 +147,10 @@ beforeEach(async () => {
   mkdirSync(join(base, 'rt'), { mode: 0o700 })
   clients = []
   hostInstanceId = newHostInstanceId()
-  server = new HostSocketServer({ dataDir, hostKind: 'headless-host', hostInstanceId, appVersion: '9.9.9-int', mock: true, peerCheck: async () => 'ok', log: () => {} })
+  server = new HostSocketServer({ dataDir, hostKind: 'node', hostInstanceId, appVersion: '9.9.9-int', mock: true, peerCheck: async () => 'ok', log: () => {} })
   ownership = await acquireHostOwnership({
     dataDir,
-    hostKind: 'headless-host',
+    hostKind: 'node',
     appVersion: '9.9.9-int',
     hostInstanceId,
     runtimeBase: join(base, 'rt'),
@@ -159,7 +159,7 @@ beforeEach(async () => {
   host = bootOrgAIHost({
     env: { userDataDir: base, logsDir: join(base, 'logs'), appVersion: '9.9.9-int', isPackaged: false },
     dataDir,
-    hostKind: 'headless-host',
+    hostKind: 'node',
     ownership,
     safeStorage,
     openExternal: () => {},
@@ -186,10 +186,10 @@ afterEach(async () => {
 describe.runIf(posix)('socket server on a booted mock host', () => {
   it('handshake, host.status and runs:list', async () => {
     const { c, hello } = await connectClient()
-    expect(hello).toMatchObject({ hostKind: 'headless-host', hostInstanceId, mock: true, dataDir, grantedScopes: ['read', 'operate', 'configure'] })
+    expect(hello).toMatchObject({ hostKind: 'node', hostInstanceId, mock: true, dataDir, grantedScopes: ['read', 'operate', 'configure'] })
     expect(hello.versionSkewWarning).toBeUndefined()
     const status = (await c.call('host.status', {})) as Msg
-    expect(status).toMatchObject({ protocolVersion: 1, hostInstanceId, hostKind: 'headless-host', mock: true, dataDir })
+    expect(status).toMatchObject({ protocolVersion: 1, hostInstanceId, hostKind: 'node', mock: true, dataDir })
     const project = mockProject('repo-list')
     expect(await c.call('runs:list', [project.id])).toEqual([])
   })

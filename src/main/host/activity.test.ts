@@ -598,7 +598,7 @@ describe.skipIf(process.platform === 'win32')('HostActivityTracker drain with re
     const dataDir = join(base, 'data')
     const runtimeBase = join(base, 'rt')
     mkdirSync(runtimeBase, { recursive: true, mode: 0o700 })
-    const ownership = await acquireHostOwnership({ dataDir, hostKind: 'headless-host', appVersion: '0.0.0-test', hostInstanceId: newHostInstanceId(), runtimeBase })
+    const ownership = await acquireHostOwnership({ dataDir, hostKind: 'desktop', appVersion: '0.0.0-test', hostInstanceId: newHostInstanceId(), runtimeBase })
     return { ownership, runDir: join(dataDir, 'run') }
   }
 

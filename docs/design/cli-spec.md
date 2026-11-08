@@ -1,5 +1,11 @@
 # OrgAI CLI & Local Daemon (`orgai`): Design and Architecture Specification
 
+> **Superseded in part (2026-11-08, `docs/design/cli-standalone-default.md`):** the desktop app and the `orgai` CLI share
+> nothing. The app has no socket, no `--headless-host` mode, no handoff and no Terminal access setting; the packaged app
+> does not contain the CLI; `orgai` runs in-process on its own data folder (`orgai-cli`). Read the sections below for the
+> CLI's command surface and the shared host code only; anything about the app serving terminals, a background host,
+> the handoff, `HostKind 'headless-host'` or Terminal access is history.
+
 Status: **Revision 4 (Final Sign-Off)** — Refined after three rounds of architectural, security, and codebase reviews by **GPT Astra (`gpt-6-astra`)** and **Claude Opus (`claude-opus-4-6`)**.
 Related: `.orgai/ARCHITECTURE.md`, `CLAUDE.md`, `docs/design/spec.md`, `docs/design/providers-and-mcp.md`, `docs/design/quick-runs.md`, `docs/design/knowledge.md`.
 

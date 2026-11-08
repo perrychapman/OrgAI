@@ -6338,20 +6338,15 @@ export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', '
 /** The most a socket client may be granted: 'operate' is read + operate, 'full' every scope. */
 export type TerminalAccessLevel = 'operate' | 'full'
 
-/**
- * Who says host.hello. 'cli' and 'tui': the orgai command (the terminal UI counts as interactive). 'desktop' (Wave 7,
- * docs/design/cli-standalone.md 4.4): the OrgAI app asking a Node host to hand over the data folder; such a connection
- * gets the handoff grant only (RpcHelloResult.handoff, HOST_HANDOFF_METHODS), whatever Terminal access is.
- */
-export type HostClientKind = 'tui' | 'cli' | 'desktop'
+/** Who says host.hello: the orgai command ('tui' counts as interactive). The OrgAI app is never a socket client. */
+export type HostClientKind = 'tui' | 'cli'
 
 /**
- * 'desktop': the Electron app with a window. 'headless-host': the Electron app started with --headless-host. 'inproc':
- * pure Node inside the CLI command that started it. 'node' (Wave 7, cli-standalone.md 4.2): a detached pure-Node
- * background host (started by the desktop app; the orgai CLI never starts one). Capabilities per kind:
+ * 'desktop': the Electron app with a window (it owns its data folder but serves no socket). 'inproc': pure Node inside
+ * the CLI command that started it. 'node': a pure-Node host without windows. Capabilities per kind:
  * HOST_KIND_CAPABILITIES.
  */
-export type HostKind = 'desktop' | 'headless-host' | 'inproc' | 'node'
+export type HostKind = 'desktop' | 'inproc' | 'node'
 
 export type HostState = 'starting' | 'ready' | 'draining'
 
@@ -6435,19 +6430,9 @@ export interface RpcHelloResult {
   /** Populated when clientVersion !== appVersion; 'read', 'operate', and 'decide' still work when protocolVersion matches. */
   versionSkewWarning?: string
   /**
-   * Wave 7 (cli-standalone.md 4.4 step 5, D8): true for a `clientKind: 'desktop'` hello, absent otherwise. Such a
-   * connection is granted exactly ['read', 'configure'] (host.status needs 'read', host.stop 'configure'), whatever
-   * Terminal access is (off, 'operate' or 'full'), and the socket server refuses every method other than
-   * HOST_HANDOFF_METHODS (host.status, host.stop, forced included) before gateRequest runs. Bound into hostProof only
-   * when true (protocol.ts hostProof appends it), so a hello without it keeps its existing proof; hostClient.ts
-   * parseHelloResult keeps it and checks the proof with it.
-   */
-  handoff?: true
-  /**
    * Canonical structured full-transcript HMAC (binds all host fields):
    * HMAC-SHA256(daemon.secret,
    *   JSON.stringify(['host:v1', protocolVersion, hostInstanceId, clientNonce, hostNonce, hostKind, appVersion, dataDir, mock, grantedScopes]))
-   * with `true` appended after grantedScopes when `handoff` is true.
    */
   hostProof: string
 }
@@ -6858,8 +6843,7 @@ export interface HostStatusResult {
   startedAt: number
   activity: HostActivitySnapshot
   /**
-   * Wave 7 (cli-standalone.md 4.4 step 4): what a `host.stop({ handoff: true })` would wait for, for the app's waiting
-   * window. Absent from hosts older than Wave 7 (and until WP-F fills it).
+   * The host-wide run counts (the TUI's quit confirm counts them). Absent when the host has no run state to report.
    */
   handoff?: HostHandoffFacts
 }
@@ -6867,20 +6851,12 @@ export interface HostStatusResult {
 /** host.stop input (scope 'configure'). Without force the host refuses while any lease is held. */
 export interface HostStopInput {
   force?: boolean
-  /**
-   * Wave 7 (cli-standalone.md 4.4 step 4): the OrgAI app asks a Node host to hand over the data folder. Without force
-   * the stricter handoff predicate applies: refused while any run is live in any form (working, idle, waiting on a
-   * card, held, paused with a resume pending) or any card is open, besides the leases. Ignored with force.
-   */
-  handoff?: boolean
 }
 
 export interface HostStopResult {
   stopping: boolean
   /** Set when the stop was refused: the non-zero lease counts that blocked it. */
   refusedBecause?: Partial<Record<ActivityLeaseKind, number>>
-  /** Wave 7: set when a handoff stop was refused: the non-zero HostHandoffFacts counts that blocked it. */
-  handoffBlockers?: Partial<Record<HostHandoffBlocker, number>>
 }
 
 /** host.subscribe input (scope 'read'). */
@@ -6915,16 +6891,16 @@ export const DEFAULT_DAEMON_IDLE_MINUTES = 30
 // the key custodians and the SecretStore API live in src/main/store/vaultTypes.ts (main only).
 
 /** Every HostKind, in a stable order (ownership.ts parseDaemonInfo, hostClient.ts parseHelloResult). */
-export const HOST_KINDS: readonly HostKind[] = ['desktop', 'headless-host', 'inproc', 'node']
+export const HOST_KINDS: readonly HostKind[] = ['desktop', 'inproc', 'node']
 
 /** Every HostClientKind (socketServer.ts helloProblem). */
-export const HOST_CLIENT_KINDS: readonly HostClientKind[] = ['cli', 'tui', 'desktop']
+export const HOST_CLIENT_KINDS: readonly HostClientKind[] = ['cli', 'tui']
 
 /**
  * Hosts that run in the background, detached from the command that asked for them (cli-standalone.md 4.1): what
  * an app-side launcher waits for. Never 'inproc', whose daemon.json belongs to the CLI command that started it.
  */
-export const BACKGROUND_HOST_KINDS: readonly HostKind[] = ['headless-host', 'desktop', 'node']
+export const BACKGROUND_HOST_KINDS: readonly HostKind[] = ['desktop', 'node']
 
 /** What a host kind can do (cli-standalone.md 4.2): replaces `hostKind === 'inproc'` checks. */
 export interface HostKindCapabilities {
@@ -6936,7 +6912,6 @@ export interface HostKindCapabilities {
 
 export const HOST_KIND_CAPABILITIES: Readonly<Record<HostKind, HostKindCapabilities>> = {
   desktop: { canOpenWindows: true, inProcess: false },
-  'headless-host': { canOpenWindows: true, inProcess: false },
   inproc: { canOpenWindows: false, inProcess: true },
   node: { canOpenWindows: false, inProcess: false }
 }
@@ -6975,27 +6950,9 @@ export interface InstallInfo {
   problem?: string
 }
 
-// ---- Handoff from a Node host to the app (cli-standalone.md 4.4) ----
+// ---- Host-wide run counts ----
 
-/**
- * The only methods a handoff connection (RpcHelloResult.handoff) may call. socketServer.ts applies this filter before
- * gateRequest (anything else answers scope_denied without reaching the registry); the connection's grantedScopes are
- * exactly HOST_HANDOFF_SCOPES, so both methods pass the gate's scope check whatever Terminal access is.
- */
-export const HOST_HANDOFF_METHODS: readonly HostMethod[] = ['host.status', 'host.stop']
-
-/** The grantedScopes of every handoff connection: host.status needs 'read', host.stop 'configure'. */
-export const HOST_HANDOFF_SCOPES: readonly HostScope[] = ['read', 'configure']
-
-/** The peer-check budget of a `clientKind: 'desktop'` hello (the others keep the shorter default). */
-export const DESKTOP_HELLO_PEER_CHECK_MS = 2_000
-
-/** What a non-forced `host.stop({ handoff: true })` waits for, besides the activity leases. */
-export type HostHandoffBlocker = 'workingRuns' | 'waitingRuns' | 'heldRuns' | 'pausedRuns' | 'openCards'
-
-export const HOST_HANDOFF_BLOCKERS: readonly HostHandoffBlocker[] = ['workingRuns', 'waitingRuns', 'heldRuns', 'pausedRuns', 'openCards']
-
-/** host.status `handoff`: every count the app's waiting window shows. */
+/** host.status `handoff`: the host-wide run counts. */
 export interface HostHandoffFacts {
   /** Runs starting, running or stopping. */
   workingRuns: number
@@ -7007,7 +6964,7 @@ export interface HostHandoffFacts {
   pausedRuns: number
   /** Open decision cards across every run. */
   openCards: number
-  /** Authenticated terminal sessions (cli and tui sockets), handoff connections excluded. */
+  /** Authenticated terminal sessions (cli and tui sockets). */
   terminalSessions: number
 }
 

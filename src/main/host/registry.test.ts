@@ -47,8 +47,8 @@ const SPEC_TABLE = {
 
 const specSet = (row: keyof typeof SPEC_TABLE): string[] => SPEC_TABLE[row].split(',').map((s) => s.trim()).sort()
 
-const ALL_SCOPES: GateContext = { grantedScopes: HOST_SCOPES, hostKind: 'headless-host' }
-const only = (scopes: HostScope[], hostKind: HostKind = 'headless-host'): GateContext => ({ grantedScopes: scopes, hostKind })
+const ALL_SCOPES: GateContext = { grantedScopes: HOST_SCOPES, hostKind: 'desktop' }
+const only = (scopes: HostScope[], hostKind: HostKind = 'desktop'): GateContext => ({ grantedScopes: scopes, hostKind })
 
 function failure(fn: () => unknown): HostRpcFailure {
   try {
@@ -311,7 +311,7 @@ describe('gateRequest', () => {
     expect(failure(() => gateRequest('window:openRun', [target], only(['operate'], 'inproc'))).code).toBe('desktop_unavailable')
     expect(failure(() => gateRequest('window:openRun', [target], only(['operate'], 'inproc'))).message).toContain('runs inside the CLI')
     expect(failure(() => gateRequest('window:openRun', [target], only(['operate'], 'node'))).code).toBe('desktop_unavailable')
-    const ok = gateRequest('window:openRun', [target], only(['operate'], 'headless-host'))
+    const ok = gateRequest('window:openRun', [target], only(['operate'], 'desktop'))
     expect(ok.args).toEqual([target])
     expect(ok.mutation).toBe(true)
     expect(gateRequest('window:openRun', [target], only(['operate'], 'desktop')).channel).toBe('window:openRun')

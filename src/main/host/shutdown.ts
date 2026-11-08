@@ -1,7 +1,7 @@
 /**
  * The shutdown coordinator (Wave 7, docs/design/cli-standalone.md 4.3 and round 6 items 5 and 9): one sequence for
- * every exit path (host.stop over the socket, the app's handoff stop, desktop Quit and the last window closing on
- * Windows / Linux, the headless and Node hosts' idle exit and signals, the inproc host's cleanup), ownership released
+ * every exit path (host.stop over the socket, desktop Quit and the last window closing on
+ * Windows / Linux, the Node host's idle exit and signals, the inproc host's cleanup), ownership released
  * only once the owner's writes are done, and a process-wide registry of the child processes a host must kill when it
  * gives up at the hard limit (git under the repo lock, custodian helpers, agent CLIs).
  *
@@ -25,26 +25,18 @@ import { execFile } from 'node:child_process'
 import type {
   ActivityLeaseKind,
   HostActivitySnapshot,
-  HostHandoffBlocker,
   HostHandoffFacts,
   HostState,
   HostStopInput,
   HostStopResult
 } from '../../shared/types'
-import { ACTIVITY_LEASE_KINDS, HOST_HANDOFF_BLOCKERS } from '../../shared/types'
+import { ACTIVITY_LEASE_KINDS } from '../../shared/types'
 import { neutralCwd, psExecutable, windowsPowerShellPath, system32Path } from './systemBinaries'
 
 /** After this long a shutdown kills the tracked children and exits; the exit hooks then release ownership. */
 export const SHUTDOWN_HARD_LIMIT_MS = 60_000
 /** HostSocketServer.closeGracefully: how long queued frames (the host.stop reply) may take to flush. */
 export const SOCKET_CLOSE_GRACE_MS = 2_000
-/** The app's handoff (4.4): no waiting window unless the Node host takes longer than this to exit. */
-export const HANDOFF_WINDOW_DELAY_MS = 1_000
-/** The app's handoff: "Open when they finish" retries the stop this often. */
-export const HANDOFF_RETRY_MS = 5_000
-/** The app's handoff: no answer within this long (or an owner older than Wave 7) shows the busy-folder message. */
-export const HANDOFF_ANSWER_TIMEOUT_MS = 5_000
-
 /** Hard limit: SIGTERM, then this long before SIGKILL (round 6 item 5). */
 export const KILL_TERM_GRACE_MS = 5_000
 /** Hard limit: after SIGKILL (or with an unreadable process table), wait at most this long for the tree to be gone. */
@@ -62,7 +54,6 @@ export type ShutdownReason =
   | 'idle-exit'
   | 'signal'
   | 'inproc-cleanup'
-  | 'handoff'
 
 /** Where a shutdown is. 'released' is final: ownership is gone and the process may exit. */
 export type ShutdownPhase = 'running' | 'draining' | 'settling' | 'closing' | 'released'
@@ -600,7 +591,7 @@ export interface ShutdownCoordinatorOptions {
   release(): void
   /** HostSocketServer.closeGracefully; absent = no socket server (or it closes elsewhere). */
   closeSocket?: (graceMs: number) => Promise<void>
-  /** Run state for a handoff stop and host.status (RunManager.handoffFacts plus the socket's terminal sessions). */
+  /** Run state for host.status (RunManager.handoffFacts plus the socket's terminal sessions). */
   handoffFacts?: () => HostHandoffFacts
   /**
    * Called once ownership is released (normal path or hard limit): the process may exit now (desktop: app.quit;
@@ -610,7 +601,7 @@ export interface ShutdownCoordinatorOptions {
   /**
    * At the hard limit, after the descendants are gone and the socket closed: end the process now (process.exit), so the
    * exit hooks release ownership once no JavaScript of this host can run any more (4.3: "kills ... and exits; the exit
-   * hooks release"). Every real host passes it (desktop and headless: process.exit; inproc and Node: startInprocHost's,
+   * hooks release"). Every real host passes it (desktop: process.exit; inproc and Node: startInprocHost's,
    * which tells the terminal and exits with EXIT.failure), because a hung in-process writer would otherwise still write
    * after the release. Absent (tests) = release here, then onReleased. If it returns, the coordinator releases and
    * calls onReleased as without it.
@@ -633,20 +624,6 @@ export class ShutdownRefusedError extends Error {
     super('The host is busy; it was not stopped.')
     this.name = 'ShutdownRefusedError'
   }
-}
-
-/** The non-zero handoff blocker counts, or undefined when nothing blocks a handoff. */
-export function handoffBlockersOf(facts: HostHandoffFacts): Partial<Record<HostHandoffBlocker, number>> | undefined {
-  const out: Partial<Record<HostHandoffBlocker, number>> = {}
-  let any = false
-  for (const k of HOST_HANDOFF_BLOCKERS) {
-    const n = facts[k]
-    if (typeof n === 'number' && n > 0) {
-      out[k] = n
-      any = true
-    }
-  }
-  return any ? out : undefined
 }
 
 /** The non-zero lease counts of a snapshot, or undefined when the host is idle. */
@@ -728,26 +705,11 @@ export class ShutdownCoordinator implements ShutdownCoordinatorApi {
     }
   }
 
-  /**
-   * HostControl.stop (host.stop). `handoff` without force applies the stricter handoff predicate first (any live,
-   * held or resumable run, or an open card, refuses with handoffBlockers); the activity's lease check follows in the
-   * same synchronous step, so nothing can start in between. The predicate fails closed: when the run facts cannot be
-   * read the handoff is refused with an empty handoffBlockers (a drain would end runs the user never saw listed; the
-   * app then offers "Stop them and open"). Resolves once the drain settled (or with the refusal).
-   */
+  /** HostControl.stop (host.stop). Resolves once the drain settled (or with the refusal). */
   stop(input: HostStopInput = {}): Promise<HostStopResult> {
     const activity = this.need()
     const force = input.force === true
-    if (this.current === 'running' && !force && input.handoff === true) {
-      const read = this.readHandoffFacts()
-      const blockers = read.failed ? {} : read.facts ? handoffBlockersOf(read.facts) : undefined
-      if (blockers) {
-        // Refused without touching the drain; the busy leases are reported too, as a plain stop would.
-        const busy = busyLeases(activity.snapshot())
-        return Promise.resolve({ stopping: false, handoffBlockers: blockers, ...(busy ? { refusedBecause: busy } : {}) })
-      }
-    }
-    if (this.current === 'running') this.pendingReason = input.handoff === true && !force ? 'handoff' : 'host.stop'
+    if (this.current === 'running') this.pendingReason = 'host.stop'
     // A forced request that joins a drain under way upgrades it (the tracker runs forceStop once).
     if (force && this.current !== 'released') this.forced = true
     const result = activity.requestDrain({ force })

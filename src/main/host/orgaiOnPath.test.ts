@@ -157,9 +157,8 @@ describe('findOrgaiOnPath on a real folder tree', () => {
     ])
   })
 
-  it('the launcher mark matches doctor and both packaged launchers', () => {
+  it('the launcher mark matches doctor (the packaged app no longer ships a launcher; old ones are still recognised)', () => {
     expect(PACKAGED_LAUNCHER_MARK).toBe(DOCTOR_LAUNCHER_MARK)
-    for (const f of ['orgai', 'orgai.cmd']) expect(readFileSync(join(__dirname, '..', '..', '..', 'build', 'bin', f), 'utf8')).toContain(PACKAGED_LAUNCHER_MARK)
   })
 
   it('finds nothing for an empty PATH', () => {

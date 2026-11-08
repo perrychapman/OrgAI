@@ -1,5 +1,11 @@
 # Standalone `orgai` (cli-spec Wave 7): design spec
 
+> **Superseded in part (2026-11-08, `docs/design/cli-standalone-default.md`):** the desktop app and the `orgai` CLI share
+> nothing. The app has no socket, no `--headless-host` mode, no handoff and no Terminal access setting; the packaged app
+> does not contain the CLI; `orgai` runs in-process on its own data folder (`orgai-cli`). Read the sections below for the
+> CLI's command surface and the shared host code only; anything about the app serving terminals, a background host,
+> the handoff, `HostKind 'headless-host'` or Terminal access is history.
+
 Status: implemented on wave7/standalone-cli (not merged), 2026-11-06. Written as draft 7, 2026-11-05, revised after
 review rounds 1-5; round 6 was folded in as binding implementation rules (13) (GPT Astra, Gemini Argon; resolutions in
 section 13). Builds on `docs/design/cli-spec.md` (Waves 0-6, landed on dev; Wave 7 entry in its "Implementation

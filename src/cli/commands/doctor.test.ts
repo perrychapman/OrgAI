@@ -190,8 +190,8 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
 
   it("shim: a symlink to this install's launcher is ok, to another one warns (review L)", () => {
     packaged()
-    const launcherText = readFileSync(join(process.cwd(), 'build', 'bin', 'orgai'), 'utf8')
-    expect(launcherText).toContain(PACKAGED_LAUNCHER_MARK)
+    // An old packaged launcher (the app no longer ships one) carries the mark on a line of its own.
+    const launcherText = `#!/bin/sh\n# ${PACKAGED_LAUNCHER_MARK} (cli-spec 7, Wave 6).\n`
     files.set(SHIM(), launcherText)
     doctorProbes.realpath = (p) => (p === SHIM() ? LAUNCHER : p)
     expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} (a link) runs this OrgAI (${LAUNCHER})` })

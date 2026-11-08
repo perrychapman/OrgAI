@@ -306,25 +306,23 @@ describe('bootOrgAIHost', () => {
     expect(h.activity.snapshot().counts.inFlightRpcMutations).toBe(0)
   })
 
-  it('host.status carries the handoff facts; a handoff stop is refused while a run is live in any form (4.4)', async () => {
+  it('host.status carries the host-wide run counts; a plain stop goes through once nothing is live', async () => {
     const h = boot({ terminalSessions: () => 2 })
     expect(h.hostControl.status().handoff).toEqual({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 })
     const folder = join(root, 'repo-handoff')
     mkdirSync(folder)
-    const project = h.services.projects.create({ name: 'Handoff', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const project = h.services.projects.create({ name: 'Counts', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
     const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
     await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'keep me live' }], ctx)
-    const res = (await h.dispatcher.invokeRpc('host.stop', [{ handoff: true }], ctx)) as { stopping: boolean; handoffBlockers?: Record<string, number> }
+    const res = (await h.dispatcher.invokeRpc('host.stop', [{}], ctx)) as { stopping: boolean }
     expect(res.stopping).toBe(false)
-    expect(Object.values(res.handoffBlockers ?? {}).reduce((a, b) => a + b, 0)).toBeGreaterThan(0)
     expect(h.activity.state()).toBe('ready')
     await h.runs.stopAll({ reason: 'quit' })
-    // The ended work run armed a Team review (a backgroundTasks lease); without it and with nothing live, the handoff
-    // stop goes through.
+    // The ended work run armed a Team review (a backgroundTasks lease); without it and with nothing live, the stop goes through.
     h.services.capabilities.dispose()
     await vi.waitFor(() => expect(h.activity.isIdle()).toBe(true))
     expect(h.hostControl.status().handoff).toMatchObject({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0 })
-    await expect(h.dispatcher.invokeRpc('host.stop', [{ handoff: true }], ctx)).resolves.toEqual({ stopping: true })
+    await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     await h.shutdown.released()
   })
 
@@ -357,7 +355,7 @@ describe('bootOrgAIHost', () => {
 
   it('a non-forced stop (idle exit, `orgai daemon stop`) ends a run that only waits on the user, written as cut by the app before the release', async () => {
     const own = fakeOwnership()
-    const h = boot({ ownership: own, hostKind: 'headless-host' })
+    const h = boot({ ownership: own, hostKind: 'node' })
     const atRelease: (RunSummary | null)[] = []
     let runId = ''
     own.release.mockImplementation(() => {
@@ -430,7 +428,7 @@ describe('bootOrgAIHost', () => {
 
   it('arms idle exit for a non-desktop host', () => {
     const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
-    boot({ hostKind: 'headless-host' })
+    boot({ hostKind: 'node' })
     expect(armIdle).toHaveBeenCalledTimes(1)
   })
 

@@ -429,10 +429,9 @@ describe('host-specific handlers', () => {
     await d.invokeRpc(HOST_METHODS.hostStop, [{ force: true, evil: 1 }], RPC)
     await d.invokeRpc(HOST_METHODS.hostStop, [{ force: 'yes' }], RPC)
     await d.invokeRpc(HOST_METHODS.hostStop, [], RPC)
-    // Wave 7: handoff passes through only as literal true.
+    // A handoff flag is not part of host.stop any more: it is dropped.
     await d.invokeRpc(HOST_METHODS.hostStop, [{ handoff: true }], RPC)
-    await d.invokeRpc(HOST_METHODS.hostStop, [{ handoff: 'yes', force: true }], RPC)
-    expect(host.stop.mock.calls).toEqual([[{ force: true }], [{ force: false }], [{ force: false }], [{ force: false, handoff: true }], [{ force: true }]])
+    expect(host.stop.mock.calls).toEqual([[{ force: true }], [{ force: false }], [{ force: false }], [{ force: false }]])
   })
 
   it('secrets:* (Wave 7): every channel goes to the store with its input rebuilt; bad input is bad_request; no store refuses all', async () => {

@@ -170,7 +170,7 @@ export interface SecretStoreOptions {
    * get / has / keys and are never persisted. The map is copied at construction.
    */
   overlay?: ReadonlyMap<string, string>
-  /** Decides "can write back" (an app host: desktop or headless-host, with safeStorage) and lazy creation. Default 'desktop'. */
+  /** Decides "can write back" (an app host: desktop, with safeStorage) and lazy creation. Default 'desktop'. */
   hostKind?: HostKind
   /** `<userDataDir>`: a key file anywhere inside it is refused (5.3.1). */
   userDataDir?: string
@@ -257,7 +257,7 @@ export function platformVaultScheme(platform: NodeJS.Platform): VaultCustodySche
 
 /** Hosts that run in the OrgAI app (Electron with safeStorage): the "can write back" column of 5.5. */
 export function isAppHostKind(kind: HostKind): boolean {
-  return kind === 'desktop' || kind === 'headless-host'
+  return kind === 'desktop'
 }
 
 /** Thrown by a commit. 'clean': nothing changed on disk. 'indeterminate': the outcome is not known (5.5). */

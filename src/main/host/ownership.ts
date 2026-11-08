@@ -184,7 +184,7 @@ export interface OwnershipOptions {
   hostInstanceId?: string
   /**
    * The caller holds Electron's single-instance lock (`app.requestSingleInstanceLock()`, keyed by userData, and dataDir
-   * is `<userData>/data`): no other Electron host (desktop / headless-host) runs on this data folder. An Electron
+   * is `<userData>/data`): no other Electron host (desktop) runs on this data folder. An Electron
    * incumbent whose pid is 'unconfirmed', whose daemon.json says `listening: false` and whose endpoint does not
    * answer is then known to be stale and is reclaimed (review M9 follow-up: a crashed desktop host with Terminal access
    * off whose pid Windows reused for an elevated process). Only the Electron hosts pass it; `--host inproc` takes no
@@ -209,7 +209,7 @@ export interface OwnershipOptions {
   /**
    * win32: what an icacls failure on daemon.secret does when the listener is bound at once (listen not false).
    * 'required' throws HostOwnershipError('secret_acl_failed'); 'best-effort' warns, goes on and sets
-   * HostOwnership.secretAclWarning. Default: 'best-effort' for the desktop host, 'required' for headless and inproc
+   * HostOwnership.secretAclWarning. Default: 'best-effort' for the desktop host, 'required' for inproc
    * hosts, which exist to serve the orgai command. setListening(true) is always 'required' (a failure keeps the
    * listener off; the Electron hosts acquire with listen: false, so a desktop launch never fails on it, review M8).
    */
@@ -581,7 +581,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       // slow or unreadable start time must never let a second host write the same data folder).
       // Unless this launch holds Electron's single-instance lock and the incumbent is an Electron host: the lock
       // proves no Electron host runs on this data folder, so the record is stale (review M9 follow-up).
-      const lockProvesGone = opts.singleInstanceLockHeld === true && (incumbent.hostKind === 'desktop' || incumbent.hostKind === 'headless-host')
+      const lockProvesGone = opts.singleInstanceLockHeld === true && incumbent.hostKind === 'desktop'
       const unboundButMaybeLive = live === 'unconfirmed' && incumbent.listening === false && !lockProvesGone
       if (live === 'same' || reachable || unboundButMaybeLive) {
         removeStartupDir()

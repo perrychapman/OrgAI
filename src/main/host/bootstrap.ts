@@ -1,8 +1,7 @@
 /**
  * bootOrgAIHost (cli-spec 3.1, 3.2(2) step 4, 3.2(4), Wave 1): Electron-free host construction. Every store, service,
  * adapter and background probe the app needs is built here, in the order index.ts's whenReady built them before, so the
- * same boot runs inside Electron (index.ts, the desktop shell) and, from Wave 2 on, in plain Node (`--host inproc`,
- * `--headless-host`).
+ * same boot runs inside Electron (index.ts, the desktop shell) and, from Wave 2 on, in plain Node (`--host inproc`).
  *
  * The caller acquires <dataDir>/run ownership BEFORE calling (RunStore rewrites live runs at construction). Every
  * main -> client push goes through one HostEventBus; the desktop shell forwards it to windows. Synchronous, like the
@@ -162,7 +161,7 @@ export interface BootOrgAIHostOptions {
   /**
    * The shutdown's hard limit (4.3): once the host's descendants are gone, end the process (its exit hook releases
    * ownership), so no writer of this host can run after the data folder is given up. Every real entry point passes one
-   * (desktop and headless: process.exit; inproc and Node hosts: startInprocHost's, which tells the terminal and exits);
+   * (desktop: process.exit; inproc and Node hosts: startInprocHost's, which tells the terminal and exits);
    * absent (tests) = release, then onDrained.
    */
   exitAtHardLimit?: () => void

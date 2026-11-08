@@ -101,22 +101,10 @@ jobs:
       # Unpacked app only, no installers: catches electron-builder config and asarUnpack breakage.
       # (`npm run pack`, not `npm pack`, which is npm's own tarball command.)
       - run: npm run pack
-      # The npm tarball from the same out/cli, for pack:verify's (g): the npm orgai must find and drive the packed app.
-      - name: build-npm-package
-        shell: bash
-        run: |
-          args=()
-          if [ "$NPM_SHRINKWRAP" = "full" ]; then args=(--shrinkwrap); fi
-          node scripts/build-npm-package.mjs "${args[@]}"
-      # The packaged orgai command (cli-spec 7): --version, doctor, and a mock exec (ORGAI_MOCK=1, no tokens) in-process
-      # and through the spawned background app, on a temp data folder. UNVERIFIED until CI runs it: the Windows
-      # launcher (cmd.exe running orgai.cmd) and the default-host step (the packaged app spawned with --headless-host).
-      # continue-on-error until it has passed once on both windows-latest and macos-15 (review H4): it has never run in
-      # CI, its Windows path has never run anywhere, and a first-run failure should not hide the rest of the pack job's
-      # result. A failure still shows on the step (and in the job's annotations). Drop this line once both legs are green.
+      # The packaged app must not contain the orgai CLI (cli-standalone-default.md 5.2): no out/cli in app.asar or beside it,
+      # no bin/orgai launcher. Token-free; it never starts the app.
       - name: pack:verify
-        run: npm run pack:verify -- --npm
-        continue-on-error: true
+        run: npm run pack:verify
 
   # The orgai npm package (cli-standalone.md 3.4): build it from this commit's CLI bundle and run verify-npm (steps 1-6,
   # all token-free on the mock; step 7 skips without a codex on PATH) on three OSes. The installs download the pinned

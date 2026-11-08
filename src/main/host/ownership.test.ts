@@ -140,7 +140,7 @@ function leftovers(runDir: string): string[] {
 describe.skipIf(!posix)('acquireHostOwnership', () => {
   it('creates run/ (0700), the secret (0600), the socket (0600) and daemon.json "starting"; markReady sets "ready"', async () => {
     const env = tempEnv()
-    const own = await acquire(env, { hostKind: 'headless-host', appVersion: '1.2.3' })
+    const own = await acquire(env, { hostKind: 'desktop', appVersion: '1.2.3' })
     expect(mode(env.runDir)).toBe(0o700)
     const secretPath = join(env.runDir, 'daemon.secret')
     expect(own.secretPath).toBe(secretPath)
@@ -151,7 +151,7 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(mode(own.endpoint)).toBe(0o600)
     expect(own.runtimeDir).toBeUndefined()
     const info = readDaemonInfo(env.dataDir)
-    expect(info).toMatchObject({ hostInstanceId: own.info.hostInstanceId, pid: process.pid, endpoint: own.endpoint, state: 'starting', hostKind: 'headless-host', appVersion: '1.2.3' })
+    expect(info).toMatchObject({ hostInstanceId: own.info.hostInstanceId, pid: process.pid, endpoint: own.endpoint, state: 'starting', hostKind: 'desktop', appVersion: '1.2.3' })
     expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
     expect(await canConnect(own.endpoint)).toBe(true)
     expect(own.markReady()).toBe(true)
@@ -718,7 +718,7 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       }
     )
 
-    it.each(['desktop', 'headless-host'] as const)(
+    it.each(['desktop'] as const)(
       'an Electron launch holding the single-instance lock takes over from an unconfirmed %s pid whose daemon.json says listening: false (review M9 follow-up)',
       async (hostKind) => {
         // A crashed desktop host with Terminal access off; Windows reused its pid for an elevated process.
