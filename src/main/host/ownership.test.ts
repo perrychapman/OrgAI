@@ -371,6 +371,44 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       own.release()
     })
 
+    it('two starts at once: exactly one wins, the other is refused without waiting', async () => {
+      const env = tempEnv()
+      const results = await Promise.all([0, 1, 2].map(() => acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).then((o) => o, (e: unknown) => e)))
+      const won = results.filter((r) => !(r instanceof Error))
+      expect(won).toHaveLength(1)
+      cleanups.push(() => (won[0] as HostOwnership).release())
+      for (const r of results) if (r instanceof Error) expect([HostAlreadyRunningError, HostStartingOrBusyError].some((c) => r instanceof c)).toBe(true)
+    })
+
+    it('a record whose pid is live but whose start time differs (pid reuse) is stale and reclaimed', async () => {
+      const env = tempEnv()
+      const child = spawnSleeper()
+      daemonJson(env, { hostInstanceId: 'dddddddddddd', pid: child.pid!, endpoint: join(env.runDir, 'gone.sock'), processStartTime: 'not-the-real-start-time' })
+      const own = await acquire(env, { wait: 'none', sleep: never })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
+    it.each(OWNERSHIP_BOUNDARIES)('a crash at %s: a young leftover mutex is refused at once, an old one and a dead owner are reclaimed', async (boundary) => {
+      const env = tempEnv()
+      let fault: unknown
+      try {
+        const crashed = await acquireHostOwnership(opts(env, { wait: 'none', faultAt: boundary }))
+        crashed.markReady()
+      } catch (e) {
+        fault = e
+      }
+      expect(fault).toBeInstanceOf(OwnershipFaultError)
+      await (fault as OwnershipFaultError).crash()
+      const startup = join(env.runDir, 'startup.mkdir')
+      if (existsSync(startup) && !existsSync(join(startup, 'owner.json'))) {
+        const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never, isLiveProcess: () => false })).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(HostStartingOrBusyError)
+        utimesSync(startup, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+      }
+      const own = await acquire(env, { wait: 'none', sleep: never, isLiveProcess: () => false })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
     it('a corrupt record is refused, and a record without ownerCwd still parses', async () => {
       const env = tempEnv()
       const first = await acquire(env, { wait: 'none' })
