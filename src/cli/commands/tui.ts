@@ -125,9 +125,10 @@ export async function prepareResume(ctx: CliContext, conn: TuiHostConnection, re
 
 export const runTuiCommand: CommandFn = async (ctx, args) => {
   const { values, positionals } = parseFlags(args, { ...TUI_FLAGS, run: { type: 'string' } })
-  if (positionals.length) throw usage('Use: orgai tui [--run <runId-or-R#>] [--inline] [--ax-screen-reader]')
+  const USE = 'Use: orgai tui [<run> | --run <runId-or-R#>] [--inline] [--ax-screen-reader]'
+  if (positionals.length > 1 || (positionals.length === 1 && values.run !== undefined)) throw usage(USE)
   requireTty(ctx)
-  const ref = values.run
+  const ref = values.run ?? positionals[0]
   if (ref === undefined) {
     refuseManaged(ctx)
     return launchTui(ctx, flagsOf(values), (conn) => prepareFolder(ctx, conn))

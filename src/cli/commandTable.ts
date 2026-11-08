@@ -134,7 +134,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: 'doctor',
-    summary: 'Check the install, data folder, vault and connections',
+    summary: 'Check the install, data folder, vault and runtimes',
     usage: 'doctor',
     flags: [],
     available: true
@@ -150,7 +150,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'tui',
     summary: 'Start the interactive terminal UI (optionally on a run)',
-    usage: 'tui [--run <runId-or-R#>] [--inline] [--ax-screen-reader]',
+    usage: 'tui [<run> | --run <run>] [--inline] [--ax-screen-reader]',
     flags: [{ name: 'run', takesValue: true, summary: 'Run to open' }, ...TUI_FLAGS],
     available: true
   },

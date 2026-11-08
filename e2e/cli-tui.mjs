@@ -374,8 +374,8 @@ try {
       check(Date.now() - began < 15_000, 'the refusal came at once', `${Date.now() - began} ms`)
       const beside = await cli(['runs', 'list'], { cwd: repo })
       check(beside.code === 0 && beside.err.includes('this is a saved snapshot'), 'runs list beside the TUI is a saved snapshot', show(beside))
-      const noCards = await cli(['status', '--output-format', 'json'], { cwd: repo })
-      check(noCards.code === 0 && json(noCards.out)?.liveInboxAvailable === false, 'status beside the TUI has no live cards (they exist only inside the owner)', show(noCards))
+      const statusBeside = await cli(['status', '--output-format', 'json'], { cwd: repo })
+      check(statusBeside.code === 0, 'status beside the TUI answers from the saved files', show(statusBeside))
 
       // f. Paste safety: a bracketed paste into the composer resolves nothing.
       t.paste('y\na\n')
@@ -392,15 +392,20 @@ try {
       await t.waitFor('card one ran', 20_000)
       check(true, 'g: `y` allows card 1 (its tool result "card one ran" is shown)')
 
-      // Card 2 (a `y` inside the 750 ms card-swap guard is ignored; after it `n` + Enter denies).
+      // Card 2 is drawn at once. A `y` inside the 750 ms card-swap guard is ignored: the card stays and its tool does not run.
+      await t.waitFor('card-two', 20_000)
+      t.write('y')
+      await sleep(250)
+      check(CARD_ON_SCREEN.test(t.screen()) && !t.screen().includes('card two ran'), 'g: a `y` inside the card-swap guard is ignored (card 2 is still pending)', esc(t.screen()))
+      // After the guard, `n` + Enter denies it and the card leaves the tray.
       await sleep(900)
       t.key('f2')
       await sleep(200)
       t.write('n')
       await sleep(300)
       t.key('enter')
-      await t.waitFor((s) => !s.includes('card two ran'), 3_000).catch(() => undefined)
-      await sleep(1500)
+      const gone = await t.waitFor((s) => !CARD_ON_SCREEN.test(s), 15_000).then(() => true, () => false)
+      check(gone, 'g: card 2 left the tray after `n` + Enter', esc(t.screen()))
       check(!t.screen().includes('card two ran'), 'g: `n` + Enter denies card 2 (its tool never ran)', esc(t.screen()))
 
       const e = await quit(t, { confirm: true })
@@ -410,6 +415,15 @@ try {
     }
   }
   check(!fs.existsSync(DAEMON_JSON), 'the folder is free after the TUI quits')
+  // The saved run holds the answers: card 1 ran, card 2 was denied by the user and never ran (read hostless after quit).
+  {
+    const listed = await cli(['runs', 'list', '--output-format', 'json'], { cwd: repo })
+    const cardsRun = json(listed.out)?.runs?.find((r) => r?.summary?.prompt === 'E2E cards run')
+    check(!!cardsRun, 'g: the cards run is among the saved runs', show(listed))
+    const saved = await cli(['runs', 'show', cardsRun?.summary?.id ?? 'R1', '--transcript', '--output-format', 'json'], { cwd: repo })
+    check(saved.code === 0 && saved.out.includes('card one ran'), 'g: the saved run shows card 1 ran', show(saved))
+    check(saved.out.includes('Denied by user') && !saved.out.includes('card two ran'), 'g: the saved run shows card 2 "Denied by user" and no "card two ran"', show(saved))
+  }
 
   // ---------- i: the org tree, inspector and keys overlay ----------
   {

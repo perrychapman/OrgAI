@@ -112,6 +112,22 @@ describe('startInprocHost', () => {
     expect(Date.now() - began).toBeLessThan(2000)
   })
 
+  it('an unreadable daemon.json is the owned refusal (exit 6), not the raw ownership error (spec 4.2)', async () => {
+    const first = await start(new Map())
+    const file = join(dataDir, 'run', 'daemon.json')
+    const good = readFileSync(file, 'utf8')
+    const { writeFileSync } = await import('node:fs')
+    // Unparseable, but the live owner still holds the folder: not provably stale.
+    writeFileSync(file, '{ not json')
+    const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(CliError)
+    expect((err as CliError).exitCode).toBe(6)
+    expect((err as CliError).message).toMatch(/^orgai is already running/)
+    expect((err as CliError).message).not.toContain('daemon.json')
+    writeFileSync(file, good)
+    await first.stop(true)
+  })
+
   it('stop(true) drains and releases daemon.json', async () => {
     const h = await start()
     await h.stop(true)

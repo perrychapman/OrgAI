@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { checkCliFolder, folderRefusal, readProductMarker, writeProductMarker } from './productMarker'
+import { checkCliFolder, folderRefusal, markerWriteRefusal, readProductMarker, writeProductMarker } from './productMarker'
 
 const dirs: string[] = []
 const base = (): string => {
@@ -113,5 +113,45 @@ describe('product marker', () => {
     const root = base()
     writeFileSync(join(root, 'file'), 'x')
     expect(writeProductMarker(join(root, 'file', 'sub'), 'orgai-cli')).toBe(false)
+  })
+
+  it('refuses a folder inside the desktop default (its data/ subfolder, or deeper) and writes nothing there', () => {
+    const app = join(base(), 'OrgAI')
+    mkdirSync(join(app, 'data'), { recursive: true })
+    for (const inside of [join(app, 'data'), join(app, 'data', 'x'), join(app, 'newfolder')]) {
+      expect(check(inside, app), inside).toBe(folderRefusal(inside))
+    }
+    expect(() => readFileSync(join(app, 'data', 'product.json'))).toThrow()
+  })
+
+  it('refuses a folder that contains the desktop default, and one under a desktop-marked ancestor', () => {
+    const root = base()
+    const app = join(root, 'Support', 'OrgAI')
+    mkdirSync(app, { recursive: true })
+    expect(check(join(root, 'Support'), app)).toBe(folderRefusal(join(root, 'Support')))
+    const other = join(root, 'Other')
+    mkdirSync(join(other, 'deep'), { recursive: true })
+    marker(other, 'orgai-desktop')
+    expect(check(join(other, 'deep'), join(root, 'elsewhere'))).toBe(folderRefusal(join(other, 'deep')))
+  })
+
+  it('a sibling of the desktop default is fine', () => {
+    const root = base()
+    const app = join(root, 'OrgAI')
+    mkdirSync(app)
+    expect(check(join(root, 'orgai-cli'), app)).toBeUndefined()
+  })
+
+  it('a marker that cannot be written is a refusal naming the folder, not a silent go-ahead', () => {
+    const root = base()
+    writeFileSync(join(root, 'file'), 'x')
+    const dir = join(root, 'file', 'sub')
+    expect(check(dir, join(root, 'OrgAI'))).toBe(markerWriteRefusal(dir))
+  })
+
+  it('the marker is written through a temp file that is gone afterwards', () => {
+    const dir = base()
+    expect(writeProductMarker(dir, 'orgai-cli')).toBe(true)
+    expect(readdirSync(dir)).toEqual(['product.json'])
   })
 })

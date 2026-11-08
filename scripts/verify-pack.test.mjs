@@ -131,10 +131,10 @@ test('parseArgs', () => {
 
 test('verifyEnv drops run-as-node, secrets and app overrides, and sets the temp data dir and mock mode', () => {
   const env = verifyEnv(
-    { HOME: '/h', PATH: '/bin', ELECTRON_RUN_AS_NODE: '1', ORGAI_SECRET_X: 's', ORGAI_ELECTRON_PATH: '/e', ORGAI_APP_ROOT: '/a', ORGAI_DATA_DIR: '/real' },
+    { HOME: '/h', PATH: '/bin', ELECTRON_RUN_AS_NODE: '1', ORGAI_SECRET_X: 's', ORGAI_ELECTRON_PATH: '/e', ORGAI_APP_ROOT: '/a', ORGAI_DATA_DIR: '/real', ORGAI_CLI_DATA_DIR: '/real-cli' },
     '/tmp/d'
   )
-  assert.deepEqual(env, { HOME: '/h', PATH: '/bin', ORGAI_DATA_DIR: '/tmp/d', ORGAI_MOCK: '1', NO_COLOR: '1', ORGAI_VAULT_NO_OS_KEYSTORE: '1' })
+  assert.deepEqual(env, { HOME: '/h', PATH: '/bin', ORGAI_CLI_DATA_DIR: '/tmp/d', ORGAI_MOCK: '1', NO_COLOR: '1', ORGAI_CLI_VAULT_NO_OS_KEYSTORE: '1' })
 })
 
 test('launchCommand: POSIX runs the script, win32 goes through cmd.exe with fixed quoted arguments', () => {
@@ -359,7 +359,7 @@ test('main: a complete fake release passes every check and cleans its temp dirs'
       assert.equal(c.env.NO_COLOR, '1')
       assert.equal(c.env.ELECTRON_RUN_AS_NODE, undefined)
       assert.equal(c.env.ORGAI_SECRET_TOKEN, undefined)
-      assert.ok(c.env.ORGAI_DATA_DIR.includes('orgai-verify-data-'))
+      assert.ok(c.env.ORGAI_CLI_DATA_DIR.includes('orgai-verify-data-'))
       assert.equal(c.timeoutMs, 90_000)
     }
     const inproc = r.calls.find((c) => hasArg(c, 'inproc'))
@@ -437,7 +437,7 @@ test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_EL
     assert.equal(npmExec.length, 3, 'exec, daemon status and daemon stop')
     assert.equal(npmExec[0].env.ORGAI_ELECTRON_PATH, fake.paths.appBinary)
     assert.ok(hasArg(npmExec[0], 'daemon') && hasArg(npmExec[0], 'exec'))
-    assert.ok(npmExec[0].env.ORGAI_DATA_DIR.includes('orgai-verify-npmcli-'), 'its own data folder')
+    assert.ok(npmExec[0].env.ORGAI_CLI_DATA_DIR.includes('orgai-verify-npmcli-'), 'its own data folder')
     assert.deepEqual(r.leftovers, [], 'temp dirs removed')
 
     const failed = await runMain(fake, ['--skip-host', '--npm-tarball', tgz], { npmInstall: { code: 1, stdout: '', stderr: 'E404' } })

@@ -522,7 +522,7 @@ describe('App quitting', () => {
   it('an inproc host with live runs asks first; n keeps going, y quits', async () => {
     const m = mount({ inproc: true, session: fakeSession({ testLive: 2 }, 'inproc') })
     await m.send(ctrlKey('d'))
-    expect(m.frame()).toContain('Quitting stops 2 live runs in this in-process host')
+    expect(m.frame()).toContain('Quitting stops 2 live runs in this orgai')
     await m.send(key('n'))
     expect(m.exits).toEqual([])
     expect(m.frame()).not.toContain('Quitting stops')
@@ -535,7 +535,7 @@ describe('App quitting', () => {
     const inproc = { status: () => ({ handoff: { workingRuns: 2, waitingRuns: 1, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 } }) }
     const m = mount({ inproc, session: fakeSession({ testLive: 1 }, 'inproc') })
     await m.send(ctrlKey('d'))
-    expect(m.frame()).toContain('Quitting stops 3 live runs in this in-process host, 2 of them from other projects or terminals')
+    expect(m.frame()).toContain('Quitting stops 3 live runs in this orgai, 2 of them from other projects')
     await m.send(key('n'))
     m.r.unmount()
   })
@@ -547,7 +547,7 @@ describe('App quitting', () => {
       await tick()
       await m.send(quit)
       const flat = m.frame().replace(/[│|]/g, ' ').replace(/\s+/g, ' ')
-      expect(flat, label).toContain('Quitting stops 1 live run in this in-process host, 1 of them from other projects or terminals')
+      expect(flat, label).toContain('Quitting stops 1 live run in this orgai, 1 of them from other projects')
       expect(m.exits).toEqual([])
       await m.send(key('y'))
       expect(m.exits.map((e) => e[0])).toEqual([0])

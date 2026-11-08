@@ -129,7 +129,7 @@ describe('doctor: secure storage without a host (metadata only)', () => {
     writeFileSync(join(dir, 'vault.json'), JSON.stringify(vault))
     writeFileSync(join(dir, 'secrets.json'), JSON.stringify({ version: 1, secrets: { x: 'Y2lwaGVy', y: 'Y2lwaGVy' } }))
     const c = byId(offlineSecretsChecks(dir))
-    expect(c.vault).toMatchObject({ status: 'ok', detail: 'Present (key file): 2 secrets, 1 removed secret kept; not opened (no host is running)' })
+    expect(c.vault).toMatchObject({ status: 'ok', detail: 'Present (key file): 2 secrets, 1 removed secret kept; not opened here' })
     expect(c['legacy-secrets'].detail).toBe("secrets.json (an older copy): 2 keys")
     writeFileSync(join(dir, 'vault.json'), '{nope')
     writeFileSync(join(dir, 'secrets.json'), '[]')

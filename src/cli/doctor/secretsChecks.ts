@@ -184,14 +184,14 @@ export function pendingLegacyCount(values: Readonly<Record<string, string>>, vau
 }
 
 /** Checks without a host: metadata, key names and hashes only. */
-export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
+export function offlineSecretsChecks(dataDir: string, ownerRunning = false): DoctorCheck[] {
   const meta = readVaultMetadata(dataDir)
   const checks: DoctorCheck[] = []
   if (meta.state === 'absent') checks.push({ id: 'vault', status: 'ok', detail: 'Not created yet; the first saved secret creates it' })
   else if (meta.state === 'corrupt') checks.push({ id: 'vault', status: 'fail', detail: VAULT_MESSAGES.corrupt })
   else {
     const tomb = meta.tombstones ? `, ${plural(meta.tombstones, 'removed secret')} kept` : ''
-    checks.push({ id: 'vault', status: 'ok', detail: `Present (${schemeText(meta.scheme ?? null)}): ${plural(meta.entries, 'secret')}${tomb}; not opened (no host is running)` })
+    checks.push({ id: 'vault', status: 'ok', detail: `Present (${schemeText(meta.scheme ?? null)}): ${plural(meta.entries, 'secret')}${tomb}; not opened here${ownerRunning ? ' (another orgai is running)' : ''}` })
   }
   const legacy = readLegacyShape(dataDir)
   if (meta.legacyRetired && legacy.state === 'missing') checks.push(legacyCheck('retired', 0))

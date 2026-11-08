@@ -1210,6 +1210,34 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
     expect(ps(`Get-ChildItem ${data}`, ctx)).toBeNull()
   })
 
+  describe('the CLI vault names (ORGAI_CLI_VAULT_*, OrgAI CLI Vault)', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
+    it('denies the renamed variables and the renamed keychain service like the desktop ones', () => {
+      for (const command of [
+        'echo $ORGAI_CLI_VAULT_KEY_FILE',
+        'echo ${ORGAI_CLI_VAULT_KEY_FILE}',
+        'printenv ORGAI_CLI_VAULT_KEY_FILE',
+        'echo $orgai_cli_vault_key_file',
+        'echo $ORGAI_"CLI"_VAULT_KEY_FILE',
+        'echo $ORGAI_CL\\I_VAULT_KEY_FILE',
+        'echo ${!ORGAI_CLI_V@}',
+        'echo ${!ORGAI_CLI_@}',
+        'echo ${!ORGAI_C@}',
+        'env | grep ORGAI_CLI_VAULT',
+        'security find-generic-password -s "OrgAI CLI Vault" -a abc -w',
+        'keyring get "OrgAI CLI Vault" abc',
+        'keyring get "OrgAI\\ CLI\\ Vault" abc',
+        'kwallet-query -r abc "OrgAI CLI Vault"',
+        "python3 -c \"import keyring; print(keyring.get_password('OrgAI CLI Vault', 'abc'))\""
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+    })
+    it('still allows the CLI data folder variable', () => {
+      expect(bash('ORGAI_CLI_DATA_DIR=/tmp/x node cli.js', ctx)).toBeNull()
+    })
+  })
+
   describe('ORGAI_VAULT_* references', () => {
     const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
     it('denies expansions, assignments, exports and environment reads of ORGAI_VAULT_*', () => {

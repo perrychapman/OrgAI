@@ -3,7 +3,7 @@
  * "version": 1 }`, written 0600 by whichever product creates or first opens a folder. Each product refuses a folder
  * marked for the other. Electron-free; relative imports only (the CLI bundle uses it).
  */
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, win32, posix } from 'node:path'
 
 export type ProductId = 'orgai-cli' | 'orgai-desktop'
@@ -34,11 +34,19 @@ export function writeProductMarker(userDataDir: string, product: ProductId): boo
   try {
     mkdirSync(userDataDir, { recursive: true, mode: 0o700 })
     const file = join(userDataDir, PRODUCT_MARKER_FILE)
-    writeFileSync(file, `${JSON.stringify({ product, version: 1 })}\n`, { mode: 0o600 })
+    // Temp file then rename, so a crash never leaves a half-written marker.
+    const tmp = `${file}.${process.pid}.tmp`
     try {
-      chmodSync(file, 0o600)
-    } catch {
-      // Windows ignores modes.
+      writeFileSync(tmp, `${JSON.stringify({ product, version: 1 })}\n`, { mode: 0o600 })
+      try {
+        chmodSync(tmp, 0o600)
+      } catch {
+        // Windows ignores modes.
+      }
+      renameSync(tmp, file)
+    } catch (e) {
+      rmSync(tmp, { force: true })
+      throw e
     }
     return true
   } catch {
@@ -72,6 +80,22 @@ export function sameFolder(folder: string, other: string, platform: NodeJS.Platf
   return a.some((x) => b.includes(x))
 }
 
+/** True when `folder` is inside `parent` or is `parent` itself, by canonical spellings (any pair of spellings). */
+function isInside(folder: string, parent: string, platform: NodeJS.Platform): boolean {
+  const sep = platform === 'win32' ? '\\' : '/'
+  const p = canonicalSpellings(parent, platform)
+  return canonicalSpellings(folder, platform).some((f) => p.some((x) => f === x || f.startsWith(x.endsWith(sep) ? x : x + sep)))
+}
+
+/** True when an ancestor of `folder` carries the desktop marker (the folder sits inside an app folder). */
+function insideDesktopMarkedFolder(folder: string): boolean {
+  for (let dir = dirname(real(folder)); ; dir = dirname(dir)) {
+    const m = readProductMarker(dir)
+    if (m.state === 'marked' && m.product === 'orgai-desktop') return true
+    if (dirname(dir) === dir) return false
+  }
+}
+
 function dataFolderHoldsFiles(dataDir: string): boolean {
   if (!existsSync(dataDir)) return false
   try {
@@ -90,6 +114,9 @@ export interface CliFolderCheck {
   platform?: NodeJS.Platform
 }
 
+/** The refusal when the marker cannot be written (before any other write, so a later start never misreads the folder). */
+export const markerWriteRefusal = (userDataDir: string): string => `orgai cannot write ${PRODUCT_MARKER_FILE} in ${userDataDir}; choose another folder.`
+
 /** The refusal text of 3.1. */
 export const folderRefusal = (userDataDir: string): string => `${userDataDir} belongs to the OrgAI app. orgai keeps its own data; choose another folder.`
 
@@ -101,9 +128,11 @@ export function checkCliFolder(c: CliFolderCheck): string | undefined {
   const platform = c.platform ?? process.platform
   const marker = readProductMarker(c.userDataDir)
   if (marker.state === 'marked' && marker.product === 'orgai-desktop') return folderRefusal(c.userDataDir)
-  if (sameFolder(c.userDataDir, c.desktopDefault, platform)) return folderRefusal(c.userDataDir)
+  // The app's own folder, anything inside it and anything that contains it (G1: never write the app's data).
+  if (isInside(c.userDataDir, c.desktopDefault, platform) || isInside(c.desktopDefault, c.userDataDir, platform)) return folderRefusal(c.userDataDir)
+  if (insideDesktopMarkedFolder(c.userDataDir)) return folderRefusal(c.userDataDir)
   if (marker.state === 'marked') return undefined
   if (dataFolderHoldsFiles(c.dataDir)) return folderRefusal(c.userDataDir)
-  writeProductMarker(c.userDataDir, 'orgai-cli')
+  if (!writeProductMarker(c.userDataDir, 'orgai-cli')) return markerWriteRefusal(c.userDataDir)
   return undefined
 }

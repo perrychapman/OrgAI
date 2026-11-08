@@ -158,8 +158,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   const hostInstanceId = currentHostInstanceId()
   const hostKind = 'inproc' as const
   // In memory only (never daemon.json, daemon.secret or a log): this process's proof that it started the host, so its
-  // own commands get every scope while any other client of the socket stays capped by Terminal access (review H2).
-  // A Node host is detached and has no owner client.
+  // own commands get every scope; any other client of the socket is refused as not_owner (spec 4.1).
   const ownerKey = newNonce()
   const server = new HostSocketServer({
     dataDir,
@@ -191,6 +190,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     server.close()
     if (e instanceof HostAlreadyRunningError) throw new CliError(ownedMessage(ownerWordsOf(e.info)), EXIT.hostBusy)
     if (e instanceof HostStartingOrBusyError) throw new CliError(ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {}), EXIT.hostBusy)
+    // An unreadable record that is not provably stale is "owned" (spec 4.2); other ownership failures keep their message.
+    if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable') throw new CliError(ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {}), EXIT.hostBusy)
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)
     throw e
   }

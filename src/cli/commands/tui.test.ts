@@ -127,6 +127,14 @@ describe('orgai tui', () => {
     expect(tui.calls[1].flags.inline).toBe(true)
   })
 
+  it('tui <run> opens a saved run like --run; both together are refused', async () => {
+    tui.conn = fakeConn({ runs })
+    const f = ttyCtx()
+    expect(await runTuiCommand(f.ctx, ['R1'])).toBe(0)
+    expect(tui.calls[0].prepared).toEqual({ runId: 'run_aaaaaa01', project: P1 })
+    await expect(runTuiCommand(f.ctx, ['R1', '--run', 'R1'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runTuiCommand(f.ctx, ['R1', 'R2'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+  })
   it('a bad ref is a usage error', async () => {
     tui.conn = fakeConn({ runs })
     const f = ttyCtx()

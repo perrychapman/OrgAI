@@ -119,16 +119,24 @@ const runStatus = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, { probe: { type: 'boolean' } })
   unexpected(positionals)
   // Beside another orgai: what the files say (vault.json metadata, key names and counts), never a host or a key store.
-  if (await ownerSnapshot(ctx)) {
-    const checks = offlineSecretsChecks(ctx.paths.dataDir)
-    emit(ctx, { snapshot: true, checks }, () => checks.map((c) => `${c.status.padEnd(4)}  ${c.id.padEnd(16)} ${safeLine(c.detail)}`))
+  // The JSON keeps its `secrets` key (null here) so a script reading `.secrets` does not break.
+  const fromFiles = (): number => {
+    const checks = offlineSecretsChecks(ctx.paths.dataDir, true)
+    emit(ctx, { secrets: null, snapshot: true, checks }, () => checks.map((c) => `${c.status.padEnd(4)}  ${c.id.padEnd(16)} ${safeLine(c.detail)}`))
     return EXIT.ok
   }
-  return withHost(ctx, READ, async (client) => {
-    const s = await refusable<SecretsStatusResult>(client, 'secrets:status', [values.probe ? { probe: true } : {}])
-    emit(ctx, { secrets: statusJson(s) }, () => statusLines(s))
-    return EXIT.ok
-  })
+  if (await ownerSnapshot(ctx)) return fromFiles()
+  try {
+    return await withHost(ctx, READ, async (client) => {
+      const s = await refusable<SecretsStatusResult>(client, 'secrets:status', [values.probe ? { probe: true } : {}])
+      emit(ctx, { secrets: statusJson(s) }, () => statusLines(s))
+      return EXIT.ok
+    })
+  } catch (e) {
+    // Another orgai took the folder between the owner check and the start: answer from the saved files (G4, 4.3).
+    if (e instanceof CliError && e.exitCode === EXIT.hostBusy && (await ownerSnapshot(ctx, { quiet: true }))) return fromFiles()
+    throw e
+  }
 }
 
 // ---------- init ----------

@@ -52,10 +52,10 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      # The real Node host process test needs out/cli, so `npm test` above skips it; run it again on the build, where a
-      # missing bundle fails instead of skipping (Wave 7 WP-E). POSIX only: it skips itself on Windows.
-      - name: Node host integration test
-        run: npx vitest run src/cli/nodeHost.int.test.ts src/cli/daemonNodeHost.int.test.ts src/cli/vaultCli.int.test.ts
+      # The CLI vault integration test needs out/cli, so `npm test` above skips it; run it again on the build, where a
+      # missing bundle fails instead of skipping. POSIX only: it skips itself on Windows.
+      - name: CLI vault integration test
+        run: npx vitest run src/cli/vaultCli.int.test.ts
         env:
           ORGAI_REQUIRE_NODE_HOST_INT: '1'
       - name: e2e (free)

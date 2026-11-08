@@ -509,8 +509,8 @@ const KEYCHAIN_SUBCOMMANDS: readonly string[] = [
   'delete-generic-password', 'delete-internet-password', 'set-generic-password-partition-list',
   'set-internet-password-partition-list', 'dump-keychain', 'export'
 ]
-/** The keychain service name `OrgAI Vault` (vaultTypes KEYCHAIN_SERVICE) in any case and spacing, quotes or escapes between. */
-const VAULT_LABEL = /orgai(?:[\s"'\\]|\\x20|\\040|\\u0020)*vault/i
+/** The keychain service names `OrgAI Vault` and the CLI's `OrgAI CLI Vault` (vaultTypes) in any case and spacing, quotes or escapes between. */
+const VAULT_LABEL = /orgai(?:[\s"'\\]|\\x20|\\040|\\u0020)*(?:cli(?:[\s"'\\]|\\x20|\\040|\\u0020)*)?vault/i
 /** secret-tool subcommands (any secret-tool call is denied at the program position; elsewhere one must follow it). */
 const SECRET_TOOL_SUBCOMMANDS: readonly string[] = ['lookup', 'store', 'search', 'clear', 'lock', 'unlock']
 /** D-Bus clients that can call the Secret Service. */
@@ -699,7 +699,7 @@ function segmentProgramWord(segment: string): string | undefined {
  * and also a plain mention (`grep -rn ORGAI_VAULT_KEY_FILE src`; agents search with the Grep tool instead). A shortened
  * prefix that can only stand for it (`ORGAI_V*`, `${!ORGAI_VA@}`) counts too; `ORGAI_VERSION` does not.
  */
-const VAULT_ENV_WORD = /ORGAI_(?:VAULT|MCP)|ORGAI_(?:V(?:A(?:UL?)?)?|M(?:C)?)?(?![A-Za-z0-9_])/i
+const VAULT_ENV_WORD = /ORGAI_(?:CLI_)?(?:VAULT|MCP)|ORGAI_(?:V(?:A(?:UL?)?)?|M(?:C)?|C(?:L(?:I(?:_(?:V(?:A(?:UL?)?)?|M(?:C)?)?)?)?)?)?(?![A-Za-z0-9_])/i
 /**
  * Wave 7 follow-up: `ORGAI_MCP_<hex>_<n>_<k>` names carry MCP secret values in the agent CLI's environment (never
  * scrubbed, the CLI expands them), so they are protected like ORGAI_VAULT_*, and VAULT_ENV_WORD above reads both. A

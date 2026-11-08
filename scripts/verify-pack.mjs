@@ -78,9 +78,10 @@ export function parseArgs(argv) {
 /** The environment of every checked command. Pure. */
 export function verifyEnv(base, userDataDir) {
   const out = baseVerifyEnv(base)
-  out.ORGAI_DATA_DIR = userDataDir
-  // Never create items in the real OS keychain (a script-supplied ORGAI_VAULT_KEY_FILE still wins in the child).
-  out.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
+  // The CLI ignores ORGAI_DATA_DIR (cli-standalone-default.md 3.1): its own folder is the temp one, never the user's.
+  out.ORGAI_CLI_DATA_DIR = userDataDir
+  // Never create items in the real OS keychain (a script-supplied ORGAI_CLI_VAULT_KEY_FILE still wins in the child).
+  out.ORGAI_CLI_VAULT_NO_OS_KEYSTORE = '1'
   return out
 }
 

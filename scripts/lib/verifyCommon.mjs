@@ -8,7 +8,7 @@ import path from 'node:path'
 /** The default timeout of one checked command. */
 export const DEFAULT_CHECK_TIMEOUT_MS = 90_000
 /** Variables a checked command never inherits: the app's and the launcher's own. */
-export const DROPPED_ENV = new Set(['ELECTRON_RUN_AS_NODE', 'ORGAI_ELECTRON_PATH', 'ORGAI_APP_ROOT', 'ORGAI_DATA_DIR'])
+export const DROPPED_ENV = new Set(['ELECTRON_RUN_AS_NODE', 'ORGAI_ELECTRON_PATH', 'ORGAI_APP_ROOT', 'ORGAI_DATA_DIR', 'ORGAI_CLI_DATA_DIR'])
 const SECRET_PREFIX = 'ORGAI_SECRET_'
 
 /** The environment every checked command starts from: no dropped variable, no ORGAI_SECRET_*, mock adapter, no colour. Pure. */

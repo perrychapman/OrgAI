@@ -34,6 +34,14 @@ describe('corpus', () => {
     expect([...ids].some((i) => i.startsWith('connector:'))).toBe(true)
     expect([...ids].some((i) => i.startsWith('doc:how-it-works#'))).toBe(true)
   })
+  it('no bundled doc tells CLI users about orgai decide or Terminal access (README included)', () => {
+    const docs = bundledDocs()
+    for (const [name, text] of Object.entries(docs)) {
+      if (name === 'cli-standalone-default') continue
+      expect(text, name).not.toMatch(/orgai decide/)
+    }
+    expect(docs.README).not.toMatch(/Terminal access/i)
+  })
   it('leaves out the withdrawn CLI designs and embeds the new command table (no removed commands)', () => {
     const keys = Object.keys(bundledDocs())
     for (const gone of ['cli-approvals', 'cli-spec', 'cli-standalone']) expect(keys).not.toContain(gone)

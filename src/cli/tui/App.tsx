@@ -658,14 +658,14 @@ export function App(props: AppProps) {
     }
     const inproc = conn.inproc !== undefined
     const shown = statusSummary(session.getState()).liveRuns
-    // This terminal's host also serves other terminals and projects (cli-standalone-default.md 4.2): count every live
-    // run on it, not only the ones this view lists.
+    // This orgai's host also runs other projects' runs (it serves only this process, cli-standalone-default.md 4.1):
+    // count every live run on it, not only the ones this view lists.
     const onHost = inproc ? hostLiveRuns(conn.inproc) : undefined
     const live = Math.max(shown, onHost ?? 0)
     if (inproc && live > 0) {
       const elsewhere = live - shown
-      const more = elsewhere > 0 ? `, ${elsewhere} of them from other projects or terminals` : ''
-      void confirm(`Quitting stops ${live} live run${live === 1 ? '' : 's'} in this in-process host${more}. Quit?`).then((yes) => {
+      const more = elsewhere > 0 ? `, ${elsewhere} of them from other projects` : ''
+      void confirm(`Quitting stops ${live} live run${live === 1 ? '' : 's'} in this orgai${more}. Quit?`).then((yes) => {
         if (yes) doExit(0)
       })
       return

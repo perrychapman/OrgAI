@@ -179,14 +179,24 @@ const runShow = async (ctx: CliContext, args: string[]): Promise<number> => {
   if (positionals.length) throw new CliError(`Unexpected argument "${safeLine(positionals[0]).slice(0, 40)}".`, EXIT.usage)
   const f = filtersOf(values)
   const saved = await ownerSnapshot(ctx)
-  if (saved) return showUsage(ctx, values, f, await savedStats(ctx, saved, !!values['all-projects'], f))
-  return withHost(ctx, READ, async (client) => {
-    const projects = await scopeProjects(ctx, client, !!values['all-projects'])
-    const now = Date.now()
-    const results: { project: Project; stats: UsageStats }[] = []
-    for (const p of projects) results.push({ project: p, stats: await hostCall<UsageStats>(client, 'runs:usageStats', [usageQuery(p.id, f, now)]) })
-    return showUsage(ctx, values, f, results)
-  })
+  const fromFiles = async (src: ReadSource): Promise<number> => showUsage(ctx, values, f, await savedStats(ctx, src, !!values['all-projects'], f))
+  if (saved) return fromFiles(saved)
+  try {
+    return await withHost(ctx, READ, async (client) => {
+      const projects = await scopeProjects(ctx, client, !!values['all-projects'])
+      const now = Date.now()
+      const results: { project: Project; stats: UsageStats }[] = []
+      for (const p of projects) results.push({ project: p, stats: await hostCall<UsageStats>(client, 'runs:usageStats', [usageQuery(p.id, f, now)]) })
+      return showUsage(ctx, values, f, results)
+    })
+  } catch (e) {
+    // Another orgai took the folder between the owner check and the start: answer from the saved files (G4, 4.3).
+    if (e instanceof CliError && e.exitCode === EXIT.hostBusy) {
+      const late = await ownerSnapshot(ctx)
+      if (late) return fromFiles(late)
+    }
+    throw e
+  }
 }
 
 /** Beside another orgai: the same numbers from the saved run summaries (a summary without usage reads as legacy). */

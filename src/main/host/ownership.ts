@@ -123,7 +123,9 @@ export class HostOwnershipError extends Error {
   readonly exitCode = 6
   constructor(
     readonly code: HostOwnershipErrorCode,
-    message: string
+    message: string,
+    /** The pid an unreadable daemon.json still named, when it did. */
+    readonly ownerPid?: number
   ) {
     super(message)
     this.name = 'HostOwnershipError'
@@ -597,7 +599,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       const answer = dead && file.endpoint ? await probe(file.endpoint, probeTimeoutMs) : undefined
       if (!dead || answer === 'connected' || answer === 'eacces' || answer === 'timeout') {
         removeStartupDir()
-        throw new HostOwnershipError('daemon_json_unreadable', `${daemonPath} could not be used: ${file.reason}. ${runDirHint(runDir)}`)
+        throw new HostOwnershipError('daemon_json_unreadable', `${daemonPath} could not be used: ${file.reason}. ${runDirHint(runDir)}`, file.pid)
       }
       warn(`OrgAI host ownership: replacing an unusable daemon.json (${file.reason}) that names pid ${file.pid}, which is gone.`)
       if (file.endpoint) unlinkStaleEndpoint(file.endpoint)

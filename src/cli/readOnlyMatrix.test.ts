@@ -17,7 +17,7 @@ import { runSecrets } from './commands/secrets'
 import { runStatus } from './commands/status'
 import { runUsage } from './commands/usage'
 import { fakeContext, project, record, summary } from './testing/fakeContext'
-import { EXIT } from './types'
+import { CliError, EXIT } from './types'
 
 const p1 = project('p1', '/work/app', { name: 'App' })
 const runs = [summary('run_one111', { startedAt: 1000, title: 'First', projectId: 'p1' })]
@@ -86,5 +86,39 @@ describe('read-only commands beside a live owner', () => {
     const j = JSON.parse(f.out())
     expect(j.snapshot).toBe(true)
     expect(j.checks.map((c: { id: string }) => c.id)).toContain('vault')
+  })
+
+  describe('another orgai takes the folder between the owner check and the host start', () => {
+    /** First readStore says stopped, later ones ready; starting a host fails like a lost race (exit 6). */
+    const racing = (args: Parameters<typeof fakeContext>[0] = {}) => {
+      const f = fakeContext({
+        cwd: '/work/app',
+        globals: { outputFormat: 'json' },
+        paths: { userDataDir, dataDir },
+        store: { projects: [p1], runs, records, hostState: 'ready' },
+        inproc: () => {
+          throw new CliError('orgai is already running. Use that one, or quit it first.', EXIT.hostBusy)
+        },
+        ...args
+      })
+      const read = f.ctx.readStore
+      let n = 0
+      f.ctx.readStore = async () => ({ ...(await read()), hostState: n++ === 0 ? 'stopped' : 'ready' })
+      return f
+    }
+
+    it('usage show falls back to the saved files instead of exit 6', async () => {
+      const f = racing()
+      expect(await runUsage(f.ctx, ['show'])).toBe(EXIT.ok)
+      expect(JSON.parse(f.out())).toMatchObject({ project: { id: 'p1' }, runs: 1 })
+    })
+
+    it('secrets status falls back to the saved files with a stable JSON shape', async () => {
+      const f = racing()
+      expect(await runSecrets(f.ctx, ['status'])).toBe(EXIT.ok)
+      const j = JSON.parse(f.out())
+      expect(j).toMatchObject({ secrets: null, snapshot: true })
+      expect(j.checks.find((c: { id: string }) => c.id === 'vault').detail).not.toContain('no host is running')
+    })
   })
 })
