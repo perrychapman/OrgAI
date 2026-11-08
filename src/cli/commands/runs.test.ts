@@ -35,6 +35,12 @@ describe('orgai runs list', () => {
     expect(f.err()).toBe('')
   })
 
+  it('message, interrupt and stop are gone (orgai tui <run> opens a saved run)', async () => {
+    const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs } })
+    for (const sub of ['message', 'interrupt', 'stop']) await expect(runRuns(f.ctx, [sub, 'R1'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining(`Unknown runs command "${sub}"`) })
+    expect(f.connectCalls).toEqual([])
+  })
+
   it('--limit and --status', async () => {
     const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs } })
     await runRuns(f.ctx, ['list', '--limit', '2'])

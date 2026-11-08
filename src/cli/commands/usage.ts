@@ -18,6 +18,8 @@ import { parseFlags } from '../flags'
 import { hostCall, requireProject, withHost } from '../manage'
 import { emit, isJsonOutput, safe, safeLine, styleFor, table, termWidth, warn, type Json } from '../output'
 import { kindLabel } from '../render'
+import { checkProjectResolution, ownerSnapshot, type ReadSource } from '../runRef'
+import { buildUsageStats, monthRange } from '../../main/runtime/runUsage'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
 import { OPERATE, READ } from './connections'
 
@@ -176,24 +178,55 @@ const runShow = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, FILTER_FLAGS)
   if (positionals.length) throw new CliError(`Unexpected argument "${safeLine(positionals[0]).slice(0, 40)}".`, EXIT.usage)
   const f = filtersOf(values)
+  const saved = await ownerSnapshot(ctx)
+  if (saved) return showUsage(ctx, values, f, await savedStats(ctx, saved, !!values['all-projects'], f))
   return withHost(ctx, READ, async (client) => {
     const projects = await scopeProjects(ctx, client, !!values['all-projects'])
     const now = Date.now()
     const results: { project: Project; stats: UsageStats }[] = []
     for (const p of projects) results.push({ project: p, stats: await hostCall<UsageStats>(client, 'runs:usageStats', [usageQuery(p.id, f, now)]) })
-    const value: Json = values['all-projects']
+    return showUsage(ctx, values, f, results)
+  })
+}
+
+/** Beside another orgai: the same numbers from the saved run summaries (a summary without usage reads as legacy). */
+async function savedStats(ctx: CliContext, src: ReadSource, all: boolean, f: UsageFilters): Promise<{ project: Project; stats: UsageStats }[]> {
+  const projects = (await src.projects()).filter((p) => !isVirtualProjectId(p.id))
+  let scope = projects
+  if (!all) {
+    const res = ctx.resolveProject(projects)
+    checkProjectResolution(res)
+    if (!res.project) throw new CliError('No OrgAI project here. Run this inside a project folder or pass --project <id-or-path>.', EXIT.usage)
+    scope = [res.project]
+  }
+  const now = Date.now()
+  const out: { project: Project; stats: UsageStats }[] = []
+  for (const p of scope) {
+    const q = usageQuery(p.id, f, now)
+    if (q.range) {
+      const { since, until } = monthRange(q.range.month)
+      q.since = since
+      q.until = until
+      delete q.range
+    }
+    out.push({ project: p, stats: buildUsageStats(await src.runs(p.id), q, now) })
+  }
+  return out
+}
+
+function showUsage(ctx: CliContext, values: { 'all-projects'?: boolean }, f: UsageFilters, results: { project: Project; stats: UsageStats }[]): number {
+  const value: Json = values['all-projects']
       ? { range: f.month ? { month: f.month } : (f.range ?? 'all'), projects: results.map((r) => statsJson(r.project, r.stats)), total: { cost: costText(sumCosts(results.map((r) => r.stats.totals))), costUsd: sumCosts(results.map((r) => r.stats.totals)).costUsd } }
       : { range: f.month ? { month: f.month } : (f.range ?? 'all'), ...statsJson(results[0].project, results[0].stats) }
-    emit(ctx, value, () => {
-      if (results.length === 0) return 'No projects.'
-      const out: string[] = []
-      for (const r of results) out.push(...statsLines(ctx, r.project, r.stats, f), '')
-      if (results.length > 1) out.push(`All projects: estimated cost ${costText(sumCosts(results.map((r) => r.stats.totals)))}`)
-      while (out.length && out[out.length - 1] === '') out.pop()
-      return out
-    })
-    return EXIT.ok
+  emit(ctx, value, () => {
+    if (results.length === 0) return 'No projects.'
+    const out: string[] = []
+    for (const r of results) out.push(...statsLines(ctx, r.project, r.stats, f), '')
+    if (results.length > 1) out.push(`All projects: estimated cost ${costText(sumCosts(results.map((r) => r.stats.totals)))}`)
+    while (out.length && out[out.length - 1] === '') out.pop()
+    return out
   })
+  return EXIT.ok
 }
 
 // ---------- csv ----------

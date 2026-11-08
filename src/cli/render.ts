@@ -1,5 +1,5 @@
 /**
- * Text renderers shared by the read commands (runs list / show, watch, status, inbox). Everything here builds on the
+ * Text renderers shared by the read commands (runs list / show, status). Everything here builds on the
  * shared view models (src/shared/view): status words come only from statusText, names from runName, costs from
  * costView, decision rows from waitingItems. Untrusted strings pass through safe / safeLine before any styling.
  */

@@ -249,7 +249,7 @@ class Session {
   }
 
   checkGranted(scope: HostScope): void {
-    // Names the fix: the Terminal access level (review H2) or a version skew.
+    // Names the missing scope.
     const missing = missingScopesError(this.client, [scope])
     if (missing) throw missing
   }

@@ -17,6 +17,8 @@ import { formatDateTime } from '../../shared/view/dates'
 import { CLI_VAULT_MESSAGES as VAULT_MESSAGES } from '../../main/store/vaultTypes'
 import { parseFlags } from '../flags'
 import { confirm, runSubcommands, withHost } from '../manage'
+import { offlineSecretsChecks } from '../doctor/secretsChecks'
+import { ownerSnapshot } from '../runRef'
 import { emit, printText, safeLine, warn, type Json } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
 import { CONFIGURE, READ, refusable } from './connections'
@@ -116,6 +118,12 @@ export function statusLines(s: SecretsStatusResult): string[] {
 const runStatus = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, { probe: { type: 'boolean' } })
   unexpected(positionals)
+  // Beside another orgai: what the files say (vault.json metadata, key names and counts), never a host or a key store.
+  if (await ownerSnapshot(ctx)) {
+    const checks = offlineSecretsChecks(ctx.paths.dataDir)
+    emit(ctx, { snapshot: true, checks }, () => checks.map((c) => `${c.status.padEnd(4)}  ${c.id.padEnd(16)} ${safeLine(c.detail)}`))
+    return EXIT.ok
+  }
   return withHost(ctx, READ, async (client) => {
     const s = await refusable<SecretsStatusResult>(client, 'secrets:status', [values.probe ? { probe: true } : {}])
     emit(ctx, { secrets: statusJson(s) }, () => statusLines(s))

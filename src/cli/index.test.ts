@@ -243,6 +243,16 @@ describe('orgai routing', () => {
     expect(editDistance('stauts', 'status')).toBe(2)
   })
 
+  it('the removed commands are unknown commands (exit 2), and runs has no message, interrupt or stop', async () => {
+    for (const gone of ['daemon', 'app', 'terminal-access', 'watch', 'inbox', 'decide', 'attach']) {
+      const r = await run([gone])
+      expect(r.code, gone).toBe(2)
+      expect(r.err, gone).toMatch(/Unknown command/i)
+    }
+    expect((await run(['--host', 'inproc', 'status'])).code).toBe(2)
+    expect(calls).toHaveLength(0)
+  })
+
   it('environment secrets: a read-only command refuses an explicit --secret-env and ignores an ambient one with one warning', async () => {
     for (const argv of [['runs', 'list'], ['status'], ['doctor'], ['projects', 'list'], ['projects', 'show', 'p1'], ['completions', 'bash']]) {
       const r = await run(['--secret-env', 'mcp:p:s:env:X=V', ...argv], { V: 'v' })

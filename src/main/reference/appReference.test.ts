@@ -34,6 +34,14 @@ describe('corpus', () => {
     expect([...ids].some((i) => i.startsWith('connector:'))).toBe(true)
     expect([...ids].some((i) => i.startsWith('doc:how-it-works#'))).toBe(true)
   })
+  it('leaves out the withdrawn CLI designs and embeds the new command table (no removed commands)', () => {
+    const keys = Object.keys(bundledDocs())
+    for (const gone of ['cli-approvals', 'cli-spec', 'cli-standalone']) expect(keys).not.toContain(gone)
+    expect(keys).toContain('cli-standalone-default')
+    const ids = buildReferenceCorpus({ shortcuts: [] }).map((x) => x.id).filter((i) => i.startsWith('command:'))
+    for (const removed of ['daemon', 'app', 'terminal-access', 'watch', 'inbox', 'decide', 'attach']) expect(ids).not.toContain(`command:${removed}`)
+    expect(ids).toEqual(expect.arrayContaining(['command:status', 'command:doctor', 'command:tui', 'command:exec']))
+  })
   it('splits markdown by heading, ignoring headings in code fences and capping sections', () => {
     const md = ['# T', 'intro', '## A', 'a body', '```', '## not a heading', '```', '## A', 'again', '### B', 'b', `## Big`, 'x'.repeat(7000)].join('\n')
     const s = splitMarkdown('f', md)

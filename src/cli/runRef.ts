@@ -84,7 +84,20 @@ const newestFirst = (a: RunSummary, b: RunSummary): number => b.startedAt - a.st
  * starts a host, never writes. `quiet` skips the note (the command prints its own wording).
  */
 export async function openReadSource(ctx: CliContext, opts: { quiet?: boolean } = {}): Promise<ReadSource> {
+  return sourceOf(ctx, await ctx.readStore(), opts)
+}
+
+/**
+ * For the read commands that start their own host when nobody owns the folder (usage show, secrets status): the saved
+ * files as a ReadSource while another orgai owns it (with the snapshot note), else null. Chosen before any connect, so
+ * an owned answer never reaches a host call.
+ */
+export async function ownerSnapshot(ctx: CliContext, opts: { quiet?: boolean } = {}): Promise<ReadSource | null> {
   const snap = await ctx.readStore()
+  return snap.hostState === 'stopped' ? null : sourceOf(ctx, snap, opts)
+}
+
+function sourceOf(ctx: CliContext, snap: ReadOnlySnapshot, opts: { quiet?: boolean }): ReadSource {
   if (!opts.quiet && snap.hostState !== 'stopped') note(ctx, SNAPSHOT_NOTE)
   const byProject = (projectId: string): RunSummary[] => snap.runs.filter((r) => r.projectId === projectId).sort(newestFirst)
   return {
