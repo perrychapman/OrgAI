@@ -99,7 +99,7 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
             <div data-testid="canvas-presentation"><SegmentedControl label="Presentation" value={canvas.presentation ?? 'graph'} options={PRESENTATION_OPTIONS} onChange={(presentation) => change({ presentation })} /></div>
           } />
           {canvas.presentation === 'pocket-office' && <SettingRow title="Office palette" description="Choose the colours of the Pocket Office scene." width="select" control={
-            <div data-testid="canvas-scene-palette"><SegmentedControl label="Office palette" value={canvas.scenePalette ?? 'neutral'} options={SCENE_PALETTE_OPTIONS} onChange={(scenePalette) => change({ scenePalette })} /></div>
+            <div data-testid="canvas-scene-palette"><SegmentedControl label="Office palette" value={canvas.scenePalette ?? 'color'} options={SCENE_PALETTE_OPTIONS} onChange={(scenePalette) => change({ scenePalette })} /></div>
           } />}
         </SettingsCard>
         <div className="canvas-section-body">

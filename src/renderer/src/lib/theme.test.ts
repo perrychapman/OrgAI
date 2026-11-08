@@ -8,7 +8,7 @@ describe('theme', () => {
     applyAppearance({ ...DEFAULT_APPEARANCE, canvas: { ...DEFAULT_APPEARANCE.canvas, presentation: 'pocket-office', scenePalette: 'green' } }, true, root)
     expect(root.dataset).toMatchObject({ canvasPresentation: 'pocket-office', canvasScenePalette: 'green' })
     applyAppearance({ ...DEFAULT_APPEARANCE, canvas: { ...DEFAULT_APPEARANCE.canvas, presentation: undefined, scenePalette: undefined } }, false, root)
-    expect(root.dataset).toMatchObject({ canvasPresentation: 'graph', canvasScenePalette: 'neutral' })
+    expect(root.dataset).toMatchObject({ canvasPresentation: 'graph', canvasScenePalette: 'color' })
   })
   it('resolves system with the OS preference', () => {
     expect(resolveTheme('system', true)).toBe('dark')

@@ -10,6 +10,7 @@ export const PRESENTATION_OPTIONS: { value: CanvasPresentation; label: string }[
   { value: 'pocket-office', label: 'Pocket Office' }
 ]
 export const SCENE_PALETTE_OPTIONS: { value: CanvasScenePalette; label: string }[] = [
+  { value: 'color', label: 'Color' },
   { value: 'neutral', label: 'Neutral' },
   { value: 'green', label: 'Green' }
 ]

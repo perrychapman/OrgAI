@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useMemo, useRef } from 'react'
 import { ReactFlow, ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { useCanvasOptions } from '../../lib/canvas'
+import { withOfficeDepartments } from '../../lib/office/departments'
 import { buildSample, type SampleInks } from '../../lib/canvasSample'
 import { useCssVar } from '../../lib/useCssVar'
 import { AgentNode } from '../AgentNode'
@@ -97,7 +98,7 @@ export function CanvasPreview(): ReactElement {
   return (
     <div className="canvas-preview" data-testid="canvas-preview" role="img" aria-label={options.presentation === 'pocket-office' ? 'Static sample office in the current style' : 'Sample canvas in the current style'} inert>
       {options.presentation === 'pocket-office' ? (
-        <OfficeScene mode="sample" palette={options.scenePalette} agents={[{ id: 'lead', name: 'Lead', status: 'Sample' }, { id: 'implementer', name: 'Implementer', status: 'Sample' }, { id: 'reviewer', name: 'Reviewer', status: 'Sample' }, { id: 'researcher', name: 'Researcher', status: 'Sample' }]} messages={[]} onSelect={() => {}} />
+        <OfficeScene mode="sample" palette={options.scenePalette} agents={withOfficeDepartments([{ id: 'lead', name: 'Lead', parentId: null, status: 'Sample' }, { id: 'implementer', name: 'Implementer', parentId: 'lead', status: 'Sample' }, { id: 'reviewer', name: 'Reviewer', parentId: 'implementer', status: 'Sample' }, { id: 'researcher', name: 'Researcher', parentId: 'lead', status: 'Sample' }])} messages={[]} onSelect={() => {}} />
       ) : (
       <ReactFlowProvider>
         <PreviewFlow />
