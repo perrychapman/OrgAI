@@ -5,6 +5,7 @@ import { HIDDEN_OR_CONTROL_RUN } from '../../lib/hiddenChars'
 import { outputsOfRuns } from '../../lib/outputs'
 import type { RunOutput } from '@shared/types'
 import { announceText, unannouncedTitles } from '../../lib/outputsRun'
+import { updatedText, updatedVersions, type UpdatedVersion } from '../../lib/outputsList'
 import { useFrameAnnounce } from '../layout/CanvasFrame'
 
 /** At most one polite announcement per this long (docs/design/outputs.md section 3). */
@@ -24,6 +25,8 @@ export function useOutputAnnouncements(runId: string): void {
   const seen = useRef<Set<string> | null>(null)
   const scope = useRef('')
   const latest = useRef<RunOutput[]>([])
+  const versions = useRef(new Map<string, number>())
+  const updated = useRef(new Map<string, UpdatedVersion>())
   const lastAt = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const say = useRef(announce)
@@ -42,6 +45,8 @@ export function useOutputAnnouncements(runId: string): void {
       scope.current = key
       seen.current = null
       latest.current = []
+      versions.current = new Map()
+      updated.current = new Map()
       if (timer.current) clearTimeout(timer.current)
       timer.current = null
     }
@@ -49,20 +54,30 @@ export function useOutputAnnouncements(runId: string): void {
     const mine = outputsOfRuns(list, chainKey.split('|'))
     if (seen.current === null) {
       seen.current = new Set(mine.map((o) => o.id))
+      versions.current = new Map(mine.map((o) => [o.id, o.version ?? 1]))
       return
     }
     latest.current = mine
-    if (unannouncedTitles(mine, seen.current).length === 0) return
+    // A new version of an output already known: "Updated Project plan to version 3".
+    for (const u of updatedVersions(
+      [...versions.current].map(([id, version]) => ({ id, title: '', version })),
+      mine
+    ))
+      updated.current.set(u.id, u)
+    for (const o of mine) if (!versions.current.has(o.id) || (versions.current.get(o.id) ?? 1) < (o.version ?? 1)) versions.current.set(o.id, o.version ?? 1)
+    if (unannouncedTitles(mine, seen.current).length === 0 && updated.current.size === 0) return
     // The count is read when the sentence is said (after the throttle), from the chain's outputs then, so it
     // agrees with the chip and the list however many arrived while it waited.
     const flush = (): void => {
       timer.current = null
       const known = seen.current
       const titles = known ? unannouncedTitles(latest.current, known) : []
-      if (!known || titles.length === 0) return
+      const ups = [...updated.current.values()].map((u) => ({ ...u, title: u.title.replace(HIDDEN_OR_CONTROL_RUN, '') }))
+      updated.current.clear()
+      if (!known || (titles.length === 0 && ups.length === 0)) return
       for (const o of latest.current) known.add(o.id)
       lastAt.current = Date.now()
-      const text = announceText(titles.map((t) => t.replace(HIDDEN_OR_CONTROL_RUN, '')))
+      const text = [announceText(titles.map((t) => t.replace(HIDDEN_OR_CONTROL_RUN, ''))), updatedText(ups)].filter(Boolean).join('. ')
       if (text) say.current?.(text)
     }
     if (timer.current) return

@@ -522,3 +522,21 @@ export async function setReduceMotion(page, mode) {
 
 /** Shortcut: reduced motion on. */
 export const motionOff = (page) => setReduceMotion(page, 'on')
+
+/**
+ * Wait (at most `ms`) until every finite animation in the document has finished: the view crossfade's short rise
+ * (motion.md 3.3) moves a view by a few pixels, so a layout measure taken during it reads a scroll that is not there.
+ * Infinite animations (breathing marks) are ignored.
+ */
+export async function settleMotion(page, ms = 1500) {
+  await page
+    .evaluate(async (limit) => {
+      const finite = document.getAnimations().filter((a) => {
+        const end = a.effect?.getComputedTiming?.().endTime
+        return typeof end === 'number' && Number.isFinite(end) && a.playState === 'running'
+      })
+      if (finite.length === 0) return
+      await Promise.race([Promise.all(finite.map((a) => a.finished.catch(() => undefined))), new Promise((r) => setTimeout(r, limit))])
+    }, ms)
+    .catch(() => {})
+}

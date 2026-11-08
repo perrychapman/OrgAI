@@ -8,6 +8,7 @@ import DocumentView from './DocumentView'
 import SheetView from './SheetView'
 import TextPreview from './TextPreview'
 import ImagePreview from './ImagePreview'
+import SlideViewer from './SlideViewer'
 import SvgPreview from './SvgPreview'
 import '../../styles/outputs-preview.css'
 import '../../styles/outputs-diagram.css'
@@ -23,15 +24,18 @@ export interface OutputPreviewProps {
   /** The Larger view covers the whole window (dialog only). */
   full?: boolean
   onToggleFull?: () => void
+  /** An older version to show (null / absent = the current one). */
+  version?: number | null
 }
 
 type State = { status: 'loading' } | { status: 'error' } | { status: 'ready'; preview: OutputPreviewData }
 
 /** The in-window preview of one output, fetched on demand and cached per project. Renders nothing for a missing file. */
-export default function OutputPreview({ output, context = 'detail', onOpenLarge, full, onToggleFull }: OutputPreviewProps): ReactElement | null {
+export default function OutputPreview({ output, context = 'detail', onOpenLarge, full, onToggleFull, version }: OutputPreviewProps): ReactElement | null {
+  const older = version ?? null
   const view = useMemo<OutputViewValue>(() => ({ context, onOpenLarge, full, onToggleFull }), [context, onOpenLarge, full, onToggleFull])
   const { projectId, id } = output
-  const key = previewKey(output)
+  const key = previewKey(output, older)
   const [state, setState] = useState<State>(() => {
     const hit = output.missing ? undefined : previewCacheFor(projectId).get(key)
     return hit ? { status: 'ready', preview: hit } : { status: 'loading' }
@@ -53,7 +57,7 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
     setState({ status: 'loading' })
     let p: Promise<OutputPreviewData>
     try {
-      p = window.orgai.outputs.preview({ projectId, outputId: id })
+      p = window.orgai.outputs.preview(older === null ? { projectId, outputId: id } : { projectId, outputId: id, version: older })
     } catch {
       setState({ status: 'error' })
       return
@@ -71,7 +75,7 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
     return () => {
       seq.current++
     }
-  }, [projectId, id, key, attempt, missing])
+  }, [projectId, id, key, attempt, missing, older])
 
   if (missing) return null
 
@@ -132,13 +136,16 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
       body = <SvgPreview text={p.text} title={output.title} />
 
       break
+    case 'slides':
+      body = <SlideViewer size={p.size} slides={p.slides} truncatedSlides={p.truncatedSlides} title={output.title} />
+      break
     case 'image':
       body = <ImagePreview dataUrl={p.dataUrl} title={output.title} />
       break
     default:
       body = (
         <p className="output-preview-note" data-testid="output-preview-none">
-          {p.kind === 'none' ? p.reason : 'Open the deck to see its slides.'}
+          {p.reason}
         </p>
       )
   }

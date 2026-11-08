@@ -10,7 +10,7 @@ import type { OutputKind } from '@shared/types'
 import { OUTPUT_KIND_LABEL, kindLabel } from './outputs'
 import { bareToolName } from './transcriptRows'
 
-export type OutputWriteState = 'produced' | 'registered' | 'refused'
+export type OutputWriteState = 'produced' | 'registered' | 'updated' | 'refused'
 
 /** One transcript row that stands for an output tool call. */
 export interface OutputWriteRow {
@@ -34,6 +34,8 @@ export interface OutputCollapse {
 
 const PRODUCED_ROW_RE = /^Produced (?:document|workbook|diagram|file) (.*)$/s
 const REGISTERED_ROW_RE = /^Registered output (.*)$/s
+/** A new version of an existing output: main's row "Updated <title> to version 3". */
+const UPDATED_ROW_RE = /^Updated (.*) to version (\d+)$/s
 /** The tool result: `Produced docx "Title" at outputs/x.docx (38 KB). ...`; the title can hold quotes, so greedy up to the last ` at `. */
 const RESULT_RE = /^(Produced|Registered) (\S+) "(.*)" at (.*) \([^()]*\)\./s
 /** The older words main's harness row uses, mapped to a kind (the file word names no kind). */
@@ -68,7 +70,7 @@ export function isOutputTool(name: string): boolean {
 
 /** A harness row main wrote for an output ("Produced document X", "Registered output X"). */
 export function isOutputWriteRow(e: TranscriptEntry): boolean {
-  return e.source === 'harness' && e.block.kind === 'system' && (PRODUCED_ROW_RE.test(e.block.text) || REGISTERED_ROW_RE.test(e.block.text))
+  return e.source === 'harness' && e.block.kind === 'system' && (PRODUCED_ROW_RE.test(e.block.text) || REGISTERED_ROW_RE.test(e.block.text) || UPDATED_ROW_RE.test(e.block.text))
 }
 
 interface ParsedResult {
@@ -84,6 +86,8 @@ function parseResult(text: string): ParsedResult | null {
 }
 
 function rowOfHarness(text: string, res: ParsedResult | null): OutputWriteRow {
+  const updated = UPDATED_ROW_RE.exec(text)
+  if (updated) return { state: 'updated', text: `Updated ${updated[1].trim()} to version ${updated[2]}`, title: updated[1].trim() }
   const produced = PRODUCED_ROW_RE.exec(text)
   const registered = produced ? null : REGISTERED_ROW_RE.exec(text)
   const title = res?.title ?? (produced ?? registered)?.[1]?.trim() ?? ''

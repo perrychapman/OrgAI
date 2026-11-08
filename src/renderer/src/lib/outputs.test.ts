@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunOutput } from '@shared/types'
+import { canReviseFallback, currentProvenance, editBlockedReason, externalAppName, isEditableKind } from './outputs'
 import { PreviewCache, canDeleteOutput, canOpenOutput, extBadgeText, fileExtension, formatBytes, kindChipLabel, kindLabel, mergeOutput, outputKindLabel, outputMetaLine, outputSearchTerms, outputsCountLabel, outputsOfRuns, previewKey, provenanceLine } from './outputs'
 
 function out(id: string, extra: Partial<RunOutput> = {}): RunOutput {
@@ -83,8 +84,8 @@ describe('outputs helpers', () => {
     expect(canOpenOutput({ kind: 'svg' })).toBe(false)
     expect(canOpenOutput({ kind: 'docx', missing: true })).toBe(false)
     expect(canDeleteOutput({ source: 'produced' })).toBe(true)
-    expect(canDeleteOutput({ source: 'registered' })).toBe(false)
-    expect(canDeleteOutput({ source: 'produced', missing: true })).toBe(false)
+    expect(canDeleteOutput({ source: 'registered' })).toBe(true)
+    expect(canDeleteOutput({ source: 'produced', missing: true })).toBe(true)
   })
 
   it('merges newest first and replaces by id in place', () => {
@@ -118,5 +119,28 @@ describe('outputs helpers', () => {
     expect(c.get('b')).toBeUndefined()
     expect(c.get('a')).toBeDefined()
     expect(c.size).toBe(2)
+  })
+})
+
+describe('outputs 2 helpers', () => {
+  it('keys older versions by number', () => {
+    expect(previewKey({ id: 'x', createdAt: 1 }, 2)).toBe('x#v2')
+    expect(previewKey({ id: 'x', createdAt: 1 }, null)).toBe('x@1')
+  })
+  it('names editors and blocks', () => {
+    expect(isEditableKind('csv')).toBe(true)
+    expect(isEditableKind('docx')).toBe(false)
+    expect(externalAppName('pptx')).toBe('PowerPoint')
+    expect(externalAppName('csv')).toBeNull()
+    expect(canReviseFallback({ kind: 'image' })).toBe(false)
+    expect(canReviseFallback({ kind: 'docx' })).toBe(true)
+    expect(editBlockedReason({ kind: 'text', bytes: 1 }, false)).toBe('Restore this version to edit it.')
+    expect(editBlockedReason({ kind: 'text', bytes: 1, missing: true }, true)).toBe('The file is gone.')
+    expect(editBlockedReason({ kind: 'text', bytes: 2 * 1024 * 1024 }, true)).toMatch(/too large/)
+    expect(editBlockedReason({ kind: 'docx', bytes: 1 }, false)).toBeNull()
+  })
+  it('words the current provenance', () => {
+    expect(currentProvenance({ createdAt: 1, current: { source: 'edit', at: 0 } })).toBe('You · edited')
+    expect(currentProvenance({ createdAt: 1, role: 'Analyst' }, 'R2')).toContain('Analyst · R2')
   })
 })

@@ -1,0 +1,51 @@
+name: Auto-merge into dev
+
+on:
+  pull_request_target:
+    branches: [dev]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge when eligible
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=${REPOSITORY%%/*}
+          repo=${REPOSITORY#*/}
+          pr=$(gh api graphql -f query='query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                id state isDraft baseRefName headRefOid autoMergeRequest { enabledAt }
+                labels(first: 100) { nodes { name } pageInfo { hasNextPage } }
+              }
+            }
+          }' -f owner="$owner" -f repo="$repo" -F number="$PR_NUMBER")
+          if ! jq -e --arg head "$EVENT_HEAD" '
+            .data.repository.pullRequest as $pr |
+            $pr != null and $pr.state == "OPEN" and ($pr.isDraft | not) and
+            $pr.baseRefName == "dev" and $pr.headRefOid == $head and
+            $pr.autoMergeRequest == null and
+            ($pr.labels.pageInfo.hasNextPage | not) and
+            ([$pr.labels.nodes[].name] | index("no-auto-merge") | not)
+          ' <<< "$pr" > /dev/null; then
+            echo "Pull request is no longer eligible; skipping."
+            exit 0
+          fi
+          id=$(jq -r '.data.repository.pullRequest.id' <<< "$pr")
+          gh api graphql -f query='mutation($id: ID!, $head: GitObjectID!) {
+            enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: MERGE}) {
+              pullRequest { number }
+            }
+          }' -f id="$id" -f head="$EVENT_HEAD"

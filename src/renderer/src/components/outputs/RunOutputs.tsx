@@ -3,13 +3,16 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ArrowLeft } from 'lucide-react'
 import type { RunOutput } from '@shared/types'
 import { chainKeyOf, chainOf } from '../../lib/runChains'
-import { outputMetaLine, outputsOfRuns, provenanceLine } from '../../lib/outputs'
+import { outputsOfRuns } from '../../lib/outputs'
+import { RUN_ROW_THUMB_KINDS, currentProvenance, isNewVersion, rowMetaLine } from '../../lib/outputsList'
+import { OutputBadges, OutputThumb } from './OutputThumb'
+import { useOutputThumb } from './useOutputThumb'
 import { showHidden } from '../../lib/hiddenChars'
 import { runTag } from '../../lib/runLabels'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import OutputActions from './OutputActions'
-import OutputDetail from './OutputDetail'
+import OutputDetail, { confirmLeaveOutput } from './OutputDetail'
 import OutputKindIcon from './OutputKindIcon'
 import { OutputStepper, stepKeyHandler } from './OutputStepper'
 import ExtBadge from './ExtBadge'
@@ -81,10 +84,23 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
     if (id) setGrabFocus(true)
     useAppStore.getState().openRunOutput(runId, id)
   }
+  // Leaving the shown output (another one, Back) asks first while it has unsaved edits (outputs-2 9, dirty guard).
+  const leaveThen = (to: string | null, then: () => void): void => {
+    if (shown && to === shown.id) {
+      then()
+      return
+    }
+    void confirmLeaveOutput().then((ok) => {
+      if (ok) then()
+    })
+  }
   const back = (): void => {
     if (!shown) return
-    pendingFocus.current = { id: shown.id }
-    open(null)
+    const id = shown.id
+    leaveThen(null, () => {
+      pendingFocus.current = { id }
+      open(null)
+    })
   }
   const removed = (id: string): void => {
     const at = list.findIndex((o) => o.id === id)
@@ -108,10 +124,11 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
   }, [shown, list])
 
   // Previous / next: a click keeps focus on the button (the detail does not grab it); the keys put it on the heading.
-  const step = (to: string, viaKeyboard: boolean): void => {
-    setGrabFocus(viaKeyboard)
-    useAppStore.getState().openRunOutput(runId, to)
-  }
+  const step = (to: string, viaKeyboard: boolean): void =>
+    leaveThen(to, () => {
+      setGrabFocus(viaKeyboard)
+      useAppStore.getState().openRunOutput(runId, to)
+    })
   const onStepKey = stepKeyHandler(list, shown?.id ?? null, step)
 
   const onDetailKey = (e: KeyboardEvent<HTMLDivElement>): void => {
@@ -148,7 +165,7 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
         ) : (
           <ul className="run-outputs-list" data-testid="run-outputs-list" data-split={wide && shown ? 'true' : undefined} tabIndex={-1} aria-label="Outputs">
             {list.map((o) => (
-              <OutputRow key={o.id} output={o} current={o.id === shown?.id} tag={indexes.get(o.runId)} onShow={() => open(o.id)} onNotice={say} onRemoved={removed} />
+              <OutputRow key={o.id} output={o} current={o.id === shown?.id} tag={indexes.get(o.runId)} onShow={() => leaveThen(o.id, () => open(o.id))} onNotice={say} onRemoved={removed} />
             ))}
           </ul>
         ))}
@@ -182,6 +199,10 @@ function OutputRow({
   onRemoved: (id: string) => void
 }): ReactElement {
   const title = showHidden(output.title)
+  const seen = useAppStore((s) => s.outputSeenVersion)
+  const wantsThumb = RUN_ROW_THUMB_KINDS.has(output.kind)
+  const { ref, thumb } = useOutputThumb({ ...output, missing: output.missing || !wantsThumb ? true : undefined })
+  const meta = rowMetaLine(output)
   return (
     <li
       className="run-output-row"
@@ -191,8 +212,8 @@ function OutputRow({
       data-missing={output.missing ? 'true' : undefined}
       aria-current={current ? 'true' : undefined}
     >
-      <span className="run-output-icon">
-        <OutputKindIcon kind={output.kind} />
+      <span className="run-output-icon" ref={ref}>
+        {wantsThumb ? <OutputThumb thumb={thumb} kind={output.kind} size="run" /> : <OutputKindIcon kind={output.kind} />}
       </span>
       <div className="run-output-text">
         <span className="run-output-head">
@@ -200,9 +221,10 @@ function OutputRow({
             {title}
           </span>
           <ExtBadge fileName={output.fileName} />
+          <OutputBadges openNotes={output.openNoteCount ?? 0} isNew={isNewVersion(output, seen)} />
         </span>
-        <span className="run-output-meta">{output.missing ? `File missing · ${outputMetaLine(output)}` : outputMetaLine(output)}</span>
-        <span className="run-output-prov">{provenanceLine(output, tag !== undefined ? runTag(tag) : undefined)}</span>
+        <span className="run-output-meta">{output.missing ? `File missing · ${meta}` : meta}</span>
+        <span className="run-output-prov">{currentProvenance(output, (id) => (id === output.runId && tag !== undefined ? runTag(tag) : undefined))}</span>
       </div>
       <div className="run-output-actions">
         <Button variant="primary" size="sm" testId="run-output-show" ariaLabel={`Show ${title}`} onClick={onShow}>

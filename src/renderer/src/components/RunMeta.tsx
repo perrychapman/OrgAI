@@ -3,8 +3,11 @@ import { useEffect, useRef, useState } from 'react'
 import { Bot, ClipboardList, Clock, Database, Files, Folder, ShieldAlert } from 'lucide-react'
 import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
 import { useOutputAnnouncements } from './outputs/useOutputAnnouncements'
+import { chipLabel } from '../lib/outputRevise'
+import { showHidden } from '../lib/hiddenChars'
 import { revealOutputsTab } from './outputs/revealOutputsTab'
 import '../styles/outputs.css'
+import '../styles/outputs-revise.css'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
@@ -96,6 +99,14 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   // What the conversation produced (docs/design/outputs.md section 6): every member run, every agent.
   const outputCount = useAppStore((s) => (run.summary.kind === 'work' && !summary.quick ? outputsOfRuns(s.outputsByProject[project.id], chain.map((m) => m.id)).length : 0))
   useOutputAnnouncements(summary.id)
+  // A revise request this window sent to any run of the chain, still waiting for the team's version (outputs-2 7).
+  const revising = useAppStore((s) => {
+    for (const m of chain) {
+      const p = s.pendingRevisionsByRun[m.id]
+      if (p && p.length > 0) return p[p.length - 1]
+    }
+    return undefined
+  })
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -187,6 +198,22 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           <span className="run-meta-outputs-count">{outputCount}</span>
           <span className="run-meta-outputs-label">{outputCount === 1 ? 'output' : 'outputs'}</span>
           <span className="sr-only">; opens the Outputs tab</span>
+        </button>
+      )}
+      {revising && (
+        <button
+          type="button"
+          className="run-meta-item run-meta-revision"
+          data-testid="run-meta-revision"
+          title={chipLabel(showHidden(revising.title))}
+          onClick={() => {
+            useAppStore.getState().openRunOutput(summary.id, revising.outputId)
+            revealOutputsTab()
+          }}
+        >
+          <Icon icon={Files} size="xs" />
+          <span className="run-meta-revision-text">{chipLabel(showHidden(revising.title))}</span>
+          <span className="sr-only">; opens it in the Outputs tab</span>
         </button>
       )}
       {sessions > 1 && (
