@@ -13,6 +13,7 @@ export function floorBounds(layout: BuildingLayout, viewportWidth: number, viewp
 export const DESKS_PER_ROOM = 8
 export const ROOM_WIDTH = 18
 export const ROOM_HEIGHT = 13
+// Layout coordinates are expressed in whole atlas tiles.
 export const ROOM_PROPS = [{ name: 'plant', x: 0, y: 11 }, { name: 'shelf', x: 7, y: 11 }, { name: 'coffee-station', x: 15, y: 11 }] as const
 
 const BUILDING_ROOM_WIDTH = ROOM_WIDTH + 2
