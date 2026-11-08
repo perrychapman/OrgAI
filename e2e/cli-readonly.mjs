@@ -42,9 +42,11 @@ try {
 
   // ---------- 2. A second orgai ----------
   const slow = startCli(['--output-format', 'stream-json', 'exec', '[mock:exec-slow] take your time'], { cwd: repo })
+  let ownerPid
   try {
     await until('the first orgai to own the folder', () => fs.existsSync(DAEMON_JSON) && JSON.parse(fs.readFileSync(DAEMON_JSON, 'utf8')).state === 'ready', 60_000)
     const owner = JSON.parse(fs.readFileSync(DAEMON_JSON, 'utf8'))
+    ownerPid = owner.pid
     check(owner.hostKind === 'inproc' && typeof owner.ownerCwd === 'string' && owner.ownerCwd.length > 0, 'daemon.json carries the owner pid and ownerCwd', JSON.stringify(owner))
 
     const snap = await cli(['--project', repo, 'runs', 'list'])
@@ -68,7 +70,19 @@ try {
     await slow.done
     clearTimeout(t)
   }
-  await until('the folder to be free again', () => !fs.existsSync(DAEMON_JSON), 30_000)
+  if (process.platform === 'win32') {
+    // kill('SIGINT') is TerminateProcess on Windows: no handler runs, so daemon.json stays behind with a dead pid and the
+    // next orgai reclaims it. Wait for the owner process to be gone instead of the record.
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    await until('the first orgai to end', () => typeof ownerPid !== 'number' || !alive(ownerPid), 30_000)
+  } else await until('the folder to be free again', () => !fs.existsSync(DAEMON_JSON), 30_000)
   const free = await cli(['--project', repo, 'connections', 'list'])
   check(free.code === 0, 'when the first orgai ends the folder is free again', show(free))
 
