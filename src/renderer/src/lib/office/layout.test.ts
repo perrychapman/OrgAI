@@ -1,8 +1,44 @@
 import { describe, expect, it } from 'vitest'
 import atlas from '../../assets/pocket-office/atlas.json'
-import { assignDepartmentSlots, assignDesks, blockedCells, buildingBlocked, buildingDesk, buildingLayout, deskForSlot, DESKS_PER_ROOM, floorBounds, OFFICE_TILE, ROOM_PROPS, route, type BuildingAgent } from './layout'
+import { assignAppearances, assignDepartmentSlots, assignDesks, blockedCells, buildingBlocked, buildingDesk, buildingLayout, buildingProps, clearWorkerPath, deskForSlot, DESKS_PER_ROOM, floorBounds, OFFICE_TILE, ROOM_PROPS, route, type BuildingAgent } from './layout'
 
 describe('office layout', () => {
+  it('assigns twelve distinct looks and retains identity through reorder, removal and return', () => {
+    const ids = Array.from({ length: 12 }, (_, index) => `person-${index}`)
+    const first = assignAppearances(new Map(), ids, 12)
+    expect(new Set(first.values()).size).toBe(12)
+    expect(assignAppearances(first, [...ids].reverse(), 12)).toEqual(first)
+    const removed = assignAppearances(first, ids.slice(1), 12)
+    expect(assignAppearances(removed, ids, 12)).toEqual(first)
+    const replaced = assignAppearances(first, Array.from({ length: 12 }, (_, index) => `new-${index}`), 12)
+    expect(new Set([...replaced].filter(([id]) => id.startsWith('new-')).map(([, look]) => look)).size).toBe(12)
+  })
+  it('furnishes sparse and full rooms while keeping every occupied desk connected to its door', () => {
+    for (const count of [1, 8]) {
+      const agents: BuildingAgent[] = Array.from({ length: count }, (_, i) => ({ id: `person-${i}`, departmentId: 'studio', departmentName: 'Studio', central: false }))
+      const slots = assignDepartmentSlots(new Map(), agents)
+      const layout = buildingLayout(agents, slots, 700, 800, 1)
+      const room = layout.rooms[0]
+      const furniture = buildingProps(room)
+      const blocked = buildingBlocked([room], agents, slots)
+      expect(furniture.map(p => p.name)).toEqual(expect.arrayContaining(['sofa', 'window', 'coffee-station']))
+      const furnishedCells = new Set<string>()
+      for (const prop of furniture) for (const [x, y] of atlas.props[prop.name].footprint) {
+        const cell = `${prop.x + x},${prop.y + y}`
+        expect(furnishedCells.has(cell)).toBe(false)
+        furnishedCells.add(cell)
+      }
+      for (const prop of furniture) for (const [x, y] of atlas.props[prop.name].footprint) expect(blocked.has(`${prop.x + x},${prop.y + y}`)).toBe(true)
+      for (let slot = 0; slot < count; slot++) {
+        const { anchor, furniture: desk } = buildingDesk(room, slot)
+        for (const [x, y] of atlas.props.desk.footprint) expect(furnishedCells.has(`${desk.x + x},${desk.y + y}`)).toBe(false)
+        const door = { x: room.x + Math.floor(room.width / 2) - 1, y: room.y + room.height - 1 }
+        const path = route(anchor, door, blocked, layout.height, layout.width)
+        expect(path[0]).toEqual(anchor)
+        expect(path.at(-1)).toEqual(door)
+      }
+    }
+  })
   it('preserves occupied and removed slots when the team changes order', () => {
     const first = assignDesks(new Map(), ['a', 'b', 'c'])
     const next = assignDesks(first, ['c', 'a', 'd'])
@@ -45,6 +81,9 @@ describe('office layout', () => {
       expect(path[0]).toEqual(from)
       expect(path.at(-1)).toEqual(to)
       for (const p of path) expect(obstacles.has(`${p.x},${p.y}`)).toBe(false)
+      const occupied = anchors.filter(other => other !== from)
+      const safePath = clearWorkerPath(path, occupied)
+      for (const point of safePath) for (const other of occupied) expect(Math.abs(point.x - other.x) >= 2 || Math.abs(point.y - other.y) >= 3).toBe(true)
     }
   })
   it('uses viewport capacity, caps floors, and retains department slots on resize and removal', () => {

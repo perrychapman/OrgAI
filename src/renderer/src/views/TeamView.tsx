@@ -519,7 +519,12 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }
 
   const returnToNode = useCallback((roleId: string) => {
-    rootRef.current?.querySelector<HTMLElement>(`[data-office-agent-id="${CSS.escape(roleId)}"], .react-flow__node[data-id="${CSS.escape(roleId)}"]`)?.focus()
+    const target = rootRef.current?.querySelector<HTMLElement>(`[data-office-worker-id="${CSS.escape(roleId)}"], .react-flow__node[data-id="${CSS.escape(roleId)}"]`)
+    if (target) { target.focus(); return }
+    const directoryTarget = rootRef.current?.querySelector<HTMLElement>(`[data-office-agent-id="${CSS.escape(roleId)}"]`)
+    const directory = directoryTarget?.closest('details')
+    if (directory) directory.open = true
+    directoryTarget?.focus()
   }, [])
 
   const addRole = (): void => {

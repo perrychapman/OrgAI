@@ -2,11 +2,13 @@
 .office-scene > p { margin: var(--space-2); }
 .office-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
 .office-stage { flex: 1 1 auto; min-height: 100px; overflow: auto; display: flex; background: var(--surface-0); }
-.office-stage:focus-visible, .office-roster button:focus-visible, .office-nameplate:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.office-stage:focus-visible, .office-roster button:focus-visible, .office-person:focus-visible, .office-directory summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .office-map { position: relative; flex: none; margin: auto; overflow: hidden; }
 .office-pixels { position: absolute; transform-origin: top left; image-rendering: pixelated; }
 .office-sprite { position: absolute; display: block; image-rendering: pixelated; }
-.office-roster { display: flex; flex-direction: column; gap: var(--space-1); overflow: auto; max-height: 35%; min-height: 70px; padding: var(--space-2); }
+.office-directory { flex: none; border-top: 1px solid var(--border-default); }
+.office-directory summary { cursor: pointer; padding: var(--space-2); font-size: var(--text-caption); }
+.office-roster { display: flex; flex-direction: column; gap: var(--space-1); overflow: auto; max-height: 160px; padding: var(--space-2); }
 .office-roster button { min-height: 24px; text-align: left; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border-default); font: inherit; }
 .office-roster button[aria-pressed='true'], .office-nameplate[aria-pressed='true'] { border: 3px double var(--text-primary); font-weight: var(--font-weight-semibold, 600); }
 .office-nameplate { position: absolute; display: flex; flex-direction: column; box-sizing: border-box; width: 64px; height: 48px; overflow: hidden; padding: var(--space-1); color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border-default); font-family: var(--font-sans); font-size: var(--text-caption); line-height: 1.1; text-align: left; }
@@ -14,3 +16,10 @@
 .office-nameplate span:first-child { flex: 1; min-height: 0; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
 .office-nameplate span:last-child { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .office-full-message { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.office-person { position: absolute; padding: 0; min-width: 24px; min-height: 24px; border: 2px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-primary); cursor: pointer; }
+.office-person[aria-pressed='true'] { border-color: var(--text-primary); border-style: double; }
+.office-person-label { position: absolute; display: flex; flex-direction: column; left: 50%; top: 100%; transform: translateX(-50%); width: 62px; padding: var(--space-1); font-family: var(--font-sans); font-size: var(--text-caption); line-height: 1.2; background: var(--surface-1); border: 1px solid var(--border-default); pointer-events: none; }
+.office-person-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-person:focus-visible .office-person-label, .office-person:hover .office-person-label { width: max-content; max-width: 200px; z-index: 1; }
+.office-person:focus-visible .office-person-label span, .office-person:hover .office-person-label span { white-space: normal; overflow-wrap: anywhere; }
+.office-empty { align-self: center; max-width: 30em; padding: var(--space-3); background: var(--surface-1); }
