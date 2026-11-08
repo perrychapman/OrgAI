@@ -96,7 +96,7 @@ function PreviewFlow(): ReactElement {
 export function CanvasPreview(): ReactElement {
   const options = useCanvasOptions()
   return (
-    <div className="canvas-preview" data-testid="canvas-preview" role="img" aria-label={options.presentation === 'pocket-office' ? 'Static sample office in the current style' : 'Sample canvas in the current style'} inert>
+    <div className="canvas-preview" data-testid="canvas-preview" data-presentation={options.presentation} role="img" aria-label={options.presentation === 'pocket-office' ? 'Static sample office in the current style' : 'Sample canvas in the current style'} inert>
       {options.presentation === 'pocket-office' ? (
         <OfficeScene mode="sample" palette={options.scenePalette} agents={withOfficeDepartments([{ id: 'lead', name: 'Lead', parentId: null, status: 'Sample' }, { id: 'implementer', name: 'Implementer', parentId: 'lead', status: 'Sample' }, { id: 'reviewer', name: 'Reviewer', parentId: 'implementer', status: 'Sample' }, { id: 'researcher', name: 'Researcher', parentId: 'lead', status: 'Sample' }])} messages={[]} onSelect={() => {}} />
       ) : (
