@@ -90,24 +90,25 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
     <SettingsSection
       id={CANVAS_SECTION_ID}
       title="Canvas"
-      description="How the org chart and run canvases look. Both follow these settings."
+      description="Applies to Live, Team and the sample preview."
       testId="canvas-section"
     >
       <div className="canvas-section">
+        <SettingsCard>
+          <SettingRow title="Presentation" description="Choose how agents appear on the canvas." width="select" control={
+            <div data-testid="canvas-presentation"><SegmentedControl label="Presentation" value={canvas.presentation ?? 'graph'} options={PRESENTATION_OPTIONS} onChange={(presentation) => change({ presentation })} /></div>
+          } />
+          {canvas.presentation === 'pocket-office' && <SettingRow title="Office palette" description="Choose the colours of the Pocket Office scene." width="select" control={
+            <div data-testid="canvas-scene-palette"><SegmentedControl label="Office palette" value={canvas.scenePalette ?? 'neutral'} options={SCENE_PALETTE_OPTIONS} onChange={(scenePalette) => change({ scenePalette })} /></div>
+          } />}
+        </SettingsCard>
         <div className="canvas-section-body">
           <div className="canvas-section-preview">
             <CanvasPreview />
           </div>
           <div className="canvas-section-main">
-            <SettingsCard>
-              <SettingRow title="Presentation" description="Choose how agents appear on the canvas." width="select" control={
-                <div data-testid="canvas-presentation"><SegmentedControl label="Canvas presentation" value={canvas.presentation ?? 'graph'} options={PRESENTATION_OPTIONS} onChange={(presentation) => change({ presentation })} /></div>
-              } />
-              <SettingRow title="Office palette" description="Choose the colours of the Pocket Office scene." width="select" control={
-                <div data-testid="canvas-scene-palette"><SegmentedControl label="Office palette" value={canvas.scenePalette ?? 'neutral'} options={SCENE_PALETTE_OPTIONS} onChange={(scenePalette) => change({ scenePalette })} /></div>
-              } />
-            </SettingsCard>
-            <CanvasPresetGroup canvas={canvas} onPick={pick} variant="gallery" groupRef={groupRef} />
+            <p>Choose a graph style to switch to Graph.</p>
+            <CanvasPresetGroup canvas={canvas} onPick={pick} variant="gallery" groupRef={groupRef} label="Graph style" />
             <div className="canvas-customise">
               <button type="button" className="canvas-customise-toggle" data-testid="canvas-customise" aria-expanded={open} aria-controls={bodyId} onClick={toggle}>
                 <span className="canvas-customise-chevron">
