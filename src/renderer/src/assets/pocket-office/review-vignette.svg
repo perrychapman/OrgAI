@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="144" viewBox="0 0 192 144" shape-rendering="crispEdges">
+<title>Four workers in an original Pocket Office</title><desc>Four workers at desks with shelving, a plant and a message envelope.</desc>
+<defs>
+<pattern id="floor" width="16" height="16" patternUnits="userSpaceOnUse"><rect width="16" height="16" fill="#e4ead5"/><path d="M0 15h16M15 0v16" stroke="#aab4a4"/></pattern>
+<g id="desk"><path fill="#242a2a" d="M0 0h32v14H0z"/><path fill="#aab4a4" d="M1 1h30v10H1z"/><path fill="#65706c" d="M2 12h28v2H2z"/><path fill="#242a2a" d="M9 1h14v8H9z"/><path fill="#65706c" d="M10 2h12v5H10z"/><path fill="#e4ead5" d="M11 3h8v1h-8z"/></g>
+<g id="worker"><path fill="#242a2a" d="M5 0h6v1h2v6h-1v2h-1v1h2v2h1v7h-2v3H9v-2H7v2H4v-3H2v-7h1v-2h2V9H4V7H3V2h2z"/><path fill="#aab4a4" d="M5 3h6v5H5z"/><path fill="#65706c" d="M4 11h8v7H4z"/><path fill="#e4ead5" d="M7 11h2v3H7z"/></g>
+</defs>
+<rect width="192" height="144" fill="#242a2a"/><rect x="4" y="4" width="184" height="136" fill="url(#floor)"/><path fill="#65706c" d="M4 4h184v10H4z"/><path fill="#aab4a4" d="M4 11h184v3H4z"/>
+<path fill="#242a2a" d="M12 17h23v17H12z"/><path fill="#65706c" d="M14 19h19v4H14zm0 6h19v3H14zm0 5h19v2H14z"/><path fill="#e4ead5" d="M16 20h3v2h-3zm7 6h4v1h-4zm5 5h3v1h-3z"/><path fill="#242a2a" d="M161 18h16v16h-16z"/><path fill="#65706c" d="M163 20h12v12h-12z"/><path fill="#aab4a4" d="M168 19h3v10h-3zm-4 3h11v3h-11z"/><path fill="#242a2a" d="M166 30h6v5h-6z"/>
+<use href="#desk" x="43" y="31"/><use href="#desk" x="117" y="31"/><use href="#desk" x="43" y="96"/><use href="#desk" x="117" y="96"/>
+<use href="#worker" x="51" y="47"/><path fill="#242a2a" d="M54 47h10v3H54z"/><use href="#worker" x="125" y="47"/><path fill="#242a2a" d="M127 47h12v2h-12zm-2 2h3v3h-3z"/><use href="#worker" x="51" y="112"/><path fill="#242a2a" d="M53 111h12v4H53zm-1 4h3v3h-3z"/><use href="#worker" x="125" y="112"/><path fill="#242a2a" d="M127 111h12v3h-12zm9 3h3v5h-3z"/>
+<path fill="#242a2a" d="M88 69h16v12H88z"/><path fill="#e4ead5" d="M89 70h14v10H89z"/><path fill="none" stroke="#65706c" d="m89 71 7 5 7-5"/><path fill="#65706c" d="M69 74h13v2H69zm41 0h13v2h-13z"/>
+</svg>
