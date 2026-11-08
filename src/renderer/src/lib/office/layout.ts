@@ -1,10 +1,13 @@
-export const OFFICE_TILE = 16
+import atlas from '../../assets/pocket-office/atlas.json'
+
+export const OFFICE_TILE = atlas.tileSize
 
 export interface Point { x: number; y: number }
 export interface Desk { slot: number; room: number; furniture: Point; anchor: Point }
 export const DESKS_PER_ROOM = 8
 export const ROOM_WIDTH = 18
 export const ROOM_HEIGHT = 13
+export const ROOM_PROPS = [{ name: 'plant', x: 0, y: 10 }, { name: 'shelf', x: 7, y: 10 }, { name: 'coffee-station', x: 15, y: 10 }] as const
 
 /** Retain tombstones so removal and later additions never move an existing desk. */
 export function assignDesks(previous: ReadonlyMap<string, number>, ids: readonly string[]): Map<string, number> {
@@ -18,14 +21,16 @@ export function deskForSlot(slot: number): Desk {
   const local = slot % DESKS_PER_ROOM
   const x = 2 + (local % 4) * 4
   const y = 1 + Math.floor(local / 4) * 5
-  return { slot, room: Math.floor(slot / DESKS_PER_ROOM), furniture: { x, y }, anchor: { x, y: y + 2 } }
+  const [ax, ay] = atlas.props.desk.interactionAnchors[0].cell
+  return { slot, room: Math.floor(slot / DESKS_PER_ROOM), furniture: { x, y }, anchor: { x: x + ax, y: y + ay } }
 }
 
 export function blockedCells(): Set<string> {
-  return new Set(Array.from({ length: DESKS_PER_ROOM }, (_, i) => {
+  const furniture = Array.from({ length: DESKS_PER_ROOM }, (_, i) => {
     const { furniture } = deskForSlot(i)
-    return [[0, 0], [1, 0], [0, 1], [1, 1]].map(([x, y]) => `${furniture.x + x},${furniture.y + y}`)
-  }).flat())
+    return { ...furniture, footprint: atlas.props.desk.footprint }
+  }).concat(ROOM_PROPS.map(({ x, y, name }) => ({ x, y, footprint: atlas.props[name].footprint })))
+  return new Set(furniture.flatMap(p => p.footprint.map(([x, y]) => `${p.x + x},${p.y + y}`)))
 }
 
 /** Breadth-first route through the connected floor; includes both endpoints. */
