@@ -22,6 +22,7 @@ import type {
   RunSummary,
   TranscriptEntry
 } from '../../shared/types'
+import { applyRunDelegation } from '../../shared/delegationView'
 import { statusEventEndFacts } from '../../shared/view/runChains'
 import type { SnapshotResult } from '../client/runStream'
 import { safeLine } from '../output'
@@ -485,6 +486,11 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     case 'plan.updated':
       run = { ...run, plan: e.plan }
       break
+    case 'run.delegation': {
+      const applied = applyRunDelegation(run.summary, run.agents, e)
+      run = { ...run, summary: applied.summary, agents: applied.agents }
+      break
+    }
     case 'agent.message': {
       // Keep only a bounded, sanitized preview; full content remains in the transcript.
       if (typeof e.from !== 'string' || e.from === '') return out

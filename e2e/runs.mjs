@@ -637,6 +637,39 @@ try {
   await shot('run-auth-fail')
   await endSession(page)
 
+  // Required delegation (delegation-enforcement 4.1, 6): lead -> manager (requires policy and evidence) -> policy, evidence.
+  {
+    const before = await findProject(page, NAME)
+    const tpl = before.roles[0]
+    const mk = (id, name, slug, reportsTo, spawnable, requiredReports) => ({ ...tpl, id, name, slug, reportsTo, canSpawn: spawnable.length > 0, spawnable, requiredReports, mcpServers: [], skills: [] })
+    const chart = [
+      mk('dlg-lead', 'Lead', 'dlg-lead', null, ['dlg-mgr'], undefined),
+      mk('dlg-mgr', 'Manager', 'dlg-mgr', 'dlg-lead', ['dlg-pol', 'dlg-evi'], ['dlg-pol', 'dlg-evi']),
+      mk('dlg-pol', 'Policy Analyst', 'dlg-pol', 'dlg-mgr', [], undefined),
+      mk('dlg-evi', 'Evidence Reviewer', 'dlg-evi', 'dlg-mgr', [], undefined)
+    ]
+    await page.evaluate((p) => window.orgai.projects.save(p), { ...before, roles: chart, autoContinue: false })
+    const delegationRun = async (marker, badgeId) => {
+      await page.keyboard.press('Control+t')
+      await page.locator('.new-run').waitFor({ timeout: 5000 })
+      await startOnPage(`Delegate the work ${marker}`)
+      await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+      await page.locator(`[data-testid=${badgeId}]`).first().waitFor({ state: 'attached', timeout: 30_000 }).catch(() => {})
+    }
+    await delegationRun('[mock:delegation-skip]', 'agent-badge-delegation-failed')
+    check((await page.locator('[data-testid=agent-badge-delegation-failed]').count()) >= 1, 'a [mock:delegation-skip] run shows the "Skipped required reports" badge on an agent node')
+    await shot('run-delegation-skip')
+    await endSession(page)
+    await delegationRun('[mock:delegation-fix]', 'agent-badge-delegation-corrected')
+    check((await page.locator('[data-testid=agent-badge-delegation-corrected]').count()) >= 1, 'a [mock:delegation-fix] run shows the "Corrected" badge')
+    await page.waitForFunction(() => document.querySelectorAll('.react-flow__node .agent-node').length >= 4, null, { timeout: 30_000 }).catch(() => {})
+    const fixNodes = await page.locator('.react-flow__node .agent-node').count()
+    check(fixNodes >= 4, 'the corrected run shows the lead, the manager and its two worker nodes', String(fixNodes))
+    await shot('run-delegation-fix')
+    await endSession(page)
+    await page.evaluate((p) => window.orgai.projects.save(p), before)
+  }
+
   // One conversation per chain: Send on an ended run continues it in the same tab, the feed shows both turns with a divider.
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })

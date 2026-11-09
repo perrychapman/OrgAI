@@ -14,7 +14,7 @@ import { Checkbox } from './ui/Checkbox'
 import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
 import { initials } from '../lib/layout'
-import { setReportsTo, wouldCycle } from '../lib/roleOps'
+import { setReportsTo, withRequiredReport, withSpawnableToggled, wouldCycle } from '../lib/roleOps'
 import { roleModelSummary } from '../lib/roleModels'
 import { modelFoldSummary } from '../lib/roleConnection'
 
@@ -44,10 +44,7 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
   const patch = (p: Partial<Role>): void =>
     updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, ...p } : r)))
 
-  const toggleSpawnable = (rid: string): void => {
-    const spawnable = role.spawnable.includes(rid) ? role.spawnable.filter((x) => x !== rid) : [...role.spawnable, rid]
-    patch({ spawnable, canSpawn: spawnable.length > 0 ? true : role.canSpawn })
-  }
+  const toggleSpawnable = (rid: string): void => patch(withSpawnableToggled(role, rid))
 
   const changeParent = (value: string): void => {
     const reportsTo = value || null
@@ -169,17 +166,26 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
             <div className="check-grid">
               {others.length === 0 && <span className="hint">Add more roles to delegate to.</span>}
               {others.map((r) => (
-                <Checkbox
-                  key={r.id}
-                  checked={role.spawnable.includes(r.id)}
-                  onChange={() => toggleSpawnable(r.id)}
-                  label={
-                    <span className="row gap-2">
-                      <span className="avatar xs" style={{ ['--role' as string]: r.color }} aria-hidden="true" />
-                      {r.name}
-                    </span>
-                  }
-                />
+                <div key={r.id} className="row gap-3">
+                  <Checkbox
+                    checked={role.spawnable.includes(r.id)}
+                    onChange={() => toggleSpawnable(r.id)}
+                    label={
+                      <span className="row gap-2">
+                        <span className="avatar xs" style={{ ['--role' as string]: r.color }} aria-hidden="true" />
+                        {r.name}
+                      </span>
+                    }
+                  />
+                  <Checkbox
+                    checked={(role.requiredReports ?? []).includes(r.id)}
+                    onChange={(v) => patch(withRequiredReport(role, r.id, v))}
+                    disabled={!role.spawnable.includes(r.id)}
+                    title="The harness requires this report to be delegated to every time this role finishes"
+                    testId={`role-required-report-${r.slug}`}
+                    label="Required"
+                  />
+                </div>
               ))}
             </div>
           )}

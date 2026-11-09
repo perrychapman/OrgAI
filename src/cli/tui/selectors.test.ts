@@ -80,6 +80,23 @@ describe('trayCards', () => {
 })
 
 describe('orgTreeRows', () => {
+  it('carries one short delegation badge per agent, the most serious first', () => {
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'running', startedAt: 1 })]), { activeRunId: 'r1' })
+    s = applyRecord(s, {
+      ...record(summary('r1', { status: 'running', startedAt: 1 })),
+      agents: {
+        root: agent('root', null),
+        a: agent('a', 'root', { startedAt: 2, delegation: { verdict: 'failed', missing: ['x'], corrected: true, nativeSpawns: 1 } }),
+        b: agent('b', 'root', { startedAt: 3, delegation: { verdict: 'ok', missing: [], corrected: true, nativeSpawns: 0 } }),
+        c: agent('c', 'root', { startedAt: 4, delegation: { verdict: 'ok', missing: [], corrected: false, nativeSpawns: 2 } })
+      }
+    })
+    s = setActiveRun(s, 'r1', ['r1'])
+    const rows = orgTreeRows(s)
+    expect(rows.map((r) => r.delegationBadge)).toEqual([undefined, 'skipped reports', 'corrected', 'native agents'])
+  })
+
   it('depth first, root first, children by start; earlier chain members marked earlier under the root', () => {
     let s = base()
     const r1 = summary('r1', { status: 'finished', startedAt: 1, endedAt: 2, sessionId: 's' })
@@ -105,6 +122,7 @@ describe('orgTreeRows', () => {
     ])
     expect(rows[0]).toMatchObject({ isRoot: true, label: 'Orchestrator', stateWord: 'Thinking' })
     expect(rows[2].worktree).toEqual({ branch: 'wt-a', status: 'active' })
+    expect(rows[2].delegationBadge).toBeUndefined()
     // A handle with control characters falls back to the role name.
     expect(rows[3].label).toBe('Worker')
   })

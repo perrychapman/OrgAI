@@ -4,6 +4,7 @@
  * status from statusText (render.ts statusWordOf), names from agentLabel / runName, costs from costView, the needs-you
  * count from decisionCount (cli-spec 2 item 4).
  */
+import { DELEGATION_BADGE_SHORT, delegationBadges } from '../../shared/delegationView'
 import { VIRTUAL_PROJECT_IDS, type AgentInstance, type AgentState, type CardKind, type RunSummary, type TranscriptEntry } from '../../shared/types'
 import { agentCostInput, costView, formatDuration, formatTokens, runCostInput, sumCosts } from '../../shared/view/cost'
 import { normalizeParents } from '../../shared/view/agentTree'
@@ -363,6 +364,8 @@ function treeOf(
     const label = agentLabel(a)
     const open = earlier ? 0 : (waiting[a.id]?.length ?? 0)
     const chip = a.worktree ? worktreeChipOf(a.worktree) : undefined
+    const firstBadge = delegationBadges(a.delegation)[0]
+    const delegationBadge = firstBadge ? DELEGATION_BADGE_SHORT[firstBadge] : undefined
     const tr = earlier ? undefined : traffic.get(a.id)
     out.push({
       id: rowId(a),
@@ -381,6 +384,7 @@ function treeOf(
       ...(earlier ? { earlier: true, earlierKey: earlierGroupKey } : {}),
       ...(open > 0 ? { waiting: open } : {}),
       ...(chip ? { worktreeChip: chip } : {}),
+      ...(delegationBadge ? { delegationBadge } : {}),
       ...(tr && tr.out.length > 0 ? { msgOut: tr.out } : {}),
       ...(tr && tr.in.length > 0 ? { msgIn: tr.in } : {}),
       ...(tr?.recent ? { traffic: true } : {}),
