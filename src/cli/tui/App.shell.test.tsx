@@ -134,6 +134,19 @@ describe('conversation-first layout', () => {
     expect(m.frame()).toContain('Check the result')
   })
 
+  it('uses the available sidebar height for all eleven tasks beneath a five-agent team', async () => {
+    const run = record(summary('run1', { status: 'running' }))
+    for (let i = 1; i <= 4; i++) run.agents[`agent${i}`] = { ...run.agents.root, id: `agent${i}`, parentId: 'root', name: `Member ${i}`, handle: `member-${i}` }
+    run.plan = { goal: 'Complete the work', status: 'active', autoContinues: 0, updatedAt: 1,
+      steps: Array.from({ length: 11 }, (_, i) => ({ id: `p${i}`, title: `Checklist task ${i + 1}`, status: i === 7 ? 'in_progress' as const : 'pending' as const })) }
+    const m = mount({ cols: 120, rows: 52, state: applyRecord(stateWith(), run) })
+    await tick()
+    const checklist = m.frame().split('Tasks')[1] ?? ''
+    for (let i = 1; i <= 11; i++) expect(checklist).toContain(`Checklist task ${i}`)
+    expect(checklist).not.toContain('Tab to view')
+    expect(checklist).toContain('0% · Estimating')
+  })
+
   it.each(['active', 'blocked', 'done'] as const)('shows the %s run plan beneath the team automatically', async (status) => {
     const state = applyRecord(stateWith(), record(summary('run1', { status: 'running' }), {
       plan: { goal: 'Build the dashboard', status, autoContinues: 0, updatedAt: 1, steps: [

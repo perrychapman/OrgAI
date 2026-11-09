@@ -126,19 +126,37 @@ describe('PlanPane', () => {
     t.unmount()
   })
 
-  it('shows at most five tasks and follows the current task in a long plan', () => {
+  it('shows every task when the pane has room', () => {
     const many = { ...PLAN, steps: Array.from({ length: 20 }, (_, i) => step(String(i), i === 14 ? 'in_progress' : 'pending')), total: 20 }
     const t = mount({ plan: many, height: 40 })
     expect(t.lastFrame()).toContain('Step 14')
+    expect(lines(t.lastFrame()).filter(line => /Step \d/.test(line))).toHaveLength(20)
+    expect(t.lastFrame()).not.toContain('of 20')
+    t.unmount()
+  })
+
+  it('fills an exact-fit pane and keeps the active task and progress visible after shrinking', async () => {
+    const many = { ...PLAN, total: 11, steps: Array.from({ length: 11 }, (_, i) => step(String(i), i === 7 ? 'in_progress' : 'pending')) }
+    const t = mount({ plan: many, height: 13 })
+    expect(lines(t.lastFrame()).filter(line => /Step \d/.test(line))).toHaveLength(11)
+    expect(t.lastFrame()).not.toContain('Tab to view')
+    t.rerender({ height: 8 })
+    await new Promise(resolve => setTimeout(resolve, 20))
     expect(lines(t.lastFrame()).filter(line => /Step \d/.test(line))).toHaveLength(5)
-    expect(t.lastFrame()).toContain('of 20')
+    expect(t.lastFrame()).toContain('Step 7')
+    expect(t.lastFrame()).toContain('of 11')
+    expect(lines(t.lastFrame())[1]).toContain('%')
+    t.rerender({ height: 20 })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(lines(t.lastFrame()).filter(line => /Step \d/.test(line))).toHaveLength(11)
+    expect(t.lastFrame()).not.toContain('Tab to view')
     t.unmount()
   })
 
   it('resets manual scrolling on refocus and on a different run', async () => {
     const tick = () => new Promise(r => setTimeout(r, 20))
     const many = { ...PLAN, runId: 'r1', steps: Array.from({ length: 20 }, (_, i) => step(String(i), i === 14 ? 'in_progress' : 'pending')), total: 20 }
-    const t = mount({ plan: many, height: 12, focused: true })
+    const t = mount({ plan: many, height: 8, focused: true })
     await tick()
     press(t.bus, 'plan', key('end'))
     await tick()

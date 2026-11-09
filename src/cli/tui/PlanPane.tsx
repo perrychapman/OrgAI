@@ -1,4 +1,4 @@
-/** Compact run checklist: pinned progress/ETA and up to five one-line tasks. */
+/** Compact run checklist: pinned progress/ETA and as many one-line tasks as fit. */
 import { useEffect, useRef, useState } from 'react'
 import { useFocusHandler, useTuiEnv } from './context'
 import { observePlan, planProgress, type PlanObservation } from './planProgress'
@@ -115,8 +115,8 @@ export function PlanPane(props: PlanPaneProps) {
   } else head.push({ key: 'empty', segs: cutSegs([{ text: 'No plan yet', dim: true }], width, env) })
 
   const room = Math.max(0, height - head.length)
-  const overflow = steps.length > Math.min(5, room) && room >= 2
-  const bodyH = Math.min(5, Math.max(0, room - (overflow ? 1 : 0)))
+  const overflow = steps.length > room && room >= 2
+  const bodyH = Math.max(0, room - (overflow ? 1 : 0))
   const maxTop = Math.max(0, steps.length - bodyH)
   const current = plan?.steps.findIndex(step => step.status === 'blocked') ?? -1
   const active = plan?.steps.findIndex(step => step.status === 'in_progress') ?? -1
