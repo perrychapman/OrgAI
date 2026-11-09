@@ -225,6 +225,68 @@ describe('stderr helpers', () => {
     feed('y'.repeat(STDERR_TAIL_MAX_CHARS * 5))
     expect(s.stderrTail().length).toBeLessThanOrEqual(STDERR_TAIL_MAX_CHARS)
   })
+
+  it('does not split known secrets when flushing a newline-free stderr line', () => {
+    const key = 'synthetic-codex-secret-value-1234567890'
+    const seen: string[] = []
+    const s = new CodexAppServer({ env: { OPENAI_API_KEY: key }, onStderr: (line) => seen.push(line) })
+    const feed = (s as unknown as { onStderrData(c: string): void }).onStderrData.bind(s)
+
+    feed(`${'x'.repeat(7200)}${key}${'z'.repeat(1014)}`)
+    feed('\n')
+
+    const output = seen.join('\n')
+    expect(output).not.toContain(key)
+    expect(output).not.toContain(key.slice(0, 20))
+    expect(output).not.toContain(key.slice(20))
+    expect(output).toContain('[redacted]')
+  })
+
+  it('masks an unknown key-like value before a forced flush cuts through it', () => {
+    const seen: string[] = []
+    const s = new CodexAppServer({ onStderr: (line) => seen.push(line) })
+    const feed = (s as unknown as { onStderrData(c: string): void }).onStderrData.bind(s)
+    const key = `sk-${'A'.repeat(40)}`
+
+    feed(`${'x'.repeat(7190)}${key} error ${'z'.repeat(1014)}`)
+    feed('\n')
+
+    const output = seen.join('\n')
+    expect(output).not.toContain(key)
+    expect(output).not.toContain(key.slice(0, 20))
+    expect(output).not.toContain(key.slice(20))
+    expect(output).toContain('[redacted]')
+  })
+
+  it('suppresses the rest of an unknown unbounded key-like value after a forced cut', () => {
+    const seen: string[] = []
+    const s = new CodexAppServer({ onStderr: (line) => seen.push(line) })
+    const feed = (s as unknown as { onStderrData(c: string): void }).onStderrData.bind(s)
+    const token = 'synthetic-bearer-value-abcdefghijklmnopqrstuvwxyz'
+
+    feed(`${'x'.repeat(7200)}Bearer ${token.slice(0, 8)}`)
+    feed(token.slice(8, 18).padEnd(1000, 'q'))
+    feed('q'.repeat(8000))
+    feed(`${token.slice(18)}\nnormal line\n`)
+
+    const output = seen.join('\n')
+    expect(output).not.toContain('Bearer')
+    expect(output).not.toContain(token)
+    expect(output).not.toContain(token.slice(0, 8))
+    expect(output).not.toContain(token.slice(8, 18))
+    expect(output).toContain('normal line')
+  })
+
+  it('redacts known secrets from non-JSON stdout diagnostics', () => {
+    const key = 'synthetic-codex-secret-value-1234567890'
+    const seen: string[] = []
+    const s = new CodexAppServer({ env: { OPENAI_API_KEY: key }, onStderr: (line) => seen.push(line) })
+    const feed = (s as unknown as { onData(c: string): void }).onData.bind(s)
+
+    feed(`not-json ${key}\n`)
+
+    expect(seen).toEqual(['(non-JSON stdout) not-json [redacted]'])
+  })
 })
 
 describe.skipIf(!live)('real codex app-server (token-free)', () => {

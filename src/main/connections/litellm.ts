@@ -7,6 +7,7 @@ import { validModelId } from './codexAccount'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { MOCK_BAD_KEY, isMockProxyUrl, mockProxyModels, normalizeProxyUrl } from './proxy'
 import { sanitizeModelPrice } from '../runtime/pricing'
+import { cancelResponseBody, readCappedResponseText } from '../http/readCapped'
 
 /**
  * LiteLLM proxy discovery. UNVERIFIED against a live proxy (written from LiteLLM's documented API):
@@ -86,11 +87,16 @@ async function getJsonUrl(url: string, path: string, base: string, key: string, 
     throw new Error(`Could not reach ${hostOf(base)}`)
   }
   if (!res.ok) {
-    let reason = res.statusText
-    if (res.status === 401 || res.status === 403) reason = 'invalid key'
+    // statusText is remote-controlled too. Redact the complete key before bounding this fallback string.
+    let reason = printableText(res.statusText.split(key).join('***')).slice(0, 120)
+    if (res.status === 401 || res.status === 403) {
+      reason = 'invalid key'
+      await cancelResponseBody(res)
+    }
     else {
       try {
-        const body = (await res.json()) as { error?: { message?: unknown } | string; detail?: unknown }
+        const text = await readCappedResponseText(res, LITELLM_MAX_BODY_BYTES)
+        const body = JSON.parse(text) as { error?: { message?: unknown } | string; detail?: unknown }
         const msg = typeof body.error === 'string' ? body.error : body.error?.message ?? body.detail
         if (typeof msg === 'string' && msg) reason = printableText(msg.split(key).join('***')).slice(0, 120)
       } catch {
@@ -101,7 +107,7 @@ async function getJsonUrl(url: string, path: string, base: string, key: string, 
   }
   let text: string
   try {
-    text = await readCapped(res, LITELLM_MAX_BODY_BYTES)
+    text = await readCappedResponseText(res, LITELLM_MAX_BODY_BYTES)
   } catch {
     throw new Error(`${path} response was too large or unreadable`)
   }
@@ -122,10 +128,13 @@ async function getStatusJson(url: string, key: string, fetchImpl: FetchLike): Pr
   } catch {
     return { kind: 'failed' }
   }
-  if (!res.ok) return { kind: 'status', status: res.status }
+  if (!res.ok) {
+    await cancelResponseBody(res)
+    return { kind: 'status', status: res.status }
+  }
   let text: string
   try {
-    text = await readCapped(res, LITELLM_MAX_BODY_BYTES)
+    text = await readCappedResponseText(res, LITELLM_MAX_BODY_BYTES)
   } catch {
     return { kind: 'failed' }
   }
@@ -134,31 +143,6 @@ async function getStatusJson(url: string, key: string, fetchImpl: FetchLike): Pr
   } catch {
     return { kind: 'failed' }
   }
-}
-
-/** The body as text, failing once it passes `max` bytes (the stream is cancelled). */
-async function readCapped(res: Response, max: number): Promise<string> {
-  const declared = Number(res.headers?.get?.('content-length'))
-  if (Number.isFinite(declared) && declared > max) throw new Error('too large')
-  if (!res.body) {
-    const t = await res.text()
-    if (t.length > max) throw new Error('too large')
-    return t
-  }
-  const reader = res.body.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.byteLength
-    if (size > max) {
-      await reader.cancel().catch(() => undefined)
-      throw new Error('too large')
-    }
-    chunks.push(value)
-  }
-  return Buffer.concat(chunks).toString('utf8')
 }
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {})

@@ -63,6 +63,7 @@ import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSp
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
 import { isolateClaudeEnv, scrubControlEnv } from './childEnv'
+import { StreamingSecretRedactor } from './streamRedactor'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import { WorktreeIntegrator } from './integration'
 import { resolveParent } from './agentTree'
@@ -1128,6 +1129,7 @@ export class ClaudeSession implements RuntimeSession {
   private harnessServer?: McpSdkServerConfigWithInstance
   /** Secret values (MCP env/headers, connection tokens) redacted from logged lines. Never emitted. */
   private secrets = new Set<string>()
+  private stderrRedactor = new StreamingSecretRedactor('***')
   /** Generates report handles (implementer-1, implementer-2) for spawns that did not name themselves. */
   private handles = new HandleNamer()
   /** Agent tool_use id -> the handle the report was spawned with; stored on the agent at task_started. */
@@ -3060,7 +3062,7 @@ export class ClaudeSession implements RuntimeSession {
       abortController: this.abort,
       env,
       stderr: (data) => {
-        const line = redactSecrets(data.trim(), this.secrets)
+        const line = this.stderrRedactor.push(data, this.secrets).trim()
         if (line) this.log('warn', line)
       },
       canUseTool: async (toolName, input, permOptions) => {
@@ -3268,6 +3270,8 @@ export class ClaudeSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId, status: 'error', error: message })
       }
     } finally {
+      const trailingStderr = this.stderrRedactor.push('', this.secrets, true).trim()
+      if (trailingStderr) this.log('warn', trailingStderr)
       this.ending = true
       this.continuation.dispose()
       this.stopUsagePolling()

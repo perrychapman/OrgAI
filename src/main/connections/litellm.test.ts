@@ -220,6 +220,65 @@ describe('proxy output bounds', () => {
     const fetchImpl = (async () => big()) as unknown as typeof fetch
     await expect(fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl)).rejects.toThrow(/too large/)
   })
+
+  it('does not buffer a declared oversized error response', async () => {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([0x78]))
+      },
+      cancel() {
+        cancelled = true
+      }
+    })
+    const fetchImpl = (async () => new Response(body, {
+      status: 500,
+      statusText: 'Internal Server Error',
+      headers: { 'content-length': String(LITELLM_MAX_BODY_BYTES + 1) }
+    })) as unknown as typeof fetch
+    const error = await fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl).catch((e: Error) => e)
+    expect((error as Error).message).toBe('500 from /v1/models: Internal Server Error')
+    expect(cancelled).toBe(true)
+  })
+
+  it('cancels a chunked oversized error response', async () => {
+    let cancelled = false
+    const fetchImpl = (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(LITELLM_MAX_BODY_BYTES))
+        controller.enqueue(new Uint8Array([0x78]))
+      },
+      cancel() {
+        cancelled = true
+      }
+    }), { status: 500, statusText: 'Internal Server Error' })) as unknown as typeof fetch
+    const error = await fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl).catch((e: Error) => e)
+    expect((error as Error).message).toBe('500 from /v1/models: Internal Server Error')
+    expect(cancelled).toBe(true)
+  })
+
+  it('redacts the supplied key from a remote statusText when the error body is not JSON', async () => {
+    const key = 'synthetic-proxy-key-1234567890'
+    const fetchImpl = (async () => new Response('not json', {
+      status: 500,
+      statusText: `Proxy rejected ${key}`
+    })) as unknown as typeof fetch
+    const error = await fetchLiteLLMModels('http://localhost:4000', key, fetchImpl).catch((e: Error) => e)
+    expect((error as Error).message).toContain('Proxy rejected ***')
+    expect((error as Error).message).not.toContain(key)
+  })
+
+  it('redacts the supplied key from statusText when an error body is too large', async () => {
+    const key = 'synthetic-proxy-key-1234567890'
+    const fetchImpl = (async () => new Response('oversized', {
+      status: 500,
+      statusText: `Proxy rejected ${key}`,
+      headers: { 'content-length': String(LITELLM_MAX_BODY_BYTES + 1) }
+    })) as unknown as typeof fetch
+    const error = await fetchLiteLLMModels('http://localhost:4000', key, fetchImpl).catch((e: Error) => e)
+    expect((error as Error).message).toContain('Proxy rejected ***')
+    expect((error as Error).message).not.toContain(key)
+  })
 })
 
 // ---- Spend by period (daily activity routes; the proxy shape is UNVERIFIED live, tests use fixtures) ----

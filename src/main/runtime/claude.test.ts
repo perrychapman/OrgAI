@@ -771,6 +771,23 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
   const attach = (s: ClaudeSession, spec: McpServerSpec) => (s as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(spec)
   const init = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] }
   const result = { type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} }
+  it('does not expose fragments when the SDK splits a secret across stderr callbacks', async () => {
+    const { ctx, session } = start([])
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const secret = 'synthetic-claude-secret-value-1234567890'
+    ;(session as unknown as { secrets: Set<string> }).secrets.add(secret)
+    const stderr = sdk.queries[0]!.options.stderr as (chunk: string) => void
+
+    stderr(`provider echoed ${secret.slice(0, 18)}`)
+    stderr(`${secret.slice(18)} after`)
+
+    const logged = ctx.events.flatMap((event) => (event.type === 'log' ? [event.message] : [])).join('\n')
+    expect(logged).toContain('***')
+    expect(logged).not.toContain(secret)
+    expect(logged).not.toContain(secret.slice(0, 18))
+    expect(logged).not.toContain(secret.slice(18))
+  })
+
   it('switches the idle root in the existing query without changing transcript or continuation state', async () => {
     const { ctx, session } = start([])
     await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))

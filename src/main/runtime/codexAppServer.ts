@@ -4,6 +4,7 @@ import { delimiter, join } from 'node:path'
 import { trackChildProcess } from '../host/shutdown'
 import { scrubControlEnv } from './childEnv'
 import { checkCodexBinary, lookupCodexBinary, type CodexBinary, type CodexLookupOptions, type CodexVersionRunner } from './codexBinary'
+import { StreamingSecretRedactor } from './streamRedactor'
 
 /**
  * A client for `codex app-server`: JSON-RPC 2.0 messages, one JSON object per line, over the child's stdio.
@@ -54,9 +55,6 @@ export function redactSecrets(text: string, secrets: readonly string[]): string 
   for (const s of [...secrets].filter((v) => v.length >= 4).sort((a, b) => b.length - a.length)) out = out.split(s).join('[redacted]')
   return out
 }
-
-/** Characters kept back when a newline-free stderr run is flushed (longer than any key we pass). */
-const STDERR_CARRY = 1_024
 
 /**
  * Mask key-like tokens exact-value redaction cannot match (a gateway echoing a key fragment, a token codex holds
@@ -130,6 +128,8 @@ export class CodexAppServer {
   private serverRequestHandler?: ServerRequestHandler
   private buffer = ''
   private stderrBuffer = ''
+  private stderrRedactor = new StreamingSecretRedactor('[redacted]', 4)
+  private suppressStderrLine = false
   private stderrLines: string[] = []
   private closed = false
   private exitHandlers = new Set<(code: number | null, error?: Error) => void>()
@@ -248,6 +248,7 @@ export class CodexAppServer {
   private handleExit(code: number | null, error?: Error): void {
     if (this.closed) return
     this.closed = true
+    this.appendStderr(this.stderrRedactor.push('', this.secrets(), true))
     // A last line without a newline still counts.
     if (this.stderrBuffer.trim()) this.pushStderrLine(this.stderrBuffer)
     this.stderrBuffer = ''
@@ -298,18 +299,30 @@ export class CodexAppServer {
 
   /** stderr arrives in chunks that can split a line: complete lines go out, the rest waits for the next chunk. */
   private onStderrData(chunk: string): void {
-    this.stderrBuffer += chunk
+    this.appendStderr(this.stderrRedactor.push(chunk, this.secrets()))
+  }
+
+  private appendStderr(text: string): void {
+    if (this.suppressStderrLine) {
+      const newline = text.indexOf('\n')
+      if (newline < 0) return
+      this.suppressStderrLine = false
+      text = text.slice(newline + 1)
+    }
+    if (!text) return
+    this.stderrBuffer += text
     let nl: number
     while ((nl = this.stderrBuffer.indexOf('\n')) >= 0) {
       const line = this.stderrBuffer.slice(0, nl)
       this.stderrBuffer = this.stderrBuffer.slice(nl + 1)
       this.pushStderrLine(line)
     }
-    // A runaway line without newlines is flushed in pieces so the buffer stays bounded.
-    // The last STDERR_CARRY characters stay buffered so a secret is never cut in two by the flush.
+    // Do not split a runaway line into independently scrubbed fragments: a credential could straddle the cut and
+    // lose the prefix that lets maskKeyLike recognize it. Emit a fixed marker, then discard through the next newline.
     if (this.stderrBuffer.length > STDERR_TAIL_MAX_CHARS * 4) {
-      this.pushStderrLine(this.stderrBuffer.slice(0, -STDERR_CARRY))
-      this.stderrBuffer = this.stderrBuffer.slice(-STDERR_CARRY)
+      this.stderrBuffer = ''
+      this.pushStderrLine('[redacted] (oversized stderr line omitted)')
+      this.suppressStderrLine = true
     }
   }
 
@@ -339,7 +352,7 @@ export class CodexAppServer {
       if (!parsed || typeof parsed !== 'object') return
       msg = parsed as Record<string, unknown>
     } catch {
-      this.options.onStderr?.(`(non-JSON stdout) ${line.slice(0, 200)}`)
+      this.options.onStderr?.(this.scrub(`(non-JSON stdout) ${line}`).slice(0, 200))
       return
     }
     const id = msg.id as number | string | undefined
