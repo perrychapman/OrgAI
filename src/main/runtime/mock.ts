@@ -4,7 +4,7 @@ import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcri
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
-import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
+import { cleanRequiredReports, mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
@@ -107,6 +107,13 @@ import { buildRolePrompt } from './prompts'
  * untilInMs 1500 and the session ends (RunManager pauses the run). [mock:exec-slow] (execSlowSteps): about 30 text
  * steps one second apart, cut short by interrupt and stop. Every root turn end calls ctx.onRootTurnEnded before
  * run.status 'idle' (the auth-fail marker reports ok false with isAuthError, before its 'error' status).
+ * Required-delegation markers (work runs, default script; chart root -> manager -> two required workers): [mock:delegation-ok]
+ * (delegationSteps: the manager spawns both workers, both report, then it reports), [mock:delegation-fix] (the manager
+ * tries to finish without them, is corrected by the harness gate, then spawns them and finishes), [mock:delegation-skip]
+ * (never complies: the second finish is accepted as failed and its report carries the failure line) and
+ * [mock:delegation-claim] (like skip, and the manager's report claims both workers ran). Each ends with the plan steps
+ * when [mock:exec-plan] is also in the prompt. The mock calls ctx.delegation at each spawn, completion and delivery
+ * and prefixes receiptText to the report its parent receives; it is the reference for the real adapters.
  * Model switching markers (all run kinds): [mock:model-switch] yields one root text then idle, without cards;
  * replies echo the active root model. [mock:model-switch-limit] ends the first session at a usage limit with
  * a reset 24 hours away (set autoResume off in the test); [mock:model-switch-error] ends it with a provider error.
@@ -161,7 +168,7 @@ export type MockStep =
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
   | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
-  | { type: 'finish'; id: string; result: string }
+  | { type: 'finish'; id: string; result: string; /** Steps run when the delegation gate corrects the agent (the agent complies), before it tries to finish again. */ comply?: MockStep[] }
   /** Call one of the harness's own tools by bare name (propose_architecture, ask_user, complete_setup, ...). */
   | {
       type: 'harness'
@@ -590,6 +597,46 @@ export function folderConfigSteps(loaded: boolean, covered: boolean): MockStep[]
 /** Trigger token (work runs, default script): the root changes its own project's MCP servers and skills mid-run. */
 /** Trigger token (work runs, default script): a three-level agent tree whose reports all finish (deepTreeSteps). */
 export const DEEP_TREE_TOKEN = '[mock:deep-tree]'
+
+/** Required-delegation markers (work runs, default script). See the file header. */
+export const DELEGATION_OK_TOKEN = '[mock:delegation-ok]'
+export const DELEGATION_FIX_TOKEN = '[mock:delegation-fix]'
+export const DELEGATION_SKIP_TOKEN = '[mock:delegation-skip]'
+export const DELEGATION_CLAIM_TOKEN = '[mock:delegation-claim]'
+/** The agent ids the delegation scripts spawn. */
+export const MOCK_DELEGATION_MANAGER = 'mock-manager'
+export const MOCK_DELEGATION_WORKERS = ['mock-worker-1', 'mock-worker-2'] as const
+export const MOCK_DELEGATION_CLAIM = 'I spawned both workers and obtained both reports before synthesizing.'
+
+/**
+ * The required-delegation turn: the root spawns the manager (`managerSlug`); `variant` decides how it treats its required
+ * workers (`workerSlugs`, spawned under it). 'fix' complies after the harness correction, 'skip' and 'claim' never do.
+ */
+export function delegationSteps(variant: 'ok' | 'fix' | 'skip' | 'claim', managerSlug: string, workerSlugs: readonly string[]): MockStep[] {
+  const m = MOCK_DELEGATION_MANAGER
+  const workers = workerSlugs.map((slug, i) => ({ slug, id: MOCK_DELEGATION_WORKERS[i] ?? `mock-worker-${i + 1}` }))
+  const spawnAll = (): MockStep[] => workers.map((w) => ({ type: 'spawn', id: w.id, name: w.id, parent: m, role: w.slug, description: `Do the ${w.slug} part` }) as MockStep)
+  const finishAll = (): MockStep[] => workers.map((w) => ({ type: 'finish', id: w.id, result: `${w.slug} part done.` }) as MockStep)
+  const head: MockStep[] = [
+    { type: 'text', text: 'Planning the work: one manager owns it.' },
+    { type: 'spawn', id: m, name: m, role: managerSlug, description: 'Manage the work' }
+  ]
+  if (variant === 'ok') {
+    return [...head, ...spawnAll(), ...finishAll(), { type: 'finish', id: m, result: 'Both parts are done and combined.' }, { type: 'text', text: 'The manager finished.' }]
+  }
+  const claim = variant === 'claim'
+  return [
+    ...head,
+    { type: 'text', agent: m, text: claim ? MOCK_DELEGATION_CLAIM : 'Wrapping up.' },
+    {
+      type: 'finish',
+      id: m,
+      result: claim ? MOCK_DELEGATION_CLAIM : 'Done.',
+      ...(variant === 'fix' ? { comply: [...spawnAll(), ...finishAll()] } : {})
+    },
+    { type: 'text', text: 'The manager finished.' }
+  ]
+}
 
 /** Headless exec markers (work runs, default script). See the file header. */
 export const EXEC_PLAN_TOKEN = '[mock:exec-plan]'
@@ -1366,6 +1413,11 @@ export class MockSession implements RuntimeSession {
     }
   }
 
+  /** RuntimeSession.nudge: a harness message for the orchestrator (the delegation correction), not an auto-continue. */
+  async nudge(text: string): Promise<void> {
+    this.deliverHarness(text, 'Reading a harness reminder…')
+  }
+
   /** Headless exec settlement view (cli-spec 6.2(2)). The mock has no integrator or restarts. */
   settlement(): SessionSettlement {
     const root = this.agents.get(ROOT_AGENT_ID)
@@ -1728,6 +1780,8 @@ export class MockSession implements RuntimeSession {
       if (!ref) this.log('info', 'Mock [mock:reference-shell]: this run has no reference folder, so the command step is skipped.')
       return referenceShellSteps(ref)
     }
+    const delegation = this.delegationMarkerSteps()
+    if (delegation) return delegation
     const execMarker = this.execMarkerSteps()
     if (execMarker) return execMarker
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
@@ -1792,6 +1846,7 @@ export class MockSession implements RuntimeSession {
     return buildRolePrompt(role, this.ctx.roles, this.ctx.project, {
       isSetup: this.isSetup,
       isolation: false,
+      ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}),
       ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}),
       ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}),
       ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
@@ -1817,6 +1872,19 @@ export class MockSession implements RuntimeSession {
   }
 
   /** The headless exec markers' first turn (work runs, default script), or null. */
+  /** The [mock:delegation-*] turn (root -> manager -> required workers), then the exec plan steps with [mock:exec-plan]. */
+  private delegationMarkerSteps(): MockStep[] | null {
+    if (this.isSetup || this.ctx.run.kind !== 'work' || this.ctx.run.quick || this.script.work !== DEFAULT_WORK) return null
+    const prompt = this.ctx.prompt
+    const variant = prompt.includes(DELEGATION_CLAIM_TOKEN) ? 'claim' : prompt.includes(DELEGATION_SKIP_TOKEN) ? 'skip' : prompt.includes(DELEGATION_FIX_TOKEN) ? 'fix' : prompt.includes(DELEGATION_OK_TOKEN) ? 'ok' : null
+    if (!variant) return null
+    const managerSlug = this.firstSpawnableSlug(this.root)
+    const manager = this.rolesBySlug.get(managerSlug)
+    const required = manager ? (cleanRequiredReports(manager) ?? manager.spawnable) : []
+    const slugs = required.map((id) => this.ctx.roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
+    return [...delegationSteps(variant, managerSlug, slugs), ...(prompt.includes(EXEC_PLAN_TOKEN) ? execPlanSteps() : [])]
+  }
+
   private execMarkerSteps(): MockStep[] | null {
     if (this.isSetup || this.ctx.run.kind !== 'work' || this.ctx.run.quick || this.script.work !== DEFAULT_WORK) return null
     const prompt = this.ctx.prompt
@@ -1932,19 +2000,8 @@ export class MockSession implements RuntimeSession {
         return this.toolStep(step)
       case 'spawn':
         return this.spawnStep(step)
-      case 'finish': {
-        const a = this.ensureAgent(step.id)
-        a.result = step.result
-        a.state = 'done'
-        a.activity = 'Reported back'
-        a.endedAt = Date.now()
-        this.upsert(a)
-        this.noteActivity('report')
-        const toolUseId = this.spawnToolUse.get(step.id)
-        if (toolUseId) this.transcript(a.parentId ?? ROOT_AGENT_ID, { kind: 'tool_result', toolUseId, content: step.result, isError: false })
-        if (a.parentId) this.setState(a.parentId, 'thinking', 'Thinking…')
-        return
-      }
+      case 'finish':
+        return this.finishStep(step)
       case 'harness': {
         const result = await this.harnessStep(step)
         if (step.echo !== undefined && result !== undefined && !this.stopped && !this.interrupted) {
@@ -2337,6 +2394,42 @@ export class MockSession implements RuntimeSession {
     return allowed[0]?.slug ?? fallback ?? this.ctx.roles.find((r) => r.reportsTo !== null)?.slug ?? this.root.slug
   }
 
+  /**
+   * A report finishes. With ctx.delegation the gate is asked first (spec 5.2): a correction is shown to the agent, `comply`
+   * steps run, then it tries again; the report its parent receives carries the harness receipt, and delivery is confirmed.
+   */
+  private async finishStep(step: Extract<MockStep, { type: 'finish' }>): Promise<void> {
+    const gate = this.ctx.delegation
+    let text = step.result
+    if (gate) {
+      const ask = (): ReturnType<typeof gate.completion> => gate.completion(step.id, { canCorrect: true, canWait: true, reportText: step.result })
+      let d = ask()
+      if (d.action === 'correct' && d.text) {
+        this.transcript(step.id, { kind: 'system', text: d.text }, { source: 'harness' })
+        for (const c of step.comply ?? []) {
+          if (this.stopped || this.interrupted) return
+          await this.step(c)
+        }
+        d = ask()
+      }
+      // 'none': the agent already ended. 'wait': a required child is still running (the script never does this), it stays open.
+      if (d.action === 'none' || d.action === 'wait' || d.action === 'correct') return
+      const receipt = gate.receiptText(step.id)
+      if (receipt) text = `${receipt}\n\n${step.result}`
+    }
+    const a = this.ensureAgent(step.id)
+    a.result = step.result
+    a.state = 'done'
+    a.activity = 'Reported back'
+    a.endedAt = Date.now()
+    this.upsert(a)
+    this.noteActivity('report')
+    const toolUseId = this.spawnToolUse.get(step.id)
+    if (toolUseId) this.transcript(a.parentId ?? ROOT_AGENT_ID, { kind: 'tool_result', toolUseId, content: text, isError: false })
+    gate?.delivered(step.id)
+    if (a.parentId) this.setState(a.parentId, 'thinking', 'Thinking…')
+  }
+
   private async spawnStep(step: Extract<MockStep, { type: 'spawn' }>): Promise<void> {
     const parentId = step.parent ?? ROOT_AGENT_ID
     const parent = this.ensureAgent(parentId)
@@ -2371,6 +2464,7 @@ export class MockSession implements RuntimeSession {
       state: 'thinking',
       activity: step.description.slice(0, 90) || 'Reading the brief…'
     })
+    if (role) this.ctx.delegation?.noteSpawn(step.id, agentParent ?? parentId, role.id)
     this.transcript(step.id, { kind: 'user', text: brief })
     // After the upsert, so the row lands on the report (like Codex); the block stays out of its transcript entry.
     this.promptKnowledgeBriefs.push({ agentId: step.id, brief: this.ctx.knowledgeBrief?.() })

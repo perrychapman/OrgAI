@@ -940,6 +940,16 @@ export const completePlan = defineTool({
   async handler(ctx, { summary }, hooks) {
     const current = ctx.getPlan()
     if (!current) return 'There is no plan to complete. Give the user your final report.'
+    // Required delegation (spec 5.6): a provisional root check; finalizeDelegation records the verdict at the end of the run.
+    let delegationNote = ''
+    if (ctx.delegation) {
+      const d = ctx.delegation.completion(ROOT_AGENT_ID, { canCorrect: true, canWait: true, reportText: summary, provisional: true })
+      if (d.action === 'wait') return `REFUSED: reports are still running.${d.text ? ` ${d.text}` : ''} The plan stays active.`
+      if (d.action === 'correct') return `REFUSED: ${d.text ?? 'required reports are missing.'} The plan stays active.`
+      if (d.action === 'fail') {
+        delegationNote = ` The run is recorded as failing its required delegation${d.missing ? ` (${d.missing})` : ''}; say so plainly in your report.`
+      }
+    }
     const plan: RunPlan = { ...current, status: 'done', summary: summary.trim(), updatedAt: Date.now() }
     delete plan.blockedReason
     await ctx.updatePlan(plan)
@@ -947,6 +957,7 @@ export const completePlan = defineTool({
     const open = remainingSteps(plan)
     return (
       'Plan marked complete. Give the user your final report now.' +
+      delegationNote +
       (open.length ? ` Note: ${open.map((s) => s.id).join(', ')} ${open.length === 1 ? 'was' : 'were'} not marked done; say why in the report.` : '')
     )
   }

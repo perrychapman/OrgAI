@@ -24,6 +24,8 @@ export interface CompletionResult {
   /** Correction / wait text to send the agent. */
   text?: string
   verdict?: DelegationVerdict
+  /** On 'fail': what is missing, in words. */
+  missing?: string
 }
 
 export interface DelegationLedgerOptions {
@@ -81,7 +83,7 @@ export class DelegationLedger {
   }
 
   /** An agent tries to finish (spec 4.4). Writes the receipt on allow / fail. */
-  completion(agentId: string, opts: { canCorrect: boolean; canWait: boolean; reportText: string }): CompletionResult {
+  completion(agentId: string, opts: { canCorrect: boolean; canWait: boolean; reportText: string; provisional?: boolean }): CompletionResult {
     const a = this.state.agents[agentId]
     if (!a) return { action: 'allow', verdict: 'adaptive' }
     if (a.phase === 'ended') return { action: 'none' }
@@ -109,6 +111,12 @@ export class DelegationLedger {
         })
       }
     }
+    if (opts.provisional) {
+      // Decide only: the agent stays open and nothing is recorded (the root's complete_plan; finalizeDelegation records the verdict).
+      return r.action === 'fail'
+        ? { action: 'fail', verdict: r.verdict, missing: labels.map((m) => `${m.slug} ${whyText(m.why)}`).join('; ') }
+        : { action: r.action, verdict: r.verdict }
+    }
     a.phase = 'done'
     a.verdict = r.verdict
     a.missing = r.action === 'fail' ? missing : []
@@ -124,7 +132,7 @@ export class DelegationLedger {
       }
       this.state.receipts.push(receipt)
     }
-    return { action: r.action, verdict: r.verdict }
+    return { action: r.action, verdict: r.verdict, ...(r.action === 'fail' ? { missing: labels.map((m) => `${m.slug} ${whyText(m.why)}`).join('; ') } : {}) }
   }
 
   /** The agent ended (interrupted, failed, removed) without completing. A finished agent keeps its verdict. */
