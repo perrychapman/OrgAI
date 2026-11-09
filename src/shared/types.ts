@@ -2929,6 +2929,11 @@ export interface WorktreeInfo {
   parentAgentId?: string
   /** Nested isolation: the parent's branch this one was cut from and merges into. */
   parentBranch?: string
+  /**
+   * With status 'held': who held it. 'delegation' = the harness held it because the agent failed its required delegation
+   * (WorktreeIntegrator.holdFailed); the integrate tool skips such a branch. Absent = the user held it (merge review).
+   */
+  heldBy?: 'delegation'
 }
 
 /** A report branch still sitting in the repository, as shown by the maintenance panel. */
