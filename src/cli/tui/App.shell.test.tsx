@@ -39,7 +39,7 @@ afterEach(() => {
   for (const r of mounted.splice(0)) r.unmount()
 })
 
-function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; state?: TuiState; launch?: TuiLaunch; now?: () => number }) {
+function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; inproc?: boolean; state?: TuiState; launch?: TuiLaunch; now?: () => number }) {
   let state = opts.state ?? stateWith()
   const listeners = new Set<(e: InputEvent) => void>()
   // A live store: notify() adds a notice and tells subscribers, so notice lifetimes can be watched in frames.
@@ -86,7 +86,7 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
       terminal={terminal as never}
       env={env}
       launch={opts.launch ?? {}}
-      conn={{ client: {} as never, hello: {} as never, started: false } as never}
+      conn={{ client: {} as never, hello: {} as never, started: false, ...(opts.inproc ? { inproc: {} } : {}) } as never}
       input={{ subscribe: (fn) => (listeners.add(fn), () => void listeners.delete(fn)) }}
       processEnv={{}}
       now={opts.now ?? (() => 1_000_000)}
@@ -105,6 +105,186 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
   }
   return { r, session, emit, send, frame: () => plain(r.lastFrame() ?? '') }
 }
+
+describe('conversation-first layout', () => {
+  it.each([
+    { cols: 80, status: 'active' as const, hasSteps: true, shown: false },
+    { cols: 80, status: 'blocked' as const, hasSteps: true, shown: true },
+    { cols: 120, status: 'active' as const, hasSteps: false, shown: false }
+  ])('preserves compact screens and ignores empty checklists: %j', async ({ cols, status, hasSteps, shown }) => {
+    const run = record(summary('run1', { status: 'running' }), {
+      plan: { goal: 'Unique checklist goal', status, autoContinues: 0, updatedAt: 1,
+        steps: hasSteps ? [{ id: 'p1', title: 'Check the work', status: 'pending' }] : [] }
+    })
+    const m = mount({ cols, rows: 40, state: applyRecord(stateWith(), run) })
+    await tick()
+    expect(m.frame().includes('Tasks')).toBe(shown)
+  })
+
+  it('keeps every team member visible when focusing the roster above a plan', async () => {
+    const run = record(summary('run1', { status: 'running' }))
+    run.agents.root = { ...run.agents.root, state: 'tool', activity: '$ npm test' }
+    for (let i = 1; i <= 4; i++) run.agents[`agent${i}`] = { ...run.agents.root, id: `agent${i}`, parentId: 'root', name: `Member ${i}`, handle: `member-${i}` }
+    run.plan = { goal: 'Complete the work', status: 'active', autoContinues: 0, updatedAt: 1, steps: [{ id: 'p1', title: 'Check the result', status: 'pending' }] }
+    const m = mount({ cols: 120, rows: 40, state: applyRecord(stateWith(), run) })
+    await tick()
+    await m.send(named('tab'), named('tab'))
+    const roster = m.frame().split('Tasks')[0]
+    for (let i = 1; i <= 4; i++) expect(roster).toContain(`member-${i}`)
+    expect(m.frame()).toContain('Check the result')
+  })
+
+  it('uses the available sidebar height for all eleven tasks beneath a five-agent team', async () => {
+    const run = record(summary('run1', { status: 'running' }))
+    for (let i = 1; i <= 4; i++) run.agents[`agent${i}`] = { ...run.agents.root, id: `agent${i}`, parentId: 'root', name: `Member ${i}`, handle: `member-${i}` }
+    run.plan = { goal: 'Complete the work', status: 'active', autoContinues: 0, updatedAt: 1,
+      steps: Array.from({ length: 11 }, (_, i) => ({ id: `p${i}`, title: `Checklist task ${i + 1}`, status: i === 7 ? 'in_progress' as const : 'pending' as const })) }
+    const m = mount({ cols: 120, rows: 52, state: applyRecord(stateWith(), run) })
+    await tick()
+    const checklist = m.frame().split('Tasks')[1] ?? ''
+    for (let i = 1; i <= 11; i++) expect(checklist).toContain(`Checklist task ${i}`)
+    expect(checklist).not.toContain('Tab to view')
+    expect(checklist).toContain('0% · Estimating')
+  })
+
+  it.each(['active', 'blocked', 'done'] as const)('shows the %s run plan beneath the team automatically', async (status) => {
+    const state = applyRecord(stateWith(), record(summary('run1', { status: 'running' }), {
+      plan: { goal: 'Build the dashboard', status, autoContinues: 0, updatedAt: 1, steps: [
+        { id: 'p1', title: 'Inspect the project', status: 'done' },
+        { id: 'p2', title: 'Build the dashboard', status: 'in_progress' },
+        { id: 'p3', title: 'Review the result', status: 'pending' }
+      ] }
+    }))
+    const m = mount({ cols: 120, rows: 40, state })
+    await tick()
+    const lines = m.frame().split('\n')
+    const team = lines.findIndex(line => /Agents|Team/.test(line))
+    const plan = lines.findIndex(line => /Tasks/.test(line))
+    expect(plan).toBeGreaterThan(team)
+    expect(plan - team).toBeLessThanOrEqual(5)
+    expect(m.frame()).toContain('1/3 done')
+    expect(m.frame()).toContain('✓ Inspect the project')
+    expect(m.frame()).toContain('◐ Build the dashboard')
+    expect(m.frame()).toContain('○ Review the result')
+  })
+
+  it.each([{ cols: 120, rows: 40 }, { cols: 80, rows: 24 }])('keeps quit confirmation compact and the conversation visible at $cols columns', async ({ cols, rows }) => {
+    const state = applyRecord(stateWith(), record(summary('run1', { status: 'idle' }), {
+      transcript: [{ id: 'answer', agentId: 'root', at: 1, block: { kind: 'text', text: 'Keep this conversation visible.' } }]
+    }))
+    const m = mount({ cols, rows, state, inproc: true })
+    await tick()
+    await m.send(key('d', { ctrl: true }))
+    const frame = m.frame().split('\n')
+    expect(m.frame()).toContain('Quit and stop 1 active run?')
+    expect(m.frame()).toContain('Keep this conversation visible.')
+    const question = frame.findIndex(line => line.includes('Quit and stop'))
+    const prompt = frame.findIndex(line => line.includes('Message R1'))
+    expect(prompt - question).toBeGreaterThan(0)
+    expect(prompt - question).toBeLessThanOrEqual(5)
+    expect(frame).toHaveLength(rows)
+    await m.send(named('escape'))
+    expect(m.frame()).not.toContain('Quit and stop')
+    expect(m.frame()).toContain('Keep this conversation visible.')
+  })
+
+  it('expands tool details with Ctrl+O without changing the composer draft', async () => {
+    const state = applyRecord(stateWith(), record(summary('run1', { status: 'idle' }), {
+      transcript: [
+        { id: 'call', agentId: 'root', at: 1, block: { kind: 'tool_use', id: 'tool1', name: 'Bash', input: { command: '/bin/zsh -lc pwd' } } },
+        { id: 'result', agentId: 'root', at: 2, block: { kind: 'tool_result', toolUseId: 'tool1', content: '/work/expanded-details-marker', isError: false } }
+      ]
+    }))
+    const m = mount({ cols: 120, rows: 40, state })
+    await tick()
+    expect(m.frame()).toContain('Ran pwd')
+    expect(m.frame()).not.toContain('expanded-details-marker')
+    await m.send(key('h'), key('i'), key('o', { ctrl: true }))
+    expect(m.frame()).toContain('expanded-details-marker')
+    expect(m.frame()).toContain('/bin/zsh -lc pwd')
+    await m.send(key('o', { ctrl: true }))
+    expect(m.frame()).not.toContain('expanded-details-marker')
+    await m.send(named('enter'))
+    expect(m.session.submitPrompt).toHaveBeenCalledWith('hi')
+  })
+
+  it('tabs through the conversation before the right sidebar', async () => {
+    const m = mount({ cols: 120, rows: 40 })
+    await m.send(named('tab'), key('?'))
+    expect(m.frame()).toContain('Keys: Transcript')
+    await m.send(named('escape'), named('tab'), key('?'))
+    expect(m.frame()).toContain('Keys: Agents')
+  })
+
+  it('keeps arriving approvals inline without treating follow-up typing as a decision', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 120, rows: 40, now: () => clock.t })
+    await tick()
+    m.session.setState(stateWith({ waiting: true }))
+    await tick()
+    clock.t += 1000
+    await m.send(key('s'), key('u'), key('r'), key('e'))
+    expect(m.session.decide).not.toHaveBeenCalled()
+    expect(m.frame()).toContain('Shift+Tab to choose')
+    await m.send(named('enter'))
+    expect(m.session.submitPrompt).toHaveBeenCalledWith('sure')
+    await m.send(named('backtab'))
+    await m.send(key('y'))
+    expect(m.session.decide).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a draft in the composer when a request arrives', async () => {
+    const m = mount({ cols: 120, rows: 40 })
+    await tick()
+    await m.send(key('y'), key('e'), key('s'))
+    m.session.setState(stateWith({ waiting: true }))
+    await tick()
+    expect(m.frame()).toContain('Shift+Tab to choose')
+    await m.send(named('enter'))
+    expect(m.session.submitPrompt).toHaveBeenCalledWith('yes')
+    expect(m.session.decide).not.toHaveBeenCalled()
+  })
+
+  it('shows inline approval choices without requiring a reveal shortcut', async () => {
+    const m = mount({ cols: 120, rows: 40, state: stateWith({ waiting: true, title: 'Review this command' }) })
+    await tick()
+    expect(m.frame()).toContain('Approval needed')
+    expect(m.frame()).toContain('Allow once')
+    expect(m.frame()).toContain('Command: npm test')
+    expect(m.frame()).not.toContain('R1*!')
+    expect(m.frame()).not.toContain('1 needs you')
+    expect(m.frame().split('Review this command')).toHaveLength(2)
+    await m.send(named('backtab'))
+    expect(m.frame()).toContain('Esc to type')
+    expect(m.frame()).toContain('Command: npm test')
+    expect(m.frame()).not.toContain('Alt+D to review')
+    expect(m.session.decide).not.toHaveBeenCalled()
+    await m.send(named('escape'))
+    expect(m.frame()).toContain('Allow once')
+    expect(m.frame()).toContain('Command: npm test')
+  })
+
+  it('keeps the agent room on the right and the last message just above the composer', async () => {
+    let state = stateWith({ title: 'Layout preview' })
+    state = applyRecord(state, record(summary('run1', { status: 'idle', title: 'Layout preview' }), {
+      transcript: [{ id: 't1', agentId: 'root', at: 1, block: { kind: 'text', text: 'The updated layout is ready to try.' } }]
+    }))
+    const m = mount({ cols: 120, rows: 40, state })
+    await tick()
+    const rows = m.frame().split('\n')
+    expect(rows[0].indexOf('Agents')).toBeGreaterThan(70)
+    const message = rows.findIndex(row => row.includes('The updated layout is ready'))
+    const prompt = rows.findIndex(row => row.includes('Message R1'))
+    expect(message).toBeGreaterThan(25)
+    expect(prompt - message).toBeGreaterThan(0)
+    expect(prompt - message).toBeLessThanOrEqual(4)
+    expect(rows[message].indexOf('The updated layout')).toBeLessThan(25)
+    expect(rows.at(-1)).toContain('? keys')
+    expect(rows.at(-1)).toContain('Idle')
+    expect(rows.filter(row => row.includes('Ctrl+O tools'))).toHaveLength(1)
+    expect(m.frame()).not.toContain('Alt+D decisions')
+  })
+})
 
 describe('input across a focus change (issue #31 M9)', () => {
   it('"/runs" then Enter pushed with no render between runs /runs and sends nothing to the agent', async () => {
@@ -272,7 +452,8 @@ describe('? on the composer (issue #30 L5)', () => {
     expect(m.frame()).toContain('Keys: Composer')
     await m.send(key('h'))
     expect(m.frame()).not.toContain('Keys: Composer')
-    expect(m.frame()).toContain('h')
+    await m.send(named('enter'))
+    expect(m.session.submitPrompt).toHaveBeenCalledWith('h')
   })
 
   it('opens the composer keys on an empty composer, types ? when there is text', async () => {

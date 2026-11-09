@@ -13,14 +13,14 @@
  */
 import { SPLIT_MIN_COLS, type LayoutInput, type LayoutPlan, type PaneBox, type PaneId } from './types'
 
-/** The split's left column: about this share of the width ... */
+/** The right sidebar leaves the conversation most of the width. */
 const TREE_COL_SHARE = 0.34
 /** ... clamped to these columns. */
 const TREE_COL_MIN = 28
-const TREE_COL_MAX = 48
-/** Split: the plan takes at most a third of its column, and is left out below this many rows. */
+const TREE_COL_MAX = 42
+/** Split: reserve a third for the plan, then give it unused team space; omit it below this many rows. */
 const SPLIT_PLAN_MIN = 4
-/** Split: worktrees take at most this share of the left column, and are left out below this many rows. */
+/** Split: worktrees take at most this share of the sidebar, and are left out below this many rows. */
 const SPLIT_WORKTREES_SHARE = 0.4
 const PANE_MIN = 3
 /** Inline footer: the tray's most rows (a title line and three rows of keys). */
@@ -75,7 +75,7 @@ export function computeLayout(input: LayoutInput): LayoutPlan {
   const palette = { width: cols, height: paletteH }
 
   if (cols >= SPLIT_MIN_COLS) {
-    const { panes, gutter } = splitPanes(cols, body, visible, nat(input.worktreeRows ?? 0))
+    const { panes, gutter } = splitPanes(cols, body, visible, nat(input.worktreeRows ?? 0), nat(input.treeRows ?? 0))
     return { mode: 'split', statusRows, panes, tray, composer, palette, gutter }
   }
   return { mode: 'stacked', statusRows, panes: stackedPanes(cols, body, visible, nat(input.treeRows ?? 0)), tray, composer, palette, gutter: 0 }
@@ -84,49 +84,42 @@ export function computeLayout(input: LayoutInput): LayoutPlan {
 /** Blank columns between the split's two columns. */
 const SPLIT_GUTTER = 1
 
-function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>, worktreeWanted: number): { panes: PaneBox[]; gutter: number } {
-  const left = visible.tree || visible.worktrees
-  const right = visible.transcript || visible.plan
-  let leftW = 0
-  // The gutter exists only where two columns do: left + gutter + right = cols.
-  const gutter = left && right ? SPLIT_GUTTER : 0
-  if (left && right) {
-    leftW = Math.max(TREE_COL_MIN, Math.min(TREE_COL_MAX, Math.round(cols * TREE_COL_SHARE)))
-    leftW = Math.min(leftW, cols - gutter)
-  } else if (left) {
-    leftW = cols
-  }
-  const rightW = right ? cols - leftW - gutter : 0
+function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>, worktreeWanted: number, treeWanted: number): { panes: PaneBox[]; gutter: number } {
+  const sidebar = visible.tree || visible.worktrees || visible.plan
+  const chat = visible.transcript
+  const gutter = sidebar && chat ? SPLIT_GUTTER : 0
+  const sidebarW = sidebar
+    ? chat ? Math.min(cols - gutter, Math.max(TREE_COL_MIN, Math.min(TREE_COL_MAX, Math.round(cols * TREE_COL_SHARE)))) : cols
+    : 0
+  const chatW = chat ? cols - sidebarW - gutter : 0
+  const sidebarCol = chat ? 1 : 0
   const out: PaneBox[] = []
 
-  if (left) {
-    let wt = 0
-    if (visible.worktrees) {
-      if (!visible.tree) wt = body
-      else {
-        wt = Math.floor(body * SPLIT_WORKTREES_SHARE)
-        // It takes what its rows want (a title and a line per worktree), not a fixed 40% for one line.
-        if (worktreeWanted > 0) wt = Math.min(wt, Math.max(PANE_MIN, worktreeWanted))
-        if (wt < PANE_MIN || body - wt < PANE_MIN) wt = 0
-      }
-    }
-    if (visible.tree) out.push({ pane: 'tree', column: 0, width: leftW, height: body - wt })
-    if (visible.worktrees && (wt > 0 || !visible.tree)) out.push({ pane: 'worktrees', column: 0, width: leftW, height: wt })
+  let plan = 0
+  let wt = 0
+  if (visible.plan) {
+    plan = visible.tree || visible.worktrees ? Math.floor(body / 3) : body
+    if (plan < SPLIT_PLAN_MIN && (visible.tree || visible.worktrees)) plan = 0
   }
-  if (right) {
-    let plan = 0
-    if (visible.plan) {
-      if (!visible.transcript) plan = body
-      else {
-        plan = Math.floor(body / 3)
-        if (plan < SPLIT_PLAN_MIN) plan = 0
-      }
+  const remaining = body - plan
+  if (visible.worktrees) {
+    if (!visible.tree) wt = remaining
+    else {
+      wt = Math.floor(remaining * SPLIT_WORKTREES_SHARE)
+      if (worktreeWanted > 0) wt = Math.min(wt, Math.max(PANE_MIN, worktreeWanted))
+      if (wt < PANE_MIN || remaining - wt < PANE_MIN) wt = 0
     }
-    if (visible.transcript) out.push({ pane: 'transcript', column: 1, width: rightW, height: body - plan })
-    if (visible.plan && (plan > 0 || !visible.transcript)) out.push({ pane: 'plan', column: 1, width: rightW, height: plan })
   }
-  // A lone column is column 0.
-  if (!left) for (const p of out) p.column = 0
+  let tree = remaining - wt
+  if (visible.tree && plan > 0 && treeWanted > 0) {
+    // Keep the checklist immediately below the roster instead of below a tall empty tree pane.
+    tree = Math.min(tree, Math.max(PANE_MIN, treeWanted))
+    plan += remaining - wt - tree
+  }
+  if (visible.tree) out.push({ pane: 'tree', column: sidebarCol, width: sidebarW, height: tree })
+  if (visible.plan && (plan > 0 || (!visible.tree && !visible.worktrees))) out.push({ pane: 'plan', column: sidebarCol, width: sidebarW, height: plan })
+  if (visible.worktrees && (wt > 0 || !visible.tree)) out.push({ pane: 'worktrees', column: sidebarCol, width: sidebarW, height: wt })
+  if (chat) out.push({ pane: 'transcript', column: 0, width: chatW, height: body })
   return { panes: out, gutter }
 }
 

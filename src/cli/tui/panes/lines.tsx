@@ -113,13 +113,13 @@ function commonPrefix(a: string, b: string): number {
 }
 
 /** Renders lines into a Box of exactly width x height (never more lines than height). */
-export function PaneLines(props: { width: number; height: number; lines: PaneLine[]; env: TuiEnv; phase?: number }) {
+export function PaneLines(props: { width: number; height: number; lines: PaneLine[]; env: TuiEnv; phase?: number; align?: 'top' | 'bottom' }) {
   const width = Math.max(0, Math.floor(props.width))
   const height = Math.max(0, Math.floor(props.height))
   if (width === 0 || height === 0) return <Box width={width} height={height} />
   const lines = props.lines.slice(0, height)
   return (
-    <Box flexDirection="column" width={width} height={height} overflow="hidden">
+    <Box flexDirection="column" justifyContent={props.align === 'bottom' ? 'flex-end' : 'flex-start'} width={width} height={height} overflow="hidden">
       {lines.map((l) => (
         <Text key={l.key} wrap="truncate-end">
           {l.segs.length === 0

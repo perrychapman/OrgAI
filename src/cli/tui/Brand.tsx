@@ -7,7 +7,6 @@ import { asciiOnly, glyphs, terminalPalette } from './theme'
 import type { TuiEnv } from './types'
 
 const WORDMARK = ['█▀█ █▀█ █▀▀ ▄▀█ █', '█▄█ █▀▄ █▄█ █▀█ █'] as const
-const WORDMARK_WIDTH = textWidth(WORDMARK[0])
 const SWEEP_MS = 1_000
 const IDLE_MS = 5_000
 const TICK_MS = 80
@@ -74,14 +73,6 @@ function markRow(row: string, phase: number, env: TuiEnv): ReactElement {
   )
 }
 
-function metadataRow(metadata: string, env: TuiEnv): ReactElement {
-  const name = metadata.startsWith('OrgAI') ? 'OrgAI' : metadata
-  const suffix = metadata.startsWith('OrgAI') ? metadata.slice(5) : ''
-  const palette = terminalPalette(env)
-  const colored = brandColorEnabled(env)
-  return <Text color={colored ? palette.brandBase : undefined} bold={colored}>{name}{suffix ? <Text dimColor={colored}>{suffix}</Text> : null}</Text>
-}
-
 export interface BrandProps {
   width: number
   version?: string
@@ -101,13 +92,8 @@ export function Brand({ width, version, prominent = false, animated = true }: Br
   const palette = terminalPalette(env)
   const colored = brandColorEnabled(env)
   if (expanded) {
-    const metadata = truncateEnd(`OrgAI${suffix}`, Math.max(0, size - WORDMARK_WIDTH - 3), glyphs(env).ellipsis)
     return <Box width={size} height={3} flexDirection="column" flexShrink={0} overflow="hidden">
-      <Box width={size} height={1} flexShrink={0}>
-        {markRow(WORDMARK[0], phase, env)}
-        <Text>   </Text>
-        {metadataRow(metadata, env)}
-      </Box>
+      {markRow(WORDMARK[0], phase, env)}
       {markRow(WORDMARK[1], phase, env)}
       <Text color={colored ? palette.brandBase : undefined}> </Text>
     </Box>

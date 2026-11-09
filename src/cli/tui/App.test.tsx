@@ -28,11 +28,11 @@ vi.mock('./selectors', () => {
 })
 
 vi.mock('./layout', () => ({
-  computeLayout: (input: { cols: number; rows: number; visible: Record<string, boolean> }) => ({
+  computeLayout: (input: { cols: number; rows: number; trayRows: number; visible: Record<string, boolean> }) => ({
     mode: 'split',
     statusRows: 1,
     panes: (['tree', 'transcript', 'plan', 'worktrees'] as const).filter((p) => input.visible[p]).map((pane) => ({ pane, column: pane === 'tree' ? 0 : 1, width: 40, height: 5 })),
-    tray: { width: input.cols, height: 3 },
+    tray: { width: input.cols, height: input.trayRows },
     composer: { width: input.cols, height: 3 }
   })
 }))
@@ -45,6 +45,7 @@ vi.mock('./input/keys', () => ({
 }))
 
 vi.mock('./decisions', () => ({
+  proposalPreview: () => undefined,
   cardDetailLines: (card: { key: string }) => [`DETAIL ${card.key}`, 'second line'],
   cardTitle: () => 'title',
   bindingsFor: () => [],
@@ -522,10 +523,10 @@ describe('App quitting', () => {
   it('an inproc host with live runs asks first; n keeps going, y quits', async () => {
     const m = mount({ inproc: true, session: fakeSession({ testLive: 2 }, 'inproc') })
     await m.send(ctrlKey('d'))
-    expect(m.frame()).toContain('Quitting stops 2 live runs in this in-process host')
+    expect(m.frame()).toContain('Quit and stop 2 active runs?')
     await m.send(key('n'))
     expect(m.exits).toEqual([])
-    expect(m.frame()).not.toContain('Quitting stops')
+    expect(m.frame()).not.toContain('Quit and stop')
     await m.send(ctrlKey('d'), key('y'))
     expect(m.exits.map((e) => e[0])).toEqual([0])
     m.r.unmount()
@@ -544,7 +545,7 @@ describe('App quitting', () => {
     const s = fakeSession({ testLive: 1, activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } }, 'inproc')
     const m = mount({ session: s })
     await m.send(ctrlKey('d'))
-    expect(m.frame()).not.toContain('Quitting stops')
+    expect(m.frame()).not.toContain('Quit and stop')
     expect(m.exits).toHaveLength(1)
     expect(m.exits[0][1]).toMatchObject({ detachedLive: true })
     m.r.unmount()
@@ -728,7 +729,7 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
     const m = mount({ session: s, launch: LAUNCH, inproc: true })
     await m.send(ctrlKey('d'))
     await tick()
-    expect(m.frame()).not.toContain('Quitting stops')
+    expect(m.frame()).not.toContain('Quit and stop')
     expect(s.api.stop).toHaveBeenCalledTimes(1)
     expect(m.exits.map((e) => e[0])).toEqual([130])
     m.r.unmount()

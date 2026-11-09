@@ -45,7 +45,7 @@ const PROMPT_UNICODE: Record<ComposerMode, string> = { start: '›', send: '›'
 const PROMPT_ASCII: Record<ComposerMode, string> = { start: '>', send: '>', continue: '>', quick: '>', readOnly: '--' }
 
 /** Optional view-only affordances used by the full-screen composer. Kept local so the input contract stays stable. */
-export type ComposerViewProps = ComposerProps & { height?: number; maxHeight?: number; hints?: string; animated?: boolean; working?: boolean }
+export type ComposerViewProps = ComposerProps & { height?: number; maxHeight?: number; hints?: string; animated?: boolean; working?: boolean; cursorVisible?: boolean; showFooter?: boolean }
 
 export function promptGlyph(mode: ComposerMode, ascii: boolean): string {
   return (ascii ? PROMPT_ASCII : PROMPT_UNICODE)[mode] ?? '>'
@@ -164,6 +164,7 @@ export function Composer(props: ComposerViewProps) {
     props.focused
   )
 
+  const showFooter = props.showFooter !== false
   const width = Math.max(0, Math.floor(props.width))
   const requestedHeight = props.height === undefined ? undefined : Math.max(0, Math.floor(props.height))
   const maxHeight = props.maxHeight === undefined ? undefined : Math.max(0, Math.floor(props.maxHeight))
@@ -176,19 +177,20 @@ export function Composer(props: ComposerViewProps) {
   const contentWidth = Math.max(1, width - inset * 2)
   const promptW = Math.min(textWidth(glyph) + 1, Math.max(0, contentWidth - 1))
   // With colour off an inverse cell would be invisible, so the cursor is a glyph and one column is kept for it.
-  const markCursor = !env.color && props.focused
+  const cursorFocused = props.focused && props.cursorVisible !== false
+  const markCursor = !env.color && cursorFocused
   const textW = Math.max(1, contentWidth - promptW - (markCursor ? 1 : 0))
   const dim = styleFor({ tone: 'dim' }, env)
   const reason = props.mode === 'readOnly' && props.disabledReason ? sanitizeTty(props.disabledReason).replace(/\n/g, ' ') : ''
   const placeholder = (inline && reason ? reason : sanitizeTty(props.placeholder ?? '')).replace(/\n/g, ' ')
   const rows = buffer.text === '' ? [] : wrapBuffer(buffer, textW)
-  const autoHeight = autoFullscreen ? 4 + Math.min(COMPOSER_MAX_ROWS, Math.max(1, rows.length)) : undefined
+  const autoHeight = autoFullscreen ? (showFooter ? 4 : 2) + Math.min(COMPOSER_MAX_ROWS, Math.max(1, rows.length)) : undefined
   const unclampedHeight = requestedHeight ?? autoHeight
   const layoutHeight = unclampedHeight === undefined || maxHeight === undefined ? unclampedHeight : Math.min(unclampedHeight, maxHeight)
   const band = layoutHeight !== undefined && layoutHeight >= 3 && width >= 3 && (explicitBand || autoBand)
   const surface = band ? composerSurface(env) : {}
-  const footerGap = band && layoutHeight !== undefined && layoutHeight >= 5 ? 1 : 0
-  const surfaceHeight = band && layoutHeight !== undefined ? Math.max(1, layoutHeight - 1 - footerGap) : 0
+  const footerGap = showFooter && band && layoutHeight !== undefined && layoutHeight >= 5 ? 1 : 0
+  const surfaceHeight = band && layoutHeight !== undefined ? Math.max(1, layoutHeight - (showFooter ? 1 : 0) - footerGap) : 0
   const bodyViewport = band
     ? Math.max(1, Math.min(COMPOSER_MAX_ROWS, surfaceHeight, Math.max(1, rows.length)))
     : Math.max(1, Math.min(COMPOSER_MAX_ROWS, (layoutHeight ?? COMPOSER_MAX_ROWS) - (!inline && reason && layoutHeight !== undefined ? 1 : 0)))
@@ -216,14 +218,14 @@ export function Composer(props: ComposerViewProps) {
   const promptStyle = styleFor({ tone: props.focused && props.mode !== 'readOnly' ? 'accent' : 'muted', bold: true }, env)
   const rowView = (row: (typeof rows)[number] | undefined, absoluteRow: number): ReactNode => {
     const lead = absoluteRow === 0 ? `${glyph} `.slice(0, promptW) : spaces(promptW)
-    const at = props.focused ? row?.cursorAt : undefined
+    const at = cursorFocused ? row?.cursorAt : undefined
     const prompt = <Text {...promptStyle}>{lead}</Text>
     if (!row) {
       const hint = truncateEnd(placeholder, Math.max(0, textW), ascii ? '...' : '…')
       return (
         <Box key={absoluteRow} width={contentWidth} height={1} flexShrink={0} overflow="hidden">
           {prompt}
-          {absoluteRow === 0 && props.focused ? (
+          {absoluteRow === 0 && cursorFocused ? (
             markCursor ? <Text {...surfaceText}>{CURSOR_GLYPH}</Text> : <Text {...surfaceText} backgroundColor={surface.backgroundColor} inverse={env.color}> </Text>
           ) : null}
           {absoluteRow === 0 ? <Text {...hintStyle} wrap="truncate-end">{hint}</Text> : null}
@@ -271,7 +273,7 @@ export function Composer(props: ComposerViewProps) {
     return (
       <Box flexDirection="column" width={width} height={layoutHeight} overflow="hidden" flexShrink={0}>
         {bodyRows}
-        {reason ? <Text {...dim} wrap="truncate-end">{reason}</Text> : null}
+        {reason && showFooter ? <Text {...dim} wrap="truncate-end">{reason}</Text> : null}
       </Box>
     )
   }
@@ -284,9 +286,9 @@ export function Composer(props: ComposerViewProps) {
         {bodyRows}
       </Box>
       {footerGap ? <Box height={footerGap} flexShrink={0} /> : null}
-      <Box width={width} height={1} paddingX={inset} flexShrink={0} overflow="hidden">
+      {showFooter ? <Box width={width} height={1} paddingX={inset} flexShrink={0} overflow="hidden">
         <Text color={toneColor('muted', env)} wrap="truncate-end">{truncateEnd(footer, contentWidth, ascii ? '...' : '…')}</Text>
-      </Box>
+      </Box> : null}
     </Box>
   )
 }

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CardKind, DecisionOutcome, McpInstallRequest, PermissionRequest, UserQuestion } from '../../shared/types'
 import { DEFAULT_TUI_ENV, InputBus, InputBusContext, TuiEnvContext } from './context'
 import { DecisionTray } from './DecisionTray'
+import { trayHeight } from './trayLayout'
+import { textWidth } from './panes/text'
 import { cardKey, type CardRef, type DecisionCall, type DecisionTrayProps, type InputEvent, type ResolvedCardInfo, type TrayCard, type TuiEnv } from './types'
 
 const RUN = 'run_1'
@@ -45,7 +47,7 @@ interface Harness {
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
 
-async function mount(initial: Partial<DecisionTrayProps> & { cards: TrayCard[] }, env: Partial<TuiEnv> = {}, outcome?: (call: DecisionCall) => Promise<DecisionOutcome>): Promise<Harness> {
+async function mount(initial: Partial<DecisionTrayProps> & { cards: TrayCard[]; compact?: boolean }, env: Partial<TuiEnv> = {}, outcome?: (call: DecisionCall) => Promise<DecisionOutcome>): Promise<Harness> {
   const bus = new InputBus()
   const clock = { t: 10_000 }
   const calls: Harness['calls'] = []
@@ -94,6 +96,33 @@ async function mount(initial: Partial<DecisionTrayProps> & { cards: TrayCard[] }
     unmount: () => r.unmount()
   }
 }
+
+describe('compact proposal preview', () => {
+  it.each([70, 120, 200])('keeps a bounded proposal card with full review at %s columns', async (width) => {
+    const c = tray('proposal', 'architecture', {
+      id: 'architecture', kind: 'architecture', title: 'Desktop and terminal architecture',
+      payload: { summary: 'Keep the existing application boundaries. '.repeat(20), stack: ['STACK-DETAIL-MARKER'], modules: [], conventions: ['FULL-REVIEW-MARKER'], commands: [], risks: [] }
+    })
+    const height = trayHeight([c], width, 50, false)
+    expect(height).toBeLessThanOrEqual(7)
+    const h = await mount({ cards: [c], compact: true, width, height })
+    expect(h.frame()).toContain('Desktop and terminal architecture')
+    expect(h.frame()).toContain('[v] Review')
+    expect(h.frame()).toContain('[y] Approve')
+    expect(h.frame()).toContain('Review architecture')
+    expect(h.frame()).not.toContain('Approve architecture proposal')
+    expect(h.frame().split('\n').every(line => textWidth(line) <= Math.min(width, 96))).toBe(true)
+    expect(h.frame()).not.toContain('STACK-DETAIL-MARKER')
+    expect(h.frame()).not.toContain('Esc Back')
+    expect(h.frame().split('Esc to type')).toHaveLength(2)
+    h.clock.t += 1000
+    await h.press('v')
+    expect(h.onViewText.mock.calls[0]?.[1]).toContain('STACK-DETAIL-MARKER')
+    expect(h.onViewText.mock.calls[0]?.[1]).toContain('FULL-REVIEW-MARKER')
+    expect(h.calls).toHaveLength(0)
+    h.unmount()
+  })
+})
 
 describe('DecisionTray: card-swap guard', () => {
   it('ignores a key within 750 ms of a swap and decides the new card with the same key after it', async () => {

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { asciiOnly, composerSurface, glyphs, separatorFor, stateGlyph, stateTone, terminalPalette, terminalThemeFor, toneColor } from './theme'
 import type { TuiEnv } from './types'
+import { AGENT_IDENTITY_TONES } from './identity'
 
 const env = (over: Partial<TuiEnv> = {}): TuiEnv => ({
   bufferMode: 'fullscreen',
@@ -40,7 +41,7 @@ describe('theme', () => {
     expect(toneColor('running', env())).toBe('#4cb8ff')
     expect(toneColor('warn', env())).toBe('#f5b73d')
     for (const mode of [{ color: false }, { screenReader: true }, { dumbTerminal: true }]) {
-      for (const t of ['ok', 'warn', 'danger', 'dim', 'accent', 'running', 'identity', 'message', 'code', 'muted'] as const) expect(toneColor(t, env(mode))).toBeUndefined()
+      for (const t of [...AGENT_IDENTITY_TONES, 'ok', 'warn', 'danger', 'dim', 'accent', 'running', 'message', 'code', 'muted'] as const) expect(toneColor(t, env(mode))).toBeUndefined()
     }
     expect(toneColor('dim', env())).not.toBe('gray')
   })
@@ -92,7 +93,7 @@ describe('theme', () => {
     for (const terminalTheme of ['dark', 'light'] as const) {
       const palette = terminalPalette({ terminalTheme })
       const backgrounds = [palette.surface, terminalTheme === 'dark' ? '#0b0d12' : '#ffffff']
-      for (const tone of ['accent', 'warn', 'running', 'ok', 'danger', 'identity', 'message', 'code', 'muted'] as const) {
+      for (const tone of [...AGENT_IDENTITY_TONES, 'accent', 'warn', 'running', 'ok', 'danger', 'message', 'code', 'muted'] as const) {
         const color = toneColor(tone, env({ terminalTheme }))!
         for (const bg of backgrounds) {
           const a = luminance(color), b = luminance(bg)

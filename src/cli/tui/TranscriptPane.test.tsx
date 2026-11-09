@@ -36,9 +36,36 @@ function mount(props: Partial<Props> = {}, e: TuiEnv = env()) {
   return { ...out, bus, rerender }
 }
 
-const lines = (frame: string | undefined): string[] => (frame ?? '').split('\n')
+const lines = (frame: string | undefined): string[] => (frame ?? '').replace(/^(?:[ \t]*\n)+/, '').split('\n')
 
 describe('TranscriptPane (full-screen)', () => {
+  it('uses one speaker heading per turn and keeps compact tool activity to one line', () => {
+    const rows = [r('intro', { text: 'I will check the project.' }), r('call', { kind: 'tool', toolUseId: 't', text: 'Ran a very long command '.repeat(8) }), r('out', { kind: 'result', toolUseId: 't', text: 'Raw JSON output' }), r('answer', { text: 'The check passed.' }), r('other', { agentId: 'reviewer', agentLabel: 'Reviewer', text: 'Review complete.' })]
+    const t = mount({ rows, compact: true, height: 20, width: 60 })
+    const frame = t.lastFrame() ?? ''
+    expect(frame.split('orchestrator')).toHaveLength(2)
+    expect(frame).not.toContain('orchestrator:')
+    expect(frame).toContain('Reviewer')
+    expect(frame).not.toContain('Raw JSON output')
+    expect(lines(frame).filter(line => line.includes('Ran a very long'))).toHaveLength(1)
+    expect(frame).toContain('The check passed.')
+    t.rerender({ detailsExpanded: true })
+    expect(t.lastFrame()).toContain('Raw JSON output')
+    t.unmount()
+  })
+
+  it('anchors short conversations and streaming partials at the bottom of the viewport', () => {
+    const t = mount({ height: 12, rows: [r('a')], partials: [{ key: 'p', runId: 'r1', agentId: 'root', agentLabel: 'orchestrator', text: 'streaming' }] })
+    const frame = (t.lastFrame() ?? '').split('\n')
+    expect(frame).toHaveLength(12)
+    expect(frame.slice(0, 10).every(line => line.trim() === '')).toBe(true)
+    expect(frame[10]).toBe('• orchestrator: text of a')
+    expect(frame[11]).toBe('• orchestrator: streaming')
+    t.rerender({ height: 6 })
+    expect((t.lastFrame() ?? '').split('\n').at(-1)).toBe('• orchestrator: streaming')
+    t.unmount()
+  })
+
   it('formats headings, inline code and fenced code without printing Markdown fences', () => {
     const formatted = rowLines(r('md', { text: '# Result\n- Updated **authentication** in `auth.ts`\n```ts\nconst ok = true\n```' }), 80, env())
     expect(formatted.map(l => l.text).join('\n')).toContain('const ok = true')
@@ -52,6 +79,41 @@ describe('TranscriptPane (full-screen)', () => {
     expect(rowLines(r('literal', { text: '```ts\nunfinished code' }), 80, env()).map(l => l.text).join('\n')).toContain('```ts')
     const rows = [r('a', { kind: 'tool' }), r('b', { kind: 'tool' }), r('a-result', { kind: 'result' })]
     expect(groupToolRows(rows)).toEqual(rows)
+  })
+
+  it('renders table records and references at narrow and wide widths in accessible modes', () => {
+    const text = 'Safety controls\n\n| Protection | What it does |\n|---|---|\n| **Permissions** | Asks before running commands. |\n| Sandbox | Limits writes to the project. |\n\nSee [source](/Users/me/project/src/permissions.ts:49).'
+    for (const width of [24, 60, 120]) {
+      for (const settings of [{}, { unicode: false, color: false }, { screenReader: true }]) {
+        const output = rowLines(r('table', { text, agentLabel: undefined }), width, env(settings))
+        const rendered = output.map(line => line.segs?.map(seg => seg.text).join('') ?? line.text).join('\n')
+        expect(rendered).not.toContain('|')
+        expect(rendered).not.toContain('**')
+        expect(rendered).toContain('Permissions')
+        expect(rendered).toContain('source [1]')
+        expect(rendered).toContain('References')
+        expect(rendered.replace(/\s+/g, '')).toContain('/Users/me/project/src/permissions.ts:49')
+        for (const line of output) {
+          expect(textWidth(line.text)).toBeLessThanOrEqual(width)
+          expect(line.segs?.map(seg => seg.text).join('')).toBe(line.text)
+        }
+      }
+    }
+  })
+
+  it('uses readable Markdown in fullscreen and inline transcript rendering', () => {
+    for (const mode of ['fullscreen', 'inline'] as const) {
+      const app = mount({ mode, width: 60, height: 30, rows: [r('formatted', {
+        text: '| Name | Detail |\n|---|---|\n| Permission | Requires approval |\n\nSee [docs](/project/docs.md).'
+      })] })
+      const frame = app.lastFrame() ?? ''
+      expect(frame).toContain('Name: Permission')
+      expect(frame).toContain('Detail: Requires approval')
+      expect(frame).toContain('See docs [1].')
+      expect(frame).toContain('[1] /project/docs.md')
+      expect(frame).not.toContain('|---|')
+      app.unmount()
+    }
   })
 
   it('expands grouped tool activity and always leaves failures visible', async () => {

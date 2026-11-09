@@ -55,6 +55,7 @@ import type {
   Proposal,
   RpcHelloResult,
   RunPlan,
+  RunStatus,
   RunSummary,
   RunTeam,
   TranscriptEntry,
@@ -101,7 +102,7 @@ export type BufferMode = 'fullscreen' | 'inline'
 export type LayoutMode = 'split' | 'stacked'
 export type PaneId = 'tree' | 'transcript' | 'plan' | 'worktrees'
 export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector'
-export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running' | 'identity' | 'message' | 'code' | 'muted'
+export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running' | 'identity' | 'identityCyan' | 'identityGreen' | 'identityAmber' | 'identityPink' | 'identityBlue' | 'message' | 'code' | 'muted'
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'gone'
 
 export interface TuiEnv {
@@ -167,6 +168,7 @@ export type InputHandler = (e: InputEvent) => boolean
 // ---------- Rows and views (every string already sanitized by the producer) ----------
 
 export interface OrgTreeRow {
+  identityTone?: Tone
   id: string
   runId: string
   depth: number
@@ -175,6 +177,8 @@ export interface OrgTreeRow {
   state: AgentState
   stateWord: string
   activity: string
+  /** Raw activity was compound or shortened; do not infer a specific command category. */
+  activityIsCompound?: boolean
   costText: string
   isRoot: boolean
   /** An agent of an earlier chain member. */
@@ -182,7 +186,9 @@ export interface OrgTreeRow {
   worktree?: { branch: string; status: WorktreeStatus }
   // ---- Fold (F1) and row facts (F2, F5, F10); every field optional so plain rows stay valid ----
   /** 'group' is a folded "N done" row (default 'agent'). */
-  kind?: 'agent' | 'group'
+  kind?: 'agent' | 'group' | 'role'
+  /** Configured role that has no agent in this run. */
+  configuredRoleId?: string
   /** The role name adds nothing beside the label (false: drop it from the row). Default true. */
   roleShown?: boolean
   /** Row id of the visible parent (agent rows). */
@@ -254,6 +260,7 @@ export interface RunChip {
 export type TranscriptRowKind = 'user' | 'text' | 'thinking' | 'tool' | 'result' | 'system' | 'harness' | 'divider' | 'error' | 'log'
 
 export interface TranscriptRow {
+  identityTone?: Tone
   key: string
   runId: string
   agentId?: string
@@ -262,12 +269,17 @@ export interface TranscriptRow {
   text: string
   tone?: Tone
   at?: number
+  /** Concise display label and expanded detail, already sanitized. */
+  summary?: string
+  pendingSummary?: string
+  detail?: string
   /** Correlates tool calls and results before compacting completed activity. */
   toolUseId?: string
 }
 
 /** A streaming (agent.partial) row for one agent. */
 export interface PartialRow {
+  identityTone?: Tone
   key: string
   runId: string
   agentId: string
@@ -284,6 +296,12 @@ export interface PlanStepView {
 }
 
 export interface PlanView {
+  runId?: string
+  continued?: boolean
+  status?: 'active' | 'done' | 'blocked'
+  startedAt?: number
+  runStatus?: RunStatus
+  waiting?: boolean
   goal: string
   statusWord: string
   done: number
@@ -563,6 +581,9 @@ export interface OrgTreePaneProps extends PaneProps {
 }
 
 export interface TranscriptPaneProps extends PaneProps {
+  compact?: boolean
+  detailsExpanded?: boolean
+  onToggleDetails?(): void
   rows: TranscriptRow[]
   partials: PartialRow[]
   omitted?: number
@@ -595,6 +616,7 @@ export interface DecisionTrayProps {
   height: number
   focused: boolean
   variant: 'full' | 'footer'
+  focusHint?: string
   cards: TrayCard[]
   resolved: ResolvedCardInfo[]
   onDecide(card: TrayCard, call: DecisionCall): Promise<DecisionOutcome>
