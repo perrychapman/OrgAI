@@ -69,7 +69,7 @@ message. Code examples stay literal, and malformed tables or links remain visibl
 The same formatting applies in fullscreen and inline scrollback, including no-color and screen-reader
 modes. Streaming partials remain literal until committed; stored transcripts retain the original text.
 
-Verification (2026-11-09): all 869 TUI tests pass, including inline action selection, guarded Enter,
+Verification (2026-11-09): all 870 TUI tests pass after merging upstream dev, including inline action selection, guarded Enter,
 draft preservation after idle, Escape dismissal and explicit persistent-grant confirmation. The CLI
 bundle builds and the token-free mock terminal walkthrough passes all checks, including automatic
 approval focus, Enter confirmation, paste protection, card-swap protection and external resolution.
