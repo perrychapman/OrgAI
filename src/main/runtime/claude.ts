@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { obligationsFor } from './delegation'
 import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -164,6 +165,14 @@ const ORGAI_MCP = 'orgai'
 const ORGAI_TOOL_PREFIX = `mcp__${ORGAI_MCP}__`
 
 /** Activity string for an SDK tool name; harness tools lose their MCP prefix first. */
+/** The Agent tool's answer to a background spawn ('async_launched'): the child has not reported yet. */
+function isAsyncLaunch(response: unknown): boolean {
+  if (typeof response === 'string') return response.includes('async_launched')
+  if (Array.isArray(response)) return JSON.stringify(response).includes('async_launched')
+  if (response && typeof response === 'object') return (response as { status?: unknown }).status === 'async_launched'
+  return false
+}
+
 function describe(name: string, input: unknown): string {
   if (name.startsWith(ORGAI_TOOL_PREFIX)) return describeTool(name.slice(ORGAI_TOOL_PREFIX.length), input, { harness: true })
   return describeTool(name, input)
@@ -668,6 +677,7 @@ export function buildAgents(
       prompt: buildRolePrompt(role, ctx.roles, ctx.project, {
         isSetup,
         isolation,
+        ...(ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}),
         ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
         // Single-agent work runs ('single'): the prompt drops delegation and plan wording.
         ...(ctx.run.team ? { team: ctx.run.team } : {}),
@@ -1091,6 +1101,8 @@ export class ClaudeSession implements RuntimeSession {
   private toolUseIssuer = new Map<string, string>()
   /** Agent tool_use id -> spawned task/agent id */
   private taskByToolUse = new Map<string, string>()
+  /** Agents task_started has already reported to the delegation gate (noteSpawn); a later task_started for one is a resume. */
+  private gateKnown = new Set<string>()
   /** tool name -> last agent seen requesting it (permission attribution fallback) */
   private lastToolAgent = new Map<string, string>()
   /**
@@ -1578,6 +1590,18 @@ export class ClaudeSession implements RuntimeSession {
     return total
   }
 
+  /** Required delegation: `target` is an obligation of `caller`, or has obligations itself (run-start roles, strict mode). */
+  private receiptBearingSpawn(caller: Role | undefined, target: Role): boolean {
+    if (!this.ctx.delegation) return false
+    const obligations = obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)
+    return (!!caller && !!obligations[caller.id]?.includes(target.id)) || (obligations[target.id]?.length ?? 0) > 0
+  }
+
+  /** RuntimeSession.nudge: the root's one delegation correction. A harness message, never counted as an auto-continue. */
+  async nudge(text: string): Promise<void> {
+    this.notifyOrchestrator(text, 'Reading a harness reminder…')
+  }
+
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
   private notifyOrchestrator(
     text: string,
@@ -2027,6 +2051,9 @@ export class ClaudeSession implements RuntimeSession {
         const brief = typeof toolInput.prompt === 'string' ? toolInput.prompt : ''
         const knownItems = spawnKnowledge(this.ctx, brief, undefined, (m) => this.log('warn', m))
         if (knownItems) updates.prompt = withSpawnKnowledge(brief, knownItems)
+        // Required delegation (spec 5.4): a spawn that earns a receipt runs in the foreground, so the child's report and
+        // the receipt reach the caller in one tool result. Adaptive spawns keep the SDK default (background).
+        if (target && this.receiptBearingSpawn(parentRole, target)) updates.run_in_background = false
         if (!Object.keys(updates).length && !dropModel) return {}
         const updated: Record<string, unknown> = { ...toolInput, ...updates }
         if (dropModel) delete updated.model
@@ -2135,6 +2162,16 @@ export class ClaudeSession implements RuntimeSession {
       // Between tool calls the orchestrator's node shows the plan step it is on.
       const activity = (agentId === ROOT_ID && !this.isSetup ? stepActivity(this.ctx.getPlan()) : undefined) ?? 'Thinking…'
       if (a && a.state !== 'done' && a.state !== 'error') this.setState(agentId, 'thinking', activity)
+      // A completed (foreground) spawn: the report reached the caller. Confirm it and hand the caller the receipt.
+      const gate = this.ctx.delegation
+      if (gate && (input.tool_name === SPAWN_TOOL || input.tool_name === 'Task')) {
+        const child = this.taskByToolUse.get(input.tool_use_id)
+        if (child && !isAsyncLaunch(input.tool_response)) {
+          gate.delivered(child)
+          const receipt = gate.receiptText(child)
+          if (receipt) return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: receipt } }
+        }
+      }
       return {}
     }
 
@@ -2160,14 +2197,23 @@ export class ClaudeSession implements RuntimeSession {
     const subagentStop: HookCallback = async (raw) => {
       const input = raw as SubagentStopHookInput
       const a = this.ensureAgent(input.agent_id, { roleSlug: input.agent_type })
+      const decision = this.ctx.delegation?.completion(a.id, { canCorrect: true, canWait: true, reportText: input.last_assistant_message ?? '' })
+      if ((decision?.action === 'wait' || decision?.action === 'correct') && decision.text) {
+        // The subagent keeps going and gets the reason as a new turn (verified, sdk-facts). Not done, nothing integrated.
+        this.transcript(a.id, { kind: 'system', text: decision.text }, { source: 'harness' })
+        this.log('info', `${a.name}: ${decision.action === 'wait' ? 'told to wait for its required reports' : 'corrected: required reports are missing'}.`)
+        return { decision: 'block', reason: decision.text }
+      }
+      const failed = decision?.action === 'fail'
       a.result = input.last_assistant_message
       a.state = 'done'
-      a.activity = 'Reported back'
+      a.activity = failed ? 'Skipped required reports' : 'Reported back'
       a.endedAt = Date.now()
       this.partial.clear(a.id, true)
       this.upsert(a)
       this.reportFinished()
-      void this.integrator.onSubagentFinished(a.id)
+      if (failed) void this.integrator.holdFailed(a.id, decision.missing ?? 'required reports missing')
+      else void this.integrator.onSubagentFinished(a.id)
       return {}
     }
 
@@ -3357,6 +3403,14 @@ export class ClaudeSession implements RuntimeSession {
             ...(worktree ? { worktree } : {}),
             ...(handle ? { handle } : {})
           })
+          if (!this.gateKnown.has(msg.task_id)) {
+            this.gateKnown.add(msg.task_id)
+            if (role) this.ctx.delegation?.noteSpawn(msg.task_id, parentId ?? ROOT_ID, role.id)
+          } else {
+            // A resume (SendMessage to a finished subagent): a delegation-held branch is active again; the gate is asked at its next stop.
+            this.integrator.unhold(msg.task_id)
+            this.setState(msg.task_id, 'thinking', 'Thinking…')
+          }
         } else if (msg.subtype === 'api_retry') {
           // SDKAPIRetryMessage carries no agent fields, so a retry counts against the root.
           const root = this.ensureAgent(ROOT_ID)
@@ -3368,9 +3422,12 @@ export class ClaudeSession implements RuntimeSession {
         } else if (msg.subtype === 'task_notification') {
           this.backgroundTaskEnded(msg.task_id)
           const a = this.agents.get(msg.task_id)
-          if (a) {
-            // SubagentStop usually marked it done already; only a first finish opens the hand-back window.
-            const firstFinish = a.state !== 'done' && a.state !== 'error'
+          if (a && a.state === 'done') {
+            // SubagentStop already finished it (and the gate and integrator saw it): never finish it a second time.
+            this.noteActivity('report')
+          } else if (a) {
+            const firstFinish = a.state !== 'error'
+            if (msg.status !== 'completed') this.ctx.delegation?.ended(a.id)
             a.state = msg.status === 'completed' ? 'done' : 'error'
             a.activity = msg.status === 'completed' ? 'Reported back' : `Task ${msg.status}`
             a.result = a.result ?? msg.summary
