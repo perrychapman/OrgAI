@@ -1,12 +1,15 @@
 import { Box, Text } from 'ink'
+import { totalTokens } from '../../shared/defaults'
+import { formatTokens } from '../../shared/view/cost'
 import type { RunStatus } from '../../shared/types'
-import { elapsedLabel, isWorkingAgentState, motionEnabled, useActivityTick } from './activity'
+import { agentActivityLabel, elapsedLabel, isWorkingAgentState, motionEnabled, useActivityTick } from './activity'
 import { useTuiEnv } from './context'
 import { Shimmer } from './Motion'
 import { alignSegs, styleFor, type Seg } from './panes/lines'
+import { textWidth, truncateEnd } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import { asciiOnly, glyphs } from './theme'
-import type { OrgTreeRow, TuiEnv } from './types'
+import type { OrgTreeRow, TuiEnv, TuiRun } from './types'
 
 export interface WorkLabelParts {
   prefix: string
@@ -16,12 +19,11 @@ export interface WorkLabelParts {
 export function workLabelParts(rows: readonly OrgTreeRow[], status: RunStatus): WorkLabelParts {
   const current = rows.filter(row => !row.earlier && isWorkingAgentState(row.state))
   const lead = current.find(row => row.isRoot) ?? current[0]
-  const base = lead?.stateWord || (status === 'starting' ? 'Starting the run' : status === 'stopping' ? 'Stopping the run' : 'Working')
-  const detail = lead?.activity || ''
+  const base = status === 'stopping' ? 'Stopping the run' : lead ? agentActivityLabel(lead) : status === 'starting' ? 'Starting the run' : 'Working'
   const team = current.length > 1 ? `${current.length} agents working` : ''
   return {
     prefix: sanitizeTty(base).replace(/\s+/g, ' ').trim(),
-    details: [team, detail].filter(Boolean).map(value => sanitizeTty(value).replace(/\s+/g, ' ').trim()).filter(Boolean)
+    details: [team].filter(Boolean)
   }
 }
 
@@ -30,16 +32,23 @@ export function workLabel(rows: readonly OrgTreeRow[], status: RunStatus): strin
   return [parts.prefix, ...parts.details].filter(Boolean).join(' · ')
 }
 
-/** Label segments keep team/activity detail static while allowing only a thinking lead's short state prefix to shimmer. */
+/** One shared activity label shimmers; team counts and timing remain static. */
 export function activityLabelSegments(rows: readonly OrgTreeRow[], status: RunStatus, env: TuiEnv, animated = true): Seg[] {
   const parts = workLabelParts(rows, status)
   const lead = rows.find(row => !row.earlier && isWorkingAgentState(row.state) && row.isRoot) ?? rows.find(row => !row.earlier && isWorkingAgentState(row.state))
-  const thinking = status === 'running' && lead?.state === 'thinking' && animated && motionEnabled(env)
+  const shimmer = status === 'running' && !!lead && animated && motionEnabled(env)
   const separator = asciiOnly(env) ? ' | ' : ' · '
   return [
-    { text: parts.prefix, shimmer: thinking, bold: true, tone: 'running' },
+    { text: parts.prefix, shimmer, bold: true, tone: 'running' },
     ...(parts.details.length ? [{ text: `${separator}${parts.details.join(separator)}` }] : [])
   ]
+}
+
+/** Prefer the authoritative run aggregate; fall back to agent counters before the first usage event. */
+export function runTokenCount(run: TuiRun | undefined): number | undefined {
+  if (!run) return undefined
+  if (run.summary.usage) return totalTokens(run.summary.usage.tokens)
+  return Object.values(run.agents).reduce((sum, agent) => sum + (agent.usage ? totalTokens(agent.usage.tokens) : agent.inputTokens + agent.outputTokens), 0)
 }
 
 /** Actual work in the already-reserved tray row. Decisions always take precedence over this display. */
@@ -51,6 +60,8 @@ export function RunActivity(props: {
   endedAt?: number
   animated?: boolean
   canInterrupt?: boolean
+  compact?: boolean
+  tokenCount?: number
 }) {
   const env = useTuiEnv()
   const working = props.status === 'starting' || props.status === 'running' || props.status === 'stopping'
@@ -64,10 +75,18 @@ export function RunActivity(props: {
     : [{ text: props.status === 'finished' ? 'Run finished' : 'Ready', bold: true }]
   const marker = env.screenReader ? '' : `${working ? g.spinner[tick % g.spinner.length] : g.check} `
   const elapsed = props.startedAt === undefined ? '' : elapsedLabel(props.startedAt, props.endedAt ?? Date.now())
-  const meta = [elapsed, working && props.canInterrupt ? 'Esc Esc interrupts' : ''].filter(Boolean).join(asciiOnly(env) ? ' | ' : ' · ')
+  const sep = asciiOnly(env) ? ' | ' : ' · '
+  const tokens = props.tokenCount === undefined ? '' : `${formatTokens(props.tokenCount)} tokens`
+  const counters = [elapsed, tokens].filter(Boolean).join(sep)
+  const workingCount = props.rows.filter(row => !row.earlier && isWorkingAgentState(row.state)).length
+  const meta = [!props.compact ? counters : '', working && props.canInterrupt ? 'Esc Esc interrupts' : ''].filter(Boolean).join(sep)
+  const compactMeta = [counters, working && workingCount > 1 ? `${workingCount} agents working` : ''].filter(Boolean).join(sep)
+  const suffix = compactMeta ? `${sep}${compactMeta}` : ''
+  const labelRoom = Math.max(8, inner - textWidth(marker + suffix + meta) - (meta ? 2 : 0))
   const segments = alignSegs([
     { text: marker, tone: working ? 'running' : 'ok', bold: true },
-    ...labelSegments
+    ...(props.compact ? [{ ...labelSegments[0], text: truncateEnd(labelSegments[0].text, labelRoom, g.ellipsis) }] : labelSegments),
+    ...(props.compact && suffix ? [{ text: suffix, tone: 'muted' as const }] : [])
   ], meta ? { text: meta, dim: true } : undefined, inner, env)
   return <Box width={width} height={1} paddingX={inset} overflow="hidden"><Text wrap="truncate-end">{segments.map((seg: Seg, i) => <Text key={i} {...styleFor(seg, env)}>{seg.shimmer ? <Shimmer text={seg.text} phase={tick} active={false} /> : seg.text}</Text>)}</Text></Box>
 }

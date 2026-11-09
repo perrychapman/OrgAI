@@ -169,7 +169,7 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
     }),
     {
       // Ink never paints while the pager (or a stop) owns the terminal; see gateWrites.
-      stdout: gateWrites(stdout, () => terminal.suspended),
+      stdout: gateWrites(stdout, () => terminal.suspended, env.bufferMode === 'fullscreen'),
       stdin: inkStdin,
       stderr: stdout,
       exitOnCtrlC: false,

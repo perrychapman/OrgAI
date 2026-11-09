@@ -60,6 +60,8 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'transcript', keys: 'Up, Down', label: 'Scroll a line', hint: { order: 1, text: 'Up/Down scroll' } },
   { scope: 'transcript', keys: 'PgUp, PgDn', label: 'Scroll a page', hint: { order: 2, text: 'PgUp/PgDn page' } },
   { scope: 'transcript', keys: 'Home, End', label: 'Oldest row / back to the newest', hint: { order: 3, text: 'End newest' } },
+  { scope: 'composer', keys: 'Ctrl+O', label: 'Expand / collapse tool details' },
+  { scope: 'transcript', keys: 'Ctrl+O', label: 'Expand / collapse tool details' },
   { scope: 'transcript', keys: 'Enter', label: 'Expand / collapse completed tool activity', hint: { order: 4, text: 'Enter tools' } },
   // ---- Plan ----
   { scope: 'plan', keys: 'Up, Down, PgUp, PgDn, Home, End', label: 'Scroll the plan', hint: { order: 1, text: 'Up/Down scroll' } },
