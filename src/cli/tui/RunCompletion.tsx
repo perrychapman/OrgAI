@@ -33,6 +33,7 @@ function outcomeLabel(summary: TuiState['runs'][string]['summary']): { heading: 
     'unmerged-conflicts': 'Completed with unmerged conflicts',
     blocked: 'Blocked',
     'incomplete-plan': 'Incomplete plan',
+    'delegation-incomplete': 'Required delegation incomplete',
     'needs-decision': 'Needs a decision',
     'budget-exceeded': 'Budget exceeded',
     'rate-limited': 'Rate limited',

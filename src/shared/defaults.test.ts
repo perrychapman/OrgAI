@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_APP_SETTINGS, connectionConfigured, connectionIds, connectionName, connectionProviderLabel, connectionRecord, connectionInUse, isConnectionId, isKnownConnection, proxyModelFamily, proxyModelsUrl, proxyOf, proxyOpenAIBase, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG, singleRunProject } from './defaults'
 import type { Project, ProviderModel, ProxyConnection } from './types'
 import { RUN_KIND_LABELS, VIRTUAL_PROJECT_IDS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from './types'
-import { isSafeId } from './defaults'
+import { isSafeId, cleanRequiredReports } from './defaults'
+import type { Role } from './types'
 
 describe('virtual projects (Assistants)', () => {
   it('recognises exactly the three virtual ids, which still pass SAFE_ID', () => {
@@ -432,5 +433,19 @@ describe('singleRunProject', () => {
     expect(out.allowedDirectories).toEqual(['/extra'])
     expect(out.id).toBe(p.id)
     expect(p.roles).toHaveLength(2)
+  })
+})
+
+describe('cleanRequiredReports', () => {
+  const role = (over: Partial<Role>): Pick<Role, 'id' | 'canSpawn' | 'spawnable' | 'requiredReports'> => ({ id: 'm', canSpawn: true, spawnable: ['a', 'b'], ...over })
+  it('keeps spawnable, non-self, unique ids in order', () => {
+    expect(cleanRequiredReports(role({ requiredReports: ['b', 'x', 'a', 'b', 'm'] }))).toEqual(['b', 'a'])
+    expect(cleanRequiredReports(role({ spawnable: ['a', 'm'], requiredReports: ['m', 'a'] }))).toEqual(['a'])
+  })
+  it('is undefined when empty, missing or the role cannot spawn', () => {
+    expect(cleanRequiredReports(role({}))).toBeUndefined()
+    expect(cleanRequiredReports(role({ requiredReports: [] }))).toBeUndefined()
+    expect(cleanRequiredReports(role({ requiredReports: ['x'] }))).toBeUndefined()
+    expect(cleanRequiredReports(role({ canSpawn: false, requiredReports: ['a'] }))).toBeUndefined()
   })
 })

@@ -2,7 +2,7 @@
  * Headless exec settlement (cli-spec 6.2(2)-(3)): when an `orgai exec` run is done, and how it ended. Pure; RunManager
  * (`trySettleExecRun`) gathers the inputs at a stable (rootTurnGen, activityGen) and finalizes with the result.
  */
-import type { AgentInstance, AgentState, ExecOutcome, RunEndedBy, RunPlan } from '@shared/types'
+import type { AgentInstance, AgentState, DelegationVerdict, ExecOutcome, RunEndedBy, RunPlan } from '@shared/types'
 import type { SessionSettlement } from './types'
 import { ROOT_AGENT_ID } from './types'
 
@@ -57,13 +57,19 @@ export interface ExecOutcomeInput {
   plan: RunPlan | undefined
   agents: readonly Pick<AgentInstance, 'worktree'>[]
   allowUnmerged?: boolean
+  /** Required delegation (spec 5.8): the root's verdict, a failed subtree, and the strict-mode native spawn count. */
+  rootVerdict?: DelegationVerdict
+  subtreeFailed?: boolean
+  strictNativeSpawns?: number
 }
 
 /** The outcome of a quiescent exec run and the endedBy it records (spec 6.2(3) table). */
 export function execOutcomeFor(i: ExecOutcomeInput): { outcome: ExecOutcome; endedBy?: RunEndedBy } {
   const plan = i.plan
+  if (plan?.status === 'blocked') return { outcome: 'blocked', endedBy: 'policy' }
+  // Before the unplanned early return: an unplanned run with a failed required delegation is not complete either.
+  if (i.rootVerdict === 'failed' || i.subtreeFailed || (i.strictNativeSpawns ?? 0) > 0) return { outcome: 'delegation-incomplete', endedBy: 'policy' }
   if (!plan) return { outcome: 'completed-unplanned' }
-  if (plan.status === 'blocked') return { outcome: 'blocked', endedBy: 'policy' }
   // 'active' is incomplete even with no steps left: complete_plan was never called.
   if (plan.status !== 'done') return { outcome: 'incomplete-plan', endedBy: 'policy' }
   if (!i.allowUnmerged && i.agents.some((a) => a.worktree?.status === 'conflict')) return { outcome: 'unmerged-conflicts', endedBy: 'policy' }
@@ -76,6 +82,7 @@ export function defaultEndedBy(outcome: ExecOutcome): RunEndedBy | undefined {
     case 'unmerged-conflicts':
     case 'blocked':
     case 'incomplete-plan':
+    case 'delegation-incomplete':
     case 'needs-decision':
     case 'stalled':
       return 'policy'

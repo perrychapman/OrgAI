@@ -419,6 +419,7 @@ export const OUTCOME_LABEL: Record<ExecOutcome, string> = {
   'unmerged-conflicts': 'Unmerged conflicts',
   blocked: 'Blocked',
   'incomplete-plan': 'Plan not finished',
+  'delegation-incomplete': 'Required delegation incomplete',
   'needs-decision': 'Needs a decision',
   'budget-exceeded': 'Budget reached',
   'rate-limited': 'Usage limit reached',

@@ -90,6 +90,19 @@ describe('execOutcomeFor', () => {
     expect(execOutcomeFor({ plan: undefined, agents }).outcome).toBe('completed-unplanned')
   })
 
+  it('delegation-incomplete comes after blocked and before the unplanned and plan checks', () => {
+    const policy = { outcome: 'delegation-incomplete', endedBy: 'policy' }
+    expect(execOutcomeFor({ plan: undefined, agents: [], rootVerdict: 'failed' })).toEqual(policy)
+    expect(execOutcomeFor({ plan: undefined, agents: [], subtreeFailed: true })).toEqual(policy)
+    expect(execOutcomeFor({ plan: undefined, agents: [], strictNativeSpawns: 1 })).toEqual(policy)
+    expect(execOutcomeFor({ plan: plan(), agents: [], rootVerdict: 'failed' })).toEqual(policy)
+    expect(execOutcomeFor({ plan: plan({ status: 'active' }), agents: [], subtreeFailed: true })).toEqual(policy)
+    expect(execOutcomeFor({ plan: plan({ status: 'blocked' }), agents: [], rootVerdict: 'failed' })).toEqual({ outcome: 'blocked', endedBy: 'policy' })
+    expect(execOutcomeFor({ plan: undefined, agents: [], rootVerdict: 'ok', strictNativeSpawns: 0 })).toEqual({ outcome: 'completed-unplanned' })
+    expect(execOutcomeFor({ plan: plan(), agents: [], rootVerdict: 'adaptive' })).toEqual({ outcome: 'completed' })
+    expect(defaultEndedBy('delegation-incomplete')).toBe('policy')
+  })
+
   it('defaultEndedBy follows the table', () => {
     expect(defaultEndedBy('completed')).toBeUndefined()
     expect(defaultEndedBy('rate-limited')).toBeUndefined()
