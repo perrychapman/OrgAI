@@ -4,6 +4,7 @@ import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOS
 import { BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, OUTPUT_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
+import { obligationsFor } from './delegation'
 
 /**
  * Prompt text the harness gives every role, independent of the provider. Pure functions of the role,
@@ -87,6 +88,11 @@ export interface PromptFlags {
    * told to finish with a concise report, since its last message is handed back to the agent that delegated.
    */
   bridged?: boolean
+  /**
+   * RunOverrides.strictDelegation: every role that can spawn must delegate to its whole spawnable list (obligationsFor).
+   * Adapters pass `strictDelegation: ctx.run.overrides?.strictDelegation === true`. Missing = only Role.requiredReports count.
+   */
+  strictDelegation?: boolean
 }
 
 /** One line for the root of a bridged child session: its final message is what the delegating agent receives. */
@@ -106,7 +112,17 @@ export function reportsOf(role: Role, roles: Role[]): Role[] {
   return roles.filter((r) => role.canSpawn && role.spawnable.includes(r.id))
 }
 
-export function reportsText(reports: Role[], bridged: PromptFlags['bridgedRoles'] = [], via: PromptFlags['bridgeVia'] = 'delegate_agent'): string {
+function joinAnd(items: readonly string[]): string {
+  return items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+}
+
+export function reportsText(
+  reports: Role[],
+  bridged: PromptFlags['bridgedRoles'] = [],
+  via: PromptFlags['bridgeVia'] = 'delegate_agent',
+  /** Slugs of the reports this role must delegate to (obligationsFor): adds the required-delegation paragraph. */
+  required: readonly string[] = []
+): string {
   const mark = (r: Role): string => {
     const b = bridged?.find((x) => x.roleId === r.id)
     return b ? bridgedReportMark(b.connectionName, via) : ''
@@ -114,7 +130,11 @@ export function reportsText(reports: Role[], bridged: PromptFlags['bridgedRoles'
   return (
     `You lead the following specialists. Delegate to them with the Agent tool, passing subagent_type exactly as written:\n` +
     reports.map((r) => `- ${r.slug}${mark(r)}: ${r.description}`).join('\n') +
-    `\nYou may only delegate to these roles. Give each delegate a complete, self-contained brief.`
+    `\nYou may only delegate to these roles. Give each delegate a complete, self-contained brief.` +
+    (required.length
+      ? `\nYou must delegate to ${joinAnd(required)} and wait for their reports before you finish; the harness checks the run's record and will not accept your report without them.`
+      : '') +
+    `\nEach report may arrive with a harness receipt of what it delegated; trust the receipt over the report's own account.`
   )
 }
 
@@ -449,7 +469,9 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
   }
   const reports = reportsOf(role, roles)
   if (reports.length) {
-    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia))
+    const requiredIds = obligationsFor(roles, flags.strictDelegation === true)[role.id] ?? []
+    const requiredSlugs = requiredIds.map((id) => roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
+    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs))
     if (isolation && isRoot) parts.push(orchestratorIsolationText())
     if (!isSetup) parts.push(networkLeadText(reports))
   } else if (!isSetup) {

@@ -28,6 +28,8 @@ export interface ExecSettleInput {
   plan: RunPlan | undefined
   /** ctx.autoContinue (already folded with planNudgesApply): the continuation driver may send the turn-1 nudge. */
   autoContinue: boolean
+  /** The exec root's one delegation correction was sent and its turn has not ended yet. */
+  delegationCorrectionPending?: boolean
 }
 
 /** Why the run is not quiescent yet, or null when it is. For logs and tests. */
@@ -39,6 +41,7 @@ export function execNotQuiescentReason(i: ExecSettleInput): string | null {
   if (s.rootTurnGen !== i.rootTurnGen) return 'the adapter is on another root turn'
   if (!s.continuationSettled) return 'the continuation check is pending'
   if (!s.quiescent) return 'the adapter has pending work'
+  if (i.delegationCorrectionPending) return 'a delegation correction is pending'
   if (i.limitHold) return 'held on a usage limit'
   if (i.held) return 'held by an interrupt'
   if (i.agents.some(isWorkingReport)) return 'reports are working'
