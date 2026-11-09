@@ -105,6 +105,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - `src/main/runtime/prompts.ts`
 - `src/main/runtime/activity.ts`
 - `src/main/runtime/continuation.ts`
+- `src/main/runtime/delegation.ts` (pure required-delegation decisions, preflight and texts) and `delegationLedger.ts` (the per-run ledger RunManager owns)
 - `src/main/runtime/integration.ts`
 - `src/main/runtime/permissionRules.ts`
 - `src/main/runtime/ruleMatch.ts`

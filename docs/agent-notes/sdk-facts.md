@@ -65,5 +65,13 @@ What was verified against SDK v0.3.312 by smoke scripts: task events, hooks, per
     canUseTool (options carry `agentID` and `mcpServer`) and the call ran.
   - A subagent spawned after the add, with `tools` omitted, can call the new server even when its definition says
     `mcpServers: ['alpha']`: `AgentDefinition.mcpServers` does not restrict a subagent to the named servers.
+  - Delegation gate facts (`scripts/smoke-delegation-gate.mjs`, SDK 0.3.318, haiku, 2026-11-08, variants A-D):
+    `SubagentStop` returning `{ decision: 'block', reason }` keeps the subagent running, it acts on the reason, and its
+    next stop has `stop_hook_active: true`. `PostToolUse` `hookSpecificOutput.additionalContext` on an `Agent` call
+    reaches the calling model, for the root and for a subagent's own `Agent` call; `updatedToolOutput` did not reach the
+    model. `PreToolUse` `updatedInput` with `run_in_background: false` makes `Agent` synchronous, in the order child
+    `SubagentStop` -> `task_updated` -> `task_notification` -> parent `PostToolUse` -> `tool_result`; without it the call
+    returns `async_launched` at once. Main-thread hooks carry `agent_type` = the root agent's name when `agent` is set, so
+    use `agent_id` (absent on the main thread) to tell a subagent.
   - Not checked: `reloadSkills()`, `Options.skills` blocking, resume honouring new `agents`, and whether a resumed
     session keeps its session id or `total_cost_usd`.
