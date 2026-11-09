@@ -1,5 +1,7 @@
 # OrgAI architecture
 
+Fullscreen TUI approvals use inline selected actions (Left/Right, Enter). New cards may focus an empty idle prompt; preserve drafts, card-arrival guards, read-before-approval gates and explicit persistent-grant confirmation. See docs/design/tui-style.md.
+
 Outputs Phase C keyboard follow-up: `useBlockCursor` connects source lines, rendered Markdown blocks and document items to note selection; sheet and CSV previews expose their active cell and debounce range announcements. See `docs/design/outputs-2.md` Phase C notes and `node e2e/outputs-notes.mjs` after `npm run build`.
 
 OrgAI is an Electron app built with electron-vite and three processes. The main process (src/main) holds the runtime adapters, run manager, connections and model catalog, MCP servers and secrets, usage tracking, setup service, worktrees and JSON stores. The preload (src/preload) exposes window.orgai. The renderer (src/renderer) uses React 19 with React Flow and zustand. IPC types live in src/shared/types.ts. Two provider adapters exist: Claude (Claude Agent SDK) and Codex (`codex app-server`). They are reached through three connections: Anthropic, OpenAI and LiteLLM.
