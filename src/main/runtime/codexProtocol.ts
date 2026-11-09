@@ -494,7 +494,7 @@ export function buildLaunchConfig(
   opts: { noProjectDocs?: boolean; writableRoots?: string[]; folderTrust?: FolderTrustConfig; random?: (size: number) => Uint8Array } = {}
 ): LaunchConfig {
   const mcpEnvPrefix = `ORGAI_MCP_${Buffer.from((opts.random ?? randomBytes)(8)).toString('hex')}`
-  const config: string[] = [...NATIVE_SKILL_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
+  const config: string[] = [...NATIVE_SKILL_CONFIG, ...NATIVE_AGENT_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
   const trust = folderTrustEntry(opts.folderTrust)
   if (trust) config.push(trust)
   // Allowed folders become extra writable roots of the workspace-write sandbox (key found in the codex 0.166.0
@@ -616,6 +616,12 @@ export function buildLaunchConfig(
  */
 export const NO_PROJECT_DOCS_CONFIG: readonly string[] = ['project_doc_max_bytes=0']
 export const NATIVE_SKILL_CONFIG: readonly string[] = ['skills.bundled.enabled=false', 'skills.include_instructions=false']
+
+/**
+ * Switches Codex's built-in multi-agent tools off (delegation-enforcement 5.1): their agents are invisible to OrgAI.
+ * UNVERIFIED that every Codex build honours both keys; codex.ts detects and stops a native item regardless.
+ */
+export const NATIVE_AGENT_CONFIG: readonly string[] = ['features.multi_agent=false', 'features.multi_agent_v2=false']
 
 /** Most skills one lock disables per call (a folder with more is warned about; the rest stay enabled). */
 export const NATIVE_SKILL_DISABLE_LIMIT = 500

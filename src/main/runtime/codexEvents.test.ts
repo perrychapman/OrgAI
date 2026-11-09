@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CodexEventMapper, ThrottledPartial, contentText, fileChangeTargets, fileChanges, parseJsonl, type CodexUpdate } from './codexEvents'
+import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, canonicalNetworkTool, contentText, fileChangeTargets, fileChanges, parseJsonl, type CodexUpdate } from './codexEvents'
 import { parseNotification } from './codexProtocol'
 
 describe('returned media', () => {
@@ -109,8 +109,11 @@ describe('tools fixture', () => {
     expect(byId('it-w1')).toMatchObject({ name: 'WebSearch', activity: 'Searching the web: zod toJSONSchema' })
   })
 
-  it('warns about Codex built-in multi-agent calls', () => {
+  it('warns about Codex built-in multi-agent calls and reports one nativeSpawn for the started+completed pair', () => {
     expect(updates.filter((u) => u.type === 'log')).toHaveLength(1)
+    expect(updates.filter((u) => u.type === 'nativeSpawn')).toEqual([{ type: 'nativeSpawn', threadId: 'th-1', tool: 'spawnAgent', itemId: 'it-x1' }])
+    expect(byId('it-x1')).toMatchObject({ name: 'codex:spawnAgent' })
+    expect(updates).toContainEqual({ type: 'toolResult', threadId: 'th-1', toolUseId: 'it-x1', content: "Codex's built-in multi-agent tools are not available in OrgAI.", isError: true })
   })
 
   it('flags a usage limit error and the failed turn', () => {
@@ -215,5 +218,39 @@ describe('ThrottledPartial', () => {
     expect(out).toEqual(['x', 'xyz'])
     p.clear('a')
     expect(out).toEqual(['x', 'xyz', ''])
+  })
+})
+
+describe('network tool names', () => {
+  it('uses the renamed tools and maps the old names to them', () => {
+    expect(NETWORK_TOOLS).toEqual({ spawn: 'spawn_report', message: 'message_agent', list: 'list_team' })
+    expect(canonicalNetworkTool('spawn_agent')).toBe('spawn_report')
+    expect(canonicalNetworkTool('send_message')).toBe('message_agent')
+    expect(canonicalNetworkTool('list_agents')).toBe('list_team')
+    expect(canonicalNetworkTool('spawn_report')).toBe('spawn_report')
+    expect(canonicalNetworkTool('Agent')).toBeNull()
+  })
+  it('maps both the new and the old names back to the Claude names', () => {
+    const m = new CodexEventMapper()
+    const use = (tool: string) => m.handle('item/started', { threadId: 't', item: { type: 'dynamicToolCall', id: `i-${tool}`, tool, arguments: { role: 'engineer', brief: 'b', to: 'x', message: 'm' } } })[0] as Extract<CodexUpdate, { type: 'toolUse' }>
+    expect(use('spawn_report').name).toBe('Agent')
+    expect(use('spawn_agent').name).toBe('Agent')
+    expect(use('message_agent').name).toBe('SendMessage')
+    expect(use('send_message').name).toBe('SendMessage')
+    expect(use('list_team').name).toBe('ListAgents')
+    expect(use('list_agents').name).toBe('ListAgents')
+  })
+})
+
+describe('native multi-agent items', () => {
+  it('emits one nativeSpawn per item id, on item/started only', () => {
+    const m = new CodexEventMapper()
+    const item = { type: 'subAgentActivity', id: 'n1', tool: 'wait' }
+    const started = m.handle('item/started', { threadId: 't', item })
+    expect(started.map((u) => u.type)).toEqual(['toolUse', 'toolResult', 'nativeSpawn'])
+    expect(started[0]).toMatchObject({ name: 'codex:wait' })
+    expect(m.handle('item/started', { threadId: 't', item })).toEqual([])
+    expect(m.handle('item/completed', { threadId: 't', item }).map((u) => u.type)).toEqual(['log'])
+    expect(m.handle('item/started', { threadId: 't', item: { ...item, id: 'n2' } }).filter((u) => u.type === 'nativeSpawn')).toHaveLength(1)
   })
 })

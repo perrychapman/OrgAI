@@ -147,7 +147,7 @@ query(), a fake Codex server and the mock only.
   - Every secret of every RunConnection of the run is redacted from forwarded text.
 - **Starting a bridged report:** Claude and mock use the harness tool `delegate_agent` (`BRIDGE_HARNESS_TOOLS`,
   'spawners', non-blocking for node state). On Claude, a bridged role gets no AgentDefinition, and PreToolUse denies
-  native spawns of it and checks delegate_agent's caller. Codex routes `spawn_agent` to `ctx.bridge.spawn` and
+  native spawns of it and checks delegate_agent's caller. Codex routes `spawn_report` to `ctx.bridge.spawn` and
   delivers the result as a report message (`harnessToolsFor` option `bridgeThroughSpawn`).
 - **Usage:** `AgentInstance.connection` and per-connection pricing; `RunUsage.connections` is filled only for runs
   that used another connection.

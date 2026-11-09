@@ -31,7 +31,7 @@ import {
   type PolicyChoice
 } from './codexProtocol'
 import { countUsage, setModelTokens } from './runUsage'
-import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, fileChangeTargets, fileChanges, type CodexUpdate } from './codexEvents'
+import { CodexEventMapper, ThrottledPartial, fileChangeTargets, fileChanges, type CodexUpdate } from './codexEvents'
 import { costFromPrice, openAiMix, priceFor } from './pricing'
 import {
   CodexAgentNetwork,
@@ -39,6 +39,7 @@ import {
   childFirstMessage,
   codexToolNotes,
   createAgentWorktree,
+  canonicalNetworkTool,
   networkToolNames,
   networkToolSpecs,
   reportMessage,
@@ -185,7 +186,7 @@ function withoutControlEnv(servers: ResolvedMcpServer[]): ResolvedMcpServer[] {
  * Shape of a run
  *   one app-server process per run, env = connection.env (CODEX_HOME = OrgAI's own Codex home) over process.env
  *   root thread    thread/start { developerInstructions = role prompt, dynamicTools, cwd, approvalPolicy, sandbox }
- *   subagents      Codex has no spawn the harness can govern, so the dynamic tool spawn_agent starts another thread
+ *   subagents      Codex has no spawn the harness can govern, so the dynamic tool spawn_report starts another thread
  *                  per report (own prompt, model, worktree); its final message goes to the parent as a harness message
  *   approvals      item/*\/requestApproval server requests -> ctx.requestPermission (or saved rules / the mode's policy)
  *   harness tools  dynamicTools on thread/start, answered through the item/tool/call server request
@@ -249,6 +250,12 @@ interface ThreadInfo {
   policy: PolicyChoice
 }
 
+/** Turns in which one agent may use Codex's built-in multi-agent tools before it fails (the third one fails it). */
+const NATIVE_STRIKE_LIMIT = 3
+const NATIVE_FAIL_ACTIVITY = 'Used native multi-agent tools'
+const NATIVE_AGENTS_NOTICE =
+  "Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports."
+
 class CodexSession implements RuntimeSession {
   readonly finished: Promise<void>
   private server!: CodexServerLike
@@ -289,7 +296,7 @@ class CodexSession implements RuntimeSession {
   private sessionDirs: string[] = []
   private limited = false
   private ending = false
-  /** Bridged reports started through spawn_agent and still working: harness agent id -> who they report to. */
+  /** Bridged reports started through spawn_report and still working: harness agent id -> who they report to. */
   private bridgedLive = new Map<string, { handle: string; roleSlug: string; connectionName: string; parentId: string }>()
   private ended = false
   private launch: LaunchConfig = { config: [], env: {}, summary: [], skipped: [] }
@@ -298,6 +305,20 @@ class CodexSession implements RuntimeSession {
   private rootTurnGen = 0
   /** thread/start or thread/resume requests in flight. */
   private threadStarts = 0
+  /** Updates of threads OrgAI has not bound yet, held while a thread start is in flight and re-dispatched after it. */
+  private heldUpdates: CodexUpdate[] = []
+  /** Server requests of unbound threads waiting for a thread start to resolve. */
+  private bindWaiters: (() => void)[] = []
+  /** Foreign threads whose turn was already interrupted. */
+  private foreignInterrupted = new Set<string>()
+  /** Native multi-agent items seen this run (Phase 3 wires it into the run summary). */
+  private nativeItems = 0
+  /** Strikes per agent: turns in which it used Codex's built-in multi-agent tools. */
+  private nativeStrikes = new Map<string, number>()
+  /** threadId -> the turn already struck (several native items in one turn are one strike). */
+  private struckTurn = new Map<string, string>()
+  /** threadId -> the strike whose interrupted turn is still to complete; that turnCompleted skips normal handling. */
+  private nativeTag = new Map<string, { strike: number }>()
   private restarting = false
   private pendingMcpPrefixes: string[] = []
   private closeSignal!: () => void
@@ -332,7 +353,7 @@ class CodexSession implements RuntimeSession {
       addMcpServer: (spec) => this.addMcpServer(spec),
       configChanged: (change) => this.configChanged(change)
     }
-    // Bridged reports go through spawn_agent (spawnBridged), so no delegate_agent here.
+    // Bridged reports go through spawn_report (spawnBridged), so no delegate_agent here.
     this.harness = harnessToolsFor(ctx, hooks, { bridgeThroughSpawn: true })
     for (const t of this.harness) this.harnessByCodexName.set(codexToolName(t.name), t)
     this.mapper = new CodexEventMapper({
@@ -398,6 +419,7 @@ class CodexSession implements RuntimeSession {
   async interrupt(): Promise<void> {
     // An interrupted turn waits for the user; no automatic continue until they reply.
     this.continuation.hold()
+    this.nativeTag.clear()
     await this.interruptAll()
   }
 
@@ -447,6 +469,7 @@ class CodexSession implements RuntimeSession {
     if (this.ending) return
     this.ending = true
     this.continuation.dispose()
+    this.nativeTag.clear()
     await this.interruptAll()
     this.server?.close()
     this.closeSignal()
@@ -552,8 +575,32 @@ class CodexSession implements RuntimeSession {
     return a
   }
 
-  private agentOf(threadId: string): string {
-    return this.threads.get(threadId)?.agentId ?? ROOT_AGENT_ID
+  /** The agent of a thread OrgAI started; undefined for a thread that is not part of this run's org chart. */
+  private agentOf(threadId: string): string | undefined {
+    return this.threads.get(threadId)?.agentId
+  }
+
+  /**
+   * agentOf for a server request: while a thread start is in flight an unbound thread may be the one being started, so
+   * the request waits until it is bound or the start resolved. Undefined (refuse) for a thread that stays unknown.
+   */
+  private async agentForRequest(threadId: string): Promise<string | undefined> {
+    while (!this.threads.has(threadId) && this.threadStarts > 0) await new Promise<void>((resolve) => this.bindWaiters.push(resolve))
+    const id = this.agentOf(threadId)
+    if (id === undefined) this.log('warn', `Refused a request from thread ${threadId}: it is not part of this run's org chart.`)
+    return id
+  }
+
+  private wakeBindWaiters(): void {
+    for (const w of this.bindWaiters.splice(0)) w()
+  }
+
+  /** Re-dispatch held updates of `threadId` (now bound), or every held update when the starts have all resolved. */
+  private flushHeld(threadId?: string): void {
+    const held = this.heldUpdates.filter((u) => (threadId ? 'threadId' in u && u.threadId === threadId : true))
+    if (!held.length) return
+    this.heldUpdates = this.heldUpdates.filter((u) => !held.includes(u))
+    for (const u of held) this.apply(u, true)
   }
 
   private serialized<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
@@ -701,6 +748,13 @@ class CodexSession implements RuntimeSession {
       return await this.startThreadNow(params, method)
     } finally {
       this.threadStarts -= 1
+      if (this.threadStarts === 0) {
+        // The caller binds the thread right after this returns; whatever is still unbound after that is foreign.
+        setImmediate(() => {
+          if (this.threadStarts === 0) this.flushHeld()
+          this.wakeBindWaiters()
+        })
+      }
     }
   }
 
@@ -731,6 +785,8 @@ class CodexSession implements RuntimeSession {
   private bindThread(threadId: string, agentId: string, policy: PolicyChoice): void {
     this.threads.set(threadId, { agentId, policy })
     this.agentThread.set(agentId, threadId)
+    this.flushHeld(threadId)
+    this.wakeBindWaiters()
   }
 
   private createServer(launch: LaunchConfig): CodexServerLike {
@@ -859,9 +915,26 @@ class CodexSession implements RuntimeSession {
     for (const u of this.mapper.handle(method, params)) this.apply(u)
   }
 
-  private apply(u: CodexUpdate): void {
+  private apply(u: CodexUpdate, replayed = false): void {
     if (u.type === 'log') return this.log(u.level, u.message)
+    // Turn tracking first, for any thread (a replayed update was tracked when it first arrived).
+    if (!replayed) {
+      if (u.type === 'turnStarted' && u.turnId) this.activeTurn.set(u.threadId, u.turnId)
+      else if (u.type === 'turnCompleted') {
+        if (u.turnId) this.completedTurns.add(u.turnId)
+        if (this.activeTurn.get(u.threadId) === u.turnId || !u.turnId) this.activeTurn.delete(u.threadId)
+      }
+    }
     const agentId = this.agentOf(u.threadId)
+    if (agentId === undefined) {
+      // A thread OrgAI did not start. While a start is in flight it may be that one: hold the update and re-dispatch it.
+      if (this.threadStarts > 0 && !replayed) {
+        this.heldUpdates.push(u)
+        return
+      }
+      this.applyForeign(u)
+      return
+    }
     const agent = this.agents.get(agentId)
     switch (u.type) {
       case 'text':
@@ -931,20 +1004,31 @@ class CodexSession implements RuntimeSession {
         }
         return
       case 'turnStarted':
-        if (u.turnId) this.activeTurn.set(u.threadId, u.turnId)
         if (agent && (agent.state === 'idle' || agent.state === 'done')) {
           this.setState(agentId, 'thinking', 'Thinking…')
           if (agentId === ROOT_AGENT_ID) this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
         }
         return
-      case 'turnCompleted':
-        if (u.turnId) this.completedTurns.add(u.turnId)
-        if (this.activeTurn.get(u.threadId) === u.turnId || !u.turnId) this.activeTurn.delete(u.threadId)
+      case 'turnCompleted': {
         this.partial.clear(agentId)
         if (agent) countUsage(agent, 'turns')
+        const tag = this.nativeTag.get(u.threadId)
+        if (tag) {
+          this.nativeTag.delete(u.threadId)
+          // A failed turn is the ordinary failure path; an interrupted or finished one was cut short by the strike.
+          if (u.status !== 'failed') {
+            this.nativeStrikeEnded(agentId, tag.strike, u)
+            void this.maybeRestartForMcp()
+            return
+          }
+        }
         if (agentId === ROOT_AGENT_ID) this.rootTurnCompleted(u)
         else this.childTurnCompleted(agentId, u)
         void this.maybeRestartForMcp()
+        return
+      }
+      case 'nativeSpawn':
+        this.onNativeSpawn(agentId, u)
         return
       case 'error':
         this.log(u.willRetry ? 'info' : 'warn', `Codex: ${u.message}${u.willRetry ? ' (retrying)' : ''}`)
@@ -955,6 +1039,75 @@ class CodexSession implements RuntimeSession {
         if (u.usageLimit && !u.willRetry) void this.onUsageLimit()
         return
     }
+  }
+
+  /** An update of a thread that is not part of this run: never attributed to an agent. */
+  private applyForeign(u: Exclude<CodexUpdate, { type: 'log' }>): void {
+    switch (u.type) {
+      case 'turnStarted':
+        this.log('warn', `Thread ${u.threadId} is not part of this run's org chart; interrupting its turn.`)
+        if (u.turnId && !this.foreignInterrupted.has(u.turnId)) {
+          this.foreignInterrupted.add(u.turnId)
+          void this.server?.request(METHOD.turnInterrupt, { threadId: u.threadId, turnId: u.turnId }).catch((e: Error) => this.log('warn', `Could not interrupt thread ${u.threadId}: ${e.message}`))
+        }
+        return
+      case 'toolUse':
+        this.log('info', `Foreign thread ${u.threadId} used ${u.name}.`)
+        return
+      case 'nativeSpawn':
+        this.log('info', `Foreign thread ${u.threadId} used ${u.tool}.`)
+        return
+      case 'error':
+        this.log('info', `Foreign thread ${u.threadId}: ${u.message}`)
+        return
+      default:
+        return
+    }
+  }
+
+  /** Codex's built-in multi-agent tools were used (item started): interrupt the turn, one strike per turn. */
+  private onNativeSpawn(agentId: string, u: Extract<CodexUpdate, { type: 'nativeSpawn' }>): void {
+    this.nativeItems += 1
+    this.log('warn', `${this.agents.get(agentId)?.name ?? agentId} used Codex's built-in multi-agent tool ${u.tool} (${this.nativeItems} native item${this.nativeItems === 1 ? '' : 's'} this run).`)
+    const turnId = this.activeTurn.get(u.threadId)
+    if (!turnId || this.struckTurn.get(u.threadId) === turnId) return
+    this.struckTurn.set(u.threadId, turnId)
+    const strike = (this.nativeStrikes.get(agentId) ?? 0) + 1
+    this.nativeStrikes.set(agentId, strike)
+    this.nativeTag.set(u.threadId, { strike })
+    void this.server.request(METHOD.turnInterrupt, { threadId: u.threadId, turnId }).catch((e: Error) => this.log('warn', `Interrupt failed: ${e.message}`))
+  }
+
+  /** The struck turn is over. Strikes 1 and 2 tell the agent; strike 3 fails it. */
+  private nativeStrikeEnded(agentId: string, strike: number, u: Extract<CodexUpdate, { type: 'turnCompleted' }>): void {
+    const agent = this.agents.get(agentId)
+    if (!agent || this.ending) return
+    if (strike >= NATIVE_STRIKE_LIMIT) {
+      this.failNative(agent, u.result)
+      return
+    }
+    this.setState(agentId, 'thinking', 'Reading a harness notice…')
+    this.deliverTo(agentId, NATIVE_AGENTS_NOTICE).catch((e) => this.log('warn', `Could not deliver the native-tools notice: ${(e as Error).message}`))
+  }
+
+  /** Strike 3: end the agent with an error. A child frees its network slot and reports the failure; the root ends the session. */
+  private failNative(agent: AgentInstance, result?: string): void {
+    const message = `${agent.name} kept using Codex's built-in multi-agent tools, which are not available in OrgAI.`
+    this.log('error', message)
+    if (agent.id === ROOT_AGENT_ID) {
+      this.setState(ROOT_AGENT_ID, 'error', NATIVE_FAIL_ACTIVITY)
+      this.endRun(message)
+      return
+    }
+    this.net.finish(agent.id)
+    if (result) agent.result = result
+    agent.state = 'error'
+    agent.activity = NATIVE_FAIL_ACTIVITY
+    agent.endedAt = Date.now()
+    this.upsert(agent)
+    this.noteActivity('report')
+    const text = reportMessage(agent, { status: 'failed', result, error: 'it used Codex\'s built-in multi-agent tools, which are not available in OrgAI' })
+    this.deliverTo(agent.parentId ?? ROOT_AGENT_ID, text).catch((e) => this.log('warn', `Could not report the failure of ${agent.handle ?? agent.id}: ${(e as Error).message}`))
   }
 
   private noteArchitectureEdit(agentId: string, itemId: string): void {
@@ -1036,6 +1189,10 @@ class CodexSession implements RuntimeSession {
    * agent's words and stay unmarked.
    */
   private deliverTo(agentId: string, text: string, opts: { agentMessage?: boolean } = {}): Promise<void> {
+    if (this.agents.get(agentId)?.state === 'error') {
+      this.log('warn', `Did not deliver a message to ${this.agents.get(agentId)?.handle ?? agentId}: it ended with an error.`)
+      return Promise.resolve()
+    }
     if (agentId === ROOT_AGENT_ID) {
       this.notifyOrchestrator(text, undefined, { agentMessage: opts.agentMessage })
       return Promise.resolve()
@@ -1092,12 +1249,13 @@ class CodexSession implements RuntimeSession {
   private async onToolCall(params: unknown): Promise<unknown> {
     const call = parseToolCall(params)
     if (!call) return toolResponse('Malformed tool call.', false)
-    const agentId = this.agentOf(call.threadId)
+    const agentId = await this.agentForRequest(call.threadId)
+    if (agentId === undefined) return toolResponse("This thread is not part of this run's org chart.", false)
     const role = this.net.roleOf(agentId) ?? this.root
-    const isNetwork = (Object.values(NETWORK_TOOLS) as string[]).includes(call.tool)
-    if (isNetwork) {
-      if (!networkToolNames(role, { setupLike: this.setupLike }).includes(call.tool)) return toolResponse(`${role.slug} may not use ${call.tool}.`, false)
-      const out = await callNetworkTool(this.net, this.networkHost, agentId, call.callId, call.tool, call.arguments)
+    const networkTool = canonicalNetworkTool(call.tool)
+    if (networkTool) {
+      if (!networkToolNames(role, { setupLike: this.setupLike }).includes(networkTool)) return toolResponse(`${role.slug} may not use ${call.tool}.`, false)
+      const out = await callNetworkTool(this.net, this.networkHost, agentId, call.callId, networkTool, call.arguments)
       return toolResponse(out.text, out.success)
     }
     const tool = this.harnessByCodexName.get(call.tool)
@@ -1250,7 +1408,8 @@ class CodexSession implements RuntimeSession {
   private async onCommandApproval(params: unknown): Promise<unknown> {
     const req = parseCommandApproval(params)
     if (!req) return { decision: 'decline' }
-    const agentId = this.agentOf(req.threadId)
+    const agentId = await this.agentForRequest(req.threadId)
+    if (agentId === undefined) return { decision: 'decline' }
     // Self-control gate first (cli-spec 3.4(1)): declined without a card before the policy, reference checks and rules.
     const selfCwd = typeof req.cwd === 'string' && req.cwd && isAbsolute(req.cwd) ? req.cwd : this.ctx.project.path
     if (this.selfControlDenied(agentId, [{ toolName: process.platform === 'win32' ? 'PowerShell' : 'Bash', input: { command: req.command } }], selfCwd)) {
@@ -1351,7 +1510,8 @@ class CodexSession implements RuntimeSession {
   private async onFileApproval(params: unknown): Promise<unknown> {
     const req = parseFileApproval(params)
     if (!req) return { decision: 'decline' }
-    const agentId = this.agentOf(req.threadId)
+    const agentId = await this.agentForRequest(req.threadId)
+    if (agentId === undefined) return { decision: 'decline' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
     // Every path the change writes: each source path and each move destination (`kind.move_path`, review H1). Every
@@ -1427,7 +1587,8 @@ class CodexSession implements RuntimeSession {
   private async onPermissionsApproval(params: unknown): Promise<unknown> {
     const req = parsePermissionsApproval(params)
     if (!req) return { permissions: {}, scope: 'turn' }
-    const agentId = this.agentOf(req.threadId)
+    const agentId = await this.agentForRequest(req.threadId)
+    if (agentId === undefined) return { permissions: {}, scope: 'turn' }
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { permissions: {}, scope: 'turn' }
     // Self-control gate (cli-spec 3.4(1)): a requested folder at, under or above OrgAI's control files (the data dir,
@@ -1448,7 +1609,8 @@ class CodexSession implements RuntimeSession {
     const req = parseUserInputQuestions(params)
     const answers: Record<string, { answers: string[] }> = {}
     if (!req) return { answers }
-    const agentId = this.agentOf(req.threadId)
+    const agentId = await this.agentForRequest(req.threadId)
+    if (agentId === undefined) return { answers }
     for (const q of req.questions) {
       this.setState(agentId, 'waiting', 'Asking you a question…')
       const answer = await this.ctx.requestQuestion({
@@ -1494,14 +1656,14 @@ class CodexSession implements RuntimeSession {
     }
   }
 
-  /** PromptFlags for bridged reports: their marks (started through spawn_agent) and a bridged child's report prompt. */
+  /** PromptFlags for bridged reports: their marks (started through spawn_report) and a bridged child's report prompt. */
   private bridgeFlags(): { bridgedRoles?: BridgedRole[]; bridgeVia?: 'spawn'; bridged?: boolean } {
     const roles = this.bridgedRoles()
     return { ...(roles.length ? { bridgedRoles: roles, bridgeVia: 'spawn' as const } : {}), ...(this.ctx.bridgedChild ? { bridged: true } : {}) }
   }
 
   /**
-   * spawn_agent for a bridged role: RuntimeContext.bridge.spawn starts it in its own child session (the harness remaps
+   * spawn_report for a bridged role: RuntimeContext.bridge.spawn starts it in its own child session (the harness remaps
    * its events into this run). Resolves once the child exists (onStarted), so the tool call is answered at once; when
    * the child's final text arrives it goes to the parent like a native report's (deliverTo, a harness message), fenced
    * through bridgedResultText. A refusal before the child exists rejects with RunManager's message.

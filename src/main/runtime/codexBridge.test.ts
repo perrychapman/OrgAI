@@ -126,15 +126,15 @@ describe('Codex bridged reports', () => {
     const { s } = await start({ bridge })
     const root = s.of('thread/start')[0]!.params
     const names = root.dynamicTools.map((t: { name: string }) => t.name)
-    expect(names).toContain('spawn_agent')
+    expect(names).toContain('spawn_report')
     expect(names).not.toContain('delegate_agent')
     expect(root.developerInstructions).toContain('- analyst (runs on Anthropic: spawn it as usual; the harness runs it on that connection and messages you its final report)')
   })
 
-  it('spawn_agent for a bridged role calls bridge.spawn (no thread), answers at once and hands the final text to the parent', async () => {
+  it('spawn_report for a bridged role calls bridge.spawn (no thread), answers at once and hands the final text to the parent', async () => {
     const { bridge, spawn, pending } = fakeBridge()
     const { ctx, s } = await start({ bridge })
-    const out = await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_agent', { role: 'analyst', brief: 'Analyse the logs', description: 'Log analysis' }))
+    const out = await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'analyst', brief: 'Analyse the logs', description: 'Log analysis' }))
     expect(out.success).toBe(true)
     expect(out.contentItems[0].text).toContain('Spawned analyst-1 (analyst) on Anthropic')
     expect(spawn).toHaveBeenCalledTimes(1)
@@ -142,8 +142,8 @@ describe('Codex bridged reports', () => {
     expect(spawn.mock.calls[0]![0].name).toBeUndefined()
     // No thread of its own: the only thread is the root's.
     expect(s.of('thread/start')).toHaveLength(1)
-    // list_agents shows it as a running report.
-    const list = await s.ask('item/tool/call', call('th-1', 'c2', 'list_agents', {}))
+    // list_team shows it as a running report.
+    const list = await s.ask('item/tool/call', call('th-1', 'c2', 'list_team', {}))
     expect(list.contentItems[0].text).toContain('analyst-1 · analyst · running on Anthropic')
 
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
@@ -160,7 +160,7 @@ describe('Codex bridged reports', () => {
     const { bridge, pending } = fakeBridge()
     const { s } = await start({ bridge, autoContinue: true })
     await s.ask('item/tool/call', call('th-1', 'c-plan', 'set_plan', { goal: 'Ship', steps: [{ title: 'Analyse' }] }))
-    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_agent', { role: 'analyst', brief: 'Analyse' }))
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'analyst', brief: 'Analyse' }))
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
     await new Promise((r) => setTimeout(r, 60))
     expect(s.turnStarts('th-1')).toHaveLength(1)
@@ -174,7 +174,7 @@ describe('Codex bridged reports', () => {
   it('a failed child delivers its failure text; a refusal before it exists answers the tool call unsuccessfully', async () => {
     const { bridge, pending, spawn } = fakeBridge()
     const { s } = await start({ bridge })
-    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_agent', { role: 'analyst', brief: 'Analyse' }))
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'analyst', brief: 'Analyse' }))
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
     pending[0]!.resolve({ agentId: 'b1', handle: 'analyst-1', text: 'The connection refused the key.', ok: false })
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
@@ -185,20 +185,20 @@ describe('Codex bridged reports', () => {
     spawn.mockImplementationOnce(async () => {
       throw new Error('Concurrent subagent limit reached.')
     })
-    const refused = await s.ask('item/tool/call', call('th-1', 'c2', 'spawn_agent', { role: 'analyst', brief: 'Again' }))
+    const refused = await s.ask('item/tool/call', call('th-1', 'c2', 'spawn_report', { role: 'analyst', brief: 'Again' }))
     expect(refused.success).toBe(false)
     expect(refused.contentItems[0].text).toBe('Could not start analyst: Concurrent subagent limit reached.')
   })
 
-  it('L5: a bridged spawn_agent refuses a brief over BRIDGE_BRIEF_MAX_CHARS with delegate_agent\'s wording, and frees the reservation', async () => {
+  it('L5: a bridged spawn_report refuses a brief over BRIDGE_BRIEF_MAX_CHARS with delegate_agent\'s wording, and frees the reservation', async () => {
     const { bridge, spawn } = fakeBridge()
     const { s } = await start({ bridge })
-    const long = await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_agent', { role: 'analyst', brief: 'x'.repeat(BRIDGE_BRIEF_MAX_CHARS + 1) }))
+    const long = await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'analyst', brief: 'x'.repeat(BRIDGE_BRIEF_MAX_CHARS + 1) }))
     expect(long.success).toBe(false)
     expect(long.contentItems[0].text).toBe(`REFUSED: the brief is longer than ${BRIDGE_BRIEF_MAX_CHARS} characters. Shorten it.`)
     expect(spawn).not.toHaveBeenCalled()
     // At the cap it goes through, and the refused call left no reserved handle behind.
-    const ok = await s.ask('item/tool/call', call('th-1', 'c2', 'spawn_agent', { role: 'analyst', brief: 'x'.repeat(BRIDGE_BRIEF_MAX_CHARS) }))
+    const ok = await s.ask('item/tool/call', call('th-1', 'c2', 'spawn_report', { role: 'analyst', brief: 'x'.repeat(BRIDGE_BRIEF_MAX_CHARS) }))
     expect(ok.success).toBe(true)
     expect(spawn).toHaveBeenCalledTimes(1)
   })
@@ -206,10 +206,10 @@ describe('Codex bridged reports', () => {
   it('a report lead spawning it passes its own agent and role ids, and gets the result in its own thread', async () => {
     const { bridge, spawn, pending } = fakeBridge()
     const { ctx, s } = await start({ bridge })
-    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_agent', { role: 'engineer', brief: 'Build' }))
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'engineer', brief: 'Build' }))
     const engId = ctx.events.find((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1')!.agent.id
     await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
-    const out = await s.ask('item/tool/call', call('th-2', 'c2', 'spawn_agent', { role: 'analyst', brief: 'Check', name: 'ext-a' }))
+    const out = await s.ask('item/tool/call', call('th-2', 'c2', 'spawn_report', { role: 'analyst', brief: 'Check', name: 'ext-a' }))
     expect(out.success).toBe(true)
     expect(spawn.mock.calls[0]![0]).toMatchObject({ role: 'r-ext', name: 'ext-a', parentAgentId: engId, parentRoleId: 'r-eng' })
     s.push('turn/completed', turnDone('th-2', 'tu-2'))

@@ -154,7 +154,7 @@ export interface HarnessToolOptions {
    */
   nativeSkills?: boolean
   /**
-   * The adapter starts bridged reports from its own spawn tool (Codex spawn_agent calls ctx.bridge.spawn), so
+   * The adapter starts bridged reports from its own spawn tool (Codex spawn_report calls ctx.bridge.spawn), so
    * delegate_agent is left out. Default false: offered whenever ctx.bridge lists bridged roles (Claude, mock).
    */
   bridgeThroughSpawn?: boolean
@@ -2627,7 +2627,7 @@ export const delegateAgentTool = defineTool({
     const hit = roles.find((r) => r.slug === want || r.roleId === want)
     if (!hit) {
       const native = ctx.roles.find((r) => r.slug === want || r.id === want)
-      if (native) return `REFUSED: ${datum(native.slug, 80)} runs on this session's own connection. Spawn it the usual way (the Agent tool or spawn_agent), not with ${BRIDGE_HARNESS_TOOLS.delegate}.`
+      if (native) return `REFUSED: ${datum(native.slug, 80)} runs on this session's own connection. Spawn it the usual way (the Agent tool or spawn_report), not with ${BRIDGE_HARNESS_TOOLS.delegate}.`
       return `REFUSED: unknown role. Roles that run on another connection: ${roles.map((r) => `${datum(r.slug, 80)} (runs on ${datum(r.connectionName, 60)})`).join(', ') || 'none'}.`
     }
     const brief = typeof args.brief === 'string' ? args.brief.trim() : ''
