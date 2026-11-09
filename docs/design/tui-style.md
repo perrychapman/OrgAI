@@ -69,12 +69,11 @@ message. Code examples stay literal, and malformed tables or links remain visibl
 The same formatting applies in fullscreen and inline scrollback, including no-color and screen-reader
 modes. Streaming partials remain literal until committed; stored transcripts retain the original text.
 
-Formatting verification (2026-11-09): all 858 TUI tests pass, including 23 focused parser/transcript tests covering narrow/wide
+Formatting verification (2026-11-09, integrated with fork/dev): all 862 TUI tests pass, including 23 focused parser/transcript tests covering narrow/wide
 panes, fullscreen/inline rendering, ASCII/screen-reader modes, code literals and retained link targets.
 The CLI bundle builds. Full typecheck and desktop build are blocked by the local missing `mermaid`
-dependency. The mock terminal walkthrough passes through resize, scrollback and approval checks, then
-fails its existing deep-tree sidebar alignment assertion (the displayed agent is Finished, but the
-assertion does not allow the branch glyph before the status). The full suite also encounters sandbox
+dependency. All checks in the mock terminal walkthrough pass after its sidebar status assertions were
+updated to allow the visible tree guides. The earlier full suite also encountered sandbox
 socket restrictions and an SDK/package-lock version mismatch; it was interrupted after repeated
 socket-related timeouts. This is not a green repository-wide gate.
 

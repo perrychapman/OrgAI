@@ -524,10 +524,10 @@ try {
       await t.waitFor('mock-lead', 40_000)
       check(true, 'i: the deep-tree run shows mock-lead in the agents pane')
       // Configured roles stay visible after their agents finish. Unstarted roles remain Available.
-      await t.waitFor(/^.{79}.*mock-lead[^\n]*\n.{79}\s+Finished/m, 30_000)
+      await t.waitFor(/^.{79}.*mock-lead[^\n]*\n.{79}[ │]+Finished/m, 30_000)
       await sleep(7000)
-      check(/^.{79}.*mock-lead[^\n]*\n.{79}\s+Finished/m.test(t.screen()), 'i: the configured team stays visible after the settle grace', esc(t.screen()))
-      check(/Team 4/.test(t.screen()) && /Reviewer[^\n]*\n.{79}\s+Available/.test(t.screen()) && /Researcher[^\n]*\n.{79}\s+Available/.test(t.screen()),
+      check(/^.{79}.*mock-lead[^\n]*\n.{79}[ │]+Finished/m.test(t.screen()), 'i: the configured team stays visible after the settle grace', esc(t.screen()))
+      check(/Team 4/.test(t.screen()) && /Reviewer[^\n]*\n.{79}[ │]+Available/.test(t.screen()) && /Researcher[^\n]*\n.{79}[ │]+Available/.test(t.screen()),
         'i: the sidebar includes configured roles that have not started', esc(t.screen()))
 
       t.key('tab') // conversation on the left
@@ -541,7 +541,7 @@ try {
       // At 120 columns the 41-column agent room begins at column 79. Match its selection marker,
       // not a prompt or a mention in the conversation to its left. The next row after the root is mock-lead.
       t.key('down')
-      const open2 = await t.waitFor(/^.{79}> .*mock-lead[^\n]*\n.{79}\s+Finished/m, 8_000).then(() => true, () => false)
+      const open2 = await t.waitFor(/^.{79}> .*mock-lead[^\n]*\n.{79}[ │]+Finished/m, 8_000).then(() => true, () => false)
       check(open2, 'i: Down selects the finished team member', esc(t.screen()))
 
       // Enter on the agent row (not a group) opens its inspector.
