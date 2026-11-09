@@ -715,13 +715,15 @@ try {
   await sectionConnections(page, shot)
   await sectionLocalSkill(page)
   await sectionRiskAndKeyboard(page)
-  await sectionRequiredReports(page)
   await sectionRunsEnded(page)
   await sectionAssistant(page, shot)
   await sectionDismiss(page, shot, app)
   await sectionDesignDecisions(page, shot)
   await sectionExactModel(page)
   await sectionProxyExactModel(page, app, shot)
+  // Last among the sections: it reloads the page, which would let the Team tray decide its "since your last run" line
+  // before sectionRunsEnded's runs end.
+  await sectionRequiredReports(page)
   await selectReviewer(page)
   // Screenshots: both sizes in both themes, with the block holding content.
   await page.locator('[data-testid=role-capabilities] [data-testid=role-add-skill]').click()
