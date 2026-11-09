@@ -64,6 +64,8 @@ export function normalizeRole(r: TeamRoleDoc): TeamRoleDoc {
     skills: sortedUnique(r.skills),
     mcpServers: sortedUnique(r.mcpServers)
   }
+  const required = sortedUnique(r.requiredReports ?? [])
+  if (required.length > 0) out.requiredReports = required
   if (r.tier !== undefined) out.tier = r.tier
   else if (r.model !== undefined) out.model = r.model
   if (r.effort !== undefined) out.effort = r.effort

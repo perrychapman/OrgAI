@@ -19,6 +19,8 @@ export interface DiffRole {
   tools?: readonly string[]
   canSpawn?: boolean
   spawnable?: readonly string[]
+  /** Role.requiredReports as ids (like spawnable). A full role without it reads as none. */
+  requiredReports?: readonly string[]
   skills?: readonly string[]
   prompt?: string
   responsibilities?: readonly string[]
@@ -130,6 +132,11 @@ function fieldChanges(before: DiffRole, after: DiffRole, cur: Map<string, DiffRo
   if (after.tools !== undefined) push('tools', 'tools', sortedList(before.tools), sortedList(after.tools))
   if (after.canSpawn !== undefined && (after.spawnable !== undefined || after.canSpawn !== !!before.canSpawn)) {
     push('canSpawn', 'spawns', spawnNames(before, cur), spawnNames(after, prop))
+  }
+  // A changed list is a line ("must delegate to: none -> Dev, QA"); a role that states spawnable states this too.
+  if (after.requiredReports !== undefined || after.spawnable !== undefined) {
+    const names = (r: DiffRole, by: Map<string, DiffRole>): string => sortedList((r.requiredReports ?? []).map((id) => by.get(id)?.name ?? id))
+    push('requiredReports', 'must delegate to', names(before, cur), names(after, prop))
   }
   if (after.skills !== undefined) push('skills', 'skills', sortedList(before.skills), sortedList(after.skills))
   if (responsibilitiesChange(before, after)) out.push({ field: 'responsibilities', label: 'responsibilities', from: '', to: 'responsibilities changed' })

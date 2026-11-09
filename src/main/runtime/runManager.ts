@@ -941,7 +941,7 @@ export interface ContinueRunOptions {
 }
 
 /** Narrowing overrides a continuation always keeps. */
-const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues'] as const
+const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues', 'strictDelegation'] as const
 /** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
 const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
 

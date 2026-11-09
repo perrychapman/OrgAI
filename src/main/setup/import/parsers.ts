@@ -63,6 +63,7 @@ interface Draft {
   responsibilities?: string[]
   reportsTo?: string | null
   spawnable?: string[]
+  requiredReports?: string[]
   tier?: ModelTier
   primary?: boolean
   notes?: string[]
@@ -94,6 +95,7 @@ function finish(d: Draft): ImportedAgent {
   if (d.responsibilities) a.responsibilities = d.responsibilities
   if (d.reportsTo !== undefined) a.reportsTo = d.reportsTo
   if (d.spawnable) a.spawnable = d.spawnable
+  if (d.requiredReports?.length) a.requiredReports = d.requiredReports
   if (d.tier) a.tier = d.tier
   if (d.primary) a.primary = true
   return a
@@ -148,6 +150,7 @@ export function parseOrgExport(text: string, file: string): ParseResult {
       d.tools = field('tools', (v) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined))
       d.responsibilities = field('responsibilities', (v) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined))
       d.spawnable = field('spawnable', (v) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined))
+      d.requiredReports = field('requiredReports', (v) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined))
       const tier = field('tier', (v) => (typeof v === 'string' && TIERS.includes(v) ? (v as ModelTier) : undefined))
       if (tier) d.tier = tier
       const effort = field('effort', (v) => (isEffort(v) ? v : undefined))

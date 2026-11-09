@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } 
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { HARNESS_PROJECT_ID, PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isVirtualProjectId } from '@shared/types'
-import { isConnectionId, isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
+import { cleanRequiredReports, isConnectionId, isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 import { isInsideEither, pathKey, samePath } from '../quick/scratch'
@@ -43,6 +43,15 @@ export function sanitizeRoleModels(
       const { connection: _drop, ...rest } = role
       role = rest as Role
       changed = true
+    }
+    // Role.requiredReports stays within the role's spawnable list (a hand-edited file or an older save may not).
+    if (role && typeof role === 'object' && Object.hasOwn(role, 'requiredReports')) {
+      const required = cleanRequiredReports({ ...role, spawnable: Array.isArray(role.spawnable) ? role.spawnable : [] })
+      if (JSON.stringify(required) !== JSON.stringify(role.requiredReports)) {
+        const { requiredReports: _drop, ...rest } = role
+        role = (required ? { ...rest, requiredReports: required } : rest) as Role
+        changed = true
+      }
     }
     if (!role || typeof role !== 'object' || acceptableRoleModel(role.model)) return role
     changed = true

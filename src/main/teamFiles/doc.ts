@@ -42,6 +42,8 @@ export interface TeamRoleDoc {
   canSpawn: boolean
   /** Sorted slugs. */
   spawnable: string[]
+  /** Sorted slugs, a subset of `spawnable` (Role.requiredReports). Absent when none; front matter key `required_reports`. */
+  requiredReports?: string[]
   /** Slug; null for the root. */
   reportsTo: string | null
   color: string

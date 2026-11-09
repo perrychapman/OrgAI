@@ -158,6 +158,7 @@ const teamRole: SubcommandFn = async (ctx, args) => {
         `  model: ${safeLine(role.model)} (${safeLine(roleTierWord(role))})${role.effort ? ` · effort ${role.effort}` : ''}`,
         `  reports to: ${role.reportsTo ? visible(nameOf.get(role.reportsTo) ?? role.reportsTo) : 'nobody (root)'}`,
         `  spawning: ${role.canSpawn ? (role.spawnable.length ? role.spawnable.map((id) => visible(nameOf.get(id) ?? id)).join(', ') : 'allowed, none listed') : 'no'}`,
+        ...(role.requiredReports?.length ? [`  must delegate to: ${role.requiredReports.map((id) => visible(nameOf.get(id) ?? id)).join(', ')}`] : []),
         `  tools: ${role.tools.length ? role.tools.map(visible).join(', ') : 'none'}`,
         `  MCP grants: ${role.mcpServers?.length ? role.mcpServers.map((id) => visible(servers.get(id) ?? id)).join(', ') : 'none'}`,
         `  skills: ${role.skills?.length ? role.skills.map((id) => visible(skills.get(id) ?? id)).join(', ') : 'none'}`

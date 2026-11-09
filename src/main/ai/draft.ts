@@ -1,6 +1,6 @@
 import type { ConnectionId, DraftRequest, DraftResult, ModelRef, ModelTier, Project, Role, ToolName } from '@shared/types'
 import { TOOL_CATALOG } from '@shared/types'
-import { ROLE_COLORS, modelForTier, nearestTiers, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
+import { ROLE_COLORS, cleanRequiredReports, modelForTier, nearestTiers, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
 import type { RuntimeAdapter } from '../runtime/types'
 
 export interface DraftRole {
@@ -14,6 +14,8 @@ export interface DraftRole {
   connection?: string
   canSpawn: boolean
   spawnable: string[]
+  /** Optional: names of spawnable roles this role must delegate to every time (Role.requiredReports). */
+  requiredReports?: string[]
   reportsTo: string | null
 }
 
@@ -49,6 +51,7 @@ Respond with a single JSON object and nothing else, no code fences, matching:
       "model": "everyday",
       "canSpawn": false,
       "spawnable": ["Name of a direct report", "..."],
+      "requiredReports": ["Optional: names from spawnable this role must always delegate to"],
       "reportsTo": "Name of manager role or null"
     }
   ]
@@ -239,6 +242,15 @@ export function toRoles(payload: DraftPayload, models?: DraftModelContext, other
     }
   }
 
+  // Required reports: names resolved like spawnable, then kept only within the final spawnable list.
+  drafts.forEach((d, i) => {
+    if (!Array.isArray(d.requiredReports)) return
+    const role = roles[i]
+    const ids = d.requiredReports.map((n) => byName.get(String(n).trim().toLowerCase())).filter((r): r is Role => !!r).map((r) => r.id)
+    const required = cleanRequiredReports({ ...role, requiredReports: ids })
+    if (required) role.requiredReports = required
+  })
+
   layout(roles)
   return roles
 }
@@ -264,6 +276,7 @@ export async function draftOrgChart(
             model: r.model,
             canSpawn: r.canSpawn,
             spawnable: r.spawnable.map((id) => project.roles.find((x) => x.id === id)?.name).filter(Boolean),
+            ...(r.requiredReports?.length ? { requiredReports: r.requiredReports.map((id) => project.roles.find((x) => x.id === id)?.name).filter(Boolean) } : {}),
             reportsTo: r.reportsTo ? project.roles.find((x) => x.id === r.reportsTo)?.name ?? null : null
           })),
           null,

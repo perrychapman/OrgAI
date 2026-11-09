@@ -313,6 +313,7 @@ export const draftRoleSchema = z.object({
   connection: z.string().optional().describe("Optional, only when the user wants this role on another provider: a connection id ('anthropic', 'openai' or a proxy id); an unknown one is answered with the valid ids and names. Omit to use the project's connection"),
   canSpawn: z.boolean(),
   spawnable: z.array(z.string()).describe('Names of roles this role may delegate to, normally its direct reports'),
+  requiredReports: z.array(z.string()).optional().describe('Optional: names of roles from spawnable that this role must delegate to every time one of its agents completes (the harness enforces it). Omit to keep the current list, [] to clear'),
   reportsTo: z.string().nullable().describe('Name of the manager role, or null for the single root orchestrator')
 })
 // No grant fields (review H1): the org chart card does not show Role.mcpServers / Role.skills, so an org change never
@@ -385,6 +386,8 @@ function rolesFromDrafts(
   // through the new connection, already done by toRoles); a kept role's model resolves through its own connection.
   const named = (d: DraftRole): string | undefined => (typeof d.connection === 'string' && d.connection !== '' ? d.connection : undefined)
   for (const [i, cur] of matched) {
+    // A draft without requiredReports keeps the role's list (ids of the existing roles; mergeOrgChart remaps and filters).
+    if (drafts[i].requiredReports === undefined && cur.requiredReports?.length) converted[i].requiredReports = [...cur.requiredReports]
     const c = named(drafts[i])
     const curConnection = cur.reportsTo === null ? runConnection : cur.connection && Object.hasOwn(others, cur.connection) ? cur.connection : runConnection
     if (c !== undefined && c !== curConnection) continue
@@ -528,6 +531,17 @@ function reviseKeepingUnmentioned(
     role.spawnable = named
     // Reset from the draft: toRoles forced canSpawn on its stand-in root, which may now report to a kept role (review M2).
     role.canSpawn = !!d.canSpawn || named.length > 0
+    // Required reports resolve like spawnable (drafts and kept roles); the final clean-up is mergeOrgChart's, after its id remap.
+    if (Array.isArray(d.requiredReports)) {
+      const req: string[] = []
+      for (const n of d.requiredReports) {
+        const at = draftIndexByName.get(lower(n))
+        const target = at !== undefined ? converted[at] : keptByRef(n)
+        if (target && target.id !== role.id) req.push(target.id)
+      }
+      if (req.length) role.requiredReports = [...new Set(req)]
+      else delete role.requiredReports
+    }
   })
   for (const r of converted) {
     const reports = converted.filter((x) => x.reportsTo === r.id).map((x) => x.id)
@@ -543,11 +557,13 @@ function reviseKeepingUnmentioned(
   for (const k of keptRoles) {
     if (k.reportsTo !== null && !chartIds.has(k.reportsTo) && !matchedIds.has(k.reportsTo)) k.reportsTo = rootId ?? null
     k.spawnable = (k.spawnable ?? []).filter((id) => !removedIds.has(id))
+    if (k.requiredReports) k.requiredReports = k.requiredReports.filter((id) => !removedIds.has(id))
   }
   // A role that reported to a removed role (a matched draft can too, through its existing id) goes to the root.
   for (const r of chart) {
     if (r.reportsTo !== null && removedIds.has(r.reportsTo)) r.reportsTo = rootId && r.id !== rootId ? rootId : null
     r.spawnable = (r.spawnable ?? []).filter((id) => !removedIds.has(id) && id !== r.id)
+    if (r.requiredReports) r.requiredReports = r.requiredReports.filter((id) => !removedIds.has(id) && id !== r.id)
   }
   // Managers may spawn their direct reports (kept managers gain the new reports).
   const existingIdOf = new Map<string, string>() // proposed id of a matched draft -> the existing role's id
@@ -590,6 +606,7 @@ export function mergeTemplateDrafts(template: readonly Role[], given: readonly D
     model: r.model,
     canSpawn: r.canSpawn,
     spawnable: r.spawnable.map((id) => nameOf.get(id)).filter((n): n is string => !!n),
+    ...(r.requiredReports?.length ? { requiredReports: r.requiredReports.map((id) => nameOf.get(id)).filter((n): n is string => !!n) } : {}),
     reportsTo: r.reportsTo ? (nameOf.get(r.reportsTo) ?? null) : null
   }))
   const out = [...base]

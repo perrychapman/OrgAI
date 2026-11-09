@@ -77,6 +77,7 @@ export function cleanRunOverrides(v: unknown): RunOverrides | undefined {
   for (const key of ['autoContinue', 'allowUnpricedBudget', 'allowUnmerged', 'allowPeerMessages', 'execMode', 'waitForReset'] as const) {
     if (typeof v[key] === 'boolean') out[key] = v[key] as boolean
   }
+  if (v.strictDelegation === true) out.strictDelegation = true
   const mac = v.maxAutoContinues
   if (typeof mac === 'number' && Number.isInteger(mac) && mac >= 0 && mac <= MAX_AUTO_CONTINUES_LIMIT) out.maxAutoContinues = mac
   if (isNonNegative(v.maxBudgetUsd)) out.maxBudgetUsd = v.maxBudgetUsd
