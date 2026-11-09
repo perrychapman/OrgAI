@@ -81,6 +81,41 @@ describe('TranscriptPane (full-screen)', () => {
     expect(groupToolRows(rows)).toEqual(rows)
   })
 
+  it('renders table records and references at narrow and wide widths in accessible modes', () => {
+    const text = 'Safety controls\n\n| Protection | What it does |\n|---|---|\n| **Permissions** | Asks before running commands. |\n| Sandbox | Limits writes to the project. |\n\nSee [source](/Users/me/project/src/permissions.ts:49).'
+    for (const width of [24, 60, 120]) {
+      for (const settings of [{}, { unicode: false, color: false }, { screenReader: true }]) {
+        const output = rowLines(r('table', { text, agentLabel: undefined }), width, env(settings))
+        const rendered = output.map(line => line.segs?.map(seg => seg.text).join('') ?? line.text).join('\n')
+        expect(rendered).not.toContain('|')
+        expect(rendered).not.toContain('**')
+        expect(rendered).toContain('Permissions')
+        expect(rendered).toContain('source [1]')
+        expect(rendered).toContain('References')
+        expect(rendered.replace(/\s+/g, '')).toContain('/Users/me/project/src/permissions.ts:49')
+        for (const line of output) {
+          expect(textWidth(line.text)).toBeLessThanOrEqual(width)
+          expect(line.segs?.map(seg => seg.text).join('')).toBe(line.text)
+        }
+      }
+    }
+  })
+
+  it('uses readable Markdown in fullscreen and inline transcript rendering', () => {
+    for (const mode of ['fullscreen', 'inline'] as const) {
+      const app = mount({ mode, width: 60, height: 30, rows: [r('formatted', {
+        text: '| Name | Detail |\n|---|---|\n| Permission | Requires approval |\n\nSee [docs](/project/docs.md).'
+      })] })
+      const frame = app.lastFrame() ?? ''
+      expect(frame).toContain('Name: Permission')
+      expect(frame).toContain('Detail: Requires approval')
+      expect(frame).toContain('See docs [1].')
+      expect(frame).toContain('[1] /project/docs.md')
+      expect(frame).not.toContain('|---|')
+      app.unmount()
+    }
+  })
+
   it('expands grouped tool activity and always leaves failures visible', async () => {
     const rows = [r('t1', { kind: 'tool', text: 'Read one.ts' }), r('r1', { kind: 'result', text: 'Read complete' }), r('t2', { kind: 'tool', text: 'Read two.ts' }), r('r2', { kind: 'result', text: 'Read complete' }), r('fail', { kind: 'error', text: 'Check failed' })]
     expect(groupToolRows(rows)).toHaveLength(2)

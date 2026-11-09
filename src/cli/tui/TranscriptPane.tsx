@@ -13,6 +13,7 @@ import { omittedLabel } from '../../shared/view/transcriptRows'
 import { useFocusHandler, useTuiEnv } from './context'
 import { glyphs } from './theme'
 import { compactToolRows } from './streamRows'
+import { readableMarkdown } from './markdownBlocks'
 import type { BufferMode, PartialRow, Tone, TranscriptPaneProps, TranscriptRow, TuiEnv } from './types'
 import { PaneLines, cutSegs, navKey, segText, styleFor, type PaneLine, type Seg } from './panes/lines'
 import { sliceToWidth, textWidth, wrapText } from './panes/text'
@@ -175,6 +176,7 @@ function inlineMarkup(text: string): Seg[] {
 
 function markdownLines(text: string, base: RowStyle, width: number, env: TuiEnv): DisplayLine[] {
   if (text.split('\n').filter(line => /^\s*```/.test(line)).length % 2 !== 0) return hangingLines(text, base, width, env)
+  text = readableMarkdown(text)
   const out: DisplayLine[] = []
   let code = false
   let first = true
@@ -278,7 +280,7 @@ export function dividerLine(text: string, width: number, env: TuiEnv): string {
 export function rowLines(row: TranscriptRow, width: number, env: TuiEnv): DisplayLine[] {
   const style = rowStyle(row, env)
   if (row.kind === 'divider') return [{ text: dividerLine(row.text, width, env), style }]
-  if (row.kind === 'text' && /^#{1,6}\s|```|`[^`]+`|\*\*[^*]+\*\*|^\s*[-*+]\s/m.test(row.text)) return markdownLines(row.text, style, width, env)
+  if (row.kind === 'text' && /^#{1,6}\s|```|`[^`]+`|\*\*[^*]+\*\*|^\s*[-*+]\s|\||\[[^\]]+\]\(/m.test(row.text)) return markdownLines(row.text, style, width, env)
   return hangingLines(row.text, style, width, env)
 }
 

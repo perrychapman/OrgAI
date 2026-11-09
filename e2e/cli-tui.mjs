@@ -286,9 +286,7 @@ try {
 
       // a. Quit.
       t.key('ctrl+d')
-      // A PTY can split one painted frame across reads. Wait for the input below
-      // the confirmation too, rather than inspecting a half-delivered frame.
-      await t.waitFor(s => s.includes('Quit and stop') && /Message R\d+/.test(s), 10_000)
+      await t.waitFor('Quit and stop', 10_000)
       const confirmRow = locate(t, /Quit and stop/)
       const inputRow = locate(t, /Message R\d+/)
       check(t.screen().includes('E2E-MARK-OMEGA') && !!confirmRow && !!inputRow && inputRow.row - confirmRow.row <= 5,

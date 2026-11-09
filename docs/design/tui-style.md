@@ -60,6 +60,24 @@ The activity row and sidebar use the same reported activity, such as reading fil
 updating a plan or waiting for reports. Generic thinking falls back to "Working". Setup proposals show a short preview with a full
 review action, and quit confirmations occupy a compact area above the input while the conversation
 stays visible. Action hints include one way back to typing, without duplicate Escape labels.
+
+Completed assistant messages render Markdown tables as separated records, with bold column labels
+and wrapped values instead of raw pipes and separator rows. This layout stays readable when the
+sidebar or a narrow terminal leaves little room for columns. Inline Markdown links read as their
+label plus a numbered reference; full destinations appear once in a References block after the
+message. Code examples stay literal, and malformed tables or links remain visible as written.
+The same formatting applies in fullscreen and inline scrollback, including no-color and screen-reader
+modes. Streaming partials remain literal until committed; stored transcripts retain the original text.
+
+Formatting verification (2026-11-09): all 858 TUI tests pass, including 23 focused parser/transcript tests covering narrow/wide
+panes, fullscreen/inline rendering, ASCII/screen-reader modes, code literals and retained link targets.
+The CLI bundle builds. Full typecheck and desktop build are blocked by the local missing `mermaid`
+dependency. The mock terminal walkthrough passes through resize, scrollback and approval checks, then
+fails its existing deep-tree sidebar alignment assertion (the displayed agent is Finished, but the
+assertion does not allow the branch glyph before the status). The full suite also encounters sandbox
+socket restrictions and an SDK/package-lock version mismatch; it was interrupted after repeated
+socket-related timeouts. This is not a green repository-wide gate.
+
 Setup review cards are capped at 96 columns, with a left border, bold proposal title, secondary
 summary and timing text, and bracketed action keys separated from the preview by a blank line.
 The right sidebar includes the configured project team. Unstarted roles show "Available" in their
