@@ -64,6 +64,22 @@ it('gives sidebar agents separate name/status lines with breathing room', () => 
   r.unmount()
 })
 
+it.each([true, false])('continues tree connectors through status and spacer rows (unicode=%s)', unicode => {
+  const r = mount({ compact: true, teamSize: 3, width: 42, height: 16, rows: [
+    row('root', { depth: 0, activity: '', state: 'idle', stateWord: 'Idle' }),
+    row('builder', { activity: '', state: 'idle', stateWord: 'Available' }),
+    row('reviewer', { activity: '', state: 'idle', stateWord: 'Available' })
+  ] }, env({ unicode }))
+  const out = lines(r.lastFrame())
+  const builder = out.findIndex(line => line.includes('builder'))
+  const reviewer = out.findIndex(line => line.includes('reviewer'))
+  const vertical = unicode ? '│' : '|'
+  expect(out[builder + 1]).toMatch(new RegExp('^' + (unicode ? vertical : '\\|')))
+  expect(out[builder + 2]?.trim()).toBe(vertical)
+  expect(out[reviewer + 1]?.trim()).toBe('Available')
+  r.unmount()
+})
+
 it('keeps multiple decisions and conflicts visible in a compact unfocused roster', () => {
   const item = { kind: 'row' as const, prefix: '', row: row('builder', { waiting: 3, worktreeChip: 'conflict', state: 'waiting', stateWord: 'Needs you' }) }
   const text = rowLine(item, false, false, 42, env(), 0, false, false, true).map(seg => seg.text).join('')
@@ -301,7 +317,7 @@ describe('OrgTreePane', () => {
       [row('a', { depth: 0 }), row('b', { depth: 1 }), row('c', { depth: 2 }), row('d', { depth: 1 })],
       env()
     )
-    expect(prefixes).toEqual(['', '├─ ', '  └─ ', '└─ '])
+    expect(prefixes).toEqual(['', '├─ ', '│ └─ ', '└─ '])
   })
 
   it('uses a spinner and shimmer only for current agents doing active work', async () => {

@@ -25,6 +25,21 @@ import { sliceToWidth, textWidth, truncateEnd } from './panes/text'
 const LABEL_MIN = 14
 export const TREE_INDENT_MAX = 4
 
+function hasNextBranch(rows: readonly OrgTreeRow[], index: number, depth: number): boolean {
+  for (let i = index + 1; i < rows.length; i++) {
+    const next = rows[i]!
+    if (next.runId !== rows[index]!.runId || next.depth < depth) return false
+    if (next.depth === depth) return true
+  }
+  return false
+}
+
+function treeGuides(rows: readonly OrgTreeRow[], index: number, levels: number, env: TuiEnv): string {
+  return Array.from({ length: levels }, (_, level) =>
+    !env.screenReader && hasNextBranch(rows, index, level + 1) ? `${glyphs(env).v} ` : '  '
+  ).join('')
+}
+
 export function treePrefixes(rows: readonly OrgTreeRow[], env: TuiEnv): string[] {
   const g = glyphs(env)
   return rows.map((row, i) => {
@@ -33,15 +48,7 @@ export function treePrefixes(rows: readonly OrgTreeRow[], env: TuiEnv): string[]
     const extra = row.depth - capped
     const more = extra > 0 ? `+${extra} ` : ''
     if (env.screenReader) return '  '.repeat(capped) + more
-    let last = true
-    for (let j = i + 1; j < rows.length; j++) {
-      if (rows[j].depth < row.depth) break
-      if (rows[j].depth === row.depth) {
-        last = false
-        break
-      }
-    }
-    return '  '.repeat(capped - 1) + more + (last ? g.lastBranch : g.branch) + ' '
+    return treeGuides(rows, i, capped - 1, env) + more + (hasNextBranch(rows, i, row.depth) ? g.branch : g.lastBranch) + ' '
   })
 }
 
@@ -49,6 +56,7 @@ interface Item {
   kind: 'row' | 'header'
   row?: OrgTreeRow
   prefix: string
+  continuation?: string
 }
 
 export function clipMiddle(label: string, max: number, ell: string): string {
@@ -169,11 +177,11 @@ function buildItems(rows: readonly OrgTreeRow[], env: TuiEnv): { items: Item[]; 
   const earlier = rows.filter((r) => r.earlier)
   const items: Item[] = []
   const cp = treePrefixes(current, env)
-  current.forEach((row, i) => items.push({ kind: 'row', row, prefix: cp[i]! }))
+  current.forEach((row, i) => items.push({ kind: 'row', row, prefix: cp[i]!, continuation: treeGuides(current, i, Math.min(row.depth + 1, TREE_INDENT_MAX), env) }))
   if (earlier.length > 0) {
     items.push({ kind: 'header', prefix: '' })
     const ep = treePrefixes(earlier, env)
-    earlier.forEach((row, i) => items.push({ kind: 'row', row, prefix: `  ${ep[i]!}` }))
+    earlier.forEach((row, i) => items.push({ kind: 'row', row, prefix: `  ${ep[i]!}`, continuation: `  ${treeGuides(earlier, i, Math.min(row.depth + 1, TREE_INDENT_MAX), env)}` }))
   }
   return { items, selectable: [...current, ...earlier] }
 }
@@ -317,12 +325,13 @@ export function OrgTreePane(props: MotionOrgTreePaneProps) {
     lines.push({ key: `${row.runId}:${row.id}`, segs: rowLine(item, selected, props.focused, width, env, phase, motionAllowed, involved, compact, stackedStatus) })
     if (stackedStatus) {
       const indent = Math.min(width, textWidth(item.prefix) + (compact ? 2 : 4))
+      const guides = (compact ? '' : '  ') + (item.continuation ?? '')
       const working = isWorkingAgentState(row.state)
       lines.push({ key: `${row.runId}:${row.id}:status`, segs: cutSegs([
-        { text: ' '.repeat(indent) },
+        { text: guides.padEnd(indent, ' ') },
         shimmerSeg({ text: agentActivityLabel(row), tone: working ? undefined : stateTone(row.state), dim: !working }, working && motionAllowed)
       ], width, env) })
-      if (spaced && items[index + 1]?.kind === 'row') lines.push({ key: `${row.runId}:${row.id}:gap`, segs: [] })
+      if (spaced && items[index + 1]?.kind === 'row') lines.push({ key: `${row.runId}:${row.id}:gap`, segs: cutSegs([{ text: guides.trimEnd() }], width, env) })
     }
   }
 
