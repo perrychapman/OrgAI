@@ -48,6 +48,7 @@ import {
 } from './codexAgents'
 import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, stepActivity } from './continuation'
+import { obligationsFor } from './delegation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { describeTool, isAuthFailure } from './activity'
@@ -256,6 +257,9 @@ const NATIVE_FAIL_ACTIVITY = 'Used native multi-agent tools'
 const NATIVE_AGENTS_NOTICE =
   "Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports."
 
+/** sendToRoot's rejection when the root thread does not exist yet (already logged). */
+const ROOT_DROPPED = new Error('the root thread does not exist yet')
+
 class CodexSession implements RuntimeSession {
   readonly finished: Promise<void>
   private server!: CodexServerLike
@@ -319,6 +323,8 @@ class CodexSession implements RuntimeSession {
   private struckTurn = new Map<string, string>()
   /** threadId -> the strike whose interrupted turn is still to complete; that turnCompleted skips normal handling. */
   private nativeTag = new Map<string, { strike: number }>()
+  /** Delegation gate: reports held back for 'wait' (parked) or 'correct' (still working), by agent id. */
+  private heldReports = new Map<string, { result: string | undefined; waiting: boolean }>()
   private restarting = false
   private pendingMcpPrefixes: string[] = []
   private closeSignal!: () => void
@@ -473,6 +479,13 @@ class CodexSession implements RuntimeSession {
     await this.interruptAll()
     this.server?.close()
     this.closeSignal()
+  }
+
+  /** RunManager's one delegation correction: a harness message to the root, never an auto-continue. */
+  async nudge(text: string): Promise<void> {
+    if (this.ending) return
+    await this.sendToRoot(text, 'Reading a harness notice…')
+    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
   }
 
   // ---------- plumbing ----------
@@ -639,6 +652,14 @@ class CodexSession implements RuntimeSession {
    * `agentMessage` deliveries: those carry another agent's words and stay unmarked, like Claude's native SendMessage.
    */
   private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string; agentMessage?: boolean } = {}): void {
+    this.sendToRoot(text, activity, opts).catch((e: Error) => {
+      if (e !== ROOT_DROPPED) this.log('warn', `Could not deliver a harness message to the orchestrator: ${e.message}`)
+    })
+    this.noteActivity('message')
+  }
+
+  /** notifyOrchestrator's work, returning the real send promise (it rejects when the message did not reach the root thread). */
+  private sendToRoot(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string; agentMessage?: boolean } = {}): Promise<void> {
     if (opts.transcript !== false) {
       this.transcript(
         ROOT_AGENT_ID,
@@ -653,10 +674,9 @@ class CodexSession implements RuntimeSession {
     }
     if (!this.rootThreadId) {
       this.log('warn', 'A harness message for the orchestrator was dropped: the root thread does not exist yet.')
-      return
+      return Promise.reject(ROOT_DROPPED)
     }
-    void this.sendToThread(this.rootThreadId, text).catch((e) => this.log('warn', `Could not deliver a harness message to the orchestrator: ${(e as Error).message}`))
-    this.noteActivity('message')
+    return this.sendToThread(this.rootThreadId, text)
   }
 
   private async interruptAll(): Promise<void> {
@@ -713,7 +733,7 @@ class CodexSession implements RuntimeSession {
     const engagementDocument = this.ctx.engagementDocument?.()
     // Constant for the run (RunManager computes it once), so every thread's instructions carry the same index.
     const knowledgeBrief = this.ctx.knowledgeBrief?.()
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags() })
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}), ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags() })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -1068,6 +1088,7 @@ class CodexSession implements RuntimeSession {
   /** Codex's built-in multi-agent tools were used (item started): interrupt the turn, one strike per turn. */
   private onNativeSpawn(agentId: string, u: Extract<CodexUpdate, { type: 'nativeSpawn' }>): void {
     this.nativeItems += 1
+    this.ctx.delegation?.nativeStrike(agentId)
     this.log('warn', `${this.agents.get(agentId)?.name ?? agentId} used Codex's built-in multi-agent tool ${u.tool} (${this.nativeItems} native item${this.nativeItems === 1 ? '' : 's'} this run).`)
     const turnId = this.activeTurn.get(u.threadId)
     if (!turnId || this.struckTurn.get(u.threadId) === turnId) return
@@ -1099,6 +1120,8 @@ class CodexSession implements RuntimeSession {
       this.endRun(message)
       return
     }
+    this.ctx.delegation?.ended(agent.id)
+    this.heldReports.delete(agent.id)
     this.net.finish(agent.id)
     if (result) agent.result = result
     agent.state = 'error'
@@ -1108,6 +1131,7 @@ class CodexSession implements RuntimeSession {
     this.noteActivity('report')
     const text = reportMessage(agent, { status: 'failed', result, error: 'it used Codex\'s built-in multi-agent tools, which are not available in OrgAI' })
     this.deliverTo(agent.parentId ?? ROOT_AGENT_ID, text).catch((e) => this.log('warn', `Could not report the failure of ${agent.handle ?? agent.id}: ${(e as Error).message}`))
+    this.recheckParent(agent)
   }
 
   private noteArchitectureEdit(agentId: string, itemId: string): void {
@@ -1162,6 +1186,13 @@ class CodexSession implements RuntimeSession {
   private childTurnCompleted(agentId: string, u: Extract<CodexUpdate, { type: 'turnCompleted' }>): void {
     const child = this.agents.get(agentId)
     if (!child) return
+    if (u.status === 'completed' && this.ctx.delegation && !this.ending) {
+      this.evaluateChild(child, u.result)
+      return
+    }
+    // Interrupted or failed: no accepted completion.
+    if (u.status !== 'completed') this.ctx.delegation?.ended(agentId)
+    this.heldReports.delete(agentId)
     this.net.finish(agentId)
     if (u.result) child.result = u.result
     if (u.status === 'interrupted') {
@@ -1177,10 +1208,74 @@ class CodexSession implements RuntimeSession {
     child.endedAt = Date.now()
     this.upsert(child)
     this.noteActivity('report')
-    if (u.status === 'completed') void this.integrator.onSubagentFinished(agentId)
-    if (u.status === 'interrupted') return
+    if (u.status === 'completed') void this.integrator.onSubagentFinished(child.id)
+    if (u.status === 'interrupted') {
+      this.recheckParent(child)
+      return
+    }
     const text = reportMessage(child, u.status === 'failed' ? { status: 'failed', result: u.result, error: u.error?.message } : { status: 'completed', result: u.result })
-    this.deliverTo(child.parentId ?? ROOT_AGENT_ID, text)
+    this.deliverTo(child.parentId ?? ROOT_AGENT_ID, text).catch((e: Error) => this.log('warn', `Could not deliver the report of ${child.handle ?? child.id}: ${e.message}`))
+    this.recheckParent(child)
+  }
+
+  /** A child's completed turn, asked of the delegation gate (spec 5.5): wait, correct, or hand the report over. */
+  private evaluateChild(child: AgentInstance, result: string | undefined): void {
+    const gate = this.ctx.delegation
+    if (!gate) return
+    const d = gate.completion(child.id, { canCorrect: true, canWait: true, reportText: result ?? '' })
+    if (d.action === 'wait') {
+      this.heldReports.set(child.id, { result, waiting: true })
+      this.net.park(child.id)
+      if (result) child.result = result
+      child.endedAt = undefined
+      this.upsert(child)
+      this.setState(child.id, 'waiting', 'Waiting for reports')
+      return
+    }
+    if (d.action === 'correct') {
+      this.heldReports.set(child.id, { result, waiting: false })
+      if (result) child.result = result
+      this.setState(child.id, 'thinking', 'Reading a harness notice…')
+      if (d.text) this.deliverTo(child.id, d.text, { correction: true }).catch((e: Error) => this.log('warn', `Could not deliver the delegation correction to ${child.handle ?? child.id}: ${e.message}`))
+      return
+    }
+    this.heldReports.delete(child.id)
+    this.net.finish(child.id)
+    if (result) child.result = result
+    child.state = 'done'
+    child.endedAt = Date.now()
+    const failed = d.action === 'fail'
+    child.activity = failed ? 'Skipped required reports' : 'Reported back'
+    this.upsert(child)
+    this.noteActivity('report')
+    if (failed) void this.integrator.holdFailed(child.id, d.missing ?? 'it skipped its required reports')
+    else void this.integrator.onSubagentFinished(child.id)
+    const receipt = d.action === 'none' ? undefined : gate.receiptText(child.id)
+    const text = (receipt ? `${receipt}\n\n` : '') + reportMessage(child, { status: 'completed', result })
+    const parentId = child.parentId ?? ROOT_AGENT_ID
+    this.deliverTo(parentId, text).then(
+      () => {
+        if (d.action === 'none' || this.agents.get(parentId)?.state === 'error') return
+        gate.delivered(child.id)
+      },
+      (e: Error) => this.log('warn', `Could not deliver the report of ${child.handle ?? child.id}: ${e.message}`)
+    )
+    this.recheckParent(child)
+  }
+
+  /** A child reached a terminal state: a waiting parent with no running child left is evaluated again with its held report. */
+  private recheckParent(child: AgentInstance): void {
+    const parentId = child.parentId
+    if (!parentId || this.ending) return
+    const held = this.heldReports.get(parentId)
+    if (!held?.waiting) return
+    const running = [...this.agents.values()].some((a) => a.parentId === parentId && a.id !== child.id && a.state !== 'done' && a.state !== 'error') || [...this.bridgedLive.values()].some((b) => b.parentId === parentId)
+    if (running) return
+    const parent = this.agents.get(parentId)
+    if (!parent) return
+    this.heldReports.delete(parentId)
+    this.net.unpark(parentId)
+    this.evaluateChild(parent, held.result)
   }
 
   /**
@@ -1188,19 +1283,27 @@ class CodexSession implements RuntimeSession {
    * messages (report hand-offs) get a harness row; `agentMessage` deliveries (send_message) carry another
    * agent's words and stay unmarked.
    */
-  private deliverTo(agentId: string, text: string, opts: { agentMessage?: boolean } = {}): Promise<void> {
+  private deliverTo(agentId: string, text: string, opts: { agentMessage?: boolean; correction?: boolean } = {}): Promise<void> {
     if (this.agents.get(agentId)?.state === 'error') {
       this.log('warn', `Did not deliver a message to ${this.agents.get(agentId)?.handle ?? agentId}: it ended with an error.`)
       return Promise.resolve()
     }
     if (agentId === ROOT_AGENT_ID) {
-      this.notifyOrchestrator(text, undefined, { agentMessage: opts.agentMessage })
-      return Promise.resolve()
+      const sent = this.sendToRoot(text, undefined, { agentMessage: opts.agentMessage })
+      this.noteActivity('message')
+      return sent
     }
     const threadId = this.agentThread.get(agentId)
     const target = this.agents.get(agentId)
     if (!threadId || !target) return Promise.reject(new Error(`${agentId} has no thread`))
     this.transcript(agentId, { kind: 'system', text }, opts.agentMessage ? undefined : { source: 'harness' })
+    const held = this.heldReports.get(agentId)
+    if (held && !opts.correction) {
+      // A hand-off (or message) starts a new turn: the held report is dropped and that turn is evaluated again.
+      this.heldReports.delete(agentId)
+      this.net.unpark(agentId)
+      if (held.waiting) this.setState(agentId, 'thinking', 'Reading a message…')
+    }
     if (target.state === 'done' || target.state === 'idle') {
       target.endedAt = undefined
       this.setState(agentId, 'thinking', 'Reading a message…')
@@ -1726,6 +1829,8 @@ class CodexSession implements RuntimeSession {
     const parentId = live?.parentId ?? ROOT_AGENT_ID
     const text = `Harness: ${bridgedResultText(r, roleName)}`
     this.deliverTo(parentId, text).catch((e) => this.log('warn', `Could not deliver the report of ${r.handle}: ${(e as Error).message}`))
+    const parent = this.agents.get(parentId)
+    if (parent && this.heldReports.get(parentId)?.waiting) this.recheckParent({ ...parent, id: r.agentId, parentId } as AgentInstance)
   }
 
   private async spawnChild(req: SpawnRequest): Promise<void> {
@@ -1751,6 +1856,7 @@ class CodexSession implements RuntimeSession {
     this.integrator.noteBrief(req.id, req.description ?? req.brief.slice(0, 100))
     const parentLabel = req.parentId === ROOT_AGENT_ID ? 'the orchestrator' : (parent?.handle ?? parentRole.slug)
     const policy = this.policyFor(req.role)
+    let registered = false
     try {
       const params = this.threadParams(req.role, false, cwd, parent?.model)
       const started = await this.startThread(params)
@@ -1765,6 +1871,8 @@ class CodexSession implements RuntimeSession {
         ...(started.model ?? parent?.model ? { model: started.model ?? parent?.model } : {}),
         ...(worktree ? { worktree } : {})
       })
+      registered = true
+      this.ctx.delegation?.noteSpawn(req.id, req.parentId, req.role.id)
       this.transcript(req.id, { kind: 'user', text: req.brief })
       const effort = req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
       // After newAgent, so the "Added N known items" row lands on the report; the block stays out of its transcript entry.
@@ -1772,7 +1880,11 @@ class CodexSession implements RuntimeSession {
       await this.sendToThread(started.threadId, childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), undefined, effort)
     } catch (e) {
       if (this.agents.delete(req.id)) this.emit({ type: 'agent.remove', runId: this.ctx.run.id, agentId: req.id })
-      if (worktree) void this.integrator.onSubagentFinished(req.id)
+      const gate = this.ctx.delegation
+      if (registered) gate?.ended(req.id)
+      // An obligated writer's branch is held rather than merged (its report never came).
+      const obligated = !!gate && (obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)[req.role.id]?.length ?? 0) > 0
+      if (worktree) void (obligated ? this.integrator.holdFailed(req.id, 'its first message could not be sent') : this.integrator.onSubagentFinished(req.id))
       throw e
     }
   }

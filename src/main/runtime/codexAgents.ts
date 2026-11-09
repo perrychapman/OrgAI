@@ -104,6 +104,8 @@ interface Member {
   depth: number
   handle: string
   live: boolean
+  /** Waiting for required reports: still live for settlement, but not counted against concurrency. */
+  parked?: boolean
 }
 
 const HANDLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,40}$/
@@ -127,7 +129,22 @@ export class CodexAgentNetwork {
 
   /** Spawned agents that have not finished their current turn. */
   liveCount(): number {
-    return [...this.members.values()].filter((m) => m.live).length
+    return [...this.members.values()].filter((m) => m.live && !m.parked).length
+  }
+
+  /** The agent waits for its required reports: it stays live but stops counting against the concurrency limit. */
+  park(agentId: string): void {
+    const m = this.members.get(agentId)
+    if (m) m.parked = true
+  }
+
+  unpark(agentId: string): void {
+    const m = this.members.get(agentId)
+    if (m) m.parked = false
+  }
+
+  isParked(agentId: string): boolean {
+    return this.members.get(agentId)?.parked ?? false
   }
 
   isLive(agentId: string): boolean {
@@ -204,13 +221,19 @@ export class CodexAgentNetwork {
   /** The agent's turn ended (it reported). */
   finish(agentId: string): void {
     const m = this.members.get(agentId)
-    if (m) m.live = false
+    if (m) {
+      m.live = false
+      m.parked = false
+    }
   }
 
   /** The agent got a message and works again. */
   wake(agentId: string): void {
     const m = this.members.get(agentId)
-    if (m) m.live = true
+    if (m) {
+      m.live = true
+      m.parked = false
+    }
   }
 
   /** Ids of the spawned agents, oldest first. */
