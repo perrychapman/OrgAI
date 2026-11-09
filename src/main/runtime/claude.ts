@@ -3409,6 +3409,7 @@ export class ClaudeSession implements RuntimeSession {
           } else {
             // A resume (SendMessage to a finished subagent): a delegation-held branch is active again; the gate is asked at its next stop.
             this.integrator.unhold(msg.task_id)
+            this.ctx.delegation?.resumed(msg.task_id)
             this.setState(msg.task_id, 'thinking', 'Thinking…')
           }
         } else if (msg.subtype === 'api_retry') {

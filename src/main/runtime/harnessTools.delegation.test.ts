@@ -16,6 +16,7 @@ function gate(answer: DelegationCompletion): DelegationGate & { calls: unknown[]
       return answer
     },
     ended: () => {},
+    resumed: () => {},
     delivered: () => {},
     receiptText: () => undefined,
     nativeStrike: () => 0

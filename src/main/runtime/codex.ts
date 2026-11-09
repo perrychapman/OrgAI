@@ -1305,6 +1305,7 @@ class CodexSession implements RuntimeSession {
       if (held.waiting) this.setState(agentId, 'thinking', 'Reading a message…')
     }
     if (target.state === 'done' || target.state === 'idle') {
+      if (target.state === 'done') this.ctx.delegation?.resumed(agentId)
       target.endedAt = undefined
       this.setState(agentId, 'thinking', 'Reading a message…')
     }
