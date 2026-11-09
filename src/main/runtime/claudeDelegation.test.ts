@@ -93,6 +93,7 @@ function gateMock(answers: DelegationCompletion[] = [{ action: 'allow' }]) {
     noteSpawn: vi.fn(),
     completion: vi.fn((): DelegationCompletion => (queue.length > 1 ? queue.shift()! : queue[0]!)),
     ended: vi.fn(),
+    resumed: vi.fn(),
     delivered: vi.fn(),
     receiptText: vi.fn((): string | undefined => 'Harness receipt: mgr-1 ok'),
     nativeStrike: vi.fn(() => 1)
@@ -264,6 +265,7 @@ describe('Claude delegation: task_started and task_notification', () => {
     taskStarted(q, 'w1', 'tu9', 'wrk', 'm1')
     await vi.waitFor(() => expect(unhold).toHaveBeenCalledWith('w1'))
     expect(gate.noteSpawn).toHaveBeenCalledTimes(1)
+    expect(gate.resumed).toHaveBeenCalledExactlyOnceWith('w1')
     expect(gate.completion).toHaveBeenCalledTimes(1)
     expect(lastAgent(ctx, 'w1')?.state).toBe('thinking')
   })

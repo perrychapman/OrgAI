@@ -772,6 +772,8 @@ export interface DelegationGate {
   completion(agentId: string, opts: { canCorrect: boolean; canWait: boolean; reportText: string; provisional?: boolean }): DelegationCompletion
   /** The agent ended (interrupted, failed, removed) without completing. */
   ended(agentId: string): void
+  /** A done or ended agent was resumed (its lead messaged it): it works again and its next completion is evaluated afresh. */
+  resumed(agentId: string): void
   /** The adapter confirmed the child's report reached its parent. */
   delivered(childId: string): void
   /** The receipt (+ failure) line to place before the child's report; undefined when the child has no obligations. */

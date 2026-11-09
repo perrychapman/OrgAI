@@ -2371,6 +2371,7 @@ export class RunManager {
       noteSpawn: (childId, parentId, roleId) => changed(ledger.noteSpawn(childId, parentId, roleId)),
       completion: (agentId, opts) => changed(ledger.completion(agentId, { ...opts, canCorrect: opts.canCorrect && !held(), canWait: opts.canWait && !held() })),
       ended: (agentId) => changed(ledger.ended(agentId)),
+      resumed: (agentId) => changed(ledger.resumed(agentId)),
       delivered: (childId) => changed(ledger.delivered(childId)),
       receiptText: (childId) => ledger.receiptText(childId),
       nativeStrike: (agentId) => {

@@ -57,6 +57,43 @@ describe('DelegationLedger', () => {
     expect(agents.m1.missing).toEqual(['pol: never spawned', 'evi: never spawned'])
   })
 
+  it('a failed agent that is resumed is evaluated afresh: spawn + deliver both -> ok, corrections stay 1', () => {
+    const l = make()
+    l.completion('m1', { ...full, reportText: 'a' })
+    expect(l.completion('m1', { ...full, reportText: 'b' }).action).toBe('fail')
+    expect(l.completion('m1', { ...full, reportText: 'c' }).action).toBe('fail') // cached
+    l.resumed('m1')
+    expect(l.snapshot().agents.m1).toMatchObject({ phase: 'working', corrections: 1, missing: [] })
+    l.noteSpawn('p1', 'm1', 'pol')
+    l.noteSpawn('e1', 'm1', 'evi')
+    l.completion('p1', { ...full, reportText: 'p' })
+    l.completion('e1', { ...full, reportText: 'e' })
+    l.delivered('p1')
+    l.delivered('e1')
+    expect(l.completion('m1', { ...full, reportText: 'final' })).toEqual({ action: 'allow', verdict: 'ok' })
+    const s = l.snapshot()
+    expect(s.agents.m1).toMatchObject({ phase: 'done', verdict: 'ok', corrections: 1 })
+    expect(s.receipts.filter((x) => x.childId === 'm1')).toHaveLength(2)
+    expect(l.summary().summary.failed).toBe(0)
+  })
+
+  it('a resumed agent with the reports still missing fails again without a second correction; root and working agents are unaffected', () => {
+    const l = make()
+    l.completion('m1', { ...full, reportText: 'a' })
+    l.completion('m1', { ...full, reportText: 'b' })
+    l.resumed('m1')
+    expect(l.completion('m1', { ...full, reportText: 'c' }).action).toBe('fail')
+    l.completion('root', { ...full, reportText: 'x' })
+    l.resumed('root')
+    expect(l.snapshot().agents.root.phase).toBe('done')
+    l.noteSpawn('m3', 'root', 'mgr')
+    l.resumed('m3')
+    expect(l.snapshot().agents.m3.phase).toBe('working')
+    l.ended('m3')
+    l.resumed('m3')
+    expect(l.snapshot().agents.m3.phase).toBe('working')
+  })
+
   it('canCorrect false fails immediately; ended agents are ignored', () => {
     const l = make()
     expect(l.completion('m1', { canCorrect: false, canWait: false, reportText: 'x' }).action).toBe('fail')

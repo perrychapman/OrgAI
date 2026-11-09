@@ -134,6 +134,7 @@ describe('CodexAdapter delegation gate', () => {
         return script(agentId, calls[agentId]!)
       }),
       ended: vi.fn(),
+      resumed: vi.fn(),
       delivered: vi.fn(),
       receiptText: vi.fn((id: string) => `RECEIPT(${id})`),
       nativeStrike: vi.fn(() => 1)
@@ -270,6 +271,25 @@ describe('CodexAdapter delegation gate', () => {
     expect(hold).toHaveBeenCalledWith(mgr, 'w2 never spawned')
     expect(done).not.toHaveBeenCalledWith(mgr)
     await vi.waitFor(() => expect(gate.delivered).toHaveBeenCalledWith(mgr))
+  })
+
+  it('resumed: a message to a finished (failed) manager reports the resume to the gate; a waiting manager is not resumed', async () => {
+    const { gate } = makeGate((id, n) => (id === gate.noteSpawn.mock.calls[0]?.[0] ? (n === 1 ? { action: 'fail', missing: 'w2 never spawned' } : { action: 'wait', text: 'w' }) : { action: 'allow' }))
+    vi.spyOn(WorktreeIntegrator.prototype, 'holdFailed').mockResolvedValue()
+    const { s, ctx } = await start(gate)
+    await tree(s)
+    const mgr = idOf(ctx, 'mgr-1')
+    finish(s, 'th-2', 'tu-2', 'claims done')
+    await vi.waitFor(() => expect(lastOf(ctx, mgr).state).toBe('done'))
+    expect(gate.resumed).not.toHaveBeenCalled()
+    await call(s, 'th-1', 'c9', 'message_agent', { to: 'mgr-1', message: 'Please do the rest' })
+    await vi.waitFor(() => expect(gate.resumed).toHaveBeenCalledExactlyOnceWith(mgr))
+    expect(lastOf(ctx, mgr).state).toBe('thinking')
+    // Its next turn is waiting (a child still running); a further message does not resume a non-done agent.
+    finish(s, 'th-2', 'tu-5', 'second try')
+    await vi.waitFor(() => expect(lastOf(ctx, mgr).state).toBe('waiting'))
+    await call(s, 'th-1', 'c10', 'message_agent', { to: 'mgr-1', message: 'ping' })
+    expect(gate.resumed).toHaveBeenCalledTimes(1)
   })
 
   it('a waiting manager is parked: it does not count against the concurrency limit', async () => {

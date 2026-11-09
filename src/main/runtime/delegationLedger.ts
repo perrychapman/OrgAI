@@ -141,6 +141,18 @@ export class DelegationLedger {
     if (a && a.phase !== 'done') a.phase = 'ended'
   }
 
+  /**
+   * A finished or ended agent is running again (its lead resumed it). It returns to 'working' and its next completion
+   * evaluates the current receipts afresh; the correction budget is not restored. The root is never resumed.
+   */
+  resumed(agentId: string): void {
+    const a = this.state.agents[agentId]
+    if (!a || !a.parentId || (a.phase !== 'done' && a.phase !== 'ended')) return
+    a.phase = 'working'
+    delete a.verdict
+    a.missing = []
+  }
+
   /** The adapter confirmed the child's report reached its parent. */
   delivered(childId: string): void {
     for (let i = this.state.receipts.length - 1; i >= 0; i--) {

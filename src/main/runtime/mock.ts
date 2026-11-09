@@ -603,6 +603,8 @@ export const DELEGATION_OK_TOKEN = '[mock:delegation-ok]'
 export const DELEGATION_FIX_TOKEN = '[mock:delegation-fix]'
 export const DELEGATION_SKIP_TOKEN = '[mock:delegation-skip]'
 export const DELEGATION_CLAIM_TOKEN = '[mock:delegation-claim]'
+/** The manager tries to finish while its workers still run; the finish stays pending and completes once both report. */
+export const DELEGATION_EARLY_TOKEN = '[mock:delegation-early]'
 /** The agent ids the delegation scripts spawn. */
 export const MOCK_DELEGATION_MANAGER = 'mock-manager'
 export const MOCK_DELEGATION_WORKERS = ['mock-worker-1', 'mock-worker-2'] as const
@@ -612,7 +614,7 @@ export const MOCK_DELEGATION_CLAIM = 'I spawned both workers and obtained both r
  * The required-delegation turn: the root spawns the manager (`managerSlug`); `variant` decides how it treats its required
  * workers (`workerSlugs`, spawned under it). 'fix' complies after the harness correction, 'skip' and 'claim' never do.
  */
-export function delegationSteps(variant: 'ok' | 'fix' | 'skip' | 'claim', managerSlug: string, workerSlugs: readonly string[]): MockStep[] {
+export function delegationSteps(variant: 'ok' | 'early' | 'fix' | 'skip' | 'claim', managerSlug: string, workerSlugs: readonly string[]): MockStep[] {
   const m = MOCK_DELEGATION_MANAGER
   const workers = workerSlugs.map((slug, i) => ({ slug, id: MOCK_DELEGATION_WORKERS[i] ?? `mock-worker-${i + 1}` }))
   const spawnAll = (): MockStep[] => workers.map((w) => ({ type: 'spawn', id: w.id, name: w.id, parent: m, role: w.slug, description: `Do the ${w.slug} part` }) as MockStep)
@@ -621,6 +623,9 @@ export function delegationSteps(variant: 'ok' | 'fix' | 'skip' | 'claim', manage
     { type: 'text', text: 'Planning the work: one manager owns it.' },
     { type: 'spawn', id: m, name: m, role: managerSlug, description: 'Manage the work' }
   ]
+  if (variant === 'early') {
+    return [...head, ...spawnAll(), { type: 'finish', id: m, result: 'Both parts are done and combined.' }, ...finishAll(), { type: 'text', text: 'The manager finished.' }]
+  }
   if (variant === 'ok') {
     return [...head, ...spawnAll(), ...finishAll(), { type: 'finish', id: m, result: 'Both parts are done and combined.' }, { type: 'text', text: 'The manager finished.' }]
   }
@@ -1876,7 +1881,7 @@ export class MockSession implements RuntimeSession {
   private delegationMarkerSteps(): MockStep[] | null {
     if (this.isSetup || this.ctx.run.kind !== 'work' || this.ctx.run.quick || this.script.work !== DEFAULT_WORK) return null
     const prompt = this.ctx.prompt
-    const variant = prompt.includes(DELEGATION_CLAIM_TOKEN) ? 'claim' : prompt.includes(DELEGATION_SKIP_TOKEN) ? 'skip' : prompt.includes(DELEGATION_FIX_TOKEN) ? 'fix' : prompt.includes(DELEGATION_OK_TOKEN) ? 'ok' : null
+    const variant = prompt.includes(DELEGATION_CLAIM_TOKEN) ? 'claim' : prompt.includes(DELEGATION_SKIP_TOKEN) ? 'skip' : prompt.includes(DELEGATION_FIX_TOKEN) ? 'fix' : prompt.includes(DELEGATION_OK_TOKEN) ? 'ok' : prompt.includes(DELEGATION_EARLY_TOKEN) ? 'early' : null
     if (!variant) return null
     const managerSlug = this.firstSpawnableSlug(this.root)
     const manager = this.rolesBySlug.get(managerSlug)
@@ -2394,6 +2399,9 @@ export class MockSession implements RuntimeSession {
     return allowed[0]?.slug ?? fallback ?? this.ctx.roles.find((r) => r.reportsTo !== null)?.slug ?? this.root.slug
   }
 
+  /** Finishes the gate said to wait on (agent id -> step), retried when a child of that agent finishes. */
+  private readonly pendingFinish = new Map<string, Extract<MockStep, { type: 'finish' }>>()
+
   /**
    * A report finishes. With ctx.delegation the gate is asked first (spec 5.2): a correction is shown to the agent, `comply`
    * steps run, then it tries again; the report its parent receives carries the harness receipt, and delivery is confirmed.
@@ -2412,8 +2420,14 @@ export class MockSession implements RuntimeSession {
         }
         d = ask()
       }
-      // 'none': the agent already ended. 'wait': a required child is still running (the script never does this), it stays open.
-      if (d.action === 'none' || d.action === 'wait' || d.action === 'correct') return
+      // 'none': the agent already ended. 'wait': a required child is still running; the finish stays pending and is retried
+      // when one of its children finishes (like Codex's held report).
+      if (d.action === 'wait') {
+        this.pendingFinish.set(step.id, step)
+        return
+      }
+      if (d.action === 'none' || d.action === 'correct') return
+      this.pendingFinish.delete(step.id)
       const receipt = gate.receiptText(step.id)
       if (receipt) text = `${receipt}\n\n${step.result}`
     }
@@ -2427,7 +2441,14 @@ export class MockSession implements RuntimeSession {
     const toolUseId = this.spawnToolUse.get(step.id)
     if (toolUseId) this.transcript(a.parentId ?? ROOT_AGENT_ID, { kind: 'tool_result', toolUseId, content: text, isError: false })
     gate?.delivered(step.id)
-    if (a.parentId) this.setState(a.parentId, 'thinking', 'Thinking…')
+    if (a.parentId) {
+      this.setState(a.parentId, 'thinking', 'Thinking…')
+      const pending = this.pendingFinish.get(a.parentId)
+      if (pending && !this.stopped && !this.interrupted) {
+        const running = [...this.agents.values()].some((x) => x.parentId === a.parentId && x.state !== 'done' && x.state !== 'error')
+        if (!running) await this.finishStep(pending)
+      }
+    }
   }
 
   private async spawnStep(step: Extract<MockStep, { type: 'spawn' }>): Promise<void> {

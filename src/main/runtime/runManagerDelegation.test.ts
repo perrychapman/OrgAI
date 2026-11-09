@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ExecOutcome, Role, RunEvent, RunOverrides } from '@shared/types'
-import { DELEGATION_CLAIM_TOKEN, DELEGATION_FIX_TOKEN, DELEGATION_OK_TOKEN, DELEGATION_SKIP_TOKEN, DEEP_TREE_TOKEN, EXEC_PLAN_TOKEN, MockAdapter } from './mock'
+import { DELEGATION_CLAIM_TOKEN, DELEGATION_EARLY_TOKEN, DELEGATION_FIX_TOKEN, DELEGATION_OK_TOKEN, DELEGATION_SKIP_TOKEN, DEEP_TREE_TOKEN, EXEC_PLAN_TOKEN, MockAdapter } from './mock'
 import { RunManager } from './runManager'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -71,6 +71,17 @@ describe('RunManager required delegation (mock adapter)', () => {
     expect(record?.delegation?.receipts.filter((x) => x.delivered)).toHaveLength(3)
     const mgr = Object.values(record!.agents).find((a) => a.roleSlug === 'mgr')
     expect(mgr?.delegation).toMatchObject({ verdict: 'ok', corrected: false })
+  })
+
+  it('early: a manager that finishes before its workers waits, then reports once both are delivered', async () => {
+    const r = rig(chart())
+    const outcome = await runExec(r, `go ${DELEGATION_EARLY_TOKEN} ${EXEC_PLAN_TOKEN}`)
+    expect(outcome).toBe('completed')
+    expect(finalized()[0].summary.delegation).toMatchObject({ failed: 0, corrected: 0, rootVerdict: 'adaptive' })
+    const record = r.store.getRecord(finalized()[0].summary.id)
+    expect(record?.delegation?.receipts.filter((x) => x.delivered)).toHaveLength(3)
+    expect(Object.values(record!.agents).find((a) => a.roleSlug === 'mgr')?.delegation).toMatchObject({ verdict: 'ok' })
+    expect(toolResults().some((t) => t.startsWith('Harness receipt for') && t.includes('policy ✔') && t.includes('evidence ✔'))).toBe(true)
   })
 
   it('fix: the correction is recorded once, the manager complies and the run completes', async () => {
