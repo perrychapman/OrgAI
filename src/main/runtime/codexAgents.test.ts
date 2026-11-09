@@ -8,6 +8,7 @@ import {
   CodexAgentNetwork,
   callNetworkTool,
   childFirstMessage,
+  canonicalNetworkTool,
   codexToolNotes,
   createAgentWorktree,
   networkToolNames,
@@ -58,33 +59,33 @@ function setup(opts: { maxDepth?: number; maxConcurrent?: number; roles?: Return
 describe('spawn policy', () => {
   it('spawns an allowed role with a generated handle', async () => {
     const s = setup()
-    const out = await callNetworkTool(s.net, s.host, 'root', 'call-1', 'spawn_agent', { role: 'engineer', brief: 'Build it' })
+    const out = await callNetworkTool(s.net, s.host, 'root', 'call-1', 'spawn_report', { role: 'engineer', brief: 'Build it' })
     expect(out.success).toBe(true)
     expect(out.text).toContain('engineer-1')
     expect(s.spawned[0]).toMatchObject({ handle: 'engineer-1', parentId: 'root', depth: 1, callId: 'call-1', brief: 'Build it' })
-    const second = await callNetworkTool(s.net, s.host, 'root', 'call-2', 'spawn_agent', { role: 'engineer', brief: 'Again' })
+    const second = await callNetworkTool(s.net, s.host, 'root', 'call-2', 'spawn_report', { role: 'engineer', brief: 'Again' })
     expect(second.text).toContain('engineer-2')
   })
 
   it('uses the requested name and rejects clashes and bad names', async () => {
     const s = setup()
-    expect((await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { role: 'engineer', brief: 'b', name: 'login' })).text).toContain('login')
-    const clash = await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_agent', { role: 'reviewer', brief: 'b', name: 'LOGIN' })
+    expect((await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'engineer', brief: 'b', name: 'login' })).text).toContain('login')
+    const clash = await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_report', { role: 'reviewer', brief: 'b', name: 'LOGIN' })
     expect(clash).toMatchObject({ success: false })
-    expect((await callNetworkTool(s.net, s.host, 'root', 'c3', 'spawn_agent', { role: 'reviewer', brief: 'b', name: 'main' })).success).toBe(false)
-    expect((await callNetworkTool(s.net, s.host, 'root', 'c4', 'spawn_agent', { role: 'reviewer', brief: 'b', name: 'bad name!' })).success).toBe(false)
+    expect((await callNetworkTool(s.net, s.host, 'root', 'c3', 'spawn_report', { role: 'reviewer', brief: 'b', name: 'main' })).success).toBe(false)
+    expect((await callNetworkTool(s.net, s.host, 'root', 'c4', 'spawn_report', { role: 'reviewer', brief: 'b', name: 'bad name!' })).success).toBe(false)
     expect(s.spawned).toHaveLength(1)
   })
 
   it('refuses roles the parent may not spawn, and parents that cannot spawn', async () => {
     const s = setup()
-    const unknown = await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { role: 'designer', brief: 'b' })
+    const unknown = await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'designer', brief: 'b' })
     expect(unknown.success).toBe(false)
     expect(unknown.text).toContain('Allowed role values: engineer, reviewer')
-    const first = await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_agent', { role: 'engineer', brief: 'b' })
+    const first = await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_report', { role: 'engineer', brief: 'b' })
     expect(first.success).toBe(true)
     const childId = s.spawned[0].id
-    const nested = await callNetworkTool(s.net, s.host, childId, 'c3', 'spawn_agent', { role: 'reviewer', brief: 'b' })
+    const nested = await callNetworkTool(s.net, s.host, childId, 'c3', 'spawn_report', { role: 'reviewer', brief: 'b' })
     expect(nested.text).toContain('does not let engineer spawn subagents')
     expect(s.spawned).toHaveLength(1)
   })
@@ -96,8 +97,8 @@ describe('spawn policy', () => {
       role({ id: 'r-b', slug: 'b', reportsTo: 'r-lead' })
     ]
     const s = setup({ roles })
-    expect((await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { role: 'b', brief: 'x' })).success).toBe(false)
-    expect((await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_agent', { role: 'a', brief: 'x' })).success).toBe(true)
+    expect((await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'b', brief: 'x' })).success).toBe(false)
+    expect((await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_report', { role: 'a', brief: 'x' })).success).toBe(true)
   })
 
   it('enforces maxSubagentDepth for nested spawns', async () => {
@@ -107,26 +108,26 @@ describe('spawn policy', () => {
       role({ id: 'r-leaf', slug: 'leaf', reportsTo: 'r-mid' })
     ]
     const s = setup({ roles, maxDepth: 1 })
-    await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { role: 'mid', brief: 'x' })
-    const nested = await callNetworkTool(s.net, s.host, s.spawned[0].id, 'c2', 'spawn_agent', { role: 'leaf', brief: 'x' })
+    await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'mid', brief: 'x' })
+    const nested = await callNetworkTool(s.net, s.host, s.spawned[0].id, 'c2', 'spawn_report', { role: 'leaf', brief: 'x' })
     expect(nested.success).toBe(false)
     expect(nested.text).toContain('depth limit')
     const deeper = setup({ roles, maxDepth: 2 })
-    await callNetworkTool(deeper.net, deeper.host, 'root', 'c1', 'spawn_agent', { role: 'mid', brief: 'x' })
-    const ok = await callNetworkTool(deeper.net, deeper.host, deeper.spawned[0].id, 'c2', 'spawn_agent', { role: 'leaf', brief: 'x' })
+    await callNetworkTool(deeper.net, deeper.host, 'root', 'c1', 'spawn_report', { role: 'mid', brief: 'x' })
+    const ok = await callNetworkTool(deeper.net, deeper.host, deeper.spawned[0].id, 'c2', 'spawn_report', { role: 'leaf', brief: 'x' })
     expect(ok.success).toBe(true)
     expect(deeper.spawned[1]).toMatchObject({ depth: 2, parentId: deeper.spawned[0].id })
   })
 
   it('enforces maxConcurrentSubagents and frees a slot when a report finishes', async () => {
     const s = setup({ maxConcurrent: 2 })
-    await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { role: 'engineer', brief: 'x' })
-    await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_agent', { role: 'reviewer', brief: 'x' })
-    const refused = await callNetworkTool(s.net, s.host, 'root', 'c3', 'spawn_agent', { role: 'engineer', brief: 'x' })
+    await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'engineer', brief: 'x' })
+    await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_report', { role: 'reviewer', brief: 'x' })
+    const refused = await callNetworkTool(s.net, s.host, 'root', 'c3', 'spawn_report', { role: 'engineer', brief: 'x' })
     expect(refused).toMatchObject({ success: false })
     expect(refused.text).toContain('Concurrent subagent limit')
     s.net.finish(s.spawned[0].id)
-    expect((await callNetworkTool(s.net, s.host, 'root', 'c4', 'spawn_agent', { role: 'engineer', brief: 'x' })).success).toBe(true)
+    expect((await callNetworkTool(s.net, s.host, 'root', 'c4', 'spawn_report', { role: 'engineer', brief: 'x' })).success).toBe(true)
   })
 
   it('releases the reservation when the host fails to start the child', async () => {
@@ -134,7 +135,7 @@ describe('spawn policy', () => {
     s.host.spawn = async () => {
       throw new Error('git worktree add failed')
     }
-    const out = await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { role: 'engineer', brief: 'x' })
+    const out = await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'engineer', brief: 'x' })
     expect(out).toMatchObject({ success: false })
     expect(out.text).toContain('git worktree add failed')
     expect(s.net.liveCount()).toBe(0)
@@ -142,23 +143,23 @@ describe('spawn policy', () => {
 
   it('rejects malformed arguments with a readable text', async () => {
     const s = setup()
-    const out = await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { brief: 'x' })
+    const out = await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { brief: 'x' })
     expect(out.success).toBe(false)
-    expect(out.text).toContain('spawn_agent needs')
+    expect(out.text).toContain('spawn_report needs')
   })
 })
 
-describe('send_message and list_agents', () => {
+describe('message_agent and list_team', () => {
   async function withChildren() {
     const s = setup()
-    await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { role: 'engineer', brief: 'x' })
-    await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_agent', { role: 'reviewer', brief: 'x' })
+    await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'engineer', brief: 'x' })
+    await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_report', { role: 'reviewer', brief: 'x' })
     return s
   }
 
   it('routes a message by handle to the child and announces it', async () => {
     const s = await withChildren()
-    const out = await callNetworkTool(s.net, s.host, 'root', 'm1', 'send_message', { to: 'engineer-1', message: 'Use tabs' })
+    const out = await callNetworkTool(s.net, s.host, 'root', 'm1', 'message_agent', { to: 'engineer-1', message: 'Use tabs' })
     expect(out).toEqual({ text: 'Delivered to engineer-1.', success: true })
     expect(s.delivered).toEqual([{ to: s.spawned[0].id, text: 'Message from the orchestrator:\nUse tabs' }])
     expect(s.announced[0].m).toMatchObject({ from: 'root', to: s.spawned[0].id, toHandle: 'engineer-1' })
@@ -169,7 +170,7 @@ describe('send_message and list_agents', () => {
     const s = await withChildren()
     const child = s.spawned[0].id
     for (const to of ['main', 'orchestrator']) {
-      const out = await callNetworkTool(s.net, s.host, child, 'm', 'send_message', { to, message: 'done early' })
+      const out = await callNetworkTool(s.net, s.host, child, 'm', 'message_agent', { to, message: 'done early' })
       expect(out.success).toBe(true)
     }
     expect(s.delivered.map((d) => d.to)).toEqual(['root', 'root'])
@@ -182,14 +183,14 @@ describe('send_message and list_agents', () => {
     s.net.finish(id)
     s.agents.get(id)!.state = 'done'
     expect(s.net.isLive(id)).toBe(false)
-    const out = await callNetworkTool(s.net, s.host, 'root', 'm1', 'send_message', { to: 'engineer-1', message: 'one more thing' })
+    const out = await callNetworkTool(s.net, s.host, 'root', 'm1', 'message_agent', { to: 'engineer-1', message: 'one more thing' })
     expect(out.success).toBe(true)
     expect(s.net.isLive(id)).toBe(true)
   })
 
   it('refuses unknown recipients and lists who is reachable', async () => {
     const s = await withChildren()
-    const out = await callNetworkTool(s.net, s.host, s.spawned[0].id, 'm1', 'send_message', { to: 'ghost-9', message: 'hi' })
+    const out = await callNetworkTool(s.net, s.host, s.spawned[0].id, 'm1', 'message_agent', { to: 'ghost-9', message: 'hi' })
     expect(out.success).toBe(false)
     expect(out.text).toContain('main')
     expect(out.text).toContain('reviewer-1')
@@ -198,26 +199,44 @@ describe('send_message and list_agents', () => {
 
   it('lists running agents with handles', async () => {
     const s = await withChildren()
-    const out = await callNetworkTool(s.net, s.host, s.spawned[0].id, 'l1', 'list_agents', {})
+    const out = await callNetworkTool(s.net, s.host, s.spawned[0].id, 'l1', 'list_team', {})
     expect(out.text).toContain('main (the orchestrator)')
     expect(out.text).toContain('reviewer-1 · reviewer')
     expect(out.text).not.toContain('engineer-1')
   })
 })
 
+describe('pre-rename aliases', () => {
+  it('canonicalNetworkTool maps old and new names to the new one', () => {
+    expect(['spawn_agent', 'spawn_report', 'send_message', 'message_agent', 'list_agents', 'list_team', 'other'].map(canonicalNetworkTool)).toEqual(['spawn_report', 'spawn_report', 'message_agent', 'message_agent', 'list_team', 'list_team', null])
+  })
+  it('callNetworkTool accepts the old names', async () => {
+    const s = setup()
+    const out = await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_agent', { role: 'engineer', brief: 'x' })
+    expect(out.success).toBe(true)
+    expect((await callNetworkTool(s.net, s.host, 'root', 'c2', 'list_agents', {})).success).toBe(true)
+    expect((await callNetworkTool(s.net, s.host, 'root', 'c3', 'send_message', { to: 'engineer-1', message: 'hi' })).success).toBe(true)
+  })
+  it('the role check passes an old name through canonicalNetworkTool', () => {
+    const roles = orgChart()
+    expect(networkToolNames(roles[0], { setupLike: false }).includes(canonicalNetworkTool('spawn_agent')!)).toBe(true)
+    expect(networkToolNames(roles[1], { setupLike: false }).includes(canonicalNetworkTool('spawn_agent')!)).toBe(false)
+  })
+})
+
 describe('tool exposure', () => {
   const roles = orgChart()
   it('gives spawners all three tools, others only what their tools list allows', () => {
-    expect(networkToolNames(roles[0], { setupLike: false })).toEqual(['spawn_agent', 'send_message', 'list_agents'])
+    expect(networkToolNames(roles[0], { setupLike: false })).toEqual(['spawn_report', 'message_agent', 'list_team'])
     expect(networkToolNames(roles[1], { setupLike: false })).toEqual([])
     const talker = role({ id: 'r-t', slug: 't', tools: ['Read', 'SendMessage'] })
-    expect(networkToolNames(talker, { setupLike: false })).toEqual(['send_message'])
+    expect(networkToolNames(talker, { setupLike: false })).toEqual(['message_agent'])
     expect(networkToolNames(roles[0], { setupLike: true })).toEqual([])
   })
 
   it('generates function specs with JSON schemas from zod', () => {
-    const specs = networkToolSpecs(['spawn_agent', 'list_agents'])
-    expect(specs[0]).toMatchObject({ type: 'function', name: 'spawn_agent' })
+    const specs = networkToolSpecs(['spawn_report', 'list_team'])
+    expect(specs[0]).toMatchObject({ type: 'function', name: 'spawn_report' })
     const schema = specs[0].inputSchema as { type: string; required: string[]; properties: Record<string, unknown> }
     expect(schema.type).toBe('object')
     expect(schema.required).toEqual(['role', 'brief'])
@@ -227,8 +246,10 @@ describe('tool exposure', () => {
   })
 
   it('writes Codex notes only for the tools the thread has', () => {
-    const notes = codexToolNotes(['spawn_agent', 'send_message', 'list_agents'], { renamedPlanTool: true })
-    expect(notes).toContain('spawn_agent')
+    const notes = codexToolNotes(['spawn_report', 'message_agent', 'list_team'], { renamedPlanTool: true })
+    expect(notes).toContain('spawn_report')
+    expect(notes).toContain("built-in multi-agent tools")
+    expect(notes).toContain('unavailable')
     expect(notes).toContain('orgai_update_plan')
     expect(codexToolNotes([], { renamedPlanTool: false })).toBe('')
   })

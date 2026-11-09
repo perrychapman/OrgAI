@@ -174,7 +174,7 @@ describe('CodexSession exec settlement (fake app-server)', () => {
     // A spawn whose thread/start has not answered yet.
     let release: (() => void) | undefined
     s.overrides['thread/start'] = () => new Promise((r) => (release = () => r({ thread: { id: 'th-2' }, model: 'gpt-test' })))
-    const spawn = s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build it' } })
+    const spawn = s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
     await vi.waitFor(() => expect(release).toBeDefined())
     expect(sess.settlement!().quiescent).toBe(false)
     release!()
@@ -190,7 +190,7 @@ describe('CodexSession exec settlement (fake app-server)', () => {
 
   it('notes subagent activity at a thread start and a report at its finish', async () => {
     const { s, activity } = await start()
-    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build it' } })
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
     expect(activity).toContain('subagent')
     await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
     s.push('turn/completed', turnDone('th-2', 'tu-2'))

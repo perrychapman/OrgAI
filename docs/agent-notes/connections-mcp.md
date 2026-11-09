@@ -37,7 +37,7 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   - `Role.connection` is read only through `roleConnection`; the root always uses the project's connection.
     `AdapterChoice.bridged` lists roles that run in a child session (runtime/bridge.ts `BridgedSessions`) on their own
     adapter and RunConnection (`ConnectionService.runConnectionFor`).
-  - Claude and mock start a bridged role with `delegate_agent`. Codex starts it through `spawn_agent`, which calls
+  - Claude and mock start a bridged role with `delegate_agent`. Codex starts it through `spawn_report`, which calls
     `ctx.bridge.spawn`.
   - A child ctx has `bridgedChild` set: no root-audience tools, a report prompt (`PromptFlags.bridged`) and no
     worktree. Adapters pass `bridgedRoles`, `bridgeVia` and `bridged` to buildRolePrompt and never give a bridged role
@@ -118,7 +118,7 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     `maskKeyLike`). Still unverified: whether a LiteLLM proxy serves `/v1/responses` for GPT models.
   - Harness tools are `dynamicTools` on `thread/start`, answered through `item/tool/call`. `update_plan` collides
     with a built-in Codex tool, so it is exposed as `orgai_update_plan`. Subagents are threads started by the
-    harness's own `spawn_agent` tool. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
+    harness's own `spawn_report` tool. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
     (spends tokens, consent required) has not been run.
   - It is unverified that dynamic tools survive `thread/resume`. The adapter's MCP restart and run continuation
     assume they do.

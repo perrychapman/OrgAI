@@ -21,15 +21,26 @@ import {
  * Codex item -> harness tool name (so activity.ts phrases and the renderer's tool rendering fit):
  *   commandExecution -> Bash {command, cwd}        fileChange -> Edit (Write when every change is an add)
  *   mcpToolCall      -> mcp__<server>__<tool>      webSearch  -> WebSearch {query}
- *   dynamicToolCall  -> harness tools as mcp__orgai__<name>; spawn_agent -> Agent, send_message -> SendMessage,
- *                       list_agents -> ListAgents (inputs renamed to the Claude shapes)
+ *   dynamicToolCall  -> harness tools as mcp__orgai__<name>; spawn_report -> Agent, message_agent -> SendMessage,
+ *                       list_team -> ListAgents (the pre-rename names map the same way) (inputs renamed to the Claude shapes)
  * Ignored: plan, contextCompaction, hookPrompt and the rest. Codex's own multi-agent items
  * (collabAgentToolCall, subAgentActivity) are logged: those agents are not governed by the org chart.
  */
 
 export const ORGAI_TOOL_PREFIX = 'mcp__orgai__'
 /** Tool names (as the model calls them) the harness network adds besides the harness tools. */
-export const NETWORK_TOOLS = { spawn: 'spawn_agent', message: 'send_message', list: 'list_agents' } as const
+export const NETWORK_TOOLS = { spawn: 'spawn_report', message: 'message_agent', list: 'list_team' } as const
+
+/** Names before the rename (they collided with Codex's built-in multi-agent tools). Threads saved earlier still use them. */
+const LEGACY_NETWORK_TOOLS: Record<string, string> = { spawn_agent: NETWORK_TOOLS.spawn, send_message: NETWORK_TOOLS.message, list_agents: NETWORK_TOOLS.list }
+
+/** The canonical network tool name for a new or pre-rename name, or null when it is not a network tool. */
+export function canonicalNetworkTool(name: string): string | null {
+  if (name === NETWORK_TOOLS.spawn || name === NETWORK_TOOLS.message || name === NETWORK_TOOLS.list) return name
+  return LEGACY_NETWORK_TOOLS[name] ?? null
+}
+
+export const NATIVE_AGENTS_UNAVAILABLE = "Codex's built-in multi-agent tools are not available in OrgAI."
 
 export type TurnStatus = 'completed' | 'interrupted' | 'failed'
 
@@ -46,11 +57,13 @@ export type CodexUpdate =
   | { type: 'turnCompleted'; threadId: string; turnId: string; status: TurnStatus; result?: string; error?: CodexTurnError }
   | { type: 'error'; threadId: string; message: string; willRetry: boolean; usageLimit: boolean }
   | { type: 'log'; level: 'info' | 'warn'; message: string }
+  /** Codex's built-in multi-agent item started (once per item id). The adapter interrupts the turn. */
+  | { type: 'nativeSpawn'; threadId: string; tool: string; itemId: string }
 
 export interface MapperOptions {
   /** True for a model-visible harness tool name that waits on the user (isBlockingHarnessTool on the bare name). */
   isBlockingTool?(codexToolName: string): boolean
-  /** Model-visible names of the harness tools of this run (spawn_agent & co. are recognised separately). */
+  /** Model-visible names of the harness tools of this run (the network tools are recognised separately). */
   harnessToolNames?: Iterable<string>
 }
 
@@ -84,6 +97,8 @@ export class CodexEventMapper {
   private finalText = new Map<string, string>()
   private items = new Map<string, CodexItem>()
   private harness: Set<string>
+  /** Native multi-agent item ids already reported (started then completed of one id counts once). */
+  private nativeSeen = new Set<string>()
 
   constructor(private opts: MapperOptions = {}) {
     this.harness = new Set(opts.harnessToolNames ?? [])
@@ -148,7 +163,7 @@ export class CodexEventMapper {
   private itemStarted(threadId: string, item: CodexItem): UpdateList {
     this.items.set(item.id, item)
     const tool = this.toolOf(item)
-    if (!tool) return this.otherItem(item)
+    if (!tool) return this.otherItem(threadId, item)
     return [{ type: 'toolUse', threadId, id: item.id, name: tool.name, input: tool.input, activity: tool.activity, state: tool.blocking ? 'waiting' : 'tool' }]
   }
 
@@ -191,16 +206,23 @@ export class CodexEventMapper {
       case 'webSearch':
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: '', isError: false }]
       default:
-        return this.otherItem(item, true)
+        return this.otherItem(threadId, item, true)
     }
   }
 
-  private otherItem(item: CodexItem, completed = false): UpdateList {
-    if (!completed) return []
-    if (item.type === 'collabAgentToolCall' || item.type === 'subAgentActivity') {
-      return [{ type: 'log', level: 'warn', message: `Codex used its built-in multi-agent feature (${str(item.tool) ?? item.type}); those agents are not governed by the org chart.` }]
+  private otherItem(threadId: string, item: CodexItem, completed = false): UpdateList {
+    if (item.type !== 'collabAgentToolCall' && item.type !== 'subAgentActivity') return []
+    const tool = str(item.tool) ?? item.type
+    if (completed) {
+      return [{ type: 'log', level: 'warn', message: `Codex used its built-in multi-agent feature (${tool}); those agents are not governed by the org chart.` }]
     }
-    return []
+    if (this.nativeSeen.has(item.id)) return []
+    this.nativeSeen.add(item.id)
+    return [
+      { type: 'toolUse', threadId, id: item.id, name: `codex:${tool}`, input: item.arguments ?? {}, activity: 'Used native multi-agent tools', state: 'tool' },
+      { type: 'toolResult', threadId, toolUseId: item.id, content: NATIVE_AGENTS_UNAVAILABLE, isError: true },
+      { type: 'nativeSpawn', threadId, tool, itemId: item.id }
+    ]
   }
 
   /** Harness tool name and input for an item that is a tool call, or null. */
@@ -238,15 +260,16 @@ export class CodexEventMapper {
 
   private dynamicTool(codexName: string, args: unknown): { name: string; input: unknown; activity: string; blocking: boolean } {
     const a = isRec(args) ? args : {}
-    if (codexName === NETWORK_TOOLS.spawn) {
+    const canonical = canonicalNetworkTool(codexName)
+    if (canonical === NETWORK_TOOLS.spawn) {
       const input = { subagent_type: str(a.role) ?? '', description: (str(a.brief) ?? '').slice(0, 120), prompt: str(a.brief) ?? '', ...(str(a.name) ? { name: str(a.name) } : {}) }
       return { name: 'Agent', input, activity: describeTool('Agent', input), blocking: false }
     }
-    if (codexName === NETWORK_TOOLS.message) {
+    if (canonical === NETWORK_TOOLS.message) {
       const input = { to: str(a.to) ?? '', message: str(a.message) ?? '' }
       return { name: 'SendMessage', input, activity: describeTool('SendMessage', input), blocking: false }
     }
-    if (codexName === NETWORK_TOOLS.list) return { name: 'ListAgents', input: {}, activity: describeTool('ListAgents', {}), blocking: false }
+    if (canonical === NETWORK_TOOLS.list) return { name: 'ListAgents', input: {}, activity: describeTool('ListAgents', {}), blocking: false }
     const bare = harnessToolName(codexName)
     if (this.harness.has(codexName) || this.harness.has(bare)) {
       return { name: `${ORGAI_TOOL_PREFIX}${bare}`, input: args ?? {}, activity: describeTool(bare, args, { harness: true }), blocking: this.opts.isBlockingTool?.(codexName) ?? false }

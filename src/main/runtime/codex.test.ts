@@ -210,11 +210,11 @@ describe('CodexAdapter session', () => {
     expect(s.options.env).toMatchObject({ CODEX_HOME: '/data/codex' })
     const start = s.of('thread/start')[0].params
     expect(start.developerInstructions).toContain('You are lead.')
-    expect(start.developerInstructions).toContain('spawn_agent')
+    expect(start.developerInstructions).toContain('spawn_report')
     expect(start.developerInstructions).toContain('orgai_update_plan')
     expect(start).toMatchObject({ cwd: dir, approvalPolicy: 'untrusted', sandbox: 'read-only', serviceName: 'orgai' })
     const toolNames = start.dynamicTools.map((t: { name: string }) => t.name)
-    expect(toolNames).toEqual(expect.arrayContaining(['set_plan', 'orgai_update_plan', 'ask_user', 'spawn_agent', 'send_message', 'list_agents']))
+    expect(toolNames).toEqual(expect.arrayContaining(['set_plan', 'orgai_update_plan', 'ask_user', 'spawn_report', 'message_agent', 'list_team']))
     expect(toolNames).not.toContain('update_plan')
     expect(s.turnStarts('th-1')[0].params.input).toEqual([{ type: 'text', text: 'Build the thing', text_elements: [] }])
     expect(ctx.events).toContainEqual({ type: 'run.status', runId: 'run-1', status: 'running', sessionId: 'th-1' })
@@ -269,7 +269,7 @@ describe('CodexAdapter session', () => {
     const plan = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-plan', namespace: null, tool: 'set_plan', arguments: { goal: 'Ship', steps: [{ title: 'Build' }, { title: 'Verify' }] } })
     expect(plan.success).toBe(true)
     expect(ctx.getPlan()?.steps).toHaveLength(2)
-    const spawn = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build the login form' } })
+    const spawn = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build the login form' } })
     expect(spawn).toMatchObject({ success: true })
     expect(spawn.contentItems[0].text).toContain('engineer-1')
 
@@ -327,9 +327,9 @@ describe('CodexAdapter session', () => {
     const resumed = systemEntries(ctx).find((e) => e.block.text === 'Continued from run run-0')
     expect(resumed?.source).toBe('harness')
 
-    await s.ask('item/tool/call', { threadId: 'th-old', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build it' } })
+    await s.ask('item/tool/call', { threadId: 'th-old', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
     const before = systemEntries(ctx).length
-    await s.ask('item/tool/call', { threadId: 'th-old', turnId: 'tu-1', callId: 'c-msg', namespace: null, tool: 'send_message', arguments: { to: 'engineer-1', message: 'Use tabs' } })
+    await s.ask('item/tool/call', { threadId: 'th-old', turnId: 'tu-1', callId: 'c-msg', namespace: null, tool: 'message_agent', arguments: { to: 'engineer-1', message: 'Use tabs' } })
     const added = systemEntries(ctx).slice(before)
     expect(added.length).toBeGreaterThan(0)
     for (const e of added) expect(e.source).toBeUndefined()
@@ -350,7 +350,7 @@ describe('CodexAdapter session', () => {
     await vi.waitFor(() => expect(servers[0]?.turnStarts('th-1')).toHaveLength(1), { timeout: 5000 })
     const s = servers[0]
     expect(s.of('thread/start')[0].params.developerInstructions).toContain('Parallel work is safe')
-    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Edit a.txt' } })
+    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Edit a.txt' } })
     expect(out.success).toBe(true)
     const child = s.of('thread/start')[1].params
     expect(child.cwd.replace(/\\/g, '/')).toMatch(/\.claude\/worktrees\/agent-cx_/)
@@ -360,7 +360,7 @@ describe('CodexAdapter session', () => {
     expect(agent.worktree).toMatchObject({ status: 'active', mergeTarget: 'main' })
     expect(agent.worktree!.branch).toMatch(/^worktree-agent-cx_/)
     // The reviewer cannot write, so it shares the checkout.
-    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'Look' } })
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'spawn_report', arguments: { role: 'reviewer', brief: 'Look' } })
     expect(s.of('thread/start')[2].params.cwd).toBe(dir)
     // An untouched worktree is removed as empty when the report lands.
     s.push('item/completed', agentMessage('th-2', 'm1', 'Nothing to change'))
@@ -382,7 +382,7 @@ describe('CodexAdapter session', () => {
       session = await adapter.start(ctx)
       await vi.waitFor(() => expect(servers[0]?.turnStarts('th-1')).toHaveLength(1), { timeout: 5000 })
       const s = servers[0]!
-      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Edit a.txt' } })
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Edit a.txt' } })
       const cwd = s.of('thread/start')[1].params.cwd as string
       await session.stop()
       session = undefined
@@ -403,10 +403,10 @@ describe('CodexAdapter session', () => {
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
     expect(vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]).toMatchObject({ engagementDocument: 'Engagement doc v1' })
     doc = 'Engagement doc v2'
-    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'x' } })
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'x' } })
     expect(vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]).toMatchObject({ engagementDocument: 'Engagement doc v2' })
     doc = undefined
-    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'y' } })
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'spawn_report', arguments: { role: 'reviewer', brief: 'y' } })
     expect('engagementDocument' in vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]!).toBe(false)
   })
 
@@ -423,7 +423,7 @@ describe('CodexAdapter session', () => {
       session = await adapter.start(engagementCtx({ knowledgeBrief: () => 'INDEX' }))
       const s = servers[0]!
       await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'x' } })
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'x' } })
       const flags = vi.mocked(buildRolePrompt).mock.calls.map((c) => c[3]!)
       expect(new Set(flags.map((f) => f.knowledgeBrief))).toEqual(new Set(['INDEX']))
       expect(s.of('thread/start').map((r) => r.params.developerInstructions).every((i: string) => i.includes('INDEX'))).toBe(true)
@@ -436,7 +436,7 @@ describe('CodexAdapter session', () => {
       session = await adapter.start(ctx)
       const s = servers[0]!
       await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Ask Acme' } })
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Ask Acme' } })
       await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
       const child = [...ctx.events].flatMap((e) => (e.type === 'agent.upsert' && e.agent.handle === 'engineer-1' ? [e.agent.id] : []))[0]!
       expect(knowledgeContext).toHaveBeenLastCalledWith('Ask Acme', { agentId: child, purpose: 'spawn' })
@@ -457,7 +457,7 @@ describe('CodexAdapter session', () => {
       session = await adapter.start(ctx)
       const s = servers[0]!
       await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-      const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Ask Acme' } })
+      const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Ask Acme' } })
       expect(out.success).toBe(true)
       expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('graph gone'))).toBe(true)
     })
@@ -511,16 +511,17 @@ describe('CodexAdapter session', () => {
       session = await adapter.start(engagementCtx({ knowledgeRecall }))
       const s = servers[0]!
       await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'x' } })
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'reviewer', brief: 'x' } })
       for (const r of s.of('thread/start')) expect(r.params.dynamicTools.map((t: { name: string }) => t.name)).toContain('knowledge_recall')
 
       await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'knowledge_recall', arguments: { query: 'a' } })
       expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'a' }, { agentId: ROOT_AGENT_ID, roleId: 'r-lead' })
       await s.ask('item/tool/call', { threadId: 'th-2', turnId: 'tu-2', callId: 'c3', namespace: null, tool: 'knowledge_recall', arguments: { query: 'b' } })
       expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'b' }, { agentId: expect.stringMatching(/^cx/), roleId: 'r-rev' })
-      // A thread OrgAI never bound is unknown, not the root.
-      await s.ask('item/tool/call', { threadId: 'th-other', turnId: 'tu-9', callId: 'c4', namespace: null, tool: 'knowledge_recall', arguments: { query: 'c' } })
-      expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'c' }, { agentId: undefined, roleId: undefined })
+      // A thread OrgAI never bound is refused, not treated as the root.
+      const other = await s.ask('item/tool/call', { threadId: 'th-other', turnId: 'tu-9', callId: 'c4', namespace: null, tool: 'knowledge_recall', arguments: { query: 'c' } })
+      expect(other.success).toBe(false)
+      expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'b' }, expect.anything())
       await session.stop()
 
       const roles = [role({ id: 'r-a', slug: 'assistant', name: 'Assistant', tools: ['Read'] })]
@@ -541,11 +542,11 @@ describe('CodexAdapter session', () => {
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
     expect(vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]).toMatchObject({ team: 'single' })
     const names = (s.of('thread/start')[0].params.dynamicTools as { name: string }[]).map((t) => t.name)
-    expect(names).not.toContain('spawn_agent')
-    expect(names).not.toContain('send_message')
-    expect(names).not.toContain('list_agents')
+    expect(names).not.toContain('spawn_report')
+    expect(names).not.toContain('message_agent')
+    expect(names).not.toContain('list_team')
     // A spawn attempt is refused as an unknown tool.
-    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'assistant', brief: 'x' } })
+    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'assistant', brief: 'x' } })
     expect(out.success).toBe(false)
     expect(s.of('thread/start')).toHaveLength(1)
   })
@@ -570,7 +571,7 @@ describe('CodexAdapter session', () => {
     session = await adapter.start(ctx)
     const s = servers[0]!
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'Look' } })
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'reviewer', brief: 'Look' } })
     const child = s.of('thread/start')[1].params
     expect((child.dynamicTools as { name: string }[]).map((t) => t.name)).toContain('engagement_context')
     expect((child.dynamicTools as { name: string }[]).map((t) => t.name)).not.toContain('set_plan')
@@ -618,7 +619,7 @@ describe('CodexAdapter session', () => {
     session = await adapter.start(ctx)
     const s = servers[0]
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c', namespace: null, tool: 'spawn_agent', arguments: { role: 'b', brief: 'x' } })
+    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c', namespace: null, tool: 'spawn_report', arguments: { role: 'b', brief: 'x' } })
     expect(out.success).toBe(false)
     expect(out.contentItems[0].text).toContain('Allowed role values: a')
     expect(s.of('thread/start')).toHaveLength(1)
@@ -1666,7 +1667,7 @@ describe('CodexAdapter session', () => {
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
     const names = s.of('thread/start')[0].params.dynamicTools.map((t: { name: string }) => t.name)
     expect(names).toContain('propose_architecture')
-    expect(names).not.toContain('spawn_agent')
+    expect(names).not.toContain('spawn_report')
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
     await new Promise((r) => setTimeout(r, 30))
     expect(s.turnStarts('th-1')).toHaveLength(1)
@@ -1913,6 +1914,146 @@ describe('CodexAdapter session', () => {
     s1.push('turn/completed', turnDone('th-1', 'tu-1'))
     await new Promise((r) => setTimeout(r, 30))
     expect(servers).toHaveLength(1)
+  })
+
+  describe('native multi-agent tools (delegation-enforcement 5.1)', () => {
+    const native = (threadId: string, id: string, tool = 'spawnAgent') => ({ threadId, turnId: 'x', item: { type: 'collabAgentToolCall', id, tool, status: 'inProgress' } })
+    const turnStart = (threadId: string, turnId: string) => ({ threadId, turn: { id: turnId, status: 'inProgress', items: [], error: null } })
+    const interrupts = (s: FakeServer, threadId: string) => s.of('turn/interrupt').filter((r) => r.params.threadId === threadId)
+    const NOTICE = "Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports."
+    const childId = (ctx: ReturnType<typeof fakeCtx>) => ctx.events.find((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1')!.agent.id
+    const lastOf = (ctx: ReturnType<typeof fakeCtx>, id: string): AgentInstance => ctx.events.filter((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.id === id).at(-1)!.agent
+    async function withChild(over: Partial<RuntimeContext> = {}) {
+      const { adapter, servers } = setup()
+      const ctx = ctxFor({ autoContinue: false, ...over })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      const spawn = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
+      expect(spawn.success).toBe(true)
+      return { s, ctx, id: childId(ctx) }
+    }
+
+    it('launches the app-server with the native multi-agent features off', async () => {
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor())
+      expect(servers[0]!.options.config).toEqual(expect.arrayContaining(['features.multi_agent=false', 'features.multi_agent_v2=false']))
+    })
+
+    it('an old tool name from a thread saved before the rename still works, role check included', async () => {
+      const { s } = await withChild()
+      const old = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'list_agents', arguments: {} })
+      expect(old.success).toBe(true)
+      const denied = await s.ask('item/tool/call', { threadId: 'th-2', turnId: 'tu-2', callId: 'c3', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'x' } })
+      expect(denied.success).toBe(false)
+    })
+
+    it('five native items in one turn are one strike; the tagged interrupt does not end the child or hand off', async () => {
+      const { s, ctx, id } = await withChild()
+      for (let i = 0; i < 5; i++) s.push('item/started', native('th-2', `n${i}`))
+      expect(interrupts(s, 'th-2')).toHaveLength(1)
+      expect(interrupts(s, 'th-2')[0]!.params.turnId).toBe('tu-2')
+      expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_use' && e.entry.block.name === 'codex:spawnAgent')).toBe(true)
+      s.push('turn/completed', turnDone('th-2', 'tu-2', 'interrupted'))
+      expect(lastOf(ctx, id).state).not.toBe('done')
+      expect(lastOf(ctx, id).state).not.toBe('error')
+      await vi.waitFor(() => expect(s.turnStarts('th-2').at(-1).params.input[0].text).toBe(NOTICE))
+      expect(s.of('turn/steer').filter((r) => r.params.threadId === 'th-1')).toHaveLength(0)
+      expect(s.turnStarts('th-1')).toHaveLength(1)
+    })
+
+    it('a user interrupt while the tag is pending clears it and applies normal handling', async () => {
+      const { s, ctx, id } = await withChild()
+      s.push('item/started', native('th-2', 'n1'))
+      await session!.interrupt()
+      s.push('turn/completed', turnDone('th-2', 'tu-2', 'interrupted'))
+      expect(lastOf(ctx, id)).toMatchObject({ state: 'done', activity: 'Interrupted' })
+    })
+
+    it('strike 3 fails the agent, frees its slot and reports the failure to the parent; deliveries to it are refused', async () => {
+      const { s, ctx, id } = await withChild({ project: project({ path: dir, isolateWriters: false, maxConcurrentSubagents: 1 }) })
+      const strike = async (n: number, turnId: string) => {
+        if (n > 1) {
+          await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(n))
+          s.push('turn/started', turnStart('th-2', turnId))
+        }
+        s.push('item/started', native('th-2', `n-${n}`))
+        s.push('turn/completed', turnDone('th-2', turnId, 'interrupted'))
+      }
+      await strike(1, 'tu-2')
+      await strike(2, 'tu-b')
+      expect(lastOf(ctx, id).state).not.toBe('error')
+      await strike(3, 'tu-c')
+      expect(lastOf(ctx, id)).toMatchObject({ state: 'error', activity: 'Used native multi-agent tools' })
+      const blocked = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c9', namespace: null, tool: 'spawn_report', arguments: { role: 'reviewer', brief: 'again' } })
+      expect(blocked.success).toBe(true)
+      await vi.waitFor(() => expect(s.of('turn/steer').some((r) => r.params.threadId === 'th-1' && JSON.stringify(r.params.input).includes('it failed'))).toBe(true))
+      const before = s.requests.length
+      const msg = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c10', namespace: null, tool: 'message_agent', arguments: { to: 'engineer-1', message: 'hi' } })
+      expect(msg.success).toBe(false)
+      expect(s.requests.slice(before).filter((r) => r.params?.threadId === 'th-2')).toHaveLength(0)
+    })
+
+    it('strike 3 on the root ends the session with an error', async () => {
+      const { adapter, servers } = setup()
+      const ctx = ctxFor({ autoContinue: false })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      s.push('item/started', native('th-1', 'n1'))
+      s.push('turn/completed', turnDone('th-1', 'tu-1', 'interrupted'))
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
+      s.push('turn/started', turnStart('th-1', 'tu-b'))
+      s.push('item/started', native('th-1', 'n2'))
+      s.push('turn/completed', turnDone('th-1', 'tu-b', 'interrupted'))
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(3))
+      s.push('turn/started', turnStart('th-1', 'tu-c'))
+      s.push('item/started', native('th-1', 'n3'))
+      s.push('turn/completed', turnDone('th-1', 'tu-c', 'interrupted'))
+      await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(true))
+      expect(lastOf(ctx, 'root')).toMatchObject({ state: 'error', activity: 'Used native multi-agent tools' })
+    })
+
+    it('refuses tool calls and approvals from a thread that is not part of the org chart, and interrupts its turn', async () => {
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor({ autoContinue: false }))
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      const call = await s.ask('item/tool/call', { threadId: 'th-ghost', turnId: 'tu-g', callId: 'cg', namespace: null, tool: 'list_team', arguments: {} })
+      expect(call.success).toBe(false)
+      const cmd = await s.ask('item/commandExecution/requestApproval', { threadId: 'th-ghost', turnId: 'tu-g', itemId: 'i', command: 'ls' })
+      expect(cmd.decision).toBe('decline')
+      s.push('turn/started', turnStart('th-ghost', 'tu-g'))
+      await vi.waitFor(() => expect(interrupts(s, 'th-ghost')).toHaveLength(1))
+      expect(interrupts(s, 'th-ghost')[0]!.params.turnId).toBe('tu-g')
+      s.push('item/started', { threadId: 'th-ghost', turnId: 'tu-g', item: { type: 'commandExecution', id: 'x', command: 'ls', cwd: '/' } })
+      s.push('turn/completed', turnDone('th-ghost', 'tu-g', 'interrupted'))
+      // The root was untouched.
+      expect(s.of('turn/steer')).toHaveLength(0)
+    })
+
+    it('holds events of a thread whose start is in flight and attributes them to the right agent', async () => {
+      const { adapter, servers } = setup()
+      const ctx = ctxFor({ autoContinue: false })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      const realRequest = s.request.bind(s)
+      s.request = async <T>(method: string, params?: unknown): Promise<T> => {
+        const res = await realRequest<T>(method, params)
+        if (method === 'thread/start' && (params as { cwd?: string }).cwd !== undefined && s.of('thread/start').length === 2) {
+          // Events of the new thread arrive before the response is handled.
+          s.push('turn/started', turnStart('th-2', 'tu-early'))
+          s.push('item/completed', agentMessage('th-2', 'early', 'early words'))
+        }
+        return res
+      }
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
+      expect(interrupts(s, 'th-2')).toHaveLength(0)
+      const id = childId(ctx)
+      expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.agentId === id && e.entry.block.kind === 'text' && e.entry.block.text === 'early words')).toBe(true)
+      expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.agentId === 'root' && e.entry.block.kind === 'text' && e.entry.block.text === 'early words')).toBe(false)
+    })
   })
 })
 
@@ -2189,7 +2330,7 @@ describe('codexModelFor', () => {
       const s = servers[0]
       await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
       expect(s.of('thread/start')[0].params).toMatchObject({ model: 'gpt-5' })
-      const spawn = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build it' } })
+      const spawn = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
       expect(spawn).toMatchObject({ success: true })
       expect(s.of('thread/start')[1].params).toMatchObject({ model: 'claude-sonnet-4-5' })
     } finally {
