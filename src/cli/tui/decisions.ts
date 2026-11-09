@@ -658,7 +658,7 @@ export function proposalPreview(card: TrayCard, width: number): string[] | undef
 }
 
 /** The phrases of a card's key hint line ("y Allow once"), in order; the tray wraps them only between phrases. */
-export function hintPhrases(card: TrayCard, dumb: boolean, compact = false): string[] {
+export function hintPhrases(card: TrayCard, dumb: boolean, compact = false, selectedKey?: string): string[] {
   const bs = bindingsFor(card)
   const parts: string[] = []
   const picks = bs.filter((b) => b.act === 'pick')
@@ -668,8 +668,10 @@ export function hintPhrases(card: TrayCard, dumb: boolean, compact = false): str
     const k = b.key === 'space' ? 'Space' : b.key === 'enter' ? 'Enter' : b.key
     const proposal = compact && card.kind === 'proposal'
     const label = proposal && b.act === 'view' ? 'Review' : b.label
-    parts.push(`${proposal ? `[${k}]` : k} ${label}${b.text === 'optional' ? ' (note)' : ''}`)
+    const cursor = selectedKey === undefined ? '' : selectedKey === b.key ? '> ' : '  '
+    parts.push(`${cursor}${proposal || selectedKey !== undefined ? `[${k}]` : k} ${label}${b.text === 'optional' ? ' (note)' : ''}`)
   }
+  if (selectedKey !== undefined) parts.push('Left/Right choose', 'Enter confirm')
   if (!compact) parts.push('Esc Back', '? Keys')
   if (dumb) parts.push('(then Enter)')
   return parts

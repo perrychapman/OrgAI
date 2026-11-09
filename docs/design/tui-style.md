@@ -44,8 +44,8 @@ to preserve conversation space. Worktrees follow the plan when they need attenti
 Short conversations align to the bottom, keeping the latest message
 near the composer; scrolling up preserves the reading position. Agent inspection replaces the
 conversation and keeps the agent room visible. Narrow terminals keep the stacked layout. The composer
-uses a single footer row for run status, notices and essential shortcuts, with no separate hint row or gap below the input. Approval choices and their command details appear inline above the composer. New requests never take typing focus. Shift+Tab from the composer or F2 from another pane selects
-the inline choices; Esc returns to typing. Long permission bodies must still be read
+uses a single footer row for run status, notices and essential shortcuts, with no separate hint row or gap below the input. Approval choices and their command details appear inline above the composer. A new request for the active run focuses its choices only when the prompt is empty and idle for at least 750 ms, with no overlay open and decision access available. Drafts and other panes retain focus; dismissed cards do not reclaim it. Shift+Tab from the composer or F2 from another pane selects
+the inline choices. Left/Right selects an action and Enter confirms it; letter shortcuts remain available. Esc returns to typing. Persistent grants still require their explicit second confirmation. Long permission bodies must still be read
 before approval, and the arrival guard prevents buffered keys from answering a new request.
 A single-agent sidebar shows only the name and state until focused. The fullscreen footer omits
 duplicate single-run titles, zero-decision counts and lone run chips; multiple-run navigation and
@@ -69,14 +69,14 @@ message. Code examples stay literal, and malformed tables or links remain visibl
 The same formatting applies in fullscreen and inline scrollback, including no-color and screen-reader
 modes. Streaming partials remain literal until committed; stored transcripts retain the original text.
 
-Formatting verification (2026-11-09): all 858 TUI tests pass, including 23 focused parser/transcript tests covering narrow/wide
-panes, fullscreen/inline rendering, ASCII/screen-reader modes, code literals and retained link targets.
-The CLI bundle builds. Full typecheck and desktop build are blocked by the local missing `mermaid`
-dependency. The mock terminal walkthrough passes through resize, scrollback and approval checks, then
-fails its existing deep-tree sidebar alignment assertion (the displayed agent is Finished, but the
-assertion does not allow the branch glyph before the status). The full suite also encounters sandbox
-socket restrictions and an SDK/package-lock version mismatch; it was interrupted after repeated
-socket-related timeouts. This is not a green repository-wide gate.
+Verification (2026-11-09): all 869 TUI tests pass, including inline action selection, guarded Enter,
+draft preservation after idle, Escape dismissal and explicit persistent-grant confirmation. The CLI
+bundle builds and the token-free mock terminal walkthrough passes all checks, including automatic
+approval focus, Enter confirmation, paste protection, card-swap protection and external resolution.
+The walkthrough waits for the complete quit dialog and accepts tree guides before sidebar statuses.
+Full typecheck and desktop build remain blocked by the local missing `mermaid` dependency. The full
+repository suite was not rerun for this change; its earlier run encountered sandbox socket restrictions
+and an SDK/package-lock version mismatch. This is not a green repository-wide gate.
 
 Setup review cards are capped at 96 columns, with a left border, bold proposal title, secondary
 summary and timing text, and bracketed action keys separated from the preview by a blank line.

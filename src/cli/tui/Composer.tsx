@@ -45,7 +45,7 @@ const PROMPT_UNICODE: Record<ComposerMode, string> = { start: '›', send: '›'
 const PROMPT_ASCII: Record<ComposerMode, string> = { start: '>', send: '>', continue: '>', quick: '>', readOnly: '--' }
 
 /** Optional view-only affordances used by the full-screen composer. Kept local so the input contract stays stable. */
-export type ComposerViewProps = ComposerProps & { height?: number; maxHeight?: number; hints?: string; animated?: boolean; working?: boolean; cursorVisible?: boolean; showFooter?: boolean }
+export type ComposerViewProps = ComposerProps & { height?: number; maxHeight?: number; hints?: string; animated?: boolean; working?: boolean; cursorVisible?: boolean; showFooter?: boolean; onDraftChange?(text: string): void }
 
 export function promptGlyph(mode: ComposerMode, ascii: boolean): string {
   return (ascii ? PROMPT_ASCII : PROMPT_UNICODE)[mode] ?? '>'
@@ -153,6 +153,7 @@ export function Composer(props: ComposerViewProps) {
       if (!r) return false
       if (r.buffer !== bufRef.current) {
         bufRef.current = r.buffer
+        p.onDraftChange?.(r.buffer.text)
         setBuffer(r.buffer)
       }
       if (r.action === 'submit' && r.submitted) p.onSubmit(r.submitted)

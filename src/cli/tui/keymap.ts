@@ -85,6 +85,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'tray', keys: 'Permission', label: 'y allow once, s allow for the session, a always allow for the project (asks to confirm), n deny (opens an optional note), v full view; y/s/a work once the end of the command was shown (a cut command needs v)' },
   { scope: 'tray', keys: 'Rule request', label: 'r grant for the run, a always grant for the project (asks to confirm), n deny' },
   { scope: 'tray', keys: 'Proposal', label: 'y approve, e revise with a note, d decline, s enter secrets, v view in the pager' },
+  { scope: 'tray', keys: 'Left, Right, Enter', label: 'In fullscreen approvals: select an action, then Enter confirms; Up/Down scroll the details' },
   { scope: 'tray', keys: 'Question', label: '1-9 pick an option, Space toggle (multiple choice), c custom answer, Enter submit' },
   { scope: 'tray', keys: 'Merge review', label: 'v view the diff, m merge, h hold (keep the branch), x discard (asks to confirm)' },
   { scope: 'tray', keys: 'MCP install', label: 'r allow for the run, p save to the project, l save to the library (both ask), n deny' },

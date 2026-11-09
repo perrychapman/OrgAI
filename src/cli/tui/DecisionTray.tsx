@@ -79,6 +79,7 @@ interface TrayState {
   /** The last line of the card body has been on screen (or v was used): permission keys y / s / a unlock. */
   readAll: boolean
   question?: QuestionState
+  choice: number
 }
 
 const NAV_KEYS = new Set(['up', 'down', 'pageup', 'pagedown', 'home', 'end'])
@@ -141,7 +142,7 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
   if (!guardRef.current) guardRef.current = new CardSwapGuard()
   const guard = guardRef.current
   const sep = separatorFor(env)
-  const st = useRef<TrayState>({ mode: { t: 'idle' }, busy: false, guardHint: false, scroll: 0, readAll: false }).current
+  const st = useRef<TrayState>({ mode: { t: 'idle' }, busy: false, guardHint: false, scroll: 0, readAll: false, choice: 0 }).current
   const notice = (text: string, tone?: TrayStatus['tone']): void => props.onNotice?.(text, tone ?? 'warn')
   const [, setTick] = useState(0)
   const mounted = useRef(true)
@@ -194,6 +195,7 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
       st.scroll = 0
       st.readAll = false
       st.guardHint = false
+      st.choice = 0
     }
     if (top?.kind === 'question' && st.question?.key !== topKey) st.question = { key: top.key, cursor: 0, selected: [] }
     return changed
@@ -376,6 +378,8 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
   const width = Math.max(20, proposalCard ? panelWidth - 3 : props.width)
   const height = Math.max(1, Math.floor(props.height))
   const focused = props.focused
+  const choices = props.compact && props.variant === 'full' && !env.dumbTerminal && top?.kind !== 'question' && top ? bindingsFor(top) : []
+  const selectedChoice = choices[Math.min(st.choice, choices.length - 1)]
   const ell = g.ellipsis
   // Question lines carry a selection marker ("> [x] ") in front, so they wrap narrower and are never cut.
   const detailView = top ? cardDetail(top, width - (top.kind === 'question' ? 8 : 2)) : undefined
@@ -383,7 +387,7 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
   const detail = preview ?? detailView?.lines ?? []
   const statusRows = st.status ? 1 : 0
   const modeRows = st.mode.t !== 'idle' || st.pending ? 1 : 0
-  const phrases = top ? hintPhrases(top, env.dumbTerminal, props.compact) : []
+  const phrases = top ? hintPhrases(top, env.dumbTerminal, props.compact, focused && st.mode.t === 'idle' ? selectedChoice?.key : undefined) : []
   if (props.compact) phrases.push(focused ? 'Esc to type' : props.focusHint ?? 'Shift+Tab to choose')
   let hints = top ? (focused || props.compact ? wrapPhrases(phrases, sep, width, ell) : [UNFOCUSED_HINT]) : []
   const maxHints = Math.max(1, height - 1 - statusRows - modeRows - 1)
@@ -451,6 +455,12 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
       return true
     }
 
+    if (mode.t === 'idle' && choices.length && !e.ctrl && !e.alt && (e.name === 'left' || e.name === 'right')) {
+      st.choice = (st.choice + (e.name === 'right' ? 1 : -1) + choices.length) % choices.length
+      bump()
+      return true
+    }
+
     if (NAV_KEYS.has(e.name)) {
       scrollBy(e, bodyRows, detail.length)
       return true
@@ -471,7 +481,9 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
       committed = true
     }
 
-    const k = bindingKeyOf(ev)
+    // Translate Enter into the selected shortcut, then use the exact same guards and action path.
+    const k = mode.t === 'idle' && selectedChoice && !ev.ctrl && !ev.alt && ev.name === 'enter'
+      ? choices[Math.min(st.choice, choices.length - 1)]?.key : bindingKeyOf(ev)
     if (!k) return true
 
     if (st.busy) {

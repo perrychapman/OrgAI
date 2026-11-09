@@ -312,6 +312,8 @@ export function App(props: AppProps) {
   const focusRef = useRef<FocusTarget>(launch.onboarding ? 'onboarding' : 'composer')
   const pendingFocus = useRef<FocusTarget | undefined>(undefined)
   const inputQueue = useRef<InputEvent[]>([])
+  const composerDraft = useRef('')
+  const lastInputAt = useRef(Number.NEGATIVE_INFINITY)
   const queueOverflowNoted = useRef(false)
   const lastEsc = useRef<number | undefined>(undefined)
   const panesNoticeShown = useRef(false)
@@ -526,6 +528,21 @@ export function App(props: AppProps) {
       : { width: size.cols, height: bodyRows }
 
   const setFocus = useCallback((t: FocusTarget) => setFocusState(t), [])
+
+  // Only a newly arriving card may take an empty, idle prompt. Never steal a draft, a pane,
+  // an overlay, or focus after Esc; seeing the same card again does not trigger this effect.
+  const seenApproval = useRef(top?.key)
+  useLayoutEffect(() => {
+    const previous = seenApproval.current
+    seenApproval.current = top?.key
+    if (!top || top.key === previous || inline || env.dumbTerminal || readOnly || decisionsInDesktop
+      || state.connection !== 'live' || onboarding || overlay || inspecting
+      || focusRef.current !== 'composer' || pendingFocus.current !== undefined
+      || composerDraft.current !== '' || now() - lastInputAt.current < 750
+      || (state.activeRunId && top.ref.runId !== state.activeRunId)) return
+    setTrayFocusKey(undefined)
+    setFocusState('tray')
+  }, [top?.key, inline, env.dumbTerminal, readOnly, decisionsInDesktop, state.connection, onboarding, overlay, inspecting, state.activeRunId, now, setFocusState])
 
   // Keep focus on something that exists.
   useEffect(() => {
@@ -1088,6 +1105,7 @@ export function App(props: AppProps) {
 
   const dispatch = (e: InputEvent): void => {
     if (exiting.current) return
+    lastInputAt.current = now()
     // A focus change is waiting for its commit: hold the input until the new target's handler is registered.
     if (pendingFocus.current !== undefined) {
       if (inputQueue.current.length < 512) inputQueue.current.push(e)
@@ -1402,6 +1420,7 @@ export function App(props: AppProps) {
       placeholder={welcoming && mode === 'start' ? 'What would you like your team to work on?' : placeholderFor(mode, state, plan.composer.width || size.cols, env)}
       {...(state.readOnlyReason ? { disabledReason: state.readOnlyReason } : {})}
       onSubmit={submit}
+      onDraftChange={(text) => { composerDraft.current = text }}
       onOpenPalette={(initial) => {
         setPaletteQuery(initial)
         setFocusState('palette')

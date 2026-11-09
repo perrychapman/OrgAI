@@ -1,7 +1,7 @@
 /**
  * How many rows the Decision Tray gets (moved out of App.tsx so the tray owns its own sizing; issues #25, #28). Pure.
  */
-import { cardDetailLines, hintPhrases, proposalPreview, wrapPhrases } from './decisions'
+import { bindingsFor, cardDetailLines, hintPhrases, proposalPreview, wrapPhrases } from './decisions'
 import { INLINE_TRAY_MAX } from './layout'
 import type { TrayCard } from './types'
 
@@ -33,7 +33,8 @@ export function trayHeight(cards: readonly TrayCard[], cols: number, rows: numbe
   let hints = 1
   try {
     detail = (proposalPreview(cards[0], width - 2) ?? cardDetailLines(cards[0], width - 2)).length
-    hints = wrapPhrases([...hintPhrases(cards[0], false, true), focused ? 'Esc to type' : focusHint], ' · ', width).length
+    const selected = focused && cards[0].kind !== 'question' ? bindingsFor(cards[0])[0]?.key : undefined
+    hints = wrapPhrases([...hintPhrases(cards[0], false, true, selected), focused ? 'Esc to type' : focusHint], ' · ', width).length
   } catch {
     detail = 3
     hints = 1

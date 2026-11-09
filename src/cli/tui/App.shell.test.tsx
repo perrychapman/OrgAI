@@ -39,7 +39,7 @@ afterEach(() => {
   for (const r of mounted.splice(0)) r.unmount()
 })
 
-function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; inproc?: boolean; state?: TuiState; launch?: TuiLaunch; now?: () => number }) {
+function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; inproc?: boolean; canDecide?: boolean; state?: TuiState; launch?: TuiLaunch; now?: () => number }) {
   let state = opts.state ?? stateWith()
   const listeners = new Set<(e: InputEvent) => void>()
   // A live store: notify() adds a notice and tells subscribers, so notice lifetimes can be watched in frames.
@@ -86,7 +86,7 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
       terminal={terminal as never}
       env={env}
       launch={opts.launch ?? {}}
-      conn={{ client: {} as never, hello: {} as never, started: false, ...(opts.inproc ? { inproc: {} } : {}) } as never}
+      conn={{ client: {} as never, hello: { grantedScopes: opts.canDecide === false ? ['read', 'operate'] : ['read', 'operate', 'decide'] } as never, started: false, ...(opts.inproc ? { inproc: {} } : {}) } as never}
       input={{ subscribe: (fn) => (listeners.add(fn), () => void listeners.delete(fn)) }}
       processEnv={{}}
       now={opts.now ?? (() => 1_000_000)}
@@ -216,10 +216,11 @@ describe('conversation-first layout', () => {
     expect(m.frame()).toContain('Keys: Agents')
   })
 
-  it('keeps arriving approvals inline without treating follow-up typing as a decision', async () => {
+  it('keeps arriving approvals inline when the user recently typed, even after clearing the draft', async () => {
     const clock = { t: 1_000_000 }
     const m = mount({ cols: 120, rows: 40, now: () => clock.t })
     await tick()
+    await m.send(key('x'), key('c', { ctrl: true }))
     m.session.setState(stateWith({ waiting: true }))
     await tick()
     clock.t += 1000
@@ -233,10 +234,56 @@ describe('conversation-first layout', () => {
     expect(m.session.decide).toHaveBeenCalledTimes(1)
   })
 
+  it('focuses a new approval on an empty idle prompt, guards Enter, and returns to typing', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 120, rows: 40, now: () => clock.t })
+    await tick()
+    m.session.setState(stateWith({ waiting: true }))
+    await tick()
+    expect(m.frame()).toContain('> [y] Allow once')
+    expect(m.frame()).toContain('Enter confirm')
+    await m.send(named('enter'))
+    expect(m.session.decide).not.toHaveBeenCalled()
+    clock.t += 1000
+    await m.send(named('enter'))
+    expect(m.session.decide).toHaveBeenCalledTimes(1)
+    m.session.setState(stateWith())
+    await tick()
+    await m.send(key('o'), key('k'), named('enter'))
+    expect(m.session.submitPrompt).toHaveBeenCalledWith('ok')
+  })
+
+  it('does not reclaim focus after Escape dismisses an automatically focused card', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 120, rows: 40, now: () => clock.t })
+    await tick()
+    m.session.setState(stateWith({ waiting: true }))
+    await tick()
+    await m.send(named('escape'))
+    clock.t += 1000
+    m.session.setState({ ...m.session.getState() })
+    await tick()
+    await m.send(key('y'), named('enter'))
+    expect(m.session.submitPrompt).toHaveBeenCalledWith('y')
+    expect(m.session.decide).not.toHaveBeenCalled()
+  })
+
+  it.each([{ canDecide: false }, { inline: true }, { env: { dumbTerminal: true } }])('does not automatically focus when approval interaction is unavailable: %j', async (opts) => {
+    const m = mount({ cols: 120, rows: 40, ...opts })
+    await tick()
+    m.session.setState(stateWith({ waiting: true }))
+    await tick()
+    await m.send(key('x'), named('enter'))
+    expect(m.session.submitPrompt).toHaveBeenCalledWith('x')
+    expect(m.session.decide).not.toHaveBeenCalled()
+  })
+
   it('keeps a draft in the composer when a request arrives', async () => {
-    const m = mount({ cols: 120, rows: 40 })
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 120, rows: 40, now: () => clock.t })
     await tick()
     await m.send(key('y'), key('e'), key('s'))
+    clock.t += 5000 // The draft itself protects focus even after typing has been idle.
     m.session.setState(stateWith({ waiting: true }))
     await tick()
     expect(m.frame()).toContain('Shift+Tab to choose')

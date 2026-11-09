@@ -286,7 +286,7 @@ try {
 
       // a. Quit.
       t.key('ctrl+d')
-      await t.waitFor('Quit and stop', 10_000)
+      await t.waitFor(s => s.includes('Quit and stop') && /Message R\d+/.test(s), 10_000)
       const confirmRow = locate(t, /Quit and stop/)
       const inputRow = locate(t, /Message R\d+/)
       check(t.screen().includes('E2E-MARK-OMEGA') && !!confirmRow && !!inputRow && inputRow.row - confirmRow.row <= 5,
@@ -393,9 +393,11 @@ try {
       const cmdOf = (e) => e.request?.input?.command
       await sleep(1500) // the watch is subscribed
 
-      // Inline choices never steal the composer while a follow-up is being typed.
+      // An idle empty prompt focuses the arriving inline approval; Esc returns to drafting.
+      await t.waitFor('Enter confirm', 5000)
+      check(t.screen().includes('> [y]'), 'f: a new approval selects Allow once on an idle prompt', esc(t.screen()))
+      t.key('escape')
       await t.waitFor('Shift+Tab to choose', 5000)
-      check(true, 'f: a new approval stays inline without stealing the composer')
       await sleep(100)
       // f. Paste safety.
       t.paste('y\na\n')
@@ -406,13 +408,13 @@ try {
       t.key('ctrl+c') // clears the composer (once; twice would detach)
       await sleep(1200)
 
-      // g. Card 1 allowed with `y` from the tray (F2).
+      // g. Card 1 allowed with Enter from the inline choices (F2).
       const req1 = ev('permission.request', (e) => cmdOf(e) === 'npm run card-one')?.e.request ?? { id: first.requestId }
       t.key('f2')
       await sleep(250)
-      t.write('y')
+      t.key('enter')
       const res1 = await waitEv('card 1 resolved', 'permission.resolved', (e) => e.requestId === req1.id)
-      check(res1.e.decidedBy?.surface === 'tui', "g: `y` allows card 1 (permission.resolved decidedBy.surface 'tui')", JSON.stringify(res1.e))
+      check(res1.e.decidedBy?.surface === 'tui', "g: Enter allows card 1 (permission.resolved decidedBy.surface 'tui')", JSON.stringify(res1.e))
       const ok1 = await waitEv('card 1 tool result', 'transcript', (e) => e.entry?.block?.kind === 'tool_result' && e.entry.block.content === 'card one ran', 10_000).then(() => true, () => false)
       check(ok1, 'g: card 1 ran as allowed (tool result "card one ran")')
 
@@ -524,10 +526,10 @@ try {
       await t.waitFor('mock-lead', 40_000)
       check(true, 'i: the deep-tree run shows mock-lead in the agents pane')
       // Configured roles stay visible after their agents finish. Unstarted roles remain Available.
-      await t.waitFor(/^.{79}.*mock-lead[^\n]*\n.{79}\s+Finished/m, 30_000)
+      await t.waitFor(/^.{79}.*mock-lead[^\n]*\n.{79}[ │]+Finished/m, 30_000)
       await sleep(7000)
-      check(/^.{79}.*mock-lead[^\n]*\n.{79}\s+Finished/m.test(t.screen()), 'i: the configured team stays visible after the settle grace', esc(t.screen()))
-      check(/Team 4/.test(t.screen()) && /Reviewer[^\n]*\n.{79}\s+Available/.test(t.screen()) && /Researcher[^\n]*\n.{79}\s+Available/.test(t.screen()),
+      check(/^.{79}.*mock-lead[^\n]*\n.{79}[ │]+Finished/m.test(t.screen()), 'i: the configured team stays visible after the settle grace', esc(t.screen()))
+      check(/Team 4/.test(t.screen()) && /Reviewer[^\n]*\n.{79}[ │]+Available/.test(t.screen()) && /Researcher[^\n]*\n.{79}[ │]+Available/.test(t.screen()),
         'i: the sidebar includes configured roles that have not started', esc(t.screen()))
 
       t.key('tab') // conversation on the left
@@ -541,7 +543,7 @@ try {
       // At 120 columns the 41-column agent room begins at column 79. Match its selection marker,
       // not a prompt or a mention in the conversation to its left. The next row after the root is mock-lead.
       t.key('down')
-      const open2 = await t.waitFor(/^.{79}> .*mock-lead[^\n]*\n.{79}\s+Finished/m, 8_000).then(() => true, () => false)
+      const open2 = await t.waitFor(/^.{79}> .*mock-lead[^\n]*\n.{79}[ │]+Finished/m, 8_000).then(() => true, () => false)
       check(open2, 'i: Down selects the finished team member', esc(t.screen()))
 
       // Enter on the agent row (not a group) opens its inspector.
