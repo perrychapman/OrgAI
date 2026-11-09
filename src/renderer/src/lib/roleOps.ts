@@ -1,10 +1,18 @@
 import type { Role } from '@shared/types'
+import { cleanRequiredReports } from '@shared/defaults'
 
 /** "New role", then "New role 2", "New role 3"... only when the plain name is taken. */
 export function nextRoleName(roles: Role[], base = 'New role'): string {
   const taken = new Set(roles.map((r) => r.name.trim().toLowerCase()))
   if (!taken.has(base.toLowerCase())) return base
   for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`
+}
+
+/** requiredReports without `id`, as a spread-able patch (nothing when the role has none). */
+function withoutRequired(r: Role, id: string): Partial<Role> {
+  if (!r.requiredReports) return {}
+  const rest = r.requiredReports.filter((x) => x !== id)
+  return { requiredReports: rest.length > 0 ? rest : undefined }
 }
 
 /** Everything needed to put a removed role back without touching later edits to other roles. */
@@ -32,7 +40,8 @@ export function removeRole(roles: Role[], id: string): { roles: Role[]; removed:
     .map((r) => ({
       ...r,
       reportsTo: r.reportsTo === id ? role.reportsTo : r.reportsTo,
-      spawnable: r.spawnable.filter((x) => x !== id)
+      spawnable: r.spawnable.filter((x) => x !== id),
+      ...withoutRequired(r, id)
     }))
   return { roles: next, removed }
 }
@@ -53,7 +62,7 @@ export function setReportsTo(roles: Role[], childId: string, parentId: string | 
   return roles.map((r) => {
     if (r.id === childId) return { ...r, reportsTo: parentId }
     if (r.id === parentId) return { ...r, canSpawn: true, spawnable: [...new Set([...r.spawnable, childId])] }
-    return { ...r, spawnable: r.spawnable.filter((id) => id !== childId) }
+    return { ...r, spawnable: r.spawnable.filter((id) => id !== childId), ...withoutRequired(r, childId) }
   })
 }
 
@@ -67,4 +76,18 @@ export function wouldCycle(roles: Role[], childId: string, parentId: string | nu
     cur = roles.find((r) => r.id === cur)?.reportsTo ?? null
   }
   return false
+}
+
+/** Toggle a spawnable report. Removing it also drops it from requiredReports; the result is sanitized. */
+export function withSpawnableToggled(role: Role, rid: string): Partial<Role> {
+  const spawnable = role.spawnable.includes(rid) ? role.spawnable.filter((x) => x !== rid) : [...role.spawnable, rid]
+  const canSpawn = spawnable.length > 0 ? true : role.canSpawn
+  return { spawnable, canSpawn, requiredReports: cleanRequiredReports({ ...role, spawnable, canSpawn }) }
+}
+
+/** Mark or unmark a spawnable report as required. Ids outside spawnable are ignored (cleanRequiredReports). */
+export function withRequiredReport(role: Role, rid: string, required: boolean): Partial<Role> {
+  const current = role.requiredReports ?? []
+  const requiredReports = required ? [...new Set([...current, rid])] : current.filter((x) => x !== rid)
+  return { requiredReports: cleanRequiredReports({ ...role, requiredReports }) }
 }

@@ -112,6 +112,7 @@ try {
   await execCase('[mock:exec-blocked]', ['[mock:exec-blocked] do it'], 3, 'blocked')
   await execCase('--max-budget 0', ['--max-budget', '0', 'Spend nothing'], 3, 'budget-exceeded')
   await execCase('default script with --on-permission fail', ['--on-permission', 'fail', 'Do the default work'], 3, 'needs-decision')
+  await execCase('--strict-delegation [mock:delegation-skip]', ['--strict-delegation', '[mock:delegation-skip] do it'], 3, 'delegation-incomplete')
   await execCase('[mock:turn-fail]', ['[mock:turn-fail] do it'], 1, 'failed')
   await execCase('[mock:rate-limit]', ['[mock:rate-limit] do it'], 4, 'rate-limited')
   // No plan: the turn-1 set-plan nudge runs, then the run settles unplanned. No window or TUI is open, so the

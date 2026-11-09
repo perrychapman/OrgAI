@@ -11,6 +11,8 @@ import { agentNoResult, isWorkingAgent, nodeActivity, worktreeLabel } from '../l
 import { agentCostInput, costView } from '../lib/cost'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
+import { Badge } from './ui/Badge'
+import { DELEGATION_BADGE_LABEL, delegationBadges, type DelegationBadgeKind } from '@shared/delegationView'
 import { activeRun, useAppStore } from '../store/useAppStore'
 import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
 
@@ -45,6 +47,12 @@ export function MessageHandles({ hs }: { hs: (side: string) => { style?: CSSProp
       ))}
     </>
   )
+}
+
+const DELEGATION_BADGE_TEST_ID: Record<DelegationBadgeKind, string> = {
+  failed: 'agent-badge-delegation-failed',
+  corrected: 'agent-badge-delegation-corrected',
+  native: 'agent-badge-native-agents'
 }
 
 function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactElement {
@@ -94,6 +102,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
         </div>}
     </>
   )
+  const delegationKinds = delegationBadges(agent.delegation)
   const tokensText = `${formatTokens(agent.inputTokens + agent.outputTokens)} tok`
   const tail = hasCost ? costView(costInput).text : formatElapsed(agent.startedAt, agent.endedAt)
   const worktreeText = agent.worktree
@@ -108,6 +117,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
     [agent.handle ? '' : agent.roleSlug, shortModel].filter(Boolean).join(' · '),
     activity,
     worktreeText,
+    delegationKinds.map((k) => DELEGATION_BADGE_LABEL[k]).join(', '),
     onTitle ?? '',
     `${tokensText} · ${tail}`
   ]
@@ -182,6 +192,15 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
           <div className={`activity ${streaming || isWorkingAgent(agent.state) ? 'working' : ''}`} title={activity}>
             {activity}
           </div>
+          {delegationKinds.length > 0 && (
+            <div className="row gap-1" style={{ flexWrap: 'wrap' }}>
+              {delegationKinds.map((k) => (
+                <Badge key={k} tone={k === 'failed' ? 'danger' : k === 'corrected' ? 'info' : 'attention'} testId={DELEGATION_BADGE_TEST_ID[k]}>
+                  {DELEGATION_BADGE_LABEL[k]}
+                </Badge>
+              ))}
+            </div>
+          )}
           {agent.worktree && (
             <div className={`worktree wt-${agent.worktree.status}`} title={`${agent.worktree.branch} · ${agent.worktree.path}`}>
               {worktreeText}
@@ -192,6 +211,15 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
             {hasCost ? <Cost value={costInput} labelled /> : <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>}
           </div>
         </>
+      )}
+      {compact && delegationKinds.length > 0 && (
+        <span className="sr-only">
+          {delegationKinds.map((k) => (
+            <span key={k} data-testid={DELEGATION_BADGE_TEST_ID[k]}>
+              {DELEGATION_BADGE_LABEL[k]}.{' '}
+            </span>
+          ))}
+        </span>
       )}
       <Handle type="source" position={sides.source as Position} {...hs(sides.source)} />
       {/* Agent-to-agent messages attach on the side facing the other node, after the reporting-line handles so those stay the defaults. */}

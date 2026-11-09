@@ -71,6 +71,15 @@ describe('OrgTreePane chips in screen-reader mode (review M2)', () => {
   })
 })
 
+describe('delegation badge', () => {
+  it('shows one short badge on the row', () => {
+    for (const badge of ['skipped reports', 'corrected', 'native agents']) {
+      const line = rowLine({ kind: 'row', row: row('mgr', { delegationBadge: badge }), prefix: '' }, false, false, 80, env())
+      expect(line.map((s) => s.text).join('')).toContain(badge)
+    }
+  })
+})
+
 describe('OrgTreePane', () => {
   it('renders the title, one line per row with role, state word and cost, the selected activity once, and the earlier group', () => {
     const r = mount()

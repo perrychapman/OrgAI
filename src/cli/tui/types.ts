@@ -199,6 +199,8 @@ export interface OrgTreeRow {
   waiting?: number
   /** Worktree chip text ("2f", "review", "conflict", "held"). */
   worktreeChip?: string
+  /** Required-delegation badge: 'skipped reports' | 'corrected' | 'native agents' (the most serious one the agent earned). */
+  delegationBadge?: string
   /** Messages this agent sent / got (F6): per peer, counted over the kept messages. */
   msgOut?: PeerCount[]
   msgIn?: PeerCount[]

@@ -53,6 +53,46 @@ async function sectionBlock(page) {
   check(!/Manage in Tools|MCP/.test(await block.innerText()), 'the block never says "Manage in Tools" or "MCP"')
 }
 
+/** Delegation enforcement 4.1, 6: a "Required" checkbox per spawnable report, persisted as Role.requiredReports. */
+async function sectionRequiredReports(page) {
+  const project = await findProject(page, NAME)
+  const lead = project.roles.find((r) => r.canSpawn && r.spawnable.length > 0)
+  if (!lead) {
+    log('SKIP required reports: no role can delegate')
+    return
+  }
+  const reportId = lead.spawnable[0]
+  const report = project.roles.find((r) => r.id === reportId)
+  await page.locator('.react-flow__node', { hasText: lead.name }).first().click()
+  await teamPanelTab(page, 'Role').waitFor()
+  const box = page.locator(`[data-testid=role-required-report-${report.slug}]`)
+  await box.waitFor({ state: 'attached', timeout: 10_000 })
+  check(await box.isEnabled(), 'the Required checkbox is enabled for a spawnable report')
+  check(!(await box.isChecked()), 'a report is not required by default')
+  await box.check({ force: true })
+  let saved
+  for (let i = 0; i < 30 && !saved?.requiredReports?.includes(reportId); i++) {
+    saved = (await findProject(page, NAME)).roles.find((r) => r.id === lead.id)
+    if (!saved?.requiredReports?.includes(reportId)) await sleep(200)
+  }
+  check(saved?.requiredReports?.includes(reportId) === true, 'ticking Required saves requiredReports on the role', JSON.stringify(saved?.requiredReports))
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await openProject(page, NAME)
+  await openTeam(page)
+  await page.locator('.react-flow__node', { hasText: lead.name }).first().click()
+  await teamPanelTab(page, 'Role').waitFor()
+  const again = page.locator(`[data-testid=role-required-report-${report.slug}]`)
+  await again.waitFor({ state: 'attached', timeout: 10_000 })
+  check(await again.isChecked(), 'the Required checkbox persists after a reload')
+  await again.uncheck({ force: true })
+  for (let i = 0; i < 30 && saved?.requiredReports; i++) {
+    saved = (await findProject(page, NAME)).roles.find((r) => r.id === lead.id)
+    if (saved?.requiredReports) await sleep(200)
+  }
+  check(!saved?.requiredReports, 'unticking Required clears requiredReports', JSON.stringify(saved?.requiredReports))
+}
+
 /** Open the role model fold and its Advanced details, re-opening them if a re-render (project.updated) remounts the panel, until Exact model is visible. */
 async function openAdvancedModel(page) {
   await page.waitForFunction(
@@ -675,6 +715,7 @@ try {
   await sectionConnections(page, shot)
   await sectionLocalSkill(page)
   await sectionRiskAndKeyboard(page)
+  await sectionRequiredReports(page)
   await sectionRunsEnded(page)
   await sectionAssistant(page, shot)
   await sectionDismiss(page, shot, app)
