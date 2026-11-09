@@ -5,7 +5,7 @@ import type { AgentInstance, AgentMessage, Role } from '@shared/types'
 import { BRIDGE_BRIEF_MAX_CHARS } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
-import { NETWORK_TOOLS } from './codexEvents'
+import { NETWORK_TOOLS, canonicalNetworkTool } from './codexEvents'
 import { HandleNamer, mapSendMessage, messageTranscriptText, resolveRecipient, spawnHandle } from './network'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL } from './prompts'
 import { ROOT_AGENT_ID } from './types'
@@ -20,10 +20,14 @@ import { scrubControlEnv } from './childEnv'
  * logic, and codex.ts supplies the host that talks to the app-server.
  *
  * Dynamic tools exposed to the model (names are what the model calls):
- *   spawn_agent   {role, brief, name?, description?}  roles with canSpawn
- *   send_message  {to, message, summary?}             roles with canSpawn or the SendMessage tool
- *   list_agents   {}                                  roles with canSpawn or the ListAgents tool
+ *   spawn_report   {role, brief, name?, description?}  roles with canSpawn
+ *   message_agent  {to, message, summary?}             roles with canSpawn or the SendMessage tool
+ *   list_team      {}                                  roles with canSpawn or the ListAgents tool
+ * (Before the rename these were spawn_agent, send_message and list_agents, which collided with Codex's built-in multi-agent
+ * tools. canonicalNetworkTool maps the old names to the new ones for threads saved earlier.)
  */
+
+export { canonicalNetworkTool }
 
 export const spawnArgs = z.object({
   role: z.string().min(1).describe('The slug of the role to delegate to, exactly as listed in your instructions'),
@@ -39,7 +43,7 @@ export const messageArgs = z.object({
 export const listArgs = z.object({})
 
 export const SPAWN_TOOL_DESCRIPTION =
-  'Delegate work to a report in your org chart. Returns at once with the report\'s handle; the report works in the background and its final report arrives later as a message from the harness. Use send_message to follow up with a running report.'
+  'Delegate work to a report in your org chart. Returns at once with the report\'s handle; the report works in the background and its final report arrives later as a message from the harness. Use message_agent to follow up with a running report.'
 export const MESSAGE_TOOL_DESCRIPTION = 'Send a message to another running agent by handle, or to the orchestrator as "main". It reads the message at its next step.'
 export const LIST_TOOL_DESCRIPTION = 'List the agents in this run with their handles, roles and states.'
 
@@ -66,7 +70,7 @@ export function networkToolSpecs(names: string[]): DynamicToolSpec[] {
 export function codexToolNotes(toolNames: string[], opts: { renamedPlanTool: boolean }): string {
   const lines: string[] = []
   if (toolNames.includes(NETWORK_TOOLS.spawn)) {
-    lines.push(`To delegate (the "Agent tool" in the instructions above), call ${NETWORK_TOOLS.spawn} with role set to the report's slug (the instructions call it subagent_type), a complete brief, and optionally name. It returns at once; the report's final answer reaches you later as a message beginning "Harness:". Do not use Codex's own multi-agent features.`)
+    lines.push(`To delegate (the "Agent tool" in the instructions above), call ${NETWORK_TOOLS.spawn} with role set to the report's slug (the instructions call it subagent_type), a complete brief, and optionally name. It returns at once; the report's final answer reaches you later as a message beginning "Harness:". Codex's own built-in multi-agent tools (spawn_agent, send_message, wait_agent and similar) are unavailable here and their agents do not count; never use them.`)
   }
   if (toolNames.includes(NETWORK_TOOLS.message)) lines.push(`${MESSAGE_TOOL} in the instructions above is ${NETWORK_TOOLS.message} here.`)
   if (toolNames.includes(NETWORK_TOOLS.list)) lines.push(`${LIST_AGENTS_TOOL} in the instructions above is ${NETWORK_TOOLS.list} here.`)
@@ -101,6 +105,8 @@ interface Member {
   depth: number
   handle: string
   live: boolean
+  /** Waiting for required reports: still live for settlement, but not counted against concurrency. */
+  parked?: boolean
 }
 
 const HANDLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,40}$/
@@ -124,7 +130,22 @@ export class CodexAgentNetwork {
 
   /** Spawned agents that have not finished their current turn. */
   liveCount(): number {
-    return [...this.members.values()].filter((m) => m.live).length
+    return [...this.members.values()].filter((m) => m.live && !m.parked).length
+  }
+
+  /** The agent waits for its required reports: it stays live but stops counting against the concurrency limit. */
+  park(agentId: string): void {
+    const m = this.members.get(agentId)
+    if (m) m.parked = true
+  }
+
+  unpark(agentId: string): void {
+    const m = this.members.get(agentId)
+    if (m) m.parked = false
+  }
+
+  isParked(agentId: string): boolean {
+    return this.members.get(agentId)?.parked ?? false
   }
 
   isLive(agentId: string): boolean {
@@ -201,13 +222,19 @@ export class CodexAgentNetwork {
   /** The agent's turn ended (it reported). */
   finish(agentId: string): void {
     const m = this.members.get(agentId)
-    if (m) m.live = false
+    if (m) {
+      m.live = false
+      m.parked = false
+    }
   }
 
   /** The agent got a message and works again. */
   wake(agentId: string): void {
     const m = this.members.get(agentId)
-    if (m) m.live = true
+    if (m) {
+      m.live = true
+      m.parked = false
+    }
   }
 
   /** Ids of the spawned agents, oldest first. */
@@ -236,7 +263,7 @@ export interface NetworkHost {
   announce(m: AgentMessage, transcriptText: string): void
   /**
    * Multi-provider org charts: the connection name when `role` is bridged (RuntimeContext.bridge.roles()), else
-   * undefined. A bridged role is never started as a thread; spawn_agent routes it to spawnBridged.
+   * undefined. A bridged role is never started as a thread; spawn_report routes it to spawnBridged.
    */
   bridgedRole?(role: Role): { connectionName: string } | undefined
   /**
@@ -245,7 +272,7 @@ export interface NetworkHost {
    * finish is never lost); its final report reaches the parent later as a harness message. Throws a model-readable refusal.
    */
   spawnBridged?(req: SpawnRequest & { name?: string }): Promise<{ agentId: string; handle: string }>
-  /** Bridged reports still working, for list_agents (they are not threads of this session). */
+  /** Bridged reports still working, for list_team (they are not threads of this session). */
   bridgedAgents?(): Iterable<{ handle: string; roleSlug: string; connectionName: string }>
 }
 
@@ -273,6 +300,7 @@ export async function callNetworkTool(
   args: unknown
 ): Promise<ToolOutcome> {
   try {
+    tool = canonicalNetworkTool(tool) ?? tool
     if (tool === NETWORK_TOOLS.list) {
       const lines = [...host.agents()].filter((a) => a.id !== callerId && a.state !== 'done' && a.state !== 'error').map(agentLine)
       for (const b of host.bridgedAgents?.() ?? []) lines.push(`${b.handle} · ${b.roleSlug} · running on ${b.connectionName} (its final report arrives as a harness message; it cannot receive messages)`)
@@ -280,7 +308,7 @@ export async function callNetworkTool(
     }
     if (tool === NETWORK_TOOLS.message) {
       const parsed = messageArgs.safeParse(args)
-      if (!parsed.success) return fail(`send_message needs {to, message}: ${parsed.error.issues.map((i) => i.message).join('; ')}`)
+      if (!parsed.success) return fail(`message_agent needs {to, message}: ${parsed.error.issues.map((i) => i.message).join('; ')}`)
       const agents = [...host.agents()]
       const m = mapSendMessage(callerId, { to: parsed.data.to, message: parsed.data.message }, agents)
       if (!m || !m.to) {
@@ -298,7 +326,7 @@ export async function callNetworkTool(
     }
     if (tool === NETWORK_TOOLS.spawn) {
       const parsed = spawnArgs.safeParse(args)
-      if (!parsed.success) return fail(`spawn_agent needs {role, brief}: ${parsed.error.issues.map((i) => i.message).join('; ')}`)
+      if (!parsed.success) return fail(`spawn_report needs {role, brief}: ${parsed.error.issues.map((i) => i.message).join('; ')}`)
       const check = net.begin(callerId, { role: parsed.data.role, name: parsed.data.name }, host.agents())
       if (!check.ok) return fail(check.message)
       // A bridged role runs in its own child session on another connection (RuntimeContext.bridge), never as a thread.
@@ -323,7 +351,7 @@ export async function callNetworkTool(
         }
         // The host already moved the reservation to the harness's agent id (CodexAgentNetwork.adopt) when the child started.
         return {
-          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive send_message while it runs.`,
+          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.`,
           success: true
         }
       }
@@ -334,7 +362,7 @@ export async function callNetworkTool(
         return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
       }
       return {
-        text: `Spawned ${check.handle} (${check.role.slug}). It works in the background; its final report arrives as a message from the harness. Message it with send_message({to: "${check.handle}"}) while it runs.`,
+        text: `Spawned ${check.handle} (${check.role.slug}). It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.`,
         success: true
       }
     }

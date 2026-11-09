@@ -231,3 +231,16 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     (saved file rules re-read plus run grants) and the Claude hook allows matching calls through `ruleMatch.ts`,
     so no session restart is needed. `updatedPermissions` can only be returned from `canUseTool`, which the
     classifier never reaches for a call it denies outright.
+
+- Required delegation (2026-11-08, docs/design/delegation-enforcement.md v1). `Role.requiredReports` (subset of spawnable,
+  `cleanRequiredReports`) and `RunOverrides.strictDelegation` (`orgai exec --strict-delegation`: every spawning role requires
+  its whole spawnable list). RunManager owns a `DelegationLedger` (runtime/delegationLedger.ts over the pure decisions in
+  runtime/delegation.ts) per work run, behind `RuntimeContext.delegation`: adapters report spawns, completion attempts,
+  deliveries and ends; the gate answers allow / wait / correct (once per agent) / fail. Preflight refuses exec runs whose
+  obligations cannot be met (depth, concurrency, bridged edges). `finalizeDelegation` judges the root on every terminal path;
+  exec outcome `delegation-incomplete` (exit 3). Reports from spawning roles carry a harness receipt line; a failed agent's
+  worktree is held (`heldBy: 'delegation'`). Claude forces required spawns to the foreground and blocks the stop once; Codex
+  holds a manager's report while its reports run (parked, outside the concurrency count). Mock markers
+  `[mock:delegation-ok|fix|skip|claim]`. Known limits in the spec's section 10 (bridged sessions, continued runs, held-branch
+  persistence across sessions). Unit-tested; live: Claude SDK facts (sdk-facts.md) and the Codex native-agent probe
+  (connections-mcp.md).

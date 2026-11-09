@@ -533,6 +533,7 @@ Because `claude.ts:3155-3165` and `codex.ts:765-766` emit `run.status: 'idle'` b
 | `plan === undefined` (single-agent / `autoContinue: false`, or after turn-1 `set-plan` nudge completed with no plan needed) | `'completed-unplanned'` | `'finished'` | `undefined` | `Finished` | **`0`** |
 | `plan?.status === 'done'`, but `unmergedConflictBranches.length > 0` (and `!allowUnmerged`) | `'unmerged-conflicts'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
 | `plan?.status === 'blocked'` | `'blocked'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
+| Required delegation failed: root verdict `failed`, an unresolved failed subtree, preflight problems, or (`--strict-delegation`) any Codex native multi-agent use (docs/design/delegation-enforcement.md) | `'delegation-incomplete'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
 | `plan?.status === 'active'` with `remainingSteps(plan).length > 0` (`pending \| in_progress \| blocked`) | `'incomplete-plan'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
 | `maxAutoDenials` reached, or card arrived under `policy: 'fail'` / `waitTimeoutMs` expired | `'needs-decision'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
 | `maxBudgetUsd` reached (`>=`), `error_max_budget_usd`, or unpriced model when `maxBudgetUsd !== undefined && !allowUnpricedBudget` | `'budget-exceeded'` | `'finished'` | `'budget'` | `Finished` | **`3`** |

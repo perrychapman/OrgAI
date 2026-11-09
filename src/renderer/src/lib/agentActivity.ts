@@ -21,7 +21,8 @@ export const WORKTREE_LABEL: Record<Worktree['status'], string> = {
 }
 
 /** Nested reports merge into their parent's branch, not the main checkout. */
-export function worktreeLabel(wt: Pick<Worktree, 'status' | 'mergeTarget'>): string {
+export function worktreeLabel(wt: Pick<Worktree, 'status' | 'mergeTarget'> & { heldBy?: Worktree['heldBy'] }): string {
+  if (wt.status === 'held' && wt.heldBy === 'delegation') return 'Held: delegation'
   if (wt.mergeTarget === 'parent' && wt.status === 'merged') return 'merged into parent'
   return WORKTREE_LABEL[wt.status]
 }

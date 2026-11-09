@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { ROLE_COLORS, adapterForProject, mixedFamilyRefusal, newId, slugify } from '@shared/defaults'
+import { ROLE_COLORS, cleanRequiredReports, adapterForProject, mixedFamilyRefusal, newId, slugify } from '@shared/defaults'
 import type {
   AgentImportAction,
   AgentImportChoice,
@@ -291,12 +291,20 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
     // A replacement keeps the spawnable list of the role it replaces (cross-team grants included).
     const kept = d.replacesRoleId ? base.find((r) => r.id === d.replacesRoleId)?.spawnable ?? [] : []
     d.role.spawnable = [...kept, ...fromExport]
+    const reqFromExport = (d.agent.requiredReports ?? []).map((s) => exportSlugs.get(slugify(s))?.id).filter((x): x is string => !!x)
+    const reqKept = d.replacesRoleId ? base.find((r) => r.id === d.replacesRoleId)?.requiredReports ?? [] : []
+    if (reqKept.length || reqFromExport.length) d.role.requiredReports = [...reqKept, ...reqFromExport]
   }
   for (const r of roles) {
     const reports = roles.filter((x) => x.reportsTo === r.id).map((x) => x.id)
     const spawnable = [...new Set([...r.spawnable.filter((id) => ids.has(id) && id !== r.id), ...reports])]
     r.spawnable = spawnable
     if (reports.length) r.canSpawn = true
+    if (r.requiredReports) {
+      const required = cleanRequiredReports(r)
+      if (required) r.requiredReports = required
+      else delete r.requiredReports
+    }
   }
   if (root) root.canSpawn = true
 
@@ -390,7 +398,7 @@ export function importDigest(agents: readonly ImportedAgent[]): string {
   const h = createHash('sha256')
   for (const a of agents) {
     h.update(
-      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.tier, a.primary, a.responsibilities, a.color])
+      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.requiredReports, a.tier, a.primary, a.responsibilities, a.color])
     )
     h.update('\n')
   }

@@ -171,6 +171,14 @@ describe('applyEvent', () => {
     expect(s.project?.name).toBe('One')
   })
 
+  it('run.delegation sets the summary and the listed agents', () => {
+    let s = liveState()
+    const d = { verdict: 'failed' as const, missing: ['policy'], corrected: false, nativeSpawns: 1 }
+    s = applyEvent(s, ev({ type: 'run.delegation', runId: 'r1', summary: { failed: 1, corrected: 0, nativeSpawns: 1 }, agents: { root: d } }, 20))
+    expect(s.runs.r1.summary.delegation?.failed).toBe(1)
+    expect(s.runs.r1.agents.root.delegation).toEqual(d)
+  })
+
   it('log keeps only warn and error, as sanitized notices', () => {
     let s = liveState()
     s = applyEvent(s, ev({ type: 'log', runId: 'r1', level: 'info', message: 'quiet' }, 11))

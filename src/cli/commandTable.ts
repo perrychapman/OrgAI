@@ -79,6 +79,7 @@ const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
   { name: 'max-cost', takesValue: true, summary: 'Alias of --max-budget' },
   { name: 'allow-unpriced-budget', takesValue: false, summary: 'Allow a budget even when a model has no known price' },
   { name: 'allow-unmerged', takesValue: false, summary: 'Count unmerged conflict branches as completed' },
+  { name: 'strict-delegation', takesValue: false, summary: 'Every role that can spawn must delegate to all of its spawnable roles' },
   { name: 'allow-peer-messages', takesValue: false, summary: 'Accept messages from other runs (message_run)' },
   { name: 'wait-for-reset', takesValue: false, summary: 'On a usage limit, wait for the reset instead of ending' },
   { name: 'stall-timeout', takesValue: true, summary: 'Seconds without progress before the run ends as stalled' },

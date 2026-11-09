@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import {
   API_KEY_ENV,
+  NATIVE_AGENT_CONFIG,
   NATIVE_SKILL_CONFIG,
   buildLaunchConfig,
   lockNativeSkills,
@@ -202,7 +203,8 @@ describe('native skill discovery', () => {
   it('every launch turns the bundled skills and the skill instructions off', () => {
     expect(NATIVE_SKILL_CONFIG).toEqual(['skills.bundled.enabled=false', 'skills.include_instructions=false'])
     const l = buildLaunchConfig(undefined, [])
-    expect(l.config).toEqual([...NATIVE_SKILL_CONFIG])
+    expect(l.config).toEqual([...NATIVE_SKILL_CONFIG, ...NATIVE_AGENT_CONFIG])
+    expect(NATIVE_AGENT_CONFIG).toEqual(['features.multi_agent=false', 'features.multi_agent_v2=false'])
   })
 
   it('parseSkillsList reads defensively and deduplicates by path', () => {
@@ -261,7 +263,7 @@ describe('buildLaunchConfig project docs', () => {
 
 describe('buildLaunchConfig', () => {
   const secretValue = 'sk-super-secret-1234'
-  const userConfig = (c: string): boolean => !NATIVE_SKILL_CONFIG.includes(c)
+  const userConfig = (c: string): boolean => !NATIVE_SKILL_CONFIG.includes(c) && !NATIVE_AGENT_CONFIG.includes(c)
   /** The generated env name carrying `value`; it must look like ORGAI_MCP_<16 hex>_... */
   const envNameOf = (l: { env: Record<string, string> }, value: string): string => {
     const names = Object.keys(l.env).filter((k) => l.env[k] === value)

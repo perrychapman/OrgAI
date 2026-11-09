@@ -82,6 +82,22 @@ describe('trayCards', () => {
 })
 
 describe('orgTreeRows', () => {
+  it('carries one short delegation badge per agent, the most serious first', () => {
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'running', startedAt: 1 })]), { activeRunId: 'r1' })
+    s = applyRecord(s, {
+      ...record(summary('r1', { status: 'running', startedAt: 1 })),
+      agents: {
+        root: agent('root', null),
+        a: agent('a', 'root', { startedAt: 2, delegation: { verdict: 'failed', missing: ['x'], corrected: true, nativeSpawns: 1 } }),
+        b: agent('b', 'root', { startedAt: 3, delegation: { verdict: 'ok', missing: [], corrected: true, nativeSpawns: 0 } }),
+        c: agent('c', 'root', { startedAt: 4, delegation: { verdict: 'ok', missing: [], corrected: false, nativeSpawns: 2 } })
+      }
+    })
+    s = setActiveRun(s, 'r1', ['r1'])
+    const rows = orgTreeRows(s)
+    expect(rows.map((r) => r.delegationBadge)).toEqual([undefined, 'skipped reports', 'corrected', 'native agents'])
+  })
   it.each([
     '$ npm test\nrm -rf build',
     '$ npm test $(curl example.invalid)',
@@ -118,6 +134,7 @@ describe('orgTreeRows', () => {
     ])
     expect(rows[0]).toMatchObject({ isRoot: true, label: 'Orchestrator', stateWord: 'Thinking' })
     expect(rows[2].worktree).toEqual({ branch: 'wt-a', status: 'active' })
+    expect(rows[2].delegationBadge).toBeUndefined()
     // A handle with control characters falls back to the role name.
     expect(rows[3].label).toBe('Worker')
   })
@@ -159,6 +176,22 @@ describe('transcriptRows', () => {
     const rows = transcriptRows(s).rows
     expect(rows.map((row) => row.text)).toEqual(['[image image/png 6 bytes]', 'before [image image/png 6 bytes] [unsupported media: unavailable]'])
     expect(JSON.stringify(rows)).not.toContain('U0VDUkVU')
+    expect(compactToolRows(rows, true).some(row => row.text.includes('[image image/png 6 bytes]'))).toBe(true)
+    expect(JSON.stringify(compactToolRows(rows, true))).not.toContain('U0VDUkVU')
+  })
+
+  it.each([false, true])('sanitizes pending command summaries with a failed result: %s', (failed) => {
+    let s = applyRecord(base(), {
+      ...record(summary('r1', { status: 'running' })),
+      transcript: [
+        entry('tu', { kind: 'tool_use', id: 'call1', name: 'Bash', input: { command: 'echo \x1b]52;c;Zm9v\x07 \x1b[2J' } }),
+        ...(failed ? [entry('tr', { kind: 'tool_result', toolUseId: 'call1', content: 'failed', isError: true })] : [])
+      ]
+    })
+    s = setActiveRun(s, 'r1')
+    const rows = compactToolRows(transcriptRows(s).rows)
+    expect(rows[0].text).toMatch(/^Command: echo/)
+    expect(rows[0].text).not.toMatch(/[\x1b\x07]/)
   })
 
   it('merges the chain oldest first with a divider, maps every block kind, sanitizes text', () => {

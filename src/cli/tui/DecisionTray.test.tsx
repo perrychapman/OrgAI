@@ -188,7 +188,6 @@ describe('inline approval selection', () => {
     h.unmount()
   })
 })
-
 describe('DecisionTray: card-swap guard', () => {
   it('ignores a key within 750 ms of a swap and decides the new card with the same key after it', async () => {
     const a = tray('permission', 'a', permission('a'))

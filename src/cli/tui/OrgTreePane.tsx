@@ -83,6 +83,7 @@ function chipsOf(row: OrgTreeRow, env: TuiEnv): Chip[] {
       tone: row.worktreeChip === 'conflict' ? 'danger' : row.worktreeChip === 'held' ? 'dim' : row.worktreeChip === 'review' ? 'warn' : 'dim'
     })
   }
+  if (row.delegationBadge) out.push({ text: row.delegationBadge, tone: row.delegationBadge === 'skipped reports' ? 'danger' : row.delegationBadge === 'native agents' ? 'warn' : 'dim' })
   return out
 }
 

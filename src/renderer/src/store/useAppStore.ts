@@ -1,4 +1,5 @@
 import { normalizeView } from '../lib/teamView'
+import { applyRunDelegation } from '@shared/delegationView'
 import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
 import { clearKnowledgePrefs } from '../lib/knowledgePrefs'
@@ -2214,6 +2215,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'plan.updated':
           run.plan = e.plan
           break
+        case 'run.delegation': {
+          const applied = applyRunDelegation(run.summary, run.agents, e)
+          run.summary = applied.summary
+          run.agents = applied.agents
+          break
+        }
         case 'mcpInstall.request':
           run.mcpInstalls = [...(run.mcpInstalls ?? []).filter((r) => r.id !== e.request.id), e.request]
           break

@@ -1,5 +1,6 @@
 import type {
   ConnectionId,
+  DelegationVerdict,
   EngagementNote,
   EngagementNoteContent,
   KnowledgeEdgeSaveInput,
@@ -511,6 +512,12 @@ export interface RuntimeContext {
   /** Adapter-internal activity that should keep an exec run from settling or stalling (bumps activityGen). */
   noteActivity?(reason: ExecActivityReason): void
   /**
+   * Required delegation (docs/design/delegation-enforcement.md 5.2): the run's ledger gate, implemented by RunManager on
+   * work runs only (missing on setup, assistant, quick and single-agent runs: nothing is enforced). Adapters call it at
+   * each spawn, completion, delivery and native-spawn attempt and act on the answer.
+   */
+  delegation?: DelegationGate
+  /**
    * Set by RunManager on exec runs with a budget: the effective budget minus the exec chain's prior cost (0 allowed).
    * Claude passes it as options.maxBudgetUsd instead of project.maxBudgetUsd; a restart subtracts this run's cost from it.
    */
@@ -738,8 +745,41 @@ export interface RuntimeSession {
    * cannot receive (message_run answers NOT LIVE).
    */
   receive?(message: PeerMessage): Promise<void>
+  /**
+   * Deliver a harness message to the root orchestrator and wake it if idle, through the adapter's existing harness-message
+   * path (Claude: notifyOrchestrator). It is not an auto-continue and writes no user block. RunManager uses it for the
+   * exec root's one delegation correction. Missing = the adapter cannot, and no correction is sent.
+   */
+  nudge?(text: string): Promise<void>
   /** Headless exec settlement view (cli-spec 6.2(2)). Missing = the adapter cannot report it (treated as not settled). */
   settlement?(): SessionSettlement
+}
+
+/** What a completion check answers (DelegationLedger.completion). */
+export interface DelegationCompletion {
+  action: 'allow' | 'wait' | 'correct' | 'fail' | 'none'
+  /** The correction / wait text to send the agent. */
+  text?: string
+  verdict?: DelegationVerdict
+  /** On 'fail': what is missing, in words ("policy never spawned; evidence ended without a report"). */
+  missing?: string
+}
+
+/** RuntimeContext.delegation: the host-owned ledger as the adapters see it. RunManager forces canCorrect / canWait false while the run is held, limited or stopping. */
+export interface DelegationGate {
+  noteSpawn(childId: string, parentId: string, roleId: string): void
+  /** An agent tries to finish. `provisional`: decide without recording the agent as done (the root's complete_plan). */
+  completion(agentId: string, opts: { canCorrect: boolean; canWait: boolean; reportText: string; provisional?: boolean }): DelegationCompletion
+  /** The agent ended (interrupted, failed, removed) without completing. */
+  ended(agentId: string): void
+  /** A done or ended agent was resumed (its lead messaged it): it works again and its next completion is evaluated afresh. */
+  resumed(agentId: string): void
+  /** The adapter confirmed the child's report reached its parent. */
+  delivered(childId: string): void
+  /** The receipt (+ failure) line to place before the child's report; undefined when the child has no obligations. */
+  receiptText(childId: string): string | undefined
+  /** A native (non-harness) spawn attempt: returns the agent's strike count. */
+  nativeStrike(agentId: string): number
 }
 
 /** One root turn end, reported through RuntimeContext.onRootTurnEnded. */

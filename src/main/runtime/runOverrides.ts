@@ -179,6 +179,11 @@ export function runOverridesArgs(raw: unknown, opts: { partialPolicy?: boolean }
     if (typeof value !== 'boolean') throw badRequest(`overrides.${key} must be true or false.`)
     out[key] = value
   }
+  // Only adds requirements, so every scope may set it (no overridesWidening rule); exactly true or absent.
+  if (raw.strictDelegation !== undefined) {
+    if (raw.strictDelegation !== true) throw badRequest('overrides.strictDelegation must be true.')
+    out.strictDelegation = true
+  }
   if (raw.maxAutoContinues !== undefined) {
     const v = raw.maxAutoContinues
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > MAX_AUTO_CONTINUES_LIMIT) {

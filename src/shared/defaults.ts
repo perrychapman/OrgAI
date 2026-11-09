@@ -283,6 +283,20 @@ export interface SubagentLimits {
 }
 
 /**
+ * The sanitized Role.requiredReports: ids that are in `spawnable`, are not the role itself and are unique (first wins).
+ * undefined when none remain or when the role cannot spawn. Pure.
+ */
+export function cleanRequiredReports(role: Pick<Role, 'id' | 'canSpawn' | 'spawnable' | 'requiredReports'>): string[] | undefined {
+  if (!role.canSpawn || !role.requiredReports) return undefined
+  const allowed = new Set(role.spawnable ?? [])
+  const out: string[] = []
+  for (const id of role.requiredReports) {
+    if (typeof id === 'string' && id !== role.id && allowed.has(id) && !out.includes(id)) out.push(id)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/**
  * Longest reportsTo chain of an org chart, in edges (root alone = 0, root -> lead -> engineer = 2). A reportsTo that
  * names no role ends the chain; cycles are cut. Pure.
  */

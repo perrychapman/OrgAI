@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
+  DelegationVerdict,
   EngagementChangedEvent,
   HostHandoffFacts,
   EngagementNoteWriter,
@@ -80,7 +81,7 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { BridgedSessions, bridgeKey } from './bridge'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import {
@@ -107,7 +108,7 @@ import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '.
 import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
-import type { SelfKnowledgeHooks } from './types'
+import type { DelegationGate, SelfKnowledgeHooks } from './types'
 import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
 import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
 import { clampText } from '../capabilities/sanitize'
@@ -124,6 +125,8 @@ import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity,
 import { effectiveRunProject, execBudgetUsd, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
 import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
+import { delegationPreflight, obligationsFor, subtreeFailed } from './delegation'
+import { DelegationLedger } from './delegationLedger'
 import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
 import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
 import { DecisionIndex } from './decisionIndex'
@@ -396,6 +399,14 @@ interface ActiveRun {
    * until teardown.
    */
   limitHold?: boolean
+  /** Required delegation (work runs only): the host-owned ledger behind RuntimeContext.delegation. */
+  ledger?: DelegationLedger
+  /** The last run.delegation payload (JSON), so an unchanged ledger emits nothing. */
+  delegationSent?: string
+  /** The ledger carries something to show (obligations, strict, preflight problems or a native strike); plain adaptive runs stay silent. */
+  delegationOn?: boolean
+  /** The root turn generation at which the exec root's one correction was sent; pending until a later turn ends. */
+  correctionGen?: number
   /** The user ended the session; never pause it. */
   userStopped?: boolean
   /**
@@ -946,7 +957,7 @@ export interface ContinueRunOptions {
 }
 
 /** Narrowing overrides a continuation always keeps. */
-const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues'] as const
+const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues', 'strictDelegation'] as const
 /** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
 const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
 
@@ -1581,6 +1592,8 @@ export class RunManager {
       if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')) this.flushRecalled(active)
       const outcome = e.type === 'run.status' && !active.outcome ? runOutcome(e.status, !!active.userStopped) : null
       if (outcome) {
+        // Every terminal path settles the ledger before an outcome is chosen (spec 5.6).
+        this.finalizeDelegation(active, { sessionEnded: true })
         active.outcome = outcome
         active.cutOff = new Set(Object.values(active.record.agents).filter(isLiveAgent).map((a) => a.id))
       }
@@ -1604,8 +1617,11 @@ export class RunManager {
           const role = agent.roleId ? project.roles.find((r) => r.id === agent.roleId) : undefined
           on = active.bridgedAgents?.get(agent.id) ?? (role && agent.id !== ROOT_AGENT_ID ? roleConnection(role, project) : choice.connection)
         }
-        // Priced into a copy (never the adapter's object) before it is recorded or broadcast.
-        e = { ...e, agent: priceAgent({ ...agent, connection: on }, pricingFor(on)) }
+        // Priced into a copy (never the adapter's object) before it is recorded or broadcast. The delegation display is the ledger's.
+        const priced = priceAgent({ ...agent, connection: on }, pricingFor(on))
+        delete priced.delegation
+        const shown = active.ledger ? this.delegationDisplay(active)[agent.id] : undefined
+        e = { ...e, agent: shown ? { ...priced, delegation: shown } : priced }
       }
       const closing = e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')
       if (e.type === 'run.status') {
@@ -1646,6 +1662,11 @@ export class RunManager {
       this.recordEvent(active, e)
       logRunEvent(summary, e)
       this.broadcast(e)
+      // A removed agent never reports: its ledger entry is ended (spec 5.2).
+      if (e.type === 'agent.remove' && active.ledger) {
+        active.ledger.ended(e.agentId)
+        this.delegationChanged(active)
+      }
       if (e.type === 'agent.upsert' || e.type === 'run.cost' || e.type === 'run.status' || e.type === 'plan.updated' || e.type === 'skill.used') {
         if (closing) this.closeTimers(active)
         this.refreshUsage(active, closing)
@@ -1981,9 +2002,11 @@ export class RunManager {
           })
         : undefined
       active.bridge = bridge
+      const gate = kind === 'work' && !summary.quick && summary.team !== 'single' ? this.createDelegation(active, project, choice.adapter, bridging.bridged.map((b) => b.roleId)) : undefined
       const ctx: RuntimeContext = {
         run: summary,
         project: runProject,
+        ...(gate ? { delegation: gate } : {}),
         ...(folderLoads ? { folderConfigLoads: folderLoads } : {}),
         roles:
           kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
@@ -2205,6 +2228,15 @@ export class RunManager {
         this.store.upsert(summary)
       }
       active.ctx = ctx
+      if (gate && active.ledger) {
+        const problems = active.ledger.snapshot().problems
+        for (const message of problems) emit({ type: 'log', runId: summary.id, level: exec ? 'error' : 'warn', message: `Required delegation: ${message}` })
+        // An unmeetable obligation refuses an exec run before its session starts (spec 4.5); an interactive run goes on with the warning.
+        if (exec && problems.length > 0) {
+          await this.finalizeExecRun(summary.id, 'delegation-incomplete', { endedBy: 'policy' })
+          return summary
+        }
+      }
       if (exec || summary.conversationBudgetUsd !== undefined) {
         // Budget before launch (cli-spec 6.2(3)): a spent chain (maxBudgetUsd 0 included) or an unpriced role model
         // ends the run as 'budget-exceeded' without ever starting the adapter.
@@ -2309,6 +2341,127 @@ export class RunManager {
     }
   }
 
+  // ---------- required delegation (docs/design/delegation-enforcement.md 4.3-4.5, 5.2, 5.6, 5.8) ----------
+
+  /**
+   * The ledger and gate of a work run: obligations from the roles and RunOverrides.strictDelegation, the preflight problems
+   * (stored on the ledger), the root registered. The gate is RuntimeContext.delegation; holds force canCorrect / canWait false.
+   */
+  private createDelegation(a: ActiveRun, project: Project, adapterId: ProviderId, bridged: readonly string[]): DelegationGate {
+    const strict = a.summary.overrides?.strictDelegation === true
+    const roles = project.roles
+    const obligations = obligationsFor(roles, strict)
+    const root = roles.find((r) => r.reportsTo === null) ?? roles[0]
+    const problems = delegationPreflight(roles, obligations, effectiveSubagentLimits({ ...project, roles }), adapterId as 'claude' | 'codex' | 'mock', bridged)
+    const ledger = new DelegationLedger(
+      { obligations, strict, problems },
+      {
+        roleLabel: (roleId) => {
+          const r = roles.find((x) => x.id === roleId)
+          return { slug: r?.slug ?? roleId, name: r?.name ?? roleId }
+        },
+        handle: (agentId) => a.record.agents[agentId]?.handle ?? agentId,
+        spawnTool: adapterId === 'codex' ? 'spawn_report' : 'the Agent tool'
+      }
+    )
+    if (root) ledger.noteRoot(ROOT_AGENT_ID, root.id)
+    a.ledger = ledger
+    a.delegationOn = strict || Object.keys(obligations).length > 0 || problems.length > 0
+    this.delegationChanged(a)
+    const held = (): boolean => this.delegationHold(a)
+    const changed = <T,>(v: T): T => {
+      this.delegationChanged(a)
+      return v
+    }
+    return {
+      noteSpawn: (childId, parentId, roleId) => changed(ledger.noteSpawn(childId, parentId, roleId)),
+      completion: (agentId, opts) => changed(ledger.completion(agentId, { ...opts, canCorrect: opts.canCorrect && !held(), canWait: opts.canWait && !held() })),
+      ended: (agentId) => changed(ledger.ended(agentId)),
+      resumed: (agentId) => changed(ledger.resumed(agentId)),
+      delivered: (childId) => changed(ledger.delivered(childId)),
+      receiptText: (childId) => ledger.receiptText(childId),
+      nativeStrike: (agentId) => {
+        a.delegationOn = true
+        return changed(ledger.nativeStrike(agentId))
+      }
+    }
+  }
+
+  /** A held, usage-limited or stopping run (or one whose session ended) can neither correct nor wait (spec 4.4). */
+  private delegationHold(a: ActiveRun): boolean {
+    return a.held || !!a.limitHold || !!a.userStopped || !!a.finalizing || a.outcome !== undefined || a.summary.status === 'stopping'
+  }
+
+  private delegationDisplay(a: ActiveRun): Record<string, NonNullable<AgentInstance['delegation']>> {
+    return a.ledger && a.delegationOn ? a.ledger.summary().agents : {}
+  }
+
+  /** The ledger changed: persist the snapshot, update the summary and per-agent display fields and emit run.delegation. */
+  private delegationChanged(a: ActiveRun): void {
+    if (!a.ledger || !a.delegationOn) return
+    const { summary, agents } = a.ledger.summary()
+    const json = JSON.stringify({ summary, agents })
+    if (json === a.delegationSent) return
+    a.delegationSent = json
+    a.record.delegation = a.ledger.snapshot()
+    a.summary.delegation = summary
+    for (const [id, inst] of Object.entries(a.record.agents)) {
+      if (agents[id]) inst.delegation = agents[id]
+      else delete inst.delegation
+    }
+    try {
+      this.store.upsert(a.summary)
+    } catch (e) {
+      log.warn(`Run ${a.summary.id}: could not persist the delegation summary: ${(e as Error).message}`)
+    }
+    if (!a.flushTimer) a.flushTimer = setTimeout(() => this.flush(a), FLUSH_INTERVAL_MS)
+    a.emit({ type: 'run.delegation', runId: a.summary.id, summary, agents })
+  }
+
+  /**
+   * Every terminal path calls this before an outcome is chosen (spec 5.6): descendants still open are ended, then the root is
+   * judged with canCorrect and canWait false unless it already completed. A root with valid receipts that never called
+   * complete_plan is ok. Idempotent.
+   */
+  private finalizeDelegation(a: ActiveRun, _opts: { sessionEnded: boolean }): void {
+    const ledger = a.ledger
+    if (!ledger) return
+    for (const id of Object.keys(ledger.snapshot().agents)) if (id !== ROOT_AGENT_ID) ledger.ended(id)
+    ledger.completion(ROOT_AGENT_ID, { canCorrect: false, canWait: false, reportText: '' })
+    this.delegationChanged(a)
+  }
+
+  /** execOutcomeFor's delegation inputs (spec 5.8). Empty without a ledger. */
+  private delegationFacts(a: ActiveRun): { rootVerdict?: DelegationVerdict; subtreeFailed?: boolean; strictNativeSpawns?: number } {
+    const ledger = a.ledger
+    if (!ledger) return {}
+    const state = ledger.snapshot()
+    const rootVerdict = ledger.rootVerdict()
+    return {
+      ...(rootVerdict ? { rootVerdict } : {}),
+      subtreeFailed: subtreeFailed(state),
+      ...(state.strict ? { strictNativeSpawns: ledger.summary().summary.nativeSpawns } : {})
+    }
+  }
+
+  /**
+   * Exec quiescence with the root missing required reports and its correction unused: send the correction through the
+   * adapter's harness-message path (RuntimeSession.nudge, not an auto-continue) and stay live. True when one was sent.
+   */
+  private sendRootCorrection(a: ActiveRun): boolean {
+    const ledger = a.ledger
+    const nudge = a.session?.nudge
+    if (!ledger || !nudge || a.correctionGen !== undefined || this.delegationHold(a)) return false
+    const d = ledger.completion(ROOT_AGENT_ID, { canCorrect: true, canWait: false, reportText: '', provisional: true })
+    this.delegationChanged(a)
+    if (d.action !== 'correct' || !d.text) return false
+    a.correctionGen = a.rootTurnGen
+    this.bumpActivity(a)
+    a.emit({ type: 'log', runId: a.summary.id, level: 'warn', message: 'The root finished without its required reports; sent its one correction.' })
+    void nudge.call(a.session, d.text).catch((e: unknown) => log.warn(`Run ${a.summary.id}: the delegation correction was not delivered: ${(e as Error)?.message ?? e}`))
+    return true
+  }
+
   /** RunManager's view of an exec run's own events (after they were recorded and broadcast). */
   private execEventSeen(a: ActiveRun, e: RunEvent): void {
     if (e.type === 'agent.upsert') {
@@ -2331,7 +2484,8 @@ export class RunManager {
       if (a.userStopped) {
         void this.finalizeExecRun(runId, 'interrupted', { endedBy: a.endedBy ?? 'user' })
       } else {
-        const r = execOutcomeFor({ plan: a.record.plan, agents: Object.values(a.record.agents), allowUnmerged: a.summary.overrides?.allowUnmerged })
+        this.finalizeDelegation(a, { sessionEnded: true })
+        const r = execOutcomeFor({ plan: a.record.plan, agents: Object.values(a.record.agents), allowUnmerged: a.summary.overrides?.allowUnmerged, ...this.delegationFacts(a) })
         void this.finalizeExecRun(runId, r.outcome, { endedBy: r.endedBy })
       }
     }
@@ -2394,10 +2548,14 @@ export class RunManager {
       inboxLength: a.inbox.length,
       flushing: !!a.flushing,
       plan: a.record.plan,
-      autoContinue: a.ctx?.autoContinue === true
+      autoContinue: a.ctx?.autoContinue === true,
+      delegationCorrectionPending: a.correctionGen !== undefined && a.rootTurnGen <= a.correctionGen
     }
     if (execQuiescent(input)) {
-      const r = execOutcomeFor({ plan: a.record.plan, agents: input.agents, allowUnmerged: a.summary.overrides.allowUnmerged })
+      // A root with missing required reports gets its one correction and the run stays live (spec 5.6).
+      if (this.sendRootCorrection(a)) return this.armSettle(a, EXEC_SETTLE_POLL_MS)
+      this.finalizeDelegation(a, { sessionEnded: false })
+      const r = execOutcomeFor({ plan: a.record.plan, agents: input.agents, allowUnmerged: a.summary.overrides.allowUnmerged, ...this.delegationFacts(a) })
       void this.finalizeExecRun(a.summary.id, r.outcome, { endedBy: r.endedBy })
       return
     }

@@ -4,7 +4,7 @@
  *
  * - Flags map to RunOverrides (always `execMode: true`): --permission-mode, --no-auto-continue,
  *   --max-auto-continues, --max-budget / --max-cost (USD, finite >= 0; not both), --allow-unpriced-budget,
- *   --allow-unmerged, --allow-peer-messages, --wait-for-reset, --stall-timeout s, --on-* (decisionPolicy),
+ *   --allow-unmerged, --strict-delegation, --allow-peer-messages, --wait-for-reset, --stall-timeout s, --on-* (decisionPolicy),
  *   --max-auto-denials. Bad values are usage errors (exit 2); a `wait` policy is refused.
  * - The prompt is the positional, else --prompt-file <path|-> (resume: --prompt, --prompt-file), else stdin ('-', or no
  *   positional with a non-TTY stdin); at most 1 MB. Empty: exit 2. Untrusted text belongs in --prompt-file or stdin,
@@ -128,6 +128,7 @@ export function overridesFromFlags(v: Values): RunOverrides {
   if (cap !== undefined) o.maxBudgetUsd = amount(budget !== undefined ? 'max-budget' : 'max-cost', cap, 'an amount in USD (0 or more)')
   if (v['allow-unpriced-budget'] === true) o.allowUnpricedBudget = true
   if (v['allow-unmerged'] === true) o.allowUnmerged = true
+  if (v['strict-delegation'] === true) o.strictDelegation = true
   if (v['allow-peer-messages'] === true) o.allowPeerMessages = true
   if (v['wait-for-reset'] === true) o.waitForReset = true
   const stall = secondsMs('stall-timeout', str(v, 'stall-timeout'), true)
@@ -414,6 +415,7 @@ export const OUTCOME_LABEL: Record<ExecOutcome, string> = {
   'unmerged-conflicts': 'Unmerged conflicts',
   blocked: 'Blocked',
   'incomplete-plan': 'Plan not finished',
+  'delegation-incomplete': 'Required delegation incomplete',
   'needs-decision': 'Needs a decision',
   'budget-exceeded': 'Budget reached',
   'rate-limited': 'Usage limit reached',

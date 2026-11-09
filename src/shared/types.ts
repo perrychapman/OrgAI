@@ -555,6 +555,8 @@ export interface Role {
   canSpawn: boolean
   /** Which role ids this role may spawn. Enforced by the harness. */
   spawnable: string[]
+  /** Role ids this role must delegate to every time one of its agents completes. Subset of `spawnable`; missing = adaptive. Enforced by the harness. */
+  requiredReports?: string[]
   /** Parent in the org chart. null for the root orchestrator. */
   reportsTo: string | null
   /** Editor canvas position. */
@@ -2817,6 +2819,8 @@ export type AgentState =
   | 'error'
 
 export interface AgentInstance {
+  /** Required-delegation display state (set by RunManager from the ledger). */
+  delegation?: { verdict?: DelegationVerdict; missing: string[]; corrected: boolean; nativeSpawns: number }
   /** Harness id. "root" for the orchestrator, otherwise the SDK agent_id. */
   id: string
   roleId: string | null
@@ -2892,6 +2896,11 @@ export interface WorktreeInfo {
   parentAgentId?: string
   /** Nested isolation: the parent's branch this one was cut from and merges into. */
   parentBranch?: string
+  /**
+   * With status 'held': who held it. 'delegation' = the harness held it because the agent failed its required delegation
+   * (WorktreeIntegrator.holdFailed); the integrate tool skips such a branch. Absent = the user held it (merge review).
+   */
+  heldBy?: 'delegation'
 }
 
 /** A report branch still sitting in the repository, as shown by the maintenance panel. */
@@ -3205,6 +3214,8 @@ export interface SwitchRunModelResult {
 }
 
 export interface RunSummary {
+  /** Required-delegation outcome (delegation-enforcement spec 4.3). Set by RunManager once a ledger exists. */
+  delegation?: { failed: number; corrected: number; nativeSpawns: number; rootVerdict?: DelegationVerdict; subtreeFailed?: boolean }
   /** Runtime actually used by this run, retained when selecting a different adapter for continuation. */
   modelAdapter?: ProviderId
   /** Main-owned original desktop conversation cap for model handoff accounting (positive USD only). */
@@ -3341,7 +3352,43 @@ export interface RunPlan {
 export const DEFAULT_MAX_AUTO_CONTINUES = 40
 
 /** A finished or live run as persisted on disk: everything needed to redraw it later. */
+export type DelegationVerdict = 'ok' | 'adaptive' | 'failed'
+
+export interface DelegationReceipt {
+  childId: string
+  parentId: string
+  roleId: string
+  completedAt: number
+  verdict: DelegationVerdict
+  reportChars: number
+  /** Set only when the adapter confirms the report reached parentId. */
+  delivered: boolean
+}
+
+export interface DelegationAgentState {
+  roleId: string
+  /** The agent that spawned this one (absent for the root). */
+  parentId?: string
+  required: string[]
+  phase: 'working' | 'waiting' | 'correcting' | 'done' | 'ended'
+  /** Whole run, never reset, never in RunPlan. */
+  corrections: 0 | 1
+  verdict?: DelegationVerdict
+  missing: { roleId: string; why: string }[]
+  nativeStrikes: number
+}
+
+export interface DelegationLedgerState {
+  strict: boolean
+  obligations: Record<string, string[]>
+  problems: string[]
+  agents: Record<string, DelegationAgentState>
+  receipts: DelegationReceipt[]
+}
+
 export interface RunRecord {
+  /** Required-delegation ledger, persisted with the run. */
+  delegation?: DelegationLedgerState
   summary: RunSummary
   agents: Record<string, AgentInstance>
   transcript: TranscriptEntry[]
@@ -3614,6 +3661,8 @@ export type RunEvent =
    * after the run ended. The summary in runs:list / runs:get carries it from then on.
    */
   | { type: 'run.title'; runId: string; title: string }
+  /** The required-delegation ledger changed (summary and per-agent display state). */
+  | { type: 'run.delegation'; runId: string; summary: NonNullable<RunSummary['delegation']>; agents: Record<string, NonNullable<AgentInstance['delegation']>> }
   /**
    * A run moved to another project (a quick run promoted with runs:promoteQuick). One event per moved run; from now
    * on runs:list(projectId) returns it and RunSummary.projectId is `projectId`.
@@ -6652,6 +6701,8 @@ export const DEFAULT_HEADLESS_DECISION_POLICY: Readonly<Required<HeadlessDecisio
 }
 
 export interface RunOverrides {
+  /** Every role that canSpawn requires its whole spawnable list this run (--strict-delegation). Only adds requirements. */
+  strictDelegation?: true
   /** Overrides Project.permissionMode. Under 'operate' scope, must satisfy canNarrowPermissionMode(projectMode, overrideMode). */
   permissionMode?: PermissionMode
   /** Overrides Project.autoContinue for this run (under 'operate', cannot change false -> true). */
@@ -6688,6 +6739,7 @@ export type ExecOutcome =
   | 'unmerged-conflicts'
   | 'blocked'
   | 'incomplete-plan'
+  | 'delegation-incomplete'
   | 'needs-decision'
   | 'budget-exceeded'
   | 'rate-limited'
@@ -6702,6 +6754,7 @@ export const EXEC_OUTCOMES: readonly ExecOutcome[] = [
   'unmerged-conflicts',
   'blocked',
   'incomplete-plan',
+  'delegation-incomplete',
   'needs-decision',
   'budget-exceeded',
   'rate-limited',
@@ -6718,6 +6771,7 @@ export const EXEC_OUTCOME_EXIT_CODE: Record<ExecOutcome, number> = {
   'unmerged-conflicts': 3,
   blocked: 3,
   'incomplete-plan': 3,
+  'delegation-incomplete': 3,
   'needs-decision': 3,
   'budget-exceeded': 3,
   'rate-limited': 4,

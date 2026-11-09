@@ -28,6 +28,8 @@ describe('worktreeLabel and isWorkingAgent', () => {
   it('names merges into the parent', () => {
     expect(worktreeLabel({ status: 'merged', mergeTarget: 'parent' })).toBe('merged into parent')
     expect(worktreeLabel({ status: 'conflict' })).toBe('merge conflict')
+    expect(worktreeLabel({ status: 'held', heldBy: 'delegation' })).toBe('Held: delegation')
+    expect(worktreeLabel({ status: 'held' })).toBe('held for later')
   })
   it('counts starting, thinking, tool and delegating as working', () => {
     expect(['starting', 'thinking', 'tool', 'delegating'].every((s) => isWorkingAgent(s as AgentInstance['state']))).toBe(true)

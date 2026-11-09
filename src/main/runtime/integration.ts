@@ -217,6 +217,40 @@ export class WorktreeIntegrator {
     await this.settle(agentId)
   }
 
+  /**
+   * The agent failed its required delegation (docs/design/delegation-enforcement.md 5.7): commit what it left, keep the
+   * branch with status 'held' (heldBy 'delegation') and merge nothing. The status is set before any await, so a merge
+   * started later for the same agent sees it. A parent waiting for its children is settled afterwards.
+   */
+  holdFailed(agentId: string, reason: string): Promise<void> {
+    const wt = this.worktrees.get(agentId)
+    if (!wt || wt.status !== 'active') return Promise.resolve()
+    this.set(agentId, { ...wt, status: 'held', heldBy: 'delegation' })
+    return this.counted(async () => {
+      const name = this.nameOf(agentId)
+      const path = (await findWorktree(this.root, agentId))?.path ?? wt.path
+      const brief = this.briefs.get(agentId) ?? this.host.agent(agentId)?.activity ?? ''
+      const commit = await this.exclusive(path, () => commitLeftovers(path, `${name}: ${brief}`.slice(0, 120))).catch(
+        (e: unknown): { committed: boolean; error?: string } => ({ committed: false, error: errorText(e) })
+      )
+      if (commit.error) this.log('warn', `${name}: could not commit its changes before holding the branch: ${commit.error}`)
+      this.log('warn', `${name}: branch ${wt.branch} held, not merged: ${reason}`)
+      this.host.notify(
+        `Harness: ${name}'s branch ${wt.branch} was held, not merged: it failed its required delegation (${reason}). ` +
+          `Its changes are NOT in the main checkout. Do not build on them; re-delegate the work instead.`
+      )
+      await this.settle(wt.parentAgentId)
+    })
+  }
+
+  /** A delegation-held agent was resumed: its branch is active again and merges normally when it next finishes. */
+  unhold(agentId: string): void {
+    const wt = this.worktrees.get(agentId)
+    if (!wt || wt.status !== 'held' || wt.heldBy !== 'delegation') return
+    const { heldBy: _heldBy, ...rest } = wt
+    this.set(agentId, { ...rest, status: 'active' })
+  }
+
   /** Integrate a parent that is waiting for children once none is left unsettled. */
   private async settle(agentId: string | undefined): Promise<void> {
     if (!agentId) return
@@ -334,6 +368,9 @@ export class WorktreeIntegrator {
     const tracked = ownerId ? this.worktrees.get(ownerId) : undefined
     if (tracked && UNSETTLED.has(tracked.status)) {
       return `${wt.branch}: still in progress (${tracked.status}); the harness merges it when its report finishes.`
+    }
+    if (tracked?.status === 'held' && tracked.heldBy === 'delegation') {
+      return `${wt.branch}: held by the harness because ${this.nameOf(ownerId!)} failed its required delegation; it is not merged. Re-delegate the work instead.`
     }
     const owner = ownerId ? this.host.agent(ownerId) : undefined
     const info: WorktreeInfo = {

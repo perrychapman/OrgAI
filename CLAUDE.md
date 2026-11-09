@@ -63,7 +63,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 Detailed, per-feature notes live in `docs/agent-notes/`. Each fact says how it was checked. "Unverified" means it comes from docs or typings and no live run has confirmed it. Keep this file short: add new
 feature notes to the matching file there (or a new one listed here), not to CLAUDE.md.
 
-- `docs/agent-notes/core-runtime.md`: application menu (main), run end and decision cards, settings, run titles,
+- `docs/agent-notes/core-runtime.md`: application menu (main), run end and decision cards, required delegation, settings, run titles,
   projects, usage and pricing, work-run configuration changes, self-configuration (effective default connection,
   plan guard, subagent limits), concurrent runs, setup sessions.
 - `docs/agent-notes/permissions.md`: prompt fatigue (#14), allowed folders, rule matching, suggestions, permission card UI.

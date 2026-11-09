@@ -10,7 +10,7 @@ import {
   type TeamFileWarning,
   type ToolName
 } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, newId, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, cleanRequiredReports, newId, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { skippedNote } from '../capabilities/localSkills'
 import { safeKitRelPath } from '../skills/files'
@@ -281,6 +281,11 @@ export function docFromProject(project: Project, skillContent: (spec: SkillSpec)
       skills: sortedUnique((r.skills ?? []).map((id) => skillNameById.get(id)).filter((s): s is string => s !== undefined)),
       mcpServers: sortedUnique((r.mcpServers ?? []).map((id) => serverNameById.get(id)).filter((s): s is string => s !== undefined))
     }
+    const requiredIds = cleanRequiredReports(r)
+    if (requiredIds) {
+      const required = sortedUnique(requiredIds.map((id) => slugById.get(id)).filter((s): s is string => typeof s === 'string' && s !== r.slug && doc.spawnable.includes(s)))
+      if (required.length > 0) doc.requiredReports = required
+    }
     if (r.tier) doc.tier = r.tier
     else if (model === 'inherit' || validModelId(model)) doc.model = model
     else {
@@ -335,6 +340,7 @@ export function teamKey(project: Project): string {
       r.effort ?? null,
       r.canSpawn,
       names(r.spawnable, slugById),
+      names(cleanRequiredReports(r), slugById),
       r.reportsTo === null ? null : (slugById.get(r.reportsTo) ?? '?'),
       r.color,
       names(r.skills, skillById),
@@ -431,6 +437,7 @@ export function rolesFromDoc(project: Project, doc: TeamDoc, ctx: RolesFromDocCo
       ...(r.effort ? { effort: r.effort } : {}),
       canSpawn: r.canSpawn,
       spawnable: r.spawnable.map((s) => proposedId.get(s)).filter((x): x is string => x !== undefined),
+      ...(r.requiredReports ? { requiredReports: r.requiredReports.map((s) => proposedId.get(s)).filter((x): x is string => x !== undefined) } : {}),
       reportsTo: r.reportsTo === null ? null : (proposedId.get(r.reportsTo) ?? null),
       position: { x: 0, y: 0 },
       color: r.color,

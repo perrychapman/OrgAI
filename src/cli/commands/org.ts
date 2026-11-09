@@ -178,6 +178,7 @@ const orgShow: SubcommandFn = async (ctx, args) => {
             tier: role.model === 'inherit' ? null : (role.tier ?? tierForModel(role.model) ?? null),
             canSpawn: role.canSpawn,
             spawnable: role.spawnable,
+            requiredReports: role.requiredReports ?? [],
             tools: role.tools,
             mcpServers: g.mcp.map((m) => m.id),
             skills: g.skills.map((s) => s.id)
@@ -194,7 +195,8 @@ const orgShow: SubcommandFn = async (ctx, args) => {
           const spawn = role.canSpawn
             ? `spawns: ${role.spawnable.length ? role.spawnable.map((id) => safeLine(nameOf.get(id) ?? id)).join(', ') : 'none listed'}`
             : 'cannot spawn'
-          lines.push(`${pad}    ${spawn} · tools: ${role.tools.length ? role.tools.map(safeLine).join(', ') : 'none'}`)
+          const required = role.requiredReports?.length ? ` · must delegate to: ${role.requiredReports.map((id) => safeLine(nameOf.get(id) ?? id)).join(', ')}` : ''
+          lines.push(`${pad}    ${spawn}${required} · tools: ${role.tools.length ? role.tools.map(safeLine).join(', ') : 'none'}`)
           if (g.mcp.length || g.skills.length) {
             const parts: string[] = []
             if (g.mcp.length) parts.push(`MCP: ${g.mcp.map((m) => safeLine(m.label)).join(', ')}`)

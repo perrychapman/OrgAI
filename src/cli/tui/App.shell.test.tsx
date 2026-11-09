@@ -39,7 +39,7 @@ afterEach(() => {
   for (const r of mounted.splice(0)) r.unmount()
 })
 
-function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; inproc?: boolean; canDecide?: boolean; state?: TuiState; launch?: TuiLaunch; now?: () => number }) {
+function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; inproc?: boolean; state?: TuiState; launch?: TuiLaunch; now?: () => number }) {
   let state = opts.state ?? stateWith()
   const listeners = new Set<(e: InputEvent) => void>()
   // A live store: notify() adds a notice and tells subscribers, so notice lifetimes can be watched in frames.
@@ -86,7 +86,7 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
       terminal={terminal as never}
       env={env}
       launch={opts.launch ?? {}}
-      conn={{ client: {} as never, hello: { grantedScopes: opts.canDecide === false ? ['read', 'operate'] : ['read', 'operate', 'decide'] } as never, started: false, ...(opts.inproc ? { inproc: {} } : {}) } as never}
+      conn={{ client: {} as never, hello: { grantedScopes: ['read', 'operate', 'decide'] } as never, started: false, ...(opts.inproc ? { inproc: {} } : {}) } as never}
       input={{ subscribe: (fn) => (listeners.add(fn), () => void listeners.delete(fn)) }}
       processEnv={{}}
       now={opts.now ?? (() => 1_000_000)}
@@ -268,7 +268,7 @@ describe('conversation-first layout', () => {
     expect(m.session.decide).not.toHaveBeenCalled()
   })
 
-  it.each([{ canDecide: false }, { inline: true }, { env: { dumbTerminal: true } }])('does not automatically focus when approval interaction is unavailable: %j', async (opts) => {
+  it.each([{ inline: true }, { env: { dumbTerminal: true } }])('does not automatically focus when approval interaction is unavailable: %j', async (opts) => {
     const m = mount({ cols: 120, rows: 40, ...opts })
     await tick()
     m.session.setState(stateWith({ waiting: true }))

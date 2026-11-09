@@ -214,6 +214,7 @@ export function roleDocProblem(r: TeamRoleDoc): string | null {
   if (typeof r.canSpawn !== 'boolean') return 'canSpawn must be true or false.'
   const refs =
     refProblem('spawnable', r.spawnable ?? [], (s) => ROLE_SLUG_RE.test(s)) ??
+    refProblem('required_reports', r.requiredReports ?? [], (s) => ROLE_SLUG_RE.test(s)) ??
     refProblem('skills', r.skills ?? [], (s) => s.length <= SKILL_NAME_MAX && skillNameProblem(s) === null) ??
     refProblem('mcpServers', r.mcpServers ?? [], (s) => isValidMcpServerName(s))
   if (refs) return refs
@@ -269,6 +270,8 @@ function readRole(slug: string, bytes: Buffer): RoleRead {
       skills: sortedUnique(fmList(d, 'skills', 'skills') ?? []),
       mcpServers: sortedUnique(fmList(d, 'mcpServers', 'mcpServers') ?? [])
     }
+    const required = sortedUnique(fmList(d, 'required_reports', 'required_reports') ?? [])
+    if (required.length > 0) role.requiredReports = required
     const tier = Object.hasOwn(d, 'tier') ? d.tier : null
     const model = Object.hasOwn(d, 'model') ? d.model : null
     if (tier !== null && model !== null) return { problem: 'It sets both tier and model; use one.' }
@@ -948,7 +951,12 @@ function parseInner(allFiles: TeamFile[], opts: ParseOptions): ParsedTeam {
     const srv = r.mcpServers.filter((s) => serverNames.has(s))
     const dropped = r.spawnable.length - spawnable.length + (r.skills.length - sk.length) + (r.mcpServers.length - srv.length)
     if (dropped) out.notes.push(`${r.slug} names ${dropped} role${dropped === 1 ? '' : 's'}, skill${dropped === 1 ? '' : 's'} or service${dropped === 1 ? '' : 's'} that ${dropped === 1 ? 'does' : 'do'} not exist; ${dropped === 1 ? 'it was' : 'they were'} left out.`)
-    return { ...r, spawnable, skills: sk, mcpServers: srv }
+    const out2: TeamRoleDoc = { ...r, spawnable, skills: sk, mcpServers: srv }
+    // A required report must be a spawnable role of this one (cleanRequiredReports); anything else is left out quietly.
+    const required = r.canSpawn ? (r.requiredReports ?? []).filter((s) => spawnable.includes(s)) : []
+    if (required.length > 0) out2.requiredReports = required
+    else delete out2.requiredReports
+    return out2
   })
   const roleSlugs = new Set(roleList.map((r) => r.slug))
   const mcpList2 = mcp.map((m) => {

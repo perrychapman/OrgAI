@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Effort, ModelRef, ModelTier, Project, ToolName } from '@shared/types'
+import type { Effort, ModelRef, ModelTier, Project, Role, ToolName } from '@shared/types'
+import { cleanRequiredReports } from '@shared/defaults'
 
 export const ORG_EXPORT_FORMAT = 'orgai.org/1'
 export const ORG_EXPORT_PATH = '.orgai/org.json'
@@ -19,6 +20,8 @@ export interface OrgExportRole {
   effort?: Effort
   canSpawn: boolean
   spawnable: string[]
+  /** Slugs, a subset of `spawnable`; absent when none. */
+  requiredReports?: string[]
   reportsTo: string | null
   color: string
 }
@@ -29,6 +32,11 @@ export interface OrgExportFile {
   exportedAt: string
   project: { name: string }
   roles: OrgExportRole[]
+}
+
+function requiredSlugs(r: Role, slugOf: Map<string, string>): { requiredReports?: string[] } {
+  const slugs = (cleanRequiredReports(r) ?? []).map((id) => slugOf.get(id)).filter((s): s is string => !!s)
+  return slugs.length ? { requiredReports: slugs } : {}
 }
 
 /** Build the export document of a project's org chart. Pure. */
@@ -50,6 +58,7 @@ export function buildOrgExport(project: Pick<Project, 'name' | 'roles'>, now = n
       ...(r.effort ? { effort: r.effort } : {}),
       canSpawn: r.canSpawn,
       spawnable: r.spawnable.map((id) => slugOf.get(id)).filter((s): s is string => !!s),
+      ...requiredSlugs(r, slugOf),
       reportsTo: r.reportsTo === null ? null : slugOf.get(r.reportsTo) ?? null,
       color: r.color
     }))

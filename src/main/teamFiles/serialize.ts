@@ -52,6 +52,7 @@ export function serializeRole(role: TeamRoleDoc): string {
   if (r.effort !== undefined) lines.push(`effort: ${yamlQuote(r.effort)}`)
   lines.push(`canSpawn: ${r.canSpawn ? 'true' : 'false'}`)
   lines.push(...listLines('spawnable', r.spawnable))
+  if (r.requiredReports) lines.push(...listLines('required_reports', r.requiredReports))
   lines.push(`reportsTo: ${r.reportsTo === null ? 'null' : yamlQuote(r.reportsTo)}`)
   lines.push(`color: ${yamlQuote(r.color)}`)
   lines.push(...listLines('skills', r.skills))

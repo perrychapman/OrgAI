@@ -47,6 +47,8 @@ export interface ImportedAgent {
   reportsTo?: string | null
   /** OrgAI exports only: slugs this role may spawn. */
   spawnable?: string[]
+  /** OrgAI exports only: slugs of spawnable roles it must always delegate to (Role.requiredReports). */
+  requiredReports?: string[]
   /** OrgAI exports only: the role's tier. */
   tier?: ModelTier
   /** opencode `mode: primary` (or `all`): a candidate root. */

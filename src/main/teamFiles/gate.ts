@@ -410,6 +410,14 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
         next.spawnable = inter(ar.spawnable, dr.spawnable)
       }
     }
+    // Required reports (Role.requiredReports): any change goes the spawnable way, through approval (an added one adds an
+    // obligation, a removed one loosens enforcement). The final filter below keeps them within the effective spawnable.
+    const reqAdded = diff(dr.requiredReports ?? [], ar.requiredReports ?? [])
+    const reqRemoved = diff(ar.requiredReports ?? [], dr.requiredReports ?? [])
+    if (reqAdded.length || reqRemoved.length) {
+      const bits = [...(reqAdded.length ? [`must report through ${joinAnd(reqAdded)}`] : []), ...(reqRemoved.length ? [`no longer must report through ${joinAnd(reqRemoved)}`] : [])]
+      record({ ...base, id: `role:${slug}:required-reports`, action: 'changed', summary: `${who} ${bits.join(' and ')}.` }, true, 'Changes which agents it must delegate to')
+    }
     // Skill and service grants.
     for (const [field, label, reason] of [
       ['skills', 'skill', 'New skill access'],
@@ -481,7 +489,14 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
     const roleSet = new Set(eff.roles.map((r) => r.slug))
     const skillSet = new Set(eff.skills.map((s) => s.name))
     const mcpSet = new Set(eff.mcp.map((m) => m.name))
-    eff.roles = eff.roles.map((r) => ({ ...r, spawnable: r.spawnable.filter((s) => roleSet.has(s) && s !== r.slug), skills: r.skills.filter((s) => skillSet.has(s)), mcpServers: r.mcpServers.filter((s) => mcpSet.has(s)) }))
+    eff.roles = eff.roles.map((r) => {
+      const spawnable = r.spawnable.filter((s) => roleSet.has(s) && s !== r.slug)
+      const out: TeamRoleDoc = { ...r, spawnable, skills: r.skills.filter((s) => skillSet.has(s)), mcpServers: r.mcpServers.filter((s) => mcpSet.has(s)) }
+      const required = r.canSpawn ? (r.requiredReports ?? []).filter((s) => spawnable.includes(s)) : []
+      if (required.length > 0) out.requiredReports = required
+      else delete out.requiredReports
+      return out
+    })
     eff.mcp = eff.mcp.map((m) => (m.roles ? { ...m, roles: m.roles.filter((s) => roleSet.has(s)) } : m))
   }
   return { effective: normalizeDoc(eff), pending, applied }

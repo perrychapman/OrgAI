@@ -407,11 +407,16 @@ try {
       await t.waitFor('card one ran', 20_000)
       check(true, 'g: Enter allows card 1 (its tool result "card one ran" is shown)')
 
-      // Card 2 is drawn at once. A `y` inside the 750 ms card-swap guard is ignored: the card stays and its tool does not run.
-      await t.waitFor('card-two', 20_000)
+      // Focus the new card before acting so this exercises the arrival guard, not an unfocused composer.
+      await t.waitFor(s => s.includes('card-two') && s.includes('Allow once'), 20_000)
+      const cardTwoDrawnAt = Date.now()
+      t.key('f2')
+      await t.waitFor(s => s.includes('card-two') && s.includes('Enter confirm'), 5000)
+      const cardTwoInputLag = Date.now() - cardTwoDrawnAt
       t.write('y')
-      await sleep(250)
-      check(CARD_ON_SCREEN.test(t.screen()) && !t.screen().includes('card two ran'), 'g: a `y` inside the card-swap guard is ignored (card 2 is still pending)', esc(t.screen()))
+      const guardShown = await t.waitFor(/(?:card just changed|card only just arrived)/i, 2000).then(() => true, () => false)
+      check(cardTwoInputLag < 200 && guardShown && t.screen().includes('card-two') && CARD_ON_SCREEN.test(t.screen()) && !t.screen().includes('card two ran'),
+        'g: a focused action inside the card-swap guard is ignored and explains why', `lag ${cardTwoInputLag} ms; ${esc(t.screen())}`)
       // After the guard, `n` + Enter denies it and the card leaves the tray.
       await sleep(900)
       t.key('f2')

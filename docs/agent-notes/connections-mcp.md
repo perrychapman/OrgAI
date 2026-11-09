@@ -37,7 +37,7 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   - `Role.connection` is read only through `roleConnection`; the root always uses the project's connection.
     `AdapterChoice.bridged` lists roles that run in a child session (runtime/bridge.ts `BridgedSessions`) on their own
     adapter and RunConnection (`ConnectionService.runConnectionFor`).
-  - Claude and mock start a bridged role with `delegate_agent`. Codex starts it through `spawn_agent`, which calls
+  - Claude and mock start a bridged role with `delegate_agent`. Codex starts it through `spawn_report`, which calls
     `ctx.bridge.spawn`.
   - A child ctx has `bridgedChild` set: no root-audience tools, a report prompt (`PromptFlags.bridged`) and no
     worktree. Adapters pass `bridgedRoles`, `bridgeVia` and `bridged` to buildRolePrompt and never give a bridged role
@@ -118,7 +118,13 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     `maskKeyLike`). Still unverified: whether a LiteLLM proxy serves `/v1/responses` for GPT models.
   - Harness tools are `dynamicTools` on `thread/start`, answered through `item/tool/call`. `update_plan` collides
     with a built-in Codex tool, so it is exposed as `orgai_update_plan`. Subagents are threads started by the
-    harness's own `spawn_agent` tool. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
+    harness's own `spawn_report` tool (renamed from `spawn_agent` on 2026-11-08, with `message_agent` / `list_team`; the old
+    names stay accepted through `canonicalNetworkTool` for threads saved before). **Codex's built-in multi-agent tools:** with
+    the old names, `gpt-6-luna` managers called Codex's native `subAgentActivity` tools instead of the harness spawn even with
+    `features.multi_agent(_v2)=false` (lab hierarchy trials: 7 of 8; `scripts/probe-codex-native-agents.mjs`, 2026-11-08,
+    manager layer only, features off: old names 8/10 runs native, 2/10 harness spawns; new names 0/10 native, 10/10 spawned both
+    reports). OrgAI now launches with those features off, interrupts and corrects any native item (one strike per turn, third
+    strike fails the agent; `--strict-delegation` fails the run) and refuses tool calls and approvals from threads it did not start. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
     (spends tokens, consent required) has not been run.
   - It is unverified that dynamic tools survive `thread/resume`. The adapter's MCP restart and run continuation
     assume they do.
