@@ -2117,6 +2117,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // A run nobody opened yet (another run of this project, or another project's): fetch its real summary.
       if (!existing) queueMicrotask(() => void get().fillSummary(e.runId))
       switch (e.type) {
+        case 'run.model':
+          run.summary = { ...run.summary, modelSelection: e.selection }
+          break
         case 'run.status':
           run.summary = {
             ...run.summary,
@@ -2316,7 +2319,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { projectId, kind, prompt, startedAt, resumedFrom, surface } = record.summary
         // Keep live fields (status, cost) from events; take identity fields from the main process.
         const title = run.summary.title ?? record.summary.title
-        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt,
+          connection: record.summary.connection,
+          modelAdapter: record.summary.modelAdapter,
+          modelSelection: run.summary.modelSelection ?? record.summary.modelSelection,
+          ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]

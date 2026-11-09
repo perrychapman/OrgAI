@@ -175,13 +175,16 @@ describe('orgai watch', () => {
     const done = runWatch(f.ctx, ['R1'])
     await flush()
     h.push('runs:event', { atSeq: 10, event: { type: 'agent.partial', runId: s.id, agentId: 'root', text: 'typing' } })
-    h.push('runs:event', ev(11, { type: 'run.status', runId: s.id, status: 'finished' }))
+    h.push('runs:event', ev(11, { type: 'transcript', runId: s.id, entry: { id: 'media', agentId: 'root', at: 1, block: { kind: 'tool_result', toolUseId: 't', content: '', isError: false, parts: [{ type: 'media', media: { kind: 'image', image: { mediaType: 'image/png', data: 'U0VDUkVU' } } }] } } }))
+    h.push('runs:event', ev(12, { type: 'run.status', runId: s.id, status: 'finished' }))
     expect(await done).toBe(EXIT.ok)
     const lines = f.out().trimEnd().split('\n').map((l) => JSON.parse(l))
     expect(lines[0]).toMatchObject({ schemaVersion: 1, type: 'snapshot', seq: 10, filterKey: 'fk1' })
     expect(lines[0].snapshot.activeRun.transcript[0].block.images[0]).toEqual({ mediaType: 'image/png', byteLength: 600, omittedBase64: true })
     expect(lines[1]).toMatchObject({ type: 'event', atSeq: 10, event: { type: 'agent.partial', text: 'typing' } })
-    expect(lines[2]).toMatchObject({ type: 'event', seq: 11, event: { type: 'run.status', status: 'finished' } })
+    expect(lines[2].event.entry.block.parts[0].media.image).toEqual({ mediaType: 'image/png', byteLength: 6, omittedBase64: true })
+    expect(f.out()).not.toContain('U0VDUkVU')
+    expect(lines[3]).toMatchObject({ type: 'event', seq: 12, event: { type: 'run.status', status: 'finished' } })
   })
 
   it('a run already ended at subscribe time exits at once', async () => {

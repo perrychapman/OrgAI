@@ -4,9 +4,10 @@ import { ChevronRight } from 'lucide-react'
 import type { CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_PATTERNS } from '@shared/types'
 import { AVAILABLE_NODE_STYLES, applyCanvasStyle, effectiveNodeStyle, shownStyle, styleLabel, type CanvasStyleId } from '../../lib/canvas'
-import { canvasAnnouncement, type CanvasSettings } from '../../lib/canvasSettings'
+import { canvasAnnouncement, SCENE_PALETTE_OPTIONS, type CanvasSettings } from '../../lib/canvasSettings'
 import { CanvasPresetGroup } from '../canvas/CanvasPresetGroup'
 import { CanvasPreview } from '../canvas/CanvasPreview'
+import { CanvasPresentationChoices } from '../canvas/CanvasPresentationChoices'
 import { Icon } from '../ui/Icon'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
@@ -90,16 +91,20 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
     <SettingsSection
       id={CANVAS_SECTION_ID}
       title="Canvas"
-      description="How the org chart and run canvases look. Both follow these settings."
+      description="Applies across the app, including Live and Team."
       testId="canvas-section"
     >
       <div className="canvas-section">
-        <div className="canvas-section-body">
+        <SettingsCard>
+          <CanvasPresentationChoices canvas={canvas} onPresentation={(presentation) => { change({ presentation }); setSaid(`Canvas presentation: ${presentation === 'graph' ? 'Graph' : 'Pocket Office'}.`) }} onPalette={(scenePalette) => { change({ scenePalette }); setSaid(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`) }} />
+        </SettingsCard>
+        <div className="canvas-section-body" data-presentation={canvas.presentation}>
           <div className="canvas-section-preview">
             <CanvasPreview />
           </div>
-          <div className="canvas-section-main">
-            <CanvasPresetGroup canvas={canvas} onPick={pick} variant="gallery" groupRef={groupRef} />
+          {canvas.presentation !== 'pocket-office' && <div className="canvas-section-main">
+            <h3>Graph styles</h3>
+            <CanvasPresetGroup canvas={canvas} onPick={pick} variant="gallery" groupRef={groupRef} label="Graph style" />
             <div className="canvas-customise">
               <button type="button" className="canvas-customise-toggle" data-testid="canvas-customise" aria-expanded={open} aria-controls={bodyId} onClick={toggle}>
                 <span className="canvas-customise-chevron">
@@ -180,7 +185,7 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
                 </div>
               </div>
             </div>
-          </div>
+          </div>}
         </div>
         <p className="sr-only" role="status" aria-live="polite" data-testid="canvas-announce">
           {said}

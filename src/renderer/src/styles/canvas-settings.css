@@ -18,12 +18,10 @@
  */
 .canvas-section-preview {
   min-width: 0;
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky);
   padding-block: var(--space-2);
   background: var(--surface-0);
 }
+.canvas-section-body:not([data-presentation='pocket-office']) .canvas-section-preview { position: sticky; top: 0; z-index: var(--z-sticky); }
 
 .settings-scroll:has(.canvas-section) {
   scroll-padding-top: calc(160px + 2px + var(--space-2) * 2 + var(--space-4));
@@ -45,6 +43,12 @@
     top: var(--space-4);
     padding-block: 0;
     background: transparent;
+  }
+  .canvas-section-body[data-presentation='pocket-office'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .canvas-section-body[data-presentation='pocket-office'] .canvas-section-preview {
+    grid-column: 1;
   }
   .canvas-section-main {
     grid-column: 1;
@@ -74,6 +78,10 @@
   width: 100%;
   height: 100%;
 }
+
+.canvas-preview[data-presentation='pocket-office'] { height: 260px; }
+.canvas-preview .office-controls, .canvas-preview .office-directory, .canvas-preview [data-testid='office-deliveries'] { display: none; }
+.canvas-preview .office-stage { overflow: hidden; }
 
 .canvas-preview .react-flow {
   background: transparent;
@@ -246,7 +254,32 @@
   display: grid;
   gap: var(--space-2);
   padding: var(--space-2);
+  max-height: min(75vh, 600px);
+  overflow-y: auto;
 }
+
+.canvas-choice-groups { display: grid; gap: var(--space-3); padding: var(--space-3); }
+.canvas-choice-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.canvas-choice-group legend { margin-bottom: var(--space-2); font-weight: var(--weight-semibold); }
+.canvas-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.canvas-palette-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.canvas-choice { position: relative; display: flex; align-items: center; gap: var(--space-2); min-width: 0; padding: var(--space-2); color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border-default); border-radius: var(--radius-md); cursor: pointer; }
+.canvas-choice:has(input:checked) { border-color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent-text); }
+.canvas-choice:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.canvas-choice input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.canvas-choice > :not(input) { pointer-events: none; }
+.canvas-choice-description { display: block; color: var(--text-secondary); font-size: var(--text-small); line-height: var(--text-small-lh); }
+.canvas-choice-check { margin-left: auto; color: var(--accent-text); }
+.canvas-office-thumb { position: relative; display: block; flex: none; width: 72px; height: 48px; overflow: hidden; image-rendering: pixelated; border: 1px solid var(--border-default); border-radius: var(--radius-sm); }
+.canvas-office-thumb > span { position: absolute; display: block; image-rendering: pixelated; }
+.canvas-office-thumb-desk { left: 24px; top: 8px; }
+.canvas-office-thumb-person { left: 11px; top: 17px; }
+.canvas-style-popover-body .canvas-choice-groups { padding: 0; }
+.canvas-style-popover-body .canvas-choice { flex-direction: column; align-items: flex-start; }
+.canvas-style-popover-body .canvas-choice-check { position: absolute; right: var(--space-2); top: var(--space-2); }
+.canvas-style-popover-body h4 { margin: 0; font-size: var(--text-body); }
+.canvas-style-trigger { gap: var(--space-2); }
+@container frame (max-width: 760px) { .canvas-style-trigger span { display: none; } }
 
 .canvas-style-popover-heading {
   margin: 0;

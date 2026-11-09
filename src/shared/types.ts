@@ -1816,6 +1816,12 @@ export const CANVAS_NODE_STYLES: readonly CanvasNodeStyle[] = ['card', 'compact'
 export type CanvasEdgeStyle = 'curved' | 'orthogonal' | 'straight'
 export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthogonal', 'straight']
 
+/** Presentation is independent of the saved graph layout, pattern and node preferences. */
+export type CanvasPresentation = 'graph' | 'pocket-office'
+export const CANVAS_PRESENTATIONS: readonly CanvasPresentation[] = ['graph', 'pocket-office']
+export type CanvasScenePalette = 'color' | 'neutral' | 'green'
+export const CANVAS_SCENE_PALETTES: readonly CanvasScenePalette[] = ['color', 'neutral', 'green']
+
 /** App-wide look. Main applies `theme` to nativeTheme.themeSource at startup and on every settings:set. */
 export interface AppearanceSettings {
   /** Default 'dark' until the light theme is signed off (docs/design/plan.md section 2). */
@@ -1823,6 +1829,10 @@ export interface AppearanceSettings {
   /** Accent color '#rrggbb' (lowercase). Default '#7c5cff'. */
   accent: string
   canvas: {
+    /** Missing on legacy inputs; normalization fills 'graph' without changing graph preferences. */
+    presentation?: CanvasPresentation
+    /** Scene artwork palette, independent of app theme. Normalization fills full 'color'. */
+    scenePalette?: CanvasScenePalette
     pattern: CanvasPattern
     /** Tint the canvas background with the accent. */
     tint: boolean
@@ -1835,6 +1845,14 @@ export interface AppearanceSettings {
   }
   /** 'system' honours prefers-reduced-motion; 'on' always reduces motion. */
   reduceMotion: 'system' | 'on'
+}
+
+/** DEFAULT_APPEARANCE and normalizeAppearance guarantee the new fields; legacy input literals stay valid. */
+export interface NormalizedAppearanceSettings extends AppearanceSettings {
+  canvas: AppearanceSettings['canvas'] & {
+    presentation: CanvasPresentation
+    scenePalette: CanvasScenePalette
+  }
 }
 
 /** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
@@ -2978,11 +2996,22 @@ export interface ImageAttachment {
   ref?: string
 }
 
+/** Returned media is data only: raster bytes or a bounded explanation; never a fetchable URL/path. */
+export type TranscriptMedia =
+  | { kind: 'image'; image: ImageAttachment }
+  | { kind: 'unsupported'; mediaType?: string; name?: string; reason: string }
+
+/** Ordered provider output. `content` remains the text fallback for older transcript readers. */
+export type TranscriptContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'media'; media: TranscriptMedia }
+
 export type TranscriptBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool_use'; id: string; name: string; input: unknown }
-  | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean }
+  | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean; parts?: TranscriptContentPart[] }
+  | { kind: 'media'; media: TranscriptMedia }
   /** `text` may be empty when the message is only images. */
   | { kind: 'user'; text: string; images?: ImageAttachment[] }
   /**
@@ -3193,7 +3222,28 @@ export interface SetupStartInput {
   surface?: RunSurface
 }
 
+/** Explicit root-model selection for a running or recoverable conversation. */
+export interface SwitchRunModelInput {
+  runId: string
+  model: string
+  connection?: ConnectionId
+}
+
+export interface SwitchRunModelResult {
+  /** May be a successor run after an explicit provider handoff; callers must follow its id. */
+  run: RunSummary
+  /** True only when the returned run is using the selection. False may also mean saved for continuation (reason explains). */
+  applied: boolean
+  reason?: string
+}
+
 export interface RunSummary {
+  /** Runtime actually used by this run, retained when selecting a different adapter for continuation. */
+  modelAdapter?: ProviderId
+  /** Main-owned original desktop conversation cap for model handoff accounting (positive USD only). */
+  conversationBudgetUsd?: number
+  /** Root selection; on an ended/paused run applies to its next continuation. Never alters project defaults. */
+  modelSelection?: { model: string; connection: ConnectionId }
   id: string
   projectId: string
   kind: RunKind
@@ -3564,6 +3614,7 @@ export interface UsageStatus {
 // ---------- Run events (main -> renderer) ----------
 
 export type RunEvent =
+  | { type: 'run.model'; runId: string; selection: { model: string; connection: ConnectionId } }
   | {
       type: 'run.status'
       runId: string
@@ -4823,6 +4874,7 @@ export interface OrgAIApi {
     decideMerge(input: { runId: string; reviewId: string; decision: MergeDecision }): Promise<void>
     /** A paused run: continue it now instead of waiting for the usage window to reset. */
     resumeNow(runId: string): Promise<RunSummary>
+    switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult>
     /** A paused run: keep it paused; the user continues it by hand. */
     cancelAutoResume(runId: string): Promise<void>
     /**
@@ -5817,6 +5869,7 @@ export const IPC = {
   runsDecide: 'runs:decide',
   runsContinue: 'runs:continue',
   runsResumeNow: 'runs:resumeNow',
+  runsSwitchModel: 'runs:switchModel',
   runsCancelAutoResume: 'runs:cancelAutoResume',
   runEvent: 'runs:event',
   setupStart: 'setup:start',

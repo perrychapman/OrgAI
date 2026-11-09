@@ -148,6 +148,19 @@ describe('transcriptRows', () => {
     expect(rows[0].text).not.toMatch(/[\x1b\x07]/)
   })
 
+  it('shows standalone and ordered tool-result media without image bytes', () => {
+    const image = { kind: 'image' as const, image: { mediaType: 'image/png' as const, data: 'U0VDUkVU' } }
+    let s = base()
+    s = applyRecord(s, { ...record(summary('r1', { status: 'running' })), transcript: [
+      entry('m', { kind: 'media', media: image }),
+      entry('r', { kind: 'tool_result', toolUseId: 't', content: '', isError: false, parts: [{ type: 'text', text: 'before' }, { type: 'media', media: image }, { type: 'media', media: { kind: 'unsupported', reason: 'unavailable' } }] })
+    ] })
+    s = setActiveRun(s, 'r1')
+    const rows = transcriptRows(s).rows
+    expect(rows.map((row) => row.text)).toEqual(['[image image/png 6 bytes]', 'before [image image/png 6 bytes] [unsupported media: unavailable]'])
+    expect(JSON.stringify(rows)).not.toContain('U0VDUkVU')
+  })
+
   it('merges the chain oldest first with a divider, maps every block kind, sanitizes text', () => {
     let s = base()
     const r1 = summary('r1', { status: 'finished', startedAt: 1000, endedAt: 2000, sessionId: 's' })

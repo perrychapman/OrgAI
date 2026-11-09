@@ -1,4 +1,6 @@
 import { basename } from 'node:path'
+import type { TranscriptContentPart, TranscriptMedia } from '@shared/types'
+import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { describeTool } from './activity'
 import {
   harnessToolName,
@@ -21,7 +23,7 @@ import {
  *   mcpToolCall      -> mcp__<server>__<tool>      webSearch  -> WebSearch {query}
  *   dynamicToolCall  -> harness tools as mcp__orgai__<name>; spawn_agent -> Agent, send_message -> SendMessage,
  *                       list_agents -> ListAgents (inputs renamed to the Claude shapes)
- * Ignored: plan, imageView, contextCompaction, hookPrompt and the rest. Codex's own multi-agent items
+ * Ignored: plan, contextCompaction, hookPrompt and the rest. Codex's own multi-agent items
  * (collabAgentToolCall, subAgentActivity) are logged: those agents are not governed by the org chart.
  */
 
@@ -37,7 +39,8 @@ export type CodexUpdate =
   | { type: 'partial'; threadId: string; text: string }
   | { type: 'thinking'; threadId: string; text: string }
   | { type: 'toolUse'; threadId: string; id: string; name: string; input: unknown; activity: string; state: 'tool' | 'waiting' }
-  | { type: 'toolResult'; threadId: string; toolUseId: string; content: string; isError: boolean }
+  | { type: 'media'; threadId: string; media: TranscriptMedia }
+  | { type: 'toolResult'; threadId: string; toolUseId: string; content: string; parts?: TranscriptContentPart[]; isError: boolean }
   | { type: 'tokens'; threadId: string; input: number; output: number; cachedInput: number }
   | { type: 'turnStarted'; threadId: string; turnId: string }
   | { type: 'turnCompleted'; threadId: string; turnId: string; status: TurnStatus; result?: string; error?: CodexTurnError }
@@ -175,9 +178,14 @@ export class CodexEventMapper {
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: fileChangeResult(item), isError: item.status === 'failed' || item.status === 'declined' }]
       case 'mcpToolCall': {
         const error = isRec(item.error) ? str(item.error.message) : undefined
-        const result = isRec(item.result) ? contentText(item.result.content) || (item.result.structuredContent ? safeJson(item.result.structuredContent) : '') : ''
-        return [{ type: 'toolResult', threadId, toolUseId: item.id, content: clip(error ?? result), isError: !!error || item.status === 'failed' }]
+        const result = isRec(item.result) && item.result.content != null ? normalizeTranscriptContent(item.result.content) : { content: '' }
+        if (!result.parts?.some(p => p.type === 'media')) delete result.parts
+        if (!result.content && !result.parts && isRec(item.result) && item.result.structuredContent) result.content = clip(safeJson(item.result.structuredContent))
+        return [{ type: 'toolResult', threadId, toolUseId: item.id, ...(error ? { content: clip(error) } : result), isError: !!error || item.status === 'failed' }]
       }
+      case 'imageView':
+        // Native imageView carries a local path, not returned image bytes. Never read that path.
+        return [{ type: 'media', threadId, media: normalizeTranscriptMedia(item) }]
       case 'dynamicToolCall':
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: clip(contentText(item.contentItems)), isError: item.success === false || item.status === 'failed' }]
       case 'webSearch':

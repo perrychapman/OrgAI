@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1080,17 +1081,6 @@ function permissionKey(toolName: string, input: unknown): string {
   }
 }
 
-function textOf(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map((b) => (b && typeof b === 'object' && 'text' in b ? String((b as { text: unknown }).text) : ''))
-      .filter(Boolean)
-      .join('\n')
-  }
-  return ''
-}
-
 export class ClaudeSession implements RuntimeSession {
   readonly finished: Promise<void>
   private input = new PushStream<SDKUserMessage>()
@@ -1367,6 +1357,27 @@ export class ClaudeSession implements RuntimeSession {
   async receive(message: PeerMessage): Promise<void> {
     if (this.abort.signal.aborted) return
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
+  /** Switch only the root at an idle boundary, preserving the existing conversation and grants. */
+  async switchModel(input: { model: string; connection?: RunConnection }): Promise<void> {
+    if (this.ctx.bridgedChild) throw new Error('Only the run root can switch models.')
+    if (!validModelId(input.model)) throw new Error('Invalid model id.')
+    if (input.connection && (input.connection.adapter !== this.ctx.connection?.adapter || input.connection.connection !== this.ctx.connection?.connection)) {
+      throw new Error('Switching connections requires transporting the conversation and is not supported by this session.')
+    }
+    if (this.ending || this.abort.signal.aborted || !this.queryInitSeen) throw new Error('This session is not live; continue the run before switching models.')
+    const state = this.settlement()
+    if (!state.rootIdle || !state.quiescent || this.ctx.pendingInteractions() > 0 || [...this.agents.values()].some((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error')) {
+      throw new Error('Switch models when the agents are idle and all decision cards are answered.')
+    }
+    await this.q.setModel(input.model)
+    this.root = { ...this.root, model: input.model }
+    const root = this.agents.get(ROOT_ID)
+    if (root) {
+      root.model = input.model
+      this.upsert(root)
+    }
   }
 
   /** Headless exec settlement view (cli-spec 6.2(2)). */
@@ -3433,6 +3444,9 @@ export class ClaudeSession implements RuntimeSession {
             this.seenBlocks.add(blockKey)
             a.lastText = block.text.trim().slice(0, 200)
             this.transcript(agentId, { kind: 'text', text: block.text })
+          } else if ((block as { type: string }).type === 'image') {
+            this.seenBlocks.add(blockKey)
+            this.transcript(agentId, { kind: 'media', media: normalizeTranscriptMedia(block) })
           } else if (block.type === 'thinking' && block.thinking?.trim()) {
             this.seenBlocks.add(blockKey)
             this.transcript(agentId, { kind: 'thinking', text: block.thinking })
@@ -3473,7 +3487,7 @@ export class ClaudeSession implements RuntimeSession {
               this.transcript(agentId, {
                 kind: 'tool_result',
                 toolUseId: block.tool_use_id,
-                content: textOf(block.content).slice(0, 4000),
+                ...normalizeTranscriptContent(block.content),
                 isError: !!block.is_error
               })
             }

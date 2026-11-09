@@ -73,6 +73,8 @@ import type {
   RunPlan,
   RunRecord,
   RunSummary,
+  SwitchRunModelInput,
+  SwitchRunModelResult,
   RunSurface,
   SkillUseCount,
   UserQuestion
@@ -119,7 +121,8 @@ import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { effectiveRunProject, execBudgetUsd } from './runOverrides'
+import { effectiveRunProject, execBudgetUsd, projectBudgetUsd } from './runOverrides'
+import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
 import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
 import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
@@ -888,6 +891,8 @@ export interface StartInput {
   resumeSessionId?: string
   /** The run being continued. */
   resumedFrom?: string
+  modelSelection?: RunSummary['modelSelection']
+  conversationBudgetUsd?: number
   /** Cost already recorded on the run being continued. */
   resumeBaseCostUsd?: number
   /** The continued run's plan; it carries over with a fresh automatic-continue count. */
@@ -1349,6 +1354,8 @@ export class RunManager {
     hiddenContext,
     scaffold,
     resumeSessionId,
+    modelSelection,
+    conversationBudgetUsd,
     resumedFrom,
     resumeBaseCostUsd,
     plan: carriedPlan,
@@ -1365,6 +1372,7 @@ export class RunManager {
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
+    let continuationBudget = conversationBudgetUsd !== undefined ? projectBudgetUsd(project) : undefined
     // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
     const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
     if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
@@ -1383,14 +1391,26 @@ export class RunManager {
     if (this.options.teamFiles && (kind === 'work' || kind === 'setup') && !isVirtualProjectId(project.id) && !quick && !buildWorkspace) {
       try {
         const fresh = this.options.teamFiles.beforeRun(project)
-        if (fresh.project?.id === project.id) project = fresh.project
+        if (fresh.project?.id === project.id) {
+          if (continuationBudget !== undefined && fresh.project !== project && conversationBudgetUsd !== undefined) {
+            const totalCap = Math.min(conversationBudgetUsd, projectBudgetUsd(fresh.project) ?? Infinity)
+            const prior = resumedFrom ? this.summary(resumedFrom) : null
+            const spent = prior ? this.chainOf(prior).reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0) : 0
+            continuationBudget = Math.min(continuationBudget, totalCap - spent)
+            conversationBudgetUsd = totalCap
+          }
+          project = fresh.project
+        }
         teamWarning = fresh.warning
       } catch (e) {
         log.warn(`Team files could not be checked before the run: ${(e as Error).message}`)
       }
     }
     // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
+    if (continuationBudget !== undefined && continuationBudget <= 0) throw new Error('The conversation budget is spent; switching models does not reset it.')
     project = this.options.mcp?.withLibrary?.(project) ?? project
+    // Team/library refreshes return stored projects, whose cap has not had conversation spend deducted.
+    if (continuationBudget !== undefined) project = { ...project, maxBudgetUsd: Math.min(continuationBudget, projectBudgetUsd(project) ?? Infinity) }
     // The Chat's single assistant settles its model before the adapter is chosen.
     let quickWarning: string | undefined
     if (team === 'single') project = singleRunProject(project, this.options.appSettings?.().quickRunModel)
@@ -1400,7 +1420,14 @@ export class RunManager {
       quickWarning = resolved.warning
     }
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
+    if (modelSelection) {
+      const selected = this.options.catalog?.().find((m) => m.id === modelSelection.model && m.connection === modelSelection.connection)
+      if (!selected && modelSelection.connection !== projectConnection(project)) throw new Error('Selected model is no longer available')
+      const originalConnection = projectConnection(project)
+      project = { ...project, provider: { ...project.provider, connection: modelSelection.connection, id: project.provider.id === 'mock' ? 'mock' : selected?.adapter ?? project.provider.id }, roles: project.roles.map((r) => r.reportsTo === null ? { ...r, model: modelSelection.model, connection: modelSelection.connection } : { ...r, connection: r.connection ?? originalConnection }) }
+    }
     const { adapter, choice } = this.choose(project, kind)
+    if (modelSelection && modelSelection.connection !== choice.connection) throw new Error('The original connection is no longer available for this session')
     const bridging = this.resolveBridged(project, choice, kind, { quick, team, buildWorkspace })
     const connection = this.options.resolveConnection?.(project, choice)
     const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
@@ -1425,6 +1452,8 @@ export class RunManager {
       status: 'starting',
       startedAt: Date.now(),
       totalCostUsd: 0,
+      modelAdapter: choice.adapter,
+      ...(conversationBudgetUsd !== undefined && conversationBudgetUsd > 0 && Number.isFinite(conversationBudgetUsd) ? { conversationBudgetUsd } : {}),
       // Labels the run's cost in the UI (CLI estimate, proxy prices, or none on a ChatGPT plan).
       connection: connection?.connection ?? choice.connection
     }
@@ -1526,7 +1555,7 @@ export class RunManager {
 
     const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
-      if (raw.type === 'run.usage') return
+      if (raw.type === 'run.usage' || raw.type === 'run.model') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       let e = raw
       // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
@@ -1623,6 +1652,7 @@ export class RunManager {
         }
       }
       if (exec) this.execEventSeen(active, e)
+      else if (summary.conversationBudgetUsd !== undefined && (e.type === 'agent.upsert' || e.type === 'run.cost')) this.checkExecBudget(active, e.type === 'agent.upsert' ? e.agent : undefined)
     }
 
     active.emit = emit
@@ -2162,8 +2192,14 @@ export class RunManager {
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         }
       }
+      const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
+      if (root && modelSelection) root.model = modelSelection.model
+      if (root && root.model !== 'inherit' && summary.connection) {
+        summary.modelSelection = { model: root.model, connection: summary.connection }
+        this.store.upsert(summary)
+      }
       active.ctx = ctx
-      if (exec) {
+      if (exec || summary.conversationBudgetUsd !== undefined) {
         // Budget before launch (cli-spec 6.2(3)): a spent chain (maxBudgetUsd 0 included) or an unpriced role model
         // ends the run as 'budget-exceeded' without ever starting the adapter.
         this.applyExecBudget(active, ctx)
@@ -2216,8 +2252,8 @@ export class RunManager {
   /** The exec budget of the run's effective project and what is left of it for the adapter (ctx.budgetUsd). */
   private applyExecBudget(a: ActiveRun, ctx: RuntimeContext): void {
     const o = a.summary.overrides
-    if (!o?.execMode) return
-    a.execBudget = execBudgetUsd(ctx.project, o)
+    if (!o?.execMode && a.summary.conversationBudgetUsd === undefined) return
+    a.execBudget = o?.execMode ? execBudgetUsd(ctx.project, o) : projectBudgetUsd(ctx.project)
     if (a.execBudget !== undefined) ctx.budgetUsd = Math.max(0, a.execBudget - a.chainPriorCostUsd)
     else delete ctx.budgetUsd
   }
@@ -2240,11 +2276,11 @@ export class RunManager {
   }
 
   /** Synchronous budget check on every agent.upsert of an exec run (after pricing). */
-  private checkExecBudget(a: ActiveRun, agent: AgentInstance): void {
+  private checkExecBudget(a: ActiveRun, agent?: AgentInstance): void {
     const budget = a.execBudget
     if (budget === undefined || a.finalizing) return
     const runId = a.summary.id
-    if (!a.summary.overrides?.allowUnpricedBudget) {
+    if (agent && !a.summary.overrides?.allowUnpricedBudget) {
       const unpriced = agent.usage?.models.find((m) => m.costUsd === null)
       let model = unpriced?.model
       if (!model && !a.priceChecked.has(agent.id)) {
@@ -2260,7 +2296,7 @@ export class RunManager {
         return
       }
     }
-    const cost = a.summary.usage?.costUsd ?? 0
+    const cost = Math.max(a.summary.usage?.costUsd ?? 0, a.summary.usage?.providerCostUsd ?? 0)
     if (a.chainPriorCostUsd + cost >= budget) {
       a.emit({ type: 'log', runId, level: 'warn', message: `The budget of $${budget.toFixed(2)} is reached ($${(a.chainPriorCostUsd + cost).toFixed(2)} estimated); the run ends.` })
       void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
@@ -2475,7 +2511,7 @@ export class RunManager {
     }
     this.closeTimers(a)
     this.refreshUsage(a, true)
-    s.execOutcome = outcome
+    if (s.overrides?.execMode) s.execOutcome = outcome
     if (endedBy) s.endedBy = endedBy
     else if (s.endedBy !== 'app') delete s.endedBy
     try {
@@ -2487,7 +2523,7 @@ export class RunManager {
     a.finalizeDone = true
     // The run leaves the live set here once its final status is written (session.finished's teardown waited for it).
     if (this.runs.get(s.id) === a) this.teardown(a)
-    if (!a.finalizedSent) {
+    if (s.overrides?.execMode && !a.finalizedSent) {
       a.finalizedSent = true
       this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
     }
@@ -4020,6 +4056,36 @@ export class RunManager {
     return { status: 'not-found', requestId }
   }
 
+  async switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult> {
+    this.refuseWhileQuitting()
+    if (!input || typeof input.runId !== 'string' || typeof input.model !== 'string' || !input.model || input.model.length > 200 || input.model.trim() !== input.model || /[\x00-\x1f\x7f]/.test(input.model)) throw new Error('Invalid model selection')
+    let run = this.summary(input.runId)
+    if (!run) throw new Error('Run not found')
+    run = this.chainOf(run).reduce((latest, item) => item.startedAt > latest.startedAt || (item.startedAt === latest.startedAt && item.resumedFrom === latest.id) ? item : latest, run)
+    const connection = input.connection ?? run.modelSelection?.connection ?? run.connection
+    if (!connection) throw new Error('Connection is required')
+    const model = (this.options.catalog?.() ?? []).find((m) => m.connection === connection && m.id === input.model)
+    if (!model) throw new Error('Model is not available on this connection')
+    const active = this.runs.get(run.id)
+    if (active && (connection !== run.connection || (active.adapter !== 'mock' && model.adapter !== active.adapter)) && !['finished', 'error', 'paused'].includes(run.status)) return { run, applied: false, reason: 'End this session, then select the model and send a message to continue with a transcript handoff.' }
+    const selection = { model: input.model, connection }
+    if (active && !['finished', 'error', 'paused'].includes(run.status)) {
+      if (active.execBudget !== undefined && active.chainPriorCostUsd + (run.usage?.costUsd ?? run.totalCostUsd) >= active.execBudget) return { run, applied: false, reason: 'The conversation budget is spent; switching models does not reset it.' }
+      if (active.execBudget !== undefined && !run.overrides?.allowUnpricedBudget && active.modelPriced && !active.modelPriced(input.model)) {
+        return { run, applied: false, reason: 'This model has no known price, so the budget cannot be enforced.' }
+      }
+      if (!active.session?.switchModel) return { run, applied: false, reason: 'This session cannot switch models.' }
+      try { await active.session.switchModel({ model: input.model }) }
+      catch (error) { return { run: this.summary(run.id) ?? run, applied: false, reason: (error as Error).message } }
+      const root = active.ctx?.roles.find((r) => r.reportsTo === null) ?? active.ctx?.roles[0]
+      if (root) root.model = input.model
+      active.priceChecked.clear()
+    }
+    const updated = this.patchSummary(run.id, { modelSelection: selection })!
+    this.broadcast({ type: 'run.model', runId: run.id, selection })
+    return { run: updated, applied: !active || ['finished', 'error', 'paused'].includes(run.status) ? false : true, ...(!active || ['finished', 'error', 'paused'].includes(run.status) ? { reason: 'Model will be used when the run continues.' } : {}) }
+  }
+
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
     this.refuseWhileQuitting()
     const active = this.runs.get(runId)
@@ -4238,7 +4304,7 @@ export class RunManager {
     if (!from) throw new Error('Run not found')
     if (from.projectId !== project.id) throw new Error('Run belongs to another project')
     if (from.status !== 'finished' && from.status !== 'error' && from.status !== 'paused') throw new Error('Run is still active; send a message instead')
-    if (!from.sessionId) throw new Error('This run has no session to continue')
+    if (!from.sessionId && !from.modelSelection) throw new Error('This run has no session to continue')
     const prompt = text.trim()
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(prompt, images)) throw new Error('Nothing to send')
@@ -4257,11 +4323,30 @@ export class RunManager {
 
     // Continue from the newest ended run of the chain, so no turn of a later continuation is lost.
     const target = chain
-      .filter((r) => r.sessionId && (r.status === 'finished' || r.status === 'error' || r.status === 'paused'))
+      .filter((r) => (r.sessionId || r.modelSelection) && (r.status === 'finished' || r.status === 'error' || r.status === 'paused'))
       .reduce((best, r) => (r.startedAt > best.startedAt || (r.startedAt === best.startedAt && r.resumedFrom === best.id) ? r : best), from)
     const sessionId = target.sessionId ?? from.sessionId
 
-    const overrides = continuedOverrides(target.overrides ?? from.overrides, opts)
+    const selectedAdapter = this.options.catalog?.().find((m) => m.id === target.modelSelection?.model && m.connection === target.modelSelection?.connection)?.adapter
+    const switching = target.modelSelection && (!target.sessionId || target.modelSelection.connection !== target.connection || (selectedAdapter && selectedAdapter !== (target.modelAdapter ?? project.provider.id) && (target.modelAdapter ?? project.provider.id) !== 'mock'))
+    const overrides = continuedOverrides(target.overrides ?? from.overrides, switching ? { ...opts, exec: !!target.overrides?.execMode } : opts)
+    // A new provider session must not regain the conversation's already spent desktop budget.
+    let carriedBudget = target.conversationBudgetUsd
+    if ((switching || carriedBudget !== undefined) && !overrides?.execMode) {
+      // A carried override is already the remaining allowance, whereas the stored conversation cap and the
+      // current project cap describe total spend. Never subtract the chain from a remaining allowance twice.
+      const spent = chain.reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0)
+      // An explicit continuation override is a new remaining allowance, unlike a carried original total.
+      const requestedCap = carriedBudget !== undefined && opts.overrides?.maxBudgetUsd !== undefined
+        ? spent + opts.overrides.maxBudgetUsd : Infinity
+      const cap = Math.min(carriedBudget ?? overrides?.maxBudgetUsd ?? Infinity, projectBudgetUsd(project) ?? Infinity, requestedCap)
+      if (Number.isFinite(cap)) {
+        if (spent >= cap) throw new Error('The conversation budget is spent; switching models does not reset it.')
+        project = { ...project, maxBudgetUsd: cap - spent }
+        if (overrides?.maxBudgetUsd !== undefined) overrides.maxBudgetUsd = cap - spent
+        carriedBudget = cap
+      }
+    }
     // A paused run is handed over to its continuation; it stays in history as finished. An exec run still waiting for
     // its reset (no execOutcome) whose continuation is not an exec run (the Desktop composer, `orgai resume` without
     // --exec) is finalized as 'interrupted' by the user, so its `orgai exec` follower ends instead of adopting the
@@ -4288,14 +4373,16 @@ export class RunManager {
       ...(prompt === RESUME_TEXT.trim() && target.title
         ? { title: target.title }
         : { titleContext: target.title ?? excerpt(target.prompt, 200) }),
-      hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
+      hiddenContext: [target.kind === 'setup' ? this.setup.hiddenContext(project) : '', switching ? modelHandoff(chain.map((r) => this.get(r.id)).filter((r): r is RunRecord => !!r)) : ''].filter(Boolean).join('\n\n') || undefined,
       // A Team-tray Architect session stays in the Team tray when it is continued or auto-resumed.
       ...(target.surface ? { surface: target.surface } : {}),
       // A Chat run keeps its folder and settings; an MCP build session reopens in the same workspace.
       ...(target.quick ? { quick: target.quick } : {}),
       ...(target.buildWorkspace ? { buildWorkspace: target.buildWorkspace } : {}),
       ...(target.team === 'single' ? { team: target.team } : {}),
-      resumeSessionId: sessionId,
+      resumeSessionId: switching ? undefined : sessionId,
+      ...(target.modelSelection ? { modelSelection: target.modelSelection } : {}),
+      ...(carriedBudget !== undefined ? { conversationBudgetUsd: carriedBudget } : {}),
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
       // On a proxy project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.
