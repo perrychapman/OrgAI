@@ -1958,39 +1958,6 @@ export interface AppSettings {
    * runs re-price on their next usage update); persisted runs keep the cost they were saved with.
    */
   modelPrices?: ModelPriceOverride[]
-  /**
-   * Terminal access: external CLI / TUI clients (host.hello from clientKind 'cli' | 'tui' over the host socket,
-   * cli-spec 3.3) are accepted only while this is true; otherwise host.hello answers 'terminal_server_disabled'.
-   * Default false (normalized: only a boolean true stays true). A host booted as 'headless-host' or 'inproc' accepts
-   * terminal clients for that session only (OrgAIHost.terminalAccess, bootstrap.ts), never saving true, unless the user
-   * has chosen a value (terminalServerChosen). A stored true without terminalServerChosen (an older build saved it on
-   * a headless boot) is read as false (store/settings.ts).
-   */
-  terminalServer: boolean
-  /**
-   * What Terminal access lets a terminal client do: host.hello grants at most these scopes (socketServer.ts
-   * scopesForAccessLevel). Missing = 'operate': read and operate (watch, start, send to, interrupt and stop runs);
-   * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
-   * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
-   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host applies it to
-   * every client too; only the CLI process that started it gets every scope, through RpcHelloParams.ownerProof (an
-   * in-memory key). Normalized: 'full' and an explicit 'operate' are stored (Wave 7: the choice is kept with
-   * terminalAccessLevelChosen); anything else is dropped.
-   */
-  terminalAccessLevel?: TerminalAccessLevel
-  /**
-   * Main-owned: true once a settings:set changed terminalServer (the user's choice in App settings, or a configure
-   * client). A headless or in-process boot then never turns terminal access on by itself. settings:set never writes
-   * it directly (args.ts settingsSetArgs).
-   */
-  terminalServerChosen?: boolean
-  /**
-   * Main-owned (Wave 7, cli-standalone.md round 6 item 11): true once the user chose terminalAccessLevel (a settings:set
-   * that changed it, `orgai terminal-access --level`, or the answer to `orgai daemon start --runtime node`'s one
-   * question). While it is unset that question is asked once on an interactive terminal. settings:set never writes it
-   * directly (args.ts settingsSetArgs).
-   */
-  terminalAccessLevelChosen?: boolean
 }
 
 /**
@@ -4979,12 +4946,14 @@ export interface OrgAIApi {
     logPath(): Promise<string>
     /** Version, platform, data and logs folders, and whether the token-free mock adapter is available. */
     info(): Promise<AppInfo>
-    /** The orgai command shim's state (cli-spec 7(3)). Never rejects. */
-    cliShimStatus(): Promise<CliShimStatus>
-    /** Write or refresh the orgai command shim. Never rejects; failures come back as ok: false with a message. */
-    installCliShim(): Promise<CliShimResult>
-    /** Remove the orgai command shim (only OrgAI's own). Never rejects; failures come back as ok: false. */
-    uninstallCliShim(): Promise<CliShimResult>
+    /** The orgai command's state (5.3), from file metadata only. Never rejects. */
+    cliCommandStatus(): Promise<CliCommandStatus>
+    /** Run `npm install -g orgai-cli@<tag> --ignore-scripts` in the main process. One at a time. Never rejects. */
+    installCliCommand(): Promise<CliCommandResult>
+    /** Cancel the running install; true when one was running. */
+    cancelCliInstall(): Promise<boolean>
+    /** Remove the old app shim (only OrgAI's own file). Never rejects; failures come back as ok: false. */
+    removeOldCliShim(): Promise<CliCommandResult>
     /**
      * app:reference: search or read OrgAI's own reference (the atlas of screens and settings, menus, shortcuts,
      * harness tools, host channels, CLI commands, connectors and bundled docs), locate a setting or feature, or a
@@ -5773,44 +5742,47 @@ export interface AppInfo {
   packaged: boolean
 }
 
-// ---- orgai command shim (cli-spec 7(3), Wave 6) ----
+// ---- Install the orgai command (cli-standalone-default.md 5.3) ----
 
 /**
- * Where the orgai command shim stands. 'unavailable': this OrgAI cannot install it (a dev build, ORGAI_DATA_DIR set,
- * a translocated / disk-image / AppImage / portable copy; `reason` says which). 'not-installed': no file at `path`.
- * 'installed': OrgAI's shim runs this install's launcher. 'outdated': OrgAI's shim runs another launcher (`target`).
- * 'foreign': a file at `path` that OrgAI did not write; OrgAI never overwrites or removes it.
+ * What the Terminal row shows. Read from file metadata only; no `orgai` found on PATH is ever run.
+ * 'npm': the first orgai on the login PATH is an npm-installed orgai-cli (`version` from its package.json).
+ * 'old-shim': an older OrgAI app's command (no longer works). 'other': another program named orgai.
  */
-export type CliShimState = 'unavailable' | 'not-installed' | 'installed' | 'outdated' | 'foreign'
+export type CliCommandState = 'npm' | 'old-shim' | 'other' | 'not-installed'
 
-/** The orgai command shim (app:cliShimStatus). Structured-clone safe. */
-export interface CliShimStatus {
-  state: CliShimState
-  /** The shim file (~/.local/bin/orgai or %LOCALAPPDATA%\OrgAI\bin\orgai.cmd); '' when unknown. */
-  path: string
-  /** The shim's folder; '' when unknown. */
-  binDir: string
-  /** The launcher an OrgAI shim runs now (for 'outdated': the other install's). */
-  target?: string
-  /** True when binDir is on the login shell PATH; undefined when unknown. */
-  onPath?: boolean
-  /** One plain sentence for 'unavailable' and 'foreign'. */
-  reason?: string
-  /**
-   * Wave 7 (cli-standalone.md 8.2, 9.2): the first `orgai` on the login shell PATH that is not this install's shim (an
-   * npm install, an archive, another app's shim); unset when there is none or PATH could not be read. The Terminal row
-   * then says "The orgai command from npm (<version>) is on your PATH" and offers no Install.
-   */
-  otherCli?: { path: string; channel?: InstallChannel; version?: string }
+/** The answer of app:cliCommandStatus. Structured-clone safe. */
+export interface CliCommandStatus {
+  state: CliCommandState
+  /** The first orgai on the login PATH, when there is one. */
+  path?: string
+  /** The installed orgai-cli version (state 'npm'). */
+  version?: string
+  /** An old app shim file sits at its usual place and can be removed (it may be shadowed by an npm install). */
+  oldShim: boolean
+  /** An absolute npm was found on the login PATH. */
+  npmFound: boolean
+  /** The dist-tag the install uses: 'latest' for a stable app, 'next' for a prerelease. */
+  tag: 'latest' | 'next'
+  /** `npm install -g orgai-cli@<tag>`: what Install runs (plus --ignore-scripts) and what Copy puts on the clipboard. */
+  command: string
+  /** An install is running now. */
+  installing: boolean
 }
 
-/** The answer of app:installCliShim / app:uninstallCliShim. Never a rejection: failures are ok: false. */
-export interface CliShimResult {
+/** The answer of app:installCliCommand, app:removeOldCliShim. Never a rejection: failures are ok: false. */
+export interface CliCommandResult {
   ok: boolean
   /** One plain sentence for the user. */
   message: string
+  /** npm's output: the last 200 lines, at most 64 KB, control characters removed. */
+  output?: string
+  /** The `--prefix` hint after a permission failure. */
+  hint?: string
+  /** True when the user cancelled the install. */
+  cancelled?: boolean
   /** The status after the change (or the unchanged status after a failure). */
-  status: CliShimStatus
+  status: CliCommandStatus
 }
 
 /**
@@ -5898,12 +5870,14 @@ export const IPC = {
   appOpenLogs: 'app:openLogs',
   appLogPath: 'app:logPath',
   appInfo: 'app:info',
-  /** Desktop only (cli-spec 7(3)): the orgai command shim's CliShimStatus. Refused over the socket. */
-  appCliShimStatus: 'app:cliShimStatus',
-  /** Desktop only (cli-spec 7(3)): write or refresh the orgai command shim; answers CliShimResult. */
-  appInstallCliShim: 'app:installCliShim',
-  /** Desktop only (cli-spec 7(3)): remove the orgai command shim when it is OrgAI's; answers CliShimResult. */
-  appUninstallCliShim: 'app:uninstallCliShim',
+  /** Desktop only (5.3): the orgai command's CliCommandStatus. */
+  appCliCommandStatus: 'app:cliCommandStatus',
+  /** Desktop only (5.3): run the npm install of orgai-cli; answers CliCommandResult. */
+  appInstallCliCommand: 'app:installCliCommand',
+  /** Desktop only (5.3): cancel the running install; answers boolean. */
+  appCancelCliInstall: 'app:cancelCliInstall',
+  /** Desktop only (5.3): remove the old app shim when it is OrgAI's; answers CliCommandResult. */
+  appRemoveOldCliShim: 'app:removeOldCliShim',
   permissionsList: 'permissions:list',
   permissionsIgnored: 'permissions:ignored',
   permissionsRemove: 'permissions:remove',
@@ -6421,23 +6395,14 @@ export const HOST_PROTOCOL_VERSION = 1
 export type HostScope = 'read' | 'operate' | 'decide' | 'configure'
 export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
 
-/** AppSettings.terminalAccessLevel: 'operate' grants read + operate, 'full' every scope. */
-export type TerminalAccessLevel = 'operate' | 'full'
+/** Who says host.hello: the orgai command ('tui' counts as interactive). The OrgAI app is never a socket client. */
+export type HostClientKind = 'tui' | 'cli'
 
 /**
- * Who says host.hello. 'cli' and 'tui': the orgai command (the terminal UI counts as interactive). 'desktop' (Wave 7,
- * docs/design/cli-standalone.md 4.4): the OrgAI app asking a Node host to hand over the data folder; such a connection
- * gets the handoff grant only (RpcHelloResult.handoff, HOST_HANDOFF_METHODS), whatever Terminal access is.
+ * 'desktop': the Electron app with a window (it owns its data folder but serves no socket). 'inproc': pure Node inside
+ * the CLI command that started it. Capabilities per kind: HOST_KIND_CAPABILITIES.
  */
-export type HostClientKind = 'tui' | 'cli' | 'desktop'
-
-/**
- * 'desktop': the Electron app with a window. 'headless-host': the Electron app started with --headless-host. 'inproc':
- * pure Node inside the CLI command that started it. 'node' (Wave 7, cli-standalone.md 4.2): a detached pure-Node
- * background host (`orgai daemon start --runtime node`, hidden `orgai daemon run-node`). Capabilities per kind:
- * HOST_KIND_CAPABILITIES.
- */
-export type HostKind = 'desktop' | 'headless-host' | 'inproc' | 'node'
+export type HostKind = 'desktop' | 'inproc'
 
 export type HostState = 'starting' | 'ready' | 'draining'
 
@@ -6451,8 +6416,8 @@ export interface DaemonInfo {
   /** Socket path (unix) or pipe name (win32). */
   endpoint: string
   /**
-   * false while the host binds no listener and has no daemon.secret (Terminal access off, review M11): clients answer
-   * "Terminal access is off" without connecting. Absent = listening.
+   * false while the host binds no listener and has no daemon.secret (the desktop app never listens): clients do not
+   * connect to it. Absent = listening.
    */
   listening?: false
   state: HostState
@@ -6460,6 +6425,10 @@ export interface DaemonInfo {
   startedAt: number
   hostKind?: HostKind
   appVersion?: string
+  /** The owning process's cwd at boot (written by the orgai CLI; absent for older records and the desktop). */
+  ownerCwd?: string
+  /** Set when the record said hostKind 'node' (a background host of an older version, read as 'inproc'). Never written. */
+  legacyKind?: 'node'
 }
 
 /** Step 1 of the handshake: host -> client, sent immediately on socket connect. */
@@ -6491,10 +6460,10 @@ export interface RpcHelloParams {
    */
   clientProof: string
   /**
-   * Only from the CLI process that started a `--host inproc` host: HMAC-SHA256(that host's in-memory owner key,
+   * Only from the CLI process that started its in-process host: HMAC-SHA256(that host's in-memory owner key,
    * JSON.stringify(['owner:v1', hostInstanceId, hostNonce, clientNonce, clientProof])) (protocol.ts ownerProof). A
-   * matching one is granted every requested scope; any other client of that host is capped by Terminal access like
-   * on every other host. Never on disk, so a process that read daemon.secret still cannot make it.
+   * matching one is granted every requested scope; any other client of that host is refused not_owner before any
+   * method runs. Never on disk, so a process that read daemon.secret still cannot make it.
    */
   ownerProof?: string
 }
@@ -6519,19 +6488,9 @@ export interface RpcHelloResult {
   /** Populated when clientVersion !== appVersion; 'read', 'operate', and 'decide' still work when protocolVersion matches. */
   versionSkewWarning?: string
   /**
-   * Wave 7 (cli-standalone.md 4.4 step 5, D8): true for a `clientKind: 'desktop'` hello, absent otherwise. Such a
-   * connection is granted exactly ['read', 'configure'] (host.status needs 'read', host.stop 'configure'), whatever
-   * Terminal access is (off, 'operate' or 'full'), and the socket server refuses every method other than
-   * HOST_HANDOFF_METHODS (host.status, host.stop, forced included) before gateRequest runs. Bound into hostProof only
-   * when true (protocol.ts hostProof appends it), so a hello without it keeps its existing proof; hostClient.ts
-   * parseHelloResult keeps it and checks the proof with it.
-   */
-  handoff?: true
-  /**
    * Canonical structured full-transcript HMAC (binds all host fields):
    * HMAC-SHA256(daemon.secret,
    *   JSON.stringify(['host:v1', protocolVersion, hostInstanceId, clientNonce, hostNonce, hostKind, appVersion, dataDir, mock, grantedScopes]))
-   * with `true` appended after grantedScopes when `handoff` is true.
    */
   hostProof: string
 }
@@ -6543,6 +6502,8 @@ export type HostRpcErrorCode =
   | 'unknown_channel'
   | 'desktop_unavailable'
   | 'agent_descendant_refused'
+  /** host.hello: an in-process (orgai CLI) host serves only the process that started it; no valid owner proof. */
+  | 'not_owner'
   | 'stale_target_digest'
   | 'stale_revision'
   | 'scope_denied'
@@ -6940,8 +6901,7 @@ export interface HostStatusResult {
   startedAt: number
   activity: HostActivitySnapshot
   /**
-   * Wave 7 (cli-standalone.md 4.4 step 4): what a `host.stop({ handoff: true })` would wait for, for the app's waiting
-   * window. Absent from hosts older than Wave 7 (and until WP-F fills it).
+   * The host-wide run counts (the TUI's quit confirm counts them). Absent when the host has no run state to report.
    */
   handoff?: HostHandoffFacts
 }
@@ -6949,20 +6909,12 @@ export interface HostStatusResult {
 /** host.stop input (scope 'configure'). Without force the host refuses while any lease is held. */
 export interface HostStopInput {
   force?: boolean
-  /**
-   * Wave 7 (cli-standalone.md 4.4 step 4): the OrgAI app asks a Node host to hand over the data folder. Without force
-   * the stricter handoff predicate applies: refused while any run is live in any form (working, idle, waiting on a
-   * card, held, paused with a resume pending) or any card is open, besides the leases. Ignored with force.
-   */
-  handoff?: boolean
 }
 
 export interface HostStopResult {
   stopping: boolean
   /** Set when the stop was refused: the non-zero lease counts that blocked it. */
   refusedBecause?: Partial<Record<ActivityLeaseKind, number>>
-  /** Wave 7: set when a handoff stop was refused: the non-zero HostHandoffFacts counts that blocked it. */
-  handoffBlockers?: Partial<Record<HostHandoffBlocker, number>>
 }
 
 /** host.subscribe input (scope 'read'). */
@@ -6991,22 +6943,16 @@ export const DEFAULT_DAEMON_IDLE_MINUTES = 30
 
 // ---------- Wave 7 (standalone CLI) ----------
 //
-// Contracts of docs/design/cli-standalone.md (cli-spec Wave 7): the Node background host, host capabilities, the
-// app's handoff from a Node host, the install channel and secure storage's host channels. Everything here is
+// Contracts of docs/design/cli-standalone.md (cli-spec Wave 7): host capabilities, the install channel and secure
+// storage's host channels (the Node background host and the app's handoff from it are gone). Everything here is
 // structured-clone and JSON safe; no secret value or data key ever appears in these shapes. The vault file format,
 // the key custodians and the SecretStore API live in src/main/store/vaultTypes.ts (main only).
 
 /** Every HostKind, in a stable order (ownership.ts parseDaemonInfo, hostClient.ts parseHelloResult). */
-export const HOST_KINDS: readonly HostKind[] = ['desktop', 'headless-host', 'inproc', 'node']
+export const HOST_KINDS: readonly HostKind[] = ['desktop', 'inproc']
 
 /** Every HostClientKind (socketServer.ts helloProblem). */
-export const HOST_CLIENT_KINDS: readonly HostClientKind[] = ['cli', 'tui', 'desktop']
-
-/**
- * Hosts that run in the background, detached from the command that asked for them (cli-standalone.md 4.1): what
- * `--host daemon` and `orgai daemon start` wait for. Never 'inproc', whose daemon.json belongs to another command.
- */
-export const BACKGROUND_HOST_KINDS: readonly HostKind[] = ['headless-host', 'desktop', 'node']
+export const HOST_CLIENT_KINDS: readonly HostClientKind[] = ['cli', 'tui']
 
 /** What a host kind can do (cli-standalone.md 4.2): replaces `hostKind === 'inproc'` checks. */
 export interface HostKindCapabilities {
@@ -7018,9 +6964,7 @@ export interface HostKindCapabilities {
 
 export const HOST_KIND_CAPABILITIES: Readonly<Record<HostKind, HostKindCapabilities>> = {
   desktop: { canOpenWindows: true, inProcess: false },
-  'headless-host': { canOpenWindows: true, inProcess: false },
-  inproc: { canOpenWindows: false, inProcess: true },
-  node: { canOpenWindows: false, inProcess: false }
+  inproc: { canOpenWindows: false, inProcess: true }
 }
 
 /** HOST_KIND_CAPABILITIES[kind].canOpenWindows; false for an unknown value. */
@@ -7057,27 +7001,9 @@ export interface InstallInfo {
   problem?: string
 }
 
-// ---- Handoff from a Node host to the app (cli-standalone.md 4.4) ----
+// ---- Host-wide run counts ----
 
-/**
- * The only methods a handoff connection (RpcHelloResult.handoff) may call. socketServer.ts applies this filter before
- * gateRequest (anything else answers scope_denied without reaching the registry); the connection's grantedScopes are
- * exactly HOST_HANDOFF_SCOPES, so both methods pass the gate's scope check whatever Terminal access is.
- */
-export const HOST_HANDOFF_METHODS: readonly HostMethod[] = ['host.status', 'host.stop']
-
-/** The grantedScopes of every handoff connection: host.status needs 'read', host.stop 'configure'. */
-export const HOST_HANDOFF_SCOPES: readonly HostScope[] = ['read', 'configure']
-
-/** The peer-check budget of a `clientKind: 'desktop'` hello (the others keep the shorter default). */
-export const DESKTOP_HELLO_PEER_CHECK_MS = 2_000
-
-/** What a non-forced `host.stop({ handoff: true })` waits for, besides the activity leases. */
-export type HostHandoffBlocker = 'workingRuns' | 'waitingRuns' | 'heldRuns' | 'pausedRuns' | 'openCards'
-
-export const HOST_HANDOFF_BLOCKERS: readonly HostHandoffBlocker[] = ['workingRuns', 'waitingRuns', 'heldRuns', 'pausedRuns', 'openCards']
-
-/** host.status `handoff`: every count the app's waiting window shows. */
+/** host.status `handoff`: the host-wide run counts. */
 export interface HostHandoffFacts {
   /** Runs starting, running or stopping. */
   workingRuns: number
@@ -7089,7 +7015,7 @@ export interface HostHandoffFacts {
   pausedRuns: number
   /** Open decision cards across every run. */
   openCards: number
-  /** Authenticated terminal sessions (cli and tui sockets), handoff connections excluded. */
+  /** Authenticated terminal sessions (cli and tui sockets). */
   terminalSessions: number
 }
 
@@ -7115,8 +7041,7 @@ export type CustodyFailureKind = 'unavailable' | 'locked' | 'missing' | 'denied'
 
 /**
  * SecretStore.status(key) (5.4): 'set' (readable here), 'unset' (stored nowhere, or deleted), or unreadable with the
- * reason to show ("Saved by the OrgAI app and not yet shared with the orgai command: open the app once", "The secret
- * vault is locked: ..."). Never the value.
+ * reason to show ("This saved secret cannot be decrypted on this computer account. Enter it again", "Secure storage is locked: ..."). Never the value.
  */
 export type SecretStatus = 'set' | 'unset' | { unreadable: string }
 
@@ -7241,7 +7166,7 @@ export interface SecretsUndeleteInput {
 
 export interface SecretsUndeleteResult {
   restored: boolean
-  /** Why it was not restored ("This deleted secret was saved by the OrgAI app; open the app to restore it"). */
+  /** Why it was not restored ("This deleted secret cannot be restored here"). */
   reason?: string
 }
 
@@ -7281,7 +7206,7 @@ export type SecretsIpcChannel = (typeof SECRETS_IPC)[keyof typeof SECRETS_IPC]
 export interface UnreadableSecretSlot {
   /** The slot name (an env var or header name). Never a value. */
   name: string
-  /** SecretStatus.unreadable: "Saved by the OrgAI app and not yet shared with the orgai command: open the app once", ... */
+  /** SecretStatus.unreadable: "This saved secret cannot be decrypted on this computer account. Enter it again", ... */
   reason: string
 }
 
@@ -8003,7 +7928,7 @@ export type AppNavigateOutcome = { ok: true; path: string } | { ok: false; refus
 
 /**
  * AppSettings fields an agent may propose (propose_app_settings), as dotted paths into AppSettings. Never main-owned
- * fields, connections, proxies, auth, terminal access, model prices or the default connection (change those in App
+ * fields, connections, proxies, auth, model prices or the default connection (change those in App
  * settings). Each path's top-level key has `proposable: true` in APP_SETTING_DOCS (atlas.test.ts checks).
  */
 export const APP_SETTINGS_PROPOSABLE_FIELDS = [

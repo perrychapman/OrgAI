@@ -336,15 +336,14 @@ Codex is not bundled: install \`@openai/codex\` yourself (or set \`ORGAI_CODEX_P
 
 ## Hosts
 
-Every command talks to an OrgAI host that owns the data folder (one owner at a time):
+\`orgai\` runs its own host inside the command, for as long as the command runs, and shares nothing with the OrgAI
+desktop app. Only one \`orgai\` runs on a data folder at a time: a second command on the same folder is refused at once
+(exit 6) and names the one that owns it. A second data folder (\`--data-dir\`) is a separate owner.
 
-- If the OrgAI app (or a background host) is running, \`orgai\` connects to it.
-- If the app is installed but not running, \`orgai\` starts it in the background (no window).
-- With no app installed, the command runs the host inside itself for as long as it runs.
-  \`orgai daemon start\` keeps one running in the background instead.
-
-The CLI and the app share one data folder by default (projects, runs, secrets). With both installed, keep them on the
-same version: a CLI of another version can read and watch the app's runs but cannot change settings.
+The data folder is \`orgai-cli\` in your user configuration folder (\`~/Library/Application Support/orgai-cli\` on macOS,
+\`%APPDATA%\\orgai-cli\` on Windows, \`$XDG_CONFIG_HOME/orgai-cli\` or \`~/.config/orgai-cli\` on Linux). Set
+\`ORGAI_CLI_DATA_DIR\` or pass \`--data-dir\` to use another folder. Its \`product.json\` marks it as the CLI's; \`orgai\`
+refuses a folder that belongs to the desktop app.
 
 ## Secrets
 
@@ -353,13 +352,13 @@ credential store keeps (Keychain on macOS, the Windows credential store, Secret 
 a secret as an argument: use \`--from-env VAR\` or \`--stdin\`. \`orgai secrets status\` shows the vault's state.
 
 Where no credential store is available (a server, a container, CI), \`orgai secrets init --key-file <path>\` keeps
-the vault key in a file instead. **Anyone who can read that key file can read every stored secret**: keep it outside
+the vault key in a file instead (set \`ORGAI_CLI_VAULT_KEY_FILE\` to use it on every command). **Anyone who can read that key file can read every stored secret**: keep it outside
 the data folder, readable only by you, and never commit or share it.
 
 ## The app and this package
 
-The OrgAI desktop app ships its own copy of the \`orgai\` command (App settings > General > Advanced settings >
-Terminal). When this npm package is first on your PATH, the app says so and does not install its own command over it.
-\`orgai doctor\` lists every \`orgai\` on your PATH, which one runs, and whether a newer one is shadowed.
+The OrgAI desktop app is a separate product with its own data folder, connections, projects and secrets; nothing is
+shared with this package. If an older app version installed its own \`orgai\` command, \`orgai doctor\` lists every
+\`orgai\` on your PATH, which one runs, and whether another is shadowed.
 `
 }

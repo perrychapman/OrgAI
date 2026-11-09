@@ -4,7 +4,7 @@
  * for it, else the platform's OS scheme (macOS keychain, Windows dpapi-user, Linux secret-service; none elsewhere).
  * Electron-free; relative imports only.
  */
-import { VAULT_KEY_FILE_ENV, type CustodianFactory, type CustodianRequest, type KeyCustodian, type VaultCustody, type VaultCustodyScheme } from '../vaultTypes'
+import { CustodyError, vaultNames, type CustodianCreated, type CustodianFactory, type CustodianProbe, type CustodianRequest, type KeyCustodian, type VaultCustody, type VaultCustodyScheme, type VaultProduct } from '../vaultTypes'
 import type { RemovableKeyCustodian } from './common'
 import { DpapiCustodian } from './dpapi'
 import { KeychainCustodian } from './keychain'
@@ -37,6 +37,8 @@ export interface ChooseCustodySchemeInput {
   keyFileRequested?: boolean
   env?: Env
   platform?: NodeJS.Platform
+  /** Whose key-file variable decides (default 'desktop'). */
+  product?: VaultProduct
 }
 
 /** The scheme to use (5.3 "Choice of scheme"); null when none is usable for a new vault on this platform. */
@@ -44,7 +46,7 @@ export function chooseCustodyScheme(input: ChooseCustodySchemeInput = {}): Vault
   const recorded = typeof input.recorded === 'string' ? input.recorded : input.recorded?.scheme
   if (recorded) return recorded
   const env = input.env ?? process.env
-  if (input.keyFileRequested || (env[VAULT_KEY_FILE_ENV] ?? '').trim() !== '') return 'key-file'
+  if (input.keyFileRequested || (env[vaultNames(input.product).keyFileEnv] ?? '').trim() !== '') return 'key-file'
   return platformCustodyScheme(input.platform ?? process.platform)
 }
 
@@ -58,6 +60,8 @@ export interface CustodianFactoryOptions {
   /** child_process.spawn stand-in (tests). */
   spawner?: CustodianSpawner
   timeoutMs?: number
+  /** Whose names and variables the custodians use (default 'desktop'). */
+  product?: VaultProduct
   /** `secrets init --key-file <path>`: the key file asked for now. */
   keyFile?: string
   /** `secrets init --key-file <path> --import`. */
@@ -77,7 +81,51 @@ export interface CustodianFactoryOptions {
 
 /** One custodian per scheme (the store asks for the recorded scheme, or for chooseCustodyScheme's answer). */
 export function createCustodian(scheme: VaultCustodyScheme, opts: CustodianFactoryOptions): RemovableKeyCustodian {
+  const inner = createRawCustodian(scheme, opts)
+  return opts.product === 'cli' ? cliTexts(inner) : inner
+}
+
+const CLI_TEXT_RULES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/(?<!uses as its key \()\bORGAI_VAULT_/g, 'ORGAI_CLI_VAULT_'],
+  [/(ORGAI_CLI_VAULT_KEY_FILE) to a 32-byte key file/g, '$1 to a key file (see `orgai secrets init --key-file`)'],
+  [
+    /A file already exists at (.*?); OrgAI never overwrites a key file\. Choose another path, or use this file only if it is already this vault's key\./gs,
+    'A file already exists at $1; OrgAI never overwrites a key file. To use it as the vault\'s key, run `orgai secrets init --key-file "$1" --import`.'
+  ],
+  [/OrgAI Vault item/g, 'OrgAI CLI Vault item'],
+  [/OrgAI vault item/g, 'OrgAI CLI vault item']
+]
+
+/** The CLI's wording of a custodian's reason: its variables and item names (the shared texts name the desktop's). */
+export function cliWording(text: string): string {
+  return CLI_TEXT_RULES.reduce((t, [re, to]) => t.replace(re, to), text)
+}
+
+/** Wraps a custodian so every reason it reports uses the CLI's names (spec 3.3: no app references). */
+function cliTexts(c: RemovableKeyCustodian): RemovableKeyCustodian {
+  const wrap = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run()
+    } catch (e) {
+      if (e instanceof CustodyError) throw new CustodyError(e.kind, cliWording(e.reason))
+      throw e
+    }
+  }
+  // A prototype link keeps every other member (a key-file custodian's path helpers) reachable.
+  const wrapped = Object.create(c) as RemovableKeyCustodian
+  wrapped.probe = async (): Promise<CustodianProbe> => {
+    const r = await wrap(() => c.probe())
+    return r.ok ? r : { ...r, reason: cliWording(r.reason) }
+  }
+  wrapped.create = (vaultId: string): Promise<CustodianCreated> => wrap(() => c.create(vaultId))
+  wrapped.open = (vaultId: string, custody: VaultCustody): Promise<Buffer> => wrap(() => c.open(vaultId, custody))
+  wrapped.removeItem = (vaultId: string, custody: VaultCustody): Promise<void> => wrap(() => c.removeItem(vaultId, custody))
+  return wrapped
+}
+
+function createRawCustodian(scheme: VaultCustodyScheme, opts: CustodianFactoryOptions): RemovableKeyCustodian {
   const helper = {
+    ...(opts.product ? { product: opts.product } : {}),
     ...(opts.env ? { env: opts.env } : {}),
     ...(opts.platform ? { platform: opts.platform } : {}),
     ...(opts.spawner ? { spawner: opts.spawner } : {}),
@@ -113,7 +161,7 @@ export function createCustodianFactory(opts: CustodianFactoryOptions): Custodian
     // The store resolves ORGAI_VAULT_KEY_FILE itself and hands the path over in `request`. A path that is just the
     // environment's own stays an environment path for the custodian (an existing file is then imported when a new
     // vault is made); only a path asked for with `secrets init --key-file` is passed as `keyFile`.
-    const envKeyFile = ((opts.env ?? process.env)[VAULT_KEY_FILE_ENV] ?? '').trim()
+    const envKeyFile = ((opts.env ?? process.env)[vaultNames(opts.product).keyFileEnv] ?? '').trim()
     const asked = request?.keyFile !== undefined && request.keyFile !== envKeyFile ? request.keyFile : undefined
     const base: CustodianFactoryOptions = {
       ...opts,
@@ -134,6 +182,7 @@ export function custodianFor(opts: CustodianFactoryOptions & { recorded?: VaultC
   const scheme = chooseCustodyScheme({
     recorded: opts.recorded ?? null,
     keyFileRequested: opts.keyFile !== undefined,
+    ...(opts.product ? { product: opts.product } : {}),
     ...(opts.env ? { env: opts.env } : {}),
     ...(opts.platform ? { platform: opts.platform } : {})
   })

@@ -1,7 +1,7 @@
 /**
  * The install channel (Wave 7, docs/design/cli-standalone.md 3.5): `out/cli/install.json` =
  * `{ "channel": "npm" | "app" | "archive", "version", "commit" }`, written by each builder next to the CLI bundle.
- * Absent means 'dev' (a checkout or a hand-made bundle). `--version`, doctor and HostLauncher read it.
+ * Absent means 'dev' (a checkout or a hand-made bundle). `--version` and doctor read it.
  *
  * A file that exists but cannot be read or does not validate reads as channel 'dev' with `source: 'invalid'`, which
  * HostLauncher must never treat as a dev checkout (only `source: 'absent'` allows that, 4.1 step 3). Never throws.
@@ -15,7 +15,7 @@ import { INSTALL_INFO_FILE, type InstallChannel, type InstallInfo } from '../sha
 /** The largest install.json read (a builder writes well under 1 KB). */
 export const INSTALL_INFO_MAX_BYTES = 4 * 1024
 
-/** Channels a builder may write (absent = 'dev'; 'dev' is never written). */
+/** Channels an install.json may name (absent = 'dev'; 'dev' is never written). 'app' is only read, from an older app's bundle: nothing writes it now. */
 const WRITTEN_CHANNELS: readonly InstallChannel[] = ['npm', 'app', 'archive']
 
 /** A short printable token: versions like 0.1.6-dev1 and commit shas. */

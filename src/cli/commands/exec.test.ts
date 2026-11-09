@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EXEC_OUTCOMES, EXEC_OUTCOME_EXIT_CODE, type ExecOutcome, type Project, type RunEvent, type RunRecord, type RunsSubscribeResult, type RunSummary, type TranscriptEntry } from '../../shared/types'
-import { resetSkewWarning } from '../runRef'
 import { FakeHostClient, fakeContext, fakeInproc, flush, project, record, summary, type FakeContextOptions } from '../testing/fakeContext'
 import { EXIT } from '../types'
 const resumeTui = vi.hoisted(() => ({ calls: [] as string[][] }))
@@ -72,7 +71,6 @@ const subscribed = (h: FakeHostClient) => until(() => h.callsOf('runs:subscribe'
 const realIo = { ...execIo }
 let stdin = ''
 beforeEach(() => {
-  resetSkewWarning()
   stdin = ''
   execIo.readStdin = async () => stdin
   execIo.timers = { sleep: () => Promise.resolve(), now: () => Date.now() }
@@ -93,15 +91,13 @@ describe('exec flags', () => {
         'allow-peer-messages': true,
         'wait-for-reset': true,
         'stall-timeout': '90',
-        'on-permission': 'wait',
+        'on-permission': 'deny',
         'on-rules': 'fail',
         'on-mcp-install': 'deny',
         'on-question': 'conservative',
         'on-proposal': 'decline',
         'on-merge': 'hold',
-        'max-auto-denials': '3',
-        'wait-timeout': '60',
-        'human-grace': '0'
+        'max-auto-denials': '3'
       })
     ).toEqual({
       execMode: true,
@@ -114,11 +110,15 @@ describe('exec flags', () => {
       allowPeerMessages: true,
       waitForReset: true,
       execStallTimeoutMs: 90_000,
-      decisionPolicy: { permission: 'wait', rules: 'fail', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold', maxAutoDenials: 3, waitTimeoutMs: 60_000, humanGraceMs: 0 }
+      decisionPolicy: { permission: 'deny', rules: 'fail', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold', maxAutoDenials: 3 }
     })
     expect(overridesFromFlags({ 'max-budget': '0' })).toEqual({ execMode: true, maxBudgetUsd: 0 })
     // The longest timer the host can arm, in whole seconds.
     expect(overridesFromFlags({ 'stall-timeout': '2147483' })).toEqual({ execMode: true, execStallTimeoutMs: 2_147_483_000 })
+    // A policy that waits is refused: nothing else can answer an orgai run's cards (cli-standalone-default.md 4.3).
+    for (const flag of ['on-permission', 'on-rules', 'on-mcp-install', 'on-question', 'on-proposal', 'on-merge']) {
+      expect(() => overridesFromFlags({ [flag]: 'wait' }), flag).toThrow(expect.objectContaining({ exitCode: EXIT.usage, message: expect.stringContaining('wait is not available') }))
+    }
     expect(overridesFromFlags({ 'on-question': 'fail' })).toEqual({ execMode: true, decisionPolicy: { question: 'fail' } })
   })
 
@@ -403,10 +403,10 @@ describe('orgai exec: following and outcomes', () => {
     expect(f.err()).toContain("The OrgAI host went away; the run's outcome is unknown.")
   })
 
-  it('--host inproc starts the in-process host and stops it (force) after the run', async () => {
+  it('starts the in-process host and stops it (force) after the run', async () => {
     const inproc = fakeInproc()
     const h = execHost()
-    const f = live({ connect: [h], globals: { host: 'inproc' }, inproc: async () => inproc })
+    const f = live({ connect: [h], inproc: async () => inproc })
     const done = runExec(f.ctx, ['do it'])
     await subscribed(h)
     h.push('runs:event', finalized(11, 'completed'))
@@ -423,7 +423,7 @@ describe('orgai exec: following and outcomes', () => {
         }
       }
     })
-    const f = live({ connect: [h], globals: { host: 'inproc' }, inproc: async () => inproc })
+    const f = live({ connect: [h], inproc: async () => inproc })
     await expect(runExec(f.ctx, ['do it'])).rejects.toMatchObject({ exitCode: EXIT.usage })
     expect(inproc.stops).toEqual([true])
   })

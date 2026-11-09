@@ -211,6 +211,8 @@ describe('long permission card: scroll cue and read-first gate', () => {
     expect(h.onViewText).toHaveBeenCalledTimes(1)
     expect((h.onViewText.mock.calls[0] as unknown as [string, string])[1]).toContain('(cut at 64 KB)')
     expect(h.frame()).toContain('cut at 64 KB')
+    expect(h.frame()).toContain('so it can only be denied')
+    expect(h.frame()).not.toContain('elsewhere')
     await h.press('y')
     expect(h.calls).toHaveLength(0)
     h.unmount()

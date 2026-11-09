@@ -1,6 +1,17 @@
 # Standalone `orgai` (cli-spec Wave 7): design spec
 
-Status: implemented on wave7/standalone-cli (not merged), 2026-11-06. Written as draft 7, 2026-11-05, revised after
+> **Superseded in part (2026-11-08, `docs/design/cli-standalone-default.md`):** the desktop app and the `orgai` CLI share
+> nothing. The app has no socket, no `--headless-host` mode, no handoff and no Terminal access setting; the packaged app
+> does not contain the CLI; `orgai` runs in-process on its own data folder. The CLI's data folder is `orgai-cli`
+> (override `--data-dir` / `ORGAI_CLI_DATA_DIR`; `ORGAI_DATA_DIR` is ignored) and its vault custody is `OrgAI CLI Vault` /
+> `ORGAI_CLI_VAULT_*` (cli-standalone-default.md 3.1 and 3.2), which replaces the shared vault design and any
+> `ORGAI_DATA_DIR` / `ORGAI_VAULT_*` / "OrgAI Vault" text below. Removed commands and flags (cli-standalone-default.md 4.1, 4.3): `--host`,
+> `daemon`, `app`, `terminal-access`, `watch`, `inbox`, `decide`, `attach`, `runs send|interrupt|stop` and the `wait`
+> decision policies. See cli-standalone-default.md 4.3 for the current command table; use the sections below for the
+> shared host code only. Anything about the app serving terminals, a background host, the handoff or Terminal access
+> is history, and `HostKind 'headless-host'` survives only as a legacy value read as `desktop` (cli-standalone-default.md section 13).
+
+Status: implemented on wave7/standalone-cli, merged to dev via PR #24 (2026-11-07); its Node host, daemon and handoff were removed on 2026-11-08 (cli-standalone-default.md). First written 2026-11-06. Written as draft 7, 2026-11-05, revised after
 review rounds 1-5; round 6 was folded in as binding implementation rules (13) (GPT Astra, Gemini Argon; resolutions in
 section 13). Builds on `docs/design/cli-spec.md` (Waves 0-6, landed on dev; Wave 7 entry in its "Implementation
 status"). Owner decisions are marked **D1..D10**; D1 and D10 are decided (below), the rest keep their recommended default.
@@ -161,7 +172,7 @@ same outcome without those costs.
      app-server `initialize` handshake (token-free per the Codex schema; unverified until run).
 - Packaged integration (the `pack:verify` job on macOS, later Windows): install the verified npm tarball into a temp
   prefix beside the freshly packed app, point discovery at it (`ORGAI_ELECTRON_PATH` for the unpacked pack), and run
-  `ORGAI_MOCK=1 orgai --host auto exec` on a fixture: the npm CLI must find the packaged app, start it headless, run
+  `ORGAI_MOCK=1 orgai --host daemon exec` (was `--host auto`; see cli-standalone-default.md) on a fixture: the npm CLI must find the packaged app, start it headless, run
   the mock to completion and stop it with `orgai daemon stop`. This stays after the fuse change (9), where it is the
   only check of npm CLI -> packaged app.
 - Lockstep: same tag, same version, same commit as the app. `-devN` versions publish to `next` only when the owner
@@ -178,6 +189,10 @@ absent = `dev`. `--version` and `doctor` print it. `HostLauncher` uses it (4.1).
 ## 4. Hosts without the app
 
 ### 4.1 `--host auto` and `--host daemon`
+
+> Superseded for `--host auto` by `docs/design/cli-standalone-default.md` (2026-11-07): with no live host, `auto`
+> always runs in-process and never starts the app (step 3 below no longer applies to `auto`; it still describes
+> `--host daemon`). The packaged-integration checks pass `--host daemon` explicitly.
 
 `--host auto`:
 
@@ -791,7 +806,7 @@ Each with tests in `selfControlGate.test.ts`; all are text checks (cli-spec Wave
    module top level today, so the call moves). Until it answers, the state is 'pending' as now. `systemCerts.ts` keeps
    an injected launcher so it stays Electron-free; Node and inproc hosts keep `node -e`. `index.ts`'s early exit on
    `ELECTRON_RUN_AS_NODE` stays.
-2. **Retire the app-bundled CLI** (**D5** timing). Release N (after phase A): the Terminal row (`CliShimRow`) points
+2. **Retire the app-bundled CLI** (**D5** timing; SUPERSEDED: the row is now `CliCommandRow`, an npm install button, standalone default spec 5.3). Release N (after phase A): the Terminal row (`CliShimRow`) points
    to `npm i -g orgai`, Install stays, the bundled CLI prints a one-line deprecation note on stderr. Release N+1:
    - `build/bin/orgai` / `orgai.cmd` become stubs that run no JavaScript and print "The orgai command now installs
      separately: npm i -g orgai" (exit 1); `out/cli` and its asarUnpack go (the runtime packages stay unpacked for

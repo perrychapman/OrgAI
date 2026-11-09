@@ -1,6 +1,6 @@
 /**
  * A real owner process for shutdown.int.test.ts (cli-standalone.md 4.3 tests (b) and (c)), run with vite-node: it takes
- * ownership of FIXTURE_DATA_DIR as a 'node' host (no listener), runs the activity tracker and the shutdown coordinator
+ * ownership of FIXTURE_DATA_DIR as an 'inproc' host (no listener), runs the activity tracker and the shutdown coordinator
  * the way a host does, holds one leased writer, and shuts down (forced) on SIGTERM.
  *
  * - FIXTURE_MODE=late: the writer finishes FIXTURE_WRITER_MS after ready, writing `<data>/written.txt` (tmp + rename).
@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   const hardLimitMs = Number(process.env.FIXTURE_HARD_LIMIT_MS ?? '60000')
   const runtimeBase = process.env.FIXTURE_RUNTIME_BASE
 
-  const ownership = await acquireHostOwnership({ dataDir, hostKind: 'node', appVersion: '0.0.0-fixture', listen: false, ...(runtimeBase ? { runtimeBase } : {}) })
+  const ownership = await acquireHostOwnership({ dataDir, hostKind: 'inproc', appVersion: '0.0.0-fixture', listen: false, ...(runtimeBase ? { runtimeBase } : {}) })
   process.on('exit', () => ownership.release())
   const excluded: number[] = []
   const coordinator = new ShutdownCoordinator({

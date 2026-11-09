@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import type { CardKind, McpInstallRequest, MergeReview, PermissionRequest, PermissionRuleRequest, Proposal, UserQuestion } from '../../shared/types'
-import { buildDecision } from '../commands/decide'
-import { fakeContext } from '../testing/fakeContext'
 import { bindingsFor, cardDetailLines, cardFullText, cardTitle, decisionFor, secretSlotsFor, wrapLine, type TrayAction } from './decisions'
 import { cardKey, type CardRef, type TrayCard } from './types'
 
@@ -134,43 +132,6 @@ describe('decisionFor: exact cli-spec 5.3 payloads', () => {
     expect(() => decisionFor(tray('merge', merge()), { kind: 'permission', act: 'allow-once' })).toThrow()
     expect(() => decisionFor(tray('proposal', mcpProposal()), { kind: 'proposal', act: 'revise', feedback: ' ' })).toThrow()
   })
-})
-
-describe('decisionFor matches orgai decide buildDecision', () => {
-  const cases: [CardKind, unknown, string, Record<string, unknown>, TrayAction][] = [
-    ['permission', permission(), 'allow', {}, { kind: 'permission', act: 'allow-once' }],
-    ['permission', permission(), 'allow-session', {}, { kind: 'permission', act: 'allow-session' }],
-    ['permission', permission(), 'allow-project', {}, { kind: 'permission', act: 'allow-project' }],
-    ['permission', permission(), 'deny', {}, { kind: 'permission', act: 'deny' }],
-    ['permission', permission(), 'deny', { message: 'no' }, { kind: 'permission', act: 'deny', message: 'no' }],
-    ['rules', rules(), 'grant', {}, { kind: 'rules', act: 'grant-run' }],
-    ['rules', rules(), 'grant-project', {}, { kind: 'rules', act: 'grant-project' }],
-    ['rules', rules(), 'deny', {}, { kind: 'rules', act: 'deny' }],
-    ['rules', rules(), 'deny', { message: 'x' }, { kind: 'rules', act: 'deny', message: 'x' }],
-    ['proposal', mcpProposal(), 'approve', {}, { kind: 'proposal', act: 'approve' }],
-    ['proposal', mcpProposal(), 'approve', { secret: ['gh:env:GITHUB_TOKEN=TOK'] }, { kind: 'proposal', act: 'approve', secrets: { 'gh:env:GITHUB_TOKEN': 'secret-value' } }],
-    ['proposal', mcpProposal(), 'revise', { note: 'more' }, { kind: 'proposal', act: 'revise', feedback: 'more' }],
-    ['proposal', mcpProposal(), 'decline', {}, { kind: 'proposal', act: 'decline' }],
-    ['proposal', mcpProposal(), 'decline', { note: 'n' }, { kind: 'proposal', act: 'decline', note: 'n' }],
-    ['question', question(), 'answer', { option: ['SQLite'] }, { kind: 'question', act: 'answer', selected: ['SQLite'] }],
-    ['question', question(), 'answer', { pick: ['1'], text: 'and more' }, { kind: 'question', act: 'answer', selected: ['Postgres'], text: 'and more' }],
-    ['merge', merge(), 'merge', {}, { kind: 'merge', act: 'merge' }],
-    ['merge', merge(), 'hold', {}, { kind: 'merge', act: 'hold' }],
-    ['merge', merge(), 'discard', {}, { kind: 'merge', act: 'discard' }],
-    ['mcpInstall', install(), 'allow', { secret: ['API_KEY=TOK'] }, { kind: 'mcpInstall', act: 'allow-run', secrets: { API_KEY: 'secret-value' } }],
-    ['mcpInstall', install(), 'save-project', {}, { kind: 'mcpInstall', act: 'save-project' }],
-    ['mcpInstall', install(), 'save-library', { note: 'ok' }, { kind: 'mcpInstall', act: 'save-library', note: 'ok' }],
-    ['mcpInstall', install(), 'deny', {}, { kind: 'mcpInstall', act: 'deny' }],
-    ['mcpInstall', install(), 'deny', { message: 'later' }, { kind: 'mcpInstall', act: 'deny', note: 'later' }]
-  ]
-  for (const [kind, card, verb, flags, action] of cases) {
-    it(`${kind} ${verb} ${JSON.stringify(flags)}`, () => {
-      // A fresh environment per case: orgai decide takes a secret's variable out once read (review M13).
-      const { ctx } = fakeContext({ env: { TOK: 'secret-value' } })
-      const cli = buildDecision(ctx, kind, card, verb, flags as never, RUN, REQ, 3)
-      expect(decisionFor(tray(kind, card, 3), action)).toEqual(cli)
-    })
-  }
 })
 
 describe('bindingsFor', () => {

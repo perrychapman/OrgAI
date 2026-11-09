@@ -36,8 +36,8 @@ Menus and the borderless input stay still. Type `/` for searchable commands; Tab
 decisions, and Esc twice interrupts a working run from the composer. Enter sends; Alt+Enter adds a line.
 
 Folders that are not registered projects open setup choices in the same terminal flow, at the current window size. Use Up/Down and
-Enter to choose a quick run, guided setup, or the default team; the numbered shortcuts still work. Any terminal
-access limitation appears alongside those choices, without changing the permissions granted by the desktop app.
+Enter to choose a quick run, guided setup, or the default team; the numbered shortcuts still work. The orgai TUI
+answers every approval and question card itself.
 
 `--inline` keeps the conversation in terminal scrollback. `--ax-screen-reader` uses plain labels, and
 `--no-color` disables styling. Set `ORGAI_REDUCED_MOTION=1` to keep shimmer and activity indicators still. Animation also
@@ -146,9 +146,9 @@ project. It plays scripted agents and spends nothing.
 
 ## The `orgai` command
 
-A terminal front end to the same app and data. In an installed app, turn on Terminal access in App settings and
-install the command from General > Advanced > Terminal. From a checkout, run `npm run build` and then
-`npm run cli -- <command>`.
+A standalone terminal product, separate from the desktop app: it has its own data folder, its own settings and its own
+vault, and shares nothing with the app. Install it with `npm i -g orgai-cli`. From a checkout, run `npm run build` and
+then `npm run cli -- <command>`.
 
 ```text
 $ orgai runs list --project ./acme-billing
@@ -156,10 +156,9 @@ RUN  STATUS   NAME                   KIND  STARTED      COST
 R1   Stopped  Add a health endpoint  Run   1m ago   $0.01001
 ```
 
-`orgai projects list` lists your projects, `orgai exec "<task>"` runs a task headless, `orgai tui` opens a terminal view
-of a live run, `orgai decide` answers a decision card and `orgai doctor` checks your setup. `orgai --help` lists the
-rest. The CLI has been run on macOS in tests; the packaged shim has not been run on
-Windows or Linux yet.
+`orgai projects list` lists the projects the command knows, `orgai exec "<task>"` runs a task headless, `orgai tui`
+opens a terminal view (give a run, as in `orgai tui R1`, to open a saved one) and `orgai doctor` checks your setup.
+`orgai --help` lists the rest. The CLI has been run on macOS in tests; it has not been run on Windows or Linux yet.
 
 ## Build from source
 

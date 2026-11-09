@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HostRpcErrorCode, HostScope } from '../shared/types'
-import { TERMINAL_ACCESS_HINT, TERMINAL_FULL_ACCESS_HINT, VERSION_SKEW_SCOPE_HINT } from './client/ensureHost'
-import { hostSpawnEnv, resetConsumedSecretEnv } from './client/launcher'
 import {
   confirm,
   hostCall,
@@ -16,7 +14,6 @@ import {
   subscribeTopics,
   withHost
 } from './manage'
-import { resetSkewWarning } from './runRef'
 import { reservedSecretSourceProblem } from './secretOverlay'
 import { fakeContext, fakeInproc, FakeHostClient, noHost, project, rpcError } from './testing/fakeContext'
 import { CliError, EXIT, type CliContext } from './types'
@@ -24,7 +21,6 @@ import { CliError, EXIT, type CliContext } from './types'
 const realDeps = { ...manageDeps }
 afterEach(() => {
   Object.assign(manageDeps, realDeps)
-  resetSkewWarning()
 })
 
 const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate', 'decide', 'configure'] }
@@ -48,16 +44,14 @@ describe('hostError', () => {
     ['stale_revision', 1],
     ['host_draining', EXIT.hostBusy],
     ['host_starting', EXIT.hostBusy],
-    ['terminal_server_disabled', 1],
+    ['not_owner', 1],
     ['auth_failed', EXIT.auth],
     ['frame_too_large', 1]
   ]
   it.each(table)('%s -> exit %i', (code, exit) => {
     const e = hostError(rpcError({ code, message: `host says ${code}` }))
     expect(e.exitCode).toBe(exit)
-    if (code === 'terminal_server_disabled') expect(e.message).toBe(TERMINAL_ACCESS_HINT)
-    else expect(e.message).toContain(`host says ${code}`)
-    if (code === 'scope_denied') expect(e.message).toContain('another version')
+    expect(e.message).toContain(`host says ${code}`)
   })
 
   it('passes a CliError through and maps a plain error to 1', () => {
@@ -77,14 +71,14 @@ describe('withHost', () => {
   it('stops an inproc host it started and closes the client, also when fn throws', async () => {
     const client = new FakeHostClient({}, { hello: ALL })
     const inproc = fakeInproc()
-    const f = fakeContext({ globals: { host: 'inproc' }, connect: [client], inproc: async () => inproc })
+    const f = fakeContext({ connect: [client], inproc: async () => inproc })
     expect(await withHost(f.ctx, ['read', 'configure'], async () => 7)).toBe(7)
     expect(client.closed).toBe(true)
     expect(inproc.stops).toEqual([true])
 
     const client2 = new FakeHostClient({}, { hello: ALL })
     const inproc2 = fakeInproc()
-    const g = fakeContext({ globals: { host: 'inproc' }, connect: [client2], inproc: async () => inproc2 })
+    const g = fakeContext({ connect: [client2], inproc: async () => inproc2 })
     const e = await caught(
       withHost(g.ctx, ['read'], async () => {
         throw new CliError('nope', 3)
@@ -95,33 +89,31 @@ describe('withHost', () => {
     expect(inproc2.stops).toEqual([true])
   })
 
-  it('refuses a missing granted scope with exit 1 and cleans up', async () => {
+  it('refuses a missing granted scope with exit 1 and cleans up (host stopped too)', async () => {
     const client = new FakeHostClient({}, { hello: { grantedScopes: ['read', 'operate', 'decide'] } })
-    const f = fakeContext({ connect: [client] })
+    const inproc = fakeInproc()
+    const f = fakeContext({ connect: [client], inproc: async () => inproc })
     let ran = false
     const e = await caught(withHost(f.ctx, ['read', 'configure'], async () => (ran = true)))
     expect(e.exitCode).toBe(1)
-    expect(e.message).toBe(`The OrgAI host did not grant the 'configure' access this needs. ${TERMINAL_FULL_ACCESS_HINT}`)
+    expect(e.message).toBe("The orgai host did not grant the 'configure' access this needs.")
     expect(ran).toBe(false)
     expect(client.closed).toBe(true)
-    // A skewed host names the version instead.
-    const skewed = new FakeHostClient({}, { hello: { grantedScopes: ['read'], versionSkewWarning: 'other version' } })
-    const g = fakeContext({ connect: [skewed] })
-    const s = await caught(withHost(g.ctx, ['read', 'decide', 'configure'], async () => undefined))
-    expect(s.message).toBe(`The OrgAI host did not grant the 'decide', 'configure' access this needs. ${VERSION_SKEW_SCOPE_HINT}`)
+    expect(inproc.stops).toEqual([true])
   })
 
-  it('a scope_denied naming Terminal access is passed on as it is (review H2)', () => {
-    const e = hostError(rpcError({ code: 'scope_denied', message: "runs:decide needs the 'decide' scope. Terminal access lets terminal clients watch and run work only." }))
-    expect(e.message).not.toContain('another version')
-    expect(e.exitCode).toBe(1)
-  })
-
-  it('notes a headless host it started', async () => {
-    const client = new FakeHostClient({}, { hello: ALL })
-    const f = fakeContext({ connect: [noHost(), client], launcher: { waitForReady: async () => client.daemon } })
-    await withHost(f.ctx, ['read'], async () => undefined)
-    expect(f.err()).toContain('Started the OrgAI host in the background.')
+  it('another orgai owning the folder: exit 6 at once, fn never runs', async () => {
+    const refusal = new CliError('orgai is already running in another terminal (/w, pid 9). Use that one, or quit it first.', EXIT.hostBusy)
+    const f = fakeContext({
+      inproc: async () => {
+        throw refusal
+      }
+    })
+    let ran = false
+    const e = await caught(withHost(f.ctx, ['read'], async () => (ran = true)))
+    expect(e.exitCode).toBe(EXIT.hostBusy)
+    expect(ran).toBe(false)
+    expect(f.connectCalls).toEqual([])
   })
 })
 
@@ -205,16 +197,10 @@ describe('readSecretValue', () => {
   })
 
   it('takes the variable out of the environment, so a host started afterwards never inherits it (review M13)', async () => {
-    resetConsumedSecretEnv()
     const env: NodeJS.ProcessEnv = { MY_TOKEN: 'tok-1', PATH: '/bin' }
     const f = fakeContext({ env })
     expect(await readSecretValue(f.ctx, { fromEnv: 'MY_TOKEN', what: 'the token' })).toBe('tok-1')
     expect(f.ctx.env.MY_TOKEN).toBeUndefined()
-    // Even an environment that still holds it (another copy) never passes it to a spawned host.
-    const spawned = hostSpawnEnv({ MY_TOKEN: 'tok-1', PATH: '/bin', ORGAI_SECRET_X: 'y' }, { userDataDir: '/u', userChoseDataDir: false })
-    expect(spawned).toEqual({ PATH: '/bin' })
-    resetConsumedSecretEnv()
-    expect(hostSpawnEnv({ MY_TOKEN: 'tok-1' }, { userDataDir: '/u', userChoseDataDir: false })).toEqual({ MY_TOKEN: 'tok-1' })
   })
 
   it('a missing or empty variable is exit 2 naming the variable, never a value', async () => {

@@ -16,7 +16,6 @@ import { teamMessageRows, withTeamMilestones } from './collaboration'
 import { Welcome } from './Welcome'
 import { RunActivity } from './RunActivity'
 import { RunCompletion } from './RunCompletion'
-import { TUI_NO_DECIDE_NOTICE } from './session'
 import { InputBus, InputBusContext, TuiEnvContext } from './context'
 import { surfaceWords } from './cards/status'
 import { DecisionTray, GUARD_ARRIVED_NOTICE, GUARD_SWAPPED_NOTICE } from './DecisionTray'
@@ -25,7 +24,7 @@ import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
 import { InspectorPane } from './InspectorPane'
 import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
-import { Onboarding, DESKTOP_DECISIONS_NOTICE, type OnboardingChoice } from './Onboarding'
+import { Onboarding, type OnboardingChoice } from './Onboarding'
 import { OrgTreePane } from './OrgTreePane'
 import { showInPager } from './pager'
 import { PlanPane } from './PlanPane'
@@ -87,8 +86,6 @@ export const PASTE_CUT_NOTICE = 'The paste was cut at 1 MB.'
 export interface ExitInfo {
   /** The session the App ended on (onboarding may have replaced the first one). */
   session: TuiSessionApi
-  /** The followed run was still live and keeps going (a daemon or desktop host). */
-  detachedLive: boolean
   /** One line runTui prints after restoring the terminal (exitWhenEnded / stopOnQuit sessions). */
   message?: string
 }
@@ -282,6 +279,16 @@ export function startLaunchRun(session: TuiSessionApi, launch: Pick<TuiLaunch, '
   session.submitPrompt(launch.prompt, launch.team ? { team: launch.team } : undefined).catch((e: unknown) => session.notify(errText(e), 'danger'))
 }
 
+/** Live runs on an in-process host by its own count (working, waiting, held, paused with a resume due); undefined when unknown. */
+function hostLiveRuns(inproc: { status?: () => { handoff?: { workingRuns: number; waitingRuns: number; heldRuns: number; pausedRuns: number } } } | undefined): number | undefined {
+  try {
+    const h = typeof inproc?.status === 'function' ? inproc.status().handoff : undefined
+    return h ? h.workingRuns + h.waitingRuns + h.heldRuns + h.pausedRuns : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function App(props: AppProps) {
   const { terminal, env, launch, conn } = props
   const processEnv = props.processEnv ?? process.env
@@ -373,7 +380,7 @@ export function App(props: AppProps) {
   }
   const announceResolved = useCallback((info: (typeof state.resolved)[number]): void => {
     if (info.ref.runId !== activeRunId.current || info.cancelled || !info.decidedBy) return
-    notify(`Resolved in another window (${surfaceWords(info.decidedBy)})`, 'dim')
+    notify(`Resolved by ${surfaceWords(info.decidedBy)}`, 'dim')
   }, [notify])
   useEffect(() => {
     if (sessionChanged) return
@@ -415,14 +422,12 @@ export function App(props: AppProps) {
   const readOnly = state.readOnlyReason !== undefined
   const welcoming = !state.activeRunId && transcriptRows(state).rows.length === 0
   const messages = teamMessageRows(state)
-  const decisionsInDesktop = conn.hello?.grantedScopes !== undefined && !conn.hello.grantedScopes.includes('decide')
   const connectionNotice = state.connection === 'gone' ? 'Connection lost. Reconnect to continue.' : state.connection === 'reconnecting' ? 'Reconnecting to the host.' : undefined
-  const ordinaryNotice = state.notices.filter(n => n.text !== TUI_NO_DECIDE_NOTICE).at(-1)?.text
+  const ordinaryNotice = state.notices.at(-1)?.text
   const accessNotice = [
     connectionNotice,
     state.readOnlyReason,
-    ordinaryNotice,
-    ...(decisionsInDesktop ? [DESKTOP_DECISIONS_NOTICE] : [])
+    ordinaryNotice
   ].filter(Boolean).join(' ')
   const mode: ComposerMode = readOnly ? 'readOnly' : quickEdits !== undefined && !state.project && !state.activeRunId ? 'quick' : composerMode(state)
 
@@ -574,10 +579,7 @@ export function App(props: AppProps) {
     (code: number, message?: string) => {
       if (exiting.current) return
       exiting.current = true
-      const s = session.getState()
-      const active = s.activeRunId ? s.runs[s.activeRunId]?.summary.status : undefined
-      const inproc = conn.inproc !== undefined
-      props.onExit(code, { session, detachedLive: !inproc && isOpen(active), ...(message ? { message } : {}) })
+      props.onExit(code, { session, ...(message ? { message } : {}) })
     },
     [session, conn, props]
   )
@@ -618,8 +620,7 @@ export function App(props: AppProps) {
         // Only claim "stopped" (130) when the run left its open status or the host accepted runs:stop; a refused or
         // failed stop leaves the run live, so say so (exit 1) instead of hiding the detached-live hint.
         if (ended() || failure === undefined) return doExit(EXIT_SIGINT, `${name} stopped.`)
-        const keepsGoing = conn.inproc === undefined ? ' The run keeps going.' : ''
-        doExit(EXIT_FAILURE, `Could not stop ${name}: ${failure.replace(/[.\s]+$/, '')}.${keepsGoing}`)
+        doExit(EXIT_FAILURE, `Could not stop ${name}: ${failure.replace(/[.\s]+$/, '')}.`)
       })
   }, [session, notify, doExit, label, conn])
 
@@ -654,10 +655,14 @@ export function App(props: AppProps) {
         return
       }
     }
-    const inproc = conn.inproc !== undefined
-    const live = statusSummary(session.getState()).liveRuns
-    if (inproc && live > 0) {
-      void confirm(`Quitting stops ${live} live run${live === 1 ? '' : 's'} in this in-process host. Quit?`).then((yes) => {
+    const shown = statusSummary(session.getState()).liveRuns
+    // This orgai's host also runs other projects' runs (it serves only this process, cli-standalone-default.md 4.1):
+    // count every live run on it, not only the ones this view lists.
+    const live = Math.max(shown, hostLiveRuns(conn.inproc) ?? 0)
+    if (live > 0) {
+      const elsewhere = live - shown
+      const more = elsewhere > 0 ? `, ${elsewhere} of them from other projects` : ''
+      void confirm(`Quitting stops ${live} live run${live === 1 ? '' : 's'} in this orgai${more}. Quit?`).then((yes) => {
         if (yes) doExit(0)
       })
       return
@@ -1100,7 +1105,8 @@ export function App(props: AppProps) {
     }
     if (focus === 'onboarding') {
       if (ctrl(e, 'c') || ctrl(e, 'd')) {
-        doExit(0)
+        // Through the quit check: this terminal may have live runs.
+        requestQuit()
         return
       }
       bus.dispatch(e, 'onboarding')
@@ -1449,11 +1455,14 @@ export function App(props: AppProps) {
     )
   ) : null
 
+  // A confirm over onboarding (the quit check) gets its own rows: the onboarding screen fills the terminal, so without
+  // them the confirm box is squeezed and its lines overlap.
+  const onboardingConfirmRows = onboarding && overlay?.kind === 'confirm' ? 3 + wrapText(sanitizeTty(overlay.question), Math.max(1, size.cols - 4)).length : 0
   let body
   if (onboarding) {
     body = (
       <Box flexDirection="column" width={size.cols} height={inline ? undefined : size.rows}>
-        <Onboarding folder={launch.onboarding?.folder ?? state.folder} check={check} width={size.cols} height={size.rows} checking={checkingFolder} busy={onboardingBusy} animated={!terminal.suspended} accessNotice={accessNotice} decisionsInDesktop={decisionsInDesktop} onChoose={(c) => void chooseOnboarding(c)} onCancel={() => doExit(0)} />
+        <Onboarding folder={launch.onboarding?.folder ?? state.folder} check={check} width={size.cols} height={inline ? size.rows : Math.max(0, size.rows - onboardingConfirmRows)} checking={checkingFolder} busy={onboardingBusy} animated={!terminal.suspended} accessNotice={accessNotice} onChoose={(c) => void chooseOnboarding(c)} onCancel={requestQuit} />
         {overlayNode}
       </Box>
     )

@@ -41,7 +41,8 @@ import {
   VAULT_DUAL_WRITE,
   VAULT_FILE,
   VAULT_FORMAT,
-  VAULT_KEY_FILE_ENV,
+  vaultMessages,
+  vaultNames,
   VAULT_MESSAGES,
   VAULT_RESET_SUFFIX,
   VAULT_RETIREMENT_ENABLED,
@@ -58,11 +59,15 @@ import {
   type VaultCustody,
   type VaultEntry,
   type VaultFile,
+  type VaultMessages,
+  type VaultProduct,
   type VaultTombstone
 } from './vaultTypes'
 
 /** Set to '1' by the unit test runner (vitest.config.ts): the OS key stores report 'unavailable' to openSecretStore's default factory. */
 export const NO_OS_KEYSTORE_ENV = 'ORGAI_VAULT_NO_OS_KEYSTORE'
+/** The same switch for the CLI's vault (ORGAI_CLI_VAULT_NO_OS_KEYSTORE). */
+export const CLI_NO_OS_KEYSTORE_ENV = vaultNames('cli').noOsKeystoreEnv
 
 /**
  * Encrypted secrets (the LiteLLM key, MCP server env vars and headers, OAuth client secrets and tokens), Wave 7
@@ -165,13 +170,15 @@ export interface SecretStoreOptions {
    * get / has / keys and are never persisted. The map is copied at construction.
    */
   overlay?: ReadonlyMap<string, string>
-  /** Decides "can write back" (an app host: desktop or headless-host, with safeStorage) and lazy creation. Default 'desktop'. */
+  /** Decides "can write back" (an app host: desktop, with safeStorage) and lazy creation. Default 'desktop'. */
   hostKind?: HostKind
   /** `<userDataDir>`: a key file anywhere inside it is refused (5.3.1). */
   userDataDir?: string
   /** The custodian of a scheme (default: unavailableCustodianFactory until the platform custodians land). */
   custodian?: CustodianFactory
-  /** ORGAI_VAULT_KEY_FILE is read from here. Default process.env. */
+  /** Whose key-file variable and message wording the store uses. Default 'desktop'. */
+  product?: VaultProduct
+  /** The product's key-file variable is read from here. Default process.env. */
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   log?: (m: string) => void
@@ -192,17 +199,21 @@ export const VAULT_NOT_AVAILABLE_MESSAGE = 'Secure storage is not available in t
 export const SECURE_STORAGE_UNAVAILABLE_MESSAGE = 'Secure storage is not available on this system, so OrgAI cannot store secrets.'
 
 /** A value the app's safeStorage cannot decrypt (another user, a damaged string, a host without safeStorage). */
-export const UNDECRYPTABLE_REASON = 'Saved by the OrgAI app and cannot be read here'
+export const UNDECRYPTABLE_REASON = VAULT_MESSAGES.undecryptable
 
 /**
  * secrets.json does not parse: legacy-only writes refuse rather than overwrite it (5.5 Legacy file states). secrets:reset
  * moves it aside (review round 1), which also starts secure storage over.
  */
-export const LEGACY_CORRUPT_MESSAGE =
-  "The OrgAI app's secrets file (secrets.json) is damaged, so OrgAI does not change it; `orgai secrets reset` moves it aside (and starts secure storage over)."
+export const LEGACY_CORRUPT_MESSAGE = VAULT_MESSAGES.legacyCorrupt
 
 /** Mutations refused until the reconcile after a failed save succeeds (5.5 Durability and failures). */
-export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not check the saved secrets again yet; try again, or check with `orgai secrets status`.'
+export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not check the saved secrets again yet; try again in a moment.'
+/** The recovery sentence in a product's words (the CLI's points at `orgai secrets status`). */
+export const vaultRecoveryMessage = (product: VaultProduct = 'desktop'): string =>
+  product === 'cli'
+    ? 'A save did not finish and orgai could not check the saved secrets again yet; try again, or check with `orgai secrets status`.'
+    : VAULT_RECOVERY_MESSAGE
 
 /** A custodian failure that is not a classified CustodyFailure (a helper bug, an unexpected throw). */
 export const KEY_STORE_UNREACHABLE_MESSAGE = 'The key store could not be reached.'
@@ -214,8 +225,10 @@ export const vaultSaveFailedMessage = (detail: string): string => `OrgAI could n
  * vault.json or secrets.json could not be read (an I/O error such as EIO, EACCES or EBUSY; not damage). The store reads
  * it again on the next save, prepareWrite, retry, secrets:init and secrets:status (review round 2).
  */
-export const fileReadFailedMessage = (file: string, code: string): string =>
-  `${file} could not be read (${code}); OrgAI reads it again on the next save or \`orgai secrets status\``
+export const fileReadFailedMessage = (file: string, code: string, product: VaultProduct = 'desktop'): string =>
+  product === 'cli'
+    ? `${file} could not be read (${code}); orgai reads it again on the next save or \`orgai secrets status\``
+    : `${file} could not be read (${code}); OrgAI reads it again on the next save`
 
 /** secrets:reset refuses while a file cannot be read: a healthy file is never moved aside as damaged (review round 2). */
 export const resetReadFailedMessage = (file: string, code: string): string =>
@@ -232,11 +245,18 @@ export const VAULT_MOVE_FAILED_MESSAGE = 'vault.json could not be moved aside.'
 export const LEGACY_MOVE_FAILED_MESSAGE = 'The damaged secrets.json could not be moved aside.'
 
 export const NOTHING_TO_RESTORE_MESSAGE = 'No deleted value is kept for this secret.'
-export const NO_CUSTODIAN_MESSAGE = 'No key store is available on this system; set ORGAI_VAULT_KEY_FILE or run `orgai secrets init --key-file <path>`.'
+/** The product's own variable; only the CLI's text names a command (the desktop's names none). */
+export const noCustodianMessage = (product: VaultProduct = 'desktop'): string =>
+  product === 'cli'
+    ? `No key store is available on this system; set ${vaultNames(product).keyFileEnv} or run \`orgai secrets init --key-file <path>\`.`
+    : `No key store is available on this system; set ${vaultNames(product).keyFileEnv} to a 32-byte key file.`
+export const NO_CUSTODIAN_MESSAGE = noCustodianMessage('desktop')
 export const KEY_FILE_INSIDE_DATA_MESSAGE = "The key file must be outside OrgAI's data folder."
 export const VAULT_NOT_OPENED_MESSAGE = 'Secure storage has not been opened yet.'
-export const keyFileSchemeConflict = (scheme: VaultCustodyScheme): string =>
-  `This vault keeps its key in ${scheme}; run \`orgai secrets reset\` before starting a vault with a key file.`
+export const keyFileSchemeConflict = (scheme: VaultCustodyScheme, product: VaultProduct = 'desktop'): string =>
+  product === 'cli'
+    ? `This vault keeps its key in ${scheme}; run \`orgai secrets reset\` before starting a vault with a key file.`
+    : `This vault keeps its key in ${scheme}; choose Start over in the Dashboard notice before starting a vault with a key file.`
 
 /** The OS scheme a new vault uses on a platform (5.3), or null where there is none. */
 export function platformVaultScheme(platform: NodeJS.Platform): VaultCustodyScheme | null {
@@ -248,16 +268,17 @@ export function platformVaultScheme(platform: NodeJS.Platform): VaultCustodySche
 
 /** Hosts that run in the OrgAI app (Electron with safeStorage): the "can write back" column of 5.5. */
 export function isAppHostKind(kind: HostKind): boolean {
-  return kind === 'desktop' || kind === 'headless-host'
+  return kind === 'desktop'
 }
 
 /** Thrown by a commit. 'clean': nothing changed on disk. 'indeterminate': the outcome is not known (5.5). */
 class CommitError extends Error {
   constructor(
     readonly outcome: 'clean' | 'indeterminate',
-    readonly failure: unknown
+    readonly failure: unknown,
+    msg: VaultMessages = VAULT_MESSAGES
   ) {
-    super(outcome === 'indeterminate' ? VAULT_MESSAGES.notDurable : failure instanceof Error ? failure.message : String(failure))
+    super(outcome === 'indeterminate' ? msg.notDurable : failure instanceof Error ? failure.message : String(failure))
     this.name = 'CommitError'
   }
 }
@@ -268,11 +289,11 @@ class CommitError extends Error {
  */
 class VaultSaveError extends Error {
   readonly detail: string
-  constructor(e: unknown) {
+  constructor(e: unknown, msg: VaultMessages = VAULT_MESSAGES) {
     const indeterminate = e instanceof CommitError && e.outcome === 'indeterminate'
     const failure = e instanceof CommitError ? e.failure : e
     const detail = failure instanceof Error ? failure.message : 'error'
-    super(indeterminate ? VAULT_MESSAGES.notDurable : vaultSaveFailedMessage(detail))
+    super(indeterminate ? msg.notDurable : vaultSaveFailedMessage(detail))
     this.detail = detail
     this.name = 'VaultSaveError'
   }
@@ -312,6 +333,12 @@ export class SecretStore implements SecretStoreApi {
   private readonly legacyPath: string
   private readonly hostKind: HostKind
   private readonly isApp: boolean
+  private readonly product: VaultProduct
+  private readonly msg: VaultMessages
+  /** This store's product sentences (the app's or the orgai command's). */
+  get messages(): VaultMessages {
+    return this.msg
+  }
   private readonly readOnly: boolean
   /** key -> plain value, memory only. */
   private readonly overlay = new Map<string, string>()
@@ -373,6 +400,8 @@ export class SecretStore implements SecretStoreApi {
     this.vaultPath = join(dataDir, VAULT_FILE)
     this.legacyPath = join(dataDir, LEGACY_SECRETS_FILE)
     this.hostKind = opts.hostKind ?? 'desktop'
+    this.product = opts.product ?? 'desktop'
+    this.msg = vaultMessages(this.product)
     this.isApp = isAppHostKind(this.hostKind)
     this.readOnly = opts.readOnly === true
     for (const [k, v] of opts.overlay ?? []) if (typeof k === 'string' && typeof v === 'string' && v !== '') this.overlay.set(k, v)
@@ -410,7 +439,7 @@ export class SecretStore implements SecretStoreApi {
     if (legacy.state === 'unreadable') {
       // Never written while it cannot be read (the corrupt rules), and read again later.
       this.legacy = { state: 'corrupt' }
-      this.legacyReadError = fileReadFailedMessage(LEGACY_SECRETS_FILE, legacy.code)
+      this.legacyReadError = fileReadFailedMessage(LEGACY_SECRETS_FILE, legacy.code, this.product)
     } else {
       this.legacy = legacy
       this.legacyReadError = undefined
@@ -422,7 +451,7 @@ export class SecretStore implements SecretStoreApi {
       this.dropKey()
       this.vault = undefined
       this.vstate = 'corrupt'
-      this.vaultReadError = fileReadFailedMessage(VAULT_FILE, read.code)
+      this.vaultReadError = fileReadFailedMessage(VAULT_FILE, read.code, this.product)
       this.reason = this.vaultReadError
       return
     }
@@ -431,7 +460,7 @@ export class SecretStore implements SecretStoreApi {
       this.dropKey()
       this.vault = undefined
       this.vstate = read.kind
-      this.reason = read.kind === 'corrupt' ? VAULT_MESSAGES.corrupt : undefined
+      this.reason = read.kind === 'corrupt' ? this.msg.corrupt : undefined
       return
     }
     this.vault = read.vault
@@ -538,18 +567,18 @@ export class SecretStore implements SecretStoreApi {
 
   private notOpenReason(): string {
     if (this.vaultReadError) return VAULT_MESSAGES.locked(this.vaultReadError)
-    if (this.vstate === 'corrupt') return VAULT_MESSAGES.corrupt
-    if (this.vstate === 'missing-key') return VAULT_MESSAGES.missingKey
-    if (this.vstate === 'key-mismatch') return VAULT_MESSAGES.keyMismatch
+    if (this.vstate === 'corrupt') return this.msg.corrupt
+    if (this.vstate === 'missing-key') return this.msg.missingKey
+    if (this.vstate === 'key-mismatch') return this.msg.keyMismatch
     return VAULT_MESSAGES.locked(this.reason ?? VAULT_NOT_OPENED_MESSAGE)
   }
 
   private envKeyFile(): string | undefined {
-    const v = this.env[VAULT_KEY_FILE_ENV]
+    const v = this.env[vaultNames(this.product).keyFileEnv]
     return typeof v === 'string' && v.trim() !== '' ? v : undefined
   }
 
-  /** The scheme a new vault would use: key-file when ORGAI_VAULT_KEY_FILE is set, else the platform's OS scheme. */
+  /** The scheme a new vault would use: key-file when the product's key-file variable is set, else the platform's OS scheme. */
   private newScheme(): VaultCustodyScheme | null {
     return this.envKeyFile() ? 'key-file' : platformVaultScheme(this.platform)
   }
@@ -583,7 +612,7 @@ export class SecretStore implements SecretStoreApi {
     const capable = this.isApp
     // A secrets.json value newer than the vault (rows 3 and 4, or no vault at all): the app reads it, others cannot.
     if (l !== undefined && legacyIsNewer(this.vault, key, this.H(key))) {
-      return capable ? { k: 'legacy', value: l } : { k: 'unreadable', reason: VAULT_MESSAGES.pendingLegacy }
+      return capable ? { k: 'legacy', value: l } : { k: 'unreadable', reason: this.msg.pendingLegacy }
     }
     const v = this.vault
     if (!v) return { k: 'unset' }
@@ -607,7 +636,7 @@ export class SecretStore implements SecretStoreApi {
       try {
         return { value: this.legacyDecrypt(r.value) }
       } catch {
-        return { unreadable: UNDECRYPTABLE_REASON }
+        return { unreadable: this.msg.undecryptable }
       }
     }
     const v = this.vault
@@ -692,12 +721,12 @@ export class SecretStore implements SecretStoreApi {
         this.writeStep(step)
       } catch (e) {
         const clean = i === 0 && (!(e instanceof DurableFsError) || e.outcome === 'unchanged')
-        if (clean) throw new CommitError('clean', e)
+        if (clean) throw new CommitError('clean', e, this.msg)
         this.log(`a save may not be durable (${e instanceof Error ? e.message : 'error'}); re-reading from disk`)
         this.recoveryRequired = true
         if (this.recovering) this.reloadForRecovery()
         else this.tryRecover()
-        throw new CommitError('indeterminate', e)
+        throw new CommitError('indeterminate', e, this.msg)
       }
     }
   }
@@ -778,7 +807,7 @@ export class SecretStore implements SecretStoreApi {
 
   /** Before a mutation: finish the recovery a failed save left, or refuse. */
   private ensureRecovered(): void {
-    if (this.recoveryRequired && !this.tryRecover()) throw new Error(VAULT_RECOVERY_MESSAGE)
+    if (this.recoveryRequired && !this.tryRecover()) throw new Error(vaultRecoveryMessage(this.product))
   }
 
   /** The ciphers reconciliation may use: only an app host that can write back, with the vault open. */
@@ -912,7 +941,7 @@ export class SecretStore implements SecretStoreApi {
    * same bytes as the new one (H = B), so reads converge to the new value; a failure at the vault write changes nothing.
    */
   private writeLegacyOnly(key: string, value: string): void {
-    if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? LEGACY_CORRUPT_MESSAGE)
+    if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? this.msg.legacyCorrupt)
     if (!this.cipherAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE)
     const back = this.legacyEncrypt(value)
     const next = dict<string>()
@@ -1032,8 +1061,8 @@ export class SecretStore implements SecretStoreApi {
     if (this.vaultReadError) return VAULT_MESSAGES.locked(this.vaultReadError)
     if (this.legacyReadError) return this.legacyReadError
     if (this.L(key) === undefined) return undefined
-    if (this.vstate === 'corrupt') return VAULT_MESSAGES.clearRefusedCorrupt
-    if (!this.isApp && this.vstate === 'absent') return VAULT_MESSAGES.clearRefusedLegacyOnly
+    if (this.vstate === 'corrupt') return this.msg.clearRefusedCorrupt
+    if (!this.isApp && this.vstate === 'absent') return this.msg.clearRefusedLegacyOnly
     return undefined
   }
 
@@ -1258,8 +1287,8 @@ export class SecretStore implements SecretStoreApi {
       zeroize(dek)
       if (this.vault?.vaultId === vaultId) {
         this.vstate = 'key-mismatch'
-        this.reason = VAULT_MESSAGES.keyMismatch
-        this.lastFailure = { kind: 'missing', reason: VAULT_MESSAGES.keyMismatch }
+        this.reason = this.msg.keyMismatch
+        this.lastFailure = { kind: 'missing', reason: this.msg.keyMismatch }
         this.logRepeated('open:mismatch', 'the key does not match this secure storage')
       }
       return false
@@ -1286,7 +1315,7 @@ export class SecretStore implements SecretStoreApi {
    */
   private async createVault(request?: CustodianRequest): Promise<'created' | 'opened'> {
     const scheme: VaultCustodyScheme | null = request?.keyFile ? 'key-file' : this.newScheme()
-    if (!scheme) throw new CustodyError('unavailable', NO_CUSTODIAN_MESSAGE)
+    if (!scheme) throw new CustodyError('unavailable', noCustodianMessage(this.product))
     const req: CustodianRequest = scheme === 'key-file' ? { keyFile: request?.keyFile ?? this.envKeyFile(), ...(request?.importKeyFile ? { importKeyFile: true } : {}) } : {}
     if (scheme === 'key-file') {
       const problem = req.keyFile ? this.keyFileProblem(req.keyFile) : 'No key file was named.'
@@ -1322,7 +1351,7 @@ export class SecretStore implements SecretStoreApi {
         created
       }
       this.reload()
-      throw new VaultSaveError(new Error(fileReadFailedMessage(VAULT_FILE, onDisk.code)))
+      throw new VaultSaveError(new Error(fileReadFailedMessage(VAULT_FILE, onDisk.code, this.product)), this.msg)
     }
     if (onDisk.kind !== 'absent' || this.vstate !== 'absent') {
       zeroize(created.dek)
@@ -1365,7 +1394,7 @@ export class SecretStore implements SecretStoreApi {
         this.vault = undefined
         this.vstate = 'absent'
       } else zeroize(keep)
-      throw new VaultSaveError(e)
+      throw new VaultSaveError(e, this.msg)
     }
     zeroize(keep)
     this.vstate = 'open'
@@ -1397,7 +1426,7 @@ export class SecretStore implements SecretStoreApi {
     if (this.legacyReadError) throw new Error(this.legacyReadError)
     if (this.vstate === 'open') return
     if (this.isApp) {
-      if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? LEGACY_CORRUPT_MESSAGE)
+      if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? this.msg.legacyCorrupt)
       if (!this.cipherAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE)
       return
     }
@@ -1646,7 +1675,7 @@ export class SecretStore implements SecretStoreApi {
     const action = await this.runExclusive('init', async (): Promise<SecretsInitResult['action']> => {
       this.retryRead()
       if (this.vstate === 'corrupt') throw new Error(this.notOpenReason())
-      if (this.vault && request && this.vault.custody.scheme !== 'key-file') throw new Error(keyFileSchemeConflict(this.vault.custody.scheme))
+      if (this.vault && request && this.vault.custody.scheme !== 'key-file') throw new Error(keyFileSchemeConflict(this.vault.custody.scheme, this.product))
       if (this.vstate === 'open') return 'unchanged'
       if (this.vstate === 'absent') {
         try {
@@ -1720,7 +1749,7 @@ export class SecretStore implements SecretStoreApi {
     })
     if (moved.legacy) this.log(`secrets.json moved aside to ${moved.legacy}`)
     if (moved.vault) this.log(`vault.json moved aside to ${moved.vault}`)
-    if (!moved.durable) throw new Error(VAULT_MESSAGES.notDurable)
+    if (!moved.durable) throw new Error(this.msg.notDurable)
     return { movedTo: moved.vault, ...(moved.legacy ? { legacyMovedTo: moved.legacy } : {}), status: await this.statusReport() }
   }
 
@@ -1761,7 +1790,7 @@ export class SecretStore implements SecretStoreApi {
     const t = v && Object.hasOwn(v.tombstones, key) ? v.tombstones[key] : undefined
     const kept = t ? this.softDeletes().find((s) => s.key === key) : undefined
     if (!v || !t || !kept) return { restored: false, reason: NOTHING_TO_RESTORE_MESSAGE }
-    if (!t.prev && !this.isApp) return { restored: false, reason: VAULT_MESSAGES.undeleteAppOnly }
+    if (!t.prev && !this.isApp) return { restored: false, reason: this.msg.undeleteAppOnly }
     if (this.vstate !== 'open' || !this.dek) return { restored: false, reason: this.notOpenReason() }
     let plain: string
     if (t.prev) {
@@ -1774,7 +1803,7 @@ export class SecretStore implements SecretStoreApi {
       try {
         plain = this.legacyDecrypt(t.prevLegacy as string)
       } catch {
-        return { restored: false, reason: UNDECRYPTABLE_REASON }
+        return { restored: false, reason: this.msg.undecryptable }
       }
     }
     this.set(key, plain)
@@ -1828,7 +1857,9 @@ export interface OpenSecretStoreOptions {
   custodian?: CustodianFactory
   /** The CLI's ORGAI_SECRET_* / --secret-env values (inproc only); they win over stored values and are never saved. */
   overlay?: ReadonlyMap<string, string>
-  /** ORGAI_VAULT_KEY_FILE is read from here. Default process.env. */
+  /** Whose custody this store uses: 'cli' (ORGAI_CLI_VAULT_*, "OrgAI CLI Vault") or 'desktop' (ORGAI_VAULT_*, "OrgAI Vault"). */
+  product: VaultProduct
+  /** The product's key-file variable is read from here. Default process.env. */
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   log?: (m: string) => void
@@ -1854,6 +1885,7 @@ export async function openSecretStore(opts: OpenSecretStoreOptions): Promise<Sec
   const real = createCustodianFactory({
     dataDir: opts.dataDir,
     userDataDir: opts.userDataDir,
+    product: opts.product,
     ...(opts.env ? { env: opts.env } : {}),
     ...(opts.platform ? { platform: opts.platform } : {}),
     currentCustody: () => store?.currentCustody() ?? null
@@ -1862,10 +1894,11 @@ export async function openSecretStore(opts: OpenSecretStoreOptions): Promise<Sec
   // write a real keychain / DPAPI / Secret Service item, so the default OS schemes answer 'unavailable'. Key files work.
   const custodian: CustodianFactory =
     opts.custodian ??
-    ((scheme, request) => (scheme !== 'key-file' && process.env[NO_OS_KEYSTORE_ENV] === '1' ? unavailableCustodian(scheme) : real(scheme, request)))
+    ((scheme, request) => (scheme !== 'key-file' && process.env[vaultNames(opts.product).noOsKeystoreEnv] === '1' ? unavailableCustodian(scheme) : real(scheme, request)))
   store = new SecretStore(opts.dataDir, opts.cipher, {
     hostKind: opts.hostKind,
     userDataDir: opts.userDataDir,
+    product: opts.product,
     custodian,
     ...(opts.overlay ? { overlay: opts.overlay } : {}),
     ...(opts.env ? { env: opts.env } : {}),

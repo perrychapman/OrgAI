@@ -183,7 +183,7 @@ status snapshot without any secrets). Chat, the Architect and the MCP and Skill 
 with `open_in_app`, which switches the main window to that screen and says who opened it; it only ever opens screens
 the atlas knows, a few at a time. Chat can propose changes to app settings (appearance, notifications, defaults for
 new projects, assistant models) and to a project's settings; nothing changes until you approve the card. Connections,
-keys, proxies, Terminal access, model prices, saved permission rules and the default connection are not proposable:
+keys, proxies, model prices, saved permission rules and the default connection are not proposable:
 change them in App settings yourself.
 
 ## Adding a provider

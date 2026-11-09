@@ -225,9 +225,10 @@ const api: OrgAIApi = {
     openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs),
     logPath: () => ipcRenderer.invoke(IPC.appLogPath),
     info: () => ipcRenderer.invoke(IPC.appInfo),
-    cliShimStatus: () => ipcRenderer.invoke(IPC.appCliShimStatus),
-    installCliShim: () => ipcRenderer.invoke(IPC.appInstallCliShim),
-    uninstallCliShim: () => ipcRenderer.invoke(IPC.appUninstallCliShim),
+    cliCommandStatus: () => ipcRenderer.invoke(IPC.appCliCommandStatus),
+    installCliCommand: () => ipcRenderer.invoke(IPC.appInstallCliCommand),
+    cancelCliInstall: () => ipcRenderer.invoke(IPC.appCancelCliInstall),
+    removeOldCliShim: () => ipcRenderer.invoke(IPC.appRemoveOldCliShim),
     reference: (query: AppReferenceQuery) => ipcRenderer.invoke(SELF_KNOWLEDGE_IPC.appReference, query)
   },
   onFocusRun: (cb) => {

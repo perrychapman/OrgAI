@@ -500,12 +500,18 @@ try {
 
 // ---------- CLI text ----------
 
-/** Real output of the read-only CLI against the data dir this run built (hostless reads of the stored runs). */
+/**
+ * Real output of the CLI against its own fresh temp folder (the CLI shares nothing with the app, so the app's DATA_DIR is
+ * never read): one mock exec seeds a project and a run, then the read-only commands print them.
+ */
 async function cliText() {
   const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
-  const run = (a) =>
+  const CLI_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-readme-cli-'))
+  const run = (a, cwd = ROOT) =>
     new Promise((resolve) => {
-      const child = spawn(process.execPath, [CLI, '--no-color', ...a], { cwd: ROOT, env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'] })
+      const env = { ...process.env, ORGAI_CLI_DATA_DIR: CLI_DIR, ORGAI_CLI_VAULT_NO_OS_KEYSTORE: '1', ORGAI_MOCK: '1', NO_COLOR: '1' }
+      delete env.ORGAI_DATA_DIR
+      const child = spawn(process.execPath, [CLI, '--no-color', ...a], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
       let out = ''
       let err = ''
       child.stdout.on('data', (d) => (out += d))
@@ -516,8 +522,10 @@ async function cliText() {
         resolve({ code, out, err })
       })
     })
-  const clean = (s) => s.split(DATA_DIR).join('<data>').split(os.tmpdir()).join('<tmp>').replace(/\r/g, '')
+  const clean = (s) => s.split(CLI_DIR).join('<data>').split(os.tmpdir()).join('<tmp>').replace(/\r/g, '')
   const parts = []
+  const seed = await run(['exec', '--create-project', '--output-format', 'json', '[mock:exec-plan] Add a health endpoint'], path.join(ROOT, NAME_HERO))
+  log(`orgai exec (seed) -> exit ${seed.code}`)
   for (const a of [['runs', 'list', '--project', path.join(ROOT, NAME_HERO)], ['projects', 'list']]) {
     const r = await run(a)
     log(`orgai ${a.slice(0, 2).join(' ')} -> exit ${r.code}`)
@@ -526,6 +534,7 @@ async function cliText() {
   const file = path.join(OUT, 'cli-output.txt')
   fs.writeFileSync(file, parts.join('\n\n') + '\n')
   outputs.push(file)
+  fs.rmSync(CLI_DIR, { recursive: true, force: true, maxRetries: 3 })
 }
 if (wanted('cli')) await cliText().catch((e) => check(false, 'cli text', String(e.message)))
 

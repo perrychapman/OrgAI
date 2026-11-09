@@ -9,19 +9,9 @@ import { HostEventBus } from './events'
 import { LineReader, clientProof, encodeFrame, hostProof, newNonce, ownerProof, proofMatches, rpcRequest } from './protocol'
 import { gateRequest } from './registry'
 import {
-  DESKTOP_HANDOFF_REFUSED_MESSAGE,
-  DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE,
   HostSocketServer,
   SECRET_ACL_MESSAGE,
-  TERMINAL_ACCESS_LEVEL_MESSAGE,
-  NODE_TERMINAL_ACCESS_LEVEL_MESSAGE,
-  NODE_TERMINAL_ACCESS_OFF_MESSAGE,
-  NODE_TERMINAL_ACCESS_OFF_REFUSED,
-  turnsNodeTerminalAccessOff,
-  TERMINAL_ACCESS_OFF_MESSAGE,
   authorizeKey,
-  grantScopes,
-  scopesForAccessLevel,
   type HostSocketServerOptions
 } from './socketServer'
 
@@ -108,9 +98,11 @@ interface HelloOpts {
   mutate?: (p: Msg) => void
   /** Before the proof is computed (a well-proven but malformed hello). */
   shape?: (p: Msg) => void
-  /** Add an ownerProof made with this key (an in-process host's own CLI). */
+  /** The ownerProof key; default OWNER_KEY (the host's own CLI). '' sends no proof. */
   ownerKey?: string
 }
+
+const OWNER_KEY = 'ab'.repeat(32)
 
 async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; challenge: Msg; params: Msg }> {
   const challenge = await c.next((m) => m.method === 'host.challenge')
@@ -135,8 +127,9 @@ async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; chal
     cwd: params.cwd,
     requestedScopes: params.requestedScopes
   })
-  if (o.ownerKey) {
-    params.ownerProof = ownerProof(o.ownerKey, {
+  const ownerKey = o.ownerKey ?? OWNER_KEY
+  if (ownerKey) {
+    params.ownerProof = ownerProof(ownerKey, {
       hostInstanceId: challenge.params.hostInstanceId,
       hostNonce: challenge.params.hostNonce,
       clientNonce: params.clientNonce,
@@ -152,8 +145,6 @@ async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; chal
 
 interface FakeHostState {
   state: HostState
-  terminalServer: boolean
-  accessLevel?: 'operate' | 'full'
   sources: Array<() => number>
   calls: { method: string; ctx: Msg }[]
   /** Pending dispatcher calls resolve when released. */
@@ -177,7 +168,7 @@ function fakeHost(st: FakeHostState): { host: OrgAIHost; events: HostEventBus; r
     events,
     runs,
     services: { projects: { list: () => [] } },
-    settings: { get: () => ({ terminalServer: st.terminalServer, ...(st.accessLevel ? { terminalAccessLevel: st.accessLevel } : {}) }) },
+    settings: { get: () => ({}) },
     activity: {
       state: () => st.state,
       addSource: (_k: string, f: () => number) => {
@@ -189,7 +180,7 @@ function fakeHost(st: FakeHostState): { host: OrgAIHost; events: HostEventBus; r
     },
     dispatcher: {
       invokeRpc: async (method: string, params: unknown, ctx: Msg) => {
-        const g = gateRequest(method, params, { grantedScopes: ctx.grantedScopes, hostKind: 'headless-host' })
+        const g = gateRequest(method, params, { grantedScopes: ctx.grantedScopes, hostKind: 'desktop' })
         st.calls.push({ method, ctx })
         if (st.hold) await new Promise<void>((r) => st.release.push(r))
         return st.result(method, g.args)
@@ -211,13 +202,14 @@ let clients: TestClient[]
 let logs: string[]
 
 function newState(): FakeHostState {
-  return { state: 'ready', terminalServer: true, accessLevel: 'full', sources: [], calls: [], hold: false, release: [], result: () => ({ ok: true }) }
+  return { state: 'ready', sources: [], calls: [], hold: false, release: [], result: () => ({ ok: true }) }
 }
 
 async function start(over: Partial<HostSocketServerOptions> = {}, attach = true): Promise<ReturnType<typeof fakeHost>> {
   server = new HostSocketServer({
     dataDir,
-    hostKind: 'headless-host',
+    hostKind: 'inproc',
+    ownerKey: OWNER_KEY,
     hostInstanceId: HOST_ID,
     appVersion: '1.0.0',
     mock: true,
@@ -266,14 +258,14 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     const { res, challenge, params } = await hello(c, { scopes: ['read', 'operate', 'read'] })
     expect(challenge.params).toMatchObject({ protocolVersion: 1, hostInstanceId: HOST_ID })
     expect(challenge.params.hostNonce).toMatch(/^[0-9a-f]{64}$/)
-    expect(res.result).toMatchObject({ protocolVersion: 1, hostInstanceId: HOST_ID, hostKind: 'headless-host', appVersion: '1.0.0', dataDir, mock: true, grantedScopes: ['read', 'operate'] })
+    expect(res.result).toMatchObject({ protocolVersion: 1, hostInstanceId: HOST_ID, hostKind: 'inproc', appVersion: '1.0.0', dataDir, mock: true, grantedScopes: ['read', 'operate'] })
     expect(res.result.versionSkewWarning).toBeUndefined()
     const expected = hostProof(SECRET, {
       protocolVersion: 1,
       hostInstanceId: HOST_ID,
       clientNonce: params.clientNonce,
       hostNonce: challenge.params.hostNonce,
-      hostKind: 'headless-host',
+      hostKind: 'inproc',
       appVersion: '1.0.0',
       dataDir,
       mock: true,
@@ -333,66 +325,24 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect((await hello(d, { mutate: (p) => (p.clientKind = 'desktop') })).res.error.data.code).toBe('auth_failed')
   })
 
-  it("grants at most read and operate unless Terminal access is 'full' (review H2)", async () => {
-    st.accessLevel = undefined
-    st.result = (method) => ({ method })
-    await start()
-    const c = await client()
-    const { res, challenge, params } = await hello(c, { scopes: ['read', 'operate', 'decide', 'configure'] })
-    expect(res.result.grantedScopes).toEqual(['read', 'operate'])
-    // The host proof binds what was really granted.
-    const expected = hostProof(SECRET, {
-      protocolVersion: 1,
-      hostInstanceId: HOST_ID,
-      clientNonce: params.clientNonce,
-      hostNonce: challenge.params.hostNonce,
-      hostKind: 'headless-host',
-      appVersion: '1.0.0',
-      dataDir,
-      mock: true,
-      grantedScopes: ['read', 'operate']
-    })
-    expect(proofMatches(expected, res.result.hostProof)).toBe(true)
-    c.send(rpcRequest(2, 'runs:decide', [{}]))
-    const denied = await c.response(2)
-    expect(denied.error.data.code).toBe('scope_denied')
-    expect(denied.error.data.message).toContain(TERMINAL_ACCESS_LEVEL_MESSAGE)
-    c.send(rpcRequest(3, 'settings:set', [{}]))
-    expect((await c.response(3)).error.data.message).toContain("'configure'")
-    c.send(rpcRequest(4, 'runs:stop', ['r1']))
-    expect((await c.response(4)).result).toEqual({ method: 'runs:stop' })
-    // host.stop still works for a client that asked for configure (daemon stop): a same-user kill could do as much.
-    c.send(rpcRequest(5, 'host.stop', [{ force: false }]))
-    expect((await c.response(5)).result).toEqual({ method: 'host.stop' })
-    expect(st.calls.map((x) => x.method)).toEqual(['runs:stop', 'host.stop'])
-    expect(st.calls[1].ctx.grantedScopes).toEqual(['read', 'operate', 'configure'])
-    expect(logs.join('\n')).toContain('withheld by Terminal access: decide, configure')
-    // A client that never asked for configure does not get host.stop.
-    const d = await client()
-    await hello(d, { scopes: ['read'] })
-    d.send(rpcRequest(6, 'host.stop', [{ force: false }]))
-    expect((await d.response(6)).error.data.code).toBe('scope_denied')
-  })
-
-  it('an in-process host grants every scope only to the hello proven with its in-memory owner key (review H2)', async () => {
-    st.accessLevel = undefined
+  it('an in-process host serves only the hello proven with its in-memory owner key; every other hello is refused not_owner (cli-standalone-default.md 4.1)', async () => {
     st.result = (method) => ({ method })
     const KEY = 'cd'.repeat(32)
     await start({ hostKind: 'inproc', ownerKey: KEY })
-    // A client that holds daemon.secret but not the owner key (an agent that read the run folder) is capped.
+    // A client that holds daemon.secret but not the owner key (an agent that read the run folder), forged pid and kind included.
     const other = await client()
-    expect((await hello(other, { scopes: ['read', 'operate', 'decide', 'configure'] })).res.result.grantedScopes).toEqual(['read', 'operate'])
-    other.send(rpcRequest(2, 'runs:decide', [{}]))
-    expect((await other.response(2)).error.data.code).toBe('scope_denied')
-    other.send(rpcRequest(3, 'permissions:add', [{}]))
-    expect((await other.response(3)).error.data.code).toBe('scope_denied')
-    // A wrong key, a garbled proof, or a proof replayed from another hello: capped too.
+    expect((await hello(other, { scopes: ['read'] })).res.error.data).toMatchObject({ code: 'not_owner' })
+    await other.waitClosed()
+    // (a second client of the same secret, as a forged peer would be)
+    const forged = await client()
+    expect((await hello(forged, { scopes: ['read', 'operate'] })).res.error.data.code).toBe('not_owner')
+    // A wrong key, a garbled proof, or a proof replayed from another hello: refused too.
     for (const o of [
       { ownerKey: 'ef'.repeat(32) },
       { ownerKey: KEY, mutate: (p: Msg) => (p.ownerProof = 'zz') },
       { ownerKey: KEY, mutate: (p: Msg) => (p.ownerProof = ownerProof(KEY, { hostInstanceId: HOST_ID, hostNonce: newNonce(), clientNonce: p.clientNonce, clientProof: p.clientProof })) }
     ]) {
-      expect((await hello(await client(), { scopes: ['read', 'decide'], ...o })).res.result.grantedScopes).toEqual(['read'])
+      expect((await hello(await client(), { scopes: ['read', 'decide'], ...o })).res.error.data.code).toBe('not_owner')
     }
     // The owner (the CLI process that started the host) gets everything it asks for.
     const owner = await client()
@@ -407,65 +357,22 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect(logs.join('\n')).toContain('in-process owner')
   })
 
-  it("an in-process host accepts its owner whatever Terminal access says; other clients are refused (cli-standalone.md 13.12)", async () => {
-    st.terminalServer = false
+  it('an in-process host accepts its owner whatever Terminal access says, and never closes it; others are refused not_owner whatever Terminal access says', async () => {
     const KEY = 'cd'.repeat(32)
-    const { events } = await start({ hostKind: 'inproc', ownerKey: KEY })
+    await start({ hostKind: 'inproc', ownerKey: KEY })
     const other = await client()
-    expect((await hello(other, { scopes: ['read'] })).res.error.data).toMatchObject({ code: 'terminal_server_disabled' })
+    expect((await hello(other, { scopes: ['read'] })).res.error.data).toMatchObject({ code: 'not_owner' })
     const owner = await client()
     expect((await hello(owner, { scopes: ['read', 'decide', 'configure'], ownerKey: KEY })).res.result.grantedScopes).toEqual(['read', 'decide', 'configure'])
-    // Turning access off (again) never closes the owner.
-    events.emit('settings:changed', { terminalServer: false } as never)
-    await new Promise((r) => setTimeout(r, 50))
     expect(owner.closed).toBe(false)
+    const again = await client()
+    expect((await hello(again, { scopes: ['read'] })).res.error.data.code).toBe('not_owner')
   })
 
-  it('a server without an owner key ignores an ownerProof', async () => {
-    st.accessLevel = undefined
+  it('an in-process server without an owner key serves nobody: an ownerProof cannot be checked', async () => {
     await start({ hostKind: 'inproc' })
     const { res } = await hello(await client(), { scopes: ['read', 'decide', 'configure'], ownerKey: 'cd'.repeat(32) })
-    expect(res.result.grantedScopes).toEqual(['read'])
-  })
-
-  it("an in-process host follows a 'full' level for other clients, and narrowing never closes the owner", async () => {
-    const KEY = 'cd'.repeat(32)
-    const { events } = await start({ hostKind: 'inproc', ownerKey: KEY })
-    const owner = await client()
-    expect((await hello(owner, { scopes: ['read', 'decide'], ownerKey: KEY })).res.result.grantedScopes).toEqual(['read', 'decide'])
-    const other = await client()
-    expect((await hello(other, { scopes: ['read', 'decide'] })).res.result.grantedScopes).toEqual(['read', 'decide'])
-    st.accessLevel = undefined
-    events.emit('settings:changed', { terminalServer: true } as never)
-    await other.waitClosed()
-    expect(owner.closed).toBe(false)
-  })
-
-  it('reads OrgAIHost.terminalAccess when the host has it (session-only Terminal access)', async () => {
-    st.terminalServer = false
-    st.accessLevel = undefined
-    const fake = await start({}, false)
-    let access = { enabled: true, level: 'operate' as 'operate' | 'full' }
-    ;(fake.host as unknown as { terminalAccess: () => typeof access }).terminalAccess = () => access
-    server.attach(fake.host)
-    const { res } = await hello(await client(), { scopes: ['read', 'decide'] })
-    expect(res.result.grantedScopes).toEqual(['read'])
-    access = { enabled: false, level: 'full' }
-    expect((await hello(await client())).res.error.data.code).toBe('terminal_server_disabled')
-  })
-
-  it('lowering the level closes sockets holding scopes it no longer allows', async () => {
-    const { events } = await start()
-    const full = await client()
-    expect((await hello(full, { scopes: ['read', 'decide'] })).res.result.grantedScopes).toEqual(['read', 'decide'])
-    const plain = await client()
-    await hello(plain, { scopes: ['read', 'operate'] })
-    st.accessLevel = undefined
-    events.emit('settings:changed', { terminalServer: true } as never)
-    await full.waitClosed()
-    expect(logs.join('\n')).toContain('Terminal access was narrowed; closed 1 terminal connection.')
-    plain.send(rpcRequest(2, 'runs:list', ['p1']))
-    expect((await plain.response(2)).result).toBeDefined()
+    expect(res.error.data.code).toBe('not_owner')
   })
 
   it('refuses every hello while the owner reports an unprotected daemon.secret, and runs no ACL step of its own (review follow-up)', async () => {
@@ -499,77 +406,15 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     await c.waitClosed()
   })
 
-  it('a background host names the orgai commands in its level and off refusals, never App settings (review round 1)', async () => {
-    st.accessLevel = undefined
-    await start({ hostKind: 'node' })
-    const c = await client()
-    const { res } = await hello(c, { scopes: ['read', 'operate', 'decide'] })
-    expect(res.result.grantedScopes).toEqual(['read', 'operate'])
-    c.send(rpcRequest(2, 'runs:decide', [{}]))
-    const denied = await c.response(2)
-    expect(denied.error.data.code).toBe('scope_denied')
-    expect(denied.error.data.message).toContain(NODE_TERMINAL_ACCESS_LEVEL_MESSAGE)
-    expect(denied.error.data.message).toContain('orgai terminal-access --level full')
-    expect(denied.error.data.message).not.toContain('App settings')
-    st.terminalServer = false
-    const { res: off } = await hello(await client())
-    expect(off.error.data).toMatchObject({ code: 'terminal_server_disabled', message: NODE_TERMINAL_ACCESS_OFF_MESSAGE })
-  })
-
-  it('a background host refuses a settings:set that turns Terminal access off, so it never runs unreachable (review round 2)', async () => {
-    st.accessLevel = 'full'
-    st.terminalServer = true
-    st.result = (method) => ({ method })
-    await start({ hostKind: 'node' })
-    const c = await client()
-    await hello(c, { scopes: ['read', 'configure'] })
-    c.send(rpcRequest(2, 'settings:set', [{ terminalServer: false, notifications: false }]))
-    const refused = await c.response(2)
-    expect(refused.error.data).toEqual({ code: 'bad_request', message: NODE_TERMINAL_ACCESS_OFF_REFUSED })
-    expect(st.calls.map((x) => x.method)).toEqual([])
-    // Other saves (an echo of the stored on included) still go through.
-    c.send(rpcRequest(3, 'settings:set', [{ terminalServer: true, notifications: false }]))
-    expect((await c.response(3)).result).toEqual({ method: 'settings:set' })
-    c.send(rpcRequest(4, 'settings:set', [{ notifications: false }]))
-    expect((await c.response(4)).result).toEqual({ method: 'settings:set' })
-  })
-
   it('host_starting before attach', async () => {
     await start({}, false)
     const { res } = await hello(await client())
     expect(res.error.data).toMatchObject({ code: 'host_starting', retryAfterMs: 250 })
   })
 
-  it('terminal_server_disabled with the settings path', async () => {
-    st.terminalServer = false
-    await start()
-    const { res } = await hello(await client())
-    expect(res.error.data).toMatchObject({ code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE })
-  })
-
-  it('turning Terminal access off closes authenticated clients; turning it on again does not (review L)', async () => {
-    const { events } = await start()
-    const c = await client()
-    await hello(c, { scopes: ['read', 'configure'] })
-    events.emit('settings:changed', { terminalServer: true } as never)
-    c.send(rpcRequest(2, 'runs:list', ['p1']))
-    expect((await c.response(2)).result).toBeDefined()
-    st.terminalServer = false
-    events.emit('settings:changed', { terminalServer: false } as never)
-    await c.waitClosed()
-    expect(logs.join('\n')).toContain('Terminal access was turned off; closed 1 terminal connection.')
-    const { res } = await hello(await client())
-    expect(res.error.data.code).toBe('terminal_server_disabled')
-  })
-
-  it('journals run events only while Terminal access is on or a client is connected (review L)', async () => {
-    st.terminalServer = false
+  it('journals run events while the host serves sockets', async () => {
     const { events } = await start()
     const journal = (server as unknown as { journal: { size: number } }).journal
-    events.emit('runs:event', { type: 'log', runId: 'r1', level: 'info', message: 'off' })
-    expect(journal.size).toBe(0)
-    st.terminalServer = true
-    events.emit('settings:changed', { terminalServer: true } as never)
     events.emit('runs:event', { type: 'log', runId: 'r1', level: 'info', message: 'on' })
     expect(journal.size).toBe(1)
   })
@@ -863,13 +708,6 @@ describe.runIf(posix)('HostSocketServer subscriptions', () => {
 })
 
 describe('scope helpers', () => {
-  it('grantScopes caps by level, keeps order and dedupes', () => {
-    expect(scopesForAccessLevel('operate')).toEqual(['read', 'operate'])
-    expect(scopesForAccessLevel('full')).toEqual(['read', 'operate', 'decide', 'configure'])
-    expect(grantScopes(['configure', 'read', 'read', 'decide'], 'operate')).toEqual({ granted: ['read'], withheld: ['configure', 'decide'] })
-    expect(grantScopes(['configure', 'read'], 'full')).toEqual({ granted: ['configure', 'read'], withheld: [] })
-  })
-
   it('authorizeKey names a library entry or a project server, nothing else', () => {
     expect(authorizeKey({ libraryId: 'a', announceUrl: true })).toBe(authorizeKey({ libraryId: 'a' }))
     expect(authorizeKey({ projectId: 'p', serverId: 's' })).not.toBe(authorizeKey({ libraryId: 'p' }))
@@ -878,183 +716,19 @@ describe('scope helpers', () => {
   })
 })
 
-describe('turnsNodeTerminalAccessOff (review round 2; platform-neutral)', () => {
-  const on = () => ({ terminalServer: true })
-  const off = () => ({ terminalServer: false })
-  it('is true only for a background host, settings:set, terminalServer false and Terminal access stored on', () => {
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: false }], on)).toBe(true)
-    expect(turnsNodeTerminalAccessOff('headless-host', 'settings:set', [{ terminalServer: false }], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('desktop', 'settings:set', [{ terminalServer: false }], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('node', 'runs:list', [{ terminalServer: false }], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: true }], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{}], on)).toBe(false)
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', 'junk', on)).toBe(false)
-    // Stored off but open for this session (no choice): an echo of false changes nothing (settingsSetArgs marks no choice).
-    expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: false }], off)).toBe(false)
-    // Unreadable settings: refused.
-    expect(
-      turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: false }], () => {
-        throw new Error('x')
-      })
-    ).toBe(true)
-  })
-})
-
-describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4.4 step 5, D8)', () => {
-  /** The hostProof a handoff hello result must carry (handoff bound into it). */
-  function handoffProof(res: Msg, challenge: Msg, params: Msg, hostKind = 'node'): string {
-    return hostProof(SECRET, {
-      protocolVersion: 1,
-      hostInstanceId: HOST_ID,
-      clientNonce: params.clientNonce,
-      hostNonce: challenge.params.hostNonce,
-      hostKind: hostKind as 'node',
-      appVersion: '1.0.0',
-      dataDir,
-      mock: true,
-      grantedScopes: res.result.grantedScopes,
-      handoff: true
-    })
-  }
-
-  for (const hostKind of ['inproc', 'headless-host', 'desktop'] as const) {
-    for (const on of [true, false]) {
-      it(`a proven desktop hello on a ${hostKind} host is refused after the proof (only a background host hands over; Terminal access ${on ? 'on' : 'off'})`, async () => {
-        st.terminalServer = on
-        st.accessLevel = 'full'
-        await start({ hostKind })
-        const c = await client()
-        const { res } = await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })
-        expect(res.error.data.code).toBe('bad_request')
-        expect(res.error.data.message).toBe(DESKTOP_HANDOFF_REFUSED_MESSAGE)
-        c.send(rpcRequest(2, 'host.stop', [{ force: true }]))
-        await c.waitClosed()
-        expect(st.calls).toEqual([])
-      })
-    }
-  }
-
-  for (const [label, terminalServer, accessLevel] of [
-    ['Terminal access off', false, 'operate'],
-    ["Terminal access 'operate'", true, 'operate'],
-    ["Terminal access 'full'", true, 'full']
-  ] as const) {
-    it(`a proven desktop hello gets exactly read + configure and handoff: true, whatever it asked (${label})`, async () => {
-      st.terminalServer = terminalServer
-      st.accessLevel = accessLevel
-      await start({ hostKind: 'node' })
+describe.runIf(posix)('HostSocketServer: the app is not a socket client', () => {
+  for (const hostKind of ['inproc', 'desktop'] as const) {
+    it(`a 'desktop' hello on a ${hostKind} host is refused and nothing is stopped`, async () => {
+      await start({ hostKind })
       const c = await client()
-      const { res, challenge, params } = await hello(c, { kind: 'desktop', scopes: ['read', 'operate', 'decide'] })
-      expect(res.result).toMatchObject({ grantedScopes: ['read', 'configure'], handoff: true })
-      expect(proofMatches(handoffProof(res, challenge, params), res.result.hostProof)).toBe(true)
-      // The proof binds the grant: without `handoff` it does not verify.
-      const withoutHandoff = hostProof(SECRET, {
-        protocolVersion: 1,
-        hostInstanceId: HOST_ID,
-        clientNonce: params.clientNonce,
-        hostNonce: challenge.params.hostNonce,
-        hostKind: 'node',
-        appVersion: '1.0.0',
-        dataDir,
-        mock: true,
-        grantedScopes: res.result.grantedScopes
-      })
-      expect(proofMatches(withoutHandoff, res.result.hostProof)).toBe(false)
+      const { res } = await hello(c, { kind: 'desktop' as never, scopes: ['read', 'configure'] })
+      expect(res.error.data.code).toBe('bad_request')
+      expect(res.error.data.message).toMatch(/clientKind must be 'cli' or 'tui'/)
+      c.send(rpcRequest(2, 'host.stop', [{ force: true }]))
+      await c.waitClosed()
+      expect(st.calls).toEqual([])
     })
   }
-
-  it('a cli hello never gets the handoff grant, and is refused while Terminal access is off', async () => {
-    st.terminalServer = false
-    await start({ hostKind: 'node' })
-    const c = await client()
-    expect((await hello(c, { kind: 'cli', scopes: ['read', 'configure'] })).res.error.data.code).toBe('terminal_server_disabled')
-    st.terminalServer = true
-    const d = await client()
-    const ok = (await hello(d, { kind: 'cli', scopes: ['read'] })).res
-    expect(ok.result.handoff).toBeUndefined()
-  })
-
-  it('only host.status and host.stop (forced included) reach the dispatcher; everything else is scope_denied before dispatch', async () => {
-    st.terminalServer = false
-    st.result = (method, args) => ({ method, args })
-    await start({ hostKind: 'node' })
-    const c = await client()
-    await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })
-    c.send(rpcRequest(2, 'host.status', []))
-    expect((await c.response(2)).result).toEqual({ method: 'host.status', args: [] })
-    c.send(rpcRequest(3, 'host.stop', [{ force: true }]))
-    expect((await c.response(3)).result).toEqual({ method: 'host.stop', args: [{ force: true }] })
-    // read and configure channels alike, and the transport subscriptions.
-    let id = 10
-    for (const method of ['projects:list', 'settings:set', 'runs:subscribe', 'host.subscribe', 'secrets:status']) {
-      c.send(rpcRequest(id, method, []))
-      const res = await c.response(id++)
-      expect(res.error.data.code, method).toBe('scope_denied')
-      expect(res.error.data.message).toContain(DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE)
-    }
-    expect(st.calls.map((x) => x.method)).toEqual(['host.status', 'host.stop'])
-  })
-
-  it('across app versions the handoff still works (host.stop stays callable)', async () => {
-    await start({ hostKind: 'node' })
-    const c = await client()
-    const { res } = await hello(c, { kind: 'desktop', version: '0.9.0', scopes: ['read', 'configure'] })
-    expect(res.result.versionSkewWarning).toContain('0.9.0')
-    c.send(rpcRequest(2, 'host.stop', [{ handoff: true }]))
-    expect((await c.response(2)).result).toEqual({ ok: true })
-  })
-
-  it('the peer check gets DESKTOP_HELLO_PEER_CHECK_MS for a desktop hello and still refuses the host\'s descendants', async () => {
-    const budgets: (number | undefined)[] = []
-    let answer: 'ok' | 'descendant' = 'descendant'
-    await start({ hostKind: 'node', peerCheck: async (_pid, _fd, timeoutMs) => (budgets.push(timeoutMs), answer) })
-    const c = await client()
-    expect((await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })).res.error.data.code).toBe('agent_descendant_refused')
-    answer = 'ok'
-    const d = await client()
-    expect((await hello(d, { kind: 'cli' })).res.result.grantedScopes).toEqual(['read'])
-    expect(budgets).toEqual([2_000, undefined])
-  })
-
-  it('a desktop peer check that runs past the handshake deadline (to its own budget) does not close the connection', async () => {
-    // RPC_HANDSHAKE_TIMEOUT_MS is 2 s from accept; the desktop check may take DESKTOP_HELLO_PEER_CHECK_MS (2 s) itself.
-    await start({ hostKind: 'node', peerCheck: (_pid, _fd, timeoutMs) => new Promise((r) => setTimeout(() => r('ok'), timeoutMs === 2_000 ? 2_400 : 0)) })
-    const c = await client()
-    const { res } = await (async () => {
-      const challenge = await c.next((m) => m.method === 'host.challenge')
-      // Wait most of the deadline before the hello, as a slow client would.
-      await new Promise((r) => setTimeout(r, 500))
-      c.frames.unshift(challenge)
-      return hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })
-    })()
-    expect(res.result?.handoff).toBe(true)
-    expect(c.closed).toBe(false)
-  }, 15_000)
-
-  it('handoff connections are not terminal sessions and survive Terminal access being turned off or narrowed', async () => {
-    const fake = await start({ hostKind: 'node' })
-    const h = await client()
-    await hello(h, { kind: 'desktop', scopes: ['read', 'configure'] })
-    const t = await client()
-    await hello(t, { kind: 'tui', scopes: ['read', 'operate', 'decide'] })
-    expect(server.terminalSessionCount()).toBe(1)
-    expect(server.attachedClientCount()).toBe(1)
-    st.accessLevel = 'operate'
-    fake.events.emit('settings:changed', {} as never)
-    await t.waitClosed()
-    st.terminalServer = false
-    fake.events.emit('settings:changed', {} as never)
-    await new Promise((r) => setTimeout(r, 100))
-    expect(h.closed).toBe(false)
-    expect(server.terminalSessionCount()).toBe(0)
-  })
-
-  it('a draining host refuses the desktop hello with host_draining (the app then waits for the exit)', async () => {
-    st.state = 'draining'
-    await start({ hostKind: 'node' })
-    const c = await client()
-    expect((await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })).res.error.data.code).toBe('host_draining')
-  })
 })
 
 describe.runIf(posix)('HostSocketServer.closeGracefully (cli-standalone.md 4.3)', () => {

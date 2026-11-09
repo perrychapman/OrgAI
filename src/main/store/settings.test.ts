@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
-import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit, withoutUnchosenTerminalAccess } from './settings'
+import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit } from './settings'
 
 describe('tier model validation', () => {
   it('drops renderer or file tier models that are not valid model ids', () => {
@@ -378,41 +378,28 @@ describe('defaultConnectionReplaced', () => {
   })
 })
 
-describe('terminalServer', () => {
-  it('defaults to false and keeps only a boolean true', () => {
-    expect(normalizeSettings(undefined).terminalServer).toBe(false)
-    expect(normalizeSettings({}).terminalServer).toBe(false)
-    expect(normalizeSettings({ terminalServer: true }).terminalServer).toBe(true)
-    expect(normalizeSettings({ terminalServer: false }).terminalServer).toBe(false)
-    for (const junk of ['true', 1, null, {}, []]) expect(normalizeSettings({ terminalServer: junk } as never).terminalServer).toBe(false)
+describe('removed Terminal access keys', () => {
+  const KEYS = ['terminalServer', 'terminalServerChosen', 'terminalAccessLevel', 'terminalAccessLevelChosen']
+
+  it('are dropped on read', () => {
+    const n = normalizeSettings({ terminalServer: true, terminalServerChosen: true, terminalAccessLevel: 'full', terminalAccessLevelChosen: true } as never)
+    for (const k of KEYS) expect(n).not.toHaveProperty(k)
   })
 
-  it("terminalAccessLevel keeps 'full' and an explicit 'operate' (missing = operate)", () => {
-    expect(normalizeSettings({})).not.toHaveProperty('terminalAccessLevel')
-    expect(normalizeSettings({ terminalAccessLevel: 'full' }).terminalAccessLevel).toBe('full')
-    expect(normalizeSettings({ terminalAccessLevel: 'operate' }).terminalAccessLevel).toBe('operate')
-    for (const junk of ['FULL', 'configure', true, 1, null, {}]) expect(normalizeSettings({ terminalAccessLevel: junk } as never)).not.toHaveProperty('terminalAccessLevel')
-  })
-
-  it('terminalAccessLevelChosen keeps only an explicit true (Wave 7)', () => {
-    expect(normalizeSettings({})).not.toHaveProperty('terminalAccessLevelChosen')
-    expect(normalizeSettings({ terminalAccessLevel: 'operate', terminalAccessLevelChosen: true }).terminalAccessLevelChosen).toBe(true)
-    for (const junk of [false, 'true', 1, null]) expect(normalizeSettings({ terminalAccessLevelChosen: junk } as never)).not.toHaveProperty('terminalAccessLevelChosen')
-  })
-
-  it('reads Terminal access saved on without a choice (an older headless boot) as off; a chosen one stays (review H2)', () => {
-    const on = normalizeSettings({ terminalServer: true })
-    expect(withoutUnchosenTerminalAccess(on).terminalServer).toBe(false)
-    const chosen = normalizeSettings({ terminalServer: true, terminalServerChosen: true })
-    expect(withoutUnchosenTerminalAccess(chosen)).toBe(chosen)
+  it('an old settings.json still loads, and the next write leaves the keys out', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orgai-term-'))
     try {
-      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalServer: true, terminalAccessLevel: 'full' } }))
-      const s = new SettingsStore(dir).get()
-      expect(s.terminalServer).toBe(false)
-      expect(s.terminalAccessLevel).toBe('full')
-      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalServer: true, terminalServerChosen: true } }))
-      expect(new SettingsStore(dir).get().terminalServer).toBe(true)
+      writeFileSync(
+        join(dir, 'settings.json'),
+        JSON.stringify({ version: 1, settings: { notifications: false, terminalServer: true, terminalServerChosen: true, terminalAccessLevel: 'full', terminalAccessLevelChosen: true } })
+      )
+      const store = new SettingsStore(dir)
+      expect(store.get().notifications).toBe(false)
+      for (const k of KEYS) expect(store.get()).not.toHaveProperty(k)
+      store.set({ ...store.get(), notifications: true })
+      const saved = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as { settings: Record<string, unknown> }
+      expect(saved.settings.notifications).toBe(true)
+      for (const k of KEYS) expect(saved.settings).not.toHaveProperty(k)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

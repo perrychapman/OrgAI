@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { resolve } from 'node:path'
 import type { HostScope, Project, ProjectPathCheck } from '../../shared/types'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, type Answer } from '../testing/fakeContext'
 import { CliError, EXIT, type ProjectResolution } from '../types'
 import { ARCHITECT_LABEL, INIT_NO_TTY_MESSAGE, initDeps, runInit } from './init'
@@ -10,7 +9,6 @@ import type { InteractiveRunSpec } from './interactive'
 const realDeps = { ...initDeps }
 afterEach(() => {
   Object.assign(initDeps, realDeps)
-  resetSkewWarning()
 })
 
 const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate', 'decide', 'configure'] }

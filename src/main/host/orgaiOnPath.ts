@@ -2,7 +2,7 @@
  * Every `orgai` on a PATH, in the order a shell finds them (Wave 7, docs/design/cli-standalone.md 8.2), with the
  * install channel, version and commit each one runs, read from the install.json beside the bundle it reaches
  * (src/cli/installInfo.ts). Used by `orgai doctor` (src/cli/doctor/installChecks.ts) and by the app's Terminal row
- * (shimInstaller.ts `otherCli`).
+ * (cliInstaller.ts `status()`).
  *
  * Read only and bounded: network folders (UNC, /net) are skipped untouched; one lstat / stat per PATH entry and candidate name, at most SHIM_TEXT_MAX_BYTES read from a
  * candidate, at most ORGAI_PATH_MAX_ENTRIES PATH entries. Nothing is executed. Electron-free; injectable fs for tests.
@@ -118,6 +118,20 @@ export function samePathKey(platform: NodeJS.Platform | string, path: string): s
 
 const NPM_CMD_BUNDLE_RE = /node_modules[\\/](orgai(?:-cli)?)[\\/]out[\\/]cli[\\/]orgai\.mjs/i
 
+/** The version of an `orgai-cli` package.json (name checked, size bounded), else undefined. Reads one small file. */
+function npmPackageOf(fs: OrgaiPathFs, file: string): { version?: string } | undefined {
+  try {
+    // Regular file only: a link, a FIFO or a device could make the read unbounded or block.
+    const st = fs.lstat(file)
+    if (!st.isFile() || st.isSymbolicLink() || st.size > SHIM_TEXT_MAX_BYTES) return undefined
+    const j = JSON.parse(fs.readText(file)) as { name?: unknown; version?: unknown }
+    if (j.name !== 'orgai-cli') return undefined
+    return typeof j.version === 'string' && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(j.version) ? { version: j.version } : {}
+  } catch {
+    return undefined
+  }
+}
+
 function kindOfChannel(channel: InstallChannel | undefined): OrgaiOnPathKind {
   if (channel === 'npm') return 'npm'
   if (channel === 'archive') return 'archive'
@@ -187,13 +201,18 @@ function inspectCandidate(
   }
   const withBundle = (entry: OrgaiOnPathEntry, bundleDir: string, fallback: OrgaiOnPathKind): OrgaiOnPathEntry => {
     const info = readInstallInfo({ bundleDir, fs: { size: (x) => fs.lstat(x).size, isFile: (x) => fs.lstat(x).isFile(), readText: (x) => fs.readText(x) } })
-    const kind = entry.kind !== 'unknown' ? entry.kind : info.source === 'file' ? kindOfChannel(info.channel) : fallback
+    let kind = entry.kind !== 'unknown' ? entry.kind : info.source === 'file' ? kindOfChannel(info.channel) : fallback
+    // npm's package.json beside the bundle (<pkg>/out/cli): the package is orgai-cli. It names the install even when
+    // install.json is missing, and its version is the one shown (5.3).
+    const pkg = kind === 'archive' || kind === 'app-shim' || kind === 'app-launcher' ? undefined : npmPackageOf(fs, p.join(p.dirname(p.dirname(bundleDir)), 'package.json'))
+    if (pkg) kind = 'npm'
+    const version = pkg?.version ?? info.version
     return {
       ...entry,
       kind,
       bundleDir,
-      ...(info.source !== 'invalid' ? { channel: info.channel } : {}),
-      ...(info.version ? { version: info.version } : {}),
+      ...(pkg ? { channel: 'npm' as const } : info.source !== 'invalid' ? { channel: info.channel } : {}),
+      ...(version ? { version } : {}),
       ...(info.commit ? { commit: info.commit } : {})
     }
   }

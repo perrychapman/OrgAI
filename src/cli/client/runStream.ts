@@ -1,5 +1,5 @@
 /**
- * A run-chain follower over `runs:subscribe` (cli-spec 3.3(4)), shared by `orgai watch` and `orgai exec`.
+ * A run-chain follower over `runs:subscribe` (cli-spec 3.3(4)), used by `orgai exec` and the terminal UI.
  *
  * - `start()` subscribes on the given client with the caller's input (runIds, followChains, includeActiveRunRecord);
  *   notifications that arrive before the result is applied are queued, then applied in order.
@@ -12,7 +12,7 @@
  *   filterKey), queueing notifications during the call exactly like `start()`: the TUI calls it after SIGCONT (an
  *   unchanged filter gets a replay) and after a focus change (a new includeActiveRunRecord changes the filterKey, so
  *   the host answers a snapshot).
- * - The follower itself never asks to be non-interactive: `orgai watch` / `orgai exec` put `nonInteractive` in their
+ * - The follower itself never asks to be non-interactive: `orgai exec` puts `nonInteractive` in their
  *   subscribe input (exec subscribers must not hold the human grace window); the TUI leaves it out.
  */
 import type { RunsEventParams, RunsSubscribeInput, RunsSubscribeResult } from '../../shared/types'

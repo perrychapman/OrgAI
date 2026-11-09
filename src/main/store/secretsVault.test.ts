@@ -36,9 +36,10 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-const isApp = (k: HostKind): boolean => k === 'desktop' || k === 'headless-host'
+const isApp = (k: HostKind): boolean => k === 'desktop'
 function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Promise<SecretStore> {
   return openSecretStore({
+    product: 'desktop',
     dataDir,
     userDataDir: root,
     hostKind: kind,
@@ -52,7 +53,7 @@ function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Prom
   })
 }
 const app = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('desktop', extra)
-const node = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('node', extra)
+const node = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('inproc', extra)
 const vaultJson = (): VaultFile => JSON.parse(readFileSync(join(dataDir, 'vault.json'), 'utf8')) as VaultFile
 const legacyKeys = (): string[] => olderApp(dataDir).keys().sort()
 const locked = { kind: 'locked' as const, reason: 'Keychain locked over SSH' }
@@ -220,7 +221,7 @@ describe('opening and creating (cli-standalone.md 5.6)', () => {
     expect(a.state()).toBe('absent')
     a.set('k', 'v')
     expect(olderApp(dataDir).get('k')).toBe('v')
-    const n = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'inproc', cipher: noCipher, platform: 'darwin', env: {}, log: () => undefined, custodian: unavailableCustodianFactory })
+    const n = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'inproc', product: 'desktop', cipher: noCipher, platform: 'darwin', env: {}, log: () => undefined, custodian: unavailableCustodianFactory })
     await expect(n.prepareWrite()).rejects.toThrow(custodianUnavailableReason('keychain'))
     expect(() => n.set('x', 'y')).toThrow(VaultNotReady)
     expect((await n.statusReport({ probe: true })).probe).toEqual({ ok: false, kind: 'unavailable', reason: custodianUnavailableReason('keychain') })
@@ -417,6 +418,21 @@ describe('writes (5.5 Writes)', () => {
     expect((await node()).get('a')).toBe('a-value')
   })
 
+  it('the CLI product words a corrupt secrets.json without naming the app', async () => {
+    writeFileSync(join(dataDir, 'secrets.json'), 'garbage')
+    custody.fail(locked)
+    const l = await host('desktop', { product: 'cli' })
+    let message = ''
+    try {
+      l.set('k', 'v')
+    } catch (e) {
+      message = (e as Error).message
+    }
+    expect(message).toContain('secrets.json')
+    expect(message).not.toMatch(/OrgAI app/)
+    expect(message).not.toBe(LEGACY_CORRUPT_MESSAGE)
+  })
+
   it('a corrupt secrets.json is never rewritten: legacy-only writes refuse, an open vault stores vault-only', async () => {
     writeFileSync(join(dataDir, 'secrets.json'), 'garbage')
     custody.fail(locked)
@@ -475,7 +491,7 @@ describe('deletes (5.5 Deletes)', () => {
       s.set('k', 'v')
       if (fail === 'mismatch') custody.items.set(vaultJson().vaultId, Buffer.alloc(32, 3))
       else custody.fail(fail)
-      for (const kind of ['desktop', 'node'] as const) {
+      for (const kind of ['desktop', 'inproc'] as const) {
         const h = await host(kind)
         expect(h.state()).not.toBe('open')
         h.set('k', null)

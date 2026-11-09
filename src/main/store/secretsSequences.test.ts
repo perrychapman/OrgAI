@@ -27,9 +27,10 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
-const isApp = (k: HostKind): boolean => k === 'desktop' || k === 'headless-host'
+const isApp = (k: HostKind): boolean => k === 'desktop'
 function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Promise<SecretStore> {
   return openSecretStore({
+    product: 'desktop',
     dataDir,
     userDataDir: root,
     hostKind: kind,
@@ -44,7 +45,7 @@ function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Prom
 }
 const app = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('desktop', extra)
 const node = async (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => {
-  const s = await host('node', extra)
+  const s = await host('inproc', extra)
   return s
 }
 const nodeWriter = async (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => {
@@ -317,7 +318,7 @@ describe('round 6 item 1: one post-retirement baseline', () => {
 
 describe('round 6 item 2: delete recovery without a key', () => {
   it('rows 1 and 2 run while the vault is locked, at open, on every host', async () => {
-    for (const kind of ['desktop', 'node'] as const) {
+    for (const kind of ['desktop', 'inproc'] as const) {
       rmSync(dataDir, { recursive: true, force: true })
       mkdirSync(dataDir)
       custody.fail(undefined)

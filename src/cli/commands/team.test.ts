@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { resolve } from 'node:path'
 import type { HostScope, OrgTemplateInfo, Project, Role } from '../../shared/types'
 import { manageDeps } from '../manage'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, rpcError, type Answer } from '../testing/fakeContext'
 import { CliError } from '../types'
 import { runTeam } from './team'
@@ -11,7 +10,6 @@ const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate',
 const realDeps = { ...manageDeps }
 afterEach(() => {
   Object.assign(manageDeps, realDeps)
-  resetSkewWarning()
 })
 
 const lead: Role = {
@@ -80,7 +78,7 @@ describe('team templates', () => {
     expect(s.client.callsOf('templates:apply')).toEqual([[{ projectId: 'p1', templateId: 'tpl_1', mode: 'replace' }]])
     // The Desktop Team tab cannot undo a CLI apply (its Undo comes only from applies the renderer made), so never promise it.
     expect(s.f.out()).not.toContain('Desktop Team tab')
-    expect(s.f.out()).toContain('This cannot be undone from the CLI or the Desktop')
+    expect(s.f.out()).toContain('This cannot be undone from the CLI')
     expect(s.f.out()).toContain(`The previous chart had ${P.roles.length} roles.`)
   })
 

@@ -52,6 +52,29 @@ describe('controlProtectedPaths', () => {
     expect(controlProtectedPaths(data, undefined, { vaultKeyFiles: [] })).toEqual(controlProtectedPaths(data))
   })
 
+  it('protects the other product\'s control files, in both directions', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
+    dirs.push(base)
+    const app = join(base, 'OrgAI', 'data')
+    const cli = join(base, 'orgai-cli', 'data')
+    mkdirSync(app, { recursive: true })
+    mkdirSync(cli, { recursive: true })
+    for (const [own, other] of [
+      [app, cli],
+      [cli, app]
+    ] as const) {
+      const paths = controlProtectedPaths(own, undefined, { otherProductDataDirs: [other, ''] })
+      for (const e of ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd', 'vault.json']) expect(paths).toContain(join(other, e))
+      const ctx: SelfControlContext = { protectedPaths: paths, cwd: base, home: base }
+      expect(checkSelfControlDenial('Read', { file_path: join(other, 'codex', 'auth.json') }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Write', { file_path: join(other, 'settings.json'), content: '{}' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Bash', { command: `cat ${join(other, 'settings.json')}` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      // Without the extra, the other folder is open (the old one-product list).
+      const bare: SelfControlContext = { protectedPaths: controlProtectedPaths(own), cwd: base, home: base }
+      expect(checkSelfControlDenial('Read', { file_path: join(other, 'codex', 'auth.json') }, bare)).toBeNull()
+    }
+  })
+
   it('carries both spellings through a dir symlink, deduped', () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
     dirs.push(base)
@@ -650,18 +673,15 @@ describe('false positives in ordinary work (review M3)', () => {
   })
 })
 
-describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
+describe('old packaged-app CLI roots, given explicitly', () => {
   const res = '/Applications/OrgAI.app/Contents/Resources'
-  const roots = orgaiCliRootsOf(`${res}/app.asar`, 'darwin')
+  const roots = [`${res}/app.asar.unpacked/out/cli`, `${res}/bin`]
   const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: roots }
   const deny = (command: string, c: SelfControlContext = ctx): string | null => checkSelfControlDenial('Bash', { command }, c)
 
-  it('orgaiCliRootsOf(<res>/app.asar) covers the unpacked bundle and the launcher folder', () => {
-    expect(roots).toContain(`${res}/app.asar.unpacked/out/cli`)
-    expect(roots).toContain(`${res}/bin`)
-    expect(orgaiCliRootsOf(`${res}/app.asar.unpacked`, 'darwin')).toContain(`${res}/bin`)
-    // A dev root gets no packaged entries.
+  it('orgaiCliRootsOf gives only the bundle and source folders of a root', () => {
     expect(orgaiCliRootsOf('/repo', 'darwin')).toEqual(['/repo/out/cli', '/repo/src/cli'])
+    expect(orgaiCliRootsOf(`${res}/app.asar`, 'darwin')).toEqual([`${res}/app.asar/out/cli`, `${res}/app.asar/src/cli`])
   })
 
   it('denies every way of running the packaged CLI', () => {
@@ -706,7 +726,7 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
 
   it('denies cmd /c orgai.cmd on win32', () => {
     const wres = 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI\\resources'
-    const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: orgaiCliRootsOf(`${wres}\\app.asar`, 'win32') }
+    const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: [`${wres}\\app.asar.unpacked\\out\\cli`, `${wres}\\bin`] }
     expect(wctx.cliRoots).toContain(`${wres}\\bin`)
     expect(checkSelfControlDenial('PowerShell', { command: `cmd /c "${wres}\\bin\\orgai.cmd" status` }, wctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     expect(checkSelfControlDenial('Bash', { command: `cmd /c "${wres}\\bin\\orgai.cmd" status` }, { ...wctx, shell: 'bash' })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
@@ -736,7 +756,7 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
 
 describe('stdin, here-strings, substitutions, find -exec, globs, braces and escapes (Wave 6 review)', () => {
   const res = '/Applications/OrgAI.app/Contents/Resources'
-  const roots = orgaiCliRootsOf(`${res}/app.asar`, 'darwin')
+  const roots = [`${res}/app.asar.unpacked/out/cli`, `${res}/bin`]
   const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: roots, home: '/Users/me' }
   const deny = (command: string, c: SelfControlContext = ctx): string | null => checkSelfControlDenial('Bash', { command }, c)
 
@@ -1208,6 +1228,34 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
     expect(ps('Get-Content $env:APPDATA\\OrgAI\\vault.json', ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     expect(ps(`Copy-Item -Path:${data}\\secrets.json.tmp -Destination C:\\x`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     expect(ps(`Get-ChildItem ${data}`, ctx)).toBeNull()
+  })
+
+  describe('the CLI vault names (ORGAI_CLI_VAULT_*, OrgAI CLI Vault)', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
+    it('denies the renamed variables and the renamed keychain service like the desktop ones', () => {
+      for (const command of [
+        'echo $ORGAI_CLI_VAULT_KEY_FILE',
+        'echo ${ORGAI_CLI_VAULT_KEY_FILE}',
+        'printenv ORGAI_CLI_VAULT_KEY_FILE',
+        'echo $orgai_cli_vault_key_file',
+        'echo $ORGAI_"CLI"_VAULT_KEY_FILE',
+        'echo $ORGAI_CL\\I_VAULT_KEY_FILE',
+        'echo ${!ORGAI_CLI_V@}',
+        'echo ${!ORGAI_CLI_@}',
+        'echo ${!ORGAI_C@}',
+        'env | grep ORGAI_CLI_VAULT',
+        'security find-generic-password -s "OrgAI CLI Vault" -a abc -w',
+        'keyring get "OrgAI CLI Vault" abc',
+        'keyring get "OrgAI\\ CLI\\ Vault" abc',
+        'kwallet-query -r abc "OrgAI CLI Vault"',
+        "python3 -c \"import keyring; print(keyring.get_password('OrgAI CLI Vault', 'abc'))\""
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+    })
+    it('still allows the CLI data folder variable', () => {
+      expect(bash('ORGAI_CLI_DATA_DIR=/tmp/x node cli.js', ctx)).toBeNull()
+    })
   })
 
   describe('ORGAI_VAULT_* references', () => {

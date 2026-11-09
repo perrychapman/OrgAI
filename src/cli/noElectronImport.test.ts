@@ -17,22 +17,14 @@ const CLI_MODULES = [
   './client/locate',
   './client/resolveProject',
   './client/readOnlyStore',
-  './client/launcher',
   './commands/status',
   './commands/runs',
-  './commands/watch',
-  './commands/inbox',
-  './commands/daemon',
-  './commands/app',
   './commands/doctor',
   './commands/completions',
   // Wave 7 contracts
   './installInfo',
   './commands/secrets',
-  './commands/terminalAccess',
-  // Wave 7 WP-E
-  './nodeHost',
-  './terminalAccessSettings'
+  './ownedMessage'
 ]
 
 describe('CLI modules load without electron', () => {

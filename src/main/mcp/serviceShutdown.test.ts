@@ -1,5 +1,5 @@
 // Wave 7 (cli-standalone.md round 6 item 9): mcp:authorize leases only its final commit, and McpService.dispose()
-// (the drain's quiesce) aborts every interactive authorization so Quit and the app's handoff never wait on a browser.
+// (the drain's quiesce) aborts every interactive authorization so Quit and the host's shutdown never wait on a browser.
 // Fake flow, no network.
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'

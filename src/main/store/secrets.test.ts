@@ -206,11 +206,11 @@ describe('SecretStore without an opened vault (direct construction, cli-standalo
 
   it('openSecretStore honours read-only and the overlay; an app host without a working custodian stays legacy-only', async () => {
     const dir = dataDir()
-    const store = await openSecretStore({ dataDir: dir, userDataDir: dir, hostKind: 'inproc', cipher: fakeCipher(), custodian: unavailableCustodianFactory, readOnly: true, overlay: new Map([['k', 'v']]) })
+    const store = await openSecretStore({ dataDir: dir, userDataDir: dir, hostKind: 'inproc', product: 'desktop', cipher: fakeCipher(), custodian: unavailableCustodianFactory, readOnly: true, overlay: new Map([['k', 'v']]) })
     expect(store).toBeInstanceOf(SecretStore)
     expect(store.get('k')).toBe('v')
     expect(store.available()).toBe(false)
-    const rw = await openSecretStore({ dataDir: dir, userDataDir: dir, hostKind: 'desktop', cipher: fakeCipher(), log: () => undefined, custodian: unavailableCustodianFactory })
+    const rw = await openSecretStore({ dataDir: dir, userDataDir: dir, hostKind: 'desktop', product: 'desktop', cipher: fakeCipher(), log: () => undefined, custodian: unavailableCustodianFactory })
     expect(rw.state()).toBe('absent')
     rw.set(LITELLM_KEY, 'sk-3')
     expect(existsSync(join(dir, 'secrets.json'))).toBe(true)

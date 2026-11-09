@@ -98,7 +98,7 @@ export function usageText(s: TuiState): string {
   if (withUsage.length === 0) out.push('', 'This run has no usage numbers yet (they arrive with the first model response).')
 
   const unpriced = [...new Set(withUsage.flatMap((x) => x.usage!.models.filter((m) => m.costUsd === null || m.priceSource === 'unknown').map((m) => safeLine(m.model))))].filter(Boolean)
-  if (unpriced.length > 0) out.push(`No price for ${unpriced.slice(0, 6).join(', ')}${unpriced.length > 6 ? ', ...' : ''}; set one in the desktop app (App settings > Connections > Model prices).`)
+  if (unpriced.length > 0) out.push(`No price for ${unpriced.slice(0, 6).join(', ')}${unpriced.length > 6 ? ', ...' : ''}; orgai models prices lists what is known.`)
 
   const flat = newest.summary.usage
   if (flat && runs.length === 1) {

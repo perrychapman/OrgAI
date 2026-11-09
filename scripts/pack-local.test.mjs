@@ -7,8 +7,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { formatBuildInfo, unpackedLayout, assertInside, plan, buildSteps, childEnv, main } from './pack-local.mjs'
 import { CLEANUP_SIGNALS, withInstallInfoCleanup, writeInstallInfo } from './write-install-info.mjs'
+import { formatBuildInfo, unpackedLayout, assertInside, plan, buildSteps, childEnv, main } from './pack-local.mjs'
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url))
 
@@ -47,14 +47,13 @@ test('plan keeps every path under release/', () => {
   for (const k of ['current', 'previous', 'previousDir', 'previousTxt', 'buildTxt']) assertInside(p.release, p[k])
 })
 
-test('buildSteps: the CLI vite build runs after electron-vite and before electron-builder', () => {
+test('buildSteps: electron-vite then electron-builder; the app ships no CLI bundle, so no CLI build', () => {
   const steps = buildSteps()
   assert.deepEqual(
     steps.map(([pkg]) => pkg),
-    ['electron-vite', 'vite', 'electron-builder']
+    ['electron-vite', 'electron-builder']
   )
-  assert.deepEqual(steps[1][2], ['build', '-c', 'vite.cli.config.ts'])
-  assert.deepEqual(steps[2][2], ['--dir', '--publish', 'never'])
+  assert.deepEqual(steps[1][2], ['--dir', '--publish', 'never'])
 })
 
 test('childEnv: darwin gets CSC_IDENTITY_AUTO_DISCOVERY=false unless the caller set it', () => {
@@ -79,7 +78,7 @@ function fakeRoot() {
   return root
 }
 
-test('main --dry-run lists the CLI build step and the signing env choice on darwin', () => {
+test('main --dry-run lists the build steps (no CLI build, no install.json) and the signing env choice on darwin', () => {
   const root = fakeRoot()
   try {
     const lines = []
@@ -87,14 +86,12 @@ test('main --dry-run lists the CLI build step and the signing env choice on darw
     const out = lines.join('\n')
     assert.match(out, /Would set for every step: CSC_IDENTITY_AUTO_DISCOVERY=false/)
     const ev = out.indexOf('electron-vite')
-    const cli = out.indexOf('build -c vite.cli.config.ts')
     const eb = out.indexOf('--dir --publish never')
-    assert.ok(ev >= 0 && cli > ev && eb > cli, out)
+    assert.ok(ev >= 0 && eb > ev, out)
+    assert.doesNotMatch(out, /vite\.cli\.config|install\.json/)
     assert.match(out, /npm run pack:verify/)
-    assert.match(out, /Would write out[\\/]cli[\\/]install\.json: \{"channel":"app","version":"9\.9\.9"/)
-    assert.ok(out.indexOf('install.json') < eb, 'install.json is written before electron-builder')
     assert.equal(fs.existsSync(path.join(root, 'release')), false, 'a dry run writes nothing')
-    assert.equal(fs.existsSync(path.join(root, 'out')), false, 'a dry run writes no install.json')
+    assert.equal(fs.existsSync(path.join(root, 'out')), false, 'a dry run writes nothing in out/')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -106,18 +103,17 @@ test('main --dry-run on win32 sets no signing env', () => {
     const lines = []
     main(['--dry-run'], root, (l) => lines.push(l), { platform: 'win32', env: {} })
     assert.doesNotMatch(lines.join('\n'), /CSC_IDENTITY_AUTO_DISCOVERY/)
-    assert.match(lines.join('\n'), /vite\.cli\.config\.ts/)
+    assert.doesNotMatch(lines.join('\n'), /vite\.cli\.config\.ts/)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
 
-test('main passes the darwin child env to every build step, in order', () => {
+test('main passes the darwin child env to every build step, in order, and writes no install.json', () => {
   const root = fakeRoot()
   try {
     for (const [pkg, bin] of [
       ['electron-vite', 'bin/ev.js'],
-      ['vite', 'bin/vite.js'],
       ['electron-builder', 'cli.js']
     ]) {
       const dir = path.join(root, 'node_modules', pkg)
@@ -125,29 +121,17 @@ test('main passes the darwin child env to every build step, in order', () => {
       fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: pkg, bin: { [pkg]: bin } }))
     }
     const calls = []
-    const installInfo = path.join(root, 'out', 'cli', 'install.json')
-    let seenByBuilder
     const exec = (cmd, args, opts) => {
       calls.push({ cmd, args, env: opts.env })
-      // The CLI step "builds" out/cli; the last step "builds" the app so the marker check passes.
-      if (args.includes('vite.cli.config.ts')) {
-        fs.mkdirSync(path.dirname(installInfo), { recursive: true })
-        fs.writeFileSync(path.join(root, 'out', 'cli', 'orgai.mjs'), '')
-      }
-      if (args.includes('--dir')) {
-        seenByBuilder = JSON.parse(fs.readFileSync(installInfo, 'utf8'))
-        fs.mkdirSync(path.join(root, 'release', unpackedLayout('darwin', process.arch).dir, 'OrgAI.app'), { recursive: true })
-      }
+      // The last step "builds" the app so the marker check passes.
+      if (args.includes('--dir')) fs.mkdirSync(path.join(root, 'release', unpackedLayout('darwin', process.arch).dir, 'OrgAI.app'), { recursive: true })
     }
     const lines = []
     main([], root, (l) => lines.push(l), { platform: 'darwin', env: { HOME: '/h' }, exec })
-    assert.equal(seenByBuilder.channel, 'app', 'electron-builder packs install.json with channel app')
-    assert.equal(seenByBuilder.version, '9.9.9')
-    assert.equal(fs.existsSync(installInfo), false, 'install.json is removed after the pack (the checkout reads as dev)')
-    assert.equal(calls.length, 3)
+    assert.equal(fs.existsSync(path.join(root, 'out')), false, 'no out/cli/install.json is written')
+    assert.equal(calls.length, 2)
     assert.ok(calls[0].args[0].endsWith(path.join('electron-vite', 'bin', 'ev.js')))
-    assert.ok(calls[1].args[0].endsWith(path.join('vite', 'bin', 'vite.js')))
-    assert.deepEqual(calls[1].args.slice(1), ['build', '-c', 'vite.cli.config.ts'])
+    assert.ok(calls[1].args[0].endsWith(path.join('electron-builder', 'cli.js')))
     for (const c of calls) {
       assert.equal(c.cmd, process.execPath)
       assert.equal(c.env.CSC_IDENTITY_AUTO_DISCOVERY, 'false')
@@ -159,6 +143,7 @@ test('main passes the darwin child env to every build step, in order', () => {
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
 
 /** A process stand-in: listeners per signal, and the kills asked for. */
 function fakeProc() {
@@ -211,40 +196,6 @@ test('withInstallInfoCleanup removes install.json on SIGINT / SIGTERM / SIGHUP a
     assert.deepEqual(proc.kills, [])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('main: a signal during electron-builder still removes install.json (pack-local)', () => {
-  const root = fakeRoot()
-  try {
-    for (const [pkg, bin] of [
-      ['electron-vite', 'bin/ev.js'],
-      ['vite', 'bin/vite.js'],
-      ['electron-builder', 'cli.js']
-    ]) {
-      const dir = path.join(root, 'node_modules', pkg)
-      fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: pkg, bin: { [pkg]: bin } }))
-    }
-    const installInfo = path.join(root, 'out', 'cli', 'install.json')
-    const proc = fakeProc()
-    const exec = (cmd, args) => {
-      if (args.includes('vite.cli.config.ts')) {
-        fs.mkdirSync(path.dirname(installInfo), { recursive: true })
-        fs.writeFileSync(path.join(root, 'out', 'cli', 'orgai.mjs'), '')
-      }
-      if (args.includes('--dir')) {
-        assert.equal(fs.existsSync(installInfo), true)
-        proc.emit('SIGINT')
-        throw new Error('electron-builder was interrupted')
-      }
-    }
-    assert.throws(() => main([], root, () => {}, { platform: 'darwin', env: {}, exec, signalTarget: proc }), /interrupted/)
-    assert.equal(fs.existsSync(installInfo), false)
-    assert.deepEqual(proc.kills, [[4242, 'SIGINT']])
-    assert.equal(proc.count(), 0)
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
   }
 })
 

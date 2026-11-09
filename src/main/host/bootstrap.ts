@@ -1,8 +1,7 @@
 /**
  * bootOrgAIHost (cli-spec 3.1, 3.2(2) step 4, 3.2(4), Wave 1): Electron-free host construction. Every store, service,
  * adapter and background probe the app needs is built here, in the order index.ts's whenReady built them before, so the
- * same boot runs inside Electron (index.ts, the desktop shell) and, from Wave 2 on, in plain Node (`--host inproc`,
- * `--headless-host`).
+ * same boot runs inside Electron (index.ts, the desktop shell) and, from Wave 2 on, in plain Node (`--host inproc`).
  *
  * The caller acquires <dataDir>/run ownership BEFORE calling (RunStore rewrites live runs at construction). Every
  * main -> client push goes through one HostEventBus; the desktop shell forwards it to windows. Synchronous, like the
@@ -12,7 +11,7 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
+import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary } from '../../shared/types'
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
 import { connectionConfigured, connectionIds } from '../../shared/defaults'
 import { buildSettingsInfo } from '../appInfo'
@@ -36,6 +35,7 @@ import { MockAdapter } from '../runtime/mock'
 import { repoLockActivity } from '../runtime/repoLock'
 import { RunManager, outputScopeOf } from '../runtime/runManager'
 import { controlProtectedPaths } from '../runtime/selfControlGate'
+import { cliUserDataDir, platformUserDataDir } from '../../cli/client/locate'
 import type { RunConnection, RuntimeAdapter } from '../runtime/types'
 import { AgentImportService } from '../setup/import/importer'
 import { SetupService } from '../setup/service'
@@ -56,7 +56,7 @@ import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
 import { createAppReference, type ShortcutRow } from '../reference/appReference'
 import { withAppSettingChanges } from '../../shared/appSettingsProposal'
-import type { AppSettingsProposalPayload, CliShimStatus } from '../../shared/types'
+import type { AppSettingsProposalPayload, CliCommandStatus } from '../../shared/types'
 import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
 import { HostEventBus } from './events'
@@ -137,7 +137,7 @@ export interface BootOrgAIHostOptions {
   /** Shortcut rows for the reference corpus (the shell maps shared/view SHORTCUTS to this; main never imports renderer code). */
   referenceShortcuts?: readonly ShortcutRow[]
   /** The command line shim state for the reference status snapshot (desktop shell only). */
-  cliShimStatus?: () => CliShimStatus | Promise<CliShimStatus>
+  cliShimStatus?: () => CliCommandStatus | Promise<CliCommandStatus>
   /** ORGAI_MOCK === '1': registers the scripted mock adapter and keeps discovery off the real home. */
   mock: boolean
   platform?: NodeJS.Platform
@@ -150,8 +150,7 @@ export interface BootOrgAIHostOptions {
   housekeeping?: Partial<HousekeepingSteps>
   /**
    * Called once a shutdown released ownership (Wave 7, cli-standalone.md 4.3: after the writers settled and the socket
-   * closed, or at the hard limit): the process may exit now. Desktop: quit the app; inproc: resolve `closed`; Node host:
-   * exit the process.
+   * closed, or at the hard limit): the process may exit now. Desktop: quit the app; inproc: resolve `closed`.
    */
   onDrained?: (info: ShutdownReleaseInfo) => void
   /**
@@ -162,7 +161,7 @@ export interface BootOrgAIHostOptions {
   /**
    * The shutdown's hard limit (4.3): once the host's descendants are gone, end the process (its exit hook releases
    * ownership), so no writer of this host can run after the data folder is given up. Every real entry point passes one
-   * (desktop and headless: process.exit; inproc and Node hosts: startInprocHost's, which tells the terminal and exits);
+   * (desktop: process.exit; inproc: startInprocHost's, which tells the terminal and exits);
    * absent (tests) = release, then onDrained.
    */
   exitAtHardLimit?: () => void
@@ -173,7 +172,7 @@ export interface BootOrgAIHostOptions {
   shutdownExcludePids?: () => number[]
   /** The shutdown's hard limit and its tree-kill waits; production uses the defaults (tests shorten them). */
   shutdownLimits?: { hardLimitMs?: number; kill?: { termGraceMs?: number; waitMs?: number; stepMs?: number } }
-  /** Authenticated terminal sessions (HostSocketServer.terminalSessionCount), for host.status `handoff`. Absent = 0. */
+  /** Authenticated terminal sessions (HostSocketServer.terminalSessionCount), for the host.status counts. Absent = 0. */
   terminalSessions?: () => number
   /**
    * More background work the drain stops at once (after the host's own: Team assistant, OAuth flows, skill evaluation),
@@ -197,20 +196,8 @@ export interface OrgAIHost {
    * (desktop Quit, signals, inproc cleanup) go through it; ownership is released only after the writers settled.
    */
   shutdown: ShutdownCoordinator
-  /**
-   * Whether host.hello accepts terminal clients now and the most it grants (socketServer.ts): AppSettings.terminalServer,
-   * or this session of a headless / in-process boot while the user has made no choice; the level from
-   * AppSettings.terminalAccessLevel on every host kind (an in-process host's own CLI proves itself with the owner key).
-   */
-  terminalAccess(): HostTerminalAccess
   /** Stop background timers and probes (before-quit). Idempotent. */
   dispose(): void
-}
-
-/** OrgAIHost.terminalAccess(). */
-export interface HostTerminalAccess {
-  enabled: boolean
-  level: TerminalAccessLevel
 }
 
 /**
@@ -221,6 +208,12 @@ export interface HostTerminalAccess {
 export function applyAppSettingsPayload(settings: Pick<SettingsStore, 'get' | 'set'>, payload: AppSettingsProposalPayload): void {
   const stored = settings.get()
   settings.set(settingsSetArgs(withAppSettingChanges(stored, payload.changes), stored))
+}
+
+/** The other product's default data folder: the CLI's for the app, the app's for the CLI (the gate protects its control files). */
+function otherProductDataDir(hostKind: HostKind): string {
+  const dir = hostKind === 'desktop' ? cliUserDataDir : platformUserDataDir
+  return join(dir(process.platform, process.env, homedir()), 'data')
 }
 
 export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
@@ -252,27 +245,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
 
   const runStore = new RunStore(dataDir)
   const secrets = opts.secretStore ?? new SecretStore(dataDir, opts.safeStorage, opts.secrets)
-  // A headless or in-process host exists to serve the CLI: it accepts terminal clients for this session (cli-spec 1 /
-  // 3.3, "enabled when ... launches via orgai"; AppSettings.terminalServer) without saving that, so the desktop app
-  // never inherits an open socket nobody chose (review H2). A choice made in App settings (terminalServerChosen)
-  // stands: off means host.hello refuses terminal clients here too.
-  const sessionTerminal = hostKind !== 'desktop' && settings.get().terminalServer !== true && settings.get().terminalServerChosen !== true
-  if (hostKind !== 'desktop' && settings.get().terminalServer !== true) {
-    log.info(
-      sessionTerminal
-        ? `Terminal access is on for this ${hostKind === 'node' ? 'background host' : 'command'}'s session only (not saved).`
-        : `Terminal access is off in App settings; this ${hostKind === 'node' ? 'background host' : 'command'} refuses terminal clients until it is turned on.`
-    )
-  }
-  const terminalAccess = (): HostTerminalAccess => {
-    const s = settings.get()
-    return {
-      enabled: s.terminalServer === true || (sessionTerminal && s.terminalServerChosen !== true),
-      // The same on every host kind (review H2): an in-process host's own CLI gets every scope through its in-memory
-      // owner key (socketServer.ts ownerKey), never through this level, so another client of it is capped too.
-      level: s.terminalAccessLevel === 'full' ? 'full' : 'operate'
-    }
-  }
+  // Socket access is fixed by the host kind (no setting): only the orgai process's in-process host answers a socket, and
+  // only its own process through the owner proof (every scope); the desktop opens no socket at all.
   // `adapters` is declared below and only read when discovery runs.
   let adapters: { claude: ClaudeAdapter; codex: CodexAdapter; mock?: MockAdapter }
   const connections = new ConnectionService({
@@ -429,6 +403,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       platform,
       dataDir,
       mock: mockAdapter,
+      hostKind,
       settings: () => settings.get(),
       connections: () => connections.list(),
       projectCount: () => projects.list().length,
@@ -465,10 +440,11 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     // Wave 7: plus the vault's key file, re-read per call (the vault may change; cli-standalone.md 8.4).
-    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles() }),
+    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles(), otherProductDataDirs: [otherProductDataDir(hostKind)] }),
     // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
     // attachedClientCount, which leaves non-interactive CLI exec sockets out). `activity` is created further down;
     // before that (never during a run) there is nobody to count.
+    noWaitPolicy: hostKind === 'inproc',
     interactiveClients: () => (activityRef ? activityRef.snapshot().counts.interactiveClients : 0),
     // "Always allow for project" cards: append folders / switch to Accept edits on the stored project (the store cleans them).
     saveProjectPermissions: (projectId, patch) =>
@@ -686,7 +662,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       }
     },
     forceStop: () => rm.stopAll({ reason: 'quit' }),
-    // Every live run, waiting ones included: a non-forced drain (idle exit, `orgai daemon stop`) ends those too, as cut
+    // Every live run, waiting ones included: a non-forced drain ends those too, as cut
     // by the app ("Ended when OrgAI closed", continuable), before the writers settle and ownership is released.
     liveRuns: () => rm.liveRunCount(),
     // Auth probe children (abortProbes at quiesce) are awaited in the settle phase only: never a stop refusal.
@@ -718,13 +694,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       pid: ownership.info.pid,
       startedAt: ownership.info.startedAt,
       activity: activity.snapshot(),
-      // Wave 7 (4.4 step 4): what a handoff stop would wait for, for the app's waiting window.
+      // The run counts the TUI's quit confirm shows (host.status).
       ...((): { handoff?: HostStatusResult['handoff'] } => {
         const facts = shutdown.handoffFacts()
         return facts ? { handoff: facts } : {}
       })()
     }),
-    // host.stop (and the app's handoff stop) through the coordinator: the handoff predicate, then the drain.
+    // host.stop through the coordinator: the drain.
     stop: (input) => shutdown.stop(input)
   }
 
@@ -767,9 +743,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
 
   // Stores built, probes started, housekeeping done: advertise the host as ready.
   ownership.markReady()
-  // Background hosts exit when idle; the desktop host lives as long as its windows, and an inproc host (the shared
-  // in-terminal host, 'Press Ctrl+C to stop') as long as its terminal: an idle drain would end runs waiting on the user.
-  if (hostKind !== 'desktop' && hostKind !== 'inproc') activity.armIdleExit()
+  // No host arms an idle exit: the desktop host lives as long as its windows, and an inproc host as long as its terminal
+  // command ('Press Ctrl+C to stop'); an idle drain would end runs waiting on the user.
 
   const dispose = (): void => {
     if (disposed) return
@@ -787,5 +762,5 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     secrets.dispose()
   }
 
-  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, terminalAccess, dispose }
+  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, dispose }
 }

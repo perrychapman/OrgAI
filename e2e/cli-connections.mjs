@@ -1,29 +1,28 @@
 // `orgai connections | models | usage | notes` end to end (cli-spec 6.3, Wave 5, W5-T3). Run `npm run build` first.
-// Mock adapter only (ORGAI_MOCK=1): no tokens, no network, no provider CLI spawned. One long-lived host
-// (`daemon start --host inproc --foreground`), an engagement seeded through cliLib's raw hostRpc.
+// Mock adapter only (ORGAI_MOCK=1): no tokens, no network, no provider CLI spawned. Every command hosts itself, one
+// at a time; the engagement is seeded with `projects create`.
 //
 // 1. connections list --output-format json: three connections, exactly one default, no key material.
 // 2. connections set-default openai (not connected) exits 1 with the host's sentence.
 // 3. models list (json) and models prices (text, per MTok).
-// 4. One mock exec run ([mock:exec-plan] through --host daemon exec), then usage show (json, one run) and
+// 4. One mock exec run ([mock:exec-plan] through exec), then usage show (json, one run) and
 //    usage csv --out (a header plus one row; a second --out without --force exits 1).
-// 5. notes add / list / show / edit, a stale edit (a hostRpc save in between, the CLI edit with the old revision exits
+// 5. notes add / list / show / edit, a stale edit (another save in between, the CLI edit with the old revision exits
 //    1), remove; notes plan set / show and a stale plan set.
 // Not driven: connections test / connect / login and usage refresh (they spawn `claude` or the Codex app-server).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { check, finish, log, makeFixtureRepo, removeFixture } from './lib.mjs'
-import { cli, hostRpc, json, requireBuild, seedProject, show, startDaemon, stopDaemon } from './cliLib.mjs'
+import { cli, json, requireBuild, seedProject, show } from './cliLib.mjs'
 
 requireBuild()
 const NAME = 'cli-connections'
 const repo = makeFixtureRepo('cli-connections')
 
 try {
-  await startDaemon({ cwd: repo })
   const eng = await seedProject(repo, { name: 'Acme review', kind: 'engagement' })
   check(eng?.kind === 'engagement', 'seeded an engagement project', JSON.stringify(eng).slice(0, 200))
-  const d = ['--host', 'daemon']
+  const d = []
 
   // 1. connections list
   const list = await cli([...d, 'connections', 'list', '--output-format', 'json'], { cwd: repo })
@@ -80,11 +79,12 @@ try {
   const edited = json(edit.out)?.note
   check(edit.code === 0 && edited?.updatedAt >= note.updatedAt, 'notes edit with the current revision', show(edit))
   await new Promise((r) => setTimeout(r, 10))
-  await hostRpc('projects:saveNote', [{ projectId: eng.id, noteId: note.id, title: 'Kickoff call', text: 'Changed in the app.' }])
+  const other = await cli([...d, 'notes', 'edit', note.id, '--text', 'Changed in between.'], { cwd: repo })
+  check(other.code === 0, 'another notes edit lands in between', show(other))
   const stale = await cli([...d, 'notes', 'edit', note.id, '--text', 'Mine', '--expected-updated-at', String(edited.updatedAt)], { cwd: repo })
   check(stale.code === 1 && stale.err.includes('The note changed since you read it'), 'a stale notes edit exits 1', show(stale))
   const kept = await cli([...d, 'notes', 'show', note.id], { cwd: repo })
-  check(kept.out.includes('Changed in the app.'), 'the stale edit saved nothing', show(kept))
+  check(kept.out.includes('Changed in between.'), 'the stale edit saved nothing', show(kept))
   const rm = await cli([...d, 'notes', 'remove', note.id, '--yes'], { cwd: repo })
   check(rm.code === 0, 'notes remove --yes', show(rm))
 
@@ -94,7 +94,8 @@ try {
   const planShow = await cli([...d, 'notes', 'plan', 'show'], { cwd: repo })
   check(planShow.code === 0 && planShow.out.includes('Scope: billing.'), 'notes plan show', show(planShow))
   await new Promise((r) => setTimeout(r, 10))
-  await hostRpc('projects:updateEngagementDocument', [{ projectId: eng.id, text: 'Their plan', expectedUpdatedAt: plan.updatedAt }])
+  const otherPlan = await cli([...d, 'notes', 'plan', 'set', '--text', 'Their plan', '--expected-updated-at', String(plan.updatedAt)], { cwd: repo })
+  check(otherPlan.code === 0, 'another plan save lands in between', show(otherPlan))
   const planStale = await cli([...d, 'notes', 'plan', 'set', '--text', 'Mine', '--expected-updated-at', String(plan.updatedAt)], { cwd: repo })
   check(planStale.code === 1 && /changed since/.test(planStale.err), 'a stale notes plan set exits 1', show(planStale))
 
@@ -110,8 +111,6 @@ try {
 } catch (e) {
   check(false, 'no unexpected error', e?.stack ?? JSON.stringify(e))
 } finally {
-  log('stopping the daemon')
-  await stopDaemon().catch(() => undefined)
   removeFixture(repo)
   finish(NAME)
 }

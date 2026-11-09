@@ -4,19 +4,13 @@
  * no file I/O, no child process, no Electron. Relative imports only.
  *
  * CONTRACTS (Wave 7). Every new export of the contracts commit, its file, and the work package that implements it:
- *
  * | Export | File | Owner |
  * | --- | --- | --- |
- * | HostKind 'node', HostClientKind 'desktop', HOST_KINDS, HOST_CLIENT_KINDS | src/shared/types.ts | B (launcher, waits), E (node host), F (desktop hello) |
- * | BACKGROUND_HOST_KINDS | src/shared/types.ts | B (ensureHost, daemon start waits) |
+ * | HostKind, HostClientKind, HOST_KINDS, HOST_CLIENT_KINDS (the app is never a socket client; the CLI's own host is 'inproc') | src/shared/types.ts | done |
  * | HostKindCapabilities, HOST_KIND_CAPABILITIES, hostCanOpenWindows | src/shared/types.ts | done (registry gate); E uses inProcess |
  * | InstallChannel, INSTALL_CHANNELS, INSTALL_INFO_FILE, InstallInfo | src/shared/types.ts | A (builders write it; --version, doctor) |
  * | readInstallInfo | src/cli/installInfo.ts | done (reader); A (writers), B (launcher uses it) |
- * | HostStopInput.handoff, HostStopResult.handoffBlockers, HostStatusResult.handoff, HostHandoffFacts, HostHandoffBlocker, HOST_HANDOFF_BLOCKERS | src/shared/types.ts | F |
- * | RpcHelloResult.handoff, HOST_HANDOFF_METHODS, HOST_HANDOFF_SCOPES, DESKTOP_HELLO_PEER_CHECK_MS | src/shared/types.ts | F |
- * | HostProofFields.handoff (bound only when true), parseHelloResult keeps handoff | src/main/host/protocol.ts, src/cli/client/hostClient.ts | done; F sets it in socketServer.ts |
- * | CliShimStatus.otherCli | src/shared/types.ts | A (PATH lookup in shimInstaller), app Terminal row |
- * | helloProblem accepts clientKind 'desktop'; DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE refuses it after the proof | src/main/host/socketServer.ts | F (replace the refusal with the handoff grant) |
+ * | CliShimStatus.otherCli | src/shared/types.ts | superseded: removed; the app Terminal row reads CliCommandStatus from cliInstaller.ts status() (cli-standalone-default.md 5.3) |
  * | VaultState, VAULT_STATES, VaultCustodyScheme, VAULT_CUSTODY_SCHEMES, CustodyFailureKind, SecretStatus, LegacySecretsFileState | src/shared/types.ts | G |
  * | SecretsStatusResult, SecretsSoftDelete, SecretsOrphanVault, SecretsInit/Reset/Undelete/ConfirmDelete Input and Result | src/shared/types.ts | G (store side), H (channels, CLI), app notice "Restore / Keep removed" (H) |
  * | SECRETS_IPC (secrets:status / init / reset / undelete / confirmDelete), SecretsIpcChannel | src/shared/types.ts | H (handlers are stubs) |
@@ -27,19 +21,17 @@
  * | VaultMetadata | this file | G |
  * | readVaultMetadata | src/main/store/vaultMetadata.ts (the store's own validator, vaultFile.ts validateVaultFile) | done (WP-G1); H (doctor without a host) |
  * | McpService.refreshingCount | src/main/mcp/service.ts | done; H (secrets:reset busy check) |
- * | OpenSecretStoreOptions, openSecretStore | src/main/store/secrets.ts (opens, reconciles, creates on app hosts) | done (WP-G1): called by every host entry after acquireHostOwnership and before bootOrgAIHost (index.ts desktop and --headless-host with safeStorage, inprocHost.ts inproc and node with NO_CIPHER, no longer readOnly); custodian factory defaults to the real custodians (store/custodians createCustodianFactory; wired at the Wave 7 integration); unavailableCustodian.ts is for hosts that must not touch an OS key store (a mock desktop launch) and for tests |
+ * | OpenSecretStoreOptions, openSecretStore | src/main/store/secrets.ts (opens, reconciles, creates on app hosts) | done (WP-G1): called by every host entry after acquireHostOwnership and before bootOrgAIHost (index.ts desktop with safeStorage, inprocHost.ts inproc and node with NO_CIPHER, no longer readOnly); custodian factory defaults to the real custodians (store/custodians createCustodianFactory; wired at the Wave 7 integration); unavailableCustodian.ts is for hosts that must not touch an OS key store (a mock desktop launch) and for tests |
  * | BootOrgAIHostOptions.secretStore, HostBackgroundOptions / BootOrgAIHostOptions.background | src/main/host/bootstrap.ts | G (secretStore), B (background split) |
  * | HostServices.secrets (bootstrap passes the store; secrets.attachLeases gets backgroundTasks leases) | src/main/host/types.ts, bootstrap.ts | H |
  * | secrets:* dispatcher handlers (status answers statusReport, the rest refuse 'not available in this build yet') | src/main/host/dispatcher.ts registerSecretsIpc | H |
- * | HostStopInput.handoff passed through by the host.stop handler | src/main/host/dispatcher.ts | F (predicate in activity.ts) |
  * | RequestChannelEntry.storesSecret, StoresSecretFn, StoresSecretHostView, STORES_SECRET (stub predicates) | src/main/host/registry.ts, src/main/host/storesSecret.ts | H (predicates only) |
  * | invokeRpc awaits secrets.prepareWrite() when the entry's storesSecret is true (inside the mutation lease) | src/main/host/dispatcher.ts | done |
  * | ControlProtectedExtras, controlProtectedPaths(..., { vaultKeyFiles }) | src/main/runtime/selfControlGate.ts (bootstrap passes secrets.vaultKeyFiles()) | done (exact files); D (basename, glob, word and tool rules) |
  * | trackChildProcess, killTrackedChildren, trackedChildCount, shutdown constants and ShutdownCoordinatorApi | src/main/host/shutdown.ts | F (coordinator, kill at the hard limit); G and C register their children |
  * | claudeExecutable, ClaudeExecutableResolution, claudeRuntimeMissingMessage | src/main/runtime/claudeBinary.ts (stub) | C |
- * | StartInprocHostOptions.hostKind / background | src/cli/inprocHost.ts | E (node), B (background flags) |
+ * | StartInprocHostOptions.hostKind / background | src/cli/inprocHost.ts | inproc only |
  * | HostLauncherResolution, HostLauncherFound, HostLauncher.locate, resolve() source 'installed' and `path` on errors, spawn({ app }), DaemonRuntime, HOST_STARTING_WAIT_MS | src/cli/types.ts (locate maps resolve()) | B (discovery), E (--runtime) |
- * | `secrets` and `terminal-access` command entries (available: false) and routes | src/cli/entries, src/cli/commands/secrets.ts, terminalAccess.ts | H (secrets), E (terminal-access) |
  * | DoctorGroupInput, DoctorCheckGroup; installChecks, runtimeChecks, secretsChecks (return [] today, called by runDoctor) | src/cli/doctor/*.ts | A, C, H |
  *
  * Retirement of secrets.json (5.5) ships behind VAULT_RETIREMENT_ENABLED = false; the dual-write window (D6) is
@@ -96,6 +88,44 @@ export const KEYCHAIN_SERVICE = 'OrgAI Vault'
 /** Linux Secret Service attributes: `service orgai vault <vaultId>`; label "OrgAI vault". */
 export const SECRET_SERVICE_ATTRIBUTE = 'orgai'
 export const SECRET_SERVICE_LABEL = 'OrgAI vault'
+
+/** Which product owns a vault's custody (standalone spec 3.2): the CLI and the desktop app share no names or variables. */
+export type VaultProduct = 'cli' | 'desktop'
+
+export interface VaultNames {
+  /** The environment variable naming a key file. */
+  keyFileEnv: string
+  /** The variable that turns the OS key stores off (tests, verify scripts). */
+  noOsKeystoreEnv: string
+  keychainService: string
+  secretServiceAttribute: string
+  secretServiceLabel: string
+  /** DPAPI entropy prefix: `<prefix>:<vaultId>`. */
+  dpapiEntropyPrefix: string
+}
+
+const DESKTOP_NAMES: VaultNames = {
+  keyFileEnv: VAULT_KEY_FILE_ENV,
+  noOsKeystoreEnv: 'ORGAI_VAULT_NO_OS_KEYSTORE',
+  keychainService: KEYCHAIN_SERVICE,
+  secretServiceAttribute: SECRET_SERVICE_ATTRIBUTE,
+  secretServiceLabel: SECRET_SERVICE_LABEL,
+  dpapiEntropyPrefix: 'orgai.vault/1'
+}
+
+const CLI_NAMES: VaultNames = {
+  keyFileEnv: 'ORGAI_CLI_VAULT_KEY_FILE',
+  noOsKeystoreEnv: 'ORGAI_CLI_VAULT_NO_OS_KEYSTORE',
+  keychainService: 'OrgAI CLI Vault',
+  secretServiceAttribute: 'orgai-cli',
+  secretServiceLabel: 'OrgAI CLI vault',
+  dpapiEntropyPrefix: 'orgai-cli.vault/1'
+}
+
+/** The custody names of a product. The desktop's are the ones existing vaults already use. */
+export function vaultNames(product: VaultProduct = 'desktop'): VaultNames {
+  return product === 'cli' ? CLI_NAMES : DESKTOP_NAMES
+}
 /** Prefix of a moved-aside vault (`vault.json.reset-<time>`, `vault.json.corrupt-<time>`). */
 export const VAULT_RESET_SUFFIX = '.reset-'
 export const VAULT_CORRUPT_SUFFIX = '.corrupt-'
@@ -175,9 +205,9 @@ export function vaultCheckAad(vaultId: string): string {
   return `${VAULT_FORMAT}\u0000${vaultId}\u0000\u0000check`
 }
 
-/** DPAPI entropy (UTF-8): `orgai.vault/1:<vaultId>`. */
-export function dpapiEntropy(vaultId: string): string {
-  return `${VAULT_FORMAT}:${vaultId}`
+/** DPAPI entropy (UTF-8): `orgai.vault/1:<vaultId>` (desktop), `orgai-cli.vault/1:<vaultId>` (CLI). */
+export function dpapiEntropy(vaultId: string, product: VaultProduct = 'desktop'): string {
+  return `${vaultNames(product).dpapiEntropyPrefix}:${vaultId}`
 }
 
 // ---------- Custody (5.3) ----------
@@ -255,24 +285,60 @@ export function vaultStateForFailure(kind: CustodyFailureKind): Extract<VaultSta
   return kind === 'missing' || kind === 'denied' ? 'missing-key' : 'locked'
 }
 
-/** The fixed sentences of 5.4 - 5.6, shared by the store (G), the services that show status (H) and the CLI (H). */
+/**
+ * The desktop's sentences (5.4 - 5.6, standalone spec 3.3): recovery goes through the Dashboard notice (Try again,
+ * Start over) or a restart. They name no terminal command. The orgai CLI has its own set below.
+ */
 export const VAULT_MESSAGES = {
-  pendingLegacy: 'Saved by the OrgAI app and not yet shared with the orgai command: open the app once',
+  pendingLegacy: 'Saved earlier and not yet moved into secure storage. Restart OrgAI if this stays',
   locked: (reason: string): string => `Secure storage is locked: ${reason}`,
-  missingKey: "The key for this secure storage is not available for this user on this computer. Sign in to the account that created it or restore its key file. `orgai secrets reset` starts over",
-  keyMismatch: 'The key does not match this secure storage, or it is damaged. Restore the matching key file. `orgai secrets reset` starts over',
-  corrupt: "Secure storage is damaged. Run `orgai secrets reset` to start over from the OrgAI app's older copies (App settings > General > Advanced > Terminal installs the orgai command)",
+  missingKey:
+    "The key for this secure storage is not available for this user on this computer. Sign in to the account that created it or restore its key file. The Dashboard notice has a Start over button",
+  keyMismatch: 'The key does not match this secure storage, or it is damaged. Restore the matching key file. The Dashboard notice has a Start over button',
+  corrupt: "Secure storage is damaged. The Dashboard notice has a Start over button, which uses the older copies of saved keys",
+  undecryptable: 'This saved secret cannot be decrypted on this computer account. Enter it again',
+  legacyCorrupt:
+    "OrgAI's secrets file (secrets.json) is damaged, so OrgAI does not change it. The Dashboard notice has a Start over button, which moves it aside.",
   unreadableEntry: 'This saved secret is damaged and cannot be read',
-  notDurable: 'The secret may or may not have been saved. Set it again to be sure (`orgai secrets status` shows the state)',
-  clearRefusedCorrupt: 'Secure storage is damaged. Reset it first with `orgai secrets reset` (App settings > General > Advanced > Terminal installs the orgai command)',
-  clearRefusedLegacyOnly: 'Saved by the OrgAI app: open the app once, or run `orgai secrets init` first',
-  undeleteAppOnly: 'This deleted secret was saved by the OrgAI app. Open the app to restore it',
+  notDurable: 'The secret may or may not have been saved. Set it again to be sure',
+  clearRefusedCorrupt: 'Secure storage is damaged. Start over first (the Dashboard notice has a button)',
+  clearRefusedLegacyOnly: 'Saved earlier and not yet moved into secure storage: restart OrgAI and try again',
+  undeleteAppOnly: 'This deleted secret cannot be restored here',
   resetBusy: 'A sign-in or save is in progress. Try again when it ends',
-  resetWarning: "Secrets saved only through the orgai command are lost. The OrgAI app's older copies, which may be outdated, are used instead.",
+  resetWarning: 'Starting over moves secure storage aside. Older copies of saved keys, which may be outdated, are used instead; enter any key that is missing again.',
   legacyRemovedNotice: (n: number): string => `${n} saved secret${n === 1 ? ' was' : 's were'} removed by an older version of OrgAI.`,
   moveRefused: (slot: string, server: string, reason: string): string =>
-    `${slot} of ${server} cannot be read here (${reason}). Open the OrgAI app once, or unlock secure storage (\`orgai secrets status\` shows how) and try again.`
+    `${slot} of ${server} cannot be read here (${reason}). Unlock secure storage and try again.`
 } as const
+
+/**
+ * The orgai CLI's wording (standalone spec 3.3): its folder starts empty, so no secret was ever saved by the app and the
+ * texts that send a user to the app are gone. Its recovery goes through `orgai secrets`.
+ */
+export type VaultMessages = { readonly [K in keyof typeof VAULT_MESSAGES]: (typeof VAULT_MESSAGES)[K] extends string ? string : (typeof VAULT_MESSAGES)[K] }
+
+export const CLI_VAULT_MESSAGES: VaultMessages = {
+  ...VAULT_MESSAGES,
+  pendingLegacy: 'This saved secret cannot be read by orgai',
+  missingKey:
+    "The key for this secure storage is not available for this user on this computer. Sign in to the account that created it or restore its key file. `orgai secrets reset` starts over",
+  keyMismatch: 'The key does not match this secure storage, or it is damaged. Restore the matching key file. `orgai secrets reset` starts over',
+  corrupt: 'Secure storage is damaged. Run `orgai secrets reset` to start over',
+  clearRefusedCorrupt: 'Secure storage is damaged. Reset it first with `orgai secrets reset`',
+  clearRefusedLegacyOnly: 'Run `orgai secrets init` first',
+  undeleteAppOnly: 'This deleted secret cannot be restored here',
+  undecryptable: 'This saved secret cannot be read here',
+  notDurable: 'The secret may or may not have been saved. Set it again to be sure (`orgai secrets status` shows the vault state)',
+  moveRefused: (slot: string, server: string, reason: string): string =>
+    `${slot} of ${server} cannot be read here (${reason}). Unlock secure storage (\`orgai secrets status\` shows how) and try again.`,
+  legacyCorrupt: 'The secrets file (secrets.json) in this folder is damaged, so orgai does not change it; `orgai secrets reset` moves it aside (and starts secure storage over).',
+  resetWarning: 'Every secret saved in orgai is lost.'
+}
+
+/** The sentences of a product's store. */
+export function vaultMessages(product: VaultProduct = 'desktop'): VaultMessages {
+  return product === 'cli' ? CLI_VAULT_MESSAGES : VAULT_MESSAGES
+}
 
 /** set() with a value on an 'absent' vault in a Node or inproc host: prepareWrite() was not awaited first (a bug trap, 5.6). */
 export class VaultNotReady extends Error {

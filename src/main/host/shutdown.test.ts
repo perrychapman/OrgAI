@@ -7,7 +7,6 @@ import {
   ShutdownCoordinator,
   ShutdownRefusedError,
   descendantsOf,
-  handoffBlockersOf,
   installShutdownSignals,
   killHostDescendants,
   killTrackedChildren,
@@ -733,84 +732,27 @@ describe('ShutdownCoordinator (cli-standalone.md 4.3)', () => {
     expect(order).toEqual(['release'])
   })
 
-  describe('handoff stop (4.4 step 4)', () => {
+  describe('host-wide run counts (host.status handoff)', () => {
     const none: HostHandoffFacts = { workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 }
 
-    it.each([
-      ['workingRuns', { workingRuns: 1 }],
-      ['waitingRuns (an idle run, which idle exit would not count)', { waitingRuns: 1 }],
-      ['heldRuns', { heldRuns: 2 }],
-      ['pausedRuns (a resume pending)', { pausedRuns: 1 }],
-      ['openCards', { openCards: 3, waitingRuns: 1 }]
-    ])('refuses while %s, without starting a drain', async (_label, extra) => {
-      const facts = { ...none, ...extra }
-      const { shutdown, activity, order } = rig({ facts })
-      const r = await shutdown.stop({ handoff: true })
-      expect(r).toEqual({ stopping: false, handoffBlockers: extra })
-      expect(activity.state()).toBe('ready')
-      expect(shutdown.phase()).toBe('running')
-      expect(order).toEqual([])
-    })
-
-    it('also names the busy leases, as a plain stop would', async () => {
-      const { shutdown, activity } = rig({ facts: { ...none, workingRuns: 1 } })
-      activity.acquire('liveRuns')
-      activity.acquire('interactiveClients')
-      await expect(shutdown.stop({ handoff: true })).resolves.toEqual({
-        stopping: false,
-        handoffBlockers: { workingRuns: 1 },
-        refusedBecause: { liveRuns: 1, interactiveClients: 1 }
-      })
-    })
-
-    it('terminal sessions alone do not block it; leases still do (the attached TUI is interactiveClients)', async () => {
-      const busy = rig({ facts: none })
-      busy.activity.acquire('interactiveClients')
-      await expect(busy.shutdown.stop({ handoff: true })).resolves.toEqual({ stopping: false, refusedBecause: { interactiveClients: 1 } })
-      const idle = rig({ facts: none })
-      await expect(idle.shutdown.stop({ handoff: true })).resolves.toEqual({ stopping: true })
-      await idle.shutdown.released()
-      expect(idle.order.at(-1)).toBe(`released:${JSON.stringify({ reason: 'handoff', forced: false, hardLimit: false })}`)
-    })
-
-    it('forced ignores the predicate and stops everything', async () => {
-      const { shutdown, forceStop } = rig({ facts: { ...none, workingRuns: 2, openCards: 1 } })
-      await expect(shutdown.stop({ handoff: true, force: true })).resolves.toEqual({ stopping: true })
-      expect(forceStop).toHaveBeenCalledTimes(1)
+    it('reports the counts and never blocks a stop', async () => {
+      const { shutdown } = rig({ facts: { ...none, workingRuns: 2, openCards: 1 } })
+      expect(shutdown.handoffFacts()).toMatchObject({ workingRuns: 2, openCards: 1 })
+      await expect(shutdown.stop({})).resolves.toEqual({ stopping: true })
       await shutdown.released()
+      expect(shutdown.handoffFacts()).toBeDefined()
     })
 
-    it('fails closed: run facts that cannot be read refuse the handoff (empty handoffBlockers) and never drain, so no run is ended unseen', async () => {
-      const { shutdown, activity, order, forceStop, logs } = rig({
+    it('leaves the facts out and logs when they cannot be read; the stop still runs', async () => {
+      const { shutdown, logs } = rig({
         factsFn: () => {
           throw new Error('settlement read failed')
         }
       })
-      // Even with a live run the drain would end (a non-forced drain stops live runs), nothing starts.
-      activity.acquire('interactiveClients')
-      await expect(shutdown.stop({ handoff: true })).resolves.toEqual({ stopping: false, handoffBlockers: {}, refusedBecause: { interactiveClients: 1 } })
-      const idle = rig({
-        factsFn: () => {
-          throw new Error('settlement read failed')
-        }
-      })
-      await expect(idle.shutdown.stop({ handoff: true })).resolves.toEqual({ stopping: false, handoffBlockers: {} })
-      expect(idle.activity.state()).toBe('ready')
-      expect(idle.shutdown.phase()).toBe('running')
-      expect(idle.order).toEqual([])
-      expect(idle.forceStop).not.toHaveBeenCalled()
-      expect(order).toEqual([])
-      expect(forceStop).not.toHaveBeenCalled()
+      expect(shutdown.handoffFacts()).toBeUndefined()
       expect(logs.some((l) => l.includes('reading the handoff facts failed'))).toBe(true)
-      // host.status leaves the facts out; a plain or forced stop is not affected by the predicate.
-      expect(idle.shutdown.handoffFacts()).toBeUndefined()
-      await expect(idle.shutdown.stop({ handoff: true, force: true })).resolves.toEqual({ stopping: true })
-      await idle.shutdown.released()
-    })
-
-    it('handoffBlockersOf keeps only the non-zero blockers (never terminalSessions)', () => {
-      expect(handoffBlockersOf(none)).toBeUndefined()
-      expect(handoffBlockersOf({ ...none, pausedRuns: 1, openCards: 0 })).toEqual({ pausedRuns: 1 })
+      await expect(shutdown.stop({})).resolves.toEqual({ stopping: true })
+      await shutdown.released()
     })
   })
 })

@@ -9,9 +9,8 @@
  * Honest limits (UNVERIFIED / deferred):
  * - The pid is client-asserted (host.hello params.pid). An agent can claim any pid, and a process that double-forks
  *   (reparented to init / launchd) is no longer a descendant. This check is defence in depth only; the real gates are
- *   Terminal access (AppSettings.terminalServer), its level (AppSettings.terminalAccessLevel: by default a client gets
- *   read and operate only, never decide or configure; socketServer.ts grantScopes) and the self-control denial gate
- *   (checkSelfControlDenial).
+ *   the host's owner proof (only the CLI process that started the in-process host can make it; socketServer.ts) and
+ *   the self-control denial gate (checkSelfControlDenial).
  * - Socket-to-PID mapping (macOS only): with the accepted socket's fd, one `lsof -nP -U -F pfdn` (same 150 ms budget,
  *   run beside ps) finds the kernel address of the host's end of the socket (`d0x...` on that fd) and every process
  *   holding the other end (`n->0x...` naming that address). Those are the real peers; the ancestry walk then runs on
@@ -21,7 +20,7 @@
  *   other macOS versions are unverified.
  * - win32 answers 'unavailable' (no ps; GetNamedPipeClientProcessId needs a native addon). The socket server accepts
  *   such a client, so on Windows an agent holding daemon.secret is told apart from the user by nothing here: the scope
- *   cap is what keeps it from 'decide' / 'configure' unless the user chose full Terminal access (review H2).
+ *   cap is what keeps it from 'decide' / 'configure' unless it is the in-process host's own CLI (review H2).
  * - A client claiming the host's own pid (cli-standalone.md round 6 item 6): on macOS the claim proves nothing, so the
  *   shortcut sits after the OS mapping. Only a mapped peer equal to the host's pid (an in-process client: the host holds
  *   both ends of the socket) passes; a claim of the host's pid with no mapped peer (no socket fd, lsof failed or found

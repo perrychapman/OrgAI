@@ -1,8 +1,7 @@
 /**
  * What the app says about secure storage (cli-standalone.md 5.4, 5.5): the Dashboard notices and the readable form of a
  * slot's "cannot be read here" reason. Pure; no renderer, DOM or React imports. The main-process sentences these map
- * live in src/main/store/vaultTypes.ts (VAULT_MESSAGES) and mention the `orgai` command, which an app-only user may not
- * have; here every one is paired with a way to act in the app (the notice's buttons) or says nothing about a command.
+ * live in src/main/store/vaultTypes.ts (VAULT_MESSAGES); they name the Dashboard notice's buttons and no command.
  */
 import type { SecretsStatusResult, SecretsSoftDelete } from '../types'
 
@@ -88,7 +87,7 @@ const VAULT_PROBLEM: Partial<Record<SecretsStatusResult['state'], (reason?: stri
 
 /** What "Start over" gives up, shown in its confirmation (same meaning as VAULT_MESSAGES.resetWarning). */
 export const START_OVER_WARNING =
-  "Starting over moves secure storage aside. Secrets saved only through the orgai command are lost; the OrgAI app's older copies, which may be outdated, are used instead."
+  "Starting over moves secure storage aside. OrgAI then uses the older copies it kept, which may be outdated. Enter any key that is missing again."
 
 /** The notices for a status, most urgent first. Empty when there is nothing to say. */
 export function secretNotices(s: SecretsStatusResult, names: KeyNames = {}): SecretNotice[] {
@@ -126,29 +125,12 @@ export function secretNotices(s: SecretsStatusResult, names: KeyNames = {}): Sec
 
 /**
  * A slot's "cannot be read here" reason (McpServerInfo.unreadableSecrets, a connection's status detail) in the app's
- * words: the known vault sentences get the way to act in the app (the Dashboard notice), and any leftover mention of an
- * `orgai` command is dropped. Text that mentions no vault problem is returned as it is.
+ * words. The desktop's vault sentences (VAULT_MESSAGES) and its custodian reasons name the Dashboard notice or an
+ * environment variable and no command, so only the locked sentence gets its way to act added; any other text is
+ * returned as it is.
  */
 export function appSecretReason(reason: string): string {
-  // Command mentions first (a parenthetical that only points at a command goes; a bare command span reads "a terminal command").
-  const t = reason
-    .trim()
-    .replace(/,? or check with `orgai[^`]*`/g, '')
-    .replace(/ \([^()]*`orgai[^`]*`[^()]*\)/g, '')
-    .replace(/open the OrgAI app once, or unlock secure storage and try again\./, 'unlock secure storage (the Dashboard notice has a Try again button) and try again.')
-  // A known sentence may follow a prefix ("The LiteLLM API key cannot be read here: ..."): the prefix stays.
-  const at = (re: RegExp): number => t.search(re)
-  let i = at(/Secure storage is locked/)
-  if (i >= 0) return `${t.replace(/[.\s]+$/, '')}. Open the Dashboard notice and choose Try again.`
-  i = at(/The key for this secure storage is not available|The key does not match this secure storage|Secure storage is damaged/)
-  if (i >= 0) return `${t.slice(0, i)}OrgAI's secure storage cannot be opened. The Dashboard notice says what to do.`
-  i = at(/Saved by the OrgAI app and not yet shared/)
-  if (i >= 0) return `${t.slice(0, i)}Saved by OrgAI earlier and being moved into secure storage. Restart OrgAI if this stays.`
-  i = at(/This saved secret is damaged/)
-  if (i >= 0) return `${t.slice(0, i)}This saved secret is damaged and cannot be read. Enter it again.`
-  i = at(/secrets file \(secrets\.json\) is damaged/)
-  if (i >= 0) return `${t.slice(0, i)}OrgAI's secrets file (secrets.json) is damaged, so OrgAI does not change it. The Dashboard notice has a Start over button.`
-  i = at(/Saved by the OrgAI app: open the app once/)
-  if (i >= 0) return `${t.slice(0, i)}Saved by OrgAI earlier. Restart OrgAI and try again.`
-  return t.replace(/`orgai[^`]*`/g, 'a terminal command')
+  const t = reason.trim()
+  if (/Secure storage is locked/.test(t)) return `${t.replace(/[.\s]+$/, '')}. Open the Dashboard notice and choose Try again.`
+  return t
 }

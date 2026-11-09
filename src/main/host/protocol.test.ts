@@ -51,7 +51,7 @@ const host: HostProofFields = {
   hostInstanceId: '0123456789ab',
   clientNonce: 'b'.repeat(64),
   hostNonce: 'a'.repeat(64),
-  hostKind: 'headless-host',
+  hostKind: 'desktop',
   appVersion: '0.1.6',
   dataDir: '/data',
   mock: false,
@@ -92,7 +92,7 @@ describe('nonces and proofs', () => {
     expect(p).toMatch(/^[0-9a-f]{64}$/)
     expect(hostProof(SECRET, { ...host })).toBe(p)
     const changes: Partial<HostProofFields>[] = [
-      { hostKind: 'desktop' },
+      { hostKind: 'inproc' },
       { dataDir: '/data2' },
       { mock: true },
       { grantedScopes: ['read', 'operate'] },
@@ -102,12 +102,6 @@ describe('nonces and proofs', () => {
     for (const c of changes) expect(hostProof(SECRET, { ...host, ...c })).not.toBe(p)
     // Swapping the nonces must not let a host proof pass as a client one.
     expect(p).not.toBe(clientProof(SECRET, client))
-  })
-
-  it('binds handoff only when true, so other hellos keep their proof (Wave 7)', () => {
-    const p = hostProof(SECRET, host)
-    expect(hostProof(SECRET, { ...host, handoff: false })).toBe(p)
-    expect(hostProof(SECRET, { ...host, handoff: true })).not.toBe(p)
   })
 
   it('proofMatches compares in constant time and rejects junk', () => {

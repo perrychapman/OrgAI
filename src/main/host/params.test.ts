@@ -95,9 +95,10 @@ const PAYLOADS: Record<string, unknown[]> = {
   'app:setNotifications': [true],
   'usage:refresh': [],
   'app:openLogs': [],
-  'app:cliShimStatus': [],
-  'app:installCliShim': [],
-  'app:uninstallCliShim': [],
+  'app:cliCommandStatus': [],
+  'app:installCliCommand': [],
+  'app:cancelCliInstall': [],
+  'app:removeOldCliShim': [],
   // REPO_CLONE_IPC (desktop only)
   'projects:parseRepoSource': ['octo/repo'],
   'projects:repoTools': [],

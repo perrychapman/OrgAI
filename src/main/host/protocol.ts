@@ -62,8 +62,6 @@ export interface HostProofFields {
   dataDir: string
   mock: boolean
   grantedScopes: readonly HostScope[]
-  /** Wave 7 (RpcHelloResult.handoff): bound only when true, so every other hello keeps its existing proof. */
-  handoff?: boolean
 }
 
 function hmacHex(secretHex: string, transcript: unknown[]): string {
@@ -91,8 +89,7 @@ export function clientProof(secretHex: string, f: ClientProofFields): string {
 
 /**
  * HMAC-SHA256(daemon.secret, JSON.stringify(['host:v1', protocolVersion, hostInstanceId, clientNonce, hostNonce,
- * hostKind, appVersion, dataDir, mock, grantedScopes])) as lowercase hex; with `handoff: true` (Wave 7, a desktop
- * hello's handoff grant) `true` is appended after grantedScopes.
+ * hostKind, appVersion, dataDir, mock, grantedScopes])) as lowercase hex.
  */
 export function hostProof(secretHex: string, f: HostProofFields): string {
   return hmacHex(secretHex, [
@@ -105,8 +102,7 @@ export function hostProof(secretHex: string, f: HostProofFields): string {
     f.appVersion,
     f.dataDir,
     f.mock,
-    [...f.grantedScopes],
-    ...(f.handoff === true ? [true] : [])
+    [...f.grantedScopes]
   ])
 }
 
@@ -226,7 +222,7 @@ function runFile(file: string, args: string[], opts: { cwd: string; timeoutMs: n
  * SID, then `icacls <path> /inheritance:r /grant:r *<SID>:F`, both by absolute System32 path with cwd os.tmpdir() (as
  * anthropicAuth.ts runs where.exe). Resolves undefined on success, else a short reason; never throws. This keeps other
  * Windows accounts out even when the data folder lives outside the profile; it cannot keep out programs of the same
- * user, which is what the Terminal access level (socketServer.ts grantScopes) and the self-control gate are for.
+ * user, which is what the owner proof (socketServer.ts) and the self-control gate are for.
  * UNVERIFIED on Windows: the whoami / icacls output was taken from Microsoft's documentation, never run from this code.
  */
 export async function restrictDaemonSecretAcl(path: string, opts: RestrictSecretAclOptions = {}): Promise<string | undefined> {
@@ -381,6 +377,7 @@ export const RPC_NUMERIC_CODE: Record<HostRpcErrorCode, number> = {
   unknown_channel: -32601,
   desktop_unavailable: -32000,
   agent_descendant_refused: -32000,
+  not_owner: -32000,
   stale_target_digest: -32000,
   stale_revision: -32000,
   scope_denied: -32000,

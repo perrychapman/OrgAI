@@ -51,6 +51,7 @@ beforeEach(async () => {
   mkdirSync(dataDir, { recursive: true })
   mkdirSync(join(root, 'project'), { recursive: true })
   secrets = await openSecretStore({
+    product: 'desktop',
     dataDir,
     userDataDir: root,
     hostKind: 'inproc',
@@ -126,7 +127,7 @@ describe('invokeRpc and the storesSecret predicates over the real SecretStore', 
 
   it('a value stored by one host is read by the next host that opens the same folder', async () => {
     await rpc('connections:setSecret', { id: 'litellm', apiKey: 'sk-persist' })
-    const next = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'node', cipher: noCipher, env: { [VAULT_KEY_FILE_ENV]: keyFile }, log: () => undefined, retryMs: 0 })
+    const next = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'inproc', product: 'desktop', cipher: noCipher, env: { [VAULT_KEY_FILE_ENV]: keyFile }, log: () => undefined, retryMs: 0 })
     expect(next.state()).toBe('open')
     expect(next.get(LITELLM_KEY)).toBe('sk-persist')
     next.dispose()

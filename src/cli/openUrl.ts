@@ -1,5 +1,5 @@
 /**
- * Open an http(s) URL in the user's browser from plain Node (the `--host inproc` host's openExternal: OAuth sign-ins,
+ * Open an http(s) URL in the user's browser from plain Node (the orgai host's openExternal: OAuth sign-ins,
  * device-code pages). Never through a shell; anything that is not http: or https: is refused. The opener runs from the
  * temp dir, and on Windows rundll32.exe by its absolute System32 path: a bare name is searched in the cwd first
  * (review H1; UNVERIFIED on Windows).

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { openReadSource, resolveRunRef } from './runRef'
-import { FakeHostClient, fakeContext, noHost } from './testing/fakeContext'
-import { CliError, EXIT, HOST_STARTING_WAIT_MS } from './types'
+import { fakeContext } from './testing/fakeContext'
+import { CliError, EXIT } from './types'
 
 const runs = [
   { id: 'run_aaaaaa111', projectId: 'p1', startedAt: 100 },
@@ -51,15 +51,21 @@ describe('resolveRunRef', () => {
 })
 
 describe('openReadSource', () => {
-  it('waits HOST_STARTING_WAIT_MS (15 s) for a host that is still starting (Wave 7), live or hostless', async () => {
-    const live = fakeContext({ connect: [new FakeHostClient()] })
-    const src = await openReadSource(live.ctx)
-    expect(src.live).toBe(true)
+  it('reads the files, never connects or starts a host, and notes a snapshot beside another orgai', async () => {
+    const alone = fakeContext()
+    const src = await openReadSource(alone.ctx)
+    expect(src.hostState).toBe('stopped')
+    expect(alone.err()).toBe('')
     src.close()
-    expect(live.connectCalls).toEqual([{ scopes: ['read'], opts: { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS } }])
-    expect(HOST_STARTING_WAIT_MS).toBe(15_000)
-    const none = fakeContext({ connect: [noHost()] })
-    expect((await openReadSource(none.ctx, { quiet: true })).live).toBe(false)
-    expect(none.connectCalls[0].opts).toEqual({ clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
+    const beside = fakeContext({ store: { hostState: 'ready' } })
+    await openReadSource(beside.ctx)
+    expect(beside.err()).toBe('orgai is running in another terminal; this is a saved snapshot.\n')
+    const quiet = fakeContext({ store: { hostState: 'starting' } })
+    await openReadSource(quiet.ctx, { quiet: true })
+    expect(quiet.err()).toBe('')
+    for (const f of [alone, beside, quiet]) {
+      expect(f.connectCalls).toEqual([])
+      expect(f.inprocCalls).toEqual([])
+    }
   })
 })

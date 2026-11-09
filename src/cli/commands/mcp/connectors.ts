@@ -104,7 +104,7 @@ function nextStep(c: ConnectorInfo | undefined, id: string): string | undefined 
     case 'signIn':
       return 'Sign in with `orgai mcp auth --library ' + id + '`.'
     case 'ownApp':
-      return 'Create your own OAuth app first (see the connector setup in the OrgAI app), then `orgai mcp auth --library ' + id + ' --client-id <id> --client-secret-from-env <VAR>`.'
+      return 'Create your own OAuth app first, then `orgai mcp auth --library ' + id + ' --client-id <id> --client-secret-from-env <VAR>`.'
     case 'token':
       return 'Add its token with `orgai mcp connectors set-token ' + id + ' --from-env <VAR>` (or --stdin).'
   }

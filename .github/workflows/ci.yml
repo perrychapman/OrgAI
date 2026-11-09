@@ -52,19 +52,23 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      # The real Node host process test needs out/cli, so `npm test` above skips it; run it again on the build, where a
-      # missing bundle fails instead of skipping (Wave 7 WP-E). POSIX only: it skips itself on Windows.
-      - name: Node host integration test
-        run: npx vitest run src/cli/nodeHost.int.test.ts src/cli/daemonNodeHost.int.test.ts src/cli/vaultCli.int.test.ts
+      # The CLI vault integration test needs out/cli, so `npm test` above skips it; run it again on the build, where a
+      # missing bundle fails instead of skipping. POSIX only: it skips itself on Windows.
+      - name: CLI vault integration test
+        run: npx vitest run src/cli/vaultCli.int.test.ts
         env:
           ORGAI_REQUIRE_NODE_HOST_INT: '1'
+          # The CLI ignores ORGAI_DATA_DIR; this keeps a stray CLI run off the runner's profile.
+          ORGAI_CLI_DATA_DIR: ${{ runner.temp }}/orgai-cli-data
       - name: e2e (free)
         run: npm run e2e:free
         env:
           # The e2e scripts ignore this and give each script its own temp data dir (E2E_DATA_DIR overrides); this only keeps
-          # any stray launch off the runner's profile.
+          # any stray launch off the runner's profile. The desktop app reads ORGAI_DATA_DIR, the CLI only
+          # ORGAI_CLI_DATA_DIR, so both are set.
           # (The runner context is only available at step level.)
           ORGAI_DATA_DIR: ${{ runner.temp }}/orgai-data
+          ORGAI_CLI_DATA_DIR: ${{ runner.temp }}/orgai-cli-data
           # macOS only: the runner's work area is 1024x684, which clamps the 1600x1000 / 2400x1000 e2e windows.
           ORGAI_WINDOW_LARGER_THAN_SCREEN: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: Upload e2e screenshots
@@ -97,22 +101,13 @@ jobs:
       # Unpacked app only, no installers: catches electron-builder config and asarUnpack breakage.
       # (`npm run pack`, not `npm pack`, which is npm's own tarball command.)
       - run: npm run pack
-      # The npm tarball from the same out/cli, for pack:verify's (g): the npm orgai must find and drive the packed app.
-      - name: build-npm-package
-        shell: bash
-        run: |
-          args=()
-          if [ "$NPM_SHRINKWRAP" = "full" ]; then args=(--shrinkwrap); fi
-          node scripts/build-npm-package.mjs "${args[@]}"
-      # The packaged orgai command (cli-spec 7): --version, doctor, and a mock exec (ORGAI_MOCK=1, no tokens) in-process
-      # and through the spawned background app, on a temp data folder. UNVERIFIED until CI runs it: the Windows
-      # launcher (cmd.exe running orgai.cmd) and the default-host step (the packaged app spawned with --headless-host).
-      # continue-on-error until it has passed once on both windows-latest and macos-15 (review H4): it has never run in
-      # CI, its Windows path has never run anywhere, and a first-run failure should not hide the rest of the pack job's
-      # result. A failure still shows on the step (and in the job's annotations). Drop this line once both legs are green.
+      # The packaged app must not contain the orgai CLI (cli-standalone-default.md 5.2): no out/cli in app.asar or beside it,
+      # no bin/orgai launcher. Token-free; check (e) also starts the packed app hidden on the mock adapter with a temp data
+      # folder and quits it. continue-on-error until (e) has passed once on both runners: the Windows quit (taskkill
+      # without /F on a process with only hidden windows) has never run.
       - name: pack:verify
-        run: npm run pack:verify -- --npm
         continue-on-error: true
+        run: npm run pack:verify
 
   # The orgai npm package (cli-standalone.md 3.4): build it from this commit's CLI bundle and run verify-npm (steps 1-6,
   # all token-free on the mock; step 7 skips without a codex on PATH) on three OSes. The installs download the pinned

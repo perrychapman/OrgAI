@@ -25,7 +25,6 @@ describe('orgai completions', () => {
         for (const s of c.subcommands ?? []) expect(out).toContain(s)
       }
       expect(out).toContain('stream-json')
-      expect(out).toContain('inproc')
       expect(out).toContain('all-projects')
     })
 
@@ -46,11 +45,11 @@ describe('orgai completions', () => {
   it('offers the terminal UI commands and their flags', () => {
     const names = completionCommands().map((c) => c.entry.name)
     expect(names).toContain('tui')
-    expect(names).toContain('attach')
+    for (const gone of ['attach', 'watch', 'inbox', 'decide', 'daemon', 'app', 'terminal-access']) expect(names).not.toContain(gone)
     const bash = completionScript('bash')
-    expect(bash).toMatch(/compgen -W "[^"]*\btui\b[^"]*\battach\b/)
+    expect(bash).toMatch(/compgen -W "[^"]*\btui\b/)
     expect(bash).toMatch(/tui\) words="--run --inline --ax-screen-reader/)
-    expect(bash).toMatch(/attach\) words="--inline --ax-screen-reader/)
+    expect(bash).not.toContain('--host')
   })
 
   it('an unknown shell is exit 2', async () => {

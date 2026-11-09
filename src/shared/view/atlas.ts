@@ -788,7 +788,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: [APP, 'General'],
     kind: 'pane',
     scope: 'app',
-    summary: 'Appearance, notifications, canvas style and the starting values for new projects; Advanced holds motion, assistant models and terminal access.',
+    summary: 'Appearance, notifications, canvas style and the starting values for new projects; Advanced holds motion, assistant models and the orgai command.',
     reach: [
       { via: 'sidebar', label: 'App settings' },
       { via: 'menu', action: 'open-app-settings' },
@@ -885,10 +885,10 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: [APP, 'General', 'Advanced', 'Terminal'],
     kind: 'section',
     scope: 'app',
-    summary: 'Allow terminal clients to connect, choose what they may do, and install the orgai command on your PATH.',
+    summary: 'Install or update the orgai command with npm (orgai-cli, tag latest or next to match this app), copy the install command, cancel a running install, or remove the old command an older OrgAI app put on your PATH. The orgai command is a separate app with its own projects and settings.',
     reach: [{ via: 'button', label: 'Advanced settings', on: 'app-settings-general' }],
-    settings: ['terminalServer', 'terminalAccessLevel'],
-    testIds: ['terminal-server-switch', 'terminal-access-level', 'cli-shim-row']
+    settings: [],
+    testIds: ['cli-command-row']
   },
   {
     id: 'app-settings-connections',
@@ -1374,26 +1374,6 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
     summary: 'Your own per-model prices; they win over every other price source.',
     surface: 'app-settings-connections-model-prices',
     control: 'user'
-  },
-  terminalServer: {
-    summary: 'Terminal access: whether terminal clients such as the orgai command may connect.',
-    surface: 'app-settings-general-terminal',
-    control: 'user'
-  },
-  terminalAccessLevel: {
-    summary: 'What terminal clients may do: read and operate by default, or Full to also decide and configure.',
-    surface: 'app-settings-general-terminal',
-    control: 'user'
-  },
-  terminalServerChosen: {
-    summary: 'Whether you chose the Terminal access value yourself, so a background host does not override it.',
-    surface: 'none',
-    control: 'main'
-  },
-  terminalAccessLevelChosen: {
-    summary: 'Whether you chose the Terminal access level yourself, so a background host does not override it.',
-    surface: 'none',
-    control: 'main'
   }
 }
 

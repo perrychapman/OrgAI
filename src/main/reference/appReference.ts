@@ -20,13 +20,14 @@ import {
   APP_REFERENCE_READ_MAX_CHARS
 } from '../../shared/types'
 import type {
+  HostKind,
   AppReferenceHit,
   AppReferenceQuery,
   AppReferenceResult,
   AppReferenceSectionKind,
   AppSettings,
   ConnectionInfo,
-  CliShimStatus
+  CliCommandStatus
 } from '../../shared/types'
 import { CONNECTORS, connectorEase } from '../../shared/connectors'
 import { fenceDatum, fencedBlock, KNOWLEDGE_STOPWORDS, tokenizeKnowledge } from '../../shared/knowledgeIndex'
@@ -348,12 +349,14 @@ export interface ReferenceStatusDeps {
   platform: string
   dataDir: string
   mock: boolean
+  /** The kind of host running this reference (the CLI runs in process; the desktop app is its own host). */
+  hostKind?: HostKind
   settings(): AppSettings
   connections(): ConnectionInfo[] | Promise<ConnectionInfo[]>
   projectCount(): number
   mcpLibraryCount(): number
   skillLibraryCount(): number
-  cliShim?(): CliShimStatus | Promise<CliShimStatus>
+  cliShim?(): CliCommandStatus | Promise<CliCommandStatus>
 }
 
 /** The shared shortcut table (src/shared/view/shortcuts.ts, the source the renderer re-exports) as reference rows. */
@@ -498,7 +501,6 @@ export function createAppReference(deps: AppReferenceDeps = {}): AppReferenceSer
     }
     if (settings) {
       lines.push(`proxies: ${Array.isArray(settings.proxies) ? settings.proxies.length : 0}`)
-      lines.push(`terminal access: ${settings.terminalServer === true ? 'on' : 'off'}, level ${fenceDatum(String(settings.terminalAccessLevel ?? 'operate'), 20)}`)
     }
     try {
       lines.push(`projects: ${d.projectCount()}`, `library MCP servers: ${d.mcpLibraryCount()}`, `skill library entries: ${d.skillLibraryCount()}`)
@@ -507,7 +509,7 @@ export function createAppReference(deps: AppReferenceDeps = {}): AppReferenceSer
     }
     if (d.cliShim) {
       try {
-        lines.push(`command line shim: ${(await d.cliShim()).state}`)
+        lines.push(`orgai command: ${(await d.cliShim()).state}`)
       } catch {
         /* optional */
       }

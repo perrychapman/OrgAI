@@ -1,5 +1,5 @@
 /**
- * cli-standalone.md 4.3 test (c) for the `--host inproc` owner, with a real owner process: testFixtures/inprocOwner.ts
+ * cli-standalone.md 4.3 test (c) for the orgai owner, with a real owner process: testFixtures/inprocOwner.ts
  * runs startInprocHost under vite-node with a writer that never finishes and a git stand-in (plus its hook) that
  * ignore SIGTERM; this test is the racing contender. The CLI never calls process.exit itself, so before review round 1
  * the inproc host released the data folder at the hard limit while its hung writer could still write; now the default

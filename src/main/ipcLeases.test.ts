@@ -42,7 +42,7 @@ afterEach(() => {
 
 const kit = { exportBundle: vi.fn(), previewBundle: vi.fn(), applyBundle: vi.fn(), export: vi.fn(), previewImport: vi.fn(), applyImport: vi.fn(() => ({ ok: true })) }
 const repoClone = { parse: vi.fn(), tools: vi.fn(async () => ({})), clone: vi.fn(), cancel: vi.fn() }
-const cliShim = { status: vi.fn(), install: vi.fn(async () => ({ ok: true })), uninstall: vi.fn(async () => ({ ok: true })), refreshOnLaunch: vi.fn() }
+const cliInstall = { status: vi.fn(), install: vi.fn(async () => ({ ok: true })), removeOldShim: vi.fn(async () => ({ ok: true })), cancel: vi.fn(() => false) }
 
 function services(activity: Tracker, over: Partial<IpcServices> = {}): IpcServices {
   const settings = { get: () => DEFAULT_APP_SETTINGS, dataDir: dir, set: vi.fn() }
@@ -66,7 +66,7 @@ function services(activity: Tracker, over: Partial<IpcServices> = {}): IpcServic
     usage: { refresh: vi.fn(async () => null) },
     kit: kit as never,
     repoClone: repoClone as never,
-    cliShim: cliShim as never,
+    cliInstall: cliInstall as never,
     activity,
     ...over
   }
@@ -115,7 +115,7 @@ describe('desktop mutation leases (cli-standalone.md 4.3)', () => {
     expect(mutating).toContain(IPC.mcpAuthorize)
     expect(kit.applyImport).not.toHaveBeenCalled()
     expect(repoClone.clone).not.toHaveBeenCalled()
-    expect(cliShim.install).not.toHaveBeenCalled()
+    expect(cliInstall.install).not.toHaveBeenCalled()
   })
 
   it('a desktop-only mutation holds an inFlightRpcMutations lease until its promise settles', async () => {

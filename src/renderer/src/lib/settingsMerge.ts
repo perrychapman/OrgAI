@@ -1,10 +1,9 @@
 import type { AppSettings, AppSettingsInfo } from '@shared/types'
 
 /**
- * A queued App settings save after settings:changed arrived from elsewhere (another window, main turning Terminal
- * access on after installing the orgai command): the incoming settings with only the fields this view edited laid on
- * top, so a debounced flush never writes back a stale copy of a field it did not touch (review L: a pending model
- * edit used to turn Terminal access off again).
+ * A queued App settings save after settings:changed arrived from elsewhere (another window, or main changing a
+ * setting itself): the incoming settings with only the fields this view edited laid on top, so a debounced flush never
+ * writes back a stale copy of a field it did not touch.
  */
 export function mergePendingSettings(pending: AppSettings, incoming: AppSettingsInfo, edited: ReadonlySet<keyof AppSettings>): AppSettings {
   const { dataDir: _dataDir, appVersion: _appVersion, ...base } = incoming

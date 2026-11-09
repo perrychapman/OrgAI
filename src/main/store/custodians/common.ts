@@ -3,7 +3,7 @@
  * and the sentences every scheme shares. Relative imports only.
  */
 import { timingSafeEqual } from 'node:crypto'
-import { CustodyError, VAULT_KEY_FILE_ENV, type KeyCustodian, type VaultCustody } from '../vaultTypes'
+import { CustodyError, VAULT_KEY_FILE_ENV, type KeyCustodian, type VaultCustody, type VaultProduct } from '../vaultTypes'
 import type { CustodianSpawner } from './run'
 
 type Env = Readonly<Record<string, string | undefined>>
@@ -17,6 +17,8 @@ export interface HelperCustodianOptions {
   spawner?: CustodianSpawner
   /** Default CUSTODIAN_TIMEOUT_MS. */
   timeoutMs?: number
+  /** Whose custody names to use (default 'desktop'). */
+  product?: VaultProduct
 }
 
 /**
@@ -31,7 +33,7 @@ export interface RemovableKeyCustodian extends KeyCustodian {
 export const EXISTS_REASON = 'An OS key item for this vault id already exists; OrgAI never overwrites one.'
 export const BAD_VAULT_ID_REASON = 'The vault id is not 32 hexadecimal characters.'
 export const BAD_ITEM_REASON = "The OS key item for this vault does not hold a valid key."
-export const KEY_FILE_HINT = `or set ${VAULT_KEY_FILE_ENV} to a key file (see \`orgai secrets init --key-file\`)`
+export const KEY_FILE_HINT = `or set ${VAULT_KEY_FILE_ENV} to a 32-byte key file`
 
 export function wrongPlatform(scheme: string, platform: NodeJS.Platform, phase: 'probe' | 'create' | 'open'): CustodyError {
   // A vault made on another OS opens only with its recorded scheme, so its key is simply not here.

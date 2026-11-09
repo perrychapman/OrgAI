@@ -306,25 +306,23 @@ describe('bootOrgAIHost', () => {
     expect(h.activity.snapshot().counts.inFlightRpcMutations).toBe(0)
   })
 
-  it('host.status carries the handoff facts; a handoff stop is refused while a run is live in any form (4.4)', async () => {
+  it('host.status carries the host-wide run counts; a plain stop goes through once nothing is live', async () => {
     const h = boot({ terminalSessions: () => 2 })
     expect(h.hostControl.status().handoff).toEqual({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 })
     const folder = join(root, 'repo-handoff')
     mkdirSync(folder)
-    const project = h.services.projects.create({ name: 'Handoff', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const project = h.services.projects.create({ name: 'Counts', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
     const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
     await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'keep me live' }], ctx)
-    const res = (await h.dispatcher.invokeRpc('host.stop', [{ handoff: true }], ctx)) as { stopping: boolean; handoffBlockers?: Record<string, number> }
+    const res = (await h.dispatcher.invokeRpc('host.stop', [{}], ctx)) as { stopping: boolean }
     expect(res.stopping).toBe(false)
-    expect(Object.values(res.handoffBlockers ?? {}).reduce((a, b) => a + b, 0)).toBeGreaterThan(0)
     expect(h.activity.state()).toBe('ready')
     await h.runs.stopAll({ reason: 'quit' })
-    // The ended work run armed a Team review (a backgroundTasks lease); without it and with nothing live, the handoff
-    // stop goes through.
+    // The ended work run armed a Team review (a backgroundTasks lease); without it and with nothing live, the stop goes through.
     h.services.capabilities.dispose()
     await vi.waitFor(() => expect(h.activity.isIdle()).toBe(true))
     expect(h.hostControl.status().handoff).toMatchObject({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0 })
-    await expect(h.dispatcher.invokeRpc('host.stop', [{ handoff: true }], ctx)).resolves.toEqual({ stopping: true })
+    await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     await h.shutdown.released()
   })
 
@@ -355,9 +353,9 @@ describe('bootOrgAIHost', () => {
     await h.runs.stopAll({ reason: 'quit' })
   })
 
-  it('a non-forced stop (idle exit, `orgai daemon stop`) ends a run that only waits on the user, written as cut by the app before the release', async () => {
+  it('a non-forced stop (a stop request) ends a run that only waits on the user, written as cut by the app before the release', async () => {
     const own = fakeOwnership()
-    const h = boot({ ownership: own, hostKind: 'headless-host' })
+    const h = boot({ ownership: own, hostKind: 'inproc' })
     const atRelease: (RunSummary | null)[] = []
     let runId = ''
     own.release.mockImplementation(() => {
@@ -428,70 +426,10 @@ describe('bootOrgAIHost', () => {
     expect(armIdle).not.toHaveBeenCalled()
   })
 
-  it('arms idle exit for a non-desktop host', () => {
-    const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
-    boot({ hostKind: 'headless-host' })
-    expect(armIdle).toHaveBeenCalledTimes(1)
-  })
-
   it('never arms idle exit for an inproc host (it lives until Ctrl+C)', () => {
     const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
     boot({ hostKind: 'inproc' })
     expect(armIdle).not.toHaveBeenCalled()
-  })
-
-  it('a headless boot opens Terminal access for its session only, never saving it (review H2)', () => {
-    const fresh = boot({ hostKind: 'headless-host' })
-    expect(fresh.settings.get().terminalServer).toBe(false)
-    expect(fresh.settings.get().terminalServerChosen).toBeUndefined()
-    expect(fresh.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    fresh.dispose()
-    // Nothing reached settings.json: a desktop boot afterwards keeps it off.
-    const desktop = boot({ hostKind: 'desktop' })
-    expect(desktop.terminalAccess()).toEqual({ enabled: false, level: 'operate' })
-    // The user allows full access, then turns Terminal access off in App settings (settings:set marks the choice).
-    desktop.settings.set({ ...desktop.settings.get(), terminalAccessLevel: 'full' })
-    expect(desktop.terminalAccess()).toEqual({ enabled: false, level: 'full' })
-    desktop.settings.set({ ...desktop.settings.get(), terminalServer: false, terminalServerChosen: true })
-    desktop.dispose()
-    for (const hostKind of ['headless-host', 'inproc'] as const) {
-      const later = boot({ hostKind })
-      expect(later.settings.get().terminalServer, hostKind).toBe(false)
-      expect(later.settings.get().terminalServerChosen).toBe(true)
-      expect(later.terminalAccess().enabled, hostKind).toBe(false)
-      later.dispose()
-    }
-  })
-
-  it('an in-process host follows the stored level like any host (its own CLI proves itself with the owner key); a choice made during a headless session wins at once', () => {
-    const inproc = boot({ hostKind: 'inproc' })
-    expect(inproc.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    inproc.settings.set({ ...inproc.settings.get(), terminalAccessLevel: 'full' })
-    expect(inproc.terminalAccess()).toEqual({ enabled: true, level: 'full' })
-    inproc.dispose()
-    const headless = boot({ hostKind: 'headless-host' })
-    expect(headless.terminalAccess().enabled).toBe(true)
-    headless.settings.set({ ...headless.settings.get(), terminalServer: false, terminalServerChosen: true })
-    expect(headless.terminalAccess().enabled).toBe(false)
-    headless.settings.set({ ...headless.settings.get(), terminalServer: true, terminalServerChosen: true })
-    expect(headless.terminalAccess().enabled).toBe(true)
-    headless.dispose()
-  })
-
-  it('a background host follows the stored Terminal access and level like the headless host, and arms idle exit (Wave 7, 4.2.1)', () => {
-    const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
-    const node = boot({ hostKind: 'node' })
-    expect(armIdle).toHaveBeenCalledTimes(1)
-    // No stored choice: on for this session, 'operate' (never 'full' as an in-process host would be).
-    expect(node.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    node.settings.set({ ...node.settings.get(), terminalAccessLevel: 'full', terminalAccessLevelChosen: true })
-    expect(node.terminalAccess()).toEqual({ enabled: true, level: 'full' })
-    node.settings.set({ ...node.settings.get(), terminalServer: false, terminalServerChosen: true })
-    expect(node.terminalAccess()).toEqual({ enabled: false, level: 'full' })
-    node.dispose()
-    const later = boot({ hostKind: 'node' })
-    expect(later.terminalAccess()).toEqual({ enabled: false, level: 'full' })
-    later.dispose()
   })
 
   it('dispose() is idempotent and leaves no timers behind', () => {

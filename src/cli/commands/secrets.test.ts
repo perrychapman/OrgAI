@@ -1,7 +1,7 @@
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HostScope, SecretsStatusResult } from '../../shared/types'
-import { VAULT_MESSAGES } from '../../main/store/vaultTypes'
+import { CLI_VAULT_MESSAGES as VAULT_MESSAGES } from '../../main/store/vaultTypes'
 import { manageDeps } from '../manage'
 import { fakeContext, FakeHostClient, rpcError, type Answer, type FakeContextOptions } from '../testing/fakeContext'
 import { CliError, EXIT } from '../types'
@@ -66,7 +66,7 @@ describe('orgai secrets status', () => {
     const out = f.out()
     expect(out).toContain('Storage:      open (macOS keychain)')
     expect(out).toContain('Key store:    locked: The macOS keychain is locked.')
-    expect(out).toContain("3 in secure storage, 2 in the app's older secrets.json (present), 2 unreadable here, 1 from the environment (never saved)")
+    expect(out).toContain("3 in secure storage, 2 in the older secrets.json (present), 2 unreadable here, 1 from the environment (never saved)")
     expect(out).toContain(`Pending:      2 secrets: ${VAULT_MESSAGES.pendingLegacy}`)
     expect(out).toMatch(/mcp:p1:s1:env:TOKEN {2}removed by an older OrgAI .*, restorable/)
     expect(out).toContain('ffff  macOS keychain  vault.json.reset-1')

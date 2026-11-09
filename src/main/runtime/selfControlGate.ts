@@ -24,8 +24,7 @@
  * `bun test`, vitest) given test files or folders of this install's own `src/cli` is not the CLI. The scanner's other
  * fail-closed answers (untrackable cds, UNC words) give null so the normal permission flow decides. Running the CLI by
  * interpreter is matched on an `orgai` / `orgai.mjs` / `orgai.js` argument, or on an argument inside this install's
- * own CLI folders (setOrgaiCliRoots: `<app>/out/cli`, `<app>/src/cli`, and in a packaged app
- * `<Resources>/app.asar.unpacked/out/cli` and `<Resources>/bin`), never on any project's `src/cli`; sh / bash / zsh /
+ * own CLI folders (setOrgaiCliRoots: `<app>/out/cli` and `<app>/src/cli`; a packaged app ships no CLI), never on any project's `src/cli`; sh / bash / zsh /
  * dash / ksh given such a file (or an `orgai`-named one) as their script count the same way (every word that may be
  * an option's value is checked too: `bash -O extglob <launcher>`, `bash --rcfile F <launcher>`), as do an input
  * redirect of such a file into a shell or interpreter and `.` / `source` of one; `env -S '<text>'` is read as a
@@ -104,7 +103,6 @@
  * keyring service name passed through a variable or built by code at run time is not seen.
  */
 import { join, posix, resolve, win32 } from 'node:path'
-import { packagedCliRoots } from '../host/packagedLayout'
 import { canonicalDeep } from '../quick/scratch'
 import { LEGACY_SECRETS_FILE, VAULT_FILE } from '../store/vaultTypes'
 import { commandControlScan, pathAtOrUnder, searchReaches, type PrefixProtection } from './referenceDirectories'
@@ -140,14 +138,26 @@ export interface ControlProtectedExtras {
    * rule live in checkSelfControlDenial.
    */
   vaultKeyFiles?: readonly string[]
+  /**
+   * The other product's data folders (the CLI's `<userData>/data` for the app, the app's for the CLI): their control
+   * files are protected too, since an agent of one product must not change the other's connections, sign-in or vault.
+   */
+  otherProductDataDirs?: readonly string[]
 }
+
+/** The control entries of a data folder. */
+const CONTROL_ENTRIES = ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd'] as const
 
 /**
  * The paths the gate protects, each in its lexical (path.resolve) and canonical (canonicalDeep: real path of the
  * nearest existing ancestor plus the rest) spelling, deduped, in a stable order.
  */
 export function controlProtectedPaths(dataDir: string, runtimeSocketDir?: string, extras: ControlProtectedExtras = {}): string[] {
-  const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex'), join(dataDir, 'settings.json'), join(dataDir, 'auth-cwd')]
+  const roots = CONTROL_ENTRIES.map((e) => join(dataDir, e))
+  for (const other of extras.otherProductDataDirs ?? []) {
+    if (typeof other !== 'string' || other === '' || resolve(other) === resolve(dataDir)) continue
+    for (const e of [...CONTROL_ENTRIES, 'vault.json']) roots.push(join(other, e))
+  }
   if (runtimeSocketDir) roots.push(runtimeSocketDir)
   for (const f of extras.vaultKeyFiles ?? []) if (typeof f === 'string' && f !== '') roots.push(f)
   const out: string[] = []
@@ -206,16 +216,13 @@ export function setOrgaiCliRoots(roots: readonly string[]): void {
 }
 
 /**
- * The CLI folders of an app root: `<root>/out/cli` (the bundle) and `<root>/src/cli` (sources, dev), plus for a
- * packaged app (`<Resources>/app.asar` or `app.asar.unpacked`) the unpacked bundle `<Resources>/app.asar.unpacked/out/cli`
- * and the launcher folder `<Resources>/bin` (packagedLayout.ts `packagedCliRoots`).
+ * The CLI folders of an app root: `<root>/out/cli` (the bundle) and `<root>/src/cli` (sources, dev).
  */
 export function orgaiCliRootsOf(appRoot: string, platform: NodeJS.Platform = process.platform): string[] {
   // The platform's own path module: the roots are compared with it (insideCliRoot), so a win32 spelling must stay
   // backslashed and a POSIX one forward-slashed whatever the host is.
   const p = platform === 'win32' ? win32 : posix
   const out = [p.join(appRoot, 'out', 'cli'), p.join(appRoot, 'src', 'cli')]
-  for (const r of packagedCliRoots(appRoot, platform)) if (!out.includes(r)) out.push(r)
   return out
 }
 
@@ -509,8 +516,8 @@ const KEYCHAIN_SUBCOMMANDS: readonly string[] = [
   'delete-generic-password', 'delete-internet-password', 'set-generic-password-partition-list',
   'set-internet-password-partition-list', 'dump-keychain', 'export'
 ]
-/** The keychain service name `OrgAI Vault` (vaultTypes KEYCHAIN_SERVICE) in any case and spacing, quotes or escapes between. */
-const VAULT_LABEL = /orgai(?:[\s"'\\]|\\x20|\\040|\\u0020)*vault/i
+/** The keychain service names `OrgAI Vault` and the CLI's `OrgAI CLI Vault` (vaultTypes) in any case and spacing, quotes or escapes between. */
+const VAULT_LABEL = /orgai(?:[\s"'\\]|\\x20|\\040|\\u0020)*(?:cli(?:[\s"'\\]|\\x20|\\040|\\u0020)*)?vault/i
 /** secret-tool subcommands (any secret-tool call is denied at the program position; elsewhere one must follow it). */
 const SECRET_TOOL_SUBCOMMANDS: readonly string[] = ['lookup', 'store', 'search', 'clear', 'lock', 'unlock']
 /** D-Bus clients that can call the Secret Service. */
@@ -699,7 +706,7 @@ function segmentProgramWord(segment: string): string | undefined {
  * and also a plain mention (`grep -rn ORGAI_VAULT_KEY_FILE src`; agents search with the Grep tool instead). A shortened
  * prefix that can only stand for it (`ORGAI_V*`, `${!ORGAI_VA@}`) counts too; `ORGAI_VERSION` does not.
  */
-const VAULT_ENV_WORD = /ORGAI_(?:VAULT|MCP)|ORGAI_(?:V(?:A(?:UL?)?)?|M(?:C)?)?(?![A-Za-z0-9_])/i
+const VAULT_ENV_WORD = /ORGAI_(?:CLI_)?(?:VAULT|MCP)|ORGAI_(?:V(?:A(?:UL?)?)?|M(?:C)?|C(?:L(?:I(?:_(?:V(?:A(?:UL?)?)?|M(?:C)?)?)?)?)?)?(?![A-Za-z0-9_])/i
 /**
  * Wave 7 follow-up: `ORGAI_MCP_<hex>_<n>_<k>` names carry MCP secret values in the agent CLI's environment (never
  * scrubbed, the CLI expands them), so they are protected like ORGAI_VAULT_*, and VAULT_ENV_WORD above reads both. A

@@ -144,8 +144,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      # The app's CLI bundle says channel 'app' (cli-standalone.md 3.5); electron-builder unpacks out/cli/** with it.
-      - run: node scripts/write-install-info.mjs --channel app
       - name: Package
         # Windows keeps signAndEditExecutable: true (icon and version info stamped into OrgAI.exe); the runner is an
         # administrator, so winCodeSign's symlinks extract. If this step fails extracting winCodeSign, append
@@ -181,7 +179,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # The npm tarball, built once from this commit's CLI bundle (the same vite.cli.config.ts the app's build uses).
+  # The npm tarball, built once from this commit's CLI bundle (vite.cli.config.ts; the desktop app's build has no CLI bundle).
   npm-package:
     needs: meta
     runs-on: ubuntu-latest

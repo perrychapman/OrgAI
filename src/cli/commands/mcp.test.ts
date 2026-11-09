@@ -164,7 +164,7 @@ describe('mcp list / show / enable / remove', () => {
   })
 
   it('show says why a saved value cannot be read here (Wave 7, 5.4); json carries it, never a value', async () => {
-    const reason = 'Saved by the OrgAI app and not yet shared with the orgai command: open the app once'
+    const reason = 'This saved secret cannot be read by orgai'
     const s = spec()
     const { f } = setup({ 'mcp:list': () => [info(s, { unreadableSecrets: [{ name: 'GITHUB_TOKEN', reason }] })] })
     const r = await run(f, ['show', 'github'])

@@ -175,42 +175,13 @@ test('main refuses a stale bundle and a link in it', () => {
   }
 })
 
-test('write-install-info --electron-builder writes channel app, runs the local electron-builder, then removes it', () => {
-  const root = fakeRepo()
-  try {
-    const cli = path.join(root, 'out', 'cli')
-    fs.rmSync(path.join(cli, 'install.json'))
-    // No electron-builder installed: refused before anything is written.
-    assert.throws(() => writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--mac'], root, () => {}, {}, () => {}), /electron-builder is not installed/)
-    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false)
-    const eb = path.join(root, 'node_modules', 'electron-builder')
-    fs.mkdirSync(eb, { recursive: true })
-    fs.writeFileSync(path.join(eb, 'package.json'), JSON.stringify({ bin: { 'electron-builder': 'cli.js' } }))
-    const calls = []
-    const seen = []
-    const exec = (cmd, args, opts) => {
-      calls.push({ cmd, args, cwd: opts.cwd })
-      seen.push(JSON.parse(fs.readFileSync(path.join(cli, 'install.json'), 'utf8')))
-    }
-    writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--mac', '--arm64'], root, () => {}, { GITHUB_SHA: 'd'.repeat(40) }, exec)
-    assert.deepEqual(calls, [{ cmd: process.execPath, args: [path.join(eb, 'cli.js'), '--mac', '--arm64'], cwd: root }])
-    assert.deepEqual(seen, [{ channel: 'app', version: '9.9.9', commit: 'dddddddddddd' }], 'install.json is in place while electron-builder runs')
-    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false, 'removed afterwards')
-    // A failed build still removes it.
-    assert.throws(() => writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--win'], root, () => {}, {}, () => { throw new Error('builder failed') }), /builder failed/)
-    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false)
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('every npm run dist script writes install.json channel app around electron-builder', () => {
+test('the npm run dist scripts run electron-builder directly: the app ships no CLI bundle, so no install.json', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'))
   const dist = Object.entries(pkg.scripts).filter(([k]) => k === 'dist' || k.startsWith('dist:'))
   assert.ok(dist.length >= 7)
   for (const [name, cmd] of dist) {
-    assert.match(cmd, /node scripts\/write-install-info\.mjs --channel app --electron-builder /, name)
-    assert.doesNotMatch(cmd.replace('--electron-builder', ''), /electron-builder/, `${name} runs electron-builder only through write-install-info`)
+    assert.match(cmd, /electron-builder /, name)
+    assert.doesNotMatch(cmd, /write-install-info/, `${name} writes no install.json`)
   }
 })
 
@@ -234,4 +205,13 @@ test('write-install-info writes channel app and removes it again', () => {
 test('the README of a prerelease installs from the next tag, a stable one from latest', () => {
   assert.match(readmeText({ version: '0.1.6-dev1' }), /npm i -g orgai-cli@next\n/)
   assert.match(readmeText({ version: '0.1.6' }), /npm i -g orgai-cli\n/)
+})
+
+test('the README describes the standalone CLI: no daemon, no --host, no shared data folder', () => {
+  const text = readmeText({ version: '0.1.6' })
+  assert.doesNotMatch(text, /daemon/i)
+  assert.doesNotMatch(text, /--host/)
+  assert.doesNotMatch(text, /share one data folder/)
+  assert.doesNotMatch(text, /connects to it|starts it in the background/)
+  for (const word of ['orgai-cli', 'ORGAI_CLI_DATA_DIR', 'ORGAI_CLI_VAULT_KEY_FILE', '--data-dir']) assert.ok(text.includes(word), word)
 })

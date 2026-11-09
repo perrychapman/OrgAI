@@ -213,6 +213,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       })
   },
   {
+    // The owning orgai's own card list; not the removed `orgai inbox` command (spec 4.1).
     name: 'inbox',
     aliases: ['tray', 'decisions'],
     summary: 'Focus the Decision Tray',
@@ -308,12 +309,6 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
         const body = [stat, patch].filter((p) => p !== '').join('\n\n') || 'No changes.'
         await ctx.openText(`Diff ${cleanLine(target.branch, 120)}`, body)
       })
-  },
-  {
-    name: 'app',
-    aliases: ['desktop', 'open'],
-    summary: 'Open this run in the desktop app',
-    run: (ctx) => guarded(ctx, () => ctx.session.openInDesktop(ctx.state().activeRunId))
   },
   {
     name: 'quit',

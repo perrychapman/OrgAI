@@ -36,9 +36,8 @@ import { resolveProject } from '../client/resolveProject'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, requireProject, runSubcommands, withHost } from '../manage'
 import { emit, isJsonOutput, plural, safe, safeLine, styleFor, table, termWidth, type Json } from '../output'
-import { resolveRunFromSource } from '../runRef'
+import { checkProjectResolution, liveSource, openReadSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
-import { liveSource } from './watch'
 
 const READ = ['read'] as const
 const CONFIGURE = ['read', 'configure'] as const
@@ -239,8 +238,10 @@ export function projectLines(ctx: CliContext, p: Project): string[] {
 const runList: CommandFn = async (ctx, args) => {
   const { positionals } = parseFlags(args, {})
   if (positionals.length) throw usage('Use: orgai projects list')
-  return withHost(ctx, [...READ], async (client) => {
-    const list = await listProjects(client)
+  {
+    // Read from the saved files: no host, no write (cli-standalone-default.md 4.3).
+    const src = await openReadSource(ctx)
+    const list = (await src.projects()).filter((p) => !isVirtualProjectId(p.id))
     const rows = list.map((p) => ({ id: p.id, name: p.name, kind: projectKindOf(p), ...(p.client ? { client: p.client } : {}), path: p.path }))
     emit(ctx, { projects: rows }, () => {
       if (!list.length) return 'No projects yet. Create one with: orgai init'
@@ -253,18 +254,27 @@ const runList: CommandFn = async (ctx, args) => {
       )
     })
     return EXIT.ok
-  })
+  }
 }
 
 const runShow: CommandFn = async (ctx, args) => {
   const { positionals } = parseFlags(args, {})
   if (positionals.length > 1) throw usage('Use: orgai projects show [<id-or-path>]')
-  return withHost(ctx, [...READ], async (client) => {
-    const found = await projectFromArg(ctx, client, positionals[0])
-    const p = await getProject(client, found.id)
-    emit(ctx, { project: projectFacts(p) }, () => projectLines(ctx, p))
-    return EXIT.ok
-  })
+  const src = await openReadSource(ctx)
+  const list = (await src.projects()).filter((p) => !isVirtualProjectId(p.id))
+  let p: Project
+  if (positionals[0] === undefined) {
+    const res = ctx.resolveProject(list)
+    checkProjectResolution(res)
+    if (!res.project) throw usage('No OrgAI project here. Run this inside a project folder or pass --project <id-or-path>.')
+    p = res.project
+  } else {
+    const res = resolveProject(list, { flag: positionals[0], cwd: ctx.cwd, platform: ctx.platform })
+    if (!res.project) throw usage(safeLine(res.error ?? `No OrgAI project matches ${positionals[0]}.`))
+    p = res.project
+  }
+  emit(ctx, { project: projectFacts(p) }, () => projectLines(ctx, p))
+  return EXIT.ok
 }
 
 /** Text lines of a projects:checkPath answer. */

@@ -10,7 +10,7 @@ import { textWidth } from './panes/text'
 import type { InputEvent, TuiEnv, TuiSessionApi } from './types'
 
 function mount(cols: number, rows: number, onboarding = false, ordinaryNotice?: string) {
-  const state = { ...createInitialState('/work/orbit'), ...(onboarding ? {} : { project: project('p1', '/work/orbit', { name: 'Orbit' }) }), connection: 'live' as const, notices: onboarding ? [...(ordinaryNotice ? [{ id: 0, text: ordinaryNotice, at: 0 }] : []), { id: 1, text: "Decisions can't be answered from this terminal: set App settings > Terminal access > What terminals may do to Full control.", tone: 'warn' as const, at: 0 }] : [] }
+  const state = { ...createInitialState('/work/orbit'), ...(onboarding ? {} : { project: project('p1', '/work/orbit', { name: 'Orbit' }) }), connection: 'live' as const, notices: onboarding && ordinaryNotice ? [{ id: 0, text: ordinaryNotice, at: 0 }] : [] }
   const session = {
     getState: () => state, subscribe: () => () => {}, hostKind: 'daemon',
     notify: vi.fn(), submitPrompt: vi.fn(async () => {}), interrupt: vi.fn(),
@@ -39,7 +39,7 @@ describe('polished terminal composition', () => {
     app.unmount()
   })
 
-  it.each([[210, 45], [80, 24], [80, 20]])('keeps first-run choices, folder and access message together at %ix%i', async (cols, rows) => {
+  it.each([[210, 45], [80, 24], [80, 20]])('keeps first-run choices and folder together at %ix%i', async (cols, rows) => {
     const app = mount(cols, rows, true)
     await flush()
     const frame = app.lastFrame() ?? ''
@@ -47,7 +47,6 @@ describe('polished terminal composition', () => {
     expect(frame).toContain('[1]')
     expect(frame).toContain('[2]')
     expect(frame).toContain('[3]')
-    expect(frame.replace(/[│]/g, '').replace(/\s+/g, ' ')).toContain('Full control')
     expect(frame).not.toContain('OrgAI · Ready')
     expect(frame.split('Your workspace')).toHaveLength(1)
     expect(frame).toContain('OrgAI')
@@ -88,11 +87,10 @@ describe('polished terminal composition', () => {
     app.unmount()
   })
 
-  it('keeps earlier host notices alongside the persistent terminal capability warning', async () => {
-    const app = mount(120, 35, true, 'CLI and host versions differ.')
+  it('shows the latest host notice on first run', async () => {
+    const app = mount(120, 35, true, 'The host restarted.')
     await flush()
-    expect(app.lastFrame()).toContain('CLI and host versions differ.')
-    expect(app.lastFrame()).toContain('Full control')
+    expect(app.lastFrame()).toContain('The host restarted.')
     app.unmount()
   })
 

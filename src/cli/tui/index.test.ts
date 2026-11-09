@@ -39,7 +39,7 @@ vi.mock('./session', () => ({
   openTuiSession: async () => h.session
 }))
 
-const { DETACHED_MESSAGE, ESC_FLUSH_MS, NO_TTY_MESSAGE, keyInput, runTui, tuiEnvFor } = await import('./index')
+const { ESC_FLUSH_MS, NO_TTY_MESSAGE, keyInput, runTui, tuiEnvFor } = await import('./index')
 
 class Out extends EventEmitter {
   isTTY = true
@@ -150,11 +150,11 @@ describe('runTui', () => {
         }
       })
     ).rejects.toMatchObject({ exitCode: EXIT.usage })
-    expect(close).toHaveBeenCalledWith({ stopInproc: false })
+    expect(close).toHaveBeenCalledWith({ stopInproc: true })
     expect(out.text).toBe('')
   })
 
-  it('renders the App in full-screen, restores the terminal on exit, closes, and prints the detach note', async () => {
+  it('renders the App in full-screen, restores the terminal on exit and closes (stopping this process\'s host)', async () => {
     const connClose = vi.fn(async () => undefined)
     const sessionClose = vi.fn(async () => undefined)
     h.conn = { close: connClose }
@@ -173,18 +173,17 @@ describe('runTui', () => {
     const props = h.element!.props as { env: { bufferMode: string }; launch: unknown; onExit(code: number, info: unknown): void }
     expect(props.env.bufferMode).toBe('fullscreen')
     expect(props.launch).toEqual({ prompt: 'go' })
-    props.onExit(0, { session: h.session, detachedLive: true })
+    props.onExit(0, { session: h.session })
     expect(await done).toBe(0)
     expect(h.unmounted).toBe(1)
     expect(out.text).toContain('\x1b[?1049l')
     expect(sessionClose).toHaveBeenCalled()
-    expect(connClose).toHaveBeenCalledWith({ stopInproc: false })
-    expect(err.text).toContain(DETACHED_MESSAGE)
+    expect(connClose).toHaveBeenCalledWith({ stopInproc: true })
     expect(stdin.listenerCount('data')).toBe(0)
     expect(process.listenerCount('SIGTSTP')).toBe(0)
   })
 
-  it('an inproc host is stopped on exit and never prints the detach note; --inline never enters the alternate screen', async () => {
+  it('--inline never enters the alternate screen', async () => {
     const connClose = vi.fn(async () => undefined)
     h.conn = { close: connClose, inproc: {} }
     h.session = { close: vi.fn(async () => undefined) }
@@ -192,10 +191,9 @@ describe('runTui', () => {
     const err = { text: '', write(s: string) { this.text += s } }
     const done = runTui(ttyCtx().ctx, {}, { inline: true, screenReader: false }, { stdout: out as never, stdin: new In() as never, stderr: err })
     for (let i = 0; i < 20 && !h.element; i++) await new Promise((r) => setTimeout(r, 1))
-    ;(h.element!.props as { onExit(code: number, info: unknown): void }).onExit(0, { session: h.session, detachedLive: true })
+    ;(h.element!.props as { onExit(code: number, info: unknown): void }).onExit(0, { session: h.session })
     expect(await done).toBe(0)
     expect(out.text).not.toContain('\x1b[?1049')
     expect(connClose).toHaveBeenCalledWith({ stopInproc: true })
-    expect(err.text).not.toContain(DETACHED_MESSAGE)
   })
 })

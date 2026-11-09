@@ -32,11 +32,12 @@
  * sequence on Windows leaves a small window in which the path could be swapped; the DACL check runs on the same path.
  */
 import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join, posix, win32 } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { cliUserDataDir, platformUserDataDir } from '../../../cli/client/locate'
 import { system32Path } from '../../host/systemBinaries'
-import { CustodyError, VAULT_DEK_BYTES, VAULT_KEY_FILE_ENV, type CustodianCreated, type CustodianProbe, type VaultCustody } from '../vaultTypes'
+import { CustodyError, VAULT_DEK_BYTES, vaultNames, type CustodianCreated, type CustodianProbe, type VaultCustody, type VaultProduct } from '../vaultTypes'
 import type { RemovableKeyCustodian } from './common'
 import { custodianEnvFor } from './env'
 import { decodeKeyBase64, defaultSpawner, runHelper, stdoutText, type CustodianSpawner } from './run'
@@ -46,10 +47,13 @@ type Env = Readonly<Record<string, string | undefined>>
 /** The largest file read as a key (a base64 key with CRLF is 46 bytes). */
 const KEY_FILE_READ_MAX = 4096
 
-export const KEY_FILE_NOT_CONFIGURED = `No key file is configured: set ${VAULT_KEY_FILE_ENV} or run \`orgai secrets init --key-file <path>\`.`
-/** A new key file was asked for where a file already exists (names the exact import command). */
+export const keyFileNotConfigured = (product?: VaultProduct): string =>
+  product === 'cli'
+    ? `No key file is configured: set ${vaultNames(product).keyFileEnv} or run \`orgai secrets init --key-file <path>\`.`
+    : `No key file is configured: set ${vaultNames(product).keyFileEnv} to a 32-byte key file.`
+/** A new key file was asked for where a file already exists. The desktop's text names no command; the CLI's wrapper (custodians/index.ts cliWording) adds its import command. */
 export function keyFileExistsReason(path: string): string {
-  return `A file already exists at ${path}; OrgAI never overwrites a key file. To use it as the vault's key, run \`orgai secrets init --key-file "${path}" --import\`.`
+  return `A file already exists at ${path}; OrgAI never overwrites a key file. Choose another path, or use this file only if it is already this vault's key.`
 }
 export const KEY_FILE_BAD_CONTENT = 'The key file must hold exactly 32 bytes, or base64 text of 32 bytes (for example from `openssl rand -base64 32`).'
 
@@ -77,6 +81,8 @@ export interface KeyFileCustodianOptions {
   timeoutMs?: number
   /** process.getuid() stand-in (tests). */
   uid?: number
+  /** Whose key-file variable is read (default 'desktop'). */
+  product?: VaultProduct
 }
 
 // ---------- Paths ----------
@@ -134,7 +140,18 @@ export function insideOnAnySpelling(parent: string, child: string, platform: Nod
  * Why `path` cannot be a key file, else undefined (5.3.1): not absolute, a network path on Windows, control
  * characters, or inside the user data folder or the data folder.
  */
-export function keyFilePathProblem(path: string, opts: { userDataDir: string; dataDir: string; platform?: NodeJS.Platform }): string | undefined {
+export function keyFilePathProblem(
+  path: string,
+  opts: {
+    userDataDir: string
+    dataDir: string
+    platform?: NodeJS.Platform
+    /** The CLI also refuses the desktop app's default folder and the file the desktop's own key-file variable names (spec 7). */
+    cliAvoids?: { desktopDefault: string; desktopKeyFile?: string }
+    /** The desktop refuses the CLI's default folder (spec 3.1 and 7: neither product writes into the other's folder). */
+    desktopAvoids?: { cliDefault: string; cliKeyFile?: string }
+  }
+): string | undefined {
   const platform = opts.platform ?? process.platform
   // eslint-disable-next-line no-control-regex
   if (!path || /[\u0000-\u001f\u007f]/.test(path)) return 'The key file path is empty or holds control characters.'
@@ -147,6 +164,22 @@ export function keyFilePathProblem(path: string, opts: { userDataDir: string; da
   for (const folder of [opts.userDataDir, opts.dataDir]) {
     if (folder && insideOnAnySpelling(folder, path, platform)) {
       return `The key file must not be inside OrgAI's data folder (${folder}): a backup or sync of that folder would then hold both the vault and its key.`
+    }
+  }
+  if (opts.desktopAvoids && insideOnAnySpelling(opts.desktopAvoids.cliDefault, path, platform)) {
+    return `The key file must not be inside the orgai command's data folder (${opts.desktopAvoids.cliDefault}): the two products keep separate folders.`
+  }
+  const cliKey = opts.desktopAvoids?.cliKeyFile
+  if (cliKey && insideOnAnySpelling(cliKey, path, platform) && insideOnAnySpelling(path, cliKey, platform)) {
+    return `The key file must not be the file the orgai command uses as its key (${vaultNames('cli').keyFileEnv}): the two vaults would share one key.`
+  }
+  const avoid = opts.cliAvoids
+  if (avoid) {
+    if (insideOnAnySpelling(avoid.desktopDefault, path, platform)) {
+      return `The key file must not be inside the OrgAI app's data folder (${avoid.desktopDefault}): orgai never writes the app's data.`
+    }
+    if (avoid.desktopKeyFile && insideOnAnySpelling(avoid.desktopKeyFile, path, platform) && insideOnAnySpelling(path, avoid.desktopKeyFile, platform)) {
+      return `The key file must not be the file the OrgAI app uses as its key (${vaultNames('desktop').keyFileEnv}): the two vaults would share one key.`
     }
   }
   return undefined
@@ -651,7 +684,7 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
 
   /** The path to use: the one asked for now, else ORGAI_VAULT_KEY_FILE, else the recorded custody.keyFile. */
   configuredPath(custody?: VaultCustody): string | undefined {
-    const envPath = this.env[VAULT_KEY_FILE_ENV]?.trim()
+    const envPath = this.env[vaultNames(this.opts.product).keyFileEnv]?.trim()
     const p = this.opts.keyFile ?? (envPath ? envPath : undefined) ?? custody?.keyFile ?? this.opts.recordedKeyFile
     return typeof p === 'string' && p !== '' ? p : undefined
   }
@@ -673,8 +706,33 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
   /** The usable path, or a CustodyError (`unconfigured` decides the kind when nothing is configured). */
   private checkedPath(unconfigured: 'unavailable' | 'missing', custody?: VaultCustody): string {
     const p = this.configuredPath(custody)
-    if (p === undefined) throw new CustodyError(unconfigured, KEY_FILE_NOT_CONFIGURED)
-    const problem = keyFilePathProblem(p, { userDataDir: this.opts.userDataDir, dataDir: this.opts.dataDir, platform: this.platform })
+    if (p === undefined) throw new CustodyError(unconfigured, keyFileNotConfigured(this.opts.product))
+    const cliAvoids =
+      this.opts.product === 'cli'
+        ? (() => {
+            const desktopKeyFile = this.env[vaultNames('desktop').keyFileEnv]?.trim()
+            return {
+              desktopDefault: platformUserDataDir(this.platform, this.env as NodeJS.ProcessEnv, this.env.HOME ?? homedir()),
+              ...(desktopKeyFile ? { desktopKeyFile } : {})
+            }
+          })()
+        : undefined
+    // A refusal-only read of the other product's variable: the app never uses that key file.
+    const cliKeyFile = this.env[vaultNames('cli').keyFileEnv]?.trim()
+    const desktopAvoids =
+      this.opts.product === 'cli'
+        ? undefined
+        : {
+            cliDefault: cliUserDataDir(this.platform, this.env as NodeJS.ProcessEnv, this.env.HOME ?? homedir()),
+            ...(cliKeyFile ? { cliKeyFile } : {})
+          }
+    const problem = keyFilePathProblem(p, {
+      userDataDir: this.opts.userDataDir,
+      dataDir: this.opts.dataDir,
+      platform: this.platform,
+      ...(cliAvoids ? { cliAvoids } : {}),
+      ...(desktopAvoids ? { desktopAvoids } : {})
+    })
     if (problem) throw new CustodyError('denied', problem)
     return p
   }

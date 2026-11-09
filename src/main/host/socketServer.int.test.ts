@@ -17,7 +17,8 @@ const { bootOrgAIHost } = await import('./bootstrap')
 const { acquireHostOwnership } = await import('./ownership')
 const { newHostInstanceId } = await import('./identity')
 const { HostSocketServer } = await import('./socketServer')
-const { LineReader, clientProof, encodeFrame, hostProof, newNonce, proofMatches, readDaemonSecret, rpcRequest } = await import('./protocol')
+const { LineReader, clientProof, ownerProof, encodeFrame, hostProof, newNonce, proofMatches, readDaemonSecret, rpcRequest } = await import('./protocol')
+const OWNER_KEY = 'ab'.repeat(32)
 type OrgAIHost = import('./bootstrap').OrgAIHost
 type HostOwnership = import('./ownership').HostOwnership
 
@@ -111,7 +112,8 @@ async function connectClient(kind: 'cli' | 'tui' = 'cli', scopes: HostScope[] = 
   if (!secret) throw new Error('no secret')
   const params = { protocolVersion: 1 as const, clientKind: kind, clientVersion: '9.9.9-int', pid: process.pid, cwd: base, clientNonce: newNonce(), requestedScopes: scopes }
   const proof = clientProof(secret, { ...params, hostInstanceId: challenge.params.hostInstanceId, hostNonce: challenge.params.hostNonce })
-  c.socket.write(encodeFrame(rpcRequest(1, 'host.hello', { ...params, clientProof: proof })))
+  const owner = ownerProof(OWNER_KEY, { hostInstanceId: challenge.params.hostInstanceId, hostNonce: challenge.params.hostNonce, clientNonce: params.clientNonce, clientProof: proof })
+  c.socket.write(encodeFrame(rpcRequest(1, 'host.hello', { ...params, clientProof: proof, ownerProof: owner })))
   const res = await c.next((m) => m.id === 1)
   if (res.error) throw new Error(`hello refused: ${res.error.data.code}`)
   const expected = hostProof(secret, {
@@ -147,10 +149,10 @@ beforeEach(async () => {
   mkdirSync(join(base, 'rt'), { mode: 0o700 })
   clients = []
   hostInstanceId = newHostInstanceId()
-  server = new HostSocketServer({ dataDir, hostKind: 'headless-host', hostInstanceId, appVersion: '9.9.9-int', mock: true, peerCheck: async () => 'ok', log: () => {} })
+  server = new HostSocketServer({ dataDir, hostKind: 'inproc', hostInstanceId, appVersion: '9.9.9-int', mock: true, ownerKey: OWNER_KEY, peerCheck: async () => 'ok', log: () => {} })
   ownership = await acquireHostOwnership({
     dataDir,
-    hostKind: 'headless-host',
+    hostKind: 'inproc',
     appVersion: '9.9.9-int',
     hostInstanceId,
     runtimeBase: join(base, 'rt'),
@@ -159,7 +161,7 @@ beforeEach(async () => {
   host = bootOrgAIHost({
     env: { userDataDir: base, logsDir: join(base, 'logs'), appVersion: '9.9.9-int', isPackaged: false },
     dataDir,
-    hostKind: 'headless-host',
+    hostKind: 'inproc',
     ownership,
     safeStorage,
     openExternal: () => {},
@@ -169,8 +171,6 @@ beforeEach(async () => {
     processEnv: {},
     homeDir: join(base, 'home')
   })
-  // These tests drive configure channels: the user allowed full Terminal access in App settings.
-  host.settings.set({ ...host.settings.get(), terminalAccessLevel: 'full' })
   server.attach(host)
   ownership.markReady()
 })
@@ -188,21 +188,12 @@ afterEach(async () => {
 describe.runIf(posix)('socket server on a booted mock host', () => {
   it('handshake, host.status and runs:list', async () => {
     const { c, hello } = await connectClient()
-    expect(hello).toMatchObject({ hostKind: 'headless-host', hostInstanceId, mock: true, dataDir, grantedScopes: ['read', 'operate', 'configure'] })
+    expect(hello).toMatchObject({ hostKind: 'inproc', hostInstanceId, mock: true, dataDir, grantedScopes: ['read', 'operate', 'configure'] })
     expect(hello.versionSkewWarning).toBeUndefined()
     const status = (await c.call('host.status', {})) as Msg
-    expect(status).toMatchObject({ protocolVersion: 1, hostInstanceId, hostKind: 'headless-host', mock: true, dataDir })
+    expect(status).toMatchObject({ protocolVersion: 1, hostInstanceId, hostKind: 'inproc', mock: true, dataDir })
     const project = mockProject('repo-list')
     expect(await c.call('runs:list', [project.id])).toEqual([])
-  })
-
-  it('a headless boot opens Terminal access for its session only; the default level grants read and operate (review H2)', async () => {
-    expect(host.settings.get().terminalServer).toBe(false)
-    expect(host.terminalAccess()).toEqual({ enabled: true, level: 'full' })
-    host.settings.set({ ...host.settings.get(), terminalAccessLevel: 'operate' })
-    expect(host.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    const { hello } = await connectClient('cli', ['read', 'operate', 'decide', 'configure'])
-    expect(hello.grantedScopes).toEqual(['read', 'operate'])
   })
 
   it('runs:subscribe: snapshot, live pushes, then a replay after reconnecting with sinceSeq', async () => {

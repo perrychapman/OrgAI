@@ -620,6 +620,11 @@ describe('arguments and environment', () => {
     expect(gw).toMatchObject({ git_ssh: 'ok' })
     expect('git_exec_path' in gw).toBe(false)
     expect('Git_Pager' in gw).toBe(false)
+    const ctl = { PATH: 'p', ORGAI_DATA_DIR: 'x', ORGAI_VAULT_KEY_FILE: 'x', ORGAI_CLI_VAULT_KEY_FILE: 'x', ELECTRON_RUN_AS_NODE: '1' }
+    for (const e of [gitEnv(ctl), ghEnv(ctl)]) {
+      expect(e.PATH).toBe('p')
+      for (const k of Object.keys(ctl).filter((n) => n !== 'PATH')) expect(k in e).toBe(false)
+    }
     const h = ghEnv(base)
     expect(h).toMatchObject({ PATH: 'p', GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' })
     for (const k of ['GH_HOST', 'DEBUG', 'GH_REPO', 'GH_ENTERPRISE_TOKEN']) expect(k in h).toBe(false)

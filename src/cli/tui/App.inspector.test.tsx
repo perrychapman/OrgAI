@@ -387,14 +387,14 @@ describe('external decision lifecycle', () => {
     }
 
     if (scenario.notice) {
-      expect(r.lastFrame()).toContain('Resolved in another window')
+      expect(r.lastFrame()).toContain('Resolved by')
       clock += TUI_NOTICE_TTL_MS + 1
       state = { ...state }
       emit()
       await tick()
-      expect(r.lastFrame()).not.toContain('Resolved in another window')
+      expect(r.lastFrame()).not.toContain('Resolved by')
     } else {
-      expect(r.lastFrame()).not.toContain('Resolved in another window')
+      expect(r.lastFrame()).not.toContain('Resolved by')
     }
     expect(r.lastFrame()).toContain(scenario.status === 'finished' ? 'Run finished' : '2 agents working')
     r.unmount()

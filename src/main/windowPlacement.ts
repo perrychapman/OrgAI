@@ -30,6 +30,11 @@ export function parseWindowInactive(value: string | undefined): boolean {
   return value === '1'
 }
 
+/** Only the exact value '1' turns it on (ORGAI_WINDOW_HIDDEN: windows load but are never shown; pack:verify's boot check). */
+export function parseWindowHidden(value: string | undefined): boolean {
+  return value === '1'
+}
+
 /** Only the exact value '1' turns it on (ORGAI_WINDOW_LARGER_THAN_SCREEN, macOS CI only). */
 export function parseLargerThanScreen(value: string | undefined): boolean {
   return value === '1'

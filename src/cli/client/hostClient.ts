@@ -70,9 +70,8 @@ export interface ConnectHostOptions {
   /** Default call timeout of the returned client. Default 30000. */
   callTimeoutMs?: number
   /**
-   * The in-memory owner key of the `--host inproc` host this process started (InprocHostHandle.ownerKey): the hello
-   * then carries an ownerProof, the only way to get decide / configure from an in-process host past its Terminal
-   * access level. Sent only to a host whose hostInstanceId equals `ownerHostInstanceId`.
+   * The in-memory owner key of the in-process host this process started (InprocHostHandle.ownerKey): the hello
+   * then carries an ownerProof, the only way to be served by an in-process host. Sent only to a host whose hostInstanceId equals `ownerHostInstanceId`.
    */
   ownerKey?: string
   ownerHostInstanceId?: string
@@ -220,12 +219,9 @@ function openSocket(opts: ConnectHostOptions, endpoint: string, timeoutMs: numbe
   })
 }
 
-/** A host that binds no listener while Terminal access is off says so in daemon.json (review M11); same text as the host's refusal. */
-const LISTENER_OFF_MESSAGE = 'Terminal access is off. Turn it on in OrgAI: App settings > General > Advanced settings > Terminal access.'
-
 async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive: (pid: number, start?: string) => boolean): Promise<Attempt> {
   const done = (result: ConnectResult): Attempt => ({ kind: 'done', result })
-  if (daemon.listening === false) return done(fail('disabled', LISTENER_OFF_MESSAGE, daemon))
+  if (daemon.listening === false) return done(fail('refused', 'The host at this data folder has no listener.', daemon))
   const connectTimeoutMs = opts.connectTimeoutMs ?? 1500
   const opened = await openSocket(opts, daemon.endpoint, connectTimeoutMs)
   if ('error' in opened) {
@@ -311,8 +307,8 @@ async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive:
         return { kind: 'starting', message: data.message || 'OrgAI is still starting.', ...(data.retryAfterMs !== undefined ? { retryAfterMs: data.retryAfterMs } : {}) }
       case 'host_draining':
         return abort(fail('draining', data.message || 'OrgAI is shutting down for this data folder.', daemon))
-      case 'terminal_server_disabled':
-        return abort(fail('disabled', data.message, daemon))
+      case 'not_owner':
+        return abort(fail('not_owner', data.message, daemon))
       case 'agent_descendant_refused':
       case 'too_many_connections':
         return abort(fail('refused', data.message, daemon))
@@ -337,8 +333,7 @@ async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive:
     appVersion: hello.appVersion,
     dataDir: hello.dataDir,
     mock: hello.mock,
-    grantedScopes: hello.grantedScopes,
-    ...(hello.handoff === true ? { handoff: true } : {})
+    grantedScopes: hello.grantedScopes
   })
   if (!proofMatches(expected, hello.hostProof)) {
     return abort(fail('auth_failed', 'The OrgAI host could not prove it holds this data folder’s secret. Connection closed.', daemon))
@@ -357,7 +352,7 @@ const SCOPES = new Set(['read', 'operate', 'decide', 'configure'])
 
 function parseHelloResult(v: unknown): RpcHelloResult | null {
   if (!isObj(v)) return null
-  const { protocolVersion, hostInstanceId, hostKind, appVersion, dataDir, mock, grantedScopes, hostProof: proof, versionSkewWarning, handoff } = v
+  const { protocolVersion, hostInstanceId, hostKind, appVersion, dataDir, mock, grantedScopes, hostProof: proof, versionSkewWarning } = v
   if (protocolVersion !== HOST_PROTOCOL_VERSION) return null
   if (typeof hostInstanceId !== 'string' || typeof hostKind !== 'string' || !KINDS.has(hostKind)) return null
   if (typeof appVersion !== 'string' || typeof dataDir !== 'string' || typeof mock !== 'boolean' || typeof proof !== 'string') return null
@@ -371,8 +366,6 @@ function parseHelloResult(v: unknown): RpcHelloResult | null {
     mock,
     grantedScopes: grantedScopes as HostScope[],
     ...(typeof versionSkewWarning === 'string' ? { versionSkewWarning } : {}),
-    // Wave 7: kept only as `true` (and then bound into the proof check above); any other value is dropped.
-    ...(handoff === true ? { handoff: true as const } : {}),
     hostProof: proof
   }
 }

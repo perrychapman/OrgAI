@@ -1,19 +1,19 @@
 /**
- * `--host inproc` (cli-spec 3.2(1), 3.5): a pure-Node OrgAI host inside the CLI process. Same ownership protocol as
- * the Electron host (refuses with exit 6 when another host owns the data dir), its own per-instance socket so
- * `orgai watch` and later `orgai decide` can attach (this process's own client gets every scope through the in-memory
- * `ownerKey`, whatever the stored Terminal access; other clients are capped by it, review H2), and secure storage (Wave 7, cli-standalone.md 5) with the CLI's
- * environment overlay: no safeStorage outside Electron, so values the OrgAI app saved only in secrets.json read as
- * pending-legacy, and values this host stores go to vault.json (created lazily by prepareWrite). There is no desktop,
- * so window:openRun answers desktop_unavailable. Always loaded through a dynamic import (its own chunk,
- * out/cli/inprocHost.mjs). Electron-free; relative imports only.
+ * The orgai host (cli-standalone-default.md 4.1): a pure-Node OrgAI host inside the CLI process, the only host there is.
+ * Ownership is taken with `wait: 'none'`, so another orgai on the data folder is refused at once with exit 6 (its pid and
+ * cwd come from daemon.json). The host's socket serves its own process only: a hello needs the memory-only `ownerKey`
+ * proof, which is how this process's client gets every scope (anything else is refused `not_owner`). Secure storage is the
+ * CLI's own vault (product 'cli') with the CLI's environment overlay: no safeStorage outside Electron, and values this
+ * host stores go to vault.json (created lazily by prepareWrite). There is no desktop, so window:openRun answers
+ * desktop_unavailable. Always loaded through a dynamic import (its own chunk, out/cli/inprocHost.mjs). Electron-free;
+ * relative imports only.
  */
 import { writeSync } from 'node:fs'
 import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
-import { HostOwnershipError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
+import { HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
 import { newNonce } from '../main/host/protocol'
 import { ShutdownRefusedError } from '../main/host/shutdown'
 import { HostSocketServer } from '../main/host/socketServer'
@@ -22,7 +22,7 @@ import { stopSystemCertRead, trustSystemCertificates } from '../main/systemCerts
 import { orgaiCliRootsOf, setOrgaiCliRoots } from '../main/runtime/selfControlGate'
 import { openSecretStore, type SecretCipher } from '../main/store/secrets'
 import type { CustodianFactory } from '../main/store/vaultTypes'
-import { markSharedHost } from './client/sharedHost'
+import { ownedMessage, ownerWordsOf } from './ownedMessage'
 import { openUrl } from './openUrl'
 import { unavailableCustodianFactory } from '../main/store/unavailableCustodian'
 import { CliError, EXIT, type InprocHostHandle } from './types'
@@ -38,18 +38,15 @@ export interface StartInprocHostOptions {
   log?: (m: string) => void
   /** installLogging (main.log under `<userDataDir>/logs`, console patches). Default true; tests turn it off. */
   logging?: boolean
-  /** bootOrgAIHost's background probes and discovery. Default true; tests turn it off. */
+  /** bootOrgAIHost's background probes and discovery (its `startBackground`). Default true; tests turn it off. */
   startBackground?: boolean
   /**
-   * Wave 7 (cli-standalone.md 4.1 step 4): per-kind overrides of startBackground (bootOrgAIHost `background`). A
+   * Wave 7 (cli-standalone.md 4.1 step 4): per-kind overrides of the switch above (bootOrgAIHost `background`). A
    * management command's fallback host keeps connection probes and turns off discovery, prices and the usage monitor.
    */
   background?: HostBackgroundOptions
-  /**
-   * Wave 7 (cli-standalone.md 4.2): 'node' for the detached Node host (`orgai daemon run-node`), which is this host plus
-   * the idle exit and the stored Terminal access (WP-E). Default 'inproc'.
-   */
-  hostKind?: 'inproc' | 'node'
+  /** This process's cwd, written to daemon.json as `ownerCwd` for the refusal other terminals print. Default process.cwd(). */
+  cwd?: string
   /**
    * The terminal UI owns the screen: console output goes to main.log only, never to the terminal (installLogging's
    * console mirror writes to stderr too). Default false.
@@ -67,13 +64,6 @@ export interface StartInprocHostOptions {
    * the platform custodians are wired in); tests inject fakes.
    */
   custodian?: CustodianFactory
-  /**
-   * WP-B review round 2: this host serves other terminals (`orgai daemon start --host inproc`), so it writes the
-   * `run/inproc-shared-<id>` marker (client/sharedHost.ts) once it owns the data folder, before it is ready, and removes
-   * it when it ends. Without it (a command's own host) other terminals' ensureHost waits for it to end instead of
-   * attaching. Default false.
-   */
-  shared?: boolean
   /**
    * The shutdown's hard limit (cli-standalone.md 4.3): writers still in flight after SHUTDOWN_HARD_LIMIT_MS, the host's
    * descendants killed. Default `inprocHardLimitExit`: tell the terminal and end the process with EXIT.failure, so the
@@ -118,7 +108,7 @@ const SYSTEM_CERTS: SystemCertHooks = {
   stop: () => stopSystemCertRead()
 }
 
-/** Console methods that write to main.log only (`--host inproc` under the terminal UI). */
+/** Console methods that write to main.log only (the terminal UI owns the screen). */
 export function quietConsole(target: Pick<Console, 'log' | 'info' | 'warn' | 'error' | 'debug'> = console): void {
   target.log = (...args: unknown[]): void => log.info(...args)
   target.info = (...args: unknown[]): void => log.info(...args)
@@ -138,17 +128,16 @@ export interface InprocHost extends InprocHostHandle {
 export const NO_CIPHER: SecretCipher = {
   isEncryptionAvailable: () => false,
   encryptString: () => {
-    throw new Error('Secrets cannot be encrypted outside the OrgAI app.')
+    throw new Error('Secrets cannot be encrypted by this legacy cipher; orgai keeps its secrets in its own vault.')
   },
   decryptString: () => {
-    throw new Error('Stored secrets cannot be read outside the OrgAI app.')
+    throw new Error('Stored secrets cannot be read by this legacy cipher; orgai keeps its secrets in its own vault.')
   }
 }
 
 /**
  * The self-control gate's CLI folders for a chunk in `moduleDir`: it sits in out/cli (bundled) or src/cli (sources),
- * two levels below the app root either way. In a packaged app that root is `<Resources>/app.asar.unpacked`, so
- * orgaiCliRootsOf adds the unpacked bundle and `<Resources>/bin` (the launcher) too.
+ * two levels below the app root either way.
  */
 export function inprocCliRoots(moduleDir: string, platform: NodeJS.Platform = process.platform): string[] {
   const p = platform === 'win32' ? win32 : posix
@@ -163,14 +152,11 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   }
   const { userDataDir, dataDir } = opts
   const logsDir = join(userDataDir, 'logs')
-  if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })
-  if (opts.quiet) quietConsole()
   const hostInstanceId = currentHostInstanceId()
-  const hostKind = opts.hostKind ?? 'inproc'
+  const hostKind = 'inproc' as const
   // In memory only (never daemon.json, daemon.secret or a log): this process's proof that it started the host, so its
-  // own commands get every scope while any other client of the socket stays capped by Terminal access (review H2).
-  // A Node host is detached and has no owner client.
-  const ownerKey = hostKind === 'inproc' ? newNonce() : undefined
+  // own commands get every scope; any other client of the socket is refused as not_owner (spec 4.1).
+  const ownerKey = newNonce()
   const server = new HostSocketServer({
     dataDir,
     hostKind,
@@ -185,14 +171,38 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
 
   let ownershipRef: HostOwnership | undefined
   let ownership: HostOwnership
+  // Ownership warnings wait in memory: before installLogging the logger has no folder (it would fall back to the shared
+  // <tmpdir>/orgai-logs), and the console may be the terminal UI's screen. They go to main.log once it is open, or to
+  // stderr when ownership is refused.
+  const heldWarnings: string[] = []
   try {
-    ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: CLI_VERSION, hostInstanceId, onConnection: (s) => server.accept(s) })
+    // wait: 'none' (spec 4.2): another orgai, starting or running, is refused at once; a provably stale record is reclaimed.
+    ownership = await acquireHostOwnership({
+      dataDir,
+      hostKind,
+      appVersion: CLI_VERSION,
+      hostInstanceId,
+      wait: 'none',
+      warn: (m) => void heldWarnings.push(m),
+      ownerCwd: opts.cwd ?? process.cwd(),
+      onConnection: (s) => server.accept(s)
+    })
     ownershipRef = ownership
   } catch (e) {
     server.close()
+    for (const m of heldWarnings) process.stderr.write(`${m}\n`)
+    if (e instanceof HostAlreadyRunningError) throw new CliError(ownedMessage(ownerWordsOf(e.info)), EXIT.hostBusy)
+    if (e instanceof HostStartingOrBusyError) throw new CliError(ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {}), EXIT.hostBusy)
+    // An unreadable record that is not provably stale is "owned" (spec 4.2); other ownership failures keep their message.
+    if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable') throw new CliError(ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {}), EXIT.hostBusy)
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)
     throw e
   }
+  // Logging only once ownership is held: a refused second orgai must not create logs/ or rotate main.log under the owner
+  // (it reports on stderr only; spec 4.2).
+  if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })
+  if (opts.quiet) quietConsole()
+  for (const m of heldWarnings) log.warn(m)
   // After ownership (the in-process twin of the desktop's single-instance lock), before anything can fetch.
   const certOpt = opts.systemCertificates ?? true
   const certs = certOpt === true ? SYSTEM_CERTS : certOpt === false ? undefined : certOpt
@@ -208,20 +218,10 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   } catch (e) {
     log.warn(`System certificates not added: ${e instanceof Error ? e.message : String(e)}`)
   }
-  let unmarkShared = (): void => undefined
-  if (opts.shared) {
-    try {
-      unmarkShared = markSharedHost(dataDir, hostInstanceId)
-    } catch (e) {
-      // Other terminals then wait for this host instead of using it (the safe side).
-      log.warn(`Could not mark the host as shared with other terminals: ${e instanceof Error ? e.message : String(e)}`)
-    }
-  }
   // The exit hook releases only when the process ends without the shutdown sequence (a crash, process.exit elsewhere):
   // the process's own writes end with it.
   const onExit = (): void => {
     stopCerts()
-    unmarkShared()
     ownership.release()
   }
   process.on('exit', onExit)
@@ -237,7 +237,6 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     if (cleaned) return
     cleaned = true
     stopCerts()
-    unmarkShared()
     server.close()
     host?.dispose()
     try {
@@ -256,11 +255,12 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       dataDir,
       userDataDir,
       hostKind,
+      product: 'cli',
       cipher: NO_CIPHER,
       overlay: opts.overlay,
       env: opts.env,
       // A mock host (e2e, verify-pack) never writes an OS key item for a throwaway data folder unless a key file is named.
-      ...(opts.custodian ? { custodian: opts.custodian } : opts.mock && !((opts.env?.ORGAI_VAULT_KEY_FILE ?? '').trim()) ? { custodian: unavailableCustodianFactory } : {}),
+      ...(opts.custodian ? { custodian: opts.custodian } : opts.mock && !((opts.env?.ORGAI_CLI_VAULT_KEY_FILE ?? '').trim()) ? { custodian: unavailableCustodianFactory } : {}),
       log: (m) => log.info(m)
     })
     host = bootOrgAIHost({

@@ -263,9 +263,10 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'app:setNotifications': {}, // boolean
   'usage:refresh': {}, // UsageMonitor refresh (handler in index.ts)
   'app:openLogs': {}, // shell.openPath(logsDir)
-  'app:cliShimStatus': {}, // desktop only (cli-spec 7(3))
-  'app:installCliShim': {}, // desktop only
-  'app:uninstallCliShim': {}, // desktop only
+  'app:cliCommandStatus': {}, // desktop only (5.3)
+  'app:installCliCommand': {}, // desktop only
+  'app:cancelCliInstall': {}, // desktop only
+  'app:removeOldCliShim': {}, // desktop only
   'app:logPath': {}, // logPath()
   'app:info': {}, // buildAppInfo
   'app:reference': {}, // appReferenceArgs: optional fields are left out

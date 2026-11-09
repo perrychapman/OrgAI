@@ -24,7 +24,7 @@
  * /usr/bin/security as this user.
  */
 import { randomBytes } from 'node:crypto'
-import { CustodyError, KEYCHAIN_SERVICE, VAULT_DEK_BYTES, type CustodianCreated, type CustodianProbe, type CustodyFailureKind, type VaultCustody } from '../vaultTypes'
+import { CustodyError, VAULT_DEK_BYTES, vaultNames, type CustodianCreated, type CustodianProbe, type CustodyFailureKind, type VaultCustody } from '../vaultTypes'
 import { BAD_ITEM_REASON, BAD_VAULT_ID_REASON, EXISTS_REASON, KEY_FILE_HINT, sameKey, wrongPlatform, type HelperCustodianOptions, type RemovableKeyCustodian } from './common'
 import { custodianEnvFor } from './env'
 import { decodeKeyBase64, defaultSpawner, isVaultId, runHelper, stdoutText, type HelperResult } from './run'
@@ -100,8 +100,8 @@ export function securityInteractiveArg(v: string): string {
 }
 
 /** The stdin line of the create step (contains the key: never log it). */
-export function addGenericPasswordLine(vaultId: string, keyB64: string): string {
-  return `add-generic-password -s ${securityInteractiveArg(KEYCHAIN_SERVICE)} -a ${securityInteractiveArg(vaultId)} -w ${securityInteractiveArg(keyB64)}\n`
+export function addGenericPasswordLine(vaultId: string, keyB64: string, service: string = vaultNames().keychainService): string {
+  return `add-generic-password -s ${securityInteractiveArg(service)} -a ${securityInteractiveArg(vaultId)} -w ${securityInteractiveArg(keyB64)}\n`
 }
 
 export class KeychainCustodian implements RemovableKeyCustodian {
@@ -109,9 +109,11 @@ export class KeychainCustodian implements RemovableKeyCustodian {
   private readonly env: Record<string, string>
   private readonly platform: NodeJS.Platform
   private readonly opts: HelperCustodianOptions
+  private readonly service: string
 
   constructor(opts: HelperCustodianOptions = {}) {
     this.opts = opts
+    this.service = vaultNames(opts.product).keychainService
     this.platform = opts.platform ?? process.platform
     this.env = custodianEnvFor('keychain', opts.env ?? process.env, this.platform)
   }
@@ -147,12 +149,12 @@ export class KeychainCustodian implements RemovableKeyCustodian {
     if (this.platform !== 'darwin') throw wrongPlatform('the macOS keychain', this.platform, 'create')
     if (!isVaultId(vaultId)) throw new CustodyError('denied', BAD_VAULT_ID_REASON)
     // Refuse when an item exists (no -w: the attributes only, never the value).
-    const found = classifyKeychain(await this.run(['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', vaultId]))
+    const found = classifyKeychain(await this.run(['find-generic-password', '-s', this.service, '-a', vaultId]))
     if (!found) throw new CustodyError('denied', EXISTS_REASON)
     if (found.kind !== 'missing') throw new CustodyError(found.kind === 'exists' ? 'denied' : found.kind, found.reason)
 
     const dek = randomBytes(VAULT_DEK_BYTES)
-    const added = classifyKeychain(await this.run(['-i', '-q'], addGenericPasswordLine(vaultId, dek.toString('base64'))))
+    const added = classifyKeychain(await this.run(['-i', '-q'], addGenericPasswordLine(vaultId, dek.toString('base64'), this.service)))
     if (added) {
       dek.fill(0)
       throw new CustodyError(added.kind === 'exists' ? 'denied' : added.kind === 'missing' ? 'unavailable' : added.kind, added.reason)
@@ -195,7 +197,7 @@ export class KeychainCustodian implements RemovableKeyCustodian {
   }
 
   private async read(vaultId: string): Promise<Buffer> {
-    const r = await this.run(['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', vaultId, '-w'])
+    const r = await this.run(['find-generic-password', '-s', this.service, '-a', vaultId, '-w'])
     const c = classifyKeychain(r)
     if (c) {
       r.stdout.fill(0)
@@ -213,7 +215,7 @@ export class KeychainCustodian implements RemovableKeyCustodian {
     void custody
     if (this.platform !== 'darwin') throw wrongPlatform('the macOS keychain', this.platform, 'open')
     if (!isVaultId(vaultId)) throw new CustodyError('denied', BAD_VAULT_ID_REASON)
-    const c = classifyKeychain(await this.run(['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', vaultId]))
+    const c = classifyKeychain(await this.run(['delete-generic-password', '-s', this.service, '-a', vaultId]))
     if (c && c.kind !== 'missing') throw new CustodyError(c.kind === 'exists' ? 'denied' : c.kind, c.reason)
   }
 }

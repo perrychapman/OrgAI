@@ -37,7 +37,7 @@ import {
   type FaultMode,
   type FsBoundary
 } from './vaultTesting'
-import { VAULT_MESSAGES, type VaultFile } from './vaultTypes'
+import { CLI_VAULT_MESSAGES, VAULT_MESSAGES, type VaultFile } from './vaultTypes'
 
 let root: string
 let dataDir: string
@@ -54,9 +54,10 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-const isApp = (k: HostKind): boolean => k === 'desktop' || k === 'headless-host'
+const isApp = (k: HostKind): boolean => k === 'desktop'
 function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Promise<SecretStore> {
   return openSecretStore({
+    product: 'desktop',
     dataDir,
     userDataDir: root,
     hostKind: kind,
@@ -70,7 +71,7 @@ function host(kind: HostKind, extra: Partial<OpenSecretStoreOptions> = {}): Prom
   })
 }
 const app = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('desktop', extra)
-const node = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('node', extra)
+const node = (extra?: Partial<OpenSecretStoreOptions>): Promise<SecretStore> => host('inproc', extra)
 const vaultJson = (): VaultFile => JSON.parse(readFileSync(join(dataDir, 'vault.json'), 'utf8')) as VaultFile
 
 /** The key item the fake keychain holds for the vault on disk opens that vault's check record (never a zero key). */
@@ -217,7 +218,7 @@ describe('review round 2, major: an explicit clear reports a failed save (5.5 Du
     older().set('k', 'v')
     await app()
     custody.fail(locked)
-    for (const kind of ['desktop', 'node'] as const) {
+    for (const kind of ['desktop', 'inproc'] as const) {
       const f = faultFs()
       const s = await host(kind, { fs: f.fs })
       expect(s.state()).toBe('locked')
@@ -309,6 +310,18 @@ describe('review round 2, major: an explicit clear reports a failed save (5.5 Du
       }
     }
     expect(runs).toBeGreaterThan(6)
+  })
+
+  it('an indeterminate save in the orgai command says how to check (the CLI wording), the app does not', async () => {
+    const f = faultFs()
+    const s = await app({ fs: f.fs, product: 'cli' })
+    f.arm()
+    s.set('k', 'x')
+    const at = boundaryIndex(f.events, { op: 'rename' }, 2)
+    f.arm(at, 'fail-from')
+    expect(() => s.set('k', 'y')).toThrow(CLI_VAULT_MESSAGES.notDurable)
+    expect(CLI_VAULT_MESSAGES.notDurable).toContain('orgai secrets status')
+    expect(VAULT_MESSAGES.notDurable).not.toContain('orgai secrets status')
   })
 
   it('a clear while a failed save is not reconciled yet refuses with the recovery message; a removal does not throw', async () => {
@@ -426,7 +439,7 @@ describe('review round 2, minor: a read I/O error is not damage', () => {
     expect((await node()).get('k')).toBe('rotated-elsewhere')
   })
 
-  it.each(['desktop', 'node'] as const)(
+  it.each(['desktop', 'inproc'] as const)(
     'a %s host whose secrets.json cannot be read: the vault reads, values and clears wait, nothing is confirmed; then it catches up',
     async (kind) => {
       older().set('k', 'old')

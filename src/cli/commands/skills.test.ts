@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HostScope, Project, SkillImportPreview, SkillInfo, SkillLibraryInfo, SkillSpec } from '../../shared/types'
 import { manageDeps } from '../manage'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, rpcError, type FakeContextOptions } from '../testing/fakeContext'
 import { CliError, EXIT, type CliContext } from '../types'
 import { importChoices, loadableByNoRole, roleIdsFor, runSkills, skillsDeps } from './skills'
@@ -15,7 +14,6 @@ const realSkills = { ...skillsDeps }
 afterEach(() => {
   Object.assign(manageDeps, realManage)
   Object.assign(skillsDeps, realSkills)
-  resetSkewWarning()
 })
 
 const P: Project = project('p1', '/work', {

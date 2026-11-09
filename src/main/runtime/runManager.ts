@@ -121,7 +121,7 @@ import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { effectiveRunProject, execBudgetUsd, projectBudgetUsd } from './runOverrides'
+import { effectiveRunProject, execBudgetUsd, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
 import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
 import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
@@ -665,6 +665,11 @@ export interface RunManagerOptions {
    * policy waits humanGraceMs before auto-resolving a card while this is above 0. Missing = 0.
    */
   interactiveClients?: () => number
+  /**
+   * The orgai command's own host (hostKind 'inproc'): nothing but that process can answer a card, so a `wait` decision
+   * policy is turned into `fail` when a run starts, whichever path brought it (cli-standalone-default.md 4.3).
+   */
+  noWaitPolicy?: boolean
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
   /**
@@ -1374,7 +1379,8 @@ export class RunManager {
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
     let continuationBudget = conversationBudgetUsd !== undefined ? projectBudgetUsd(project) : undefined
     // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
-    const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    let overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    if (overrides && this.options.noWaitPolicy) overrides = withoutWaitPolicy(overrides)
     if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
     if (team === 'single') {
       if (kind !== 'work') throw new Error('Only a work run can use the single assistant.')
@@ -3292,7 +3298,7 @@ export class RunManager {
   }
 
   /**
-   * Wave 7 (cli-standalone.md 4.4 step 4): what a `host.stop({ handoff: true })` waits for, stricter than
+   * The run counts host.status reports (the TUI's quit confirm), stricter than
    * busyRunCount: every live run in any form counts (working or ending, waiting on the user, held), every paused run
    * with an auto-resume pending (armed or firing), and every open card. terminalSessions is the socket server's; the
    * caller fills it.

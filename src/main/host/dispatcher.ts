@@ -234,6 +234,7 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'unknown_channel',
   'desktop_unavailable',
   'agent_descendant_refused',
+  'not_owner',
   'stale_target_digest',
   'stale_revision',
   'scope_denied',
@@ -796,9 +797,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   handle(HOST_METHODS.hostStop, (ctx, input?: unknown) => {
     if (!host) throw new HostRpcFailure('desktop_unavailable', 'This host cannot be stopped over RPC.')
-    const i = input && typeof input === 'object' && !Array.isArray(input) ? (input as { force?: unknown; handoff?: unknown }) : {}
-    // handoff (Wave 7, cli-standalone.md 4.4): passed through; the stricter predicate is WP-F's (activity.ts).
-    const stopping = host.stop({ force: i.force === true, ...(i.handoff === true ? { handoff: true } : {}) })
+    const i = input && typeof input === 'object' && !Array.isArray(input) ? (input as { force?: unknown }) : {}
+    const stopping = host.stop({ force: i.force === true })
     // Over the socket, answer as soon as the drain has started: the drain ends by closing the socket server (inproc)
     // or quitting the app, so a reply sent only after it would never reach the client (it waits for daemon.json to
     // go instead). A refusal is answered as before; in-process callers still get the answer once the drain is done.

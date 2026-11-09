@@ -2,11 +2,18 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { FakeHostClient, fakeContext } from '../testing/fakeContext'
+import { fakeContext } from '../testing/fakeContext'
 import { EXIT } from '../types'
-import { renderCliShim } from '../../main/host/packagedLayout'
-import { DAEMON_JSON_MAX_BYTES, LAUNCHER_ABSENT_DETAIL, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
+import { DAEMON_JSON_MAX_BYTES, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
 import { runtimeCheckProbes } from '../doctor/runtimeChecks'
+
+/** An old OrgAI app shim, written out here (the app no longer renders one). */
+function renderCliShim(input: { platform: string; launcher: string; env?: Record<string, string> }): string {
+  const note = 'orgai-shim v1: written by OrgAI (App settings > General > Advanced settings > Terminal). OrgAI updates or removes this file.'
+  return input.platform === 'win32'
+    ? ['@echo off', `rem ${note}`, 'setlocal', `"${input.launcher}" %*`, ''].join('\r\n')
+    : `#!/bin/sh\n# ${note}\nexec '${input.launcher}' "$@"\n`
+}
 
 const realProbes = { ...doctorProbes }
 const realRuntimeProbes = { ...runtimeCheckProbes }
@@ -37,57 +44,49 @@ function liveDataDir(): string {
 }
 
 describe('orgai doctor', () => {
-  it('all ok with a live host: exit 0, JSON checks, no secrets', async () => {
+  it('all ok: exit 0, JSON checks, never a host connection', async () => {
     const data = liveDataDir()
-    const h = new FakeHostClient({
-      'auth:status': () => ({ loggedIn: true, mode: 'subscription', method: 'claude.ai' }),
-      'connections:list': () => [{ connection: { id: 'anthropic', enabled: true, tierModels: {}, auth: { mode: 'apiKey', apiKey: 'sk-secret' } }, status: { state: 'connected' }, modelCount: 3, isDefault: true }],
-      // Wave 7 (secretsChecks): the host's vault report, probe included.
-      'secrets:status': () => ({ state: 'open', scheme: 'keychain', probe: { ok: true }, counts: { vault: 2, legacy: 2, unreadable: 0, overlay: 0 }, pendingLegacy: 0, softDeletes: [], orphanedKeys: 0, orphanedVaults: [], legacyFile: 'ok', canWriteBack: false })
-    })
     // The run-dir check looks at POSIX mode bits unless the context platform is win32, so use the real platform here.
-    const f = fakeContext({ paths: { userDataDir: dir, dataDir: data }, platform: process.platform, connect: [h], globals: { outputFormat: 'json' }, env: { ORGAI_MOCK: '1' } })
+    const f = fakeContext({ paths: { userDataDir: dir, dataDir: data }, platform: process.platform, globals: { outputFormat: 'json' }, env: { ORGAI_MOCK: '1' } })
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
-    const j =JSON.parse(f.out())
+    const j = JSON.parse(f.out())
     expect(j.ok).toBe(true)
     const ids = j.checks.map((c: { id: string }) => c.id)
-    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'install-channel', 'orgai-on-path', 'node-certs', 'claude-runtime', 'codex-runtime', 'vault', 'vault-key-store', 'legacy-secrets', 'auth', 'connections'])
+    expect(ids).toEqual(['node', 'install', 'data-dir', 'product', 'run-dir', 'daemon-json', 'shim', 'git', 'mock', 'install-channel', 'orgai-on-path', 'node-certs', 'claude-runtime', 'codex-runtime', 'vault', 'vault-custody', 'legacy-secrets'])
     expect(j.checks.every((c: { status: string }) => c.status !== 'fail')).toBe(true)
-    expect(j.checks.find((c: { id: string }) => c.id === 'connections').detail).toBe('Anthropic connected (default)')
-    expect(f.out()).not.toContain('sk-secret')
+    expect(j.checks.find((c: { id: string }) => c.id === 'daemon-json').detail).toMatch(/^Another orgai is running \(pid \d+/)
+    expect(f.connectCalls).toHaveLength(0)
+    expect(f.inprocCalls).toHaveLength(0)
   })
 
   it('a failing check is exit 1 (old Node, run/ open to others)', async () => {
     const data = liveDataDir()
     doctorProbes.nodeVersion = () => '20.1.0'
     if (process.platform !== 'win32') chmodSync(join(data, 'run'), 0o755)
-    const f = fakeContext({ paths: { userDataDir: dir, dataDir: data }, connect: [{ ok: false, reason: 'disabled', message: 'Terminal access is off.' }] })
+    const f = fakeContext({ paths: { userDataDir: dir, dataDir: data }, })
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.failure)
     const out = f.out()
     expect(out).toMatch(/^fail {2}node/m)
     if (process.platform !== 'win32') expect(out).toMatch(/^fail {2}run-dir .*mode 755/m)
-    expect(out).toMatch(/^warn {2}terminal-access +Terminal access is off\./m)
     expect(out).toContain('Some checks failed.')
   })
 
-  it('no host is not a failure', async () => {
+  it('no other orgai is not a failure', async () => {
     const f = fakeContext({ paths: { userDataDir: dir, dataDir: join(dir, 'data') } })
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
-    expect(f.out()).toMatch(/^ok {4}socket +Skipped: no host is running/m)
+    expect(f.out()).toMatch(/^ok {4}daemon-json +No other orgai is running/m)
     expect(f.connectCalls).toHaveLength(0)
   })
 
-  it('launcher (Wave 7, 4.1 step 3): found is ok, no app is ok (in-process fallback), a broken install fails naming its path', async () => {
+  it('the product marker is reported: absent is ok, a desktop marker fails', async () => {
     const paths = { userDataDir: dir, dataDir: join(dir, 'data') }
-    const found = fakeContext({ paths, launcher: { locate: () => ({ status: 'found', command: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', args: [], source: 'installed' }) } })
-    expect(await runDoctor(found.ctx, [])).toBe(EXIT.ok)
-    expect(found.out()).toMatch(/^ok {4}launcher +\/Applications\/OrgAI\.app\/Contents\/MacOS\/OrgAI \(installed\)/m)
-    const absent = fakeContext({ paths, launcher: { locate: () => ({ status: 'absent', message: 'OrgAI app not found' }) } })
-    expect(await runDoctor(absent.ctx, [])).toBe(EXIT.ok)
-    expect(absent.out()).toContain(LAUNCHER_ABSENT_DETAIL)
-    const broken = fakeContext({ paths, launcher: { locate: () => ({ status: 'broken', path: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', message: 'The OrgAI app at /Applications/OrgAI.app is incomplete' }) } })
-    expect(await runDoctor(broken.ctx, [])).toBe(EXIT.failure)
-    expect(broken.out()).toMatch(/^fail {2}launcher +The OrgAI app at \/Applications\/OrgAI\.app is incomplete/m)
+    const fresh = fakeContext({ paths })
+    expect(await runDoctor(fresh.ctx, [])).toBe(EXIT.ok)
+    expect(fresh.out()).toMatch(/^ok {4}product +.* has no product marker yet/m)
+    writeFileSync(join(dir, 'product.json'), JSON.stringify({ product: 'orgai-desktop', version: 1 }))
+    const desktop = fakeContext({ paths })
+    expect(await runDoctor(desktop.ctx, [])).toBe(EXIT.failure)
+    expect(desktop.out()).toMatch(/^fail {2}product +.* is marked orgai-desktop/m)
   })
 
   it('never reads an oversized or odd daemon.json whole (review Low)', async () => {
@@ -136,19 +135,14 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
   const shimText = (launcher: string): string => renderCliShim({ platform: 'darwin', launcher })
   const pathEnv = (): NodeJS.ProcessEnv => ({ PATH: `/usr/bin:${join(HOME(), '.local', 'bin')}` })
 
-  it('install: packaged, dev checkout, standalone bundle and a transient copy', () => {
+  it('install: dev checkout and standalone bundle', () => {
     packaged()
-    expect(installCheck('darwin', {})).toEqual({ id: 'install', status: 'ok', detail: `Packaged OrgAI at ${RES} (Electron 45.1.0, Node 24.22.1)` })
-    doctorProbes.bundleDir = () => '/Volumes/OrgAI/OrgAI.app/Contents/Resources/app.asar.unpacked/out/cli'
-    const transient = installCheck('darwin', {})
-    expect(transient.status).toBe('warn')
-    expect(transient.detail).toContain('Move OrgAI to your Applications folder first')
     doctorProbes.bundleDir = realProbes.bundleDir
-    const dev = installCheck('darwin', {})
+    const dev = installCheck()
     expect(dev.status).toBe('ok')
     expect(dev.detail).toMatch(/^Development checkout /)
     doctorProbes.bundleDir = () => join(HOME(), 'somewhere', 'cli')
-    expect(installCheck('linux', {})).toEqual({ id: 'install', status: 'ok', detail: `Standalone bundle ${join(HOME(), 'somewhere', 'cli')}` })
+    expect(installCheck()).toEqual({ id: 'install', status: 'ok', detail: `Standalone bundle ${join(HOME(), 'somewhere', 'cli')}` })
   })
 
   it('the node check passes on Electron 45 Node 24', async () => {
@@ -159,9 +153,9 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     expect(checks.find((c) => c.id === 'node')).toEqual({ id: 'node', status: 'ok', detail: 'Node 24.22.1' })
   })
 
-  it('shim: missing is ok and names where to install it', () => {
+  it('shim: missing is ok (no old app command)', () => {
     packaged()
-    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: 'The orgai command is not installed (App settings > General > Advanced settings > Terminal)' })
+    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: 'No old app command found (nothing to remove)' })
   })
 
   it('shim: a foreign file warns and names the path', () => {
@@ -176,62 +170,63 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
   it("shim: this install's launcher on PATH is ok", () => {
     packaged()
     files.set(SHIM(), shimText(LAUNCHER))
-    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} runs this OrgAI (${LAUNCHER})` })
+    {
+      const c = shimCheck('darwin', pathEnv())
+      expect(c.status).toBe('warn')
+      expect(c.detail).toContain('old OrgAI app command')
+    }
   })
 
-  it('shim: another install or a missing launcher warns with Open OrgAI to update it', () => {
+  it('shim: an old shim whose launcher is gone warns, one that exists is just reported', () => {
     packaged()
     const other = '/Users/me/Downloads/OrgAI.app/Contents/Resources/bin/orgai'
     files.set(other, '')
     files.set(SHIM(), shimText(other))
     const c = shimCheck('darwin', pathEnv())
     expect(c.status).toBe('warn')
-    expect(c.detail).toContain('runs another OrgAI')
-    // OrgAI's launch refresh leaves a shim for another install that is still on disk alone.
-    expect(c.detail).toContain('Install the orgai command again from App settings')
+    expect(c.detail).toContain('old OrgAI app command')
     files.set(SHIM(), shimText('/gone/OrgAI.app/Contents/Resources/bin/orgai'))
     const gone = shimCheck('darwin', pathEnv())
     expect(gone.status).toBe('warn')
     expect(gone.detail).toContain('is gone')
-    expect(gone.detail).toContain('Open OrgAI to update it')
+    expect(gone.detail).toContain('npm i -g orgai-cli')
   })
 
   it("shim: a symlink to this install's launcher is ok, to another one warns (review L)", () => {
     packaged()
-    const launcherText = readFileSync(join(process.cwd(), 'build', 'bin', 'orgai'), 'utf8')
-    expect(launcherText).toContain(PACKAGED_LAUNCHER_MARK)
+    // An old packaged launcher (the app no longer ships one) carries the mark on a line of its own.
+    const launcherText = `#!/bin/sh\n# ${PACKAGED_LAUNCHER_MARK} (cli-spec 7, Wave 6).\n`
     files.set(SHIM(), launcherText)
     doctorProbes.realpath = (p) => (p === SHIM() ? LAUNCHER : p)
-    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} (a link) runs this OrgAI (${LAUNCHER})` })
+    expect(shimCheck('darwin', pathEnv())).toMatchObject({ status: 'warn', detail: expect.stringContaining('(a link) is the old OrgAI app command') })
     const other = '/Users/me/Apps/OrgAI.app/Contents/Resources/bin/orgai'
     files.set(other, launcherText)
     doctorProbes.realpath = (p) => (p === SHIM() ? other : p)
-    const c = shimCheck('darwin', pathEnv())
-    expect(c.status).toBe('warn')
-    expect(c.detail).toContain('runs another OrgAI')
-    expect(c.detail).toContain('Point the link at this OrgAI')
+    expect(shimCheck('darwin', pathEnv()).status).toBe('warn')
     // A link to some other program is still foreign.
     files.set(SHIM(), '#!/bin/sh\nexec /opt/x "$@"\n')
     doctorProbes.realpath = (p) => (p === SHIM() ? '/opt/x/orgai' : p)
     expect(shimCheck('darwin', pathEnv()).detail).toContain('not an OrgAI shim')
   })
 
-  it('shim: a folder that is not on PATH warns with the export hint (never edits a profile)', () => {
+  it('shim: a live shim warns, suggests removal and npm, and never advises adding it to PATH', () => {
     packaged()
     files.set(SHIM(), shimText(LAUNCHER))
-    const c = shimCheck('darwin', { PATH: '/usr/bin:/bin' })
-    expect(c.status).toBe('warn')
-    expect(c.detail).toContain(`export PATH="${join(HOME(), '.local', 'bin')}:$PATH"`)
-    // A trailing slash on the PATH entry still counts.
-    expect(shimCheck('darwin', { PATH: `${join(HOME(), '.local', 'bin')}/` }).status).toBe('ok')
+    for (const env of [{ PATH: '/usr/bin:/bin' }, { PATH: `${join(HOME(), '.local', 'bin')}/` }]) {
+      const c = shimCheck('darwin', env)
+      expect(c.status).toBe('warn')
+      expect(c.detail).toContain('remove it')
+      expect(c.detail).toContain('npm i -g orgai-cli')
+      expect(c.detail).not.toContain('export PATH')
+    }
   })
 
   it('doctor lists the shim check and never writes the shim', async () => {
     packaged()
     const f = fakeContext({ paths: { userDataDir: dir, dataDir: join(dir, 'data') }, platform: 'darwin', env: { PATH: '/usr/bin' } })
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
-    expect(f.out()).toMatch(/^ok {4}install +Packaged OrgAI at /m)
-    expect(f.out()).toMatch(/^ok {4}shim +The orgai command is not installed/m)
+    expect(f.out()).toMatch(/^ok {4}install /m)
+    expect(f.out()).toMatch(/^ok {4}shim +No old app command found/m)
     expect(files.size).toBe(0)
   })
 })

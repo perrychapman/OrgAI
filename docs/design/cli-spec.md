@@ -1,5 +1,16 @@
 # OrgAI CLI & Local Daemon (`orgai`): Design and Architecture Specification
 
+> **Superseded in part (2026-11-08, `docs/design/cli-standalone-default.md`):** the desktop app and the `orgai` CLI share
+> nothing. The app has no socket, no `--headless-host` mode, no handoff and no Terminal access setting; the packaged app
+> does not contain the CLI; `orgai` runs in-process on its own data folder. The CLI's data folder is `orgai-cli`
+> (override `--data-dir` / `ORGAI_CLI_DATA_DIR`; `ORGAI_DATA_DIR` is ignored) and its vault custody is `OrgAI CLI Vault` /
+> `ORGAI_CLI_VAULT_*` (cli-standalone-default.md 3.1 and 3.2), which replaces the shared vault design and any
+> `ORGAI_DATA_DIR` / `ORGAI_VAULT_*` / "OrgAI Vault" text below. Removed commands and flags (cli-standalone-default.md 4.1, 4.3): `--host`,
+> `daemon`, `app`, `terminal-access`, `watch`, `inbox`, `decide`, `attach`, `runs send|interrupt|stop` and the `wait`
+> decision policies. See cli-standalone-default.md 4.3 for the current command table; use the sections below for the
+> shared host code only. Anything about the app serving terminals, a background host, the handoff or Terminal access
+> is history, and `HostKind 'headless-host'` survives only as a legacy value read as `desktop` (cli-standalone-default.md section 13).
+
 Status: **Revision 4 (Final Sign-Off)** — Refined after three rounds of architectural, security, and codebase reviews by **GPT Astra (`gpt-6-astra`)** and **Claude Opus (`claude-opus-4-6`)**.
 Related: `.orgai/ARCHITECTURE.md`, `CLAUDE.md`, `docs/design/spec.md`, `docs/design/providers-and-mcp.md`, `docs/design/quick-runs.md`, `docs/design/knowledge.md`.
 
@@ -1024,8 +1035,8 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   removes and refreshes the PATH shim (`~/.local/bin/orgai`, `%LOCALAPPDATA%\OrgAI\bin\orgai.cmd`), only from a
   packaged app without ORGAI_DATA_DIR, never over a file without the `orgai-shim v1` marker, a symlink or a non-regular
   file. An install never turns Terminal access on by itself (review H2): the row asks ("Turn on Terminal access?") and
-  names the same-user trust model. App settings > General > Advanced settings > Terminal has the
-  `CliShimRow` (`lib/cliShim.ts`). The preload is CommonJS (`out/preload/index.cjs`) and every window runs with
+  names the same-user trust model (SUPERSEDED: no Terminal access setting remains). App settings > General > Advanced settings > Terminal has the
+  `CliShimRow` (`lib/cliShim.ts`; SUPERSEDED, replaced by `CliCommandRow`, standalone default spec 5.3). The preload is CommonJS (`out/preload/index.cjs`) and every window runs with
   `sandbox: true` (7(1)). `orgai doctor` gained the install and shim checks; the launcher finds a packaged app.
   `npm run pack` builds the CLI bundle too; `npm run pack:verify` (`scripts/verify-pack.mjs`) checks a local unpacked
   pack token-free: (a) files, (b) unpacked imports, (c) `--version`, (d) doctor, (e) a mock exec on `--host inproc`,
@@ -1206,7 +1217,7 @@ Each item is unit-tested on macOS unless it says otherwise; nothing here was run
   bodies live in `src/shared/view`; reexports.test.ts compares export names and values of every stub.
 - **Lows.** Conservative question policy never follows an agent's "(Recommended)" option; `execStallTimeoutMs` <= 0 is
   dropped on read; 'policy' / 'budget' endings read Stopped; kit `targetDigest` covers secret and sign-in presence;
-  CliShimRow live region, announced load failure and aria-describedby hint; `build/bin/orgai` stops after 40 link
+  CliShimRow (since removed) live region, announced load failure and aria-describedby hint; `build/bin/orgai` stops after 40 link
   hops and `.gitattributes` pins LF / CRLF; doctor caps daemon.json at 64 KB; the rest are in group B above.
 - **Owner decisions kept.** The RunAsNode fuse stays on; no PATH shim on Linux (AppImage).
 

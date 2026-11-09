@@ -25,7 +25,7 @@
  * bypasses transcription in every host configuration.
  */
 import { windowsPowerShellPath } from '../../host/systemBinaries'
-import { CustodyError, VAULT_DEK_BYTES, dpapiEntropy, type CustodianCreated, type CustodianProbe, type CustodyFailureKind, type VaultCustody } from '../vaultTypes'
+import { CustodyError, VAULT_DEK_BYTES, dpapiEntropy, type VaultProduct, type CustodianCreated, type CustodianProbe, type CustodyFailureKind, type VaultCustody } from '../vaultTypes'
 import { BAD_VAULT_ID_REASON, KEY_FILE_HINT, wrongPlatform, type HelperCustodianOptions, type RemovableKeyCustodian } from './common'
 import { custodianEnvFor } from './env'
 import { decodeKeyBase64, defaultSpawner, isStrictBase64, isVaultId, runHelper, stdoutText, type HelperResult } from './run'
@@ -55,7 +55,7 @@ export function dpapiProbeScript(): string {
 /** Writes one marker line straight to stdout (not Write-Output: a transcript never sees it). */
 const OUT = (expr: string): string => `[Console]::Out.Write(${expr} + [char]13 + [char]10); [Console]::Out.Flush()`
 
-const ENTROPY = (vaultId: string): string => `$e=[Text.Encoding]::UTF8.GetBytes(${psLiteral(dpapiEntropy(vaultId))}); `
+const ENTROPY = (vaultId: string, product?: VaultProduct): string => `$e=[Text.Encoding]::UTF8.GetBytes(${psLiteral(dpapiEntropy(vaultId, product))}); `
 const SCOPE = '[Security.Cryptography.DataProtectionScope]::CurrentUser'
 const CATCH = `catch [Security.Cryptography.CryptographicException] { ${OUT("'ERR:crypto'")} } catch { ${OUT("'ERR:other'")} }\r\n`
 
@@ -63,10 +63,10 @@ const CATCH = `catch [Security.Cryptography.CryptographicException] { ${OUT("'ER
  * The create script: PowerShell draws the key, protects it and writes `OK:<blob b64>:<key b64>`. It holds no key; the
  * only value in it is the vault id (inside the entropy).
  */
-export function dpapiProtectScript(vaultId: string): string {
+export function dpapiProtectScript(vaultId: string, product?: VaultProduct): string {
   return (
     PRELUDE +
-    `try { ${ENTROPY(vaultId)}$k=New-Object byte[] ${VAULT_DEK_BYTES}; $g=[Security.Cryptography.RandomNumberGenerator]::Create(); $g.GetBytes($k); $g.Dispose(); ` +
+    `try { ${ENTROPY(vaultId, product)}$k=New-Object byte[] ${VAULT_DEK_BYTES}; $g=[Security.Cryptography.RandomNumberGenerator]::Create(); $g.GetBytes($k); $g.Dispose(); ` +
     `$r=[Security.Cryptography.ProtectedData]::Protect($k,$e,${SCOPE}); ` +
     `${OUT("'OK:' + [Convert]::ToBase64String($r) + ':' + [Convert]::ToBase64String($k)")}; [Array]::Clear($k,0,$k.Length) } ` +
     CATCH
@@ -74,10 +74,10 @@ export function dpapiProtectScript(vaultId: string): string {
 }
 
 /** The open script: only the protected blob (checked strict base64 first) and the entropy are in it. */
-export function dpapiUnprotectScript(wrapped: string, vaultId: string): string {
+export function dpapiUnprotectScript(wrapped: string, vaultId: string, product?: VaultProduct): string {
   return (
     PRELUDE +
-    `try { $d=[Convert]::FromBase64String(${psLiteral(wrapped)}); ${ENTROPY(vaultId)}` +
+    `try { $d=[Convert]::FromBase64String(${psLiteral(wrapped)}); ${ENTROPY(vaultId, product)}` +
     `$r=[Security.Cryptography.ProtectedData]::Unprotect($d,$e,${SCOPE}); ` +
     `${OUT("'OK:' + [Convert]::ToBase64String($r)")}; [Array]::Clear($r,0,$r.Length) } ` +
     CATCH
@@ -156,7 +156,7 @@ export class DpapiCustodian implements RemovableKeyCustodian {
     if (this.platform !== 'win32') throw wrongPlatform('Windows data protection', this.platform, 'create')
     if (!isVaultId(vaultId)) throw new CustodyError('denied', BAD_VAULT_ID_REASON)
     // Nothing is stored in the OS, so no item can already exist: the blob lives only in the new vault.json.
-    const r = await this.run(dpapiProtectScript(vaultId))
+    const r = await this.run(dpapiProtectScript(vaultId, this.opts.product))
     const p = parseDpapiResult(r, 'protect')
     r.stdout.fill(0)
     if (!p.ok) throw new CustodyError(p.kind, p.reason)
@@ -175,7 +175,7 @@ export class DpapiCustodian implements RemovableKeyCustodian {
     const wrapped = custody.wrapped
     // vault.json is a file on disk: the blob is checked before it goes into a script.
     if (typeof wrapped !== 'string' || !isStrictBase64(wrapped)) throw new CustodyError('missing', "The vault does not record a protected key for Windows data protection.")
-    const r = await this.run(dpapiUnprotectScript(wrapped, vaultId))
+    const r = await this.run(dpapiUnprotectScript(wrapped, vaultId, this.opts.product))
     const p = parseDpapiResult(r, 'unprotect')
     r.stdout.fill(0)
     if (!p.ok) throw new CustodyError(p.kind, p.reason)

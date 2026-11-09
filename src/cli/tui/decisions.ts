@@ -2,7 +2,7 @@
  * Decision tray actions to the exact cli-spec 5.3 payloads (W4-T2), plus the card text the tray and the inline
  * scrollback show. Pure: no React, no I/O.
  *
- * The payloads match src/shared/types.ts and `orgai decide`'s buildDecision (src/cli/commands/decide.ts), which is the
+ * The payloads match src/shared/types.ts (the removed `orgai decide` built the same ones), which is the
  * code truth where the spec table differs: a proposal revise sends `feedback`, a rules deny sends `message`. Every
  * payload carries `expectedRevision: card.ref.revision`, so a card that changed after the user read it is refused by
  * the host as 'stale-revision'.
@@ -170,7 +170,7 @@ export function confirmQuestion(card: TrayCard, b: TrayBinding): string {
     case 'save-project':
       return 'Install this MCP server and save it to the project?'
     case 'save-library':
-      return 'Install this MCP server and save it to the app-wide library?'
+      return 'Install this MCP server and save it to the global library?'
     default:
       return `${b.label} (${cardTitle(card)})?`
   }

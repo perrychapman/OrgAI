@@ -1,13 +1,13 @@
 /**
- * Integration: `orgai mcp` against a real in-process mock host over its real socket (cli-spec 6.3, Wave 5). The host
- * gets a fake key custodian and an open vault (Wave 7: a `--host inproc` host stores secrets in vault.json once a
+ * Integration: `orgai mcp` against a real in-process mock host (one per command) (cli-spec 6.3, Wave 5). The host
+ * gets a fake key custodian and an open vault (Wave 7: an orgai host stores secrets in vault.json once a
  * custodian works), so set-secret and the mock OAuth sign-in can be checked end to end. No tokens, no network.
  */
+import { writeProductMarker } from '../../main/store/productMarker'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { allowFullTerminalAccess } from '../testing/terminalAccess'
 import type { Project } from '../../shared/types'
 import type { CliIo } from '../types'
 
@@ -27,17 +27,13 @@ vi.mock('../../main/store/secrets', async (importOriginal) => {
   }
 })
 
-const { startInprocHost } = await import('../inprocHost')
-const { connectHost } = await import('../client/hostClient')
+const { withSeedHost } = await import('../testing/seedHost')
 const { main } = await import('../index')
-const { CLI_VERSION } = await import('../version')
 const { MOCK_AUTHORIZE_URL } = await import('../../main/mcp/service')
 
 describe('orgai mcp against a real inproc host', () => {
   let userDataDir: string
-  let dataDir: string
   let projectDir: string
-  let host: Awaited<ReturnType<typeof startInprocHost>>
   let project: Project
   const saved = process.env.ORGAI_MOCK
 
@@ -63,20 +59,14 @@ describe('orgai mcp against a real inproc host', () => {
   beforeAll(async () => {
     process.env.ORGAI_MOCK = '1'
     userDataDir = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-mcp-int-')))
-    dataDir = join(userDataDir, 'data')
     projectDir = join(userDataDir, 'project')
     mkdirSync(projectDir)
-    // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
-    allowFullTerminalAccess(join(userDataDir, 'data'))
-    host = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, shared: true })
-    const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
-    if (!res.ok) throw new Error(res.message)
-    project = await res.client.call<Project>('projects:create', [{ name: 'Mcp int', path: projectDir, brief: '', mock: true }])
-    res.client.close()
+    writeProductMarker(userDataDir, 'orgai-cli')
+    // Each cli() call starts its own host on this folder (sharing the fake custodian above); a seed host makes the project.
+    project = await withSeedHost(userDataDir, (client) => client.call<Project>('projects:create', [{ name: 'Mcp int', path: projectDir, brief: '', mock: true }]), { scopes: ['read', 'configure'] })
   }, 60_000)
 
   afterAll(async () => {
-    await host?.stop(true).catch(() => {})
     if (saved === undefined) delete process.env.ORGAI_MOCK
     else process.env.ORGAI_MOCK = saved
     rmSync(userDataDir, { recursive: true, force: true })

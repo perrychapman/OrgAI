@@ -9,11 +9,9 @@
 //   release/BUILD.txt                         version, commit and time of the current build
 //   release/previous/<unpacked>/ + BUILD.txt  the build before it
 //
-// Steps: electron-vite build (main, preload, renderer), vite build -c vite.cli.config.ts (the orgai CLI bundle in
-// out/cli, which electron-builder unpacks from app.asar), out/cli/install.json with channel 'app' (Wave 7,
-// cli-standalone.md 3.5; write-install-info.mjs), then electron-builder --dir --publish never; install.json is removed
-// from out/cli again afterwards, so the checkout's own CLI keeps reading as channel 'dev'. On macOS the
-// children get CSC_IDENTITY_AUTO_DISCOVERY=false unless the caller set it, so a local pack never signs, never
+// Steps: electron-vite build (main, preload, renderer), then electron-builder --dir --publish never. The app ships no
+// orgai CLI (cli-standalone-default.md 5.2: electron-builder.yml excludes out/cli), so no CLI bundle is built and no
+// install.json is written. On macOS the children get CSC_IDENTITY_AUTO_DISCOVERY=false unless the caller set it, so a local pack never signs, never
 // contacts a timestamp server and never notarizes. Check the result with `npm run pack:verify`.
 //
 // Never touches anything outside release/ (and out/, which the builds write). Spawns only node (the local
@@ -24,8 +22,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { unpackedLayout } from './lib/packLayout.mjs'
-import { installInfoFor } from './lib/npmPackage.mjs'
-import { commitOf, withInstallInfoCleanup, writeInstallInfo } from './write-install-info.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -35,8 +31,6 @@ export { unpackedLayout }
 export function buildSteps() {
   return [
     ['electron-vite', 'electron-vite', ['build']],
-    // The orgai CLI bundle (out/cli); `npm run build` runs the same step.
-    ['vite', 'vite', ['build', '-c', 'vite.cli.config.ts']],
     ['electron-builder', 'electron-builder', ['--dir', '--publish', 'never']]
   ]
 }
@@ -181,11 +175,10 @@ function rotate(p, { dryRun, log, root }) {
 }
 
 /**
- * `options.platform` / `options.env` are for tests (default: this process); `options.exec` replaces execFileSync;
- * `options.signalTarget` replaces `process` for the signal listeners.
+ * `options.platform` / `options.env` are for tests (default: this process); `options.exec` replaces execFileSync.
  */
 export function main(argv = process.argv.slice(2), root = ROOT, log = console.log, options = {}) {
-  const { platform = process.platform, env = process.env, exec = execFileSync, signalTarget = process } = options
+  const { platform = process.platform, env = process.env, exec = execFileSync } = options
   const unknown = argv.filter((a) => a !== '--dry-run')
   if (unknown.length) throw new Error(`Unknown argument(s): ${unknown.join(' ')}. Only --dry-run is supported.`)
   const dryRun = argv.includes('--dry-run')
@@ -201,15 +194,8 @@ export function main(argv = process.argv.slice(2), root = ROOT, log = console.lo
   rotate(p, { dryRun, log, root })
 
   if (child.note) log(`${dryRun ? 'Would set' : 'Setting'} for every step: ${child.note}`)
-  const cliDir = path.join(root, 'out', 'cli')
-  const appInstallInfo = installInfoFor('app', readVersion(root), commitOf(root, env))
-  const runSteps = () => {
+  {
     for (const [pkg, bin, args] of steps) {
-      // The app's bundle says channel 'app' (cli-standalone.md 3.5): written after the CLI build, before electron-builder.
-      if (pkg === 'electron-builder') {
-        if (dryRun) log(`Would write ${rel(path.join(cliDir, 'install.json'))}: ${JSON.stringify(appInstallInfo)} (removed after the pack)`)
-        else writeInstallInfo(cliDir, appInstallInfo)
-      }
       if (dryRun) {
         let shown
         try {
@@ -223,10 +209,6 @@ export function main(argv = process.argv.slice(2), root = ROOT, log = console.lo
       exec(process.execPath, [localBin(root, pkg, bin), ...args], { cwd: root, stdio: 'inherit', windowsHide: true, env: child.env })
     }
   }
-  // The checkout's own out/cli reads as channel 'dev' again afterwards (HostLauncher treats 'app' as a packaged
-  // layout), also after Ctrl+C or a kill during electron-builder (withInstallInfoCleanup).
-  if (dryRun) runSteps()
-  else withInstallInfoCleanup(cliDir, runSteps, signalTarget)
 
   const info = formatBuildInfo({ version: readVersion(root), commit: gitShortSha(root), builtAt: new Date() })
   if (dryRun) {

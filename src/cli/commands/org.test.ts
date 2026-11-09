@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentImportItem, AgentImportPreview, CapabilityRecommendation, HostScope, Project, Role, TeamReview } from '../../shared/types'
 import { manageDeps } from '../manage'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, flush, project, rpcError, summary, record, type Answer } from '../testing/fakeContext'
 import { CliError, EXIT } from '../types'
 import * as interactive from './interactive'
@@ -11,7 +10,6 @@ const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate',
 const realDeps = { ...manageDeps }
 afterEach(() => {
   Object.assign(manageDeps, realDeps)
-  resetSkewWarning()
   vi.restoreAllMocks()
 })
 
@@ -168,7 +166,7 @@ describe('org import', () => {
     )
     expect(await runOrg(f.ctx, ['import', '--mode', 'replace'])).toBe(0)
     expect(asked).toContain('This cannot be undone.')
-    expect(f.out()).toContain('This cannot be undone from the CLI or the Desktop')
+    expect(f.out()).toContain('This cannot be undone from the CLI')
     expect(f.out()).not.toContain('Desktop Team tab')
     const j = setup(
       {
@@ -236,16 +234,12 @@ describe('org retro', () => {
     expect(await exitOf(runOrg(f.ctx, ['retro', 'R1']))).toBe(2)
   })
 
-  it('--no-attach starts setup:retro and prints the tag', async () => {
-    const started = summary('run_retro_1', { projectId: 'p1', kind: 'setup', status: 'running', startedAt: 2000 })
-    const answers = { ...base(), 'setup:retro': () => started, 'runs:list': () => [work, started] }
-    const { f, clients } = setup(answers, { clients: 2 })
+  it('without a terminal (or with --output-format json) it is refused: the run lives only inside this orgai (exit 2), and --no-attach is gone', async () => {
+    const { f } = setup(base())
     const spy = vi.spyOn(interactive, 'runInteractiveRun')
-    expect(await runOrg(f.ctx, ['retro', 'R1', '--no-attach'])).toBe(0)
-    expect(clients[1].callsOf('setup:retro')).toEqual([[{ projectId: 'p1', runId: 'run_work_1' }]])
-    expect(f.out()).toContain('orgai attach R2')
+    expect(await exitOf(runOrg(f.ctx, ['retro', 'R1']))).toBe(2)
+    expect(await exitOf(runOrg(f.ctx, ['retro', 'R1', '--no-attach']))).toBe(2)
     expect(spy).not.toHaveBeenCalled()
-    expect(f.connectCalls[1].scopes).toEqual(['read', 'operate'])
   })
 
   it('with a terminal it hands the run to runInteractiveRun', async () => {

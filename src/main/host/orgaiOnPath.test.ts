@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, win32 } from 'node:path'
@@ -13,7 +14,14 @@ import {
   shadowedNewer,
   type OrgaiPathFs
 } from './orgaiOnPath'
-import { renderCliShim } from './packagedLayout'
+
+/** An old OrgAI app shim, written out here (the app no longer renders one). */
+function renderCliShim(input: { platform: string; launcher: string; env?: Record<string, string> }): string {
+  const note = 'orgai-shim v1: written by OrgAI (App settings > General > Advanced settings > Terminal). OrgAI updates or removes this file.'
+  return input.platform === 'win32'
+    ? ['@echo off', `rem ${note}`, 'setlocal', `"${input.launcher}" %*`, ''].join('\r\n')
+    : `#!/bin/sh\n# ${note}\nexec '${input.launcher}' "$@"\n`
+}
 
 const posixOnly = process.platform === 'win32' ? it.skip : it
 
@@ -60,6 +68,39 @@ describe('findOrgaiOnPath on a real folder tree', () => {
     root = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-onpath-')))
   })
   afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  posixOnly('recognises an npm install by the orgai-cli package.json beside the bin, without install.json', () => {
+    const pkg = join(root, 'npm', 'lib', 'node_modules', 'orgai-cli')
+    mkdirSync(join(pkg, 'out', 'cli'), { recursive: true })
+    writeFileSync(join(pkg, 'out', 'cli', 'orgai.mjs'), '#!/usr/bin/env node\n', { mode: 0o755 })
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'orgai-cli', version: '0.3.1' }))
+    mkdirSync(join(root, 'npm', 'bin'))
+    symlinkSync(join(pkg, 'out', 'cli', 'orgai.mjs'), join(root, 'npm', 'bin', 'orgai'))
+    const [hit] = findOrgaiOnPath({ platform: process.platform, pathList: join(root, 'npm', 'bin') })
+    expect(hit).toMatchObject({ kind: 'npm', channel: 'npm', version: '0.3.1' })
+    // Another package name beside a bin is not npm's orgai-cli.
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'something-else', version: '9.9.9' }))
+    const [other] = findOrgaiOnPath({ platform: process.platform, pathList: join(root, 'npm', 'bin') })
+    expect(other?.kind).not.toBe('npm')
+    expect(other?.version).toBeUndefined()
+  })
+
+  posixOnly('does not follow a symlinked or FIFO package.json (bounded metadata read)', () => {
+    const pkg = join(root, 'npm', 'lib', 'node_modules', 'orgai-cli')
+    mkdirSync(join(pkg, 'out', 'cli'), { recursive: true })
+    writeFileSync(join(pkg, 'out', 'cli', 'orgai.mjs'), '#!/usr/bin/env node\n', { mode: 0o755 })
+    mkdirSync(join(root, 'npm', 'bin'))
+    symlinkSync(join(pkg, 'out', 'cli', 'orgai.mjs'), join(root, 'npm', 'bin', 'orgai'))
+    const real = join(root, 'real.json')
+    writeFileSync(real, JSON.stringify({ name: 'orgai-cli', version: '0.3.1' }))
+    symlinkSync(real, join(pkg, 'package.json'))
+    const list = join(root, 'npm', 'bin')
+    expect(findOrgaiOnPath({ platform: process.platform, pathList: list })[0]?.version).toBeUndefined()
+    rmSync(join(pkg, 'package.json'))
+    execFileSync('mkfifo', [join(pkg, 'package.json')])
+    // A FIFO would block a read forever; the check must return without opening it.
+    expect(findOrgaiOnPath({ platform: process.platform, pathList: list })[0]?.version).toBeUndefined()
+  })
 
   posixOnly('reads an npm link, an app shim and an unknown file in PATH order', () => {
     // npm: <prefix>/bin/orgai -> ../lib/node_modules/orgai-cli/out/cli/orgai.mjs
@@ -157,9 +198,8 @@ describe('findOrgaiOnPath on a real folder tree', () => {
     ])
   })
 
-  it('the launcher mark matches doctor and both packaged launchers', () => {
+  it('the launcher mark matches doctor (the packaged app no longer ships a launcher; old ones are still recognised)', () => {
     expect(PACKAGED_LAUNCHER_MARK).toBe(DOCTOR_LAUNCHER_MARK)
-    for (const f of ['orgai', 'orgai.cmd']) expect(readFileSync(join(__dirname, '..', '..', '..', 'build', 'bin', f), 'utf8')).toContain(PACKAGED_LAUNCHER_MARK)
   })
 
   it('finds nothing for an empty PATH', () => {

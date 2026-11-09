@@ -5,14 +5,10 @@
  */
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { runApp } from './commands/app'
 import { runCompletions } from './commands/completions'
 import { runConnections } from './commands/connections'
-import { runDaemon } from './commands/daemon'
-import { runDecide } from './commands/decide'
 import { runDoctor } from './commands/doctor'
 import { runExec, runResume } from './commands/exec'
-import { runInbox } from './commands/inbox'
 import { runInit } from './commands/init'
 import { runKit } from './commands/kit'
 import { runKnowledge } from './commands/knowledge'
@@ -27,17 +23,15 @@ import { runSecrets } from './commands/secrets'
 import { runSkills } from './commands/skills'
 import { runStatus } from './commands/status'
 import { runTeam } from './commands/team'
-import { runTerminalAccess } from './commands/terminalAccess'
-import { defaultTuiPrintsHelp, PROMPT_HINT, runAttach, runDefaultTui, runTuiCommand } from './commands/tui'
+import { defaultTuiPrintsHelp, PROMPT_HINT, runDefaultTui, runTuiCommand } from './commands/tui'
 import { runUsage } from './commands/usage'
-import { runWatch } from './commands/watch'
 import { runWorktrees } from './commands/worktrees'
 import { COMMANDS, DEFAULT_TUI_FLAGS, GLOBAL_FLAGS, findCommand, type CommandEntry, type CommandFlag } from './commandTable'
 import { buildContext } from './context'
 import { splitGlobalFlags } from './flags'
 import { safe } from './output'
-import { collectSecretOverlay, planSecretEnv, scrubSecretEnv, secretEnvCommandClass } from './secretOverlay'
-import { CliError, EXIT, type CliIo, type CommandFn, type SecretEnvUse } from './types'
+import { SECRET_ENV_REFUSAL, collectSecretOverlay, isHostlessCommand, planSecretEnv, scrubSecretEnv } from './secretOverlay'
+import { CliError, EXIT, type CliIo, type CommandFn } from './types'
 import { CLI_VERSION } from './version'
 import { readInstallInfo } from './installInfo'
 import { versionLine } from './versionLine'
@@ -46,17 +40,11 @@ import { versionLine } from './versionLine'
 export const ROUTES: Record<string, CommandFn> = {
   status: runStatus,
   runs: runRuns,
-  watch: runWatch,
-  inbox: runInbox,
-  daemon: runDaemon,
-  app: runApp,
   doctor: runDoctor,
   completions: runCompletions,
   exec: runExec,
   resume: runResume,
-  decide: runDecide,
   tui: runTuiCommand,
-  attach: runAttach,
   init: runInit,
   org: runOrg,
   team: runTeam,
@@ -71,8 +59,7 @@ export const ROUTES: Record<string, CommandFn> = {
   usage: runUsage,
   kit: runKit,
   projects: runProjects,
-  secrets: runSecrets,
-  'terminal-access': runTerminalAccess
+  secrets: runSecrets
 }
 
 export interface MainOverrides {
@@ -186,26 +173,20 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
 
     /**
      * Environment secrets (secretOverlay.ts planSecretEnv): the refusal, the one warning, and the overlay taken out of
-     * the environment before anything can spawn. `command` undefined is bare `orgai`; null is completions, which
-     * only refuses an explicit --secret-env (a hostless command, cli-standalone.md 4.1) and leaves the environment be.
+     * the environment before anything can spawn. `command` undefined is bare `orgai`.
      */
-    const prepareContext = (command: string | null | undefined, commandArgs: readonly string[]): ReturnType<typeof buildContext> => {
-      if (command === null) {
-        const refusal = planSecretEnv(globals.host, 'never-inproc', {}, globals.secretEnv).refusal
-        if (refusal) throw new CliError(refusal, EXIT.usage)
-        return contextFor(globals, env, io, overrides)
-      }
-      const plan = planSecretEnv(globals.host, secretEnvCommandClass(command, commandArgs), env, globals.secretEnv)
+    const prepareContext = (command: string | undefined, commandArgs: readonly string[]): ReturnType<typeof buildContext> => {
+      const plan = planSecretEnv(isHostlessCommand(command, commandArgs), env, globals.secretEnv)
       if (plan.refusal) throw new CliError(plan.refusal, EXIT.usage)
       let overlay: Map<string, string> | undefined
       if (plan.collect) {
         const collected = collectSecretOverlay(env, globals.secretEnv)
         scrubSecretEnv(env, collected.consumedVars)
-        // An ignored ambient secret is scrubbed, never handed to a host this command may start (review round 1).
+        // An ignored ambient secret is scrubbed, never handed to a host (there is none for such a command).
         if (!plan.dropOverlay) overlay = collected.overlay
       }
       if (plan.warning) io.stderr.write(`${plan.warning}\n`)
-      return contextFor(globals, env, io, overrides, overlay, plan.use)
+      return contextFor(globals, env, io, overrides, overlay)
     }
 
     // Bare `orgai`, `orgai [tui options] [--] <prompt>` or a quoted prompt (an unknown first word with whitespace).
@@ -249,7 +230,13 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     }
     if (!command.available || !ROUTES[command.name]) throw new CliError(`\`orgai ${command.name}\` is not available in this build yet.`, EXIT.usage)
 
-    return await ROUTES[command.name](prepareContext(command.name === 'completions' ? null : command.name, args), args)
+    // Completions needs no data folder and no host: no context (no marker write, no folder refusal, no ambient-secret
+    // warning). Only an explicit --secret-env is still refused, as for every read-only command.
+    if (command.name === 'completions') {
+      if (globals.secretEnv.length > 0) throw new CliError(SECRET_ENV_REFUSAL, EXIT.usage)
+      return await runCompletions({ io }, args)
+    }
+    return await ROUTES[command.name](prepareContext(command.name, args), args)
   } catch (e) {
     if (e instanceof CliError) {
       err(e.message)
@@ -268,16 +255,14 @@ function isDefaultTuiFlag(arg: string): boolean {
 }
 
 /**
- * The context. `overlay` is the environment secret overlay prepareContext already collected (and scrubbed); `secretEnv`
- * what ensureHost needs to decide about it under `--host auto`.
+ * The context. `overlay` is the environment secret overlay prepareContext already collected (and scrubbed).
  */
 function contextFor(
   globals: ReturnType<typeof splitGlobalFlags>['globals'],
   env: NodeJS.ProcessEnv,
   io: CliIo,
   overrides: MainOverrides,
-  overlay?: Map<string, string>,
-  secretEnv?: SecretEnvUse
+  overlay?: Map<string, string>
 ): ReturnType<typeof buildContext> {
   return buildContext({
     globals,
@@ -285,8 +270,7 @@ function contextFor(
     cwd: overrides.cwd ?? process.cwd(),
     platform: overrides.platform ?? process.platform,
     io,
-    ...(overlay ? { overlay } : {}),
-    ...(secretEnv ? { secretEnv } : {})
+    ...(overlay ? { overlay } : {})
   })
 }
 
@@ -299,7 +283,7 @@ function unknownCommandMessage(word: string): string {
 /**
  * The packaged launcher (build/bin/orgai) runs this bundle on the app's own binary with ELECTRON_RUN_AS_NODE=1. Under
  * Electron (`versions.electron` set) that variable is taken out of `env` before anything spawns, so pagers, git,
- * `orgai app`, MCP servers and the inproc adapters never inherit it (an inherited one would turn any Electron app they
+ * MCP servers and the inproc adapters never inherit it (an inherited one would turn any Electron app they
  * start into Node). Plain Node keeps the environment as it is. True when it removed the variable.
  */
 export function scrubElectronRunAsNode(env: NodeJS.ProcessEnv, versions: Partial<Record<string, string | undefined>> = process.versions): boolean {

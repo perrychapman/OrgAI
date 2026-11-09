@@ -7,7 +7,7 @@
  *   key that arrives before the new frame is drawn is still measured against the new card.
  * - Two-step actions (always allow / grant for project, discard a worktree, save an MCP install) open a confirmation
  *   bound to the card key. If that card leaves the tray or changes while it is open (or a note or secret field is
- *   open), it closes at once with a status line ("Resolved in another window (the desktop app)").
+ *   open), it closes at once with a status line ("Resolved by the headless decision policy").
  * - TERM=dumb: a single-key action is shown as pending and only Enter commits it (Esc clears).
  * - Secrets are typed into a masked field, never rendered, and dropped from memory when the call is made.
  * - One decision call at a time; the outcome becomes a status line.
@@ -260,7 +260,7 @@ export function DecisionTray(props: DecisionTrayProps) {
       const full = cardFullView(card)
       if (full.cut && card.kind === 'permission') {
         // The full view itself is cut: the rest of the command cannot be read here, so v does not unlock y / s / a.
-        st.status = { text: 'The full view is cut at 64 KB: the rest cannot be read here. Deny it, or answer elsewhere.', tone: 'warn' }
+        st.status = { text: 'The full view is cut at 64 KB: the rest cannot be read here, so it can only be denied.', tone: 'warn' }
         bump()
       } else st.readAll = true
       void props.onViewText(title, full.text).catch((e: unknown) => {

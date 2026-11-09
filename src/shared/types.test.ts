@@ -22,10 +22,7 @@ import {
   DEFAULT_HEADLESS_DECISION_POLICY,
   EXEC_OUTCOMES,
   EXEC_OUTCOME_EXIT_CODE,
-  BACKGROUND_HOST_KINDS,
   HOST_CLIENT_KINDS,
-  HOST_HANDOFF_BLOCKERS,
-  HOST_HANDOFF_METHODS,
   HOST_IPC,
   HOST_KINDS,
   HOST_KIND_CAPABILITIES,
@@ -259,19 +256,17 @@ describe('Wave 7 (standalone CLI) contracts', () => {
     for (const n of names) expect(taken.has(n), n).toBe(false)
   })
 
-  it('host kinds: every kind has capabilities; only desktop and headless-host open windows; background never inproc', () => {
+  it('host kinds: every kind has capabilities; only desktop opens windows', () => {
     expect([...HOST_KINDS].sort()).toEqual(Object.keys(HOST_KIND_CAPABILITIES).sort())
-    expect(HOST_KINDS).toContain('node')
-    expect(HOST_KINDS.filter((k) => hostCanOpenWindows(k)).sort()).toEqual(['desktop', 'headless-host'])
+    expect([...HOST_KINDS]).toEqual(['desktop', 'inproc'])
+    expect(HOST_KINDS.filter((k) => hostCanOpenWindows(k)).sort()).toEqual(['desktop'])
     expect(HOST_KINDS.filter((k) => HOST_KIND_CAPABILITIES[k].inProcess)).toEqual(['inproc'])
     expect(hostCanOpenWindows('__proto__' as never)).toBe(false)
-    expect([...BACKGROUND_HOST_KINDS].sort()).toEqual(['desktop', 'headless-host', 'node'])
-    expect(HOST_CLIENT_KINDS).toEqual(['cli', 'tui', 'desktop'])
+    expect(HOST_CLIENT_KINDS).toEqual(['cli', 'tui'])
   })
 
-  it('handoff connections reach host.status and host.stop only; blockers and enums are unique', () => {
-    expect([...HOST_HANDOFF_METHODS].sort()).toEqual([HOST_METHODS.hostStatus, HOST_METHODS.hostStop].sort())
-    for (const list of [HOST_HANDOFF_BLOCKERS, VAULT_STATES, VAULT_CUSTODY_SCHEMES, INSTALL_CHANNELS] as readonly (readonly string[])[]) {
+  it('enums are unique', () => {
+    for (const list of [VAULT_STATES, VAULT_CUSTODY_SCHEMES, INSTALL_CHANNELS] as readonly (readonly string[])[]) {
       expect(new Set(list).size).toBe(list.length)
     }
     expect(INSTALL_CHANNELS).toEqual(['npm', 'app', 'archive', 'dev'])

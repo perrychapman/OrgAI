@@ -17,6 +17,7 @@ import {
   type RepoTools
 } from '@shared/types'
 import { clampText, hiddenCharIn } from './capabilities/sanitize'
+import { scrubControlEnv } from './runtime/childEnv'
 import { cleanProjectPath } from './store/projects'
 import { canonicalDeep, isInside, isInsideEither, isNetworkPath, pathKey } from './quick/scratch'
 import { allowedDirectoryRisk } from './runtime/allowedDirectories'
@@ -724,7 +725,7 @@ export function gitEnv(base: NodeJS.ProcessEnv, platform: NodeJS.Platform = proc
     const name = fold ? k.toUpperCase() : k
     return name.startsWith('GIT_') && !GIT_ENV_ALLOW.has(name)
   })
-  return buildEnv(base, drop, {
+  return buildEnv(scrubControlEnv(base), drop, {
     GIT_TERMINAL_PROMPT: '0',
     GIT_ALLOW_PROTOCOL: 'https:ssh',
     SSH_ASKPASS_REQUIRE: 'never',
@@ -734,7 +735,7 @@ export function gitEnv(base: NodeJS.ProcessEnv, platform: NodeJS.Platform = proc
 }
 
 export function ghEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return buildEnv(base, GH_ENV_DROP, { GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' })
+  return buildEnv(scrubControlEnv(base), GH_ENV_DROP, { GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' })
 }
 
 /** The exact argument list of the clone (pinned by a test). */

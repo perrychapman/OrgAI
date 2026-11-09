@@ -1,143 +1,103 @@
-// CLI read-only commands end to end (cli-spec Wave 2). Run `npm run build` first. Mock adapter only: no tokens.
+// CLI read-only commands and the "one orgai at a time" rule end to end (cli-standalone-default.md 4.2, 4.3). Run
+// `npm run build` first. Mock adapter only: no tokens. No Electron: the CLI and the OrgAI desktop app share nothing, so
+// this script never starts the app.
 //
-// 1. The desktop app (Playwright) with Terminal access on, a mock project and a mock run; then, with
-//    `node out/cli/orgai.mjs`: status (hostKind desktop, ready), runs list, runs show R1, inbox, watch R1 in
-//    stream-json (the session is ended from the renderer and watch exits 0) and doctor (exit 0). The app is closed.
-// 2. `orgai daemon start` starts the headless host: status says headless-host; `daemon stop` exits 0 and daemon.json
-//    is gone.
-// 3. Hostless: `orgai runs list --project <path>` lists the run with an ended status word and the
-//    "No OrgAI host is running" note on stderr.
-import { spawn } from 'node:child_process'
+// 1. A project and one finished mock run, made by the CLI itself (`projects create`, `exec`): status, runs list, runs
+//    show R1, projects list / show and doctor read the files: no host is started (no daemon.json) and stderr is quiet.
+// 2. A second orgai: while a slow mock `exec` owns the data folder, the read-only commands answer from the files with
+//    "orgai is running in another terminal; this is a saved snapshot." (status names its folder and pid, doctor names
+//    the pid), and a command that needs a host (`connections list`, a second `exec`) is refused at once with exit 6
+//    naming the first orgai's folder and pid. When the first one ends the folder is free again.
+// 3. The removed commands (watch, inbox, decide, attach, daemon, app, terminal-access) and --host are usage errors.
 import * as fs from 'node:fs'
-import * as path from 'node:path'
-import { APP_DIR, DATA_DIR, check, finish, launch, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { check, finish, log, makeFixtureRepo, removeFixture } from './lib.mjs'
+import { DAEMON_JSON, cli, json, requireBuild, seedProject, show, startCli, until } from './cliLib.mjs'
 
-process.env.ORGAI_MOCK = '1'
-const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
-const DAEMON_JSON = path.join(DATA_DIR, 'data', 'run', 'daemon.json')
-
-if (!fs.existsSync(CLI)) {
-  console.log('out/cli/orgai.mjs missing. Run `npm run build` first.')
-  process.exit(1)
-}
-
-/** Run the CLI; resolves { code, out, err }. `onOut` sees stdout as it arrives. */
-function cli(args, { timeoutMs = 60_000, onOut } = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, '--no-color', ...args], {
-      cwd: APP_DIR,
-      env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' },
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
-    let out = ''
-    let err = ''
-    child.stdout.on('data', (d) => {
-      out += d
-      onOut?.(out)
-    })
-    child.stderr.on('data', (d) => (err += d))
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
-    child.on('close', (code, signal) => {
-      clearTimeout(timer)
-      resolve({ code: code ?? (signal ? 128 : 1), out, err, child })
-    })
-  })
-}
-
-const json = (s) => {
-  try {
-    return JSON.parse(s)
-  } catch {
-    return null
-  }
-}
-
-async function until(what, fn, ms = 30_000) {
-  const end = Date.now() + ms
-  while (Date.now() < end) {
-    const v = await fn()
-    if (v) return v
-    await sleep(250)
-  }
-  throw new Error(`timed out waiting for ${what}`)
-}
-
-// Before W2-T4's entry lands the bundle is the contracts stub; skip rather than fail (this guard matches only its text).
-const probe = await cli(['status'])
-if (probe.err.includes('the CLI is not available yet in this build')) {
-  console.log('SKIP (the CLI entry is still the Wave 2 contracts stub)')
-  process.exit(0)
-}
+requireBuild()
 
 const repo = makeFixtureRepo('cli-readonly')
-let app
-let page
 try {
-  // ---------- 1. Desktop host ----------
-  ;({ app, page } = await launch({ shotPrefix: 'cli-readonly' }))
-  const sw = page.locator('[data-testid=terminal-server-switch]')
-  if (await sw.count()) {
-    if ((await sw.getAttribute('aria-checked')) !== 'true') await sw.click()
-  } else {
-    await page.evaluate(async () => {
-      const s = await window.orgai.settings.get()
-      await window.orgai.settings.set({ ...s, terminalServer: true })
-    })
-  }
-  const terminalOn = await page.evaluate(async () => (await window.orgai.settings.get()).terminalServer === true)
-  check(terminalOn, 'Terminal access is on')
-
-  const project = await page.evaluate((dir) => window.orgai.projects.create({ name: 'CLI readonly', path: dir, brief: '', mock: true }), repo)
-  const run = await page.evaluate((projectId) => window.orgai.runs.start({ projectId, prompt: 'Hello from the CLI e2e', team: 'single' }), project.id)
-  await until('the mock run to go idle', async () => (await page.evaluate((id) => window.orgai.runs.get(id), run.id))?.summary.status === 'idle')
+  // ---------- 1. Files only ----------
+  const project = await seedProject(repo, { name: 'CLI readonly' })
+  check(!!project?.id, 'a project made with projects create')
+  const exec = await cli(['--output-format', 'json', 'exec', '--team', 'single', 'Hello from the CLI e2e'], { cwd: repo, timeoutMs: 120_000 })
+  check(exec.code === 0 && json(exec.out)?.outcome === 'completed-unplanned', 'a finished mock run made by exec', show(exec))
+  check(!fs.existsSync(DAEMON_JSON), 'no host is left behind after a command')
 
   const status = await cli(['--project', repo, 'status', '--output-format', 'json'])
   const sj = json(status.out)
-  check(status.code === 0 && sj?.host?.hostKind === 'desktop' && sj?.hostState === 'ready', 'status: desktop host, ready', `${status.code} ${status.out.slice(0, 300)} ${status.err}`)
-
+  check(status.code === 0 && sj?.hostState === 'stopped' && sj?.liveInboxAvailable === false && sj?.project?.id === project.id, 'status reads the files: no other orgai, the project found', show(status))
+  check(status.err === '', 'status is quiet when nobody else runs', status.err)
   const list = await cli(['runs', 'list', '--project', repo])
-  check(list.code === 0 && /R1\s+(Idle|Running)/.test(list.out), 'runs list shows R1 live', list.out + list.err)
-
-  const show = await cli(['--project', repo, 'runs', 'show', 'R1'])
-  check(show.code === 0 && show.out.includes('Hello from the CLI e2e'), 'runs show R1', show.out.slice(0, 400) + show.err)
-
-  const inbox = await cli(['--project', repo, 'inbox'])
-  check(inbox.code === 0, 'inbox exits 0', inbox.out + inbox.err)
-
-  let snapshotSeen = false
-  const watching = cli(['--project', repo, 'watch', 'R1', '--output-format', 'stream-json'], { onOut: (o) => (snapshotSeen ||= o.includes('"type":"snapshot"')) })
-  await until('the watch snapshot', () => snapshotSeen, 20_000)
-  await page.evaluate((id) => window.orgai.runs.stop(id), run.id)
-  const watched = await watching
-  const events = watched.out.trim().split('\n').map(json).filter(Boolean)
-  check(watched.code === 0 && events.some((e) => e.event?.type === 'run.status' && e.event.status === 'finished'), 'watch exits 0 when the session ends', `${watched.code} ${watched.err}`)
-
+  check(list.code === 0 && /R1\s+(Finished|Stopped|Idle)/.test(list.out) && list.err === '', 'runs list shows R1', list.out + list.err)
+  const showRun = await cli(['--project', repo, 'runs', 'show', 'R1'])
+  check(showRun.code === 0 && showRun.out.includes('Hello from the CLI e2e'), 'runs show R1', showRun.out.slice(0, 400) + showRun.err)
+  const projects = await cli(['projects', 'list', '--output-format', 'json'])
+  check(projects.code === 0 && json(projects.out)?.projects?.some((p) => p.id === project.id), 'projects list reads the files', show(projects))
+  const pshow = await cli(['projects', 'show', repo])
+  check(pshow.code === 0 && /Subagent depth:/.test(pshow.out), 'projects show reads the files', show(pshow))
   const doctor = await cli(['doctor'])
-  check(doctor.code === 0, 'doctor exits 0 with the app running', doctor.out + doctor.err)
+  check(doctor.code === 0 && /product +.*marked orgai-cli/.test(doctor.out) && /No other orgai is running/.test(doctor.out), 'doctor: marker, no other orgai', doctor.out + doctor.err)
+  check(!fs.existsSync(DAEMON_JSON), 'the read-only commands started no host')
 
-  await app.close().catch(() => {})
-  app = undefined
-  await until('the desktop host to release the data folder', () => !fs.existsSync(DAEMON_JSON), 20_000).catch(() => undefined)
+  // ---------- 2. A second orgai ----------
+  const slow = startCli(['--output-format', 'stream-json', 'exec', '[mock:exec-slow] take your time'], { cwd: repo })
+  let ownerPid
+  try {
+    await until('the first orgai to own the folder', () => fs.existsSync(DAEMON_JSON) && JSON.parse(fs.readFileSync(DAEMON_JSON, 'utf8')).state === 'ready', 60_000)
+    const owner = JSON.parse(fs.readFileSync(DAEMON_JSON, 'utf8'))
+    ownerPid = owner.pid
+    check(owner.hostKind === 'inproc' && typeof owner.ownerCwd === 'string' && owner.ownerCwd.length > 0, 'daemon.json carries the owner pid and ownerCwd', JSON.stringify(owner))
 
-  // ---------- 2. Headless host ----------
-  const started = await cli(['daemon', 'start', '--timeout', '60'], { timeoutMs: 90_000 })
-  check(started.code === 0, 'daemon start exits 0', started.out + started.err)
-  const hs = await cli(['status', '--output-format', 'json'])
-  check(json(hs.out)?.host?.hostKind === 'headless-host', 'status shows the headless host', hs.out.slice(0, 300) + hs.err)
-  const stopped = await cli(['daemon', 'stop'], { timeoutMs: 60_000 })
-  check(stopped.code === 0, 'daemon stop exits 0', stopped.out + stopped.err)
-  check(!fs.existsSync(DAEMON_JSON), 'daemon.json is gone after stop')
+    const snap = await cli(['--project', repo, 'runs', 'list'])
+    check(snap.code === 0 && snap.err.includes('orgai is running in another terminal; this is a saved snapshot.'), 'runs list beside an owner: a saved snapshot', show(snap))
+    const st = await cli(['--project', repo, 'status'])
+    check(st.code === 0 && st.out.includes('Another orgai running: yes') && st.out.includes(`pid ${owner.pid}`), 'status names the other orgai (folder and pid)', show(st))
+    const dr = await cli(['doctor'])
+    check(dr.out.includes(`Another orgai is running (pid ${owner.pid}`), 'doctor names the other orgai', dr.out + dr.err)
 
-  // ---------- 3. Hostless ----------
-  const hostless = await cli(['runs', 'list', '--project', repo])
-  check(hostless.code === 0 && /R1\s+(Finished|Stopped)/.test(hostless.out), 'hostless runs list shows the run ended', hostless.out + hostless.err)
-  check(hostless.err.includes('No OrgAI host is running'), 'hostless note on stderr', hostless.err)
+    const began = Date.now()
+    const refused = await cli(['--project', repo, 'connections', 'list'])
+    check(refused.code === 6 && refused.err.includes(`pid ${owner.pid}`) && refused.err.includes('Use that one, or quit it first.'), 'a command that needs a host is refused with exit 6', show(refused))
+    const refusedExec = await cli(['--project', repo, 'exec', 'hello'], { cwd: repo })
+    check(refusedExec.code === 6, 'a second exec is refused with exit 6', show(refusedExec))
+    check(Date.now() - began < 20_000, 'both refusals came at once (no waiting)', `${Date.now() - began} ms`)
+    const noSocket = await cli(['--project', repo, 'runs', 'show', 'R1'])
+    check(noSocket.code === 0, 'runs show works beside the owner', show(noSocket))
+  } finally {
+    slow.child.kill('SIGINT')
+    const t = setTimeout(() => slow.child.kill('SIGKILL'), 30_000)
+    await slow.done
+    clearTimeout(t)
+  }
+  if (process.platform === 'win32') {
+    // kill('SIGINT') is TerminateProcess on Windows: no handler runs, so daemon.json stays behind with a dead pid and the
+    // next orgai reclaims it. Wait for the owner process to be gone instead of the record.
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    await until('the first orgai to end', () => typeof ownerPid !== 'number' || !alive(ownerPid), 30_000)
+  } else await until('the folder to be free again', () => !fs.existsSync(DAEMON_JSON), 30_000)
+  const free = await cli(['--project', repo, 'connections', 'list'])
+  check(free.code === 0, 'when the first orgai ends the folder is free again', show(free))
+
+  // ---------- 3. Removed commands ----------
+  for (const argv of [['watch', 'R1'], ['inbox'], ['decide', 'x', 'allow'], ['attach', 'R1'], ['daemon', 'status'], ['app'], ['terminal-access'], ['--host', 'inproc', 'status']]) {
+    const r = await cli(argv)
+    check(r.code === 2, `\`orgai ${argv.join(' ')}\` is a usage error`, show(r))
+  }
+  for (const flag of ['--on-permission', '--on-rules', '--on-mcp-install', '--on-question', '--on-proposal', '--on-merge']) {
+    const r = await cli(['exec', flag, 'wait', 'x'], { cwd: repo })
+    check(r.code === 2 && /wait is not available/.test(r.err), `exec ${flag} wait is refused (exit 2)`, show(r))
+  }
 } catch (e) {
   check(false, 'cli-readonly ran to the end', e instanceof Error ? e.stack : String(e))
 } finally {
-  if (app) await app.close().catch(() => {})
-  // Never leave a headless host behind.
-  if (fs.existsSync(DAEMON_JSON)) await cli(['daemon', 'stop', '--force'], { timeoutMs: 30_000 }).catch(() => undefined)
   removeFixture(repo)
   log('done')
 }

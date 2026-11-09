@@ -54,7 +54,7 @@ function setup(): { c: ReturnType<typeof makeComputer>; rpc: (channel: string, .
     quick: inert(),
     templates: { rolesForNewProject: (p: Project) => p } as never,
     teamFiles: c.svc,
-    env: { app: { getVersion: () => '0.0.0', getPath: () => '', isPackaged: false }, platform: process.platform, logsDir: () => '', hostKind: 'headless-host' }
+    env: { app: { getVersion: () => '0.0.0', getPath: () => '', isPackaged: false }, platform: process.platform, logsDir: () => '', hostKind: 'desktop' }
   })
   return { c, dispatcher, rpc: (channel, ...args) => dispatcher.invokeRpc(channel, args, socketCtx()) }
 }

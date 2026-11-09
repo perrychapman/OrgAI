@@ -713,7 +713,7 @@
   margin-left: auto;
 }
 
-/* ---------- App settings > Terminal: the orgai command row (CliShimRow) ---------- */
+/* ---------- App settings > Terminal: the orgai command row (CliCommandRow) ---------- */
 .cli-shim {
   position: relative;
   display: flex;
@@ -767,4 +767,19 @@
 }
 .cli-shim-notice.is-error {
   color: var(--danger-text);
+}
+.cli-command-copy {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.cli-command-copy .cli-shim-path-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cli-command-output {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
 }

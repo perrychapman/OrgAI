@@ -1,13 +1,13 @@
 /**
  * The Electron adapter over the host dispatcher (cli-spec Wave 1). Every request handler lives in host/dispatcher.ts;
  * this module registers them with ipcMain, keeps the desktop-only channels (DESKTOP_ONLY_CHANNELS: native dialogs, picked
- * paths, the menu, the OS shell, the notifications mirror, the orgai command shim, and starting a project from a
+ * paths, the menu, the OS shell, the notifications mirror, the orgai command installer, and starting a project from a
  * repository, whose progress and cancel-on-close use the IPC sender) and forwards the host's push bus to windows when it made the bus
  * itself. The pure argument builders live in host/args.ts and are re-exported here for the existing tests.
  */
 import { appSecretReason } from '@shared/view/secretNotices'
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
-import type { CliShimResult, CliShimStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
+import type { CliCommandResult, CliCommandStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
 import { registerOutputsIpc } from './outputsIpc'
 import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, OUTPUTS_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
 import type { FolderConfigTrustResult, TeamFilesActionResult, TeamFilesCommitResult } from '@shared/types'
@@ -28,7 +28,7 @@ import { noopActivity } from './host/activity'
 import { HostDispatcher } from './host/dispatcher'
 import { runLeased } from './host/mutationLease'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices } from './host/types'
-import { CLI_SHIM_UNAVAILABLE, type CliShimService } from './host/shimInstaller'
+import { installCommandText, installTag, type CliInstallService } from './host/cliInstaller'
 
 /**
  * What registerIpc serves: the host services (host/types.ts HostServices; the shared field docs live there) plus the
@@ -43,8 +43,8 @@ export interface IpcServices extends Omit<HostServices, 'desktop'> {
   openRunWindow(target: FocusRunTarget): void
   /** The host dispatcher to serve; absent = registerIpc builds one over these services. */
   dispatcher?: HostDispatcher
-  /** The orgai command shim (cli-spec 7(3)); absent = app:cliShim* answer CLI_SHIM_UNAVAILABLE. */
-  cliShim?: CliShimService
+  /** The orgai command installer (5.3); absent = the app:cli* channels answer an unavailable status. */
+  cliInstall?: CliInstallService
   /**
    * Start a project from a repository: parse, tools, clone or fork, cancel (src/main/repoClone.ts). Desktop only: the
    * progress goes to the calling window and a closed window cancels its clone. Absent = the channels are not registered.
@@ -106,9 +106,10 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   IPC.appOpenPath,
   IPC.appOpenLogs,
   IPC.appSetNotifications,
-  IPC.appCliShimStatus,
-  IPC.appInstallCliShim,
-  IPC.appUninstallCliShim,
+  IPC.appCliCommandStatus,
+  IPC.appInstallCliCommand,
+  IPC.appCancelCliInstall,
+  IPC.appRemoveOldCliShim,
   IPC.projectsParseRepoSource,
   IPC.projectsRepoTools,
   IPC.projectsCloneRepo,
@@ -130,7 +131,7 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
  * `handleMutating` (refused with host_draining while the host drains, an inFlightRpcMutations lease until its result
  * settles). Every DESKTOP_ONLY_CHANNELS entry must be listed here (ipcLeases.test.ts), so a later channel is classified
  * when it is added. Opening a dialog, a folder or the logs, reading, and cancelling (projects:cancelClone) are not
- * mutations; installing the orgai command shim writes outside the data folder but is leased anyway (it must not race
+ * mutations; installing the orgai command writes outside the data folder but is leased anyway (it must not race
  * a quit).
  */
 export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
@@ -145,9 +146,10 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
   [IPC.appOpenPath]: false,
   [IPC.appOpenLogs]: false,
   [IPC.appSetNotifications]: true,
-  [IPC.appCliShimStatus]: false,
-  [IPC.appInstallCliShim]: true,
-  [IPC.appUninstallCliShim]: true,
+  [IPC.appCliCommandStatus]: false,
+  [IPC.appInstallCliCommand]: true,
+  [IPC.appCancelCliInstall]: false,
+  [IPC.appRemoveOldCliShim]: true,
   [IPC.projectsParseRepoSource]: false,
   [IPC.projectsRepoTools]: false,
   [IPC.projectsCloneRepo]: true,
@@ -166,9 +168,8 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
 }
 
 /**
- * A refusal on its way to a window: secure storage's sentences name the orgai command, which an app-only user may not
- * have, so they are put in the app's words (src/shared/view/secretNotices.ts appSecretReason). Any other error is
- * returned as it is.
+ * A refusal on its way to a window: the desktop's secure-storage sentences already name no command, so only the locked
+ * one gets its way to act added (src/shared/view/secretNotices.ts appSecretReason). Any other error is returned as it is.
  */
 export function appFacingError(err: unknown): unknown {
   if (!(err instanceof Error)) return err
@@ -300,7 +301,7 @@ export function registerIpc(services: IpcServices): void {
     const win = BrowserWindow.fromWebContents(e.sender)
     if (win && !win.isDestroyed()) setMenuState(win, cleanMenuState(input))
   })
-  registerCliShimIpc(activity, services.cliShim)
+  registerCliInstallIpc(activity, services.cliInstall)
   if (kit) registerKitIpc(activity, kit)
   if (services.repoClone) registerRepoIpc(activity, services.repoClone)
   registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir, handleReadOnly, watcher: services.outputWatcher })
@@ -401,32 +402,44 @@ function registerRepoIpc(activity: HostActivityTrackerApi, repoClone: RepoCloneS
   })
 }
 
-// ---- orgai command shim (cli-spec 7(3)); desktop only, never throws to the renderer ----
+// ---- Install the orgai command (5.3); desktop only, never throws to the renderer ----
 
-function cliShimStatusOf(shim: CliShimService | undefined): CliShimStatus {
+// The tag and command follow the app version, so Copy and Install never disagree.
+function cliInstallUnavailable(): CliCommandStatus {
+  const tag = installTag(app.getVersion())
+  return { state: 'not-installed', oldShim: false, npmFound: false, tag, command: installCommandText(tag), installing: false }
+}
+
+function cliCommandStatusOf(svc: CliInstallService | undefined): CliCommandStatus {
   try {
-    return shim?.status() ?? CLI_SHIM_UNAVAILABLE
+    return svc?.status() ?? cliInstallUnavailable()
   } catch (err) {
-    log.warn('app:cliShimStatus failed:', err instanceof Error ? err.message : String(err))
-    return CLI_SHIM_UNAVAILABLE
+    log.warn('app:cliCommandStatus failed:', err instanceof Error ? err.message : String(err))
+    return cliInstallUnavailable()
   }
 }
 
-function registerCliShimIpc(activity: HostActivityTrackerApi, shim: CliShimService | undefined): void {
-  const unavailable = (): CliShimResult => ({ ok: false, message: CLI_SHIM_UNAVAILABLE.reason ?? '', status: CLI_SHIM_UNAVAILABLE })
-  const change = (what: 'install' | 'uninstall') => async (): Promise<CliShimResult> => {
-    if (!shim) return unavailable()
+function registerCliInstallIpc(activity: HostActivityTrackerApi, svc: CliInstallService | undefined): void {
+  const change = (what: 'install' | 'removeOldShim') => async (): Promise<CliCommandResult> => {
+    if (!svc) return { ok: false, message: 'The orgai command cannot be installed from here.', status: cliInstallUnavailable() }
     try {
-      return await shim[what]()
+      return await svc[what]()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      log.warn(`app:${what}CliShim failed:`, message)
-      return { ok: false, message: `OrgAI could not change the orgai command: ${message}`, status: cliShimStatusOf(shim) }
+      log.warn(`app:${what} (orgai command) failed:`, message)
+      return { ok: false, message: `OrgAI could not change the orgai command: ${message}`, status: cliCommandStatusOf(svc) }
     }
   }
-  handleReadOnly(IPC.appCliShimStatus, (): CliShimStatus => cliShimStatusOf(shim))
-  handleMutating(activity, IPC.appInstallCliShim, change('install'))
-  handleMutating(activity, IPC.appUninstallCliShim, change('uninstall'))
+  handleReadOnly(IPC.appCliCommandStatus, (): CliCommandStatus => cliCommandStatusOf(svc))
+  handleMutating(activity, IPC.appInstallCliCommand, change('install'))
+  handleReadOnly(IPC.appCancelCliInstall, (): boolean => {
+    try {
+      return svc?.cancel() ?? false
+    } catch {
+      return false
+    }
+  })
+  handleMutating(activity, IPC.appRemoveOldCliShim, change('removeOldShim'))
 }
 
 // ---- Practice kit ----

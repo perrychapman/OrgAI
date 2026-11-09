@@ -57,16 +57,12 @@ import type {
 
 export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide']
 export const TUI_CONFIGURE_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
-/** Shown when host.hello withheld 'decide' (Terminal access level 'operate'). */
-export const TUI_NO_DECIDE_NOTICE =
-  "Decisions can't be answered from this terminal: set App settings > Terminal access > What terminals may do to Full control."
 /** How long a decision call may take (a proposal approval applies changes before it answers). */
 export const TUI_DECIDE_TIMEOUT_MS = 120_000
 /** Listeners are notified at most this often. */
 export const TUI_NOTIFY_MS = 16
 /** Earlier chain members fetched after a focus. */
 export const TUI_EARLIER_MEMBERS = 5
-export const DESKTOP_UNAVAILABLE_NOTICE = 'The desktop app is not available with --host inproc.'
 export const HOST_GONE_NOTICE = 'Lost the connection to the OrgAI host. Quit and start orgai again to reconnect.'
 
 /** A host call's rejection as a plain Error with a sanitized one-line message (the host's message when it sent one). */
@@ -83,8 +79,6 @@ const codeOf = (e: unknown): string | undefined => (e as Partial<HostCallError> 
 // ---------- Connection ----------
 
 export interface ConnectTuiOptions {
-  /** Called once with the host's version-skew warning (the session also shows it as a notice). */
-  warn?: (message: string) => void
 }
 
 class TuiConnection implements TuiHostConnection {
@@ -95,16 +89,14 @@ class TuiConnection implements TuiHostConnection {
    */
   private base: HostClient
   private follower: RunStream | undefined
-  readonly inproc?: InprocHostHandle
-  readonly started: boolean
+  readonly inproc: InprocHostHandle
 
   constructor(
     private readonly ctx: CliContext,
     host: EnsuredHost
   ) {
     this.base = host.client
-    if (host.inproc) this.inproc = host.inproc
-    this.started = host.started
+    this.inproc = host.inproc
   }
 
   /** The client calls go through (a stream's reconnect replaces it). */
@@ -195,10 +187,7 @@ class TuiConnection implements TuiHostConnection {
 
 export async function connectTuiHost(ctx: CliContext, opts: ConnectTuiOptions = {}): Promise<TuiHostConnection> {
   const host = await ensureHost(ctx, [...TUI_SCOPES], { clientKind: 'tui' })
-  const conn = new TuiConnection(ctx, host)
-  const skew = host.client.hello.versionSkewWarning
-  if (skew && opts.warn) opts.warn(safeLine(skew))
-  return conn
+  return new TuiConnection(ctx, host)
 }
 
 // ---------- Session ----------
@@ -257,12 +246,6 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     hostKind: conn.hello.hostKind,
     ...(opts.project ? { project: opts.project } : {}),
     ...(opts.readOnlyReason ? { readOnlyReason: opts.readOnlyReason } : {})
-  }
-  if (conn.hello.versionSkewWarning) state = addNotice(state, conn.hello.versionSkewWarning, 'warn', now())
-  // Review H2: the default Terminal access level grants read + operate only; say so up front instead of letting the
-  // first card answer fail with scope_denied.
-  if (Array.isArray(conn.hello.grantedScopes) && !conn.hello.grantedScopes.includes('decide')) {
-    state = addNotice(state, TUI_NO_DECIDE_NOTICE, 'warn', now())
   }
 
   const fire = (): void => {
@@ -547,18 +530,6 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       if (!offersRetro(run)) throw new Error('An Org retrospective looks back at an ended work run of a project.')
       const started = await call<RunSummary>('setup:retro', [{ projectId: run.projectId, runId: id }], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
       return adopt(started)
-    },
-    async openInDesktop(runId?: string) {
-      const id = runId ?? activeId()
-      try {
-        await client().call('window:openRun', [{ projectId: projectIdOf(id), runId: id }])
-      } catch (e) {
-        if (codeOf(e) === 'desktop_unavailable') {
-          api.notify(DESKTOP_UNAVAILABLE_NOTICE, 'warn')
-          return
-        }
-        throw hostError(e)
-      }
     },
     async resync() {
       await stream?.resubscribe().catch((e: unknown) => {

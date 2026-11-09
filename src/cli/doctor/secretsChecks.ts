@@ -1,7 +1,7 @@
 /**
- * Secure storage in `orgai doctor` (cli-standalone.md 5.7): custodian scheme and probe, vault state, legacy file
- * state, the pending-legacy count with the "open the app once" hint, soft deletes and orphans. With a host: its
- * secrets:status (probe on). Without one: vault.json metadata (readVaultMetadata, plus the key names, baseline hashes
+ * Secure storage in `orgai doctor` (cli-standalone.md 5.7, cli-standalone-default.md 4.5): the vault state, the CLI's own
+ * custody names (never the app's), legacy file state, the pending-legacy count, soft deletes and orphans. The doctor
+ * command is always hostless (a client, when one is passed, gives secrets:status), so it reads vault.json metadata (readVaultMetadata, plus the key names, baseline hashes
  * and tombstone kinds of a valid file) and secrets.json's keys and value strings, hashed, never decrypted: the
  * pending-legacy count of 5.4 / 5.5 (rows 3 and 4) and the legacy-removal notice. Never a custodian call, never a
  * write. Never prints a value, and never throws (a failure is a 'warn' check).
@@ -11,7 +11,8 @@ import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SecretsStatusResult } from '../../shared/types'
 import { readVaultMetadata } from '../../main/store/vaultMetadata'
-import { LEGACY_SECRETS_FILE, VAULT_FILE, VAULT_MESSAGES } from '../../main/store/vaultTypes'
+import { platformVaultScheme } from '../../main/store/secrets'
+import { CLI_VAULT_MESSAGES as VAULT_MESSAGES, LEGACY_SECRETS_FILE, VAULT_FILE, vaultNames } from '../../main/store/vaultTypes'
 import type { DoctorCheck } from '../commands/doctor'
 import { schemeText, STATE_TEXT } from '../commands/secrets'
 import type { DoctorCheckGroup } from './types'
@@ -40,7 +41,7 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
         checks.push({
           id: 'vault',
           status: 'warn',
-          detail: `Not created (${scheme})${why ? `: ${why}` : ''}; the OrgAI app keeps its secrets to itself until it can create the vault. Run \`orgai secrets init\` to try again`
+          detail: `Not created (${scheme})${why ? `: ${why}` : ''}; run \`orgai secrets init\` to try again`
         })
       } else {
         checks.push({ id: 'vault', status: 'ok', detail: `Not created yet (${scheme}); the first saved secret creates it` })
@@ -61,7 +62,7 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
   }
   checks.push(legacyCheck(s.legacyFile, s.counts.legacy))
   if (s.pendingLegacy > 0) {
-    checks.push({ id: 'vault-pending', status: 'warn', detail: `${plural(s.pendingLegacy, 'secret')} not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+    checks.push({ id: 'vault-pending', status: 'warn', detail: `${plural(s.pendingLegacy, 'secret')} not readable by the orgai command. ${VAULT_MESSAGES.pendingLegacy}` })
   }
   if (s.counts.unreadable > s.pendingLegacy) {
     checks.push({ id: 'vault-unreadable', status: 'warn', detail: `${plural(s.counts.unreadable - s.pendingLegacy, 'secret')} cannot be read on this host; \`orgai secrets status\` says why` })
@@ -71,7 +72,7 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
     checks.push({
       id: 'vault-removed',
       status: legacy ? 'warn' : 'ok',
-      detail: `${plural(s.softDeletes.length, 'removed secret')} kept for undelete${legacy ? ` (${legacy} removed by an older OrgAI)` : ''}; see them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\` (the app's Dashboard has both buttons)`
+      detail: `${plural(s.softDeletes.length, 'removed secret')} kept for undelete${legacy ? ` (${legacy} removed by an older OrgAI)` : ''}; see them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\``
     })
   }
   if (s.orphanedKeys || s.orphanedVaults.length) {
@@ -87,13 +88,13 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
 function legacyCheck(state: SecretsStatusResult['legacyFile'], keys: number): DoctorCheck {
   switch (state) {
     case 'ok':
-      return { id: 'legacy-secrets', status: 'ok', detail: `secrets.json (the app's copy): ${plural(keys, 'key')}` }
+      return { id: 'legacy-secrets', status: 'ok', detail: `secrets.json (an older copy): ${plural(keys, 'key')}` }
     case 'missing':
-      return { id: 'legacy-secrets', status: 'ok', detail: "secrets.json (the app's copy): none" }
+      return { id: 'legacy-secrets', status: 'ok', detail: "secrets.json (an older copy): none" }
     case 'retired':
       return { id: 'legacy-secrets', status: 'ok', detail: 'secrets.json was retired; secure storage holds every secret' }
     default:
-      return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; `orgai secrets reset` starts over (the OrgAI app shows a notice with Start over)" }
+      return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; `orgai secrets reset` starts over" }
   }
 }
 
@@ -183,16 +184,41 @@ export function pendingLegacyCount(values: Readonly<Record<string, string>>, vau
   return n
 }
 
+/**
+ * Which custody the CLI's vault uses, by name only (3.2): the key-file variable (and its path when set), or the platform
+ * key store's item for the recorded or default scheme. Reads names and the environment; calls no custodian.
+ */
+export function vaultCustodyCheck(recorded: SecretsStatusResult['scheme'] | undefined, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): DoctorCheck {
+  const names = vaultNames('cli')
+  const keyFile = env[names.keyFileEnv]?.trim()
+  if (keyFile) return { id: 'vault-custody', status: 'ok', detail: `The CLI's own vault key is in the key file ${keyFile} (${names.keyFileEnv}); the app's secure storage is not used` }
+  const scheme = recorded ?? platformVaultScheme(platform)
+  const fileHint = `${names.keyFileEnv} names a key file instead`
+  switch (scheme) {
+    case 'keychain':
+      return { id: 'vault-custody', status: 'ok', detail: `The CLI's own vault key is the macOS keychain item "${names.keychainService}" (not the app's); ${fileHint}` }
+    case 'secret-service':
+      return { id: 'vault-custody', status: 'ok', detail: `The CLI's own vault key is the Secret Service item "${names.secretServiceLabel}" (attribute ${names.secretServiceAttribute}, not the app's); ${fileHint}` }
+    case 'dpapi-user':
+      return { id: 'vault-custody', status: 'ok', detail: `The CLI's own vault key is protected by Windows DPAPI for this user (entropy ${names.dpapiEntropyPrefix}, not the app's); ${fileHint}` }
+    case 'key-file':
+      return { id: 'vault-custody', status: 'warn', detail: `This vault keeps its key in a key file, but ${names.keyFileEnv} is not set; set it to the key file's path` }
+    default:
+      return { id: 'vault-custody', status: 'warn', detail: `No key store is available on this system; set ${names.keyFileEnv} or run \`orgai secrets init --key-file <path>\`` }
+  }
+}
+
 /** Checks without a host: metadata, key names and hashes only. */
-export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
+export function offlineSecretsChecks(dataDir: string, ownerRunning = false, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): DoctorCheck[] {
   const meta = readVaultMetadata(dataDir)
   const checks: DoctorCheck[] = []
-  if (meta.state === 'absent') checks.push({ id: 'vault', status: 'ok', detail: 'Not created yet; the first saved secret (or the app) creates it' })
+  if (meta.state === 'absent') checks.push({ id: 'vault', status: 'ok', detail: 'Not created yet; the first saved secret creates it' })
   else if (meta.state === 'corrupt') checks.push({ id: 'vault', status: 'fail', detail: VAULT_MESSAGES.corrupt })
   else {
     const tomb = meta.tombstones ? `, ${plural(meta.tombstones, 'removed secret')} kept` : ''
-    checks.push({ id: 'vault', status: 'ok', detail: `Present (${schemeText(meta.scheme ?? null)}): ${plural(meta.entries, 'secret')}${tomb}; not opened (no host is running)` })
+    checks.push({ id: 'vault', status: 'ok', detail: `Present (${schemeText(meta.scheme ?? null)}): ${plural(meta.entries, 'secret')}${tomb}; not opened here${ownerRunning ? ' (another orgai is running)' : ''}` })
   }
+  checks.push(vaultCustodyCheck(meta.state === 'present' ? meta.scheme : undefined, env, platform))
   const legacy = readLegacyShape(dataDir)
   if (meta.legacyRetired && legacy.state === 'missing') checks.push(legacyCheck('retired', 0))
   else checks.push(legacyCheck(legacy.state, legacy.keys))
@@ -201,7 +227,7 @@ export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
   if (legacy.values && meta.state !== 'corrupt' && (meta.state === 'absent' || view)) {
     const pending = pendingLegacyCount(legacy.values, view)
     if (pending > 0) {
-      checks.push({ id: 'vault-pending', status: 'warn', detail: `${plural(pending, 'secret')} not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+      checks.push({ id: 'vault-pending', status: 'warn', detail: `${plural(pending, 'secret')} not readable by the orgai command. ${VAULT_MESSAGES.pendingLegacy}` })
     }
   }
   // The guard notice of 5.5: secrets an older OrgAI removed, kept until the user restores them or keeps them removed.
@@ -210,7 +236,7 @@ export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
     checks.push({
       id: 'vault-removed',
       status: 'warn',
-      detail: `${VAULT_MESSAGES.legacyRemovedNotice(removedByOlder)} See them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\` (the app's Dashboard has both buttons)`
+      detail: `${VAULT_MESSAGES.legacyRemovedNotice(removedByOlder)} See them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\``
     })
   }
   return checks

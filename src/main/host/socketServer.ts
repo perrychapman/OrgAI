@@ -1,7 +1,7 @@
 /**
  * The host's JSON-RPC 2.0 socket server (cli-spec 3.3). Electron-free, relative imports only.
  *
- * Use from an entry point (desktop shell, `--headless-host`, `--host inproc`):
+ * Use from an entry point (the CLI's in-process host):
  *
  *   const server = new HostSocketServer({ dataDir, hostKind, hostInstanceId: currentHostInstanceId(), appVersion, mock })
  *   const ownership = await acquireHostOwnership({ ..., onConnection: (s) => server.accept(s) })
@@ -21,15 +21,11 @@
  *   against readDaemonSecret(dataDir) ('auth_failed'); only then the field checks with their detail (clientKind,
  *   clientVersion, pid, cwd, requestedScopes: 'bad_request'), so an unauthenticated peer learns nothing about the
  *   expected format. Then before attach() 'host_starting' (retryAfterMs 250), while the host drains 'host_draining',
- *   Terminal access off (OrgAIHost.terminalAccess) 'terminal_server_disabled', the socket quota, and the peer check
- *   ('descendant' -> 'agent_descendant_refused'; 'unavailable' is logged and accepted). On success it grants the
- *   requested scopes the Terminal access level allows (grantScopes: 'operate' = read + operate, the default; 'full' =
- *   all) and remembers the rest as withheld: their channels answer 'scope_denied' with TERMINAL_ACCESS_LEVEL_MESSAGE,
- *   except host.stop for a client that asked for 'configure'. The one exception to the cap is the owner of a
- *   `--host inproc` host: a hello whose ownerProof verifies against the server's in-memory `ownerKey` (only the CLI
- *   process that started the host holds it; it is never written to disk) gets every requested scope. Every other
- *   client of an in-process host, one holding daemon.secret included, is capped like on any host (review H2).
- *   Lowering the level closes sockets holding scopes it no longer allows (never the owner's). It answers an RpcHelloResult with hostProof (and
+ *   the socket quota, and the peer check ('descendant' -> 'agent_descendant_refused'; 'unavailable' is logged and
+ *   accepted). The server belongs to the orgai process that started the host: a hello whose ownerProof verifies against
+ *   the server's in-memory `ownerKey` (only that process holds it; it is never written to disk) gets every requested
+ *   scope. Every other client, one holding daemon.secret included, is refused not_owner before any method runs.
+ *   It answers an RpcHelloResult with hostProof (and
  *   versionSkewWarning when clientVersion !== appVersion) and raises the line cap to RPC_BULK_FRAME_MAX_BYTES. A
  *   refused hello closes the socket once the error frame is flushed.
  * - Windows named pipe (review H2 (1)): Node's net.Server cannot give a pipe a security descriptor or the
@@ -37,17 +33,8 @@
  *   default DACL: full control for LocalSystem, Administrators and the creator owner, read for Everyone and Anonymous)
  *   and listen({ readableAll, writableAll }) can only widen it. Read access alone cannot send host.hello, and a
  *   client of another machine still needs daemon.secret; so on Windows the barriers are the secret's explicit DACL
- *   (refuse every hello when it cannot be set), the proof, and the scope cap above. A native addon (or a pipe created
+ *   (refuse every hello when it cannot be set), the proof, and the owner proof above. A native addon (or a pipe created
  *   through another runtime) would be needed for an explicit DACL; UNVERIFIED on Windows from this code.
- * - Handoff connections (Wave 7, cli-standalone.md 4.4 step 5, D8): a proven `clientKind: 'desktop'` hello (the OrgAI
- *   app asking this host to hand over the data folder) is accepted on a Node host ('node') whatever Terminal access is
- *   (off, 'operate' or 'full') and across app versions; every other host kind refuses it after the proof
- *   (DESKTOP_HANDOFF_REFUSED_MESSAGE), with grantedScopes exactly HOST_HANDOFF_SCOPES and `handoff: true` in the result
- *   and its hostProof. Such a connection may call only HOST_HANDOFF_METHODS (host.status, host.stop, forced included):
- *   anything else, the subscriptions included, answers scope_denied before dispatch. The peer check still refuses the
- *   host's own descendants, with DESKTOP_HELLO_PEER_CHECK_MS instead of the default budget. This does not authenticate
- *   the app: any same-user process holding daemon.secret may claim 'desktop' (D8 accepts this). Handoff connections are
- *   not terminal sessions (terminalSessionCount) and Terminal access changes never close them.
  * - closeGracefully(ms) (the shutdown coordinator, before the release): close() and resolve once every socket has
  *   flushed its queued frames and closed, or the time is up (the rest are destroyed then).
  * - mcp:authorize with announceUrl: the `mcp.authorize` connections:event reaches only the socket whose call is still
@@ -79,10 +66,7 @@ import {
   RPC_MAX_INFLIGHT_PER_SOCKET,
   RPC_MAX_UNAUTH_SOCKETS,
   RPC_PRE_AUTH_FRAME_MAX_BYTES,
-  HOST_CLIENT_KINDS,
-  HOST_HANDOFF_METHODS,
-  HOST_HANDOFF_SCOPES,
-  DESKTOP_HELLO_PEER_CHECK_MS
+  HOST_CLIENT_KINDS
 } from '../../shared/types'
 import type {
   HostClientKind,
@@ -92,11 +76,10 @@ import type {
   HostSubscribeResult,
   HostSubscribeTopic,
   RpcHelloResult,
-  RunEvent,
-  TerminalAccessLevel
+  RunEvent
 } from '../../shared/types'
 import { log } from '../log'
-import type { HostTerminalAccess, OrgAIHost } from './bootstrap'
+import type { OrgAIHost } from './bootstrap'
 import { BulkBudget, type BulkReservation } from './bulkBudget'
 import { EventJournal } from './eventJournal'
 import type { HostPushChannel } from './events'
@@ -138,8 +121,7 @@ export interface HostSocketServerOptions {
   /**
    * Best-effort peer ancestry check of host.hello's pid (cli-spec 3.4(2)): 'descendant' refuses the client with
    * 'agent_descendant_refused', 'unavailable' is logged and allowed. Missing = peerCheck.ts checkPeerAncestry with
-   * the accepted socket's fd (macOS maps the socket to its real peer pids through lsof). `timeoutMs` is the budget:
-   * DESKTOP_HELLO_PEER_CHECK_MS for a 'desktop' hello, undefined (the check's default) otherwise.
+   * the accepted socket's fd (macOS maps the socket to its real peer pids through lsof). `timeoutMs` is an optional budget.
    */
   peerCheck?: (pid: number, socketFd?: number, timeoutMs?: number) => Promise<'ok' | 'descendant' | 'unavailable'>
   log?: (m: string) => void
@@ -149,97 +131,23 @@ export interface HostSocketServerOptions {
    * Why daemon.secret is not protected, read at every hello (wired to HostOwnership.secretAclWarning: set only when a
    * best-effort acquire bound the listener after the win32 ACL step failed). A string refuses the hello with
    * SECRET_ACL_MESSAGE. The server runs no icacls itself (review follow-up): ownership restricts the run folder and the
-   * secret before any listener exists ('required' for setListening and for headless / inproc hosts), and a second,
+   * secret before any listener exists ('required' for inproc hosts), and a second,
    * concurrent ACL run here raced that write and cached its failure for the server's life.
    */
   secretAclProblem?: () => string | undefined
   /**
    * `--host inproc` only: a 32-byte hex key kept in memory by the CLI process that started this host (never on disk,
    * never logged). A hello carrying a matching ownerProof (protocol.ts ownerProof) is that process and gets every
-   * requested scope; everyone else is capped by Terminal access (review H2).
+   * requested scope; everyone else is refused not_owner.
    */
   ownerKey?: string
 }
 
-/** The scopes each Terminal access level grants at most (AppSettings.terminalAccessLevel). */
-export function scopesForAccessLevel(level: TerminalAccessLevel): readonly HostScope[] {
-  return level === 'full' ? HOST_SCOPES : (['read', 'operate'] as const)
-}
-
-/** The scopes host.hello grants: the requested ones (deduplicated, in order) the level allows, and the ones it withheld. */
-export function grantScopes(requested: readonly HostScope[], level: TerminalAccessLevel): { granted: HostScope[]; withheld: HostScope[] } {
-  const allowed = scopesForAccessLevel(level)
-  const granted: HostScope[] = []
-  const withheld: HostScope[] = []
-  for (const s of new Set(requested)) (allowed.includes(s) ? granted : withheld).push(s)
-  return { granted, withheld }
-}
+/** The refusal of a hello without the owner proof on an in-process host. */
+export const NOT_OWNER_MESSAGE = 'This orgai host answers only the orgai process that started it.'
 
 /** host.subscribe topics (HostSubscribeTopic). */
 export const HOST_SUBSCRIBE_TOPICS: readonly HostSubscribeTopic[] = ['settings', 'connections', 'mcpLibrary', 'skillLibrary', 'capabilities', 'engagement']
-
-export const TERMINAL_ACCESS_OFF_MESSAGE =
-  'Terminal access is off. Turn it on in OrgAI: App settings > General > Advanced settings > Terminal access.'
-/** scope_denied for a scope host.hello withheld because of AppSettings.terminalAccessLevel. */
-export const TERMINAL_ACCESS_LEVEL_MESSAGE =
-  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access.'
-/**
- * The same two refusals from a Node host (Wave 7, cli-standalone.md 4.2.1): a machine with only the npm CLI has no App
- * settings, so they name the commands that change the stored Terminal access (review round 1).
- */
-export const NODE_TERMINAL_ACCESS_OFF_MESSAGE =
-  'Terminal access is off. Once this background host has stopped (its idle exit), turn it on with `orgai terminal-access on`.'
-export const NODE_TERMINAL_ACCESS_LEVEL_MESSAGE =
-  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop this background host (`orgai daemon stop`), then run `orgai terminal-access --level full`.'
-
-/**
- * A socket settings:set that would turn Terminal access off on a Node host (review round 2): refused, since the host
- * would then run unreachable (4.2.1): neither `orgai daemon stop` nor `orgai terminal-access` could talk to it, and
- * its idle exit never comes while runs are live or with ORGAI_DAEMON_IDLE_MINUTES=0.
- */
-export const NODE_TERMINAL_ACCESS_OFF_REFUSED =
-  'A background host cannot turn Terminal access off from a terminal: nothing could reach it afterwards. Stop it with `orgai daemon stop`, then run `orgai terminal-access off`.'
-
-/**
- * Whether a socket settings:set (`params` as sent) turns Terminal access off on this host: on a Node host, a
- * `terminalServer: false` while it is stored on. An echo of a stored false changes nothing and passes.
- */
-export function turnsNodeTerminalAccessOff(hostKind: HostKind, method: string, params: unknown, stored: () => { terminalServer?: boolean }): boolean {
-  if (hostKind !== 'node' || method !== IPC.settingsSet) return false
-  const input = Array.isArray(params) ? params[0] : undefined
-  if (!isObj(input) || input.terminalServer !== false) return false
-  try {
-    return stored().terminalServer === true
-  } catch {
-    // Unreadable settings: refuse rather than risk an unreachable host.
-    return true
-  }
-}
-
-/** TERMINAL_ACCESS_OFF_MESSAGE, or its Node host wording. */
-export function terminalAccessOffMessage(hostKind: HostKind): string {
-  return hostKind === 'node' ? NODE_TERMINAL_ACCESS_OFF_MESSAGE : TERMINAL_ACCESS_OFF_MESSAGE
-}
-
-/** TERMINAL_ACCESS_LEVEL_MESSAGE, or its Node host wording. */
-export function terminalAccessLevelMessage(hostKind: HostKind): string {
-  return hostKind === 'node' ? NODE_TERMINAL_ACCESS_LEVEL_MESSAGE : TERMINAL_ACCESS_LEVEL_MESSAGE
-}
-
-/**
- * What a handoff connection (a 'desktop' hello, cli-standalone.md 4.4) is told when it calls anything but
- * HOST_HANDOFF_METHODS. Wave 7 contracts refused the whole hello with a message of this name; the grant replaced that
- * on Node hosts, and DESKTOP_HANDOFF_REFUSED_MESSAGE keeps refusing it on every other host kind.
- */
-export const DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE = 'An OrgAI app hand-off connection may only read the host status and stop the host.'
-/**
- * A 'desktop' hello to a host that is not a Node host (4.4 steps 3-4, D8): the app hands over only from a background
- * Node host; an inproc owner (someone's terminal) is never stopped from the app, and the desktop and headless hosts
- * share the app's single-instance lock, so the app never asks them. The hello is refused after the proof, as before the
- * grant existed.
- */
-export const DESKTOP_HANDOFF_REFUSED_MESSAGE =
-  "This OrgAI host does not hand its data folder over to the app; only a background host started with `orgai daemon start` does. Stop it from its terminal, or with `orgai daemon stop --force`."
 
 /** hello refused on win32 when daemon.secret could not be restricted to the current user. */
 export const SECRET_ACL_MESSAGE =
@@ -267,9 +175,7 @@ interface Conn {
   clientKind?: HostClientKind
   pid?: number
   scopes: HostScope[]
-  /** Requested scopes host.hello withheld (AppSettings.terminalAccessLevel); their channels answer the level message. */
-  withheld: HostScope[]
-  /** The in-process host's own CLI (ownerProof verified): not capped by Terminal access, never closed when it narrows. */
+  /** The in-process host's own CLI (ownerProof verified): not capped by the host's access (the only client an in-process host serves), never closed when it narrows. */
   owner?: boolean
   inflight: number
   /**
@@ -293,30 +199,11 @@ interface Conn {
    * are refused, since their argument shapes may differ between versions (cli-spec 3.3(2), 6.3(6)).
    */
   versionSkew?: boolean
-  /** A 'desktop' hello's handoff grant (4.4 step 5): only HOST_HANDOFF_METHODS, checked before anything else. */
-  handoff?: boolean
 }
 
 /** Re-read after calls that may close the connection (defeats narrowing). */
 const isClosed = (c: Conn): boolean => c.state === 'closed'
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
-
-/**
- * The host's Terminal access (OrgAIHost.terminalAccess; a host without it reads AppSettings directly); off with the
- * lowest level when it cannot be read. The same on every host kind: an in-process host's own CLI is recognised by its
- * ownerProof, never by the host kind (review H2).
- */
-function accessOf(host: OrgAIHost): HostTerminalAccess {
-  try {
-    const fromHost = typeof host.terminalAccess === 'function' ? host.terminalAccess() : undefined
-    const s = fromHost ? undefined : host.settings.get()
-    const enabled = fromHost ? fromHost.enabled === true : s?.terminalServer === true
-    const level: TerminalAccessLevel = (fromHost ? fromHost.level : s?.terminalAccessLevel) === 'full' ? 'full' : 'operate'
-    return { enabled, level }
-  } catch {
-    return { enabled: false, level: 'operate' }
-  }
-}
 
 /**
  * The authorizeKey of a connections:event `mcp.authorize` (a sentinel no socket holds when its target is malformed,
@@ -343,18 +230,9 @@ export class HostSocketServer {
   protected readonly journal = new EventJournal()
   private closed = false
   private readonly conns = new Set<Conn>()
-  /**
-   * AppSettings.terminalServer as last read (attach, settings:changed). While it is off and no client is
-   * authenticated, run events are not journaled: a desktop user who never uses the terminal pays nothing per event.
-   */
-  private terminalOn = false
-  /** The Terminal access level as last read (attach, settings:changed); a lower one closes over-scoped sockets. */
-  private accessLevel: TerminalAccessLevel = 'operate'
   /** win32: daemon.secret's ACL restriction, run once (before the first hello is answered). */
   /** secretAclProblem's refusal is logged once per server. */
   private secretAclLogged = false
-  /** Run events are going unjournaled (see terminalOn); the journal's gap is marked once per such stretch. */
-  private journalPaused = false
   private nextId = 1
   private detach: Array<() => void> = []
   private readonly channelTopic = new Map<string, HostSubscribeTopic>()
@@ -400,7 +278,6 @@ export class HostSocketServer {
       state: 'unauth',
       hostNonce: newNonce(),
       scopes: [],
-      withheld: [],
       inflight: 0,
       authorizing: new Map(),
       topics: new Set(),
@@ -427,29 +304,21 @@ export class HostSocketServer {
   attach(host: OrgAIHost): void {
     if (this.closed || this.host) return
     this.host = host
-    const access = accessOf(host)
-    this.terminalOn = access.enabled
-    this.accessLevel = access.level
     this.detach.push(host.activity.addSource('interactiveClients', () => this.attachedClientCount()))
     this.detach.push(host.events.on((channel, payload) => this.onHostEvent(channel, payload)))
-  }
-
-  private hasAuthenticated(): boolean {
-    for (const c of this.conns) if (c.state === 'auth') return true
-    return false
   }
 
   /** Authenticated sockets whose clientKind is 'tui' or whose runs:subscribe asked for an active run record. */
   attachedClientCount(): number {
     let n = 0
-    for (const c of this.conns) if (c.state === 'auth' && !c.handoff && (c.clientKind === 'tui' || c.runs?.interactive === true)) n++
+    for (const c of this.conns) if (c.state === 'auth' && (c.clientKind === 'tui' || c.runs?.interactive === true)) n++
     return n
   }
 
-  /** Authenticated terminal sessions (cli and tui sockets), handoff connections excluded (host.status `handoff`). */
+  /** Authenticated terminal sessions (cli and tui sockets) (host.status `handoff` counts). */
   terminalSessionCount(): number {
     let n = 0
-    for (const c of this.conns) if (c.state === 'auth' && !c.handoff && !c.closeAfterInflight) n++
+    for (const c of this.conns) if (c.state === 'auth' && !c.closeAfterInflight) n++
     return n
   }
 
@@ -517,23 +386,6 @@ export class HostSocketServer {
   private refuse(conn: Conn, msg: unknown): void {
     this.send(conn, msg)
     this.refuseQueued(conn)
-  }
-
-  /**
-   * End every authenticated socket `which` picks (default all: Terminal access turned off); the server keeps serving
-   * new handshakes. `why` starts the log line.
-   */
-  private dropAuthenticated(which: (c: Conn) => boolean = () => true, why = 'Terminal access was turned off'): void {
-    let n = 0
-    for (const c of [...this.conns]) {
-      // A handoff connection does not depend on Terminal access (4.4 step 5).
-      if (c.state !== 'auth' || c.closeAfterInflight || c.handoff || !which(c)) continue
-      n++
-      if (c.socket.destroyed) this.kill(c)
-      else if (c.inflight > 0) this.closeAfterInflight(c)
-      else this.refuseQueued(c)
-    }
-    if (n) this.log(`${why}; closed ${n} terminal connection${n === 1 ? '' : 's'}.`)
   }
 
   /** close() with requests in flight: stop reading and pushing, end the socket once their answers are queued. */
@@ -674,7 +526,7 @@ export class HostSocketServer {
    */
   private helloProblem(p: Record<string, unknown>): HostRpcError | undefined {
     const badReq = (message: string): HostRpcError => ({ code: 'bad_request', message })
-    if (!HOST_CLIENT_KINDS.includes(p.clientKind as HostClientKind)) return badReq("host.hello clientKind must be 'cli', 'tui' or 'desktop'.")
+    if (!HOST_CLIENT_KINDS.includes(p.clientKind as HostClientKind)) return badReq("host.hello clientKind must be 'cli' or 'tui'.")
     if (typeof p.clientVersion !== 'string' || p.clientVersion.length > CLIENT_VERSION_MAX) return badReq('host.hello clientVersion must be a string of at most 200 characters.')
     if (typeof p.pid !== 'number' || !Number.isSafeInteger(p.pid) || p.pid <= 0) return badReq('host.hello pid must be a positive integer.')
     if (typeof p.cwd !== 'string' || p.cwd.length > CWD_MAX || p.cwd.includes('\u0000')) return badReq('host.hello cwd must be a path of at most 4096 characters.')
@@ -748,13 +600,11 @@ export class HostSocketServer {
     this.secretCache = secret
     const problem = this.helloProblem(raw)
     if (problem) return fail(problem)
-    // Wave 7 (4.4 step 5, D8): a proven 'desktop' hello gets the handoff grant, whatever Terminal access is, from a
-    // Node host only. D8 accepts that any same-user process with daemon.secret can stop a Node host this way; an inproc
-    // CLI's host (someone's terminal session), a headless or a desktop host is never stopped through it.
-    if (raw.clientKind === 'desktop' && this.opts.hostKind !== 'node') return fail({ code: 'bad_request', message: DESKTOP_HANDOFF_REFUSED_MESSAGE })
-    const handoff = raw.clientKind === 'desktop'
     // An inproc host's own CLI, proven by the in-memory owner key (a client that only read daemon.secret cannot make that proof).
-    const owner = this.opts.hostKind === 'inproc' && !handoff && this.isOwnerHello(conn, raw, raw.clientProof as string)
+    const owner = this.isOwnerHello(conn, raw, raw.clientProof as string)
+    // An orgai host serves its own process only (cli-standalone-default.md 4.1): without the memory-only owner proof no
+    // method runs, even for a peer that can read daemon.secret and forges its client.
+    if (!owner) return fail({ code: 'not_owner', message: NOT_OWNER_MESSAGE })
     const p = raw as Record<string, unknown> & {
       clientKind: HostClientKind
       clientVersion: string
@@ -768,33 +618,19 @@ export class HostSocketServer {
       const host = this.host
       if (!host) return { code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS }
       if (host.activity.state() === 'draining') return { code: 'host_draining', message: 'OrgAI is shutting down.', retryAfterMs: HOST_DRAINING_RETRY_MS }
-      // The in-process host's own CLI (owner proof) and a desktop handoff do not depend on Terminal access (cli-standalone.md 13.12).
-      if (!handoff && !owner && !accessOf(host).enabled) return { code: 'terminal_server_disabled', message: terminalAccessOffMessage(this.opts.hostKind) }
       if (this.authCount >= RPC_MAX_CLIENT_SOCKETS) return { code: 'too_many_connections', message: `OrgAI already serves ${RPC_MAX_CLIENT_SOCKETS} terminal clients.` }
       return undefined
     }
     const before = gateProblem()
     if (before) return fail(before)
-    if (handoff) {
-      // The proof verified; the desktop peer check may take DESKTOP_HELLO_PEER_CHECK_MS, which the handshake deadline
-      // (RPC_HANDSHAKE_TIMEOUT_MS from accept) would otherwise cut, closing the app's connection mid-check (seen on a
-      // loaded Mac, where ps and lsof ran to the budget). Re-arm it past the check.
-      if (conn.timer) clearTimeout(conn.timer)
-      conn.timer = setTimeout(() => {
-        if (conn.state === 'hello') this.kill(conn)
-      }, DESKTOP_HELLO_PEER_CHECK_MS + RPC_HANDSHAKE_TIMEOUT_MS)
-      conn.timer.unref?.()
-    }
     let peer: 'ok' | 'descendant' | 'unavailable'
     try {
       const fd = socketFdOf(conn.socket)
-      // A desktop hello gets a longer budget (the app waits on it; a missed descendant would be able to stop the host).
-      const budget = handoff ? DESKTOP_HELLO_PEER_CHECK_MS : undefined
       const check =
         this.opts.peerCheck ??
         ((pid: number, socketFd?: number, timeoutMs?: number) =>
           checkPeerAncestry(pid, { ...(socketFd === undefined ? {} : { socketFd }), ...(timeoutMs === undefined ? {} : { timeoutMs }) }))
-      peer = await check(p.pid, fd, budget)
+      peer = await check(p.pid, fd)
     } catch {
       peer = 'unavailable'
     }
@@ -807,12 +643,8 @@ export class HostSocketServer {
     // Re-check after the await: another hello may have taken the last slot, or a drain may have begun.
     const after = gateProblem()
     if (after) return fail(after)
-    // Never more than Terminal access allows (review H2): decide and configure need AppSettings.terminalAccessLevel
-    // 'full', which only the desktop window sets (or `orgai terminal-access` on a Node host). The one exception is an
-    // in-process host's own CLI (owner proof, any stored choice). A handoff connection gets exactly HOST_HANDOFF_SCOPES.
-    const { granted: grantedScopes, withheld } = handoff
-      ? { granted: [...HOST_HANDOFF_SCOPES], withheld: [] as HostScope[] }
-      : grantScopes(p.requestedScopes, owner ? 'full' : accessOf(this.host!).level)
+    // The owner gets every requested scope (deduplicated, in order).
+    const grantedScopes: HostScope[] = [...new Set(p.requestedScopes)]
     const result: RpcHelloResult = {
       protocolVersion: 1,
       hostInstanceId: this.opts.hostInstanceId,
@@ -830,11 +662,9 @@ export class HostSocketServer {
         appVersion: this.opts.appVersion,
         dataDir: this.opts.dataDir,
         mock: this.opts.mock,
-        grantedScopes,
-        ...(handoff ? { handoff: true } : {})
+        grantedScopes
       })
     }
-    if (handoff) result.handoff = true
     if (p.clientVersion !== this.opts.appVersion) {
       result.versionSkewWarning = `This orgai CLI is version ${p.clientVersion} and the running OrgAI is ${this.opts.appVersion}; update them to the same version.`
     }
@@ -844,14 +674,11 @@ export class HostSocketServer {
     conn.clientKind = p.clientKind
     conn.pid = p.pid
     conn.scopes = grantedScopes
-    conn.withheld = withheld
-    if (handoff) conn.handoff = true
-    if (owner) conn.owner = true
+    conn.owner = true
     if (result.versionSkewWarning) conn.versionSkew = true
     conn.reader.maxLineBytes = RPC_BULK_FRAME_MAX_BYTES
     this.send(conn, rpcResult(HELLO_REQUEST_ID, result))
-    const held = withheld.length ? `; withheld by Terminal access: ${withheld.join(', ')}` : ''
-    this.log(`Client ${conn.id} connected (${owner ? 'in-process owner, ' : ''}${p.clientKind} ${p.clientVersion.slice(0, 40)}, scopes ${grantedScopes.join(', ') || 'none'}${held}).`)
+    this.log(`Client ${conn.id} connected (in-process owner, ${p.clientKind} ${p.clientVersion.slice(0, 40)}, scopes ${grantedScopes.join(', ') || 'none'}).`)
     for (const line of conn.pendingLines.splice(0)) {
       if (conn.state !== 'auth') break
       this.onLine(conn, line)
@@ -866,10 +693,6 @@ export class HostSocketServer {
       return this.send(conn, rpcError(id, { code: 'frame_too_large', message: `${method} requests are limited to ${frameLimitFor(method).requestBytes} bytes.` }))
     }
     if (method === HOST_METHODS.hostHello) return this.send(conn, rpcError(id, { code: 'bad_request', message: 'Already connected.' }))
-    // A handoff connection (4.4 step 5) reaches host.status and host.stop only, before any other check or dispatch.
-    if (conn.handoff && !HOST_HANDOFF_METHODS.includes(method as (typeof HOST_HANDOFF_METHODS)[number])) {
-      return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method}: ${DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE}` }))
-    }
     if (method === HOST_IPC.runsSubscribe) return this.runsSubscribe(conn, req)
     if (method === HOST_METHODS.hostSubscribe) return this.hostSubscribe(conn, req)
     const host = this.host
@@ -885,16 +708,7 @@ export class HostSocketServer {
         rpcError(id, { code: 'scope_denied', message: `${method} needs the same orgai and OrgAI version (the 'configure' scope is limited to host.stop across versions); update them to the same version.` })
       )
     }
-    // host.stop is the one 'configure' channel any client that asked for 'configure' may call whatever the Terminal
-    // access level: it does nothing a same-user `kill` of the pid in daemon.json could not (`orgai daemon stop`).
-    const stopOnly = method === HOST_METHODS.hostStop && conn.withheld.includes('configure')
-    if (scope !== undefined && conn.withheld.includes(scope as HostScope) && !stopOnly) {
-      return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method} needs the '${scope}' scope. ${terminalAccessLevelMessage(this.opts.hostKind)}` }))
-    }
-    if (turnsNodeTerminalAccessOff(this.opts.hostKind, method, req.params, () => host.settings.get())) {
-      return this.send(conn, rpcError(id, { code: 'bad_request', message: NODE_TERMINAL_ACCESS_OFF_REFUSED }))
-    }
-    const grantedScopes: HostScope[] = stopOnly ? [...conn.scopes, 'configure'] : conn.scopes
+    const grantedScopes: HostScope[] = conn.scopes
     const authorizing = method === IPC.mcpAuthorize ? this.trackAuthorize(conn, req.params) : undefined
     conn.inflight++
     let p: Promise<unknown>
@@ -1002,21 +816,6 @@ export class HostSocketServer {
 
   private onHostEvent(channel: HostPushChannel, payload: unknown): void {
     if (this.closed) return
-    // Terminal access switched off: every authenticated client loses its connection (and so its scopes) at once, not
-    // only new handshakes (AppSettings.terminalServer, cli-spec invariant 2). In-flight answers (the settings:set that
-    // turned it off) still go out first.
-    if (channel === 'settings:changed' && this.host) {
-      const access = accessOf(this.host)
-      this.terminalOn = access.enabled
-      const lowered = this.accessLevel === 'full' && access.level !== 'full'
-      this.accessLevel = access.level
-      if (!this.terminalOn) this.dropAuthenticated((c) => !c.owner)
-      else {
-        // A lower level takes effect at once: sockets holding scopes it no longer allows are closed, as when Terminal
-        // access is turned off; the client reconnects with what it may have now.
-        if (lowered) this.dropAuthenticated((c) => !c.owner && c.scopes.some((s) => !scopesForAccessLevel(access.level).includes(s)), 'Terminal access was narrowed')
-      }
-    }
     if (channel === 'runs:event') {
       this.onRunEvent(payload as RunEvent)
       return
@@ -1042,16 +841,6 @@ export class HostSocketServer {
   }
 
   private onRunEvent(event: RunEvent): void {
-    // Nobody can read the journal while Terminal access is off (handshakes are refused): skip the per-event JSON
-    // encoding and the retained ring. A client connecting later gets a snapshot (its sinceSeq predates the gap).
-    if (!this.terminalOn && !this.hasAuthenticated()) {
-      if (!this.journalPaused) {
-        this.journalPaused = true
-        this.journal.markGap()
-      }
-      return
-    }
-    this.journalPaused = false
     let appended
     try {
       appended = this.journal.append(event)

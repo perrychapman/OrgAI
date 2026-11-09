@@ -8,10 +8,9 @@
  * Anthropic connection is not in use (not the default, no project on it; defaults.ts connectionInUse); Codex is
  * optional (only the OpenAI connection uses it), so a missing Codex is ok and a Codex OrgAI would refuse warns.
  *
- * Both checks resolve in this CLI process, with its environment and bundle folder. A running host (the desktop app or
- * the daemon) resolves with its own (ORGAI_CLAUDE_PATH / ORGAI_CODEX_PATH set only in this shell do not reach a
- * Finder-launched app), so every detail says whose view it is (RUNTIME_VIEW_NOTE). No host channel reports the host's
- * own resolution yet.
+ * Both checks resolve in this CLI process, with its environment and bundle folder. Doctor is hostless and the CLI runs
+ * its own host in this process, so this is also the view an `orgai` run has; every detail still says whose view it is
+ * (RUNTIME_VIEW_NOTE), because the desktop app resolves its own runtimes separately.
  */
 import { CLAUDE_SOURCE_LABEL, claudeExecutable, claudeResolutionMessage, type ClaudeExecutableResolution } from '../../main/runtime/claudeBinary'
 import { CODEX_NOT_INSTALLED_MESSAGE, CODEX_SOURCE_LABEL, checkCodexBinary, lookupCodexBinary, type CodexLookup, type CodexRuntimeCheck, type CodexBinary } from '../../main/runtime/codexBinary'

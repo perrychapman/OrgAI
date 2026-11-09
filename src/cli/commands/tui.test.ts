@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project, ProjectPathCheck, RunSummary } from '../../shared/types'
-import { FakeHostClient, fakeContext, project, summary, type FakeContextOptions } from '../testing/fakeContext'
+import { FakeHostClient, fakeContext, fakeInproc, project, summary, type FakeContextOptions } from '../testing/fakeContext'
 import type { TuiHostConnection, TuiLaunch } from '../tui/types'
 import { EXIT, type CliContext } from '../types'
 
@@ -18,7 +18,7 @@ vi.mock('../tui/index', () => ({
   }
 }))
 
-const { defaultTuiPrintsHelp, runAttach, runDefaultTui, runResumeTui, runTuiCommand, PROMPT_HINT } = await import('./tui')
+const { defaultTuiPrintsHelp, runDefaultTui, runResumeTui, runTuiCommand, PROMPT_HINT } = await import('./tui')
 
 const P1 = project('p1', '/work')
 
@@ -31,7 +31,7 @@ function fakeConn(answers: { projects?: Project[]; runs?: RunSummary[] } = {}): 
   return {
     client,
     hello: client.hello,
-    started: false,
+    inproc: fakeInproc(),
     projects: async () => answers.projects ?? [P1],
     checkPath: async () => ({ exists: true, isDirectory: true, isGitRepo: true, suggestedName: 'work', empty: false }) as ProjectPathCheck,
     createProject: async () => P1,
@@ -114,38 +114,44 @@ describe('bare orgai / orgai <prompt>', () => {
   })
 })
 
-describe('orgai tui / attach', () => {
+describe('orgai tui', () => {
   const runs = [summary('run_bbbbbb02', { startedAt: 200 }), summary('run_aaaaaa01', { startedAt: 100 })]
 
-  it('tui --run and attach resolve refs through the live host', async () => {
+  it('tui --run resolves refs against this process\'s host', async () => {
     tui.conn = fakeConn({ runs })
     const f = ttyCtx()
     expect(await runTuiCommand(f.ctx, ['--run', 'R1'])).toBe(0)
-    expect(await runAttach(f.ctx, ['run_bbbbbb02', '--inline'])).toBe(0)
+    expect(await runTuiCommand(f.ctx, ['--run', 'run_bbbbbb02', '--inline'])).toBe(0)
     expect(tui.calls[0].prepared).toEqual({ runId: 'run_aaaaaa01', project: P1 })
     expect(tui.calls[1].prepared).toEqual({ runId: 'run_bbbbbb02', project: P1 })
     expect(tui.calls[1].flags.inline).toBe(true)
   })
 
+  it('tui <run> opens a saved run like --run; both together are refused', async () => {
+    tui.conn = fakeConn({ runs })
+    const f = ttyCtx()
+    expect(await runTuiCommand(f.ctx, ['R1'])).toBe(0)
+    expect(tui.calls[0].prepared).toEqual({ runId: 'run_aaaaaa01', project: P1 })
+    await expect(runTuiCommand(f.ctx, ['R1', '--run', 'R1'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runTuiCommand(f.ctx, ['R1', 'R2'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+  })
   it('a bad ref is a usage error', async () => {
     tui.conn = fakeConn({ runs })
     const f = ttyCtx()
-    await expect(runAttach(f.ctx, ['R9'])).rejects.toMatchObject({ exitCode: EXIT.usage })
-    await expect(runAttach(f.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runTuiCommand(f.ctx, ['--run', 'R9'])).rejects.toMatchObject({ exitCode: EXIT.usage })
     await expect(runTuiCommand(f.ctx, ['extra'])).rejects.toMatchObject({ exitCode: EXIT.usage })
   })
 
   it('needs a terminal', async () => {
     const f = ttyCtx({ tty: false })
-    await expect(runAttach(f.ctx, ['R1'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('needs a terminal') })
+    await expect(runTuiCommand(f.ctx, ['--run', 'R1'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('needs a terminal') })
     await expect(runTuiCommand(f.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.usage })
   })
 
-  it('in a managed worktree attach and tui --run open read-only; bare tui refuses', async () => {
+  it('in a managed worktree tui --run opens read-only; bare tui refuses', async () => {
     tui.conn = fakeConn({ runs })
     const f = ttyCtx()
     managed(f.ctx)
-    expect(await runAttach(f.ctx, ['R2'])).toBe(0)
     expect(await runTuiCommand(f.ctx, ['--run', 'R2'])).toBe(0)
     for (const c of tui.calls) {
       expect(c.prepared?.runId).toBe('run_bbbbbb02')

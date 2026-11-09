@@ -11,14 +11,16 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Test isolation: ORGAI_VAULT_NO_OS_KEYSTORE keeps the vault off the OS keystore for every app, CLI or helper an e2e
-// script starts. Every child inherits process.env, so setting it here (an import side effect, before any launch) covers
-// launch(), startCli() and the pty driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE) keeps it; the
-// flag is harmless beside it.
+// Test isolation: ORGAI_VAULT_NO_OS_KEYSTORE (the app's vault) and ORGAI_CLI_VAULT_NO_OS_KEYSTORE (the orgai CLI's own
+// vault, a separate product) keep the vaults off the OS keystore for every app, CLI or helper an e2e script starts.
+// Every child inherits process.env, so setting them here (an import side effect, before any launch) covers launch(),
+// startCli() and the pty driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE, ORGAI_CLI_VAULT_KEY_FILE)
+// keeps it; the flags are harmless beside it.
 process.env.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
+process.env.ORGAI_CLI_VAULT_NO_OS_KEYSTORE = '1'
 // Electron's own safeStorage (the app's older secrets.json) would otherwise create a "... Safe Storage" keychain item on
-// macOS. Only launch() passes Chromium's --use-mock-keychain (key kept in memory); apps started elsewhere (cli-host.mjs,
-// cli-readonly's daemon start, verify-pack) do not, so they can still reach the real keychain through safeStorage.
+// macOS. Only launch() passes Chromium's --use-mock-keychain (key kept in memory); apps started elsewhere (cli-readonly,
+// verify-pack) do not, so they can still reach the real keychain through safeStorage.
 
 export const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
 export const APP_DIR = path.resolve(E2E_DIR, '..')
@@ -66,25 +68,6 @@ export function electronBinary() {
 const failures = []
 
 /** Record a check. Failures are collected and reported by `finish()`. */
-/**
- * Record the user's choice of Terminal access 'full' in `<DATA_DIR>/data/settings.json` (merged into what is there),
- * as App settings does. A `--host inproc` host gives decide / configure only to the CLI process that started it (its
- * in-memory owner key, review H2); a long-lived `daemon start --host inproc` serves other CLI processes, which then
- * need this to answer cards or change settings.
- */
-export function allowFullTerminalAccess() {
-  const dir = path.join(DATA_DIR, 'data')
-  fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, 'settings.json')
-  let doc = {}
-  try {
-    if (fs.existsSync(file)) doc = JSON.parse(fs.readFileSync(file, 'utf8')) ?? {}
-  } catch {
-    doc = {}
-  }
-  fs.writeFileSync(file, JSON.stringify({ version: 1, ...doc, settings: { ...(doc.settings ?? {}), terminalAccessLevel: 'full' } }, null, 2))
-}
-
 export function check(ok, what, detail = '') {
   if (ok) log(`PASS ${what}`)
   else {

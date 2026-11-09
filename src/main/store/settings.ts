@@ -329,26 +329,8 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultMaxAutoContinues:
       r.defaultMaxAutoContinues != null && Number.isFinite(maxContinues) && maxContinues >= 0
         ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.floor(maxContinues))
-        : d.defaultMaxAutoContinues,
-    // Only an explicit boolean true opens the terminal server.
-    terminalServer: r.terminalServer === true,
-    ...(r.terminalServerChosen === true ? { terminalServerChosen: true } : {}),
-    // Missing (or junk) is 'operate': read and operate only. An explicit 'operate' is kept (Wave 7: a stored choice).
-    ...(r.terminalAccessLevel === 'full' || r.terminalAccessLevel === 'operate' ? { terminalAccessLevel: r.terminalAccessLevel } : {}),
-    ...(r.terminalAccessLevelChosen === true ? { terminalAccessLevelChosen: true } : {})
+        : d.defaultMaxAutoContinues
   }
-}
-
-/**
- * Settings read from disk: Terminal access saved on without terminalServerChosen was turned on by an older build's
- * headless or in-process boot, never by the user (every settings:set that changes terminalServer sets
- * terminalServerChosen, args.ts settingsSetArgs). It is read as off; such a boot now opens it for its own session only
- * (bootstrap.ts terminalAccess). Pure; exported for tests.
- */
-export function withoutUnchosenTerminalAccess(s: AppSettings): AppSettings {
-  if (s.terminalServer !== true || s.terminalServerChosen === true) return s
-  console.info('Terminal access was saved on by a headless start, not by a choice in App settings; it is off until turned on there.')
-  return { ...s, terminalServer: false }
 }
 
 /** Global app settings, stored as settings.json next to projects.json. */
@@ -368,7 +350,7 @@ export class SettingsStore {
     try {
       if (existsSync(this.file)) {
         const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { settings?: Partial<AppSettings> }
-        this.settings = withoutUnchosenTerminalAccess(normalizeSettings(parsed.settings))
+        this.settings = normalizeSettings(parsed.settings)
       }
     } catch (e) {
       console.error('Failed to read settings.json, using defaults:', e)

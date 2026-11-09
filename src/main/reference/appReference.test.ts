@@ -9,12 +9,12 @@ import { bundledDocs } from './docs'
 const SECRET = 'sk-SECRET-proxy-key-123456'
 
 function statusDeps(): NonNullable<AppReferenceDeps['status']> {
-  const settings = { terminalServer: true, terminalAccessLevel: 'full', proxies: [{ id: 'p1', apiKey: SECRET, anthropicBaseUrl: `https://user:${SECRET}@proxy.example.com` }], authorization: `Bearer ${SECRET}` } as unknown as AppSettings
+  const settings = { proxies: [{ id: 'p1', apiKey: SECRET, anthropicBaseUrl: `https://user:${SECRET}@proxy.example.com` }], authorization: `Bearer ${SECRET}` } as unknown as AppSettings
   const conns = [
     { connection: { id: 'anthropic', enabled: true }, status: { state: 'connected', detail: `url https://x:${SECRET}@h` }, isDefault: true },
     { connection: { id: 'p1', name: 'Mine', anthropicBaseUrl: `https://u:${SECRET}@h` }, status: { state: 'error' }, isDefault: false }
   ] as unknown as ConnectionInfo[]
-  return { appVersion: '1.2.3', platform: 'win32', dataDir: 'C:\\data', mock: true, settings: () => settings, connections: () => conns, projectCount: () => 4, mcpLibraryCount: () => 2, skillLibraryCount: () => 1, cliShim: () => ({ state: 'installed', path: '', binDir: '' }) }
+  return { appVersion: '1.2.3', platform: 'win32', dataDir: 'C:\\data', mock: true, settings: () => settings, connections: () => conns, projectCount: () => 4, mcpLibraryCount: () => 2, skillLibraryCount: () => 1, cliShim: () => ({ state: 'npm', oldShim: false, npmFound: true, tag: 'latest', command: 'npm install -g orgai-cli@latest', installing: false }) }
 }
 
 describe('corpus', () => {
@@ -33,6 +33,24 @@ describe('corpus', () => {
     expect([...ids].some((i) => i.startsWith('command:'))).toBe(true)
     expect([...ids].some((i) => i.startsWith('connector:'))).toBe(true)
     expect([...ids].some((i) => i.startsWith('doc:how-it-works#'))).toBe(true)
+  })
+  it('no bundled doc tells CLI users about orgai decide or Terminal access (README included)', () => {
+    const docs = bundledDocs()
+    for (const [name, text] of Object.entries(docs)) {
+      if (name === 'cli-standalone-default') continue
+      expect(text, name).not.toMatch(/orgai decide/)
+    }
+    expect(docs.README).not.toMatch(/terminal\s+access/i)
+  })
+  it('leaves out the withdrawn CLI designs and embeds the new command table (no removed commands)', () => {
+    const keys = Object.keys(bundledDocs())
+    for (const gone of ['cli-approvals', 'cli-spec', 'cli-standalone']) expect(keys).not.toContain(gone)
+    expect(keys).toContain('cli-standalone-default')
+    // The still-valid exec and exit code facts of the withdrawn designs live in the kept spec (4.6), so self-help finds them.
+    expect(bundledDocs()['cli-standalone-default']).toMatch(/Exec outcomes, exit codes and policies/)
+    const ids = buildReferenceCorpus({ shortcuts: [] }).map((x) => x.id).filter((i) => i.startsWith('command:'))
+    for (const removed of ['daemon', 'app', 'terminal-access', 'watch', 'inbox', 'decide', 'attach']) expect(ids).not.toContain(`command:${removed}`)
+    expect(ids).toEqual(expect.arrayContaining(['command:status', 'command:doctor', 'command:tui', 'command:exec']))
   })
   it('splits markdown by heading, ignoring headings in code fences and capping sections', () => {
     const md = ['# T', 'intro', '## A', 'a body', '```', '## not a heading', '```', '## A', 'again', '### B', 'b', `## Big`, 'x'.repeat(7000)].join('\n')
@@ -84,7 +102,6 @@ describe('query', () => {
     expect(r.text).toContain('1.2.3')
     expect(r.text).toContain('connection anthropic')
     expect(r.text).toContain('default')
-    expect(r.text).toContain('level full')
     expect(r.text).not.toContain(SECRET)
     expect(r.text).not.toContain('proxy.example.com')
     expect(r.text).not.toContain('http')

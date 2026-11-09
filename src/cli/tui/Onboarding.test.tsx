@@ -17,7 +17,7 @@ const check = (agentSources?: ProjectPathCheck['agentSources']): ProjectPathChec
   ...(agentSources ? { agentSources } : {})
 })
 
-function mount(c?: ProjectPathCheck, env: Partial<TuiEnv> = {}, layout: { width?: number; height?: number; accessNotice?: string; decisionsInDesktop?: boolean; busy?: string; checking?: boolean } = {}) {
+function mount(c?: ProjectPathCheck, env: Partial<TuiEnv> = {}, layout: { width?: number; height?: number; accessNotice?: string; busy?: string; checking?: boolean } = {}) {
   const bus = new InputBus()
   const choices: OnboardingChoice[] = []
   const onCancel = vi.fn()
@@ -180,7 +180,7 @@ describe('Onboarding', () => {
   })
 
   it('wraps a capability notice in the bounded panel and keeps the full warning', () => {
-    const notice = 'Terminal decisions stay in the desktop app. Use Settings > Terminal access > Full control to answer here.'
+    const notice = 'The connection was lost and came back; start again if the first run does not appear.'
     const m = mount(check(), {}, { width: 60, height: 16, accessNotice: notice })
     const frame = m.r.lastFrame() ?? ''
     expect(frame).toContain('Before you begin')
@@ -192,18 +192,8 @@ describe('Onboarding', () => {
     m.r.unmount()
   })
 
-  it('adds the desktop approval path without changing the selected action', async () => {
-    const m = mount(check(), {}, { width: 60, height: 16, decisionsInDesktop: true })
-    const before = m.r.lastFrame() ?? ''
-    expect(before).toContain('Approvals')
-    expect(before).toContain('What terminals may do')
-    await m.send(named('enter'))
-    expect(m.choices).toEqual([{ kind: 'quick', allowEdits: false }])
-    m.r.unmount()
-  })
-
-  it('keeps every choice visible during a tiny resize with an approval notice', () => {
-    const m = mount(check(), {}, { width: 60, height: 8, decisionsInDesktop: true })
+  it('keeps every choice visible during a tiny resize with a notice', () => {
+    const m = mount(check(), {}, { width: 60, height: 8, accessNotice: 'Reconnected to the host.' })
     const frame = m.r.lastFrame() ?? ''
     expect(frame).toContain('Before you begin')
     expect(frame).toContain('[1] Quick run in this folder')
@@ -239,24 +229,23 @@ describe('Onboarding', () => {
   it.each([{ width: 160, height: 40 }, { width: 210, height: 40 }, { width: 120, height: 40 }])('keeps imports and permission guidance visible at $width x $height', (layout) => {
     const m = mount(check([{ source: 'claude', label: 'Claude Code', agentCount: 3 }]), { unicode: true }, {
       ...layout,
-      decisionsInDesktop: true,
-      accessNotice: 'The CLI and host versions differ. Restart the desktop app after updating to make sure both versions match.'
+      accessNotice: 'Reconnected to the host after a pause.'
     })
     const frame = m.r.lastFrame() ?? ''
-    for (const label of ['[1]', '[2]', '[3]', '[i]', 'Full control', 'Enter']) expect(frame.replace(/\s+/g, ' ')).toContain(label)
+    for (const label of ['[1]', '[2]', '[3]', '[i]', 'Reconnected', 'Enter']) expect(frame.replace(/\s+/g, ' ')).toContain(label)
     expect(frame.split('\n').length).toBeLessThanOrEqual(layout.height)
     expect(Math.max(...frame.split('\n').map(row => row.length))).toBeLessThanOrEqual(layout.width)
     m.r.unmount()
   })
 
   it('keeps a large screen-reader view linear and consumes choices while setup is busy', async () => {
-    const m = mount(check(), { screenReader: true }, { width: 120, height: 40, busy: 'Creating your project', decisionsInDesktop: true })
+    const m = mount(check(), { screenReader: true }, { width: 120, height: 40, busy: 'Creating your project', accessNotice: 'Reconnected to the host.' })
     const frame = m.r.lastFrame() ?? ''
     expect(frame).toContain('Selected: [1]')
     expect(frame).not.toContain('QUICK RUN')
     expect(frame).toContain('Please wait')
     expect(frame).not.toContain('Enter to continue')
-    expect(frame.replace(/\s+/g, ' ')).toContain('Full control')
+    expect(frame.replace(/\s+/g, ' ')).toContain('Reconnected')
     await m.send(key('3'))
     await m.send(named('enter'))
     expect(m.choices).toEqual([])

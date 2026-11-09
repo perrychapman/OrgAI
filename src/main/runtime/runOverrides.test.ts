@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, MAX_TIMER_DELAY_MS, PERMISSION_MODES } from '@shared/types'
 import type { PermissionMode, Project, RunOverrides } from '@shared/types'
-import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overridesWidening, runOverridesArgs } from './runOverrides'
+import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overridesWidening, runOverridesArgs, withoutWaitPolicy } from './runOverrides'
 
 const project = (over: Partial<Project> = {}): Project =>
   ({ id: 'p1', name: 'P', path: '/tmp/p', permissionMode: 'default', roles: [], ...over }) as unknown as Project
@@ -200,5 +200,17 @@ describe('runOverridesArgs', () => {
       merge: DEFAULT_HEADLESS_DECISION_POLICY.merge,
       maxAutoDenials: 2
     })
+  })
+})
+
+describe('withoutWaitPolicy', () => {
+  it('turns wait into fail for every kind and returns the same object when nothing waits', () => {
+    const waiting: RunOverrides = { execMode: true, decisionPolicy: { ...DEFAULT_HEADLESS_DECISION_POLICY, permission: 'wait', question: 'wait', merge: 'wait', waitTimeoutMs: 5 } }
+    const out = withoutWaitPolicy(waiting)
+    expect(out.decisionPolicy).toMatchObject({ permission: 'fail', question: 'fail', merge: 'fail', rules: DEFAULT_HEADLESS_DECISION_POLICY.rules, waitTimeoutMs: 5 })
+    expect(waiting.decisionPolicy?.permission).toBe('wait')
+    const calm: RunOverrides = { execMode: true, decisionPolicy: { ...DEFAULT_HEADLESS_DECISION_POLICY } }
+    expect(withoutWaitPolicy(calm)).toBe(calm)
+    expect(withoutWaitPolicy({ execMode: true })).toEqual({ execMode: true })
   })
 })
