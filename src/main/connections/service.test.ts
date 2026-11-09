@@ -358,7 +358,7 @@ describe('anthropic connect', () => {
 })
 
 describe('openai ChatGPT login', () => {
-  function codexSetup(): { ctx: ReturnType<typeof setup>; rpc: FakeRpc; factory: ReturnType<typeof vi.fn> } {
+  function codexSetup() {
     let account: unknown = { account: null, requiresOpenaiAuth: true }
     const rpc = fakeRpc({
       'account/read': () => account,
@@ -378,7 +378,7 @@ describe('openai ChatGPT login', () => {
       account = { account: { type: 'chatgpt', email: 'me@x.io', planType: 'plus' }, requiresOpenaiAuth: true }
     }
     ;(rpc as FakeRpc & { signIn: () => void }).signIn = signIn
-    const factory = vi.fn(() => asCodexServer(rpc))
+    const factory = vi.fn<NonNullable<ConnectionServiceDeps['codexFactory']>>(() => asCodexServer(rpc))
     return { ctx: setup({ codexFactory: factory }), rpc, factory }
   }
 
