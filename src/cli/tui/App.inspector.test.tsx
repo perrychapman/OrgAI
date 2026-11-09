@@ -147,17 +147,21 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
   }
   const frame = (): string => r.lastFrame() ?? ''
   /** Tab to the tree, then up to the mock-lead row (the tree starts on the agent that needs you). */
-  const onLeadRow = async (): Promise<void> => {
-    await send(named('tab'), named('up'))
+  const onTree = async (): Promise<void> => {
+    await send(named('escape'), named('tab'), ...(opts.cols >= 110 ? [named('tab')] : []))
   }
-  return { r, session, send, frame, onLeadRow }
+  const onLeadRow = async (): Promise<void> => {
+    await onTree()
+    await send(named('up'))
+  }
+  return { r, session, send, frame, onLeadRow, onTree }
 }
 
 const notices = (m: { session: { notify: { mock: { calls: unknown[][] } } } }): unknown[] => m.session.notify.mock.calls.map((c) => c[0])
 const lines = (f: string): string[] => f.split('\n')
 
 describe('agent inspector (F4)', () => {
-  it('Enter on a non-waiting agent opens it over the right column with the facts and its own transcript', async () => {
+  it('Enter on a non-waiting agent opens it over the conversation column with the facts and its own transcript', async () => {
     const m = mount({ cols: 120, rows: 40 })
     await m.onLeadRow()
     await m.send(named('enter'))
@@ -176,7 +180,7 @@ describe('agent inspector (F4)', () => {
     expect(f).not.toContain('ROOT-ONLY-LINE')
     expect(f).not.toContain('REPORT-TWO-TEXT')
     expect(f).not.toContain('LEAD-THINKS-HARD')
-    // Split layout: the tree stays on the left, the old transcript column is replaced.
+    // Split layout: the tree stays on the right, the old transcript column is replaced.
     expect(f).toContain('Agents')
     expect(f).toContain('Esc back')
   })
@@ -190,13 +194,13 @@ describe('agent inspector (F4)', () => {
     const f = m.frame()
     expect(f).not.toContain('transcript (this agent')
     expect(f).toContain('ROOT-ONLY-LINE')
-    const row = lines(f).find((l) => /mock-lead\s+Thinking/.test(l))!
+    const row = lines(f).find((l) => /mock-lead(?:\s|~|$)/.test(l))!
     expect(row.trimStart().startsWith('>')).toBe(true)
   })
 
   it('d on an agent that needs you focuses its decision card; on one that does not it says so', async () => {
     const m = mount({ cols: 120, rows: 40 })
-    await m.send(named('tab'))
+    await m.onTree()
     // The tree starts on mock-lead-report-2 (it needs you): Enter goes to the card, so open the inspector through /agent.
     await m.send(named('escape'))
     const ctx: { run?: SlashContext['openAgent'] } = {}
@@ -209,8 +213,8 @@ describe('agent inspector (F4)', () => {
     expect(f).toContain('worktree-agent-r2')
     await m.send(key('d'))
     // The tray now has focus on that agent's card.
-    expect(m.frame()).toContain('Run npm test')
-    expect(m.frame()).toMatch(/Esc [Bb]ack/)
+    expect(m.frame()).toContain('Command: npm test')
+    expect(m.frame()).toContain('Esc to type')
   })
 
   it('w opens the worktree diff in the pager path (overlay without a pager)', async () => {
@@ -405,7 +409,7 @@ describe('message counts (F6)', () => {
   it('the selected row footer and the ~ mark; the inspector shows counts', async () => {
     const m = mount({ cols: 120, rows: 40, state: withMessages(sampleState()) })
     const f0 = m.frame()
-    const leadRow = lines(f0).find((l) => /mock-lead\s+Thinking/.test(l))!
+    const leadRow = lines(f0).find((l) => /mock-lead(?:\s|~|$)/.test(l))!
     expect(leadRow).toContain('~')
     await m.onLeadRow()
     const f = m.frame()
@@ -471,7 +475,7 @@ describe('run chips and switching (F8)', () => {
       const m = mount({ cols, rows, state: liveRuns() })
       const footer = lines(m.frame()).at(-1) ?? ''
       expect(footer, `${cols}x${rows}`).toMatch(/R1\*!? R2|2 live/)
-      expect(m.frame(), `${cols}x${rows}`).toContain('Enter sends')
+      expect(m.frame(), `${cols}x${rows}`).toContain('Ctrl+O tools')
     }
   })
 
@@ -565,7 +569,8 @@ describe('/runs picker (F8)', () => {
 describe('which-key overlay and hints (F9)', () => {
   it('? from the tree opens that pane\'s keys, the global ones and the glyph legend; Esc closes it', async () => {
     const m = mount({ cols: 120, rows: 40 })
-    await m.send(named('tab'), key('?'))
+    await m.onTree()
+    await m.send(key('?'))
     const f = m.frame()
     expect(f).toContain('Keys: Agents')
     expect(f).toContain('Open the agent inspector')
@@ -584,7 +589,8 @@ describe('which-key overlay and hints (F9)', () => {
     await m.send(named('escape'))
     await m.onLeadRow()
     await m.send(named('escape'))
-    await m.send(named('tab'), named('up'), named('enter'), key('?'))
+    await m.onLeadRow()
+    await m.send(named('enter'), key('?'))
     expect(m.frame()).toContain('Keys: Agent inspector')
   })
 
@@ -593,7 +599,8 @@ describe('which-key overlay and hints (F9)', () => {
       const m = mount({ cols: 120, rows: 40, env })
       await m.onLeadRow()
       await m.send(named('escape'))
-      await m.send(named('tab'), named('up'), named('enter'), key('?'))
+      await m.onLeadRow()
+      await m.send(named('enter'), key('?'))
       const f = m.frame()
       expect(f).toContain('Keys: Agent inspector')
       expect(f).toContain('Glyphs')
@@ -605,7 +612,7 @@ describe('which-key overlay and hints (F9)', () => {
   it('the focused tree has its own hint line, swapped by the row; the composer shows none', async () => {
     const m = mount({ cols: 120, rows: 40 })
     expect(m.frame()).not.toContain('Enter details')
-    await m.send(named('tab'))
+    await m.onTree()
     // The selected row needs you.
     expect(m.frame()).toContain('Enter decide')
     expect(m.frame()).toContain('? all keys')
@@ -618,7 +625,7 @@ describe('which-key overlay and hints (F9)', () => {
 
   it('the hint also survives a status line too long to show it (80-column inline keeps its three lines)', async () => {
     const m = mount({ cols: 100, rows: 24 })
-    await m.send(named('tab'))
+    await m.onTree()
     expect(m.frame()).toContain('? all keys')
   })
 })
@@ -659,9 +666,8 @@ describe('/usage, /retro and /focus', () => {
     const f = m.frame()
     expect(f).not.toContain('Agents ')
     expect(f).toContain('ROOT-ONLY-LINE')
-    // Focus falls back to the composer once the tree is gone; let that settle before Tab, even on a loaded machine.
-    await new Promise((r) => setTimeout(r, 200))
-    await m.send(named('tab'), key('m'))
+    // The conversation keeps focus when it is maximised; m restores the sidebar.
+    await m.send(key('m'))
     expect(m.frame()).toContain('Agents ')
   })
 })
@@ -706,7 +712,8 @@ describe('overlays in ASCII and screen-reader mode (review M1, L1)', () => {
 
   it('the ? overlay follows the same rules', async () => {
     const m = mount({ cols: 100, rows: 40, env: { color: false, unicode: false, screenReader: true } })
-    await m.send(named('tab'), key('?'))
+    await m.onTree()
+    await m.send(key('?'))
     const sr = region(m.frame(), 'Keys: Agents', 'q or Esc closes')
     expect(sr).toContain('q or Esc closes')
     expect(sr).not.toContain('+--')

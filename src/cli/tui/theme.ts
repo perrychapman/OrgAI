@@ -18,19 +18,19 @@ export function terminalThemeFor(env: Record<string, string | undefined>): 'dark
 
 /**
  * Terminal equivalents of styles/tokens.css and docs/design/spec.md sections 4 and 9.
- * Use text tokens, never the lower-contrast status fills. Identity is a quiet brand tint
- * (35% accent-text / 65% primary), separate from every state hue; message uses edge-message.
+ * Use text tokens, never the lower-contrast status fills. Identity uses a saturated violet so agent names stand apart from prose
+ * and state hues; message uses edge-message.
  */
 const TERMINAL_PALETTES = {
   dark: {
     primary: '#e8ebf3', secondary: '#a3adc2', surface: '#181c27', brandBase: '#ffffff',
     accent: '#a592ff', running: '#4cb8ff', ok: '#34d399', warn: '#f5b73d', danger: '#ff7b7b',
-    identity: '#d1ccf7', message: '#5d8bd6', code: '#a3adc2'
+    identity: '#b18aff', identityCyan: '#64d8e8', identityGreen: '#7dd3a8', identityAmber: '#edc46a', identityPink: '#ef9dc6', identityBlue: '#8bb8ff', message: '#5d8bd6', code: '#a3adc2'
   },
   light: {
     primary: '#12151f', secondary: '#4a5368', surface: '#f4f5f9', brandBase: '#12151f',
     accent: '#4f33d6', running: '#0a5fa2', ok: '#096a48', warn: '#7d4a00', danger: '#b3242f',
-    identity: '#27205f', message: '#2f67b4', code: '#4a5368'
+    identity: '#7136c8', identityCyan: '#096e80', identityGreen: '#236e48', identityAmber: '#805600', identityPink: '#a02e70', identityBlue: '#285db0', message: '#2f67b4', code: '#4a5368'
   }
 } as const
 

@@ -35,7 +35,7 @@ import {
 } from '../../shared/view/mcpProposal'
 import { pinnedVersionOf } from '../../shared/view/mcpVersion'
 import { collapseRules, noRuleLine, permissionOffer, referenceEffect, referenceLocation, ruleChip } from '../../shared/view/permissionCopy'
-import { graphemes, graphemeWidth, textWidth } from './panes/text'
+import { graphemes, graphemeWidth, textWidth, truncateEnd } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import type { DecisionCall, TrayCard } from './types'
 
@@ -334,8 +334,10 @@ function permissionLines(card: Extract<TrayCard, { kind: 'permission' }>, full =
   const out: string[] = []
   const tool = String(c.toolName ?? '')
   const o = c.input && typeof c.input === 'object' ? (c.input as Record<string, unknown>) : {}
-  if (c.summary) out.push(text(c.summary))
-  if ((tool === 'Bash' || tool === 'PowerShell') && typeof o.command === 'string') out.push(`Command: ${text(o.command)}`)
+  const command = (tool === 'Bash' || tool === 'PowerShell') && typeof o.command === 'string' ? o.command : undefined
+  const summaryCommand = c.summary?.trim().replace(/^(?:\$\s*|Run\s+|Command:\s*)/, '').trim()
+  if (c.summary && (command === undefined || summaryCommand !== command.trim())) out.push(text(c.summary))
+  if (command !== undefined) out.push(`Command: ${text(command)}`)
   else {
     const file = [o.file_path, o.notebook_path, o.path].find((x) => typeof x === 'string')
     if (typeof file === 'string') out.push(`File: ${text(file)}`)
@@ -642,8 +644,21 @@ export function cardDetailLines(card: TrayCard, width: number): string[] {
   return cardDetail(card, width).lines
 }
 
+/** Setup proposals get a readable preview; their complete contents stay in the full review view. */
+export function proposalPreview(card: TrayCard, width: number): string[] | undefined {
+  if (card.kind !== 'proposal' || (card.card.kind !== 'architecture' && card.card.kind !== 'orgChart')) return undefined
+  const p = card.card
+  const lines = [oneText(p.title, 200)]
+  if (p.kind === 'architecture' && p.payload.summary) lines.push(oneText(p.payload.summary, 160))
+  if (p.kind === 'orgChart') lines.push(`${p.payload.roles.length} roles proposed`)
+  const effect = p.effect === 'next-run' ? 'Applies to the next run.' : proposalEffectCopy(p.effect)
+  if (effect) lines.push(effect)
+  if (anyHidden(card.card)) lines.unshift(HIDDEN_BADGE)
+  return lines.map(line => truncateEnd(line, Math.max(1, width), '…'))
+}
+
 /** The phrases of a card's key hint line ("y Allow once"), in order; the tray wraps them only between phrases. */
-export function hintPhrases(card: TrayCard, dumb: boolean): string[] {
+export function hintPhrases(card: TrayCard, dumb: boolean, compact = false, selectedKey?: string): string[] {
   const bs = bindingsFor(card)
   const parts: string[] = []
   const picks = bs.filter((b) => b.act === 'pick')
@@ -651,9 +666,13 @@ export function hintPhrases(card: TrayCard, dumb: boolean): string[] {
   for (const b of bs) {
     if (b.act === 'pick') continue
     const k = b.key === 'space' ? 'Space' : b.key === 'enter' ? 'Enter' : b.key
-    parts.push(`${k} ${b.label}${b.text === 'optional' ? ' (note)' : ''}`)
+    const proposal = compact && card.kind === 'proposal'
+    const label = proposal && b.act === 'view' ? 'Review' : b.label
+    const cursor = selectedKey === undefined ? '' : selectedKey === b.key ? '> ' : '  '
+    parts.push(`${cursor}${proposal || selectedKey !== undefined ? `[${k}]` : k} ${label}${b.text === 'optional' ? ' (note)' : ''}`)
   }
-  parts.push('Esc Back', '? Keys')
+  if (selectedKey !== undefined) parts.push('Left/Right choose', 'Enter confirm')
+  if (!compact) parts.push('Esc Back', '? Keys')
   if (dumb) parts.push('(then Enter)')
   return parts
 }

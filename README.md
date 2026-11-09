@@ -29,11 +29,12 @@ a LiteLLM proxy. Projects, runs and settings are stored on your computer.
 ## Terminal workspace
 
 After building, run `npm run cli -- tui` (or `orgai` when installed on your PATH). The terminal opens with a
-window-sized workspace with a compact header at the top left and a prompt at the bottom. Active runs show the conversation, agents, plan and worktrees, with
-live activity and elapsed time. Working agents have individual spinners, and a live activity line sits above
-the prompt. A soft shimmer marks thinking labels, and a brief purple sweep crosses the welcome logo between long quiet intervals.
-Menus and the borderless input stay still. Type `/` for searchable commands; Tab moves between panes, Alt+D focuses
-decisions, and Esc twice interrupts a working run from the composer. Enter sends; Alt+Enter adds a line.
+window-sized workspace with the conversation on the left, the configured team on the right, and a prompt at the bottom.
+Agent colors match across the conversation and roster. A shimmering activity line above the prompt describes the reported work,
+with elapsed time and token totals; one footer keeps the remaining status and shortcuts together.
+Type `/` for searchable commands, Ctrl+O to expand tool details, and Tab to move between panes.
+Decisions appear inline above the prompt; Shift+Tab selects the decision without interrupting ordinary typing.
+Esc twice interrupts a working run from the composer. Enter sends; Alt+Enter adds a line.
 
 Folders that are not registered projects open setup choices in the same terminal flow, at the current window size. Use Up/Down and
 Enter to choose a quick run, guided setup, or the default team; the numbered shortcuts still work. The orgai TUI
@@ -55,9 +56,9 @@ activity; Enter in the transcript expands or collapses those groups. A finished 
 outcome, elapsed time, file changes and check results. Message previews are bounded and begin when the
 terminal attaches; they are not a reconstructed message history.
 
-![Dark terminal workspace with agent messages and inspector](docs/media/tui-team-dark.gif)
+![Terminal run from prompt through delegation, inline approval, and completion](docs/media/tui-team-dark.gif)
 
-*Headless capture of the TUI with a simulated task. [Light version](docs/media/tui-team-light.gif).*
+*Actual TUI captured with scripted agents in an isolated demo project: prompt, delegation, inline approval, an approved file edit, and completion. [Light version](docs/media/tui-team-light.gif).*
 
 | | |
 | --- | --- |

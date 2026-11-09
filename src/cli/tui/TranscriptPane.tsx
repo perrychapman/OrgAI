@@ -12,6 +12,8 @@ import { useMemo, useRef, useState } from 'react'
 import { omittedLabel } from '../../shared/view/transcriptRows'
 import { useFocusHandler, useTuiEnv } from './context'
 import { glyphs } from './theme'
+import { compactToolRows } from './streamRows'
+import { readableMarkdown } from './markdownBlocks'
 import type { BufferMode, PartialRow, Tone, TranscriptPaneProps, TranscriptRow, TuiEnv } from './types'
 import { PaneLines, cutSegs, navKey, segText, styleFor, type PaneLine, type Seg } from './panes/lines'
 import { sliceToWidth, textWidth, wrapText } from './panes/text'
@@ -154,6 +156,7 @@ export function rowStyle(row: TranscriptRow, env: TuiEnv): RowStyle {
     s.tone = row.tone
     if (row.tone !== 'dim') s.dim = false
   }
+  if (row.identityTone) s.prefixSegs = s.prefixSegs?.map(seg => seg.tone === 'identity' ? { ...seg, tone: row.identityTone } : seg)
   return s
 }
 
@@ -173,6 +176,7 @@ function inlineMarkup(text: string): Seg[] {
 
 function markdownLines(text: string, base: RowStyle, width: number, env: TuiEnv): DisplayLine[] {
   if (text.split('\n').filter(line => /^\s*```/.test(line)).length % 2 !== 0) return hangingLines(text, base, width, env)
+  text = readableMarkdown(text)
   const out: DisplayLine[] = []
   let code = false
   let first = true
@@ -276,17 +280,18 @@ export function dividerLine(text: string, width: number, env: TuiEnv): string {
 export function rowLines(row: TranscriptRow, width: number, env: TuiEnv): DisplayLine[] {
   const style = rowStyle(row, env)
   if (row.kind === 'divider') return [{ text: dividerLine(row.text, width, env), style }]
-  if (row.kind === 'text' && /^#{1,6}\s|```|`[^`]+`|\*\*[^*]+\*\*|^\s*[-*+]\s/m.test(row.text)) return markdownLines(row.text, style, width, env)
+  if (row.kind === 'text' && /^#{1,6}\s|```|`[^`]+`|\*\*[^*]+\*\*|^\s*[-*+]\s|\||\[[^\]]+\]\(/m.test(row.text)) return markdownLines(row.text, style, width, env)
   return hangingLines(row.text, style, width, env)
 }
 
-function partialLines(p: PartialRow, width: number, env: TuiEnv): DisplayLine[] {
+function partialLines(p: PartialRow, width: number, env: TuiEnv, compact = false): DisplayLine[] {
   const g = glyphs(env)
-  const prefix = env.screenReader ? `${p.agentLabel}: ` : `${g.bullet} ${p.agentLabel}: `
+  const label = compact ? '' : `${p.agentLabel}: `
+  const prefix = env.screenReader ? label : `${g.bullet} ${label}`
   const prefixSegs = env.screenReader
-    ? [{ text: `${p.agentLabel}: `, tone: 'identity' as const, bold: true }]
-    : [{ text: `${g.bullet} ` }, { text: `${p.agentLabel}: `, tone: 'identity' as const, bold: true }]
-  return hangingLines(p.text, style(prefix, { prefixSegs, continuationSegs: [{ text: '  ' }], bodyTone: 'muted' }, '  '), width, env)
+    ? [{ text: label, tone: p.identityTone ?? 'identity' as const, bold: true }]
+    : [{ text: `${g.bullet} ` }, { text: label, tone: p.identityTone ?? 'identity' as const, bold: true }]
+  return hangingLines(p.text, style(prefix, { prefixSegs, continuationSegs: [{ text: '  ' }], bodyTone: compact ? undefined : 'muted' }, '  '), width, env)
 }
 
 export interface Built {
@@ -299,16 +304,20 @@ export interface Built {
 
 /** Wrapped lines per row key, kept while width and env stay the same (issue #35 M1: an appended row re-wraps nothing else). */
 export interface RowCache {
+  compact?: boolean
+  expanded?: boolean
   width: number
   env: TuiEnv
   rows: Map<string, { row: TranscriptRow; lines: DisplayLine[] }>
 }
 
 const sameRow = (a: TranscriptRow, b: TranscriptRow): boolean =>
-  a.kind === b.kind && a.text === b.text && a.tone === b.tone && a.agentLabel === b.agentLabel
+  a.kind === b.kind && a.text === b.text && a.tone === b.tone && a.agentLabel === b.agentLabel && a.identityTone === b.identityTone
 
-export function build(rows: readonly TranscriptRow[], omitted: number, width: number, env: TuiEnv, cache?: RowCache): Built {
-  if (cache && (cache.width !== width || cache.env !== env)) {
+export function build(rows: readonly TranscriptRow[], omitted: number, width: number, env: TuiEnv, cache?: RowCache, compact = false, expanded = false): Built {
+  if (cache && (cache.width !== width || cache.env !== env || cache.compact !== compact || cache.expanded !== expanded)) {
+    cache.compact = compact
+    cache.expanded = expanded
     cache.width = width
     cache.env = env
     cache.rows.clear()
@@ -322,15 +331,28 @@ export function build(rows: readonly TranscriptRow[], omitted: number, width: nu
     rowOfLine.push('')
   }
   let previous: TranscriptRow | undefined
+  let speaker: string | undefined
   for (const row of rows) {
     starts.set(row.key, lines.length)
-    if (previous && row.kind === 'user' && previous.kind !== 'divider') {
+    if (previous && previous.kind !== 'divider' && (row.kind === 'user' || (compact && row.kind === 'text'))) {
       lines.push({ key: `${row.key}:gap`, segs: [] })
       rowOfLine.push(row.key)
     }
+    if (row.kind === 'user' || row.kind === 'divider') speaker = undefined
+    const who = row.agentLabel && row.kind !== 'user' && row.kind !== 'divider' ? `${row.runId}:${row.agentId ?? row.agentLabel}` : undefined
+    if (compact && who && who !== speaker) {
+      lines.push({ key: `${row.key}:speaker`, segs: cutSegs([{ text: row.agentLabel!, tone: row.identityTone ?? 'identity', bold: true }], width, env) })
+      rowOfLine.push(row.key)
+      speaker = who
+    }
+    const display = compact ? { ...row, agentLabel: undefined } : row
     let wrapped = cache?.rows.get(row.key)
-    if (!wrapped || !sameRow(wrapped.row, row)) {
-      wrapped = { row, lines: rowLines(row, width, env) }
+    if (!wrapped || !sameRow(wrapped.row, display)) {
+      wrapped = { row: display, lines: rowLines(display, width, env) }
+      if (compact && !expanded && (row.kind === 'tool' || row.kind === 'result')) {
+        const segments = cutSegs([...((rowStyle(display, env).prefixSegs) ?? []), { text: row.text.replace(/\s+/g, ' '), tone: 'muted' }], width, env)
+        wrapped.lines = [{ text: segText(segments), style: rowStyle(display, env), segs: segments }]
+      }
       cache?.rows.set(row.key, wrapped)
     }
     seen.add(row.key)
@@ -384,14 +406,23 @@ function FullTranscript(props: TranscriptPaneProps) {
   const width = Math.max(0, Math.floor(props.width))
   const height = Math.max(0, Math.floor(props.height))
   const [anchor, setAnchor] = useState<Anchor | undefined>(undefined)
-  const [toolsExpanded, setToolsExpanded] = useState(false)
-  const grouped = useMemo(() => groupToolRows(props.rows, toolsExpanded), [props.rows, toolsExpanded])
+  const [localExpanded, setLocalExpanded] = useState(false)
+  const toolsExpanded = props.detailsExpanded ?? localExpanded
+  const grouped = useMemo(() => props.compact ? compactToolRows(props.rows, toolsExpanded) : groupToolRows(props.rows, toolsExpanded), [props.rows, toolsExpanded, props.compact])
 
   const rowCache = useRef<RowCache>({ width, env, rows: new Map() })
-  const built = useMemo(() => build(grouped, props.omitted ?? 0, width, env, rowCache.current), [grouped, props.omitted, width, env])
+  const built = useMemo(() => build(grouped, props.omitted ?? 0, width, env, rowCache.current, props.compact, toolsExpanded), [grouped, props.omitted, width, env, props.compact, toolsExpanded])
   const partial: PaneLine[] = []
+  let lastSpeaker = [...grouped].reverse().find(row => row.kind === 'user' || row.kind === 'divider' || row.agentLabel)
   for (const p of props.partials) {
-    partialLines(p, width, env).forEach((line, i) => partial.push({
+    if (props.compact) {
+      if (built.lines.length || partial.length) partial.push({ key: `partial:${p.key}:gap`, segs: [] })
+      if (lastSpeaker?.agentId !== p.agentId || lastSpeaker?.runId !== p.runId || lastSpeaker?.kind === 'user' || lastSpeaker?.kind === 'divider') {
+        partial.push({ key: `partial:${p.key}:speaker`, segs: cutSegs([{ text: p.agentLabel, tone: p.identityTone ?? 'identity', bold: true }], width, env) })
+      }
+      lastSpeaker = { ...p, kind: 'text' }
+    }
+    partialLines(p, width, env, props.compact).forEach((line, i) => partial.push({
       key: `partial:${p.key}:${i}`,
       segs: line.segs ?? [{ text: line.text, tone: line.style.tone, dim: line.style.dim, bold: line.style.bold }]
     }))
@@ -432,7 +463,8 @@ function FullTranscript(props: TranscriptPaneProps) {
     (e) => {
       if (props.extraKeys?.(e)) return true
       if (e.type === 'key' && e.name === 'enter' && !e.ctrl && !e.alt && props.rows.some(r => r.kind === 'tool')) {
-        setToolsExpanded(v => !v)
+        if (props.onToggleDetails) props.onToggleDetails()
+        else setLocalExpanded(v => !v)
         setAnchor(undefined)
         anchorRef.current = undefined
         return true
@@ -476,7 +508,7 @@ function FullTranscript(props: TranscriptPaneProps) {
     const text = newBelow > 0 ? `${newBelow} new ${newBelow === 1 ? 'row' : 'rows'} below; End to jump` : 'More below; End to jump'
     view.push({ key: 'below', segs: cutSegs([{ text, tone: 'warn' }], width, env) })
   }
-  return <PaneLines width={width} height={height} lines={view} env={env} />
+  return <PaneLines width={width} height={height} lines={view} env={env} align={anchor ? 'top' : 'bottom'} />
 }
 
 function InlineTranscript(props: { rows: TranscriptRow[]; width: number }) {

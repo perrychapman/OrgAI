@@ -91,27 +91,28 @@ function cutTitle(title: string, max: number, ellipsis: string): string {
   return text ? `${text}${ellipsis}` : ''
 }
 
-function buildSegs(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'>, level: Level, ellipsis: string): Seg[] {
+function buildSegs(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'>, level: Level, ellipsis: string, compact = false): Seg[] {
   const out: Seg[] = []
   if (s.title) out.push({ text: s.title, tone: 'accent', bold: true })
   if (s.projectName && level.project) out.push({ text: s.projectName, bold: true })
   const title = s.runTitle ? cutTitle(s.runTitle, level.title, ellipsis) : ''
-  const run = [s.runTag, title].filter(Boolean).join(' ')
+  const multipleRuns = (s.runChips?.length ?? s.liveRuns) > 1
+  const run = compact && !multipleRuns ? '' : [s.runTag, title].filter(Boolean).join(' ')
   if (run) out.push({ text: run })
   if (s.statusWord) out.push({ text: s.statusWord, tone: s.tone })
   else out.push({ text: 'Ready', dim: true })
   if (s.costText && level.cost) out.push({ text: s.costText, dim: true })
   // "0 need you" means nothing before there is a project or a run (onboarding, R2-L5).
-  if (s.needsYou > 0 || s.projectName || s.runTag) out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })
+  if (!compact && (s.needsYou > 0 || s.projectName || s.runTag)) out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })
   const chips = s.runChips
-  if (chips && chips.length > 0) {
+  if (chips && chips.length > 0 && (!compact || multipleRuns)) {
     const tone = chips.some((c) => c.needsYou) ? { tone: 'warn' as const } : { dim: true }
     if (level.chips === 'count') out.push({ text: `${chips.length} live`, ...tone })
     else {
       const text = level.chips === 'compact' ? compactChipsText(chips, env) : runChipsText(chips, env)
       out.push({ text: env.screenReader ? `live runs: ${text}` : text, ...tone })
     }
-  } else if (s.liveRuns > 0) out.push({ text: `${s.liveRuns} live`, dim: true })
+  } else if (s.liveRuns > 0 && (!compact || multipleRuns)) out.push({ text: `${s.liveRuns} live`, dim: true })
   const conn = CONNECTION_TEXT[s.connection]
   if (conn) out.push(conn)
   if (s.readOnlyReason) out.push({ text: s.readOnlyReason, tone: 'warn' })
@@ -130,7 +131,7 @@ export function noticeFresh(notice: TuiNotice | undefined, now: number): boolean
 
 const urgent = (n: TuiNotice | undefined): boolean => n?.tone === 'danger' || n?.tone === 'warn'
 
-export function StatusBar(props: StatusBarProps) {
+export function StatusBar(props: StatusBarProps & { compact?: boolean }) {
   const env = useTuiEnv()
   const clock = props.now ?? Date.now
   const [, setTick] = useState(0)
@@ -159,7 +160,7 @@ export function StatusBar(props: StatusBarProps) {
 
   const build = (level: Level, tail: (Seg | undefined)[]): Seg[] => {
     const segs: Seg[] = []
-    for (const seg of buildSegs(props.summary, env, level, ell)) {
+    for (const seg of buildSegs(props.summary, env, level, ell, props.compact)) {
       if (segs.length > 0) segs.push({ text: sep, dim: true })
       segs.push(seg)
     }

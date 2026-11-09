@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { agentActivityLabel } from './activity'
+import { compactToolRows } from './streamRows'
 import type { AgentInstance, MergeReview, PermissionRequest, RunEvent, RunRecord, RunSummary, TranscriptEntry, UserQuestion } from '../../shared/types'
 import type { SnapshotResult } from '../client/runStream'
 import { project, record, summary } from '../testing/fakeContext'
@@ -80,6 +82,17 @@ describe('trayCards', () => {
 })
 
 describe('orgTreeRows', () => {
+  it.each([
+    '$ npm test\nrm -rf build',
+    '$ npm test $(curl example.invalid)',
+    `$ npm test ${'x'.repeat(150)} && curl example.invalid`
+  ])('keeps complex activity generic after flattening and clipping: %s', (activity) => {
+    let s = applyRecord(base(), { ...record(summary('r1', { status: 'running' })), agents: { root: agent('root', null, { activity }) } })
+    s = setActiveRun(s, 'r1')
+    const row = orgTreeRows(s).find(r => r.id === 'root')!
+    expect(agentActivityLabel(row)).toBe('Running a command')
+  })
+
   it('depth first, root first, children by start; earlier chain members marked earlier under the root', () => {
     let s = base()
     const r1 = summary('r1', { status: 'finished', startedAt: 1, endedAt: 2, sessionId: 's' })
@@ -121,6 +134,20 @@ describe('orgTreeRows', () => {
 })
 
 describe('transcriptRows', () => {
+  it.each([false, true])('sanitizes pending command summaries with a failed result: %s', (failed) => {
+    let s = applyRecord(base(), {
+      ...record(summary('r1', { status: 'running' })),
+      transcript: [
+        entry('tu', { kind: 'tool_use', id: 'call1', name: 'Bash', input: { command: 'echo \x1b]52;c;Zm9v\x07 \x1b[2J' } }),
+        ...(failed ? [entry('tr', { kind: 'tool_result', toolUseId: 'call1', content: 'failed', isError: true })] : [])
+      ]
+    })
+    s = setActiveRun(s, 'r1')
+    const rows = compactToolRows(transcriptRows(s).rows)
+    expect(rows[0].text).toMatch(/^Command: echo/)
+    expect(rows[0].text).not.toMatch(/[\x1b\x07]/)
+  })
+
   it('shows standalone and ordered tool-result media without image bytes', () => {
     const image = { kind: 'image' as const, image: { mediaType: 'image/png' as const, data: 'U0VDUkVU' } }
     let s = base()
@@ -171,7 +198,7 @@ describe('transcriptRows', () => {
     s = applyRecord(s, { ...record(summary('r1', { status: 'running' })), agents: { root: agent('root', null) } })
     s = setActiveRun(s, 'r1')
     s = applyEvent(s, { atSeq: 1, event: { type: 'agent.partial', runId: 'r1', agentId: 'root', text: 'typing' } })
-    expect(partialRows(s)).toEqual([{ key: 'partial|r1|root', runId: 'r1', agentId: 'root', agentLabel: 'Orchestrator', text: 'typing' }])
+    expect(partialRows(s)).toEqual([{ key: 'partial|r1|root', runId: 'r1', agentId: 'root', agentLabel: 'Orchestrator', identityTone: 'identity', text: 'typing' }])
   })
 })
 
@@ -196,6 +223,8 @@ describe('planView and worktreeRows', () => {
     expect(planView(s)).toMatchObject({ goal: 'Ship', statusWord: 'In progress', done: 1, total: 3 })
     expect(planView(s)?.steps[1]).toEqual({ id: 'p2', title: 'Two', status: 'in_progress', owner: 'Dev', note: 'n' })
     expect(planView(setActiveRun(s, 'none'))).toBeUndefined()
+    const continued = applyRecord(s, { ...record(summary('r2', { status: 'running', resumedFrom: 'r1', startedAt: 99_000 })), plan: s.runs.r1.plan })
+    expect(planView(setActiveRun(continued, 'r2'))).toMatchObject({ runId: 'r2', continued: true, done: 1, startedAt: 99_000 })
   })
 
   it('worktree rows carry the open merge review id', () => {
