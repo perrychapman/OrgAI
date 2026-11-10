@@ -1,11 +1,15 @@
 # Orchestration efficiency: adaptive staffing and parallel execution
 
-Status: draft 4, 2026-11-10. Decisions settled 2026-11-09: the owner accepted every recommendation in section 6 ("i
+Status: draft 5, 2026-11-10. Decisions settled 2026-11-09: the owner accepted every recommendation in section 6 ("i
 agree with all your recomendations") and asked for execution. Phase 0 (measure) is done and changed the plan twice:
 the unforced baseline looked near native, so the ranking was redone (1.5) and the automatic one-assistant shape was
 dropped (4.1); the second campaign (1.1a) then showed that the near-parity was an effort mismatch, that Codex's own
 sub-agent rule stops the lead from delegating at all, and that the Claude adapter's lead delegates unprompted.
-Phases 1 and most of 2 are built on `feat/orchestration-efficiency` (section 8).
+Phases 1, 2, 4 and 5 are built on `feat/orchestration-efficiency` (section 8). The phase 1 lab rerun reported
+(1.1b): on Claude the lead now does small work alone, at 0.65x the time and 0.28x the cost of the base build, and
+the rerun found two defects outside the original plan that decide the mandated arm on Claude (a report's text is
+lost on SDK 0.3.318, so every required report counts as empty; each spawn pays for a permission check on the
+root's model).
 
 Base: `origin/dev` at `aad24c38` (PR #41, required delegation). Every code fact below was read from that commit with
 `git show`, not from the local `dev` checkout, which is 310 commits behind it and lacks the delegation runtime.
@@ -23,8 +27,9 @@ run asks for:
 
 ## 1. Evidence
 
-Source: `~/orca/projects/orgai-performance-lab` (reports, run event logs and driver scripts). Every valid OrgAI
-run so far used the Codex adapter; the first Claude-adapter trials were void (1.1a). Costs are retail-equivalent.
+Source: `~/orca/projects/orgai-performance-lab` (reports, run event logs and driver scripts). The baselines (1.1,
+1.1a) are Codex-adapter runs; the first Claude-adapter trials were void (1.1a) and the valid ones are in 1.1b.
+Costs are retail-equivalent.
 
 ### 1.1 Baseline: OrgAI with nothing forced (`baseline-20261110T051332Z`)
 
@@ -96,6 +101,60 @@ scripted. Medians of three (the dashboard: one run); every run passed its grader
   every unforced run, where the Codex lead never does. Its cost is unmeasured until the corrected rerun (phase 1
   gate).
 - Worktrees: still unmeasured; the isolated arm did not delegate.
+
+### 1.1b Phase 1 rerun (`phase1-20261110T073250Z`)
+
+BASE is `aad24c38`, P1 is the phase 1 commit `01ff15fc` (prompts and fixed overhead only: no per-spawn staffing, no
+plan graph, Codex's native tools still on). 17 trials, all passed their graders; $12.78 of a $15 cap, so the
+Claude-adapter inventory cells have one run per build and the Claude inventory-required cell was not run. The
+Claude driver was corrected (permission mode `auto`, the product's protected paths).
+
+Claude adapter (root Opus, reports Sonnet, medium effort), against native Claude Code (ledger 42.4 s $0.167,
+inventory 207.2 s $0.850):
+
+| Task, arm | BASE | P1 | P1 / BASE (time, cost) | P1 against Claude Code |
+|---|---|---|---|---|
+| Ledger, unforced (3 runs each) | 84.8 s, $0.857 | 54.7 s, $0.238 | 0.65x, 0.28x | 1.29x, 1.43x |
+| Inventory, unforced (1 run each) | 434.7 s, $1.908 | 196.6 s, $1.464 | 0.45x, 0.77x | 0.95x, 1.72x |
+| Ledger, required reports (1 run each) | 150.9 s, $2.120 | 128.2 s, $2.060 | 0.85x, 0.97x | 3.02x, 12.3x |
+
+Codex adapter at medium effort, P1 only (3 / 3 / 1 runs), against native Codex and against `baseline2`:
+
+| Task | P1 | Against native Codex | Against `baseline2` |
+|---|---|---|---|
+| Ledger | 66.6 s, $0.113 | 1.19x, 2.52x | 0.94x, 1.29x |
+| Inventory | 148.8 s, $0.136 | 1.07x, 1.13x | 0.83x, 1.01x |
+| Dashboard | 706.9 s, $0.535 | 1.55x, 1.61x | 1.08x, 1.22x |
+
+- **On Claude the sizing rule works.** At BASE the lead delegated in all four unforced runs (an implementer, in two
+  of them a reviewer as well); at P1 it did the ledger itself in all three runs and on the inventory spawned one
+  reviewer only. That is where the 0.65x and 0.28x come from.
+- **On Codex the lead still never delegates**, as expected before the native tools are switched off (phase 2). The
+  ledger's remaining gap to native is two more requests (7 against 5, about +22 s) partly bought back by faster
+  ones; the inventory is at parity; the dashboard, which splits, is 1.55x because nothing was split. Ledger cost
+  ranges from $0.078 to $0.118 over three runs, so its cost ratio is noisy.
+- **Fixed overhead.** Run end: 0.06 to 0.08 s on Codex and 0.13 to 0.18 s on Claude (1.64 to 1.68 s at BASE).
+  First-call input of a team root: 16.5k to 17.8k tokens on Codex (19.0k to 20.2k in `baseline2`; native 11.6k to
+  12.5k, so about 5k above native against a target of 4k) and 19.9k on Claude (23.4k at BASE); a Claude report 7.8k
+  to 8.8k (9.1k to 11.3k).
+- **Plan calls.** On Codex a response that touches only the plan is now rare (0 or 1 per run, none in the
+  dashboard's 23). On Claude it still happens once or twice per run on both builds: the batching sentence did not
+  change it there.
+- **A mandated team on Claude never completes, and the cause is not the prompt.** Both builds spawned implementer
+  and reviewer, were told that both "returned a failed or empty report", spawned both again (at P1 the second pair
+  ran together) and ended `delegation-incomplete` with 40 of 40 hidden tests passing. On SDK 0.3.318 a report ends
+  by calling the built-in `SubagentHandback` tool, so `SubagentStop.last_assistant_message`, the only place the
+  adapter reads a report from, is empty: every receipt has `reportChars` 0, every report's `result` is empty in the
+  run view, and nothing can count as a first pass in the profile (4.5). Present on the base commit too. Fixed in
+  the adapter (4.6).
+- **Every spawn on Claude pays for a permission check on the root's model.** Under `auto` (the product default)
+  each `Agent` call was followed by one request with no tools, 48.8k to 57.2k input tokens, on Opus: $0.38 to
+  $0.46 and 1 to 2.5 s per spawn, $1.56 of the $2.06 mandated run. Claude Code documents a check of the delegated
+  task before a subagent starts, and names Sonnet as its default model (4.6).
+- **The self-control gate refused 1 to 3 shell commands per run** in 7 of the 10 Claude-adapter trials on both
+  builds: "could not check" on long `python3 -c` one-liners, and twice "may not invoke the OrgAI CLI" on one-liners
+  that touch no OrgAI path. Each costs a round trip. It fails closed by design and is not changed here (section 10).
+- Effort: every root, report and title call on Claude carried medium on both builds.
 
 ### 1.2 Pilots: the team mandated (`native-vs-orgai-pilot-20261109`, `complex-pilot-20261109T092758Z`, `dashboard-pilot-20261109T173008Z`)
 
@@ -177,9 +236,11 @@ delegates whether or not it pays; and a pipeline that is made to run, runs one a
    1.05x to 1.23x of the single assistant, and item 4 closes most of what is left. Triage, `soloRunProject` and
    `escalate_to_team` are dropped; the single assistant stays what it is, the user's explicit choice.
 
-Not established yet: any valid time or cost on the Claude adapter (the corrected rerun at the phase 1 gate), how
-much of the 1.27x to 1.43x phase 1 removed (same rerun), a mandated pipeline that actually runs on the default
-chart, and the cost of worktree isolation.
+After the phase 1 rerun (1.1b): phase 1 took the Codex lead from 1.27x and 1.30x to 1.19x and 1.07x of native on
+the two contained tasks and left the task that splits where it was; on Claude it stopped the needless delegation.
+Not established yet: a mandated pipeline that actually runs on the default chart on either adapter (Codex needs the
+native tools off, Claude needs the report text, both built since), whether the lead now splits work that splits,
+and the cost of worktree isolation. These are the phase 6 comparison.
 
 ## 2. Current behaviour (origin/dev, read 2026-11-09)
 
@@ -350,9 +411,12 @@ slot and nobody on it), the critical path's length against the run's, time to fi
   to a full id. A `fixed` role on a concrete model keeps its definition's model and gets no `model` at spawn. A
   `fixed` role, and every role of a `fixed` project, runs at its configured model and effort: an alias or an effort
   the orchestrator puts on the spawn call is dropped (it passed through before this work, so a fixed project could
-  run a report above its chart), and only the plan guard may change the model. An automatic `inherit` role always
-  gets its resolved tier's alias, because the SDK's typings disagree on whether `inherit` means the main model or
-  the parent's. The root's effort goes on `Options.effort` when the session is built; because a report without an
+  run a report above its chart), and only the plan guard may change the model. An automatic `inherit` role
+  gets its resolved tier's alias when it is spawned by a report, because the SDK's typings disagree on whether
+  `inherit` there means the main model or the parent's. Spawned by the root on the root's own tier it gets none
+  (both readings give the root's model, and a root pinned to an exact id keeps it). No alias is ever written that
+  the connection cannot resolve: on a proxy that maps no model for the tier the definition's model stands. The
+  staffing row records what was sent (the model the alias resolves to, else the definition's). The root's effort goes on `Options.effort` when the session is built; because a report without an
   effort would take the CLI's per-model default or a project settings file's value, an automatic role always gets
   an explicit effort (the resolved one, else medium, never above its ceiling). Codex:
   `spawn_report` gains optional `tier` and `effort`; the thread starts on the resolved model and each message
@@ -435,7 +499,17 @@ Measured in Phase 0 (`scripts/measure-prompt-size.mjs`, token-free; the baseline
 - **Plan round trips.** On the ledger the team root made one request more than the single assistant, a turn spent
   on the plan. The root is told to send `set_plan` in the same message as its first working tool calls and
   `complete_plan` with its last, never a turn that only touches the plan. When a plan is required does not change:
-  unattended continuation depends on it. Whether the models batch them is checked in the phase 1 lab rerun.
+  unattended continuation depends on it. The phase 1 rerun (1.1b): Codex batches them (0 or 1 plan-only response
+  per run), Claude still spends one or two responses per run on the plan alone.
+- **A report's text on Claude (found by the phase 1 rerun).** SDK 0.3.318 reports hand back through the built-in
+  `SubagentHandback` tool and `SubagentStop` then carries no last message. The adapter takes the report from the
+  handback call, so receipts, the run view's report text and the profile's first-pass count have it again. Without
+  this a required report can never be valid and a mandated run repeats every report once and still fails.
+- **The spawn check under `auto` (found by the phase 1 rerun).** Claude Code checks the delegated task before a
+  subagent starts; under OrgAI that request ran on the root's model with about 50k input tokens. The check stays:
+  the spawn hook does not answer `allow` for it. What is being established is which model it runs on and whether
+  `CLAUDE_CODE_AUTO_MODE_MODEL` moves it to the connection's everyday tier, the default the documentation names.
+  The more a run fans out, the more this matters.
 - **Run title.** One more call per run; on Codex it carries Codex's 10.9k-token base prompt. It already goes to
   the fast tier in the app. Left alone.
 - Worktrees: not measured yet (no writer was spawned in the baseline); `baseline2` has an isolated arm.
@@ -450,7 +524,10 @@ Measured in Phase 0 (`scripts/measure-prompt-size.mjs`, token-free; the baseline
 - Team files: `staffing` on a role, `reviewPolicy` and `staffingGoal` on the project. The gate treats a raised
   ceiling as "May spend more", like a raised effort today; lowering or switching to automatic needs no card.
 - Usage: time to first spawn, overlap and tail beside the existing efficiency signals; cost by tier; runs the lead
-  did alone against runs with reports.
+  did alone against runs with reports. As built, cost by tier is derived from each model's place in the
+  connection's tier mapping, because a run's per-agent staffing does not reach the usage overview rows.
+- As built, the per-run goal is offered on the New run page and through `--goal`; quick (Chat) runs and
+  continuations take the project's goal.
 
 ## 5. Contract (a "Run staffing" section in `src/shared/types.ts`)
 
@@ -517,7 +594,8 @@ Arms:
    scripted (`orgai-required`: 75.7 / 113.6 / 638.3 s on Codex, 5 of 7 runs `delegation-incomplete`). The scripted
    pilots of 1.2 (132 / 497 / 1093 s) are the only runs in which a pipeline ran;
 4. OrgAI unforced at `aad24c38`, root at medium effort (`orgai-adaptive-medium`: 70.9 s $0.088, 180.2 s $0.134,
-   651.6 s $0.437 on Codex; the Claude adapter's row comes from the corrected rerun);
+   651.6 s $0.437 on Codex; on the Claude adapter 84.8 s $0.857 on the ledger and 434.7 s $1.908 on the inventory,
+   1.1b; its mandated ledger run took 150.9 s $2.120 and ended `delegation-incomplete`);
 5. OrgAI single assistant (47.3 / 93.4 / 580.0 s at low effort; it cannot be run at medium, nothing sets its effort);
 6. OrgAI with this spec, unforced; 7. OrgAI with this spec, team mandated as in arm 3. Both on each adapter.
 
@@ -538,6 +616,18 @@ Targets:
 - Claude adapter: the same targets against native Claude Code, from the corrected driver; in arm 6 the lead spawns
   no report on the ledger or the inventory (at baseline it spawns one in every run).
 
+Standing after phase 1 (1.1b; the targets are judged on the phase 6 comparison, not here):
+
+| Target | Codex adapter | Claude adapter |
+|---|---|---|
+| Small and medium, time within 1.15x | ledger 1.19x, inventory 1.07x | ledger 1.29x, inventory 0.95x (1 run) |
+| Small and medium, cost within 1.25x | ledger 2.52x (noisy), inventory 1.13x | ledger 1.43x, inventory 1.72x (1 run) |
+| The lead works alone on them | yes, 6 of 6 | ledger 3 of 3; inventory spawned one reviewer |
+| Work that splits at or below native | dashboard 1.55x, not split | not run |
+| Mandated: completes, 1.5x time, 2x cost | not rerun (refusal at baseline) | 3.02x, 12.3x, `delegation-incomplete` |
+| Root first call within 4k of native | about 5k above | not comparable (no native count) |
+| Run end within 150 ms | 60 to 80 ms | 130 to 180 ms |
+
 ## 8. Phases
 
 0. **Measure. Done 2026-11-10.** `RunUsage.efficiency` (`runUsage.ts`); `scripts/measure-prompt-size.mjs`;
@@ -550,19 +640,22 @@ Targets:
    batched with work (4.6); the root's effort applied on Claude through `Options.effort`, with an explicit effort
    on every report so nothing inherits it by accident. The tier and effort rubric waits for phase 2: without the
    resolver's clamp an instruction to set a model on each spawn could spend above the chart. Gate: lab rerun of
-   arms 6 and 7 on the phase 1 commit, when `baseline2` has freed the lab.
-2. **Contract, plan graph and per-spawn staffing.** Types and defaults; `staffing.ts`; the rubric in the root
+   arms 6 and 7 on the phase 1 commit, when `baseline2` has freed the lab. **Built; the rerun is 1.1b.**
+2. **Contract, plan graph and per-spawn staffing. Built**, with three review rounds on the spend ceilings and two
+   on the team files gate (4.3). Types and defaults; `staffing.ts`; the rubric in the root
    prompt; `readySteps` and the ready lines; mock; Claude gate (aliases, the plan guard on the same path, the tier variables on the Anthropic
    connection behind a smoke check); Codex spawn parameters; the `ready` nudge; background `delegate_agent`; team
    files and the gate rule; the shared `staffingBook.ts`; Codex's native multi-agent tools switched off at launch
    (added after `baseline2`). Reviewer pass on team files and anything that can raise spend. Gate: lab rerun of
-   arms 6 and 7 on both adapters.
+   arms 6 and 7 on both adapters, run once as the phase 6 comparison, after the two fixes of 1.1b (a report's text
+   on Claude, the spawn check's model) so the mandated arm is measured on a build where it can complete.
 3. **Review policy.** The policy sentence ships with the rubric in phase 2. What is left here is checked against
    the phase 2 lab rerun: verification once per integrated result and findings going back to the author, as prompt
    rules first, as mechanics only if the rerun shows the lead still redoing the work.
-4. **Profile.** `staffingProfile.ts`, the resolver default, the staffing brief.
-5. **Surfaces.** Run view, TUI, CLI `--goal`, Team tab, usage; e2e selectors in the same change (`runs.mjs`,
-   `team.mjs`, `team-files.mjs`, `usage.mjs`, `cli-tui.mjs`, `cli-exec.mjs`).
+4. **Profile. Built.** `staffingProfile.ts`, the resolver default, the staffing brief; written at run end and read
+   at run start by RunManager, never on quick, Ask, setup, build or fixed-staffing runs.
+5. **Surfaces. Built.** Run view, TUI, CLI `--goal`, Team tab, usage, the New run page's goal; e2e selectors in
+   the same change (`runs.mjs`, `team.mjs`, `team-files.mjs`, `usage.mjs`, `cli-tui.mjs`, `cli-exec.mjs`).
 6. **Gate.** The full comparison against section 7; `docs/agent-notes/core-runtime.md`, `sdk-facts.md` and
    `.orgai/ARCHITECTURE.md`.
 
@@ -595,8 +688,13 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
 
 ## 10. Risks and open items
 
-- The evidence is small and, for time and cost, Codex-only: three runs per cell, one on the dashboard, one run per
-  arm for the mandated pilots. The Claude adapter's lead is known to delegate unprompted; what that costs is not.
+- The evidence is small: three runs per cell, one on the dashboard, one run per arm for the mandated pilots, and
+  one run per build for the Claude adapter's inventory and mandated cells (1.1b).
+- The self-control gate's false refusals on the Claude adapter (1.1b) cost a round trip each and are not addressed
+  here: the gate fails closed on purpose, and loosening what it can parse is a security change with its own review.
+- The spawn check under `auto` is a safety check. This work may move it to the tier the documentation names as its
+  default; it does not remove it, and answering `allow` for a spawn from the hook (which would) is the owner's
+  decision, not taken here.
 - Switching off Codex's native multi-agent tools rests on a debug command (`codex debug models`) and a catalog
   field name, checked on Codex 0.167 only. It fails open, and then the prompt sentence is all that stands against
   Codex's rule; whether that sentence is enough is unmeasured.
@@ -612,8 +710,9 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
   it is untested against a real limit.
 - Verified by `scripts/smoke-staffing.mjs` (one run each, haiku and sonnet, Max login): aliases and effort through
   `updatedInput`, foreground spawns in one message running together, root effort through `Options.effort`. Still
-  unverified: whether the root batches its spawns, or its plan calls, into one message without being told to in
-  capitals (the phase 1 lab rerun shows it), the tier variables on a subscription login, and all of it on Codex.
+  unverified: whether the root batches its spawns into one message (the phase 1 rerun had one run with reports;
+  its second pair ran together, its first did not), the tier variables on a subscription login, and all of it on
+  Codex. Plan calls: batched on Codex, not on Claude (1.1b).
 - Effort on Codex: an unset effort runs at `low` and OrgAI sends nothing above high. The lab drivers sent xhigh at
   the protocol level and it was applied, so the limit is OrgAI's; lifting it is a small follow-up and automatic
   staffing does not need it. Applying the root's effort on Claude changes what an effort-less report gets unless
