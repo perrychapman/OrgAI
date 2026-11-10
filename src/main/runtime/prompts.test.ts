@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
+import { briefFiles } from './contextPack'
 import { PLAN_BATCHING_TEXT, REPORT_CHECKS_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, spawnCallText, spawnLimitMark, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, type Role } from '@shared/types'
@@ -631,10 +632,13 @@ describe('team sizing paragraph', () => {
     expect(teamSizingText({ isolation: true, beside: false }).length).toBe(1267)
     expect(teamSizingText({ isolation: false, spawnFiles: true }).length).toBe(1458)
     expect(teamSizingText({ isolation: true, spawnFiles: true }).length).toBe(1420)
+    // Claude names the files on the brief's last line (spawnFiles 'brief', 2026-11-10): +67, 32 more than Codex's clause.
+    expect(teamSizingText({ isolation: false, spawnFiles: 'brief' }).length).toBe(1490)
+    expect(teamSizingText({ isolation: true, spawnFiles: 'brief' }).length).toBe(1452)
     for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
-      for (const beside of [true, false]) for (const spawnFiles of [false, true]) {
+      for (const beside of [true, false]) for (const spawnFiles of [false, true, 'brief'] as const) {
         const t = teamSizingText({ required, isolation, review, beside, spawnFiles })
-        expect(t.length).toBeLessThanOrEqual(1670)
+        expect(t.length).toBeLessThanOrEqual(spawnFiles === 'brief' ? 1700 : 1670)
         expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
       }
     }
@@ -742,6 +746,9 @@ describe('team sizing paragraph', () => {
     const inBriefFiles =
       'Once interface and acceptance criteria are set, put them in each brief, pass the files you read as files, and start tests and checks of handed-out work beside it.'
     const filesClause = 'pass the files you read as files'
+    const briefClause = 'end it with a line "Files: <path>, <path>" naming files you read'
+    const inBriefLine =
+      'Once interface and acceptance criteria are set, put them in each brief, end it with a line "Files: <path>, <path>" naming files you read, and start tests and checks of handed-out work beside it.'
     const keepPiece = "When you fan out, keep a piece yourself (the integration or the hardest to explain) unless all need a report's tools."
     const waitLine = 'While reports run, do only work you kept, never work you handed out, or end your turn and wait.'
     const integrated = 'Do not re-run checks a report ran on its piece; read its evidence and check the integrated result once.'
@@ -749,11 +756,12 @@ describe('team sizing paragraph', () => {
 
     it('every variant: the new sentences speak of handed-out work and come after the own-work rule; the paragraph ends on the integrated check', () => {
       for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
-        for (const beside of [true, false]) for (const spawnFiles of [false, true]) {
+        for (const beside of [true, false]) for (const spawnFiles of [false, true, 'brief'] as const) {
           const t = teamSizingText({ required, isolation, review, beside, spawnFiles })
-          const contract = spawnFiles ? inBriefFiles : inBrief
+          const contract = spawnFiles === 'brief' ? inBriefLine : spawnFiles ? inBriefFiles : inBrief
           expect(t.split(contract)).toHaveLength(2)
-          expect(t.includes(filesClause)).toBe(spawnFiles)
+          expect(t.includes(filesClause)).toBe(spawnFiles === true)
+          expect(t.includes(briefClause)).toBe(spawnFiles === 'brief')
           expect(t.indexOf(contract)).toBeGreaterThan(t.indexOf(noInvent))
           expect(t.includes(keepPiece)).toBe(beside)
           if (beside) {
@@ -791,11 +799,23 @@ describe('team sizing paragraph', () => {
         const withFiles = buildRolePrompt(lead, roles, project(), { ...flags, isolation, spawnFiles: true })
         expect(withFiles.split(inBriefFiles)).toHaveLength(2)
         expect(withFiles.replace(inBriefFiles, inBrief)).toBe(plain)
+        const withLine = buildRolePrompt(lead, roles, project(), { ...flags, isolation, spawnFiles: 'brief' })
+        expect(withLine.split(inBriefLine)).toHaveLength(2)
+        expect(withLine.replace(inBriefLine, inBrief)).toBe(plain)
       }
+    })
+
+    it("Claude's brief-line form names the form briefFiles parses and stays within 40 characters of the files clause", () => {
+      const codex = teamSizingText({ isolation: false, spawnFiles: true }).length
+      const claude = teamSizingText({ isolation: false, spawnFiles: 'brief' }).length
+      expect(claude - codex).toBeGreaterThan(0)
+      expect(claude - codex).toBeLessThanOrEqual(40)
+      expect(briefFiles('Build it.\nFiles: <path>, <path>')).toEqual(['<path>', '<path>'])
     })
 
     it('none of it reaches a report, a mid-level lead, a quick, setup, single-assistant or bridged child run, whatever the flags', () => {
       const all = { ...flags, spawnFiles: true, workBesideReports: true }
+    const allBrief = { ...flags, spawnFiles: 'brief' as const, workBesideReports: true, spawnCallFields: true }
       const mid = { ...eng, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'] }
       const others = [
         buildRolePrompt(eng, roles, project(), all),
@@ -806,6 +826,13 @@ describe('team sizing paragraph', () => {
         buildRolePrompt(lead, roles, project(), { ...all, bridged: true })
       ]
       for (const text of others) for (const s of ['put them in each brief', filesClause, 'When you fan out', 'check the integrated result once']) expect(text).not.toContain(s)
+      for (const text of [
+        buildRolePrompt(eng, roles, project(), allBrief),
+        buildRolePrompt(lead, roles, project(), { ...allBrief, quick }),
+        buildRolePrompt(lead, roles, project(), { ...allBrief, isSetup: true }),
+        buildRolePrompt(lead, roles, project(), { ...allBrief, team: 'single' })
+      ])
+        expect(text).not.toContain(briefClause)
       // Reports are untouched by the root's flags.
       expect(buildRolePrompt(eng, roles, project(), all)).toBe(buildRolePrompt(eng, roles, project(), flags))
     })
@@ -1080,6 +1107,32 @@ describe('Agent call fields (spawnCallFields, Claude)', () => {
     expect(spawnLimitMark({ ...rev, model: 'inherit', tier: 'fast', staffing: { mode: 'auto', maxEffort: 'low' } }, {})).toBe(' (up to haiku / low)')
   })
 
+  it('background only for the team root that works beside its reports, and only with a report not marked foreground', () => {
+    const beside = { ...base, workBesideReports: true }
+    const text = buildRolePrompt(lead, roles, project({ roles }), beside)
+    expect(text).toContain(spawnCallText({ auto: true, background: true }))
+    expect(text).toContain('run_in_background: true while you keep a piece')
+    // Without the flag: as before, no run_in_background at all for unmarked reports.
+    expect(buildRolePrompt(lead, roles, project({ roles }), base)).not.toContain('run_in_background')
+    // A required report keeps its foreground mark beside the background clause.
+    const chart = [{ ...lead, requiredReports: ['r-rev'] }, eng, rev]
+    const mixed = buildRolePrompt(chart[0]!, chart, project({ roles: chart }), beside)
+    expect(mixed).toContain('- reviewer (up to sonnet / high, foreground):')
+    expect(mixed).toContain('run_in_background: false if marked foreground, else true while you keep a piece')
+    // Every report required: nothing may run in the background.
+    const all = [{ ...lead, requiredReports: ['r-eng', 'r-rev'] }, eng, rev]
+    const allText = buildRolePrompt(all[0]!, all, project({ roles: all }), beside)
+    expect(allText).toContain(spawnCallText({ auto: true, foreground: true }))
+    expect(allText).not.toContain('while you keep a piece')
+    // A mid-level lead, a bridged child root, a quick or single run: no background clause.
+    const mid: Role = { ...rev, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'], tools: ['Read'] }
+    const nested = [{ ...lead, spawnable: ['r-mid'] }, mid, { ...eng, reportsTo: 'r-mid' }]
+    expect(buildRolePrompt(mid, nested, project({ roles: nested }), beside)).not.toContain('run_in_background')
+    expect(buildRolePrompt(lead, roles, project({ roles }), { ...beside, bridged: true })).not.toContain('while you keep a piece')
+    expect(buildRolePrompt(lead, roles, project({ roles }), { ...beside, team: 'single' })).not.toContain('while you keep a piece')
+    expect(buildRolePrompt(lead, roles, project({ roles }), { ...beside, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } })).not.toContain('while you keep a piece')
+  })
+
   it('a bridged report gets neither a mark nor (alone) the guidance', () => {
     const bridged = [{ roleId: 'r-rev', connectionName: 'OpenAI' }, { roleId: 'r-eng', connectionName: 'OpenAI' }]
     const text = buildRolePrompt(lead, roles, project({ roles }), { ...base, bridgedRoles: bridged })
@@ -1091,11 +1144,17 @@ describe('Agent call fields (spawnCallFields, Claude)', () => {
     const variants = [
       spawnCallText({ auto: true }),
       spawnCallText({ auto: true, fixed: true, worktree: true, foreground: true }),
-      spawnCallText({ auto: false, worktree: true, foreground: true })
+      spawnCallText({ auto: false, worktree: true, foreground: true }),
+      // A root that works beside its reports (split-execution 3.3): +48, or +34 beside the foreground field.
+      spawnCallText({ auto: true, background: true }),
+      spawnCallText({ auto: true, fixed: true, worktree: true, foreground: true, background: true }),
+      spawnCallText({ auto: false, worktree: true, foreground: true, background: true })
     ]
-    expect(variants.map((t) => t.length)).toEqual([312, 445, 288])
+    expect(variants.map((t) => t.length)).toEqual([312, 445, 288, 360, 479, 322])
+    expect(variants[3]!.length - variants[0]!.length).toBeLessThanOrEqual(90)
+    expect(variants[4]!.length - variants[1]!.length).toBeLessThanOrEqual(90)
     for (const t of variants) {
-      expect(t.length).toBeLessThanOrEqual(460)
+      expect(t.length).toBeLessThanOrEqual(490)
       expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
     }
     for (const alias of ['haiku', 'sonnet', 'opus']) expect(variants[0]).toContain(alias)

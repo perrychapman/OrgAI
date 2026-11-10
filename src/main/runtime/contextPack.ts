@@ -4,11 +4,14 @@ import { canonicalDeep, isInside, isInsideEither, isNetworkPath, isTrustRestrict
 import { checkSelfControlDenial } from './selfControlGate'
 
 /**
- * Context pack on spawn (docs/design/split-execution.md 3.2): the lead names files on its spawn call (`files`), and the
- * harness inlines them into the report's first message so the report does not spend its first round trips reading
- * them. The harness does not check that the lead read them: a file is inlined when the checks below pass, so the pack
- * is "files inside the folders this run may read", nothing more. Codex `spawn_report` and the mock only; the Claude
- * Agent tool is the SDK's own and the harness does not rewrite a well-formed spawn (see claude.ts, the spawn hook).
+ * Context pack on spawn (docs/design/split-execution.md 3.2): the lead names files on its spawn call, and the harness
+ * inlines them into the report's first message so the report does not spend its first round trips reading them. The
+ * harness does not check that the lead read them: a file is inlined when the checks below pass, so the pack is "files
+ * inside the folders this run may read", nothing more. Codex `spawn_report` and the mock take a `files` parameter. The
+ * Claude Agent tool is the SDK's own and the harness does not rewrite a well-formed spawn (claude.ts, the spawn hook),
+ * so a Claude lead names them on the brief's last line instead (`Files: a.ts, b.ts`, briefFiles) and the pack reaches
+ * the report through the SubagentStart hook's additional context, which the CLI keeps inline only up to
+ * CLAUDE_HOOK_CONTEXT_INLINE_MAX characters (`blockMaxChars`).
  *
  * A new read surface, so every file passes, in this order: not a network path (scratch.ts isNetworkPath, never touched);
  * the path as written (absolute, lexically normalized) inside one of the folders the report reads without asking (the
@@ -49,6 +52,45 @@ export interface ContextPackOptions {
   pathsUnavailable?: boolean
   /** Why no file is inlined at all on this run (trust-restricted or setup-like), or undefined. */
   refuseAll?: string
+  /**
+   * The whole block (contextPackBlock: heading, paths, fences and texts) stays within this many characters; a file that
+   * would push it over is left out with the total's reason. Missing = only the file text total
+   * (CONTEXT_PACK_TOTAL_MAX_CHARS) applies.
+   */
+  blockMaxChars?: number
+}
+
+/**
+ * The CLI keeps a hook's additional context inline only up to this many characters; above it the text is written to
+ * a file and the model gets a 2,000-character preview and the path (SDK 0.3.318 CLI bundle: `bve`, threshold
+ * `kHe=1e4`; read from the bundle, not checked live). A Claude context pack therefore stays within it.
+ */
+export const CLAUDE_HOOK_CONTEXT_INLINE_MAX = 10_000
+
+/** The form a Claude lead names its files in: the brief's last non-empty line, `Files: <path>, <path>`. */
+const BRIEF_FILES_LINE = /^\s*files:\s*(.*?)\s*$/i
+
+/**
+ * The paths a brief names on its last non-empty line, `Files: a.ts, src/b.ts` (case-insensitive label; comma
+ * separated; surrounding backticks or quotes are dropped). [] when the last line is not such a line. A path cannot
+ * contain a comma in this form. Pure; the line stays in the brief (the Agent call is never rewritten).
+ */
+export function briefFiles(brief: unknown): string[] {
+  if (typeof brief !== 'string') return []
+  const lines = brief.split(/\r?\n/)
+  let last = ''
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.trim()) {
+      last = lines[i]!
+      break
+    }
+  }
+  const m = BRIEF_FILES_LINE.exec(last)
+  if (!m) return []
+  return m[1]!
+    .split(',')
+    .map((p) => p.trim().replace(/^[`'"]+|[`'"]+$/g, '').trim())
+    .filter((p) => p.length > 0)
 }
 
 export interface ContextPackFile {
@@ -168,6 +210,9 @@ export function buildContextPack(paths: unknown, opts: ContextPackOptions): Cont
   let protectedKeys: Set<string> | null | undefined
   const seen = new Set<string>()
   let total = 0
+  // contextPackBlock's length so far: the heading, then per file two separator characters and its rendered entry.
+  let blockLen = CONTEXT_PACK_HEADING.length
+  const blockMax = typeof opts.blockMaxChars === 'number' && opts.blockMaxChars > 0 ? opts.blockMaxChars : undefined
   for (const [index, p] of paths.entries()) {
     const skip = (reason: string): void => {
       pack.skipped.push({ path: shown(p), reason })
@@ -320,8 +365,15 @@ export function buildContextPack(paths: unknown, opts: ContextPackOptions): Cont
       skip(`over the ${CONTEXT_PACK_TOTAL_MAX_CHARS.toLocaleString('en-US')}-character total`)
       continue
     }
+    const file = { path: shown(p), text }
+    const entryLen = 2 + fileEntry(file).length
+    if (blockMax !== undefined && blockLen + entryLen > blockMax) {
+      skip(`over the ${blockMax.toLocaleString('en-US')}-character total`)
+      continue
+    }
     total += text.length
-    pack.files.push({ path: shown(p), text })
+    blockLen += entryLen
+    pack.files.push(file)
   }
   return pack
 }
@@ -333,14 +385,16 @@ function fenceFor(text: string): string {
   return '`'.repeat(Math.max(3, longest + 1))
 }
 
+/** One file of the block: its path, then its text in a fence longer than any backtick run inside it. */
+function fileEntry(f: ContextPackFile): string {
+  const fence = fenceFor(f.text)
+  return `File: ${f.path}\n${fence}\n${f.text}${f.text.endsWith('\n') ? '' : '\n'}${fence}`
+}
+
 /** The block appended to the report's first message, or '' when no file was inlined. */
 export function contextPackBlock(pack: ContextPack): string {
   if (!pack.files.length) return ''
-  const parts = pack.files.map((f) => {
-    const fence = fenceFor(f.text)
-    return `File: ${f.path}\n${fence}\n${f.text}${f.text.endsWith('\n') ? '' : '\n'}${fence}`
-  })
-  return `${CONTEXT_PACK_HEADING}\n\n${parts.join('\n\n')}`
+  return `${CONTEXT_PACK_HEADING}\n\n${pack.files.map(fileEntry).join('\n\n')}`
 }
 
 /** `message` with the pack's block appended (unchanged when nothing was inlined). */

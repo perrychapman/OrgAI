@@ -81,9 +81,15 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   required reports keep "You must delegate to ...". Sizes are pinned in `prompts.test.ts`. Lab-checked on the root of
   the default chart only; a mid-level lead and a setup root get the new listing line with no live run behind it.
   Split execution (split-execution 3.2-3.4, unit tests only, no lab run): criteria go "in each brief" (`spawnFiles`
-  adds the files clause, unwired until codex.ts/mock `spawn_report` take `files`); "keep a piece yourself" only with
-  `workBesideReports` (default `!spawnCallFields`: not Claude today); the integrated result is checked once; writing
-  leaf reports of team work runs get `REPORT_CHECKS_TEXT`.
+  adds the files clause: `true` "pass the files you read as files" from codex.ts and mock `rolePromptFor`, `'brief'`
+  "end it with a line "Files: <path>, <path>" naming files you read" from claude.ts `buildAgents`, +32 characters; each
+  only when `contextPackRefusal` is undefined); "keep a piece yourself" only with `workBesideReports` (default
+  `!spawnCallFields`; Claude's `buildAgents` passes true since 2026-11-10, and with it the root's `spawnCallText` adds
+  "run_in_background: true while you keep a piece" (+48, or "..., else true while you keep a piece" beside the
+  foreground field, +34) when a listed report is not marked foreground; never for a mid-level lead, a bridged child
+  root, quick or single runs); the integrated result is checked once; writing leaf reports of team work runs get
+  `REPORT_CHECKS_TEXT`. The Claude root grew 233 characters (`scripts/measure-prompt-size.mjs`, iso+arch 10,857 to
+  11,090), the Codex root 35.
 - Staffing profile wiring (2026-11-10, spec 4.5, D8): `store/staffingProfile.ts` holds the lifecycle helpers.
   `staffingProfileApplies(summary, project)` = kind 'work', not quick, not Ask (`team: 'single'`), no buildWorkspace,
   not a virtual project, `staffingModeOf` 'auto'. Read: RunManager reads `<data>/staffing/<projectId>.json` once at
@@ -115,12 +121,24 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   open (a link to an outside or control file, a linked parent folder, a FIFO) is skipped as "unreadable" or "not a
   file". Trust-restricted and setup-like runs get none (`contextPackRefusal`). Every
   file left out is named with its reason in the tool result (`contextPackResultLine`). A bridged report gets no pack
-  (the result says so); `delegate_agent` and the Claude Agent tool take no `files` (the Agent tool is the SDK's own and a
-  rewrite of a well-formed spawn costs a classifier request; note in claude.ts' spawn hook). Without `files` nothing
-  changes. spawn_report's definition grew 126 chars, then the security pass's `maxItems` and wording (Codex team-root
-  budget 20,050 unchanged, `toolDefinitionSize.test.ts`). Unit tests only (contextPack with swap tests through a
-  wrapped `openSync`, POSIX only for links and FIFOs; codexContextPack, mockContextPack); no live run, `reportStartMs`
-  not measured yet. `prompts.ts` still says "pass the files you read" (owned elsewhere, not changed here).
+  (the result says so); `delegate_agent` takes no `files`. Without `files` nothing changes. spawn_report's definition
+  grew 126 chars, then the security pass's `maxItems` and wording (Codex team-root budget 20,050 unchanged,
+  `toolDefinitionSize.test.ts`). Claude (2026-11-10): the Agent tool is
+  the SDK's own and a rewrite of a well-formed spawn costs a classifier request, so the lead ends the brief with a
+  `Files: a, b` line (`briefFiles`: the last non-empty line, label in any case, comma separated, quotes and backticks
+  dropped; a path cannot hold a comma). The spawn hook reads it at PreToolUse after every denial (call unchanged; the
+  line stays in the brief) with the same checks, from the hook's cwd, roots = project, that cwd, the parent's checkout
+  (`agentCwd`: the report's worktree is cut from it), allowed and reference folders, plus `blockMaxChars` =
+  `CLAUDE_HOOK_CONTEXT_INLINE_MAX` (10,000: the CLI keeps hook context inline only up to that, above it the model gets a
+  2,000-character preview and a file path; read from the SDK 0.3.318 CLI bundle, `bve`/`kHe=1e4`, not checked live).
+  The block goes out as the report's `SubagentStart` `additionalContext` (sdk-facts check 13). The start is linked to
+  its spawn by task_started (agent id -> Agent `tool_use_id`, exact for parallel spawns of one role); stream messages
+  and hooks reach the session unordered, so the hook waits up to `SPAWN_LINK_WAIT_MS` (2 s) for the link, only while a
+  pack for that role is pending. The lead reads `contextPackResultLine` in the Agent call's `PostToolUse` additional
+  context (beside a receipt or staffing note): at launch for a background spawn, with the report for a foreground one
+  (late, but it still says which files the report had to read itself); a pack that never reached a start is listed as
+  not inlined. A refused spawn (`is_error` result) drops its pack. Unit tests only (contextPack with swap tests through a wrapped `openSync`, POSIX only for links and FIFOs;
+  codexContextPack, mockContextPack, claudeSplit); no live run, `reportStartMs` not measured yet.
 - One report and a waiting lead (2026-11-10, split-execution 3.6; `runtime/waitingNote.ts`, pure `waitingNote`): after
   a successful spawn by the run's root (not a bridged child's root) that leaves exactly one of the root's reports
   running, for a role that is not one of the root's required reports (`obligationsFor`), with an active plan that has a
@@ -128,8 +146,32 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   result gets `WAITING_NOTE`. Never a refusal, at most once per run, never on setup-like, Chat (quick) or single runs.
   The ready-step condition is an addition to the spec: with nothing ready, waiting is all the lead can do. Codex
   (`afterSpawn` on the NetworkHost, also on a bridged spawn_report) and the mock (a harness system row on the parent and
-  `spawnNotes`); Claude would need the hook's additional context, unverified. Unit tests only (waitingNote,
-  codexContextPack, mockContextPack).
+  `spawnNotes`). Claude (2026-11-10, `claude.ts` `waitingNoteFor`): the Agent call's `PostToolUse` additional context,
+  only on a background launch (`async_launched`, sdk-facts check 14): a foreground spawn's PostToolUse fires when the
+  report is back, when the note is pointless. The new report counts as running and bound to its plan step even before
+  its task_started or staffing row is handled. Unit tests only (waitingNote, codexContextPack, mockContextPack,
+  claudeSplit).
+- Background reports on Claude (2026-11-10, split-execution 3.3; `claude.ts`, unit tests `claudeSplit.test.ts`): on SDK
+  0.3.318 the Agent tool's `run_in_background` defaults to true (sdk.d.ts; sdk-facts "Subagents run in the background by
+  default"), and the spawn hook forces `false` only on a receipt-bearing spawn (`receiptBearingSpawn`: one of the
+  caller's required reports, or a role with required reports of its own), because its receipt rides the completed
+  Agent call's PostToolUse. Those are the reports `spawnCallParts` marks "foreground". Any other spawn keeps what the
+  model wrote. The session tracks a background report from its `async_launched` PostToolUse (agent id from task_started,
+  else the result's `agentId`) in `backgroundReports`: its row, step binding, worktree tracking and integration
+  (`SubagentStop`), report text (the SubagentHandback PostToolUse, else `handback_report.text` of its notification) work
+  as for a foreground report. A `task_notification` ends a report only under its own Agent `tool_use_id` (a worker's
+  own Bash notifies under its Bash call); it marks the ledger receipt delivered (`DelegationGate.delivered`). While a
+  background report is live the root is idle ("Waiting on reports…"), `liveReports` counts it (no continue nudge; the
+  ready nudge may fire, D7; no MCP restart), and `settlement().quiescent` is false (a bridged child or an exec run
+  cannot end); after it ends with the root idle, quiescent stays false until the CLI resumes the root (its next init),
+  at most `BACKGROUND_HANDBACK_WAIT_MS` (30 s). `complete_plan` is not refused while a background report runs (as on
+  Codex); the exec outcome still waits for working reports. Interrupt: like an interrupted Codex thread, each live
+  background report is settled at once (done, "Interrupted", ledger `ended`, staffing row closed, not integrated) and
+  `stopTask` is sent; OrgAI does not declare `perTaskStopAffordance`, so per sdk.d.ts the CLI's interrupt kills
+  background tasks anyway (not checked live). A later SubagentStop, handback or notification of a stopped report
+  changes nothing; a SendMessage resume makes it live again. Session end settles them ("Stopped: the session ended").
+  Not checked live: an interrupt or a killed task after which the CLI still resumes the root by itself; the stop
+  reaching a report that is mid-tool; a lab run.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls

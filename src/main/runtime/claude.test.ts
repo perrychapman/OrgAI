@@ -217,6 +217,25 @@ describe('toClaudeMcpServers', () => {
   })
 })
 
+describe('buildAgents: split execution on the root (split-execution 3.2, 3.3)', () => {
+  const keepPiece = 'When you fan out, keep a piece yourself'
+  const line = 'end it with a line "Files: <path>, <path>" naming files you read'
+  it('the root keeps a piece, may run unmarked reports in the background and names files on the brief line', () => {
+    const lead = buildAgents(fakeCtx(), [], false).lead!.prompt
+    expect(lead).toContain(keepPiece)
+    expect(lead).toContain('run_in_background: true while you keep a piece')
+    expect(lead).toContain(line)
+    expect(lead).not.toContain('pass the files you read as files')
+  })
+  it('a run that inlines no files (trust-restricted, setup-like) gets no files line; a report gets none of it', () => {
+    const restricted = buildAgents(fakeCtx({ run: runSummary({ buildWorkspace: '/w' }) }), [], false).lead!.prompt
+    expect(restricted).not.toContain(line)
+    expect(buildAgents(fakeCtx({ run: runSummary({ kind: 'setup' }) }), [], false).lead!.prompt).not.toContain(line)
+    const eng = buildAgents(fakeCtx(), [], false).engineer!.prompt
+    for (const t of [keepPiece, line, 'run_in_background']) expect(eng).not.toContain(t)
+  })
+})
+
 describe('agentMcpServerNames and buildAgents', () => {
   const p = project({ mcpServers: [fs, web, spec({ id: 'm3', name: 'off', command: 'x', enabled: false })] })
 

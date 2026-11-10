@@ -65,4 +65,13 @@ describe('mock spawn: context pack and waiting note', () => {
     expect(session.spawnNotes).toEqual([{ agentId: 'root', reportId: 'r1', text: WAITING_NOTE }])
     expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.source === 'harness' && e.entry.block.kind === 'system' && e.entry.block.text === WAITING_NOTE)).toBe(true)
   })
+
+  it("the root's prompt asks for files only where a pack can be inlined (contextPackRefusal)", async () => {
+    const clause = 'pass the files you read as files'
+    const plain = await run([{ type: 'text', text: 'End.' }])
+    const root = plain.ctx.roles.find((r) => r.reportsTo === null)!
+    expect(plain.session.rolePromptFor(root)).toContain(clause)
+    const restricted = await run([{ type: 'text', text: 'End.' }], { run: runSummary({ buildWorkspace: dir }) })
+    expect(restricted.session.rolePromptFor(root)).not.toContain(clause)
+  })
 })
