@@ -46,6 +46,59 @@ Prompt fatigue (#14): allowed folders, rule matching, suggestions, and the permi
   - Verified by unit tests, the mock and e2e/permissions.mjs. Unverified live: additionalDirectories making cds and
     edits free, session setMode / addDirectories from canUseTool, the CLI's per-segment matching agreeing with ours,
     a restarted query picking up new additionalDirectories, Codex writable_roots and its file-approval wire shape.
+- Auto mode classifier and spawn cost (SDK 0.3.318, Claude Code 2.1.318; checked 2026-11-10 with
+  `scripts/smoke-automode-classifier.mjs`: `--stub <scenario>` is zero spend against a local Messages stub, `--live`
+  spends a few cents; plus the bundled CLI's code, read with an mmap search, and the performance lab's phase1 metering):
+  - The extra no-tools request after each spawn is the auto mode classifier's spawn-time check: debug log
+    `[Stall] classifier_request_started ... tool=Agent ... stage=xml_s1`, one user message (`<transcript>` of the
+    session's user prompts and tool-call inputs, then the action), stop sequence `</block>`. Verified live and in the stub.
+  - Normally the API judges tool calls itself (`safeguard_results` in the main response, no extra request). A
+    PreToolUse `updatedInput` that changes an Agent call voids that verdict: "[server-classifier] Agent: after the
+    server reviewed the response a hook rewrote this call's input ... the local classifier judges this one call". The
+    CLI then sends its own billed request. OrgAI's spawn hook almost always changes the call (`name` handle, model,
+    effort, isolation, prompt), so every OrgAI spawn pays for one. An `updatedInput` equal to the input did not trigger
+    it (live run A). Verified live (run B). Other tools (Bash, Write, SubagentHandback) showed no extra request live
+    or in the lab.
+  - Model order (CLI code; the live and stub runs confirm each branch named): server config
+    (`tengu_auto_mode_config`, first-party login: `claude-sonnet-5[1m]` live) > `CLAUDE_CODE_AUTO_MODE_MODEL` > a
+    usable `ANTHROPIC_DEFAULT_SONNET_MODEL` > `claude-sonnet-5` (the documentation's "Sonnet 5", tried once as a
+    probe) > the session's main model once that probe failed with anything but a 401. The CLI refuses
+    `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-opus-5` as the classifier, both as `CLAUDE_CODE_AUTO_MODE_MODEL`
+    ("the API's safeguards refuse the classifier's escalated check on it") and as `ANTHROPIC_DEFAULT_SONNET_MODEL`.
+  - Why the lab saw Opus: its connection set `ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5-5` (refused). The probe
+    went to `claude-sonnet-5`, which the lab relay answers with HTTP 400 and records nothing (`phase1_campaign.py`
+    allow list). The CLI then used the root's `claude-opus-5-5` for the rest of the session. The stub reproduces this
+    exactly. A proxy that serves `claude-sonnet-5` gets it (stub).
+  - `CLAUDE_CODE_AUTO_MODE_MODEL` is ignored on a first-party login because the server-configured model wins (live
+    run A). On a proxy it works for an accepted model (stub: `claude-haiku-5-5`) and is ignored for
+    `claude-sonnet-5-5`. A usable everyday-tier id already reaches the classifier through
+    `ANTHROPIC_DEFAULT_SONNET_MODEL`, which OrgAI sets. So OrgAI does not set the variable.
+  - Size: the classifier's own system prompt is about 138.5k to 140.2k characters (debug `sys=`; about 46k to 48k
+    tokens, which matches the lab's 48.9k). The transcript part is user prompts and tool-call inputs only: no OrgAI
+    system prompt, tool results or assistant text. OrgAI's share is its brief, harness user messages and spawn
+    prompts. In the lab, every call wrote 47k to 49k tokens to the cache and read at most 5.8k. Why the cached prefix
+    was not reused is unverified.
+  - Its usage is missing from the result's `modelUsage` and `total_cost_usd` (live run B and the stub), so OrgAI's
+    cost figures leave it out.
+  - Subagent end: the CLI's hand-off review is skipped when the subagent ends with SubagentHandback (handback `send` /
+    `flagged`, CLI code), which OrgAI roles do. The SubagentHandback call itself is judged like any tool call (the
+    server's verdict, or a local request when there is none, stub). A subagent that acted and ended with plain text
+    got a local review in the stub. Documented but not seen in OrgAI runs: "reviews its work and its final report"
+    (Unverified for OrgAI's path).
+  - Spawns without a rewrite (2026-11-10; `claude.ts` spawn hook, unit tests "a well-formed spawn needs no rewrite" in
+    `claude.test.ts`; the hook's `{}` is verified by unit tests only, its effect on the classifier rests on live run A):
+    the role prompt of every Claude role with reports names the Agent call fields the hook would otherwise write
+    (`prompts.ts` `spawnCallText`, each report line carrying its limits, `spawnLimitMark`: "up to sonnet / high",
+    "fixed", "worktree", "foreground"); an automatic report's definition carries the effort an unrequested spawn
+    resolves to (`definitionEffort`); and the hook leaves a value that runs the same anyway (an alias of the resolved
+    tier whose model equals the unwritten one, an effort equal to what runs, `run_in_background: false` already set, a
+    writer's own `isolation: "worktree"`, which is tracked for integration like a harness-set one). A clamp, a missing
+    `name`, a knowledge block and a value the resolver moves still rewrite, and so does an `isolation` the call wrote
+    where the harness sets none (a reader, a project that does not isolate, a parent without a worktree): it is
+    removed, because a worktree the harness does not track is never merged back. Each rewritten spawn logs one info line
+    "Spawn of <slug> rewritten by the harness (<reasons>) ...", reasons from name, isolation, model, effort, prompt,
+    background, drop; `stop()` logs "Spawns: N, rewritten by the harness: M (<reason> <count>, ...)". The stub cannot
+    show the difference: without a server verdict (`server_no_result`) the CLI classifies every call locally.
 
 ## Renderer
 

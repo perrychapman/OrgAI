@@ -507,6 +507,13 @@ export const CLAUDE_MODEL_OPTIONS: { value: ModelRef; label: string; hint: strin
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/** Every effort level, least first (the order defaults.ts `compareEffort` uses). */
+export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+export function isEffort(v: unknown): v is Effort {
+  return typeof v === 'string' && (EFFORTS as readonly string[]).includes(v)
+}
+
 // ---------- Tools ----------
 
 export const TOOL_CATALOG = [
@@ -588,6 +595,14 @@ export interface Role {
    * roleConnectionProblems); anything else is dropped on read and save. Never filled or resolved by a store.
    */
   connection?: ConnectionId
+  /**
+   * Run staffing (section "Run staffing"): whether automatic staffing may pick this role's tier and effort per
+   * assignment, and its bounds. Missing = automatic with the role's `tier` and `effort` as the ceiling, except a role
+   * on a concrete model with no tier (an explicit user pick), which is fixed. Read it only through defaults.ts
+   * `effectiveRoleStaffing(role, project)`. ProjectStore rebuilds it on read and save (`cleanRoleStaffing`): a value
+   * without a valid `mode` is dropped whole, an unknown `minTier` or `maxEffort` is dropped alone.
+   */
+  staffing?: RoleStaffing
 }
 
 /**
@@ -754,6 +769,24 @@ export interface Project {
    * shared/knowledge.ts; never fill a default in a store or newProject. Saved through projects:save.
    */
   knowledgeAutoContext?: boolean
+  /**
+   * Run staffing (section "Run staffing"): 'fixed' turns automatic staffing off for every role, so each agent runs on
+   * its role's model and effort exactly as before staffing existed. Missing = 'auto'. Read it through defaults.ts
+   * `staffingModeOf`. ProjectStore drops any other value on read and save.
+   */
+  staffing?: StaffingMode
+  /**
+   * Run staffing: what automatic staffing optimizes for after the quality floor. Missing = 'balanced'. A run may
+   * override it (RunOverrides.goal). Read it through defaults.ts `staffingGoalOf(project, override)`. ProjectStore drops
+   * any other value on read and save.
+   */
+  staffingGoal?: StaffingGoal
+  /**
+   * When the orchestrator asks for review (docs/design/orchestration-efficiency.md 4.4). Missing = 'risk'. Not `review`:
+   * `teamReview` and `reviewMerges` already mean other things. Required reports always win. Read it through defaults.ts
+   * `reviewPolicyOf`. ProjectStore drops any other value on read and save.
+   */
+  reviewPolicy?: ReviewPolicy
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -2453,6 +2486,8 @@ export interface RunUsage {
   skills?: SkillUseCount[]
   /** Knowledge graph reads served to agents (knowledge_recall and auto context). Missing = none (or an older run). */
   knowledge?: KnowledgeServedUsage
+  /** Timing of the root's direct reports (computeRunEfficiency). Missing = no report started (or a run saved before it existed). */
+  efficiency?: RunEfficiency
   /**
    * Multi-provider runs only (at least one agent with AgentInstance.connection other than the run's): cost and agent
    * count per connection, each agent priced with its own connection's pricing. costUsd null = unknown (never $0).
@@ -2461,6 +2496,36 @@ export interface RunUsage {
    */
   connections?: Partial<Record<ConnectionId, { costUsd: number | null; agents: number; costPartial?: true }>>
   updatedAt: number
+}
+
+/**
+ * Timing shape of a run that used reports (docs/design/orchestration-efficiency.md 4.2 and 7). Computed by runUsage.ts
+ * from the agents' startedAt / endedAt. "Reports" here are the root's DIRECT reports only (agents whose parentId is the
+ * root agent's id), so a lead's own subtree is never double counted. Absent on a run where no direct report started
+ * and on runs saved before it existed. The lead's active time needs no field: it is wallMs - idleMs.
+ */
+export interface RunEfficiency {
+  /** Direct reports that started. */
+  reports: number
+  /** Run start to the first direct report's start, ms. */
+  firstSpawnMs: number
+  /** Sum of the direct reports' wall time (a live report counts to now), ms. */
+  reportSumMs: number
+  /** Time with at least one direct report running (union of their intervals), ms. reportSumMs / reportBusyMs is the overlap ratio. */
+  reportBusyMs: number
+  /** Most direct reports running at once. */
+  maxParallel: number
+  /**
+   * From the end of the first wave to the run's end (or now while live), ms. The first wave is every direct report
+   * that started before any direct report ended; it ends when its last member ends.
+   */
+  tailMs: number
+  /**
+   * Run staffing (docs/design/orchestration-efficiency.md 4.2): time a ready plan step (pending, every `after` step done
+   * or skipped) sat with a free agent slot and nobody working on it, summed over steps, ms. Absent = not computed:
+   * nothing computes it yet (computeRunEfficiency leaves it out); cleanRunEfficiency keeps a stored finite value >= 0.
+   */
+  readyIdleMs?: number
 }
 
 /** RunUsage.noResultAgents cap per run. */
@@ -3334,6 +3399,19 @@ export interface PlanStep {
   note?: string
   /** Role or handle expected to do the step. */
   owner?: string
+  /**
+   * Run staffing ("The plan is a graph"): ids of the steps this one waits for. Absent or empty = it can start now. Only
+   * ids of OTHER steps of the same plan, unique, at most PLAN_STEP_AFTER_MAX (defaults.ts `cleanPlanStepGraph`, which
+   * also breaks a dependency cycle). RunManager applies it to stored records on read; the plan tools do not call it yet.
+   */
+  after?: string[]
+  /**
+   * Files or folders the step will change, project-relative as the orchestrator wrote them (never resolved). Trimmed,
+   * unique, at most PLAN_STEP_PATHS_MAX of at most PLAN_STEP_PATH_MAX_CHARS each (`cleanPlanStepGraph`).
+   */
+  paths?: string[]
+  /** The orchestrator's pick for who does the step (role, tier, effort). The harness clamps it before it applies. */
+  staff?: PlanStepStaff
 }
 
 /**
@@ -3355,6 +3433,105 @@ export interface RunPlan {
 
 /** Automatic continues per run when a project sets none. */
 export const DEFAULT_MAX_AUTO_CONTINUES = 40
+
+// ---------- Run staffing ----------
+//
+// Who does each piece of a work run, on which tier and effort, and why (docs/design/orchestration-efficiency.md 4.2 to
+// 4.5, contract in section 5). The orchestrator proposes (PlanStep.staff), the harness clamps to the role's bounds and
+// records the result (RunStaffing on RunRecord, written through RuntimeContext.updateStaffing, broadcast as
+// `staffing.updated`). Tiers, never vendor names. Normalizers and effective values live in defaults.ts
+// (cleanRoleStaffing, cleanPlanStepGraph, cleanRunStaffing, staffingModeOf, staffingGoalOf, reviewPolicyOf,
+// effectiveRoleStaffing). Everything here is structured-clone safe. Coexists with RunRecord.delegation: the ledger
+// says whether obligations were met, staffing says who was chosen and why.
+
+/**
+ * What automatic staffing optimizes for after the quality floor. 'balanced' (the default): time on the critical path,
+ * then cost elsewhere. 'speed': every step is treated as on the critical path. 'cost': no step is.
+ */
+export type StaffingGoal = 'balanced' | 'speed' | 'cost'
+export const STAFFING_GOALS: readonly StaffingGoal[] = ['balanced', 'speed', 'cost']
+export function isStaffingGoal(v: unknown): v is StaffingGoal {
+  return typeof v === 'string' && (STAFFING_GOALS as readonly string[]).includes(v)
+}
+
+/**
+ * When the orchestrator asks for review. 'always': after every change; 'risk' (the default): when a role prompt or the
+ * brief demands it, or the change touches sensitive paths, has a large diff or failed verification once; 'never': only when required reports demand it (they always win).
+ */
+export type ReviewPolicy = 'always' | 'risk' | 'never'
+export const REVIEW_POLICIES: readonly ReviewPolicy[] = ['always', 'risk', 'never']
+export function isReviewPolicy(v: unknown): v is ReviewPolicy {
+  return typeof v === 'string' && (REVIEW_POLICIES as readonly string[]).includes(v)
+}
+
+/**
+ * 'auto': the harness picks tier and effort per assignment within the role's bounds. 'fixed': the role's model and
+ * effort exactly as configured (today's behaviour). Missing = 'auto' on Project.staffing; on a role see Role.staffing.
+ */
+export type StaffingMode = 'auto' | 'fixed'
+export const STAFFING_MODES: readonly StaffingMode[] = ['auto', 'fixed']
+export function isStaffingMode(v: unknown): v is StaffingMode {
+  return typeof v === 'string' && (STAFFING_MODES as readonly string[]).includes(v)
+}
+
+/** Role.staffing: a role's staffing mode and bounds. The role's own tier is the tier ceiling. */
+export interface RoleStaffing {
+  mode: StaffingMode
+  /** Automatic staffing never goes below this tier for the role. Ignored when it is above the role's own tier. */
+  minTier?: ModelTier
+  /** Automatic staffing never goes above this effort for the role (the role's own effort is the default ceiling). */
+  maxEffort?: Effort
+}
+
+/** PlanStep.staff: the orchestrator's pick for one step. Absent tier or effort = the resolver's default. */
+export interface PlanStepStaff {
+  /** The role expected to do the step (its slug or name, as the orchestrator wrote it). Never empty. */
+  role: string
+  tier?: ModelTier
+  effort?: Effort
+}
+
+/**
+ * Where an assignment's tier and effort came from. 'orchestrator': its pick (PlanStep.staff or the spawn call);
+ * 'profile': the project's staffing profile; 'role': the role's own setting or the rubric's default for it; 'clamped':
+ * a pick moved into the role's bounds; 'plan-guard': lowered by the plan guard near a usage limit; 'escalated': raised
+ * after a failed or unresolved attempt.
+ */
+export type StaffingSource = 'orchestrator' | 'profile' | 'role' | 'clamped' | 'plan-guard' | 'escalated'
+export const STAFFING_SOURCES: readonly StaffingSource[] = ['orchestrator', 'profile', 'role', 'clamped', 'plan-guard', 'escalated']
+export function isStaffingSource(v: unknown): v is StaffingSource {
+  return typeof v === 'string' && (STAFFING_SOURCES as readonly string[]).includes(v)
+}
+
+/** One staffing decision: who got a piece of work, on which tier, model and effort, and why. */
+export interface StaffingAssignment {
+  /** The agent the decision applied to (AgentInstance.id), once it exists. */
+  agentId?: string
+  /** The plan step it was bound to (PlanStep.id), when one matched. */
+  stepId?: string
+  /** Role.id of the agent's role. */
+  roleId: string
+  /** The resolved tier. Absent for a fixed role on a concrete model, or an inherit role whose tier was not known. */
+  tier?: ModelTier
+  /** The model actually used (an alias or the connection's model id for the tier). */
+  model: string
+  /** The effort actually used. Absent = the adapter's default. */
+  effort?: Effort
+  source: StaffingSource
+  /** Why, in words shown to the user ("capped by the role"), at most STAFFING_NOTE_MAX_CHARS. */
+  note?: string
+  /** When the decision was made, epoch ms. */
+  at: number
+}
+
+/**
+ * RunRecord.staffing: the run's effective goal and its staffing decisions, oldest first, at most
+ * RUN_STAFFING_ASSIGNMENTS_MAX (the newest kept). Written only through RuntimeContext.updateStaffing.
+ */
+export interface RunStaffing {
+  goal: StaffingGoal
+  assignments: StaffingAssignment[]
+}
 
 /** A finished or live run as persisted on disk: everything needed to redraw it later. */
 export type DelegationVerdict = 'ok' | 'adaptive' | 'failed'
@@ -3400,6 +3577,11 @@ export interface RunRecord {
   logs: { at: number; level: 'info' | 'warn' | 'error'; message: string }[]
   /** Work runs: the orchestrator's plan, once it set one. */
   plan?: RunPlan
+  /**
+   * Work runs: who was staffed on what and why (RunStaffing), once anything was recorded. Not carried to a
+   * continuation (its agents are new). RunManager cleans a stored value on read (`cleanRunStaffing`).
+   */
+  staffing?: RunStaffing
 }
 
 export interface PermissionRequest {
@@ -3725,6 +3907,8 @@ export type RunEvent =
   | { type: 'usage.status'; runId: string; usage: UsageStatus }
   /** The orchestrator's plan changed (plan tools, or the harness counting an automatic continue). */
   | { type: 'plan.updated'; runId: string; plan: RunPlan }
+  /** The run's staffing changed (RuntimeContext.updateStaffing); carries the whole RunStaffing, like plan.updated. */
+  | { type: 'staffing.updated'; runId: string; staffing: RunStaffing }
   /** One agent messaged another (SendMessage). Live only; the sender's transcript carries a persisted copy. */
   | ({ type: 'agent.message'; runId: string } & AgentMessage)
   /**
@@ -6333,6 +6517,14 @@ export interface KitPreviewRole {
   slug: string
   prompt: string
   elevatedTools: ('Bash' | 'Edit' | 'Write' | 'NotebookEdit' | 'canSpawn' | 'mcp')[]
+  /**
+   * What the role may spend, so nobody imports a team without seeing it: the model as the template wrote it (a tier
+   * name, an alias or an id, at most 80 characters), its effort and its staffing. Each is absent when the template
+   * gives none.
+   */
+  model?: string
+  effort?: Effort
+  staffing?: RoleStaffing
 }
 
 export interface KitImportPreview {
@@ -6708,6 +6900,11 @@ export const DEFAULT_HEADLESS_DECISION_POLICY: Readonly<Required<HeadlessDecisio
 export interface RunOverrides {
   /** Every role that canSpawn requires its whole spawnable list this run (--strict-delegation). Only adds requirements. */
   strictDelegation?: true
+  /**
+   * Overrides Project.staffingGoal for this run (run staffing). Never widens: every pick stays inside the roles' own
+   * ceilings, so any scope may set it (no overridesWidening rule). Continuations keep it like strictDelegation.
+   */
+  goal?: StaffingGoal
   /** Overrides Project.permissionMode. Under 'operate' scope, must satisfy canNarrowPermissionMode(projectMode, overrideMode). */
   permissionMode?: PermissionMode
   /** Overrides Project.autoContinue for this run (under 'operate', cannot change false -> true). */

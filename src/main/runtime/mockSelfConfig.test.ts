@@ -26,6 +26,8 @@ function quickCtx(prompt: string, over: Partial<RuntimeContext> = {}) {
   return fakeCtx({
     run: runSummary({ projectId: 'quick', quick, prompt }),
     prompt,
+    // These tests are about the script's tools, not continuation: no harness nudge may add a turn after it goes idle.
+    autoContinue: false,
     listProjects: () => [peek('p_first'), peek('p_second')],
     appReference: vi.fn(async () => ({ text: 'Theme: App settings > General > Appearance (app-settings-general-appearance).' })),
     navigate: vi.fn(() => ({ ok: true as const, path: 'App settings > General > Appearance' })),

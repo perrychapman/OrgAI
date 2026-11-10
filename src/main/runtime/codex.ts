@@ -1,9 +1,10 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
-import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
+import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, projectKindOf, settingTier } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult, type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
-import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
+import { CodexAppServer, CodexRpcError, codexExitMessage, codexStartLockKey, withCodexStartLock, type CodexAppServerOptions } from './codexAppServer'
+import { catalogStartFailure, nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
 import { startCodexToolGateway } from './codexToolGateway'
 import type { ClaudeToolGateway } from './claudeToolGateway'
 import {
@@ -11,7 +12,6 @@ import {
   SERVER_REQUEST,
   buildLaunchConfig,
   codexToolName,
-  dynamicToolSpec,
   harnessToolName,
   lockNativeSkills,
   matchesBashRule,
@@ -40,21 +40,25 @@ import {
   callNetworkTool,
   childFirstMessage,
   codexToolNotes,
+  NATIVE_RULE_NOTE,
   createAgentWorktree,
   canonicalNetworkTool,
+  codexToolsFor,
   networkToolNames,
-  networkToolSpecs,
   reportMessage,
   type NetworkHost,
   type SpawnRequest
 } from './codexAgents'
 import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
-import { ContinuationDriver, stepActivity } from './continuation'
+import { ContinuationDriver, agentSlots, rootRoleNames, stepActivity } from './continuation'
 import { obligationsFor } from './delegation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
+import { StaffingBook } from './staffingBook'
+import { recordStaffing } from './staffing'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
 import { dirname, isAbsolute, join } from 'node:path'
@@ -223,6 +227,72 @@ export interface CodexAdapterOptions {
   completionConnection?: () => RunConnection | undefined | Promise<RunConnection | undefined>
   /** Turn-request timeout for complete(), ms. Default 180 s. */
   completionTimeoutMs?: number
+  /**
+   * The model catalog override that switches Codex's built-in multi-agent tools off (codexNativeCatalog.ts), run by the
+   * app-server start once the binary is known. Tests inject it; default nativeAgentsCatalogConfig.
+   */
+  nativeCatalog?: (input: NativeCatalogInput) => Promise<NativeCatalogResult>
+  /**
+   * The Codex home OrgAI assigns its connections (codexHomeDir(dataDir), as the connection service builds it). The catalog
+   * override is written only when the run's CODEX_HOME resolves to it; missing = no override.
+   */
+  codexHome?: string
+}
+
+/** CodexAppServerOptions.prepareConfig for the catalog override: never throws, reports the result. */
+function catalogPreparer(options: CodexAdapterOptions, models: () => string[], onResult: (r: NativeCatalogResult) => void): NonNullable<CodexAppServerOptions['prepareConfig']> {
+  return async (input) => {
+    let r: NativeCatalogResult
+    try {
+      r = await (options.nativeCatalog ?? nativeAgentsCatalogConfig)({ ...input, models: models(), ...(options.codexHome ? { expectedHome: options.codexHome } : {}) })
+    } catch (e) {
+      r = { status: 'failed', config: [], reason: String((e as Error)?.message ?? e).slice(0, 120), ms: 0 }
+    }
+    try {
+      onResult(r)
+    } catch {
+      // reporting never blocks the launch
+    }
+    return r.config
+  }
+}
+
+/**
+ * Start an app-server under its Codex home's start lock (codexAppServer.ts withCodexStartLock): held from before the
+ * version check and the catalog step until initialize settles, the server closes, `signal` aborts or the cap passes.
+ */
+function lockedStart(server: CodexServerLike, env: Record<string, string | undefined> | undefined, clientVersion: string | undefined, signal?: AbortSignal): Promise<unknown> {
+  return withCodexStartLock(codexStartLockKey(env), () => server.start(clientVersion), { released: server.exited, ...(signal ? { signal } : {}) })
+}
+
+/** A failed start's text for catalogStartFailure: the error message and the app-server's (redacted) stderr tail. */
+function startFailureText(e: unknown, server: CodexServerLike): string {
+  let tail = ''
+  try {
+    tail = server.stderrTail?.() ?? ''
+  } catch {
+    // a fake without a tail
+  }
+  return `${String((e as Error)?.message ?? e)}\n${tail}`
+}
+
+/** The first line of a start error for a run warning, shortened. */
+function startFailureReason(e: unknown): string {
+  return String((e as Error)?.message ?? e).split('\n')[0]!.slice(0, 200)
+}
+
+/**
+ * The tier the root runs on now, the ceiling of an 'inherit' report: its chart tier, or after a model switch
+ * (`override`, switchModel) the tier that model names or the connection maps it to. Undefined = unknown, so an
+ * 'inherit' report runs as configured rather than on a stale ceiling. Pure.
+ */
+export function codexRootTier(root: Pick<Role, 'model' | 'tier'>, override: string | undefined, tierModels: Partial<Record<string, string>> | undefined): ReturnType<typeof settingTier> {
+  const model = override?.trim()
+  if (!model) return (isModelTier(root.tier) ? root.tier : undefined) ?? settingTier(root.model)
+  const named = settingTier(model)
+  if (named) return named
+  for (const [tier, id] of Object.entries(tierModels ?? {})) if (isModelTier(tier) && id?.trim() === model) return tier
+  return undefined
 }
 
 const ORGAI_SERVICE = 'orgai'
@@ -257,7 +327,7 @@ interface ThreadInfo {
 const NATIVE_STRIKE_LIMIT = 3
 const NATIVE_FAIL_ACTIVITY = 'Used native multi-agent tools'
 const NATIVE_AGENTS_NOTICE =
-  "Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports."
+  `Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports. ${NATIVE_RULE_NOTE}`
 
 /** sendToRoot's rejection when the root thread does not exist yet (already logged). */
 const ROOT_DROPPED = new Error('the root thread does not exist yet')
@@ -285,6 +355,12 @@ class CodexSession implements RuntimeSession {
   private integrator: WorktreeIntegrator
   private continuation: ContinuationDriver
   private root: Role
+  /** Run staffing: binds each spawn_report to its plan step and resolves what it may run on (never above the role's ceiling). */
+  private staffing: StaffingBook
+  /** threadId -> the effort every message to that thread carries (only reports whose staffing overrides the chart). */
+  private threadEffort = new Map<string, string>()
+  /** agentId -> the model a staffed report's thread runs on, kept for thread/resume after an MCP restart. */
+  private staffedModel = new Map<string, string>()
   private setupLike: boolean
   private isolation: boolean
   private harness: HarnessTool[] = []
@@ -306,9 +382,25 @@ class CodexSession implements RuntimeSession {
   private limited = false
   private ending = false
   /** Bridged reports started through spawn_report and still working: harness agent id -> who they report to. */
+  /** Epoch ms the newest bridged report finished (bridged reports are not in `agents`); bookkeeping for the continuation wait. */
+  private lastBridgedEndedAt?: number
   private bridgedLive = new Map<string, { handle: string; roleSlug: string; connectionName: string; parentId: string }>()
   private ended = false
   private launch: LaunchConfig = { config: [], env: {}, summary: [], skipped: [] }
+  /** The model catalog override is in effect for the current app-server: Codex offers no built-in multi-agent tools. */
+  private nativeAgentsOff = false
+  /** The catalog override's failure was logged (once per run). */
+  private nativeCatalogWarned = false
+  /** Codex did not start with the catalog override: no override for the rest of this session. */
+  private nativeCatalogRejected = false
+  /** A start with the catalog override failed and was recovered: its one warning was logged (once per session). */
+  private nativeCatalogStartWarned = false
+  /** The catalog file an app-server was launched with (set by its prepareConfig, before the spawn). */
+  private catalogOf = new WeakMap<CodexServerLike, string>()
+  /** The app-server whose first start (with the override) is in flight: its exit is retried, not a run failure. */
+  private retryableStart?: CodexServerLike
+  /** Bridged results that landed while the run was held for the user (interrupt) or for a stopped child, delivered after the user's next message. */
+  private heldBridged: { parentId: string; text: string }[] = []
   private mcpRestartPending = false
   /** Root turn ends so far (completed, failed and interrupted): RootTurnEnd.turnGen. */
   private rootTurnGen = 0
@@ -346,6 +438,16 @@ class CodexSession implements RuntimeSession {
     this.isolation = !this.setupLike && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     // Explicit project limits win; otherwise derived from the roles this run actually has (effectiveSubagentLimits).
     const limits = effectiveSubagentLimits({ ...ctx.project, roles: ctx.roles })
+    this.staffing = new StaffingBook({
+      project: ctx.project,
+      // Live: switchModel moves the root to another model mid-run.
+      rootTier: () => codexRootTier(this.root, this.rootModelOverride, this.ctx.connection?.tierModels),
+      tierModels: () => ctx.connection?.tierModels ?? {},
+      adapterEfforts: effortOptionsFor('codex'),
+      plan: () => ctx.getPlan(),
+      // The project profile's default pick for an unrequested spawn (spec 4.5); none on a fixed project.
+      ...staffingProfileDep(ctx)
+    })
     this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency })
     this.closed = new Promise((resolve) => (this.closeSignal = resolve))
     this.partial = new ThrottledPartial((agentId, text) => this.emit({ type: 'agent.partial', runId: ctx.run.id, agentId, text }))
@@ -382,6 +484,10 @@ class CodexSession implements RuntimeSession {
       },
       notify: (text) => this.notifyOrchestrator(text)
     })
+    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size
+    // The plan tools count free agent slots from ctx.liveReports; only this adapter knows its live threads, bridged ones included.
+    // A child or fake context without it reads as zero live reports.
+    ctx.liveReports = live
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
       projectKind: projectKindOf(ctx.project),
@@ -396,7 +502,14 @@ class CodexSession implements RuntimeSession {
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
       // Bridged reports are not threads of this session but still count as working reports.
-      liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size,
+      liveReports: live,
+      slots: () => agentSlots(ctx, live()),
+      ownRoles: () => rootRoleNames(ctx.roles),
+      lastReportEndedAt: () => {
+        let last = this.lastBridgedEndedAt
+        for (const a of this.agents.values()) if (a.id !== ROOT_AGENT_ID && a.endedAt !== undefined && (last === undefined || a.endedAt > last)) last = a.endedAt
+        return last
+      },
       pendingInteractions: () => ctx.pendingInteractions(),
       rateLimited: () => this.limited,
       stopping: () => this.ending || this.restarting,
@@ -419,10 +532,15 @@ class CodexSession implements RuntimeSession {
 
   async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
+    // Bridged results held for the user (bridgedFinished): the orchestrator's come with this message, a report's go to it now.
+    const held = this.heldBridged.splice(0)
+    const rootNotes = held.filter((h) => h.parentId === ROOT_AGENT_ID).map((h) => h.text)
     this.transcript(ROOT_AGENT_ID, userBlock(text, images))
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
     // The transcript entry above is what the user typed; the knowledge block goes only to the model.
-    const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    const typed = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    const body = rootNotes.length ? (typed ? `${rootNotes.join('\n\n')}\n\n---\n${typed}` : rootNotes.join('\n\n')) : typed
+    for (const h of held) if (h.parentId !== ROOT_AGENT_ID) this.deliverHeldBridged(h.parentId, h.text)
     if (this.rootThreadId) await this.sendToThread(this.rootThreadId, body, images)
     else this.earlySends.push({ text: body, images })
   }
@@ -660,7 +778,8 @@ class CodexSession implements RuntimeSession {
           this.log('info', `Could not steer the running turn (${(e as Error).message}); starting a new one.`)
         }
       }
-      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...extra, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
+      const staffedEffort = this.threadEffort.get(threadId)
+      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...(staffedEffort ? { effort: staffedEffort } : {}), ...extra, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
       const id = parseTurnId(res)
       if (id && !this.completedTurns.has(id)) this.activeTurn.set(threadId, id)
     })
@@ -737,12 +856,7 @@ class CodexSession implements RuntimeSession {
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
-    const harness = this.harness.filter((t) => isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners'))
-    const network = networkToolNames(role, { setupLike: this.setupLike })
-    return {
-      specs: [...harness.map(dynamicToolSpec), ...networkToolSpecs(network)],
-      names: [...harness.map((t) => codexToolName(t.name)), ...network]
-    }
+    return codexToolsFor(this.harness, role, isRoot, { setupLike: this.setupLike })
   }
 
   private instructionsFor(role: Role, isRoot: boolean): string {
@@ -753,22 +867,22 @@ class CodexSession implements RuntimeSession {
     const engagementDocument = this.ctx.engagementDocument?.()
     // Constant for the run (RunManager computes it once), so every thread's instructions carry the same index.
     const knowledgeBrief = this.ctx.knowledgeBrief?.()
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}), ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags() })
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}), ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}), ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags() })
     const { names } = this.toolsFor(role, isRoot)
-    const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
+    const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan'), nativeRule: !this.nativeAgentsOff })
     const parts = [base]
     if (isSetup && isRoot && this.ctx.run.kind === 'setup') parts.push(SETUP_TOOLS_INSTRUCTIONS)
     if (notes) parts.push(notes)
     return parts.join('\n\n')
   }
 
-  private threadParams(role: Role, isRoot: boolean, cwd: string, parentModel?: string): Record<string, unknown> {
+  private threadParams(role: Role, isRoot: boolean, cwd: string, parentModel?: string, modelOverride?: string): Record<string, unknown> {
     const policy = this.policyFor(role)
     const own = codexModelFor(role.model)
     if (!own && typeof role.model === 'string' && role.model.trim() && !validModelId(role.model.trim())) {
       this.log('warn', `Ignoring the invalid model of ${String(role.name).replace(/[^ -~]/g, "?").slice(0, 80)}; it uses the ${parentModel ? "parent's" : 'default'} model.`)
     }
-    const model = own ?? (validModelId(parentModel) ? parentModel : undefined)
+    const model = modelOverride ?? own ?? (validModelId(parentModel) ? parentModel : undefined)
     return {
       cwd,
       ...(model ? { model } : {}),
@@ -830,10 +944,13 @@ class CodexSession implements RuntimeSession {
   }
 
   private createServer(launch: LaunchConfig): CodexServerLike {
+    let created: CodexServerLike | undefined
     const options: CodexAppServerOptions = {
       cwd: this.ctx.project.path,
       env: launch.env,
       config: launch.config,
+      // startServer holds this home's start lock around the whole start (lockedStart).
+      startLockHeld: true,
       redact: this.gatewaySecrets,
       onStderr: (line) => {
         // The CLI's tracing output is chatty; only surface real problems.
@@ -853,9 +970,14 @@ class CodexSession implements RuntimeSession {
         if (this.versionWarned) return
         this.versionWarned = true
         this.log('warn', message)
-      }
+      },
+      // Codex's built-in multi-agent tools off through the model catalog (fails open: one warning, the prompt keeps its
+      // fallback sentence and the native-item strikes stay in force).
+      // After Codex refused to start with it, never again in this session.
+      ...(this.nativeCatalogRejected ? {} : { prepareConfig: catalogPreparer(this.options, () => this.namedModels(), (r) => this.onNativeCatalog(r, created)) })
     }
     const server = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    created = server
     if (!this.gatewaySecrets.length) return server
     const request = server.request.bind(server)
     server.request = async <T>(...args: Parameters<CodexServerLike['request']>): Promise<T> => {
@@ -870,6 +992,74 @@ class CodexSession implements RuntimeSession {
       }
     }
     return server
+  }
+
+  /**
+   * Create, adopt (assign and wire) and start an app-server, one start at a time per Codex home (lockedStart). When a
+   * start with the catalog override in effect fails:
+   * - with a transient text (catalogStartFailure: Codex's sqlite start race) it is started once more WITH the override;
+   * - otherwise (or when that retry fails too) once more without it, and the session drops the override (the prompt
+   *   keeps the fallback sentence). The catalog is rejected for the process (rejectNativeCatalog, never deleted) only
+   *   when that start without it succeeds and the failure text names the catalog or the configuration; otherwise the
+   *   next session offers it again.
+   * One warning per session says which case happened. A failure without the override, or after the fallback, is thrown.
+   */
+  private async startServer(launch: LaunchConfig, adopt: (server: CodexServerLike) => void): Promise<CodexServerLike> {
+    let failure: { path: string; text: string; reason: string } | undefined
+    let transientRetried = false
+    for (;;) {
+      const server = this.createServer(launch)
+      adopt(server)
+      this.retryableStart = server
+      try {
+        await lockedStart(server, launch.env, this.options.clientVersion)
+      } catch (e) {
+        const catalog = this.catalogOf.get(server)
+        if (!catalog || this.ending) throw e
+        this.unwire()
+        server.close()
+        failure = { path: catalog, text: startFailureText(e, server), reason: startFailureReason(e) }
+        if (!transientRetried && catalogStartFailure(failure.text) === 'transient') transientRetried = true
+        else {
+          this.nativeCatalogRejected = true
+          this.nativeAgentsOff = false
+        }
+        continue
+      } finally {
+        if (this.retryableStart === server) this.retryableStart = undefined
+      }
+      if (failure) this.noteCatalogStartRecovery(failure, this.catalogOf.has(server))
+      return server
+    }
+  }
+
+  /** The app-server started after a failed start with the catalog override: one warning per session naming the case. */
+  private noteCatalogStartRecovery(failure: { path: string; text: string; reason: string }, withCatalog: boolean): void {
+    const rejected = !withCatalog && catalogStartFailure(failure.text) === 'catalog'
+    if (rejected) rejectNativeCatalog(failure.path)
+    if (this.nativeCatalogStartWarned) return
+    this.nativeCatalogStartWarned = true
+    const still = "Agents still see Codex's built-in multi-agent tools and are told to delegate with spawn_report."
+    if (withCatalog) this.log('warn', `Codex did not start on the first try (${failure.reason}); it was started again with the model catalog override, which stays in effect.`)
+    else if (rejected) this.log('warn', `Codex did not start with the model catalog override (${failure.reason}); it was started again without it, and the catalog is not used again until OrgAI restarts. ${still}`)
+    else this.log('warn', `Codex did not start with the model catalog override (${failure.reason}); it was started again without it for this session (the failure does not name the catalog, so later sessions use it again). ${still}`)
+  }
+
+  /** Every concrete model id this run names (roles and the connection's tier mapping): the catalog override checks them. */
+  private namedModels(): string[] {
+    const ids = [...this.ctx.roles.map((r) => codexModelFor(r.model)), ...Object.values(this.ctx.connection?.tierModels ?? {}).map((m) => codexModelFor(m))]
+    return [...new Set(ids.filter((m): m is string => !!m))]
+  }
+
+  private onNativeCatalog(r: NativeCatalogResult, server: CodexServerLike | undefined): void {
+    this.nativeAgentsOff = r.status === 'written' || r.status === 'cached'
+    if (server && (r.status === 'written' || r.status === 'cached')) this.catalogOf.set(server, r.path)
+    if (this.nativeAgentsOff) this.log('info', `Codex: built-in multi-agent tools off (model catalog ${r.status === 'cached' ? 'reused' : 'written'}, ${r.ms} ms)`)
+    else if (r.status === 'skipped') this.log('info', `Codex: model catalog override skipped (${r.reason}); agents are told to delegate with spawn_report.`)
+    else if (r.status === 'failed' && !this.nativeCatalogWarned) {
+      this.nativeCatalogWarned = true
+      this.log('warn', `Codex's built-in multi-agent tools could not be switched off (${r.reason}); agents still see them and are told to delegate with spawn_report.`)
+    }
   }
 
   private buildLaunch(servers: Parameters<typeof buildLaunchConfig>[1], opts: Parameters<typeof buildLaunchConfig>[2]): LaunchConfig | Promise<LaunchConfig> {
@@ -892,7 +1082,8 @@ class CodexSession implements RuntimeSession {
     server.onServerRequest((method, params) => this.onServerRequest(method, params))
     this.unsubscribers.push(
       server.onExit((code, error) => {
-        if (this.restarting || this.ending) return
+        // A first start with the catalog override that dies is retried without it (startServer).
+        if (this.restarting || this.ending || (server === this.retryableStart && this.catalogOf.has(server))) return
         const message = error?.message ?? codexExitMessage(code, server.stderrTail?.())
         this.fail(message)
       })
@@ -938,7 +1129,7 @@ class CodexSession implements RuntimeSession {
     this.transcript(ROOT_AGENT_ID, userBlock(ctx.prompt, ctx.images))
 
     try {
-      let firstMessage = composeFirstMessage(ctx.prompt, firstMessageHiddenContext(ctx, (m) => this.log('warn', m)))
+      let firstMessage = composeFirstMessage(ctx.prompt, firstMessageHiddenContext(withRootStaffingBrief(ctx), (m) => this.log('warn', m)))
       if (this.isolation) {
         const leftover = await this.integrator.start()
         if (leftover) firstMessage += `\n\n---\n${leftover}`
@@ -948,9 +1139,10 @@ class CodexSession implements RuntimeSession {
       this.launch = launch instanceof Promise ? await launch : launch
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
-      this.server = this.createServer(this.launch)
-      this.wire(this.server)
-      await this.server.start(this.options.clientVersion)
+      await this.startServer(this.launch, (server) => {
+        this.server = server
+        this.wire(server)
+      })
       // End session during the start (the version check, the handshake): no thread, no prompt to the model.
       if (this.ending) return
 
@@ -1182,7 +1374,7 @@ class CodexSession implements RuntimeSession {
     }
     this.ctx.delegation?.ended(agent.id)
     this.heldReports.delete(agent.id)
-    this.net.finish(agent.id)
+    this.finishAgent(agent.id, true)
     if (result) agent.result = result
     agent.state = 'error'
     agent.activity = NATIVE_FAIL_ACTIVITY
@@ -1253,7 +1445,7 @@ class CodexSession implements RuntimeSession {
     // Interrupted or failed: no accepted completion.
     if (u.status !== 'completed') this.ctx.delegation?.ended(agentId)
     this.heldReports.delete(agentId)
-    this.net.finish(agentId)
+    this.finishAgent(agentId, u.status === 'failed')
     if (u.result) child.result = u.result
     if (u.status === 'interrupted') {
       child.state = 'done'
@@ -1300,11 +1492,11 @@ class CodexSession implements RuntimeSession {
       return
     }
     this.heldReports.delete(child.id)
-    this.net.finish(child.id)
+    const failed = d.action === 'fail'
+    this.finishAgent(child.id, failed)
     if (result) child.result = result
     child.state = 'done'
     child.endedAt = Date.now()
-    const failed = d.action === 'fail'
     child.activity = failed ? 'Skipped required reports' : 'Reported back'
     this.upsert(child)
     this.noteActivity('report')
@@ -1343,20 +1535,20 @@ class CodexSession implements RuntimeSession {
    * messages (report hand-offs) get a harness row; `agentMessage` deliveries (send_message) carry another
    * agent's words and stay unmarked.
    */
-  private deliverTo(agentId: string, text: string, opts: { agentMessage?: boolean; correction?: boolean } = {}): Promise<void> {
+  private deliverTo(agentId: string, text: string, opts: { agentMessage?: boolean; correction?: boolean; transcript?: boolean } = {}): Promise<void> {
     if (this.agents.get(agentId)?.state === 'error') {
       this.log('warn', `Did not deliver a message to ${this.agents.get(agentId)?.handle ?? agentId}: it ended with an error.`)
       return Promise.resolve()
     }
     if (agentId === ROOT_AGENT_ID) {
-      const sent = this.sendToRoot(text, undefined, { agentMessage: opts.agentMessage })
+      const sent = this.sendToRoot(text, undefined, { agentMessage: opts.agentMessage, ...(opts.transcript === false ? { transcript: false } : {}) })
       this.noteActivity('message')
       return sent
     }
     const threadId = this.agentThread.get(agentId)
     const target = this.agents.get(agentId)
     if (!threadId || !target) return Promise.reject(new Error(`${agentId} has no thread`))
-    this.transcript(agentId, { kind: 'system', text }, opts.agentMessage ? undefined : { source: 'harness' })
+    if (opts.transcript !== false) this.transcript(agentId, { kind: 'system', text }, opts.agentMessage ? undefined : { source: 'harness' })
     const held = this.heldReports.get(agentId)
     if (held && !opts.correction) {
       // A hand-off (or message) starts a new turn: the held report is dropped and that turn is evaluated again.
@@ -1880,23 +2072,85 @@ class CodexSession implements RuntimeSession {
     })
   }
 
-  /** A bridged report finished: hand its final text (or failure) to the agent that spawned it. */
+  /**
+   * A bridged report finished: hand its final text (or failure) to the agent that spawned it. A child the harness stopped
+   * (RunManager stops bridged reports first when the user interrupts, before this session's own interrupt lands) and any
+   * result that lands while the run is held for the user wait for the user's next message (send) instead of starting a
+   * turn, like the Claude adapter's held notices: the transcript row shows now, the delivery waits.
+   */
   private bridgedFinished(r: BridgeSpawnResult, roleName: string): void {
     const live = this.bridgedLive.get(r.agentId)
     this.bridgedLive.delete(r.agentId)
+    this.lastBridgedEndedAt = Date.now()
     this.net.finish(r.agentId)
     this.noteActivity('report')
     if (this.ending) return
     const parentId = live?.parentId ?? ROOT_AGENT_ID
     const text = `Harness: ${bridgedResultText(r, roleName)}`
+    if (r.stopped || this.continuation.isHeld()) {
+      const summary = r.stopped ? `${r.handle} was stopped.` : r.ok ? `${r.handle} reported back.` : `${r.handle} failed.`
+      this.heldBridged.push({ parentId, text })
+      this.transcript(this.agents.has(parentId) ? parentId : ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
+      return
+    }
     this.deliverTo(parentId, text).catch((e) => this.log('warn', `Could not deliver the report of ${r.handle}: ${(e as Error).message}`))
     const parent = this.agents.get(parentId)
     if (parent && this.heldReports.get(parentId)?.waiting) this.recheckParent({ ...parent, id: r.agentId, parentId } as AgentInstance)
   }
 
-  private async spawnChild(req: SpawnRequest): Promise<void> {
+  /** A report's turn ended with any outcome: free its network slot and tell the staffing book whether it failed (not an interrupt). */
+  private finishAgent(agentId: string, failed = false): void {
+    this.net.finish(agentId)
+    this.staffing.ended(agentId, { failed })
+  }
+
+  /** A held bridged result for a report (not the orchestrator), delivered once the user spoke. Its row was written when it landed. */
+  private deliverHeldBridged(parentId: string, text: string): void {
+    if (this.ending) return
+    this.deliverTo(parentId, text, { transcript: false }).catch((e) => this.log('warn', `Could not deliver a held report to ${this.agents.get(parentId)?.handle ?? parentId}: ${(e as Error).message}`))
+  }
+
+  private async spawnChild(req: SpawnRequest): Promise<{ staffing?: string; note?: string }> {
     const parent = this.agents.get(req.parentId)
     const parentRole = this.net.roleOf(req.parentId) ?? this.root
+    // Run staffing: bind to the plan step and resolve tier / effort before anything is created (cancelled below on failure).
+    const decision = this.staffing.decide({
+      key: req.id,
+      role: req.role,
+      ...(req.parentId !== ROOT_AGENT_ID ? { parentAgentId: req.parentId } : {}),
+      ...(req.onCall ? { onCall: req.onCall } : {})
+    })
+    // The model only when the tier changed, the effort only when the effort changed: an effort-only pick keeps the
+    // model the role would run on anyway (its own, or its parent's when it inherits).
+    const { resolved } = decision
+    const staffedModel = resolved.tierChanged && validModelId(resolved.model) ? resolved.model : undefined
+    const staffedEffort = resolved.effortChanged ? resolved.effort : undefined
+    try {
+      // `started` runs only once the first message was accepted, so a spawn that did not start leaves no row and no attempt.
+      await this.spawnChildNow(req, parent, parentRole, { model: staffedModel, effort: staffedEffort }, () => {
+        const row = this.staffing.started(req.id, req.id, Date.now())
+        if (row) recordStaffing(this.ctx, row).catch((e: Error) => this.log('warn', `Could not record the staffing of ${req.handle}: ${e.message}`))
+      })
+    } catch (e) {
+      this.staffing.cancel(req.id)
+      this.threadEffort.delete(this.agentThread.get(req.id) ?? '')
+      this.staffedModel.delete(req.id)
+      throw e
+    }
+    const ignored = resolved.mode === 'fixed' && (req.onCall?.tier || req.onCall?.effort)
+    return {
+      ...(resolved.mode === 'auto' ? { staffing: decision.label } : {}),
+      ...(ignored ? { note: `It runs on its configured model and effort; the ${req.onCall?.tier && req.onCall?.effort ? 'tier and effort' : req.onCall?.tier ? 'tier' : 'effort'} you gave ${req.onCall?.tier && req.onCall?.effort ? 'were' : 'was'} ignored.` } : {})
+    }
+  }
+
+  private async spawnChildNow(
+    req: SpawnRequest,
+    parent: AgentInstance | undefined,
+    parentRole: Role,
+    staffed: { model?: string; effort?: string },
+    onStarted: () => void
+  ): Promise<void> {
     // Writing reports get their own worktree when their parent is the orchestrator or is itself isolated.
     const parentWt = req.parentId === ROOT_AGENT_ID ? undefined : this.integrator.worktreeOf(req.parentId)
     const parentIsolated = req.parentId === ROOT_AGENT_ID || !!parentWt
@@ -1919,9 +2173,11 @@ class CodexSession implements RuntimeSession {
     const policy = this.policyFor(req.role)
     let registered = false
     try {
-      const params = this.threadParams(req.role, false, cwd, parent?.model)
+      const params = this.threadParams(req.role, false, cwd, parent?.model, staffed.model)
       const started = await this.startThread(params)
       this.bindThread(started.threadId, req.id, policy)
+      if (staffed.model) this.staffedModel.set(req.id, staffed.model)
+      if (staffed.effort) this.threadEffort.set(started.threadId, staffed.effort)
       this.noteActivity('subagent')
       this.newAgent(req.id, req.role, {
         parentId: req.parentId,
@@ -1935,10 +2191,11 @@ class CodexSession implements RuntimeSession {
       registered = true
       this.ctx.delegation?.noteSpawn(req.id, req.parentId, req.role.id)
       this.transcript(req.id, { kind: 'user', text: req.brief })
-      const effort = req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
+      const effort = staffed.effort ? { effort: staffed.effort } : req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
       // After newAgent, so the "Added N known items" row lands on the report; the block stays out of its transcript entry.
       const knownItems = spawnKnowledge(this.ctx, req.brief, req.id, (m) => this.log('warn', m))
       await this.sendToThread(started.threadId, childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), undefined, effort)
+      onStarted()
     } catch (e) {
       if (this.agents.delete(req.id)) this.emit({ type: 'agent.remove', runId: this.ctx.run.id, agentId: req.id })
       const gate = this.ctx.delegation
@@ -2019,16 +2276,17 @@ class CodexSession implements RuntimeSession {
       await Promise.race([old.exited, new Promise((r) => setTimeout(r, EXIT_WAIT_MS))])
       if (this.ending) return abandon()
       this.launch = launch
-      created = this.createServer(launch)
-      this.server = created
-      this.wire(created)
-      await created.start(this.options.clientVersion)
+      await this.startServer(launch, (server) => {
+        created = server
+        this.server = server
+        this.wire(server)
+      })
       if (this.ending) return abandon()
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)
         // threadParams re-derives the policy (mode and reference folders read now); the thread keeps the new one.
-        const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path)
+        const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path, undefined, this.staffedModel.get(info.agentId))
         void _t
         void _s
         info.policy = this.policyFor(role)
@@ -2080,8 +2338,31 @@ export class CodexAdapter implements RuntimeAdapter {
     // empty temp dir as cwd). Nothing in a tool-less read-only thread needs the folder.
     const launch = buildLaunchConfig(connection, [], { noProjectDocs: true })
     const scratchCwd = tmpdir()
-    const options: CodexAppServerOptions = { cwd: scratchCwd, env: launch.env, config: launch.config }
-    const server: CodexServerLike = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    // The catalog override here too: a tool-less thread would otherwise still carry Codex's multi-agent tools and rule.
+    // A failed start with it follows startServer's rules: a transient failure is retried once with it, anything else once
+    // without it, and the catalog is rejected for the process only when that worked and the failure names the catalog.
+    let catalog: string | undefined
+    const open = (withCatalog: boolean): CodexServerLike => {
+      catalog = undefined
+      const options: CodexAppServerOptions = {
+        cwd: scratchCwd,
+        env: launch.env,
+        config: launch.config,
+        startLockHeld: true,
+        ...(withCatalog
+          ? {
+              prepareConfig: catalogPreparer(this.options, () => [codexModelFor(input.model)].filter((m): m is string => !!m), (r) => {
+                if (r.status === 'written' || r.status === 'cached') catalog = r.path
+              })
+            }
+          : {})
+      }
+      const s = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+      listen(s)
+      return s
+    }
+    let server!: CodexServerLike
+    let starting = true
     let text = ''
     let final = ''
     let failure: string | undefined
@@ -2089,28 +2370,34 @@ export class CodexAdapter implements RuntimeAdapter {
     let done!: () => void
     const completed = new Promise<void>((resolve) => (done = resolve))
     const mapper = new CodexEventMapper()
-    server.onNotification((method, params) => {
-      for (const u of mapper.handle(method, params)) {
-        // thread/tokenUsage/updated carries the thread's running total; the last one is the completion's spend.
-        if (u.type === 'tokens') tokens = { input: u.input, output: u.output, cachedInput: u.cachedInput }
-        if (u.type === 'text') text += (text ? '\n\n' : '') + u.text
-        if (u.type === 'turnCompleted') {
-          final = u.result ?? ''
-          if (u.status === 'failed') failure = u.error?.message ?? 'the turn failed'
-          done()
+    const listen = (s: CodexServerLike): void => {
+      s.onNotification((method, params) => {
+        if (s !== server) return
+        for (const u of mapper.handle(method, params)) {
+          // thread/tokenUsage/updated carries the thread's running total; the last one is the completion's spend.
+          if (u.type === 'tokens') tokens = { input: u.input, output: u.output, cachedInput: u.cachedInput }
+          if (u.type === 'text') text += (text ? '\n\n' : '') + u.text
+          if (u.type === 'turnCompleted') {
+            final = u.result ?? ''
+            if (u.status === 'failed') failure = u.error?.message ?? 'the turn failed'
+            done()
+          }
         }
-      }
-    })
-    server.onServerRequest(async (method) => {
-      // Nothing may run: decline every approval and tool call.
-      if (method === SERVER_REQUEST.toolCall) return toolResponse('No tools are available.', false)
-      if (method === SERVER_REQUEST.mcpElicitation) return { action: 'decline', content: null, _meta: null }
-      return { decision: 'decline' }
-    })
-    server.onExit((code, error) => {
-      failure ??= error?.message ?? codexExitMessage(code, server.stderrTail?.())
-      done()
-    })
+      })
+      s.onServerRequest(async (method) => {
+        // Nothing may run: decline every approval and tool call.
+        if (method === SERVER_REQUEST.toolCall) return toolResponse('No tools are available.', false)
+        if (method === SERVER_REQUEST.mcpElicitation) return { action: 'decline', content: null, _meta: null }
+        return { decision: 'decline' }
+      })
+      s.onExit((code, error) => {
+        // An abandoned app-server, or a first start with the catalog override (retried below), is not the completion's failure.
+        if (s !== server || (starting && catalog)) return
+        failure ??= error?.message ?? codexExitMessage(code, s.stderrTail?.())
+        done()
+      })
+    }
+    server = open(true)
     let timer: ReturnType<typeof setTimeout> | undefined
     // The caller gave up (run-title timeout, run stopped): end the turn wait, kill the app-server at once so pending
     // requests reject, and settle whichever step is awaited (start, thread/start, turn/start) even if one hangs.
@@ -2127,7 +2414,29 @@ export class CodexAdapter implements RuntimeAdapter {
     if (input.signal?.aborted) throw new Error('Completion cancelled')
     input.signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      await step(server.start(this.options.clientVersion))
+      // One start at a time per Codex home (lockedStart); an abort leaves the lock queue whether waiting or holding.
+      const startOnce = (s: CodexServerLike): Promise<unknown> => step(lockedStart(s, launch.env, this.options.clientVersion, input.signal))
+      try {
+        let failed: { path: string; text: string } | undefined
+        let transientRetried = false
+        for (;;) {
+          try {
+            await startOnce(server)
+          } catch (e) {
+            if (!catalog || input.signal?.aborted) throw e
+            failed = { path: catalog, text: startFailureText(e, server) }
+            server.close()
+            const transient = !transientRetried && catalogStartFailure(failed.text) === 'transient'
+            if (transient) transientRetried = true
+            server = open(transient)
+            continue
+          }
+          break
+        }
+        if (failed && !catalog && catalogStartFailure(failed.text) === 'catalog') rejectNativeCatalog(failed.path)
+      } finally {
+        starting = false
+      }
       if (input.signal?.aborted) throw new Error('Completion cancelled')
       const model = codexModelFor(input.model)
       const res = await step(server.request(METHOD.threadStart, {

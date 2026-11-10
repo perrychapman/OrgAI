@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EXEC_OUTCOMES, EXEC_OUTCOME_EXIT_CODE, type ExecOutcome, type Project, type RunEvent, type RunRecord, type RunsSubscribeResult, type RunSummary, type TranscriptEntry } from '../../shared/types'
+import { EXEC_OUTCOMES, EXEC_OUTCOME_EXIT_CODE, type ExecOutcome, type StaffingAssignment, type StaffingSource, type Project, type RunEvent, type RunRecord, type RunsSubscribeResult, type RunSummary, type TranscriptEntry } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, flush, project, record, summary, type FakeContextOptions } from '../testing/fakeContext'
 import { EXIT } from '../types'
 const resumeTui = vi.hoisted(() => ({ calls: [] as string[][] }))
@@ -78,6 +78,12 @@ beforeEach(() => {
 afterEach(() => Object.assign(execIo, realIo))
 
 describe('exec flags', () => {
+  it('--goal sets overrides.goal for each value; a bad value names the three; absent leaves it out', () => {
+    for (const goal of ['balanced', 'speed', 'cost']) expect(overridesFromFlags({ goal })).toEqual({ execMode: true, goal })
+    expect(overridesFromFlags({})).not.toHaveProperty('goal')
+    expect(() => overridesFromFlags({ goal: 'fast' })).toThrow(expect.objectContaining({ exitCode: EXIT.usage, message: '--goal must be one of balanced, speed, cost.' }))
+  })
+
   it('maps every flag to RunOverrides, always execMode', () => {
     expect(overridesFromFlags({})).toEqual({ execMode: true })
     expect(
@@ -137,6 +143,7 @@ describe('exec flags', () => {
     [['--wait-timeout', 'soon', 'x']],
     [['--on-question', 'maybe', 'x']],
     [['--permission-mode', 'yolo', 'x']],
+    [['--goal', 'fastest', 'x']],
     [['--team', 'big', 'x']],
     [['--quick', '--create-project', 'x']],
     [['--allow-edits', 'x']],
@@ -320,6 +327,39 @@ describe('orgai exec: following and outcomes', () => {
     expect(out).toContain('R1 Orchestrator: Second')
     expect(out).toContain('R1 Needs you: Question: Which DB? (request q1)')
     expect(out.trimEnd().split('\n').at(-1)).toBe('Completed · Finished · $0.25')
+  })
+
+  it('text: one line per staffed report (every source), once, sanitized; json keeps the raw event only', async () => {
+    const asg = (agentId: string, source: StaffingSource, over: Partial<StaffingAssignment> = {}): StaffingAssignment => ({ agentId, roleId: 'engineer', tier: 'everyday', model: 'sonnet', effort: 'medium', source, at: 1, ...over })
+    const sources: StaffingSource[] = ['orchestrator', 'role', 'profile', 'clamped', 'plan-guard', 'escalated']
+    const assignments = sources.map((src, i) => asg(`w${i}`, src, { note: src === 'clamped' ? 'only fast\u001b[31m allowed' : undefined }))
+    const h = execHost()
+    const f = live({ connect: [h] })
+    const done = runExec(f.ctx, ['do it'])
+    await subscribed(h)
+    h.push('runs:event', ev(11, { type: 'agent.upsert', runId: RUN, agent: { ...record(started()).agents[0]!, id: 'w0', parentId: 'root', name: 'Engineer', handle: 'engineer-1' } }))
+    h.push('runs:event', ev(12, { type: 'staffing.updated', runId: RUN, staffing: { goal: 'balanced', assignments } }))
+    h.push('runs:event', ev(13, { type: 'staffing.updated', runId: RUN, staffing: { goal: 'balanced', assignments: [...assignments, asg('', 'role')] } }))
+    h.push('runs:event', finalized(14, 'completed'))
+    expect(await done).toBe(0)
+    const out = f.out()
+    expect(out).not.toContain('\u001b')
+    expect(out).toContain('R1 engineer-1 on everyday / medium (chosen by the orchestrator)')
+    expect(out).toContain('engineer on everyday / medium (the role\'s setting)')
+    expect(out).toContain("(from this project's history)")
+    expect(out).toContain('(capped by the role: only fast allowed)')
+    expect(out).toContain('(moved down by the plan guard)')
+    expect(out).toContain('(raised after a failed attempt)')
+    expect(out.match(/on everyday/g)).toHaveLength(6)
+
+    const h2 = execHost()
+    const g = live({ connect: [h2], globals: { outputFormat: 'json' } })
+    const done2 = runExec(g.ctx, ['do it'])
+    await subscribed(h2)
+    h2.push('runs:event', ev(11, { type: 'staffing.updated', runId: RUN, staffing: { goal: 'balanced', assignments } }))
+    h2.push('runs:event', finalized(12, 'completed'))
+    await done2
+    expect(g.out()).not.toContain(' on everyday')
   })
 
   it('json: one document at the end with the root agent result', async () => {

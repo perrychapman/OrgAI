@@ -99,3 +99,73 @@ describe('delegate_agent', () => {
     expect(out).toContain('may not delegate')
   })
 })
+
+describe('delegate_agent background: true', () => {
+  /** A spawn that calls onStarted at once and resolves when the test says so. */
+  function deferredSpawn() {
+    let finish!: (r: BridgeSpawnResult) => void
+    let fail!: (e: Error) => void
+    const spawn = vi.fn((input: BridgeSpawnInput) => {
+      input.onStarted?.({ agentId: 'ag_1', handle: 'engineer-1' })
+      return new Promise<BridgeSpawnResult>((resolve, reject) => {
+        finish = resolve
+        fail = reject
+      })
+    })
+    return { spawn, finish: (r: BridgeSpawnResult) => finish(r), fail: (e: Error) => fail(e) }
+  }
+  function bgHooks(blocker: string | undefined = undefined) {
+    return { blocker: vi.fn((_c: unknown, _r: string) => blocker), started: vi.fn(), ended: vi.fn() }
+  }
+
+  it('answers with the handle as soon as the child exists; the result goes to the adapter when it ends', async () => {
+    const d = deferredSpawn()
+    const bg = bgHooks()
+    const t = toolOf(harnessToolsFor(ctxWith(d.spawn), { backgroundDelegation: bg }))
+    const out = await t.call({ role: 'engineer', brief: 'go', background: true }, { agentId: ROOT_AGENT_ID })
+    expect(out).toBe('Started engineer-1 (Engineer) in the background. Its final report will arrive as a harness message; carry on with other work or end your turn, and do not poll for it.')
+    expect(bg.blocker).toHaveBeenCalledWith({ agentId: ROOT_AGENT_ID }, 'r-eng')
+    expect(bg.started).toHaveBeenCalledWith({ agentId: 'ag_1', handle: 'engineer-1', roleName: 'Engineer', parentAgentId: ROOT_AGENT_ID })
+    expect(bg.ended).not.toHaveBeenCalled()
+    d.finish(ok())
+    await vi.waitFor(() => expect(bg.ended).toHaveBeenCalledTimes(1))
+    const [report, res, text] = bg.ended.mock.calls[0]!
+    expect(report).toMatchObject({ agentId: 'ag_1', handle: 'engineer-1' })
+    expect(res).toMatchObject({ ok: true })
+    // The same text the blocking form returns.
+    expect(text).toContain('Bridged report engineer-1 (Engineer) finished.')
+    expect(text).toContain('Done: patched it.')
+  })
+
+  it('a rejection after the child started is delivered as a failure; a refusal before it is returned', async () => {
+    const d = deferredSpawn()
+    const bg = bgHooks()
+    const t = toolOf(harnessToolsFor(ctxWith(d.spawn), { backgroundDelegation: bg }))
+    await t.call({ role: 'engineer', brief: 'go', background: true })
+    d.fail(new Error('boom'))
+    await vi.waitFor(() => expect(bg.ended).toHaveBeenCalledTimes(1))
+    expect(bg.ended.mock.calls[0]![1]).toMatchObject({ ok: false, text: 'boom' })
+    expect(bg.ended.mock.calls[0]![2]).toContain('Bridged report engineer-1 (Engineer) failed.')
+
+    const bg2 = bgHooks()
+    const t2 = toolOf(harnessToolsFor(ctxWith(async () => { throw new Error('3 reports are already working') }), { backgroundDelegation: bg2 }))
+    expect(await t2.call({ role: 'engineer', brief: 'go', background: true })).toContain('REFUSED: 3 reports are already working')
+    expect(bg2.started).not.toHaveBeenCalled()
+    expect(bg2.ended).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the blocking form, saying why, when the adapter blocks it or gave no hook', async () => {
+    const bg = bgHooks('required delegations run in the foreground')
+    const t = toolOf(harnessToolsFor(ctxWith(async () => ok()), { backgroundDelegation: bg }))
+    const out = await t.call({ role: 'engineer', brief: 'go', background: true })
+    expect(out.split('\n')[0]).toBe('Ran in the foreground (required delegations run in the foreground).')
+    expect(out).toContain('Bridged report engineer-1 (Engineer) finished.')
+    expect(bg.started).not.toHaveBeenCalled()
+    const bare = toolOf(harnessToolsFor(ctxWith(async () => ok())))
+    expect((await bare.call({ role: 'engineer', brief: 'go', background: true })).split('\n')[0]).toBe('Ran in the foreground (this session cannot deliver it later).')
+    // Without background the hook is never asked.
+    const bg3 = bgHooks()
+    await toolOf(harnessToolsFor(ctxWith(async () => ok()), { backgroundDelegation: bg3 })).call({ role: 'engineer', brief: 'go' })
+    expect(bg3.blocker).not.toHaveBeenCalled()
+  })
+})

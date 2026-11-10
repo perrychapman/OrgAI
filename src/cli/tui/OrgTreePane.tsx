@@ -136,6 +136,9 @@ export function rowLine(item: Item, selected: boolean, focused: boolean, width: 
     label = room >= 4 ? clipMiddle(label0, room, g.ellipsis) : label0
   }
 
+  // Staffing is secondary: it shows only when the whole row fits with it, so it is the first thing to go.
+  const staffing = !group && row.staffing && !env.screenReader ? ` ${row.staffing}` : ''
+  const showStaffing = staffing !== '' && need(textWidth(label), useRole, list) + textWidth(staffing) <= width
   const left: Seg[] = [{ text: lead, inverse: inv }]
   if (glyph) left.push({ text: glyph, tone, inverse: inv })
   left.push({ text: label, bold: !group, tone: group ? undefined : row.identityTone ?? 'identity', inverse: inv })
@@ -144,6 +147,7 @@ export function rowLine(item: Item, selected: boolean, focused: boolean, width: 
   if (word) left.push(shimmerSeg({ text: word, tone: thinking ? undefined : tone, inverse: inv }, thinking))
   if (traffic) left.push({ text: traffic, tone: highlight && !inv ? 'message' : tone, inverse: inv })
   for (const c of list) left.push({ text: ` ${c.text}`, tone: c.tone, inverse: inv })
+  if (showStaffing) left.push({ text: staffing, dim: !inv, inverse: inv })
   const right: Seg | undefined = cost ? { text: cost, dim: !inv, inverse: inv } : undefined
   return alignSegs(left, right, width, env, { inverse: inv })
 }

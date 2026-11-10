@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { EngagementNote, ImageAttachment, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
 import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
 import { RESUME_TEXT } from './runManager'
-import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
+import { STAFFING_TOKEN, DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -13,7 +13,8 @@ import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
 import { addRules } from './permissionRules'
 import { defaultRoles } from '@shared/defaults'
-import type { AgentInstance } from '@shared/types'
+import type { AgentInstance, Effort, ModelTier, RunPlan } from '@shared/types'
+import { staffingBrief, type StaffingProfile, type StaffingProfileEntry } from '../store/staffingProfile'
 import type { MockStep } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { z } from 'zod'
@@ -222,6 +223,15 @@ describe('mock adapter harness transcript rows', () => {
   const waitFor = async (cond: () => boolean): Promise<void> => {
     for (let i = 0; i < 300 && !cond(); i++) await new Promise((r) => setTimeout(r, 10))
   }
+
+  it('wires ctx.liveReports so the plan tools can count free agent slots', async () => {
+    const ctx = fakeCtx({ autoContinue: false })
+    const session = (await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'text', text: 'Hi.' }] } }).start(ctx)) as MockSession
+    expect(typeof ctx.liveReports).toBe('function')
+    expect(ctx.liveReports?.()).toBe(0)
+    await session.stop()
+    await session.finished
+  })
 
   it('records a nudge as a harness row with the summary as text and the full instruction as detail', async () => {
     const ctx = fakeCtx({ autoContinue: true, continuationDelayMs: 1 })
@@ -585,7 +595,8 @@ describe('mock adapter assistants scripts', () => {
   }
 
   it('quick run: list_projects once, one answer naming the count, then idle; a follow-up gets a short reply', async () => {
-    const ctx = fakeCtx({ run: runSummary({ projectId: 'quick', quick }), listProjects: () => [peek('a'), peek('b')] })
+    // autoContinue off: this test is about the quick-run script, not continuation (which no longer waits 1.5 s first).
+    const ctx = fakeCtx({ run: runSummary({ projectId: 'quick', quick }), autoContinue: false, listProjects: () => [peek('a'), peek('b')] })
     const session = await runToIdle(ctx, 'thanks')
     expect(toolNames(ctx)).toEqual(['list_projects'])
     expect(texts(ctx)).toEqual(['I can see 2 OrgAI projects. Tell me what you would like to do.', 'Mock reply to: thanks'])
@@ -1492,7 +1503,8 @@ describe('mock text step partials', () => {
   const idle = (events: RunEvent[]): boolean => events.some((e) => e.type === 'run.status' && e.status === 'idle')
 
   const run = async (steps: MockStep[], delayMs = 0): Promise<RunEvent[]> => {
-    const ctx = fakeCtx()
+    // autoContinue off: these tests are about text steps, not continuation nudges.
+    const ctx = fakeCtx({ autoContinue: false })
     const session = await new MockAdapter({ script: { delayMs, work: steps } }).start(ctx)
     await vi.waitFor(() => expect(idle(ctx.events)).toBe(true), { timeout: 3000 })
     await session.stop()
@@ -1525,5 +1537,154 @@ describe('mock text step partials', () => {
     await session.stop()
     await session.finished
     expect(textEvents(ctx.events)).toEqual(['partial:a', 'partial:'])
+  })
+})
+
+describe('mock [mock:staffing]', () => {
+  const run = async (over: { project?: ReturnType<typeof project>; prompt?: string } = {}) => {
+    const ctx = fakeCtx({
+      autoContinue: false,
+      prompt: over.prompt ?? `Staff the work ${STAFFING_TOKEN}`,
+      project: over.project ?? project({ roles: defaultRoles() }),
+      connection: { connection: 'anthropic', adapter: 'mock', tierModels: { top: 'm-top', deep: 'm-deep', everyday: 'm-everyday', fast: 'm-fast' } }
+    })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    for (let i = 0; i < 300 && !statuses().includes('idle') && !statuses().includes('finished'); i++) await new Promise((r) => setTimeout(r, 10))
+    return { ctx, session }
+  }
+
+  it('records the plan steps\' picks per spawned report, clamped to each role\'s ceiling', async () => {
+    const { ctx, session } = await run()
+    const rows = ctx.getStaffing()!.assignments
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ agentId: 'mock-staffed-1', stepId: 'p1', tier: 'fast', effort: 'low', source: 'orchestrator' })
+    // The second step asks for top / max; the role's own tier and effort are the ceiling.
+    expect(rows[1]).toMatchObject({ agentId: 'mock-staffed-2', stepId: 'p2', source: 'clamped' })
+    expect(rows[1]!.tier).not.toBe('top')
+    expect(rows[1]!.effort).not.toBe('max')
+    // The report runs on the resolved model.
+    expect(session.staffedFor('mock-staffed-1')).toEqual({ model: 'm-fast', effort: 'low' })
+    const agent = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === 'mock-staffed-1').at(-1)
+    expect(agent).toMatchObject({ agent: { model: 'm-fast' } })
+    await session.stop()
+  })
+
+  it('the staffed steps run while their reports work and end done', async () => {
+    const { ctx, session } = await run()
+    const plans = (ctx.updatePlan as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as RunPlan).steps.map((s) => s.status).join(','))
+    expect(plans).toContain('in_progress,in_progress')
+    await vi.waitFor(() => expect(ctx.getPlan()!.steps.map((s) => s.status)).toEqual(['done', 'done']), { timeout: 3000 })
+    await session.stop()
+  })
+
+  it('tells the book how each report ended: a finished report is not failed', async () => {
+    const ctx = fakeCtx({
+      autoContinue: false,
+      prompt: `Staff the work ${STAFFING_TOKEN}`,
+      project: project({ roles: defaultRoles() }),
+      connection: { connection: 'anthropic', adapter: 'mock', tierModels: { top: 'm-top', deep: 'm-deep', everyday: 'm-everyday', fast: 'm-fast' } }
+    })
+    const session = (await new MockAdapter({ script: { delayMs: 20 } }).start(ctx)) as MockSession
+    const ended = vi.spyOn((session as unknown as { staffing: { ended(id: string, o?: { failed?: boolean }): void } }).staffing, 'ended')
+    await vi.waitFor(() => expect(ended).toHaveBeenCalledTimes(2), { timeout: 3000 })
+    expect(ended.mock.calls.map((c) => c[0])).toEqual(['mock-staffed-1', 'mock-staffed-2'])
+    expect(ended.mock.calls.every((c) => c[1]?.failed === false)).toBe(true)
+    await session.stop()
+  })
+
+  it('Project.staffing fixed changes nothing: no override, the report keeps the model it always had', async () => {
+    const { ctx, session } = await run({ project: project({ roles: defaultRoles(), staffing: 'fixed' }) })
+    expect(session.staffedFor('mock-staffed-1')).toBeUndefined()
+    expect(session.staffedFor('mock-staffed-2')).toBeUndefined()
+    const agent = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === 'mock-staffed-1').at(-1)
+    expect(agent).toMatchObject({ agent: { model: 'claude-sonnet-4-5' } })
+    for (const row of ctx.getStaffing()?.assignments ?? []) expect(row.source).toBe('role')
+    await session.stop()
+  })
+})
+
+describe('mock [mock:staffing] project profile (spec 4.5)', () => {
+  const tierModels = { top: 'm-top', deep: 'm-deep', everyday: 'm-everyday', fast: 'm-fast' }
+  const passing = (roleId: string, tier: ModelTier, effort: Effort): StaffingProfileEntry[] =>
+    Array.from({ length: 5 }, (_, i) => ({ roleId, tier, effort, firstOfStep: true, passedFirstTime: true, escalated: false, at: i }))
+  /** One spawn of the implementer, optionally with an on-call pick, then it finishes. */
+  const run = async (opts: { entries: (implId: string) => StaffingProfileEntry[]; staffing?: 'fixed'; spawn?: { tier?: ModelTier; effort?: Effort } }) => {
+    const p = project({ roles: defaultRoles(), ...(opts.staffing ? { staffing: opts.staffing } : {}) })
+    const impl = p.roles.find((r) => r.slug === 'implementer')!
+    const profile: StaffingProfile = { entries: opts.entries(impl.id) }
+    const ctx = fakeCtx({ autoContinue: false, prompt: 'Build it', project: p, staffingProfile: () => profile, connection: { connection: 'anthropic', adapter: 'mock', tierModels } })
+    const work: MockStep[] = [
+      { type: 'spawn', id: 'mock-p-1', role: 'implementer', description: 'Do the part', ...(opts.spawn ?? {}) },
+      { type: 'finish', id: 'mock-p-1', result: 'Done.' },
+      { type: 'text', text: 'All done.' }
+    ]
+    const session = (await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)) as MockSession
+    const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    for (let i = 0; i < 300 && !statuses().includes('idle') && !statuses().includes('finished'); i++) await new Promise((r) => setTimeout(r, 10))
+    const rowOf = () => ctx.getStaffing()?.assignments.find((a) => a.agentId === 'mock-p-1')
+    return { ctx, session, impl, rowOf }
+  }
+
+  it('an unrequested spawn takes the profile\'s qualified cheaper cell, with source profile', async () => {
+    const { session, rowOf } = await run({ entries: (id) => passing(id, 'fast', 'low') })
+    expect(rowOf()).toMatchObject({ tier: 'fast', effort: 'low', source: 'profile' })
+    expect(session.staffedFor('mock-p-1')).toEqual({ model: 'm-fast', effort: 'low' })
+    await session.stop()
+  })
+
+  it('a profile cell above the role\'s ceiling is clamped, and xhigh / max / top cells never raise what runs', async () => {
+    const above = await run({ entries: (id) => passing(id, 'deep', 'low') })
+    expect(above.rowOf()!.tier).toBe('everyday')
+    expect(above.rowOf()).toMatchObject({ tier: 'everyday', effort: 'low', source: 'clamped' })
+    await above.session.stop()
+    const strong = await run({ entries: (id) => [...passing(id, 'everyday', 'xhigh'), ...passing(id, 'everyday', 'max'), ...passing(id, 'top', 'low')] })
+    const row = strong.rowOf()!
+    expect(row.source).toBe('role')
+    expect(row.tier).toBe('everyday')
+    expect(['xhigh', 'max']).not.toContain(row.effort)
+    await strong.session.stop()
+  })
+
+  it('the orchestrator\'s own pick wins over the profile', async () => {
+    const { session, rowOf } = await run({ entries: (id) => passing(id, 'fast', 'low'), spawn: { tier: 'everyday', effort: 'medium' } })
+    expect(rowOf()).toMatchObject({ tier: 'everyday', effort: 'medium', source: 'orchestrator' })
+    await session.stop()
+  })
+
+  it('a fixed project ignores the profile', async () => {
+    const { session, rowOf } = await run({ entries: (id) => passing(id, 'fast', 'low'), staffing: 'fixed' })
+    expect(rowOf()?.source ?? 'role').toBe('role')
+    expect(session.staffedFor('mock-p-1')).toBeUndefined()
+    await session.stop()
+  })
+
+  it('the staffing brief reaches the root\'s first message once: not the transcript, a later message or the system prompt', async () => {
+    const { ctx, session, impl } = await run({ entries: (id) => passing(id, 'fast', 'low') })
+    const brief = staffingBrief({ entries: passing(impl.id, 'fast', 'low') }, ctx.roles)
+    expect(brief).toContain('Implementer')
+    const first = session.deliveredMessages.find((m) => m.agentId === ROOT_AGENT_ID)!.text
+    expect(first.startsWith('Build it')).toBe(true)
+    expect(first).toContain(brief)
+    await session.send('One more thing')
+    await vi.waitFor(() => expect(session.deliveredMessages.filter((m) => m.agentId === ROOT_AGENT_ID).length).toBeGreaterThanOrEqual(2))
+    const later = session.deliveredMessages.filter((m) => m.agentId === ROOT_AGENT_ID).slice(1)
+    for (const m of later) expect(m.text).not.toContain('Staffing history')
+    expect(session.deliveredMessages.filter((m) => m.text.includes('Staffing history'))).toHaveLength(1)
+    expect(JSON.stringify(ctx.events)).not.toContain('Staffing history')
+    for (const r of ctx.roles) expect(session.rolePromptFor(r)).not.toContain('Staffing history')
+    await session.stop()
+  })
+
+  it('no brief for a resumed session, an Ask run or a fixed project', async () => {
+    for (const over of [{ resumeSessionId: 'mock-s' }, { run: runSummary({ team: 'single' }) }, { project: project({ roles: defaultRoles(), staffing: 'fixed' }) }] as Partial<RuntimeContext>[]) {
+      const p = over.project ?? project({ roles: defaultRoles() })
+      const impl = p.roles.find((r) => r.slug === 'implementer')!
+      const ctx = fakeCtx({ autoContinue: false, prompt: 'Build it', project: p, staffingProfile: () => ({ entries: passing(impl.id, 'fast', 'low') }), ...over })
+      const session = (await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'text', text: 'ok' }] } }).start(ctx)) as MockSession
+      await vi.waitFor(() => expect(session.deliveredMessages.length).toBeGreaterThan(0))
+      expect(session.deliveredMessages[0]!.text).not.toContain('Staffing history')
+      await session.stop()
+    }
   })
 })

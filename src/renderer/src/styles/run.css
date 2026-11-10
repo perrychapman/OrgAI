@@ -468,6 +468,12 @@
 .new-run-mode .seg-item {
   white-space: nowrap;
 }
+.new-run-goal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
 .new-run-mode-desc {
   margin: 0;
   color: var(--text-secondary);
@@ -668,32 +674,48 @@
 /* Finished list (side panel): the agent a folded member ran under, when it is not a direct report. */
 /* Provider tag on a live agent that runs on another connection than its run (multi-provider). Quiet: a hairline chip. */
 /* With a tag the handle and model give way first (ellipsis), so the tag is never cut to one letter at the card edge. */
-.agent-node .sub:has(.agent-connection) {
+.agent-node .sub:has(.agent-connection, .agent-staffing-chip) {
   min-width: 0;
   overflow: hidden;
 }
-.agent-node .sub:has(.agent-connection) > span {
+.agent-node .sub:has(.agent-connection, .agent-staffing-chip) > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Shrink order: the model first (it can vanish), the handle next (it is how other agents address this one, never under 10ch), the tag last. */
-.agent-node .sub:has(.agent-connection) > span:first-child {
-  flex: 0 1 auto;
-  min-width: 10ch;
+/* Shrink order: the model first (it can vanish), the handle next (ellipsis down to 4ch, the full handle is in its tooltip), the chip
+   only once the handle is at its floor (a card that also carries a provider tag), the tag never. */
+.agent-node .sub:has(.agent-connection, .agent-staffing-chip) > span:first-child {
+  flex: 0 1000 auto;
+  min-width: 4ch;
 }
-.agent-node .sub:has(.agent-connection) > span:not(:first-child):not(.agent-connection) {
-  flex: 0 100 auto;
+.agent-node .sub:has(.agent-connection, .agent-staffing-chip) > span:not(:first-child):not(.agent-connection):not(.agent-staffing-chip) {
+  flex: 0 1000000 auto;
   min-width: 0;
 }
 .agent-node .sub > .agent-connection {
   flex: 0 0 auto;
+  white-space: nowrap;
   min-width: 5ch;
   max-width: 45%;
   color: var(--canvas-node-text-muted);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+/* Resolved tier and effort ("everyday / medium") in the card's sub line: shown in full on a card without a provider tag; it gives way
+   last (ellipsis, the tooltip has the reason and the model). Its shrink factor is tiny so it loses nothing while the handle can
+   still give way: a fraction of a pixel would already draw the ellipsis. */
+.agent-node .sub > .agent-staffing-chip {
+  flex: 0 0.001 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--canvas-node-text-muted);
   font-family: var(--font-sans);
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);

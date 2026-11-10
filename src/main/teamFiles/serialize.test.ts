@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { TEAM_FILES_AGENTS_DIR, TEAM_FILES_FORMAT, TEAM_FILES_JSON, TEAM_FILES_MCP_JSON } from '@shared/types'
 import { parseFrontmatter } from '../setup/import/frontmatter'
@@ -134,3 +135,70 @@ describe('determinism', () => {
     expect(paths).toContain(TEAM_FILES_MCP_JSON)
   })
 })
+
+describe('staffing in team files', () => {
+  // Pinned from the serializer before staffing existed: the sample team's bytes and parsed digest must not move.
+  it('writes an unchanged team byte for byte as before', () => {
+    const h = createHash('sha256')
+    const files = serializeTeam(sampleDoc())
+    for (const f of files) {
+      h.update(`${f.path}\0`)
+      h.update(f.data)
+      h.update('\0')
+    }
+    expect(files).toHaveLength(9)
+    expect(h.digest('hex')).toBe('2eecd52ee4e612dea894a09eddf22e2b7f6a53b946621263c8aaccdfbce52c6c')
+    expect(teamDigest(sampleDoc())).toBe('d75939665b00a322004b16d50a327db313bfd5a3eaa484acc3a6cb9bf1672540')
+  })
+
+  it('does not write default values', () => {
+    const doc = sampleDoc()
+    doc.settings.staffing = 'auto'
+    doc.settings.staffingGoal = 'balanced'
+    doc.settings.reviewPolicy = 'risk'
+    const files = serializeTeam(doc)
+    expect(files.map((f) => f.data.toString('utf8')).join('\n')).not.toMatch(/staffing|reviewPolicy/)
+    expect(teamDigest(doc)).toBe(teamDigest(sampleDoc()))
+    expect(serializeTeamJson(doc)).toBe(serializeTeamJson(sampleDoc()))
+  })
+
+  it('round trips the role and project fields', () => {
+    const doc = sampleDoc()
+    doc.settings.staffing = 'fixed'
+    doc.settings.staffingGoal = 'cost'
+    doc.settings.reviewPolicy = 'never'
+    doc.roles.find((r) => r.slug === 'dev')!.staffing = { mode: 'fixed', minTier: 'fast', maxEffort: 'medium' }
+    doc.roles.find((r) => r.slug === 'lead')!.staffing = { mode: 'auto' }
+    const files = serializeTeam(doc)
+    const dev = files.find((f) => f.path.endsWith('/dev.md'))!.data.toString('utf8')
+    expect(dev).toMatch(/tier: "everyday"\nstaffing: "fixed"\nstaffing_min_tier: "fast"\nstaffing_max_effort: "medium"\ncanSpawn/)
+    const p = parseTeamFiles(files, { base: null, agentsDirExists: true })
+    expect(p.problems).toEqual([])
+    expect(p.digest).toBe(teamDigest(doc))
+    expect(p.doc?.roles.find((r) => r.slug === 'dev')?.staffing).toEqual({ mode: 'fixed', minTier: 'fast', maxEffort: 'medium' })
+    expect(p.doc?.roles.find((r) => r.slug === 'lead')?.staffing).toEqual({ mode: 'auto' })
+    expect(p.doc?.settings).toMatchObject({ staffing: 'fixed', staffingGoal: 'cost', reviewPolicy: 'never' })
+  })
+
+  it('drops malformed values instead of failing the file, and default values on disk', () => {
+    const files = serializeTeam(sampleDoc())
+    const edit = (path: string, from: string, to: string): void => {
+      const f = files.find((x) => x.path === path)!
+      f.data = Buffer.from(f.data.toString('utf8').replace(from, to), 'utf8')
+    }
+    edit(`${TEAM_FILES_AGENTS_DIR}/dev.md`, 'canSpawn:', 'staffing: "sometimes"\nstaffing_max_effort: "huge"\ncanSpawn:')
+    edit(`${TEAM_FILES_AGENTS_DIR}/reviewer.md`, 'canSpawn:', 'staffing: "auto"\nstaffing_min_tier: "platinum"\nstaffing_max_effort: "low"\ncanSpawn:')
+    edit(`${TEAM_FILES_AGENTS_DIR}/lead.md`, 'canSpawn:', 'staffing_min_tier: "deep"\ncanSpawn:')
+    edit(TEAM_FILES_JSON, '"permissionMode"', '"staffing": "auto", "staffingGoal": "bogus", "reviewPolicy": "risk", "permissionMode"')
+    const p = parseTeamFiles(files, { base: null, agentsDirExists: true })
+    expect(p.problems).toEqual([])
+    const byslug = (s: string) => p.doc!.roles.find((r) => r.slug === s)!
+    expect(byslug('dev').staffing).toBeUndefined()
+    expect(byslug('reviewer').staffing).toEqual({ mode: 'auto', maxEffort: 'low' })
+    expect(byslug('lead').staffing).toBeUndefined()
+    expect(p.doc!.settings.staffing).toBeUndefined()
+    expect(p.doc!.settings.staffingGoal).toBeUndefined()
+    expect(p.doc!.settings.reviewPolicy).toBeUndefined()
+  })
+})
+

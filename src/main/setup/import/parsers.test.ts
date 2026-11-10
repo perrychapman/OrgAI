@@ -182,6 +182,21 @@ describe('parseRooModes', () => {
   })
 })
 
+describe('parseOrgExport staffing', () => {
+  it('keeps a valid staffing block, cleaned, and drops a malformed one with a note', () => {
+    const doc = { format: 'orgai.org/1', roles: [
+      { slug: 'a', name: 'A', staffing: { mode: 'fixed', minTier: 'deep', maxEffort: 'nope', extra: 1 } },
+      { slug: 'b', name: 'B', staffing: { mode: 'sometimes' } },
+      { slug: 'c', name: 'C' }
+    ] }
+    const r = parseOrgExport(JSON.stringify(doc), '.orgai/org.json')
+    expect(r.agents[0].staffing).toEqual({ mode: 'fixed', minTier: 'deep' })
+    expect(r.agents[1].staffing).toBeUndefined()
+    expect(r.agents[1].notes).toEqual(['Ignored "staffing": wrong type'])
+    expect(r.agents[2].staffing).toBeUndefined()
+  })
+})
+
 describe('parseOrgExport', () => {
   const doc = {
     format: 'orgai.org/1',

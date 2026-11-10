@@ -2,10 +2,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useFocusHandler, useTuiEnv } from './context'
 import { observePlan, planProgress, type PlanObservation } from './planProgress'
-import { asciiOnly } from './theme'
+import { namesText } from './planGraph'
+import { asciiOnly, glyphs } from './theme'
 import { textWidth, truncateEnd } from './panes/text'
 import type { PlanPaneProps, PlanStepView, Tone, TuiEnv } from './types'
-import { PaneLines, alignSegs, cutSegs, moveIndex, navKey, type PaneLine } from './panes/lines'
+import { PaneLines, alignSegs, cutSegs, moveIndex, navKey, type PaneLine, type Seg } from './panes/lines'
 
 type StepStatus = PlanStepView['status']
 
@@ -65,6 +66,19 @@ export function taskLabel(title: string, width: number, env: TuiEnv): string {
   return short ? short + ellipsis : truncateEnd(phrase, limit, ellipsis)
 }
 
+/** What an open step of a graph plan adds after its title: running, ready or waiting on (at most two titles), and its pick. */
+export function graphSegs(step: PlanStepView, env: TuiEnv): Seg[] {
+  const f = step.flow
+  const sep = ` ${glyphs(env).bullet} `
+  const out: Seg[] = []
+  if (f) {
+    const on = f.state === 'waiting' ? namesText((f.on ?? []).map((t) => taskLabel(t, 18, env))) : ''
+    out.push({ text: `${sep}${f.state === 'waiting' ? `waiting on ${on}` : f.state}`, tone: f.state === 'running' ? 'running' : undefined, dim: f.state !== 'running' })
+  }
+  if (step.staff && f) out.push({ text: `${sep}${step.staff}`, dim: true })
+  return out
+}
+
 export function PlanPane(props: PlanPaneProps) {
   const env = useTuiEnv()
   const width = Math.max(0, Math.floor(props.width))
@@ -109,7 +123,8 @@ export function PlanPane(props: PlanPaneProps) {
       const marker = `${stepMarker(step.status, env)} `
       steps.push({ key: `step:${step.id}`, segs: cutSegs([
         { text: marker, tone: STEP_TONE[step.status] },
-        { text: taskLabel(step.title, width - textWidth(marker), env), dim: step.status === 'skipped' }
+        { text: taskLabel(step.title, width - textWidth(marker), env), dim: step.status === 'skipped' },
+        ...graphSegs(step, env)
       ], width, env) })
     }
   } else head.push({ key: 'empty', segs: cutSegs([{ text: 'No plan yet', dim: true }], width, env) })

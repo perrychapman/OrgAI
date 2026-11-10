@@ -7,7 +7,7 @@
  * policy choice sets below must stay in step with its POLICY_CHOICES.
  */
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
-import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, MAX_TIMER_DELAY_MS, isPermissionMode } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, MAX_TIMER_DELAY_MS, STAFFING_GOALS, isPermissionMode, isStaffingGoal } from '@shared/types'
 import type { HeadlessDecisionPolicy, PermissionMode, Project, RunOverrides } from '@shared/types'
 
 /**
@@ -183,6 +183,11 @@ export function runOverridesArgs(raw: unknown, opts: { partialPolicy?: boolean }
   if (raw.strictDelegation !== undefined) {
     if (raw.strictDelegation !== true) throw badRequest('overrides.strictDelegation must be true.')
     out.strictDelegation = true
+  }
+  // Run staffing goal: never widens (picks stay inside the roles' ceilings), so every scope may set it.
+  if (raw.goal !== undefined) {
+    if (!isStaffingGoal(raw.goal)) throw badRequest(`overrides.goal must be one of ${STAFFING_GOALS.join(', ')}.`)
+    out.goal = raw.goal
   }
   if (raw.maxAutoContinues !== undefined) {
     const v = raw.maxAutoContinues

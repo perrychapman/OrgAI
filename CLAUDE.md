@@ -21,6 +21,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `continuation.ts` holds the pure `nextNudge` decision and the `ContinuationDriver` every adapter calls at turn end
   (`turnEnded`), on user messages, on interrupt (`hold`) and at session end; the adapter only delivers the nudge
   through its harness-message path (Claude: `notifyOrchestrator`). Never nudge setup runs.
+- Run staffing (`docs/design/orchestration-efficiency.md`): which tier and effort a report runs on is decided only in
+  `runtime/staffing.ts` (`resolveStaffing`, pure) with the shared `runtime/staffingBook.ts`; an adapter only writes the
+  result (Claude: a tier alias and an effort through the spawn hook; Codex: `spawn_report` `tier` / `effort`). A
+  `fixed` project and a fixed role run as configured. A plan step's ready / waiting state comes from
+  `src/shared/planGraph.ts`. A change that can raise spend (ceilings in team files, defaults, the staffing profile)
+  needs the Reviewer.
 - Cross-run messages (`message_run`) never override the user: RunManager gates delivery (`peerDeliveryBlocked`) while
   a run is held by an interrupt, usage-limited (`ActiveRun.limitHold`) or has pending cards, holds them in the run's
   inbox (at most `RUN_MESSAGE_QUEUE_LIMIT` 20) and flushes them oldest first, one chained flush at a time, after the

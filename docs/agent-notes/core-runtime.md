@@ -38,6 +38,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
   `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
+- Continuation wait: `ContinuationDriver.turnEnded` waits `continuationWaitMs` (`continuation.ts`), not always the 1500 ms
+  default. A host that supplies `lastReportEndedAt()` (Claude, Codex, mock: newest non-root `endedAt`, plus bridged
+  finishes on Codex) waits 0 when no report is live and none ended within the window, else only the rest of the window;
+  live reports or a future timestamp keep the full delay; a host without it, or `delayMs` 0, is unchanged. The timer is
+  still a `setTimeout`, so cancel and settlement behave as before. Checked by unit tests only; the 1,579 ms figure came
+  from one lab run on the Codex adapter and the fix has NOT been measured in a live run.
   - Who ended it: `RunSummary.endedBy` is 'user' after End session (`RunManager.stop`, saved with the 'stopping'
     status so a quit or crash keeps it), 'app' when OrgAI quit (`stopAll({ reason: 'quit' })` through
     the `ShutdownCoordinator` in `host/shutdown.ts`, at most 3 s, then the synchronous `markQuit()` writes what is left) or crashed (RunStore boot
@@ -49,6 +55,43 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     End session (`withEndFacts` in runManager.ts; adapter-set values are dropped). Once quitting, start / continueRun / send / resumeNow refuse ("OrgAI is quitting") and a
     session still opening is stopped when it opens. The renderer's adoption of endedBy lands with the
     one-conversation UI change. Unit-tested; the real Electron quit path is not.
+- Run staffing contract (2026-11-10, docs/design/orchestration-efficiency.md section 5; types.ts "Run staffing"):
+  `RunRecord.staffing` (`RunStaffing { goal, assignments }`) mirrors the work-run plan: `RuntimeContext.updateStaffing`
+  (RunManager cleans it with defaults.ts `cleanRunStaffing`, stores it on the record through `recordEvent`, flushes it
+  with the record and broadcasts `staffing.updated`), `getStaffing`, and `staffingGoal` (`staffingGoalOf(project,
+  RunOverrides.goal)`, fixed at run start). Unlike the plan it is not carried to a continuation; `RunOverrides.goal` is
+  (NARROWING_KEYS). A bridged child gets stub get/update (nothing reaches the parent) and the parent's goal. Graph
+  fields `PlanStep.after / paths / staff`, `Role.staffing`, `Project.staffing / staffingGoal / reviewPolicy` and
+  `RunEfficiency.readyIdleMs` exist; stored values are cleaned on read (ProjectStore `sanitizeRoleModels` /
+  `withCleanAllowedDirectories`; `normalizeRunRecord` runs `cleanPlanStepGraph` and `cleanRunStaffing` on stored
+  records, also on `get()` of a live run). Rows are written by the adapters at spawn time through `recordStaffing(ctx,
+  row)` in `runtime/staffing.ts` (Claude's spawn hook, Codex `spawn_report`, the mock), which also marks the row's plan
+  step `in_progress` when it is still `pending`; `set_plan` / `update_plan` run `cleanPlanStepGraph` and keep such a
+  step `in_progress` while its report works (`boundStepIds`, "kept in_progress (a report is working on it)"). Nothing
+  computes `readyIdleMs` yet. The renderer store and TUI keep the latest `staffing` on the run; exec, logs and
+  notifications ignore the event. Unit tests (`src/shared/staffing.test.ts`, `runManagerStaffing.test.ts`,
+  `staffingGoalOverride.test.ts`, projects, runUsage, bridge, TUI state and renderer store tests) and the lab runs of
+  2026-11-10 (spec 1.1c: rows on both adapters, source `orchestrator` and, on Codex, `clamped`).
+- When the lead hands work out (2026-11-10, spec 4.1, 4.4, 1.1c; `prompts.ts` `teamSizingText`, `reviewPolicyText`,
+  `reportsText`): the root's sizing paragraph is in decision order and its wording was changed twice on lab evidence,
+  so read 1.1c before touching it. The sizing sentence decides first; the split test applies to "what the brief asks
+  for"; "Tests and checks of your own work are part of it, never pieces to hand out"; the parallel, contract and
+  review sentences speak only of handed-out work, except review by risk, which covers any change again (owner
+  decision 2026-11-10, no lab run on that wording). The team listing says how ("To hand work out, use the Agent tool"), not that the lead must;
+  required reports keep "You must delegate to ...". Sizes are pinned in `prompts.test.ts`. Lab-checked on the root of
+  the default chart only; a mid-level lead and a setup root get the new listing line with no live run behind it.
+- Staffing profile wiring (2026-11-10, spec 4.5, D8): `store/staffingProfile.ts` holds the lifecycle helpers.
+  `staffingProfileApplies(summary, project)` = kind 'work', not quick, not Ask (`team: 'single'`), no buildWorkspace,
+  not a virtual project, `staffingModeOf` 'auto'. Read: RunManager reads `<data>/staffing/<projectId>.json` once at
+  context build (only with `dataDir` and when it applies) and sets `RuntimeContext.staffingProfile()` (a snapshot);
+  the bridge does not pass it on, so bridged children never see it. Each adapter spreads `staffingProfileDep(ctx)` into
+  its StaffingBook (none on a fixed project) and wraps the first message's context in `withRootStaffingBrief(ctx)`
+  before `firstMessageHiddenContext`: the brief joins the hidden harness context, not the transcript entry, the system /
+  developer prompt, later messages or spawn briefs, and is skipped when `resumeSessionId` is set. Write: `teardown`
+  (once per ActiveRun via `tornDown`) calls `recordRunInStaffingProfile` after the flush with the live `ctx.project`;
+  entries carry `runId` and `mergeProfile` replaces a run's earlier entries, so a second merge cannot double count.
+  A failed write logs one warning (step and errno code, no path) and never fails the end. Unit tests only
+  (staffingProfile, runManagerStaffing, mock, claude, claudeKnowledge, codexStaffing); no live run.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls
@@ -91,6 +134,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   from the builtin table with no provider cost, and the default script's `mock-report-2` is unpriced and returns
   nothing. Verified by unit tests and the mock only; no live run has checked the builtin ids or which model id the CLI
   or a proxy reports.
+  - `RunUsage.efficiency` (2026-11-09, `RunEfficiency` in types.ts; orchestration-efficiency.md 4.2): derived by
+    `computeRunEfficiency` (runUsage.ts) from the root's direct reports' `startedAt` / `endedAt`, nothing tracked at
+    runtime: reports, firstSpawnMs, reportSumMs, reportBusyMs (union), maxParallel, tailMs (after the first wave). Absent
+    without a direct report; `cleanRunEfficiency` drops a malformed stored value whole (`normalizeRunRecord`,
+    `cleanStoredUsage`); `sumRunUsage` never sums it. Verified by unit tests only (runUsage.test.ts, incl. the
+    dashboard run of spec 1.3); no live run has checked it.
   - App-wide overview (2026-11-07, main only; ARCHITECTURE.md Shared contracts "App-wide usage overview"):
     `runs:usageOverview` / `runs:usageOverviewCsv` (read scope; preload `runs.usageOverview / usageOverviewCsv`, query
     optional) cover every project, the virtual assistant ones and a removed project's leftover runs
@@ -244,3 +293,7 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   `[mock:delegation-ok|fix|skip|claim]`. Known limits in the spec's section 10 (bridged sessions, continued runs, held-branch
   persistence across sessions). Unit-tested; live: Claude SDK facts (sdk-facts.md) and the Codex native-agent probe
   (connections-mcp.md).
+
+## Desktop per-run goal
+
+`HostDispatcher.checkRunOverrides` (`src/main/host/dispatcher.ts`) used to drop every override on the desktop surface. It now keeps only a valid `overrides.goal` for `runs:start` (a bad value is refused as bad_request by `startRunArgs`) and passes it with `allowWidening: false`; permission mode, budget, strict delegation and the rest are still dropped. `runs:continue` and `runs:startQuick` still drop all overrides from the desktop (a continuation keeps the run's goal through `continuedOverrides`). Checked by unit tests only (`dispatcherExec.test.ts`).

@@ -73,5 +73,144 @@ What was verified against SDK v0.3.312 by smoke scripts: task events, hooks, per
     `SubagentStop` -> `task_updated` -> `task_notification` -> parent `PostToolUse` -> `tool_result`; without it the call
     returns `async_launched` at once. Main-thread hooks carry `agent_type` = the root agent's name when `agent` is set, so
     use `agent_id` (absent on the main thread) to tell a subagent.
+  - `SubagentHandback` (SDK 0.3.318, haiku, 2026-11-10; `scripts/smoke-delegation.mjs handback`, one run, plus the lab
+    run `phase1-20261110T073250Z/03-ledger-orgai-claude-required-p1-r1` events): in permission mode `auto` a subagent
+    reports by calling the built-in tool `SubagentHandback({ message })`; in `default` mode it is not offered and
+    subagents end with plain text (`smoke-delegation-gate.mjs A`, same day). The call delivers the report to the caller
+    when it runs and ends the subagent's turn. Hook order: `PreToolUse` (with the subagent's `agent_id`) -> `PostToolUse`
+    (`tool_response` `{ success: true, message: 'Report delivered to your caller.' }`) -> `SubagentStop` with no
+    `last_assistant_message` -> `task_notification` (`handback: 'send'`, `handback_report: { text }`, and a `summary`
+    that is a harness note, not the report). The parent's `Agent` result says the report "was delivered to you as a
+    message" and carries `handback`. A `PreToolUse` deny of the call reaches the subagent as a tool error; it acted on
+    the reason (spawned the worker) and handed back again successfully. A `SubagentStop` block after a successful
+    handback is ignored: the subagent did not continue and the parent acted on the first report. A subagent that ends
+    with plain text in auto mode gets repeated `SubagentStop`s (`stop_hook_active: true`, the CLI asks it to hand back);
+    if it never does, its `Agent` result has `handback: 'withheld'` and says no report was delivered. OrgAI therefore
+    takes a report from the subagent's successful `SubagentHandback` (`PostToolUse`), gates required reports at its
+    `PreToolUse` (provisional), and never blocks at `SubagentStop` once a report was handed back.
+    Unverified (read from the bundled CLI, not run): the root's call (no handback contract) answers `success: false`
+    ("not active for this agent"); a second handback to the same caller answers `success: false` ("already
+    delivered"); whether a resumed agent may hand back again; `CLAUDE_CODE_DISABLE_SUBAGENT_HANDBACK` turns the tool off.
   - Not checked: `reloadSkills()`, `Options.skills` blocking, resume honouring new `agents`, and whether a resumed
     session keeps its session id or `total_cost_usd`.
+
+## Verified against v0.3.318 by `scripts/smoke-staffing.mjs` (2026-11-09)
+
+Haiku root, sonnet only where a check needs a second model or effort support; Max login. Model ids: `sonnet` resolves
+to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is token-free). Hook input carries
+`effort.level` on every tool call, and the default level was `medium` for the root and for subagents.
+
+- Model through the hook, FULL id: NOT accepted. A `PreToolUse` `updatedInput.model = 'claude-sonnet-5-5'` on an
+  `Agent` call is rejected by schema validation: the call returns an error tool_result "PreToolUse hook for Agent
+  returned updatedInput that failed schema validation" with the allowed values `sonnet | opus | haiku | fable`, no
+  subagent starts, and the model retries (same failure again). Only the four aliases pass through `updatedInput`.
+- Model through the hook, alias: works. `updatedInput.model = 'sonnet'` over a definition that says `haiku`: the
+  child's assistant messages carry `claude-sonnet-5-5` and `modelUsage` lists both models.
+- Effort through the hook: works. Definition `effort: 'high'` (sonnet), hook sets `updatedInput.effort = 'low'`: the
+  `PreToolUse` input for the child's own Bash call reports `effort.level = "low"`.
+- Model and effort set by the model: works. Told to pass `model "sonnet"` and `effort "low"`, the root's Agent
+  `tool_input` carried both; the child ran on `claude-sonnet-5-5` and its Bash hook input reported `low` (definition
+  said `high` and haiku).
+- Subagent effort from its definition (no override, definition `low`, sonnet): the child's Bash hook input reports
+  `low` (the root's own level was `medium`).
+- Root effort from its definition: NOT verified as working. `Options.agent = 'lead'` with a definition
+  `effort: 'low'` (sonnet): the root's own Bash `PreToolUse` input reported `effort.level = "medium"`, not `low`. So
+  an `AgentDefinition.effort` applies to a spawned subagent but, in this run, not to the main-thread agent chosen by
+  `Options.agent`. `Options.effort` does set the root's effort (check 8): with `Options.effort: 'low'`, `model:
+  'sonnet'` and no `Options.agent`, the root's Bash `PreToolUse` input reported `effort.level = "low"`; with
+  `Options.agent: 'lead'` (sonnet, no `effort` field) plus `Options.effort: 'low'`, the root's own Bash call also
+  reported `"low"`. So OrgAI sets the root's effort through `Options.effort`, not the root's definition.
+- Effort inheritance (check 8b): with `Options.effort: 'low'` and a `worker` definition with NO `effort` field
+  (sonnet), the worker's own Bash `PreToolUse` input reported `effort.level = "low"`: a report without an effort of
+  its own inherits the session's `Options.effort` (it did not fall back to the default `medium`). One run, sonnet.
+- Definition effort on a model without effort levels (check 9, 2026-11-10, one run): `supportedModels()` lists
+  `claude-haiku-4-5-20251001` with no `supportsEffort` / `supportedEffortLevels` (every other row lists levels). A
+  haiku root spawning a `worker` defined with `model: 'claude-haiku-4-5-20251001'`, `effort: 'medium'`: the subagent
+  started, its assistant messages carry `claude-haiku-4-5-20251001`, its Bash ran, and its `PreToolUse` input had no
+  `effort` (`effort.level` null). So an explicit effort on such a model is accepted and silently dropped, no error.
+- Tier variable on a subscription login (check 10, 2026-11-10, two runs: the first put (a) and (b) in one session and the
+  SDK stream carried no child assistant messages, so the child model could not be attributed; the second used one session
+  per spawn and read the child model from `modelUsage`): haiku root, Max login, no `ANTHROPIC_BASE_URL`, `env` with
+  `ANTHROPIC_DEFAULT_SONNET_MODEL=claude-haiku-4-5-20251001`. (a) a subagent definition without a model, hook
+  `updatedInput.model = 'sonnet'`: spawned, `modelUsage` listed `claude-haiku-4-5-20251001` (the mapped id) and no
+  sonnet. (b) a definition with `model: 'sonnet'`, no hook change: spawned, `modelUsage` again the mapped id, no
+  sonnet. (c) control, same hook without the variable: `modelUsage` listed `claude-sonnet-5-5`. So the variable DOES
+  redirect the `sonnet` alias on a subscription login, from the hook and from a definition. Caveat: the child model
+  comes from `modelUsage` (root model plus the one extra id), not from child `message.model`, which this SDK stream
+  did not emit for subagents in these sessions. A further run of the final script gave the same three results. Only
+  `sonnet` on a Max login was tested: the other three variables and an API-key login are unverified. The control also
+  shows the bare aliases today: `sonnet` is `claude-sonnet-5-5`, and `supportedModels()` resolves `fable` to
+  `claude-fable-5-1`, not the default model `claude-fable-5-2`, so an alias is not always the newest model of its family.
+- OrgAI behaviour since this (Claude adapter, `claude.ts` `sessionEffort` / `reportEffort`; unit tests in
+  `claude.test.ts` with the fake `query`, live facts from checks 5, 8b and 9 above): the work session passes the root
+  role's effort as `Options.effort` (every build, so restarts and resumes keep it; no key when the root has none).
+  Only when it does, a report role without an effort gets `effort: 'medium'` (`CLAUDE_SDK_DEFAULT_EFFORT`) in its
+  definition so it stays at the default instead of inheriting the root's; written for any model, since check 9 shows
+  it is harmless where effort is unsupported. Roles with an effort keep theirs; values a model does not take go
+  through unchanged, as before. `buildCompletionOptions` sets no effort. Not live-checked end to end in a run.
+  Run staffing at spawn (spec 4.3; `claude.ts` `staffSpawn`, unit tests "run staffing at spawn" in `claude.test.ts`
+  with the fake `query`, live facts from checks 1 to 4 and 10): each `ClaudeSession` holds one `StaffingBook`. For a
+  native spawn that passed every denial the hook calls `decide` under the Agent call's `tool_use_id` (the parent is the
+  hook's `agent_id`; a tier from an alias or tier name on the call and a valid effort are the `onCall` request; the plan
+  guard is its `planGuard` input). The call's final `model` is `CLAUDE_TIER_ALIAS[tier]`, and only when the
+  connection resolves that alias (`aliasTarget`: its `ANTHROPIC_DEFAULT_<ALIAS>_MODEL` variable; on a proxy only a
+  tier its map names, since the variables come only from that map and the CLI would otherwise send its own native id;
+  on the Anthropic connection always, natively), in these cases: the plan guard steered the spawn, or an automatic
+  role is moved off the tier its definition runs on, or an automatic (or steered) `inherit` role has a known tier the
+  resolver did not reach through its `unmapped` fallback. A report the root spawns on the root's own live tier gets no
+  key: for a spawn by the root `inherit` is the main model under either reading, so it keeps the root's exact model (a
+  pinned id such as `claude-opus-4-1` included). Otherwise no key. A role's tier is read one way in the resolver and the adapter
+  (`staffing.ts` `roleModelTier`): the definition sends `role.model`, so an alias or tier name in it decides before
+  `role.tier`. The root's tier is read live (`switchModel` changes it). An automatic role always gets an explicit
+  effort, the resolved one or `medium` (`CLAUDE_SDK_DEFAULT_EFFORT`, never above its ceiling), written unless the
+  definition already carries it (since 2026-11-10 an automatic report's definition carries `definitionEffort`, the effort
+  the resolver picks when nothing is asked, so only a pick, profile default or retry writes one), so neither the CLI's per-model default nor a project `effortLevel` decides; a fixed
+  role keeps its definition's effort. The row records what was sent: for a written alias the model it resolves to on
+  the connection (its `ANTHROPIC_DEFAULT_<ALIAS>_MODEL` variable, else on a proxy the mapped id, else on the Anthropic
+  connection the alias itself: since 2026-11-10 a concrete id in the Anthropic tier map that the session carries no
+  variable for is not recorded, because the alias then resolves natively); with nothing written the definition's model (an `inherit` report of the root: the
+  root's live model; a nested one: `inherit`). Whatever
+  else the model wrote in `model` or `effort` is
+  removed; a full id is never passed (it used to pass and fail the spawn), and the plan guard now writes `sonnet`
+  instead of the everyday model id. When the spawn runs on other values than were asked (a clamp or the plan guard),
+  the caller gets one line, "[OrgAI harness] <Role> was spawned on <label>.", through `PostToolUse`
+  `additionalContext` on that Agent call (beside the receipt when there is one); that path is verified for foreground
+  spawns (delegation gate facts above), for a background spawn's `async_launched` result it is unverified. The row is
+  recorded at `task_started` (`recordStaffing`), an Agent `tool_result` with `is_error` before the agent started
+  cancels the decision, and `SubagentStop` or a finishing `task_notification` calls `ended`. `Project.staffing:
+  'fixed'` works like a fixed role in an automatic project: the alias and effort on the call are dropped, the report
+  runs on its definition's model and effort, only the plan guard writes `sonnet`, and the caller is told in one
+  sentence when something it asked for was dropped. The plan guard judges an `inherit` report by the model `inherit`
+  resolves to (the root's live tier, a concrete id by its family), also when its parent is unknown to the book. The
+  book survives query restarts; a resume in a new process starts with an empty book, so an `inherit` child of a report
+  spawned before the resume runs as configured (the root's model, steered by the plan guard), and a step attempted
+  before it counts as never attempted. A report resumed by `SendMessage` stays ended in the book. Not live-checked end
+  to end in a run. A nested `inherit` follows the spawning subagent (check 11 below); OrgAI still writes the resolved
+  tier's alias on every automatic nested `inherit` spawn the connection can resolve, and on a proxy whose map lacks that
+  tier nothing is written and the row keeps `inherit` with the parent's tier, which is what runs.
+- Nested `inherit` (check 11, 2026-11-10; `scripts/smoke-staffing.mjs 11stub`, zero spend, and `11`, one live session,
+  about $0.02): root `lead` on sonnet spawns `mid` (definition model `haiku`), which spawns `grand` (definition model
+  `inherit`). Stub (a local Messages stub that tells the agents apart by their system prompts): the grandchild's
+  requests went to `claude-haiku-5-5`, the parent's model, not the root's `claude-sonnet-5-5`. Live (Max login, SDK
+  0.3.318, `forwardSubagentText`, messages attributed by `parent_tool_use_id`): root `claude-sonnet-5-5`, mid
+  `claude-haiku-5-5`, grandchild `claude-haiku-5-5`. So `inherit` in a nested spawn means the spawning subagent's model.
+  Only `inherit` from a definition was checked, not an Agent call that omits `model` under a definition without one.
+- `SubagentStart` additional context (Unverified, from the typings only): SDK 0.3.318 `sdk.d.ts` declares
+  `SubagentStartHookSpecificOutput { hookEventName: 'SubagentStart'; additionalContext?: string }`, and the hook input
+  carries `agent_id` and `agent_type` but no Agent `tool_use_id` (its `toolUseID` argument is a hook invocation id,
+  above). It could carry the spawn's knowledge block without changing the Agent input (the spawn hook's `prompt`
+  rewrite, which costs an auto mode classifier request), but where the context lands and how a start is matched to its
+  Agent call are not established; nothing uses it yet.
+- Parallel foreground spawns: works. Two Agent calls in ONE assistant message (same `message.id`), both forced to
+  `run_in_background = false` by the hook, each child running `sleep 5` (about 7.5 s per child including model
+  turns): SubagentStart at 1.3 s and 1.6 s, SubagentStop at 8.9 s and 9.2 s, so they overlapped almost completely.
+  Sum of child durations 15.2 s, total wall 11.9 s (the rest is the root's two turns). The model put both calls in
+  one message when told to in capital letters; without such an instruction that is not verified. The SDK emits one
+  `assistant` message per content block, so count calls per `message.id`, not per message. Both receipts returned
+  as separate `tool_result`s after their own `SubagentStop`.
+- One-shot latency (haiku, same options as `buildCompletionOptions`: custom system prompt, `tools: []`,
+  `maxTurns: 1`, `settingSources: []`, strict empty MCP; mirrored, the adapter was not imported; 5 sequential
+  calls, ~60-word system prompt, one-word answer, all answered "solo"): total 2062 / 2502 / 3274 ms
+  (min / median / max); median 1226 ms to the `init` message (process spawn and handshake) and 2019 ms to the first
+  assistant message, so roughly half is process start and half model time. Above the 1.5 s median line in the
+  design, so triage as a model call does not meet it on this machine.

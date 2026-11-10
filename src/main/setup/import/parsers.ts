@@ -1,4 +1,5 @@
-import { AGENT_IMPORT_SOURCE_LABELS, type AgentImportSource, type Effort, type ModelTier } from '@shared/types'
+import { cleanRoleStaffing } from '@shared/defaults'
+import { AGENT_IMPORT_SOURCE_LABELS, type AgentImportSource, type Effort, type ModelTier, type RoleStaffing } from '@shared/types'
 import { parseFrontmatter, parseYamlDoc, type FmValue } from './frontmatter'
 import { parseJsonc } from './jsonc'
 import { parseToml } from './toml'
@@ -56,6 +57,7 @@ interface Draft {
   prompt?: string
   model?: string
   effort?: Effort
+  staffing?: RoleStaffing
   tools?: string[]
   deniedTools?: string[]
   canSpawn?: boolean
@@ -88,6 +90,7 @@ function finish(d: Draft): ImportedAgent {
   if (d.slug) a.slug = d.slug.trim().slice(0, MAX_NAME)
   if (d.model) a.model = d.model.trim()
   if (d.effort) a.effort = d.effort
+  if (d.staffing) a.staffing = d.staffing
   if (d.tools) a.tools = d.tools
   if (d.deniedTools && d.deniedTools.length) a.deniedTools = d.deniedTools
   if (d.canSpawn !== undefined) a.canSpawn = d.canSpawn
@@ -155,6 +158,8 @@ export function parseOrgExport(text: string, file: string): ParseResult {
       if (tier) d.tier = tier
       const effort = field('effort', (v) => (isEffort(v) ? v : undefined))
       if (effort) d.effort = effort
+      const staffing = field('staffing', (v) => cleanRoleStaffing(v))
+      if (staffing) d.staffing = staffing
       if (r.reportsTo === null) d.reportsTo = null
       else {
         const rt = field('reportsTo', (v) => (typeof v === 'string' ? v : undefined))

@@ -72,6 +72,17 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   CLI tool calling against a non-Claude model behind the proxy, and LiteLLM serving `/v1/responses` for non-OpenAI
   models on the Codex side (`scripts/smoke-litellm.mjs` can check later, with consent).
   `ConnectionService.runConnection` builds the per-run `RunConnection` (env, API key, Codex home). Verified by unit tests.
+- Anthropic connection tier variables (run staffing, spec 4.3; `service.ts` `anthropicTierEnv`): for a project whose
+  staffing mode is automatic (`staffingModeOf(project) === 'auto'`), the Anthropic connection's run env sets
+  `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` like a proxy, for each tier it maps to a concrete model id
+  (a value that is itself an alias or tier name is skipped), so an alias the spawn hook writes means the connection's
+  model for that tier. `Project.staffing: 'fixed'` and calls without a project (one-shot helpers) set none.
+  `runConnectionFor` adds them for a bridged Claude role on the Anthropic connection under a project on another
+  connection (it passes no project there, to keep the project's auth out). Checked by unit tests (`service.test.ts`
+  "run staffing") and, for the variable itself, smoke check 10 (`scripts/smoke-staffing.mjs`, sdk-facts.md): only
+  `ANTHROPIC_DEFAULT_SONNET_MODEL` on a Max login is live-verified; the other three and an API-key login are
+  unverified. The Claude session's staffing map (`claude.ts` `claudeStaffingTierModels`) fills unmapped tiers from
+  `ANTHROPIC_BUILTIN_MODELS` on this connection, so the plan guard keeps working with `everyday` unmapped.
 - Multi-provider org charts (2026-11-07; docs/design/multi-provider.md, ARCHITECTURE.md "Multi-provider org charts (bridged reports)"):
   - `Role.connection` is read only through `roleConnection`; the root always uses the project's connection.
     `AdapterChoice.bridged` lists roles that run in a child session (runtime/bridge.ts `BridgedSessions`) on their own
@@ -82,6 +93,14 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     worktree. Adapters pass `bridgedRoles`, `bridgeVia` and `bridged` to buildRolePrompt and never give a bridged role
     a native AgentDefinition or spawn.
   - Mock marker: `[mock:bridged]`.
+  - `delegate_agent` `background: true` (orchestration-efficiency 4.2, 2026-11-10): the tool answers with the handle once
+    the child exists and hands the result (`bridgedResultText`) to `HarnessToolHooks.backgroundDelegation.ended`; the
+    adapter (Claude, mock) counts it as a live report (`liveReports`, `lastReportEndedAt`, `settlement().quiescent`)
+    and delivers it as a harness message (Claude `notifyOrchestrator`). It runs in the foreground, with "Ran in the
+    foreground (<reason>)." first, for a non-root or unconfirmed caller, a required delegation (`receiptBearingSpawn`)
+    or no hook. A child the harness stopped (`BridgeSpawnResult.stopped`: interrupt or run end) or a result while held
+    waits for the user's next message (heldNotices); nothing is delivered once the session is ending. Mock marker
+    `[mock:bridged-bg]`.
   - Verified by unit tests, fakes and the mock only; nothing live.
 - Proxy connections (2026-11-06; ARCHITECTURE.md "Proxy connections"): the single LiteLLM connection became `AppSettings.proxies` (`ProxyConnection`, kind 'litellm' | 'openai-compatible', at most 20); older text in this file that says `connections.litellm` / `'litellm'` means "a proxy" now (the migrated original keeps id 'litellm' and its key). Use `connectionIds(settings)`, `connectionRecord` / `proxyOf`, `connectionName`, `isBuiltinConnectionId` (never `=== 'litellm'`); `CONNECTION_IDS` is built-ins only. IPC `connections:createProxy` / `removeProxy`, CLI `orgai connections proxy ...`, event `connections.changed`, mock host `mock-proxy.example.com` (key `mock-bad-key` is refused). Never put a real proxy host or key in code, tests or docs. Unit-tested only; the renderer still shows each proxy with the old LiteLLM card (compile fixes only) until the UI pass.
 - Default connection: `projects:create` passes `ConnectionService.prepareNewProject` to `ProjectStore.create`. A new
@@ -150,7 +169,22 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     Config goes in as `-c key=value` TOML overrides. An API key travels only in the environment
     (`model_providers.orgai.env_key`), never in argv. Verified by unit tests (`codexProtocol.test.ts`).
   - Concurrent Codex runs share that one `CODEX_HOME` at `<data>/codex` (`src/main/connections/service.ts`), each
-    with its own app-server. Whether they race on auth refresh or the session database is unverified.
+    with its own app-server. Two app-servers that START at the same moment in one home race on Codex's sqlite state:
+    one exits during `initialize` with "failed to initialize sqlite state runtime" (lab stub campaign, codex 0.166.0 and
+    0.167.0, 2026-11-10: app-style concurrent starts, typically the run's root and the run-title `complete()`). So every
+    app-server start goes through a process-wide start lock (`withCodexStartLock` in `codexAppServer.ts`), keyed by the
+    resolved `CODEX_HOME` the server runs with (one shared key when none is set), FIFO, starts in other homes never wait.
+    The adapter (`lockedStart` in `codex.ts`: session root, MCP restarts, bridged report sessions, `complete()`) holds it
+    around the whole `start()` (version check, catalog step, spawn, `initialize`) and passes `startLockHeld`;
+    `CodexAppServer.start` otherwise takes it itself from the spawn until `initialize` settles (the connection
+    service's login, account and model starts). A hold ends when the start settles, the server's `exited` resolves
+    (closing it frees the lock), the caller's abort signal fires (`complete()`, waiting or holding) or after
+    `CODEX_START_LOCK_MAX_HOLD_MS` (60 s; `initialize` itself times out at 30 s). A real start (version check, spawn,
+    `initialize`, one `config/read`) took about 0.2 s in the token-free live tests (`ORGAI_CODEX_INTEGRATION=1`), so
+    parallel report spawns in one home now start about 0.2 s apart. The lock is unit-tested (FIFO, other homes in
+    parallel, release after a failed and a hung start, abort while waiting and holding; adapter windows do not overlap
+    in one home). Whether runs still race on auth refresh or the session database after the start is unverified, and
+    the lock's effect on the stub campaign was not re-measured by its author.
   - `CodexAppServer.start` creates `CODEX_HOME` (mode 0o700) before spawning (issue #8). Verified token-free by
     fake-server unit tests; that codex 0.166.0 exits 1 on a missing dir was verified by the user. Exit errors
     (`codexExitMessage`) carry a redacted stderr tail (last 10 lines, 2,000 chars; exact env values redacted plus
@@ -165,6 +199,63 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     reports). OrgAI now launches with those features off, interrupts and corrects any native item (one strike per turn, third
     strike fails the agent; `--strict-delegation` fails the run) and refuses tool calls and approvals from threads it did not start. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
     (spends tokens, consent required) has not been run.
+  - **Native multi-agent tools off through the model catalog** (`codexNativeCatalog.ts`, 2026-11-10). Codex's catalog
+    (`codex debug models`) marks most models `multi_agent_version: "v2"`; for those Codex offers `spawn_agent`,
+    `send_message`, `followup_task`, `wait_agent`, `list_agents` plus a `<multi_agent_role>` and a `<multi_agent_mode>`
+    developer message ("Do not spawn sub-agents unless the user ... explicitly ask[s] ..."), which leads applied to
+    `spawn_report` (benchmark: 5 of 7 runs that required reports ended `delegation-incomplete`). `features.multi_agent(_v2)=false`
+    does not remove them for v2 models. The adapter now runs the same binary's `debug models` (adapter env, the provider
+    `-c` lines only, 4 s timeout) once per key, sets every `multi_agent_version` string other than "v1" to "v1" (every
+    other field kept), writes `<CODEX_HOME>/orgai-model-catalog-<key>.json` (OrgAI's Codex home only; no `CODEX_HOME`, no
+    override) and adds `model_catalog_json="<file>"` through `CodexAppServerOptions.prepareConfig` (after the version
+    check, before the spawn). Key: binary realpath + size + mtime, the provider lines and Codex's own
+    `models_cache.json` (size, mtime); a file older than 6 h is regenerated, other keys' files older than a day are deleted.
+    Covers the run's app-server, the MCP restart (same `createServer`) and `complete()`. Checked at a local Responses stub
+    (no tokens), codex 0.166.0 (the bundled one, through the real adapter launch path) and 0.167.0 app-servers, 2026-11-10: with the override the request has no native tool
+    definition, no `<multi_agent_*>` message and no rule sentence, still offers `spawn_report` / `message_agent` /
+    `list_team`, and is otherwise identical (same reasoning effort, same base instructions, same tools; the catalog file
+    differs from `debug models` only in that field). "v1" and `null` behaved the same in every probe; "v1" was chosen
+    because Codex's own catalog ships it. Both are re-enabled by `features.multi_agent_v2=true`, so OrgAI keeps passing
+    `=false`. Cost: first launch 18-115 ms for the dump and write, a cached launch about 0.03 ms (stats only).
+    **Side effect found and avoided:** setting `model_catalog_json` at all (even to the unmodified catalog) gives a model id
+    the catalog does not know (a proxy's own ids) a fallback base prompt with an extra ~3.8 KB "Planning" / `update_plan`
+    section. So the override is skipped (status `skipped`, one info line) when a role model or a tier-mapped model of the
+    run is not in the catalog; such ids get no native tools anyway with `features.multi_agent=false` (verified at the
+    stub). Fails open: a missing binary, a timeout, a non-zero exit, output that is not a catalog, a failed write or no
+    `CODEX_HOME` launch exactly as before, with one run warning; the role prompt then keeps one sentence on the
+    spawn_report note (`NATIVE_RULE_NOTE`: this project explicitly asks for delegation through spawn_report; Codex's rule
+    concerns its built-in tools), as does the strike notice. With the override in effect that sentence is left out.
+    Unverified: other Codex versions (a renamed field yields "unchanged": no override, the sentence stays), a real model
+    run, a ChatGPT login (whether `debug models` without `--bundled` returns the same refreshed catalog the app-server uses;
+    it was only run without a login, where it printed the bundled catalog, and with an API-key provider, where it made no
+    request to the provider), and a model switched mid-run (`switchModel`) to an id the catalog does not know.
+    Hardening (2026-11-10, second round): (1) when the app-server fails to start with the override (exits or fails the
+    handshake), the session and `complete()` relaunch without it, drop the override for the rest of the session (the
+    prompt keeps the fallback sentence) and log one warning; a failure without the override, or after the fallback,
+    fails as before (live at the stub with a catalog the real 0.166.0 app-server refuses: "failed to parse
+    model_catalog_json ... missing field", relaunched, request sent). Third round (2026-11-10, start race): the old rule
+    rejected the catalog process-wide AND deleted the file on ANY start failure, so a sqlite start race (above) cost every
+    later run the override and broke the other app-server already launched with the file ("failed to load
+    configuration: No such file or directory" on its `thread/start`; stub: 0.167.0 lost the override in 14 of 15 runs,
+    7 failed). Now `catalogStartFailure(text)` (`codexNativeCatalog.ts`, pure, on the error message plus stderr tail)
+    decides: 'transient' (`failed to initialize sqlite state`, plus SQLite's `database is locked` / `SQLITE_BUSY`,
+    those two unverified for Codex) restarts once more WITH the override; 'catalog' (`model_catalog_json`, `failed to
+    load|parse config(uration)`) or 'other' (anything else) restarts without it. The catalog is rejected for the process
+    (`rejectNativeCatalog`) only when the start without it succeeded and the last failure with it was 'catalog';
+    otherwise the next session offers it again. `rejectNativeCatalog` never deletes the file (another app-server may read
+    it); a new process validates it again and the stale sweep removes it later. One warning per session names the case
+    (started again with it / without it for this session / not used again until OrgAI restarts). All unit-tested only
+    (`codex.test.ts`, `codexNativeCatalog.test.ts`); the matcher strings come from the stub notes above. (2) A cached file is reused only after it parses to the shape the transform writes (an
+    object with a non-empty `models` array of objects, no `multi_agent_version` other than "v1"), checked once per process
+    (about 1.5 ms for the 0.75 MB catalog; later launches about 0.05 ms, stats only); a truncated or edited file is
+    regenerated. (3) The file is written only when `CODEX_HOME` resolves (realpath, case-insensitive on Windows) to the
+    home OrgAI assigns, `codexHomeDir(dataDir)`, passed as `CodexAdapterOptions.codexHome` from `host/bootstrap.ts`; an
+    inherited or foreign `CODEX_HOME`, or an adapter built without `codexHome`, gets no override (one warning).
+  - A bridged report's result never restarts a held run (2026-11-10): a child the harness stopped (`BridgeSpawnResult.stopped`,
+    RunManager stops bridged reports before the session's own interrupt) and any bridged result that lands while the
+    continuation is held are shown as a harness row at once and delivered with the user's next message (the orchestrator's
+    in front of the user's text, a report lead's to its own thread), like the Claude adapter's held notices. Unit-tested
+    (`codexBridge.test.ts`).
   - It is unverified that dynamic tools survive `thread/resume`. The adapter's MCP restart and run continuation
     assume they do.
   - The ChatGPT login (`account/login/start` with `chatgpt` / `chatgptDeviceCode`), `model/list` and

@@ -42,6 +42,7 @@ import ProjectsPanel from '../components/usage/ProjectsPanel'
 import ModelsPanel from '../components/usage/ModelsPanel'
 import RolesPanel from '../components/usage/RolesPanel'
 import EfficiencyPanel from '../components/usage/EfficiencyPanel'
+import StaffingPanel from '../components/usage/StaffingPanel'
 import WastefulRuns from '../components/usage/WastefulRuns'
 import AllRuns from '../components/usage/AllRuns'
 import UsageHeader, { UsageTopbarActions } from '../components/usage/UsageHeader'
@@ -415,6 +416,7 @@ export default function UsageView(): ReactElement {
                           setWastefulFocus((n) => n + 1)
                         }}
                       />
+                      <StaffingPanel {...panelProps} />
                       <WastefulRuns {...panelProps} sort={wastefulSort} onSort={setWastefulSort} focusSeq={wastefulFocus} />
                       <AllRuns {...panelProps} open={runsOpen} onToggle={setRunsOpen} />
                     </>

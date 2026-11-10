@@ -1,10 +1,11 @@
-import type { Project, ProjectKind, QuickRunInfo, Role, RunTeam } from '@shared/types'
-import { projectKindOf } from '@shared/defaults'
+import type { Project, ProjectKind, QuickRunInfo, ReviewPolicy, Role, RunTeam, StaffingGoal } from '@shared/types'
+import { effectiveRoleStaffing, projectKindOf, reviewPolicyOf, staffingGoalOf, staffingModeOf } from '@shared/defaults'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, OUTPUT_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
 import { obligationsFor } from './delegation'
+import { CLAUDE_TIER_ALIAS, roleModelTier } from './staffing'
 
 /**
  * Prompt text the harness gives every role, independent of the provider. Pure functions of the role,
@@ -93,6 +94,96 @@ export interface PromptFlags {
    * Adapters pass `strictDelegation: ctx.run.overrides?.strictDelegation === true`. Missing = only Role.requiredReports count.
    */
   strictDelegation?: boolean
+  /**
+   * Run staffing: the goal this run staffs for (RuntimeContext.staffingGoal, which carries the per-run override). Adapters
+   * pass `staffingGoal: ctx.staffingGoal`. Missing = staffingGoalOf(project), the project's own goal. Read only for the
+   * staffing paragraph of a team root (staffingText).
+   */
+  staffingGoal?: StaffingGoal
+  /**
+   * Claude's native Agent call (claude.ts buildAgents passes it on work runs): every role with reports gets
+   * spawnCallText and its report lines carry the limits that text refers to (spawnLimitMark), so a well-formed call
+   * needs no rewrite by the spawn hook (a rewritten call costs one auto mode classifier request,
+   * docs/agent-notes/permissions.md). Missing = neither (Codex and mock spawn through their own tools).
+   */
+  spawnCallFields?: boolean
+}
+
+/**
+ * The bracket after a report's name for spawnCallText: its model and effort limits ("up to sonnet / high"; an
+ * 'inherit' role without a tier: "up to your tier / high"; a fixed role: "fixed"), then "worktree" when the Agent call
+ * must ask for isolation and "foreground" when it must run in the foreground. The limits are the run staffing
+ * resolver's bounds (staffing.ts roleModelTier, effectiveRoleStaffing; an effort ceiling of high when the chart sets
+ * none), so values inside them are kept by the spawn hook as written. Pure.
+ */
+export function spawnLimitMark(report: Role, project: Pick<Project, 'staffing'>, opts: { worktree?: boolean; foreground?: boolean } = {}): string {
+  const eff = effectiveRoleStaffing(report, project)
+  const parts: string[] = []
+  // A fixed project: spawnCallText says the call names no model or effort, so no report needs the word.
+  if (staffingModeOf(project) === 'fixed') {
+    /* no limits */
+  } else if (eff.mode === 'fixed') parts.push('fixed')
+  else {
+    const model = typeof report.model === 'string' ? report.model.trim() : ''
+    const tier = model && model !== 'inherit' ? roleModelTier(report) : eff.maxTier
+    parts.push(`up to ${tier ? CLAUDE_TIER_ALIAS[tier] : 'your tier'} / ${eff.maxEffort ?? 'high'}`)
+  }
+  if (opts.worktree) parts.push('worktree')
+  if (opts.foreground) parts.push('foreground')
+  return parts.length ? ` (${parts.join(', ')})` : ''
+}
+
+/**
+ * Claude, every role with reports (PromptFlags.spawnCallFields): the Agent call fields the spawn hook would otherwise
+ * write. Each value written here and kept by the hook leaves the call unchanged, so auto mode's own verdict on it
+ * stands. `auto`: the project staffs automatically (a fixed project's reports run as configured, so the call names no
+ * model or effort); `fixed`, `worktree`, `foreground`: some listed report carries that mark.
+ */
+export function spawnCallText(opts: { auto: boolean; fixed?: boolean; worktree?: boolean; foreground?: boolean }): string {
+  const fields = ['name (a short handle unique in this run, such as tester-2)']
+  if (opts.auto) fields.push('model (haiku fast, sonnet everyday, opus deep) and effort (low, medium or high) within the limits in parentheses after each specialist')
+  if (opts.worktree) fields.push('isolation: "worktree" if marked worktree')
+  if (opts.foreground) fields.push('run_in_background: false if marked foreground')
+  return (
+    `On every Agent call pass ${joinAnd(fields)}${opts.auto ? '' : ' but no model or effort'}.` +
+    (opts.auto && opts.fixed ? ' Omit model and effort for one marked fixed.' : '') +
+    ' The harness corrects a missing or out-of-limit value, which costs an extra safety check.'
+  )
+}
+
+/**
+ * The report marks (spawnLimitMark, by slug) and the spawnCallText paragraph buildRolePrompt gives `role` when
+ * PromptFlags.spawnCallFields is set on a work run and the role has a report it spawns with the Agent tool (not
+ * bridged); otherwise no marks and no text. Pure.
+ */
+export function spawnCallParts(
+  role: Role,
+  roles: Role[],
+  project: Project,
+  flags: Pick<PromptFlags, 'isSetup' | 'isolation' | 'spawnCallFields' | 'strictDelegation' | 'bridgedRoles' | 'bridged'>
+): { limits: Record<string, string>; text?: string } {
+  const limits: Record<string, string> = {}
+  if (flags.spawnCallFields !== true || flags.isSetup) return { limits }
+  const isRoot = role.reportsTo === null && !flags.bridged
+  const obligations = obligationsFor(roles, flags.strictDelegation === true)
+  const required = obligations[role.id] ?? []
+  // Only an isolated spawner's writers get a worktree (claude.ts: the root, or a writing lead in its own worktree).
+  const isolated = flags.isolation && (isRoot || canWrite(role))
+  let worktree = false
+  let foreground = false
+  let fixed = false
+  for (const r of reportsOf(role, roles)) {
+    if (flags.bridgedRoles?.some((b) => b.roleId === r.id)) continue
+    const w = isolated && canWrite(r)
+    // A receipt-bearing spawn (claude.ts receiptBearingSpawn) runs in the foreground.
+    const f = required.includes(r.id) || (obligations[r.id]?.length ?? 0) > 0
+    worktree ||= w
+    foreground ||= f
+    fixed ||= effectiveRoleStaffing(r, project).mode === 'fixed'
+    limits[r.slug] = spawnLimitMark(r, project, { worktree: w, foreground: f })
+  }
+  if (!Object.keys(limits).length) return { limits }
+  return { limits, text: spawnCallText({ auto: staffingModeOf(project) === 'auto', fixed, worktree, foreground }) }
 }
 
 /** One line for the root of a bridged child session: its final message is what the delegating agent receives. */
@@ -121,15 +212,22 @@ export function reportsText(
   bridged: PromptFlags['bridgedRoles'] = [],
   via: PromptFlags['bridgeVia'] = 'delegate_agent',
   /** Slugs of the reports this role must delegate to (obligationsFor): adds the required-delegation paragraph. */
-  required: readonly string[] = []
+  required: readonly string[] = [],
+  /** The run's root on a delegate_agent adapter: one clause on background: true when a listed report is bridged. */
+  background = false,
+  /** Per report slug, the spawnLimitMark shown after its name (PromptFlags.spawnCallFields); a bridged report gets none. */
+  limits: Readonly<Record<string, string>> = {}
 ): string {
   const mark = (r: Role): string => {
     const b = bridged?.find((x) => x.roleId === r.id)
-    return b ? bridgedReportMark(b.connectionName, via) : ''
+    return b ? bridgedReportMark(b.connectionName, via) : (limits[r.slug] ?? '')
   }
   return (
-    `You lead the following specialists. Delegate to them with the Agent tool, passing subagent_type exactly as written:\n` +
+    `You lead the following specialists. To hand work out, use the Agent tool, passing subagent_type exactly as written:\n` +
     reports.map((r) => `- ${r.slug}${mark(r)}: ${r.description}`).join('\n') +
+    (background && via === 'delegate_agent' && reports.some((r) => bridged?.some((b) => b.roleId === r.id))
+      ? `\nPass background: true to ${BRIDGE_HARNESS_TOOLS.delegate} to keep working while that report runs; its report arrives as a harness message.`
+      : '') +
     `\nYou may only delegate to these roles. Give each delegate a complete, self-contained brief.` +
     (required.length
       ? `\nYou must delegate to ${joinAnd(required)} and wait for their reports before you finish; the harness checks the run's record and will not accept your report without them.`
@@ -138,10 +236,77 @@ export function reportsText(
   )
 }
 
+/**
+ * For the root of a team work run that has reports (not setup-like, quick, single or bridged-child runs): when to do the
+ * work itself, when to hand it out, and how to run what it hands out together (docs/design/orchestration-efficiency.md
+ * 4.1, 4.2). It yields to the role prompt, the brief and required delegation: with required reports it governs only how
+ * they run. Decision order: the sizing rule first says whether work goes out at all, splitting only what the brief asks
+ * for; tests and checks of the lead's own work are part of that work, never a piece of their own; the parallel, contract
+ * and risk-review rules apply to handed-out work (Phase 6 lab: the Codex lead otherwise handed out tests and review of
+ * its own change on a task it did alone). `required`: the role has required reports (obligationsFor). `isolation`: writers get worktrees; without
+ * it, writers that run together are told to keep to disjoint files (with it, orchestratorIsolationText says why it is safe).
+ * `review`: the project's review policy (reviewPolicyOf, default 'risk'); its sentence (reviewPolicyText) is the
+ * paragraph's only review rule, shown whatever the staffing mode.
+ */
+export function teamSizingText(opts: { required?: boolean; isolation?: boolean; review?: ReviewPolicy } = {}): string {
+  return (
+    'Unless your instructions, the brief or required reports say otherwise, do the work yourself when it is one contained piece and you hold the tools. ' +
+    "Hand work out when what the brief asks for splits into independent pieces of more than a couple of minutes each, needs a report's tools, skills or connections, or a rule demands it; " +
+    'one report doing it all while you wait is slower than doing it alone. ' +
+    'Tests and checks of your own work are part of it, never pieces to hand out. ' +
+    (opts.required ? "Required reports still go out: start together those that do not need each other's result; start one that needs another's result as soon as that result lands, only handing it over; do not redo their work. " : '') +
+    'Cut the longest piece first; a split leaving one piece nearly as long as the whole saves nothing. ' +
+    'Run several instances of a role on disjoint scopes. ' +
+    'Start every ready piece in one message: calls in one message run together, separate messages run in sequence. ' +
+    (opts.isolation ? '' : 'Parallel writers need disjoint files. ') +
+    'Once interface and acceptance criteria are set, start tests and checks of handed-out work beside it. ' +
+    `${reviewPolicyText(opts.review)} ` +
+    'While reports run, do only work you kept, never work you handed out, or end your turn and wait. ' +
+    'Do not re-run checks a report ran on the same result; read its evidence.'
+  )
+}
+
+/**
+ * The review rule of a team root (docs/design/orchestration-efficiency.md 4.4), one sentence inside teamSizingText.
+ * Required reports win over every policy: teamSizingText opens with "unless ... required reports say otherwise".
+ * Under 'risk' the conditions (sensitive code, a large diff, a failed verification) apply to any change, the lead's own
+ * included (owner decision 2026-11-10; the lab build tied them to handed-out work, spec 1.1c and section 6).
+ */
+export function reviewPolicyText(policy: ReviewPolicy = 'risk'): string {
+  if (policy === 'always') return 'Have every change reviewed before you finish, beside the next step, not after everything.'
+  if (policy === 'never') return 'Do not ask for review unless a rule demands it; verify and finish.'
+  return 'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is large or verification failed once; else verify and finish.'
+}
+
+/**
+ * Run staffing (docs/design/orchestration-efficiency.md 4.2, 4.3): for the root of a team work run (teamSizingText's
+ * conditions) when the project's staffing mode is 'auto'. How to staff the steps the sizing rule hands out (it never
+ * decides whether any are; staff, after, paths), the
+ * tier and effort rubric, the longest path, escalation, and a line for the run's goal ('balanced' adds none).
+ * Tiers and efforts named here are the only automatic picks: never top, xhigh or max.
+ */
+export function staffingText(goal: StaffingGoal = 'balanced'): string {
+  const line =
+    goal === 'speed'
+      ? ' This run favours speed: treat every step as on the longest path.'
+      : goal === 'cost'
+        ? ' This run favours cost: treat no step as on the longest path; one well-specified piece may go to a single report on a cheaper tier.'
+        : ''
+  return (
+    'In the plan, give each step you hand out (the rule above decides if any) staff (role, tier, effort), after (steps it waits for; omit it if it can start now) and paths (files it will change); ' +
+    'the harness applies the tier and effort when you start that role, never above what the role allows. ' +
+    'Tier fast for search, mechanical edits, running checks and summaries; everyday for well-specified implementation, tests and routine review; deep for ambiguous design, cross-module change, hard debugging and security review. ' +
+    'Effort low for mechanical work, medium by default, high only where the reasoning is subtle. ' +
+    'On the longest path prefer a higher tier at lower effort to a lower tier at high effort; off it prefer the cheaper tier, it has slack. ' +
+    'If a step fails verification or comes back unresolved, retry it one step up in tier or effort, at most twice.' +
+    line
+  )
+}
+
 /** For the root orchestrator when isolation is on: how merges and conflicts work. */
 export function orchestratorIsolationText(): string {
   return (
-    `Parallel work is safe: every report that can edit files runs in its own git worktree, so you may delegate several tasks at once. ` +
+    `Every report that can edit files runs in its own git worktree. ` +
     `When a report finishes, the harness commits its branch and merges it into the main checkout, then tells you the result in a message. ` +
     `If a merge conflicts, the branch is kept and you integrate it yourself: in the main checkout run git merge <branch>, resolve the conflicts, ` +
     `then git worktree remove --force <path> and git branch -d <branch>; or commit your own changes and call ${INTEGRATE_TOOL} to retry. ` +
@@ -221,6 +386,10 @@ export function orgChangeText(): string {
   )
 }
 
+/** unattendedText (plan nudges on): plan calls ride along with work, never a turn of their own (design 4.6). */
+export const PLAN_BATCHING_TEXT =
+  'Send set_plan with your first working tool calls and complete_plan with your last calls or final answer, never in a turn of their own.'
+
 /** Work-run orchestrators work unattended: plan first, keep going, stop only for genuine decisions. */
 export function unattendedText(kind: ProjectKind = 'code', nudges = true): string {
   const last =
@@ -237,6 +406,7 @@ export function unattendedText(kind: ProjectKind = 'code', nudges = true): strin
   return (
     `Work unattended. Start every task by calling set_plan with the goal and the concrete steps (${last}). ` +
     'Mark steps with update_plan as you go. Do not stop to ask whether to continue; continue until every step is done, then call complete_plan with a summary. ' +
+    `${PLAN_BATCHING_TEXT} ` +
     'Stop only for a genuine decision the user must make: ask_user (waits for the answer) or mark_blocked (ends the run\'s automatic continuation with the reason). ' +
     'The harness will remind you of remaining steps whenever a turn ends with work left.'
   )
@@ -471,7 +641,16 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
   if (reports.length) {
     const requiredIds = obligationsFor(roles, flags.strictDelegation === true)[role.id] ?? []
     const requiredSlugs = requiredIds.map((id) => roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
-    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs))
+    // Claude's Agent call: each report's limits on its line, and the fields to pass (spawnCallText).
+    const spawnCall = spawnCallParts(role, roles, project, flags)
+    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs, isRoot && !isSetup, spawnCall.limits))
+    if (spawnCall.text) parts.push(spawnCall.text)
+    // Team work-run roots only: not setup-like runs, the Chat, the single assistant or a report (a mid-level lead included).
+    if (isRoot && !isSetup && !flags.quick && flags.team !== 'single') {
+      parts.push(teamSizingText({ required: requiredSlugs.length > 0, isolation, review: reviewPolicyOf(project) }))
+      // Run staffing: only when the project lets the harness staff each assignment ('fixed' = roles' own model and effort).
+      if (staffingModeOf(project) === 'auto') parts.push(staffingText(flags.staffingGoal ?? staffingGoalOf(project)))
+    }
     if (isolation && isRoot) parts.push(orchestratorIsolationText())
     if (!isSetup) parts.push(networkLeadText(reports))
   } else if (!isSetup) {

@@ -1492,6 +1492,21 @@ export const PROJECT_SETTING_DOCS: Readonly<Record<keyof Project, AtlasSettingDo
     surface: 'project-settings-context-notes',
     control: 'user'
   },
+  staffing: {
+    summary: 'Run staffing: Automatic (tier and effort picked per assignment, within each role\'s own setting) or Fixed (every role as configured). No screen shows it yet.',
+    surface: 'none',
+    control: 'user'
+  },
+  staffingGoal: {
+    summary: 'Run staffing goal: balanced, speed or cost; a run may override it. No screen shows it yet.',
+    surface: 'none',
+    control: 'user'
+  },
+  reviewPolicy: {
+    summary: 'When the lead asks for review: always, by risk (the default) or never; required reports always win. No screen shows it yet.',
+    surface: 'none',
+    control: 'user'
+  },
   roles: { summary: 'The org chart\'s roles.', surface: 'project-team', control: 'user' },
   mcpServers: {
     summary: 'The MCP servers and connected services this project\'s roles may use.',
