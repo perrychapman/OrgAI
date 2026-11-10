@@ -535,6 +535,8 @@ interface ActiveRun {
   /** Bridged reports (multi-provider org charts): the child sessions of this run. Set at start when roles are bridged. */
   bridge?: BridgedSessions
   /** Agents the bridge wrapper emitted (remapped id -> the bridged role's connection); later upserts keep it. */
+  /** agent.compacted events counted per agent id (AgentInstance.compactions, set on every agent.upsert). */
+  compactions?: Map<string, number>
   bridgedAgents?: Map<string, ConnectionId>
   /** RunConnection per distinct connection of bridged roles, for pricing (never emitted, logged or persisted). */
   bridgedConnections?: RunConnection[]
@@ -1580,6 +1582,19 @@ export class RunManager {
       // Usage is computed by the host; an adapter's run.usage is dropped.
       if (raw.type === 'run.usage' || raw.type === 'run.model') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
+      // A compaction of an agent's conversation: counted here (AgentInstance.compactions belongs to RunManager), recorded
+      // and broadcast, then the agent goes out again with its new count.
+      if (raw.type === 'agent.compacted') {
+        if (typeof raw.agentId !== 'string' || !raw.agentId) return
+        const counts = (active.compactions ??= new Map())
+        counts.set(raw.agentId, Math.min(1_000_000, (counts.get(raw.agentId) ?? 0) + 1))
+        this.recordEvent(active, raw)
+        logRunEvent(summary, raw)
+        this.broadcast(raw)
+        const known = active.record.agents[raw.agentId]
+        if (known) emit({ type: 'agent.upsert', runId: summary.id, agent: known })
+        return
+      }
       let e = raw
       // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
       // (the abort's 'finished' / 'error', a stray 'idle') never change status, execOutcome or endedBy.
@@ -1626,6 +1641,9 @@ export class RunManager {
         // Priced into a copy (never the adapter's object) before it is recorded or broadcast. The delegation display is the ledger's.
         const priced = priceAgent({ ...agent, connection: on }, pricingFor(on))
         delete priced.delegation
+        const compacted = active.compactions?.get(agent.id)
+        if (compacted) priced.compactions = compacted
+        else delete priced.compactions
         const shown = active.ledger ? this.delegationDisplay(active)[agent.id] : undefined
         e = { ...e, agent: shown ? { ...priced, delegation: shown } : priced }
       }

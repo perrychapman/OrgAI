@@ -1,3 +1,4 @@
+import { ordinal } from '@shared/view/compactionText'
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, projectKindOf, settingTier } from '@shared/defaults'
@@ -371,6 +372,10 @@ class CodexSession implements RuntimeSession {
   private rootModelOverride?: string
   /** App-server usage totals are cumulative for the thread, including turns on earlier models. */
   private rootTokenTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  /** Thread id -> the context window Codex measures it against (thread/tokenUsage/updated modelContextWindow). */
+  private contextWindows = new Map<string, number>()
+  /** Agent id -> compactions of its thread in this session (log wording only; RunManager keeps the run's count). */
+  private compactionCounts = new Map<string, number>()
   /** Messages the user sent before the root thread existed. */
   private earlySends: { text: string; images?: ImageAttachment[] }[] = []
   /** Rules granted with "allow for this run". */
@@ -1242,7 +1247,11 @@ class CodexSession implements RuntimeSession {
         }
         return
       }
+      case 'compacted':
+        this.onCompacted(agentId, u.threadId)
+        return
       case 'tokens':
+        if (u.contextWindow) this.contextWindows.set(u.threadId, u.contextWindow)
         if (agent) {
           agent.inputTokens = u.input
           agent.outputTokens = u.output
@@ -1314,6 +1323,23 @@ class CodexSession implements RuntimeSession {
         if (u.usageLimit && !u.willRetry) void this.onUsageLimit()
         return
     }
+  }
+
+  /**
+   * Codex compacted an agent's thread: one log line, a transcript row on the root, agent.compacted for RunManager's
+   * count, and the continuation's thrash guard (a compaction never nudges by itself).
+   */
+  private onCompacted(agentId: string, threadId: string): void {
+    const agent = this.agents.get(agentId)
+    const n = (this.compactionCounts.get(agentId) ?? 0) + 1
+    this.compactionCounts.set(agentId, n)
+    const name = agent?.name ?? agentId
+    this.log('info', `Compaction ${n} of ${agentId === ROOT_AGENT_ID ? "the orchestrator's" : `${name}'s`} conversation (Codex).`)
+    if (agentId === ROOT_AGENT_ID) this.transcript(agentId, { kind: 'system', text: `The conversation was compacted (${ordinal(n)} time).` }, { source: 'harness' })
+    this.emit({ type: 'agent.compacted', runId: this.ctx.run.id, agentId, at: Date.now(), trigger: 'auto' })
+    if (this.setupLike) return
+    const contextWindow = this.contextWindows.get(threadId)
+    this.continuation.compacted({ agentId, name, ...(agent?.model ? { model: agent.model } : {}), ...(contextWindow ? { contextWindow } : {}) })
   }
 
   /** An update of a thread that is not part of this run: never attributed to an agent. */

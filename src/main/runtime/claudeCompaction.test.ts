@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentInstance, Role, RunEvent } from '@shared/types'
+import type { AgentInstance, Role, RunEvent, RunPlan } from '@shared/types'
 
 // Compaction of the orchestrator's conversation on Claude, with a scripted stand-in for the CLI. Message and hook
 // shapes follow scripts/smoke-compaction.mjs (SDK 0.3.318, docs/agent-notes/sdk-facts.md "Compaction"): PreCompact ->
@@ -51,6 +51,9 @@ const sdk = vi.hoisted(() => {
     async stopTask() {}
     async supportedModels() {
       return sdk.models
+    }
+    async getContextUsage() {
+      return { rawMaxTokens: 200_000 }
     }
     close(): void {
       this.end()
@@ -183,5 +186,56 @@ describe('Claude: the models a session resolves (run start)', () => {
     init(q, 2)
     await vi.waitFor(() => expect(logs(ctx.events).filter((m) => m.startsWith('Models this session resolves'))).toHaveLength(1))
     expect(logs(ctx.events).find((m) => m.startsWith('Models this session resolves'))).toContain('opus -> claude-opus-5-5')
+  })
+})
+
+const plan = (): RunPlan => ({
+  goal: 'Ship',
+  steps: [
+    { id: 'p1', title: 'Read', status: 'done' },
+    { id: 'p2', title: 'Change', status: 'in_progress' }
+  ],
+  status: 'active',
+  autoContinues: 0,
+  updatedAt: 0
+})
+
+describe('Claude: after a compaction of the orchestrator', () => {
+  it('emits agent.compacted with the sizes', async () => {
+    const { ctx, q } = await start()
+    init(q, 1)
+    await compaction(q, { root: true, pre: 168_400, post: 12_100 })
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'agent.compacted')).toBe(true))
+    expect(ctx.events.find((e) => e.type === 'agent.compacted')).toMatchObject({ agentId: 'root', trigger: 'auto', tokensBefore: 168_400, tokensAfter: 12_100 })
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text === 'The conversation was compacted (1st time, 168k to 12k tokens).')).toBe(true)
+  })
+
+  it('re-attaches the plan once per root compaction through SessionStart; never for a subagent compaction', async () => {
+    const { ctx, q } = await start()
+    init(q, 1)
+    await ctx.updatePlan(plan())
+    const out = await compaction(q, { root: true })
+    expect(out?.hookSpecificOutput?.hookEventName).toBe('SessionStart')
+    expect(out?.hookSpecificOutput?.additionalContext).toContain('- p2 [in progress] Change')
+    // A second SessionStart for the same compaction adds nothing.
+    expect(await hooksOf(q, 'SessionStart')!({ ...base, hook_event_name: 'SessionStart', source: 'compact' }, 'x', {})).toEqual({})
+    // A subagent's compaction: no 'compacting' on the stream, so nothing goes to it.
+    expect(await compaction(q, { root: false, forkId: 'fork-9' })).toEqual({})
+    // Other sources never get it.
+    expect(await hooksOf(q, 'SessionStart')!({ ...base, hook_event_name: 'SessionStart', source: 'startup' }, 'x', {})).toEqual({})
+    // The next root compaction gets it again.
+    expect((await compaction(q, { root: true, forkId: 'fork-3' }))?.hookSpecificOutput?.additionalContext).toContain('Plan (active, 1 of 2 steps done)')
+  })
+
+  it('three compactions without a finished step stop the automatic continues with one warning naming the model and window', async () => {
+    const { ctx, q } = await start({ autoContinue: true })
+    init(q, 1)
+    q.emit({ type: 'assistant', message: { id: 'm1', role: 'assistant', model: 'claude-opus-4-5', content: [{ type: 'text', text: 'Reading.' }], usage: { input_tokens: 1, output_tokens: 1 } }, parent_tool_use_id: null, session_id: 's', uuid: 'a1' })
+    await ctx.updatePlan(plan())
+    for (const id of ['f1', 'f2', 'f3']) await compaction(q, { root: true, forkId: id })
+    await vi.waitFor(() => expect(logs(ctx.events).some((m) => m.includes('compacted its context 3 times'))).toBe(true))
+    const warn = ctx.events.find((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('compacted its context'))
+    expect(warn && warn.type === 'log' ? warn.message : '').toContain('(claude-opus-4-5, 200k-token context)')
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text.startsWith('Automatic continues stopped:'))).toBe(true)
   })
 })

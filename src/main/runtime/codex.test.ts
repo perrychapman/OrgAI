@@ -207,6 +207,24 @@ describe('CodexAdapter session', () => {
     ] }))
     expect(blocks).toContainEqual({ kind: 'media', media: expect.objectContaining({ kind: 'unsupported' }) })
   })
+  it('maps a contextCompaction item to agent.compacted on the thread\'s agent, with the window Codex reported (compaction investigation 2026-11-10)', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ autoContinue: true })
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 250000, outputTokens: 20, cachedInputTokens: 0 }, last: {}, modelContextWindow: 258400 } })
+    for (const id of ['c1', 'c2', 'c3']) {
+      s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'contextCompaction', id } })
+      s.push('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'contextCompaction', id } })
+    }
+    await vi.waitFor(() => expect(ctx.events.filter(e => e.type === 'agent.compacted')).toHaveLength(3))
+    expect(ctx.events.find(e => e.type === 'agent.compacted')).toMatchObject({ agentId: 'root', trigger: 'auto' })
+    const logs = ctx.events.flatMap(e => e.type === 'log' ? [`${e.level}:${e.message}`] : [])
+    expect(logs).toContain("info:Compaction 1 of the orchestrator's conversation (Codex).")
+    expect(logs.some(l => l.startsWith('warn:') && l.includes('compacted its context 3 times') && l.includes('258k-token context'))).toBe(true)
+    expect(ctx.events.some(e => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text === 'The conversation was compacted (2nd time).')).toBe(true)
+  })
   it('switches only subsequent root turns on the existing thread and refuses busy/cards/connections', async () => {
     let pending = 0
     const { adapter, servers } = setup()

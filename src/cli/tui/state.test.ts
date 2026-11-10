@@ -428,3 +428,14 @@ describe('run logs and plan usage (cli-parity 3.5)', () => {
     expect(s.planUsage).toEqual(usage)
   })
 })
+
+describe('applyEvent: agent.compacted (compaction investigation 2026-11-10)', () => {
+  it('counts on the agent row and adds one notice per compaction', () => {
+    let s = liveState()
+    s = applyEvent(s, ev({ type: 'agent.upsert', runId: 'r1', agent: { id: 'root', roleId: null, roleSlug: 'lead', name: 'Lead', parentId: null, spawnToolUseId: null, state: 'thinking', activity: 'Reading', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1 } }, 11))
+    s = applyEvent(s, ev({ type: 'agent.compacted', runId: 'r1', agentId: 'root', at: 5, trigger: 'auto' }, 12))
+    s = applyEvent(s, ev({ type: 'agent.compacted', runId: 'r1', agentId: 'root', at: 6, trigger: 'auto' }, 13))
+    expect(s.runs.r1!.agents.root!.compactions).toBe(2)
+    expect(s.notices.map((n) => n.text)).toEqual(['Lead compacted its context (1st time).', 'Lead compacted its context (2nd time).'])
+  })
+})

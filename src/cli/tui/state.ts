@@ -11,6 +11,7 @@
  * - The arrival order of decision cards (`cardArrivalSeq`): a WeakMap keyed by the card object, which this reducer
  *   never copies, so the tray can order cards by arrival across kinds and runs.
  */
+import { compactionLine } from '../../shared/view/compactionText'
 import type {
   AgentInstance,
   CardKind,
@@ -457,6 +458,7 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
 
   const existing = out.runs[e.runId]
   if (!existing && (e.type === 'agent.partial' || e.type === 'agent.remove' || e.type === 'agent.message')) return out
+  let compactedNotice: string | undefined
   let run: TuiRun = existing ?? newRun(stubSummary(out, e.runId, now))
   const summary = run.summary
 
@@ -513,6 +515,15 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
       if (text === '') run = withoutPartial(run, e.agentId)
       else if (run.partials[e.agentId] === text) return out
       else run = { ...run, partials: { ...run.partials, [e.agentId]: text } }
+      break
+    }
+    case 'agent.compacted': {
+      // RunManager re-sends the agent with its count right after; counted here too so the row and notice agree at once.
+      if (typeof e.agentId !== 'string' || !e.agentId) return out
+      const a = run.agents[e.agentId]
+      const n = (a?.compactions ?? 0) + 1
+      if (a) run = { ...run, agents: { ...run.agents, [a.id]: { ...a, compactions: n } } }
+      compactedNotice = compactionLine(safeLine(a?.name ?? e.agentId), n)
       break
     }
     case 'plan.updated':
@@ -585,6 +596,7 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
 
   out = putRun(out, run)
   if (!existing || summary !== run.summary) out = { ...out, runOrder: withOrder(out, [run.summary]) }
+  if (compactedNotice) out = addNotice(out, compactedNotice, 'warn', now)
   return followSuccessors(out)
 }
 

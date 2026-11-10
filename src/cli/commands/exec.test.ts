@@ -441,6 +441,20 @@ describe('orgai exec: following and outcomes', () => {
     expect(execLogLine('warn', '', st)).toBeNull()
   })
 
+  it('text: one line per compaction with the agent\'s name and the ordinal (compaction investigation 2026-11-10)', async () => {
+    const h = execHost()
+    const f = live({ connect: [h] })
+    const done = runExec(f.ctx, ['do it'])
+    await subscribed(h)
+    h.push('runs:event', ev(11, { type: 'agent.upsert', runId: RUN, agent: { ...record(started()).agents[0]!, id: 'root', name: 'Lead' } }))
+    for (let i = 0; i < 3; i++) h.push('runs:event', ev(12 + i, { type: 'agent.compacted', runId: RUN, agentId: 'root', at: i, trigger: 'auto' }))
+    h.push('runs:event', finalized(15, 'completed'))
+    expect(await done).toBe(0)
+    const out = f.out()
+    expect(out).toContain('R1 Lead compacted its context (1st time).')
+    expect(out).toContain('R1 Lead compacted its context (3rd time).')
+  })
+
   it('json: one document at the end with the root agent result', async () => {
     const h = execHost()
     const f = live({ connect: [h], globals: { outputFormat: 'json' } })

@@ -23,7 +23,7 @@ import {
  *   mcpToolCall      -> mcp__<server>__<tool>      webSearch  -> WebSearch {query}
  *   dynamicToolCall  -> harness tools as mcp__orgai__<name>; spawn_report -> Agent, message_agent -> SendMessage,
  *                       list_team -> ListAgents (the pre-rename names map the same way) (inputs renamed to the Claude shapes)
- * Ignored: plan, contextCompaction, hookPrompt and the rest. Codex's own multi-agent items
+ * contextCompaction -> compacted (the adapter emits agent.compacted). Ignored: plan, hookPrompt and the rest. Codex's own multi-agent items
  * (collabAgentToolCall, subAgentActivity) are logged: those agents are not governed by the org chart.
  */
 
@@ -52,7 +52,9 @@ export type CodexUpdate =
   | { type: 'toolUse'; threadId: string; id: string; name: string; input: unknown; activity: string; state: 'tool' | 'waiting' }
   | { type: 'media'; threadId: string; media: TranscriptMedia }
   | { type: 'toolResult'; threadId: string; toolUseId: string; content: string; parts?: TranscriptContentPart[]; isError: boolean }
-  | { type: 'tokens'; threadId: string; input: number; output: number; cachedInput: number }
+  | { type: 'tokens'; threadId: string; input: number; output: number; cachedInput: number; contextWindow?: number }
+  /** Codex compacted the thread's conversation (a contextCompaction item completed). */
+  | { type: 'compacted'; threadId: string }
   | { type: 'turnStarted'; threadId: string; turnId: string }
   | { type: 'turnCompleted'; threadId: string; turnId: string; status: TurnStatus; result?: string; error?: CodexTurnError }
   | { type: 'error'; threadId: string; message: string; willRetry: boolean; usageLimit: boolean }
@@ -132,7 +134,7 @@ export class CodexEventMapper {
         return [{ type: 'partial', threadId: n.threadId, text: '' }, { type: 'turnCompleted', threadId: n.threadId, turnId: n.turnId, status, ...(result ? { result } : {}), ...(n.error ? { error: n.error } : {}) }]
       }
       case 'tokenUsage':
-        return [{ type: 'tokens', threadId: n.threadId, input: n.input, output: n.output, cachedInput: n.cachedInput }]
+        return [{ type: 'tokens', threadId: n.threadId, input: n.input, output: n.output, cachedInput: n.cachedInput, ...(n.contextWindow ? { contextWindow: n.contextWindow } : {}) }]
       case 'agentMessageDelta': {
         const text = (this.streaming.get(n.itemId) ?? '') + n.delta
         this.streaming.set(n.itemId, text)
@@ -205,6 +207,9 @@ export class CodexEventMapper {
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: clip(contentText(item.contentItems)), isError: item.success === false || item.status === 'failed' }]
       case 'webSearch':
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: '', isError: false }]
+      case 'contextCompaction':
+        // Codex compacted the thread's history (auto, mid-turn; checked with codex 0.167 at a zero-spend stub).
+        return [{ type: 'compacted', threadId }]
       default:
         return this.otherItem(threadId, item, true)
     }

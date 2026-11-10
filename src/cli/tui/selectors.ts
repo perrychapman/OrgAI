@@ -4,6 +4,7 @@
  * status from statusText (render.ts statusWordOf), names from agentLabel / runName, costs from costView, the needs-you
  * count from decisionCount (cli-spec 2 item 4).
  */
+import { compactionCount } from '../../shared/view/compactionText'
 import { DELEGATION_BADGE_SHORT, delegationBadges } from '../../shared/delegationView'
 import { VIRTUAL_PROJECT_IDS, type AgentInstance, type AgentState, type CardKind, type RunSummary, type TranscriptEntry, type UsageStatus } from '../../shared/types'
 import { agentCostInput, costView, formatDuration, formatTokens, runCostInput, sumCosts } from '../../shared/view/cost'
@@ -388,7 +389,7 @@ function treeOf(
       stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
       activity,
       activityIsCompound: isCompoundCommand(a.activity) || activity !== fullActivity,
-      costText: cost.empty ? '' : cost.text,
+      costText: [cost.empty ? '' : cost.text, compactionCount(a.compactions)].filter(Boolean).join(' · '),
       isRoot: a.parentId === null,
       kind: 'agent',
       ...(roleAdds(label, role) ? {} : { roleShown: false }),

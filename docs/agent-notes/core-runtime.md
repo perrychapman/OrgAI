@@ -478,3 +478,28 @@ summaries) and `scripts/smoke-compaction.mjs` here.
   definitions 20k; harness text (plan tool results) under 1k, no nudges, no hook context. A run on the same build with
   a 200k model would therefore have compacted at about request 70. The Fable and Codex runs were stopped early when the
   investigation was redirected.
+- Compaction awareness (2026-11-10, second commit; unit tests in `continuationCompaction.test.ts`,
+  `claudeCompaction.test.ts`, `codex.test.ts`, `codexEvents.test.ts`, `runManager.test.ts`, `mockExec`-style mock marker,
+  `exec.test.ts`, `tui/state.test.ts`, `render.test.ts`; NOT checked in a live run that compacts):
+  - `RunEvent` `agent.compacted { runId, agentId, at, trigger?, tokensBefore?, tokensAfter? }` and
+    `AgentInstance.compactions`. RunManager owns the count: it counts the events, records and broadcasts them, re-sends
+    the agent, and sets `compactions` on every `agent.upsert` (an adapter's value is replaced). The bridge forwards a
+    child's event under the mapped agent id. Claude emits it at `compact_boundary` (the orchestrator only: a subagent's
+    compaction carries no agent id, sdk-facts "Compaction"); Codex maps a completed `contextCompaction` item on any
+    agent's thread (seen with codex 0.167 at a zero-spend stub: `item/started` + `item/completed` type
+    `contextCompaction`, mid-turn, when the reported usage passed about 245k of the 258,400-token window Codex measures
+    gpt-6.1-sol against, the same for an unknown proxied id); the mock scripts it with `[mock:compact]` (a two-step plan,
+    three root compactions, no step finished).
+  - Surfaces: `orgai exec` text prints "Lead compacted its context (3rd time)."; `runs show` and the TUI agent rows add
+    "compacted Nx"; the TUI adds a notice per event; the root's transcript row says "(Nth time, ...)". Wording in
+    `src/shared/view/compactionText.ts`.
+  - Thrash guard (`continuation.ts`, pure `noteCompaction` / `compactionThrash`, `COMPACTION_THRASH_LIMIT` 2): a
+    compaction never nudges and is never a turn; when one agent compacts more than twice with no plan step finished in
+    between (a finished step resets its count), the ContinuationDriver logs one warning naming the agent, its model and
+    window (Claude: `getContextUsage().rawMaxTokens`, token-free; Codex: `modelContextWindow`) and the remedy, tells the
+    user, and sends no nudge (continue or ready) until the user's next message. Off when automatic continues are off.
+  - Re-attach (Claude): a `SessionStart` hook answers source 'compact' only while the stream said the ORCHESTRATOR is
+    compacting (status 'compacting'), once per compaction, with `compactionStateText`: the plan with each step's
+    state, the reports working now and the required reports not delivered yet, at most 4,000 characters. Nothing is
+    re-attached on Codex: whether its compaction keeps the thread's recent user messages (harness messages included)
+    was not checked.

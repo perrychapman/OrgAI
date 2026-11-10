@@ -3682,3 +3682,21 @@ describe('resolveAllowedDirectories through a linked home or project (review re-
     }
   })
 })
+
+describe('RunManager: agent.compacted (compaction investigation 2026-11-10)', () => {
+  it('counts each compaction on the agent, records and broadcasts it, and the thrash guard stops the continues', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p)
+    const run = await m.start({ project: p, prompt: 'Read it all [mock:compact]' })
+    await waitFor(isType('log', (e) => e.runId === run.id && e.message.includes('compacted its context 3 times')))
+    expect(events.filter(isType('agent.compacted', (e) => e.runId === run.id))).toHaveLength(3)
+    const root = events.filter(isType('agent.upsert', (e) => e.runId === run.id && e.agent.id === 'root')).at(-1)!.agent
+    expect(root.compactions).toBe(3)
+    const rec = Reflect.get(m, 'runs').get(run.id).record
+    expect(rec.agents.root.compactions).toBe(3)
+    // An adapter's own value never wins over RunManager's count.
+    Reflect.get(m, 'runs').get(run.id).emit({ type: 'agent.upsert', runId: run.id, agent: { ...root, compactions: 99 } })
+    expect(rec.agents.root.compactions).toBe(3)
+    await m.stopAll()
+  })
+})

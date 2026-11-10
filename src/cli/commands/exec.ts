@@ -58,6 +58,7 @@ import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styl
 import { agentLabel, costText, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { staffingLine } from '../staffingText'
 import { loadImages } from '../images'
+import { compactionLine } from '../../shared/view/compactionText'
 import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
@@ -526,6 +527,8 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
     logged.add(key)
     printText(ctx, `${st.dim(tagOf(runId))} ${line}`)
   }
+  /** `runId:agentId` -> compactions seen in this stream (agent.compacted). */
+  const compacted = new Map<string, number>()
   let lastActive: RunRecord | undefined
 
   const tagOf = (runId: string): string => {
@@ -647,6 +650,13 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
       case 'log':
         printLog(runId, ev.level, ev.message)
         return
+      case 'agent.compacted': {
+        const key = `${runId}:${ev.agentId}`
+        const n = (compacted.get(key) ?? 0) + 1
+        compacted.set(key, n)
+        if (!json) printText(ctx, `${st.dim(tagOf(runId))} ${safeLine(compactionLine(agentOf(runId, ev.agentId)?.name ?? ev.agentId, Math.max(n, agentOf(runId, ev.agentId)?.compactions ?? 0)))}`)
+        return
+      }
       case 'staffing.updated':
         // One line per staffed report, once; json and stream-json carry the raw event instead.
         if (!json) {
