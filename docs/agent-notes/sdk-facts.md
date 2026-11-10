@@ -98,8 +98,13 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
 - Root effort from its definition: NOT verified as working. `Options.agent = 'lead'` with a definition
   `effort: 'low'` (sonnet): the root's own Bash `PreToolUse` input reported `effort.level = "medium"`, not `low`. So
   an `AgentDefinition.effort` applies to a spawned subagent but, in this run, not to the main-thread agent chosen by
-  `Options.agent`. OrgAI's root effort therefore needs `Options.effort` (typed at `sdk.d.ts` `effort?: EffortLevel`),
-  which this script did NOT test.
+  `Options.agent`. `Options.effort` does set the root's effort (check 8): with `Options.effort: 'low'`, `model:
+  'sonnet'` and no `Options.agent`, the root's Bash `PreToolUse` input reported `effort.level = "low"`; with
+  `Options.agent: 'lead'` (sonnet, no `effort` field) plus `Options.effort: 'low'`, the root's own Bash call also
+  reported `"low"`. So OrgAI sets the root's effort through `Options.effort`, not the root's definition.
+- Effort inheritance (check 8b): with `Options.effort: 'low'` and a `worker` definition with NO `effort` field
+  (sonnet), the worker's own Bash `PreToolUse` input reported `effort.level = "low"`: a report without an effort of
+  its own inherits the session's `Options.effort` (it did not fall back to the default `medium`). One run, sonnet.
 - Parallel foreground spawns: works. Two Agent calls in ONE assistant message (same `message.id`), both forced to
   `run_in_background = false` by the hook, each child running `sleep 5` (about 7.5 s per child including model
   turns): SubagentStart at 1.3 s and 1.6 s, SubagentStop at 8.9 s and 9.2 s, so they overlapped almost completely.

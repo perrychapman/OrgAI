@@ -1,9 +1,9 @@
 // Smoke for docs/design/orchestration-efficiency.md §2, §4.2, §4.3: per-spawn model and effort, parallel foreground
 // spawns, one-shot latency. Spends real tokens (haiku; sonnet only where a check needs effort or a second model).
-// About 12 short model sessions: checks 1-6 are one each, check 7 is 5 sequential one-shots. Run once, do not loop.
+// About 14 short model sessions: checks 1-6 are one each (plus 5b), check 7 is 5 sequential one-shots, check 8 is two. Run once, do not loop.
 // Check 7 MIRRORS buildCompletionOptions in src/main/runtime/claude.ts (importing the adapter drags in Electron),
 // minus the OrgAI env isolation (it inherits this shell's login).
-// Usage: node scripts/smoke-staffing.mjs [1 2 3 4 5 6 7]   (default: all)
+// Usage: node scripts/smoke-staffing.mjs [1 2 3 4 5 6 7 8]   (default: all; 5 also runs 5b)
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { mkdtempSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,7 +11,7 @@ import { join } from 'node:path'
 
 const dir = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-smoke-staffing-')))
 process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }) } catch {} })
-const want = new Set(process.argv.slice(2).length ? process.argv.slice(2) : ['1', '2', '3', '4', '5', '6', '7'])
+const want = new Set(process.argv.slice(2).length ? process.argv.slice(2) : ['1', '2', '3', '4', '5', '6', '7', '8'])
 const results = []
 let sessions = 0
 const verdict = (id, v, evidence) => { results.push({ id, v, evidence }); console.log(`\n[${id}] ${v}: ${evidence}\n`) }
@@ -141,6 +141,17 @@ if (want.has('7')) {
   const med = (a) => { const s = a.filter((x) => x != null).sort((x, y) => x - y); return s[Math.floor(s.length / 2)] }
   const bad = rows.some((r) => r.text.startsWith('ERR'))
   verdict('7 one-shot latency (haiku)', bad ? 'INCONCLUSIVE' : 'PASS', `total ms min/median/max=${sorted[0]}/${med(sorted)}/${sorted.at(-1)} (all=${JSON.stringify(sorted)}); median ms to init message=${med(rows.map((r) => r.init))} (process start + handshake); median ms to first assistant message=${med(rows.map((r) => r.firstAssistant))}; answers=${JSON.stringify(rows.map((r) => r.text))}`)
+}
+if (want.has('8')) {
+  const echo = 'Run the Bash command `echo hi` and reply with the word done.'
+  const a = await run('8a Options.effort low, no Options.agent', echo, { allowedTools: ['Bash'], permissionMode: 'dontAsk', model: 'sonnet', effort: 'low' })
+  const ea = a.pre.filter((p) => p.tool === 'Bash').map((p) => p.effort)
+  verdict('8a Options.effort on the main thread', authFail(a) || !ea.length ? 'INCONCLUSIVE' : ea.every((x) => x === 'low') ? 'PASS' : 'FAIL', `Options.effort=low, model=sonnet, no agent; root Bash effort.level=${JSON.stringify(ea)}; error=${a.error ?? 'none'}`)
+  const p8 = 'First run the Bash command `echo root` yourself. Then spawn the agent "worker" with the Agent tool (subagent_type "worker", prompt "Run the Bash command `echo hi` and reply with the word done."), foreground, and reply with its answer.'
+  const b = await run('8b Options.effort low + Options.agent lead (no effort fields)', p8, { ...base, model: 'sonnet', effort: 'low', agents: { lead: rootDef({ model: 'sonnet', tools: ['Agent', 'Bash'] }), worker: workerDef({ model: 'sonnet' }) } }, () => ({ run_in_background: false }))
+  const rb = b.pre.filter((p) => p.agent === 'root' && p.tool === 'Bash').map((p) => p.effort)
+  const cb = childEffort(b)
+  verdict('8b Options.effort reaches a root chosen by Options.agent', authFail(b) || !rb.length ? 'INCONCLUSIVE' : rb.every((x) => x === 'low') ? 'PASS' : 'FAIL', `Options.effort=low, agent=lead (no effort field); (i) root Bash effort.level=${JSON.stringify(rb)}; (ii) child with no effort of its own, Bash effort.level=${JSON.stringify(cb)} (observed fact: ${cb.length ? (cb.every((x) => x === 'low') ? 'inherits the session effort' : 'does not inherit') : 'child Bash not observed'}); error=${b.error ?? 'none'}`)
 }
 console.log(`\n=== SUMMARY (${sessions} model sessions)`)
 for (const r of results) console.log(`${r.v.padEnd(12)} ${r.id}`)
