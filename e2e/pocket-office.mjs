@@ -35,7 +35,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
     const s = el.querySelector('[data-testid=office-stage]')
     return {
       w: Number(s.dataset.width), h: Number(s.dataset.height), cw: s.clientWidth, ch: s.clientHeight, sw: s.scrollWidth, sh: s.scrollHeight, sl: s.scrollLeft, st: s.scrollTop,
-      zoom: Number(el.querySelector('[data-testid=office-zoom]').dataset.zoom), readout: `${el.querySelector('[data-testid=office-zoom]').textContent} ${el.querySelector('[data-testid=office-zoom]').getAttribute('aria-label') ?? ''}`, plates: el.dataset.plates
+      zoom: Number(el.querySelector('[data-testid=office-zoom]').dataset.zoom), aria: el.querySelector('[data-testid=office-zoom]').getAttribute('aria-label'), readout: `${el.querySelector('[data-testid=office-zoom]').textContent} ${el.querySelector('[data-testid=office-zoom]').getAttribute('aria-label') ?? ''}`, plates: el.dataset.plates
     }
   })
   const positionsOf = () => scene().evaluate(el => Object.fromEntries([...el.querySelectorAll('[data-office-sprite-id]')].map(s => [s.dataset.officeSpriteId, `${s.dataset.officeX},${s.dataset.officeY}`])))
@@ -200,13 +200,14 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
           cues: [...el.querySelectorAll('[data-office-sprite-id]')].map(s => s.dataset.officeCue), states: [...el.querySelectorAll('[data-office-sprite-id]')].map(s => s.dataset.officeState),
           floorText: /\bfloors?\b/i.test(el.textContent), floorAttr: el.hasAttribute('data-floor') || !!el.querySelector('[data-floor], [data-office-floor]'),
           floorButtons: [...el.querySelectorAll('button')].some(b => /floor/i.test(`${b.textContent} ${b.getAttribute('aria-label')}`)),
-          stageLabel: el.querySelector('[data-testid=office-stage]').getAttribute('aria-label'),
+          stageLabel: el.querySelector('[data-testid=office-stage]').getAttribute('aria-label'), stageRole: el.querySelector('[data-testid=office-stage]').getAttribute('role'),
           people: [...el.querySelectorAll('button[data-office-worker-id]')].map(b => ({ name: b.querySelector('.office-person-name')?.textContent, line: b.querySelector('.office-person-line')?.textContent, label: b.getAttribute('aria-label') }))
         }))
         check(team.clock === 'stopped' && team.animated === '0' && team.cues.every(cue => cue === 'none') && team.states.every(state => state === 'idle'), `Team has no clock, no cues and every person idle ${tag}`, JSON.stringify(team))
         check(!team.pause && team.bubbles === 0 && team.marks === 0, `Team has no Pause motion, bubbles or marks ${tag}`)
         check(!team.floorText && !team.floorAttr && !team.floorButtons, `Team has no floor text, attribute or button ${tag}`)
         check(/^Office scene\. Arrow keys pan, plus and minus zoom, 0 fits the building/.test(team.stageLabel ?? ''), `the stage names its keys ${tag}`, team.stageLabel)
+        check(team.stageRole === 'group' && /arrow keys/i.test(team.stageLabel ?? '') && /plus and minus/i.test(team.stageLabel ?? '') && /\b0 fits\b/.test(team.stageLabel ?? '') && /home/i.test(team.stageLabel ?? ''), `the stage is a role=group whose label mentions the keys ${tag}`, `${team.stageRole} ${team.stageLabel}`)
         check(team.people.length > 1 && team.people.every(p => p.line && p.label === `${p.name}, ${p.line}`) && team.people[0].line === 'Orchestrators', `Team plate line 2 is the department name (Orchestrators in the lobby) ${tag}`, JSON.stringify(team.people))
         placed.add(JSON.stringify(await positionsOf()))
         await shot(`office-team-${w}x${h}-${theme}-${palette}`)
@@ -225,6 +226,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
     const reached = await zoomTo(target)
     const info = await stageInfo()
     check(reached && info.zoom === target && (info.readout.includes(target === 0.5 ? '½×' : `${target}×`) || info.readout.includes(`Zoom ${target * 100}%`)), `zoom reads ${target === 0.5 ? '½×' : `${target}×`} with data-zoom ${target}`, JSON.stringify(info))
+    check(info.aria === `Zoom ${target * 100}%`, `the zoom readout is labelled "Zoom ${target * 100}%" at zoom ${target}`, String(info.aria))
     check(JSON.stringify(await positionsOf()) === JSON.stringify(home), `data-office-x/y do not change at zoom ${target}`)
     const t = await targetsOk()
     check(t.size && t.aligned && t.named && !t.overlap, `person targets are at least 24 px, aligned and apart at zoom ${target}`, JSON.stringify(t))
@@ -384,6 +386,39 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await page.keyboard.press('Home')
   await settle()
 
+  // Keyboard zoom with a person focused: they stay inside the stage, each change is announced once, the readout is labelled.
+  await page.keyboard.press('Tab')
+  const zoomWho = await page.evaluate(() => document.activeElement?.dataset?.officeWorkerId ?? null)
+  check(!!zoomWho, 'Tab from the stage focuses a person for the keyboard zoom pass', String(zoomWho))
+  await sleep(1100)
+  await page.evaluate(() => {
+    window.__said?.stop()
+    const region = document.querySelector('[data-testid=tray-announce]')
+    const list = []
+    let last = ''
+    const observer = new MutationObserver(() => { const text = region.textContent ?? ''; if (text && text !== last) list.push(text); last = text })
+    observer.observe(region, { childList: true, characterData: true, subtree: true })
+    window.__said = { list, stop: () => observer.disconnect() }
+  })
+  await page.keyboard.press('+')
+  await waits('plus announces `Zoom 300%`', () => window.__said.list.includes('Zoom 300%'), undefined, 4000)
+  await settle()
+  check((await stageInfo()).zoom === 3 && await inStage(zoomWho) && await page.evaluate(id => document.activeElement?.dataset?.officeWorkerId === id, zoomWho), 'plus keeps the focused person inside the stage and focused', JSON.stringify(await stageInfo()))
+  check((await stageInfo()).aria === 'Zoom 300%', 'the zoom readout is labelled `Zoom 300%` after plus')
+  await sleep(1100) // the frame announcer joins lines said within one second of each other (JOIN_WINDOW_MS)
+  await page.keyboard.press('-')
+  await waits('minus announces `Zoom 200%`', () => window.__said.list.includes('Zoom 200%'), undefined, 4000)
+  await settle()
+  check((await stageInfo()).zoom === 2 && await inStage(zoomWho), 'minus keeps the focused person inside the stage')
+  await settle()
+  const said = await page.evaluate(() => window.__said.list.slice())
+  check(JSON.stringify(said) === JSON.stringify(['Zoom 300%', 'Zoom 200%']), 'each keyboard zoom change is announced exactly once through the frame live region', JSON.stringify(said))
+  await page.evaluate(() => window.__said.stop())
+  await sleep(1100) // later announcement checks read the whole region text, so let this one age out of the join window
+  await stage().focus()
+  await page.keyboard.press('Home')
+  await settle()
+
   // Find a person (roster): selects, pans so the person is inside, rings them, then the ring goes away.
   await openDirectory()
   await scene().locator('button[data-office-agent-id="office-worker-3-6"]').click()
@@ -397,7 +432,10 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   }, undefined, 8000)
   check(await scene().locator('button[data-office-worker-id="office-worker-3-6"]').getAttribute('aria-pressed') === 'true', 'Find a person selects the person')
   check(await scene().locator('[data-office-found]').count() === 1, 'only one person is ringed at a time')
-  check(/^Showing Worker 4\.7, Department lead 4$/.test((await page.locator('[data-testid=tray-announce]').first().textContent()) ?? ''), 'Find a person announces `Showing {name}, {room}` once', await page.locator('[data-testid=tray-announce]').first().textContent())
+  // The frame announcer joins lines said within a second of each other (JOIN_WINDOW_MS), so earlier keyboard-zoom lines may precede it:
+  // the Showing line must be the latest and appear exactly once.
+  const findSaid = (await page.locator('[data-testid=tray-announce]').first().textContent()) ?? ''
+  check(/(^|\. )Showing Worker 4\.7, Department lead 4$/.test(findSaid) && findSaid.split('Showing ').length === 2, 'Find a person announces `Showing {name}, {room}` once, as the latest line', findSaid)
   await keyShot('team-33-find')
   await waits('the Find ring goes away after three seconds', () => !document.querySelector('[data-office-found]'), undefined, 6000)
   await page.locator('[data-testid=office-role-back]').click()
@@ -437,6 +475,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   check(await scene().getAttribute('data-mode') === 'live', 'Live uses the live scene')
   check(await scene().locator('button[data-office-agent-id]').count() >= 4, 'finished deep-tree agents remain available in the office list')
   check(await scene().locator('[data-testid=office-pause]').count() === 1 && await scene().locator('[data-testid=office-pause]').getAttribute('aria-pressed') === 'false', 'Live offers Pause motion, not pressed')
+  check(await scene().locator('[data-testid=office-pause]').getAttribute('aria-disabled') === null, 'Pause motion is not aria-disabled while motion is on')
   const finished = await snapshot()
   check(finished.sprites.length >= 4 && marksAgree(finished), 'every person has a valid state and cue, and marks match states', JSON.stringify(finished.sprites.map(s => `${s.state}/${s.cue}`)))
   check(finished.sprites.some(sprite => sprite.state === 'finished') ? finished.marks.some(mark => mark.mark === 'done') : true, 'finished people carry the done mark')
@@ -452,6 +491,11 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   const reduced = await snapshot()
   check(quiet(reduced) && reduced.active === 0, 'app reduced motion stops the clock and every cue is none', JSON.stringify(reduced))
   check(await page.evaluate(() => document.documentElement.getAttribute('data-reduce-motion') === 'on'), 'the app setting writes data-reduce-motion on the root')
+  const reducedPause = scene().locator('[data-testid=office-pause]')
+  check(await reducedPause.getAttribute('aria-disabled') === 'true', 'Pause motion is aria-disabled when the app Reduce motion setting is on')
+  await reducedPause.click({ force: true }) // Playwright treats aria-disabled as not actionable
+  await settle()
+  check(await reducedPause.getAttribute('aria-pressed') === 'false' && quiet(await snapshot()), 'pressing the disabled Pause motion changes nothing')
   await setAppearance({ theme: 'dark' })
   await setAppearance({ theme: 'light' })
   check((await snapshot()).active === 0, 'theme changes do not replay retained messages')
@@ -583,8 +627,16 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
 
   // Pause motion: aria-pressed toggles, the clock stops, every cue is none and frames hold still, then it resumes.
   const pause = scene().locator('[data-testid=office-pause]')
+  const pauseLook = () => pause.evaluate(el => { const c = getComputedStyle(el); return [c.backgroundColor, c.borderTopColor, c.boxShadow, c.fontWeight, c.color].join(' | ') })
+  await page.mouse.move(2, 2) // no hover tint in either reading
+  await settle()
+  const unpressedLook = await pauseLook()
   await pause.click()
+  await page.mouse.move(2, 2)
+  await settle()
   check(await pause.getAttribute('aria-pressed') === 'true', 'Pause motion is pressed after a click')
+  const pressedLook = await pauseLook()
+  check(pressedLook !== unpressedLook, 'Pause motion has a visible pressed state (computed style differs from unpressed)', `${unpressedLook}  =>  ${pressedLook}`)
   await waits('Pause stops the clock and every cue is none', () => {
     const scene = document.querySelector('[data-testid=office-scene]')
     return scene?.dataset.officeClock === 'stopped' && scene.dataset.officeAnimated === '0' && [...scene.querySelectorAll('[data-office-sprite-id]')].every(s => s.dataset.officeCue === 'none')
@@ -639,6 +691,72 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
     check(afterReload.bubbles.length === 0 && afterReload.active === 0 && !afterReload.marks.some(m => m.mark === 'talk'), 'reloading does not replay old messages', JSON.stringify(afterReload))
   }
   await setCanvas({ scenePalette: 'color' })
+  await endSession(page)
+
+  // ---------- Live: the sender returns to its desk while the bubble still shows; the strip log holds still under focus ----------
+  const LONG = 'Please review the notes API before we ship it to the customers.'
+  fs.writeFileSync(scriptFile, JSON.stringify({
+    delayMs: 300,
+    work: [
+      { type: 'spawn', id: 'office-a', name: 'office-a', description: 'Receive the findings' },
+      { type: 'spawn', id: 'office-b', name: 'office-b', description: 'Check the tests' },
+      { type: 'wait', ms: 1500 },
+      { type: 'message', to: 'office-a', text: LONG },
+      { type: 'wait', ms: 9000 },
+      { type: 'message', to: 'office-b', text: 'Hold two' },
+      { type: 'wait', ms: 1500 },
+      { type: 'message', to: 'office-a', text: 'Hold three' },
+      { type: 'wait', ms: 10_000 },
+      { type: 'message', to: 'office-b', text: 'Hold four' },
+      { type: 'wait', ms: 120_000 }
+    ]
+  }))
+  await resizeTo(1600, 1000)
+  await setAppearance({ reduceMotion: 'system', theme: 'dark' }, { presentation: 'pocket-office', scenePalette: 'color' })
+  await startRun('Office hold')
+  // Watch the orchestrator across its first walk: remember its resting place, note the return, then look at it once the walk is over.
+  await page.evaluate(() => { window.__desk = { rest: null, out: false, ret: false, done: null } })
+  await waits('the sender finishes the return leg of its first walk', () => {
+    const d = window.__desk
+    const el = document.querySelector('[data-testid=office-scene] [data-office-sprite-id=root]')
+    if (!el || d.done) return !!d.done
+    const r = el.getBoundingClientRect()
+    const phase = el.dataset.officeMotionPhase
+    if (phase === 'outbound') d.out = true
+    if (!d.out) { if (phase === 'rest') d.rest = { left: r.left, top: r.top }; return false }
+    if (phase === 'return') { d.ret = true; return false }
+    if (!d.ret) return false
+    d.done = {
+      phase, cue: el.dataset.officeCue, left: r.left, top: r.top,
+      bubble: !!document.querySelector('[data-testid=office-bubble][data-office-bubble-for=office-a]'),
+      x: el.dataset.officeX, y: el.dataset.officeY
+    }
+    return true
+  }, undefined, 30_000)
+  const desk = await page.evaluate(() => window.__desk)
+  check(!!desk.done && !!desk.rest && Math.abs(desk.done.left - desk.rest.left) <= 1 && Math.abs(desk.done.top - desk.rest.top) <= 1, 'once the walk ends the sender sprite is back at its desk (same on-screen position as before the walk)', JSON.stringify(desk))
+  check(!!desk.done && desk.done.cue !== 'walking' && desk.done.bubble, 'the sender is not walking while the recipient bubble is still showing', JSON.stringify(desk.done))
+  // The strip log: with focus on a Show button, newer messages wait; once focus leaves, the newest three appear.
+  await waits('the strip logs three rows with `Hold three` first', () => {
+    const rows = [...document.querySelectorAll('[data-testid=office-caption] .office-strip-text')].map(r => r.textContent)
+    return rows.length === 3 && rows[0].includes('Hold three')
+  }, undefined, 30_000)
+  const firstShow = scene().locator('[data-testid=office-caption]').first().getByRole('button', { name: /^Show / })
+  const showName = await firstShow.textContent()
+  await firstShow.focus()
+  check(await page.evaluate(() => !!document.activeElement?.closest('.office-message-strip') && document.activeElement?.textContent?.startsWith('Show ')), 'focus is on a Show button in the strip')
+  await waits('a newer message ("Hold four") has reached the office while focus is in the strip', () => /Hold four/.test(document.querySelector('[data-testid=office-bubble][data-office-bubble-for=office-b]')?.textContent ?? ''), undefined, 40_000)
+  const heldState = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll('[data-testid=office-caption] .office-strip-text')].map(r => r.textContent),
+    focus: document.activeElement?.textContent ?? null, inStrip: !!document.activeElement?.closest('.office-message-strip'), held: document.querySelector('.office-message-strip')?.dataset.officeStripHeld ?? null
+  }))
+  check(heldState.inStrip && heldState.focus === showName && heldState.rows.length === 3 && heldState.rows[0].includes('Hold three') && !heldState.rows.some(r => r.includes('Hold four')), 'with focus on a Show button the log holds: the row stays, focus is not dropped to body, newer messages wait', JSON.stringify(heldState))
+  await stage().focus()
+  await waits('after focus leaves the strip the log catches up to the newest three', () => {
+    const rows = [...document.querySelectorAll('[data-testid=office-caption] .office-strip-text')].map(r => r.textContent)
+    return rows.length === 3 && rows[0].includes('Hold four') && rows[1].includes('Hold three') && rows[2].includes('Hold two')
+  }, undefined, 4000)
+  check(await scene().locator('.office-message-strip').getAttribute('data-office-strip-held') === null, 'the strip is no longer held once focus has left')
   await endSession(page)
 
   // ---------- Reduced motion: no walks, no cues, bubbles and the talk mark still appear ----------
@@ -703,6 +821,51 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await waits('Needs you people wave once any message walk is over (cue waving)', () => !!document.querySelector('[data-testid=office-scene] [data-office-state=waiting][data-office-cue=waving]'), undefined, 15_000)
   const waitingNow = await snapshot()
   check(waitingNow.clock === 'running' && marksAgree(waitingNow) && waitingNow.animated >= 1, 'the clock runs for Needs you, and marks agree', JSON.stringify(waitingNow.sprites.map(s => `${s.state}/${s.cue}`)))
+  // Off-screen chips: the person who needs you is scrolled out of the stage, a chip names them in the controls row,
+  // pressing it brings them back and hands them keyboard focus, and the stage never changes height.
+  const waitingWho = await page.evaluate(() => document.querySelector('[data-testid=office-scene] [data-office-state=waiting]')?.dataset.officeSpriteId ?? null)
+  check(!!waitingWho, 'a person is waiting on the card', String(waitingWho))
+  // A roomy window: at 1024x640 with the card open the stage is only ~116 px tall, too short to reveal a 4x person with a plate and bubble room.
+  await resizeTo(1600, 1000)
+  await settle()
+  check(await zoomTo(4), 'zoom in to 4x so the building is larger than the stage')
+  const chips = scene().locator('.office-controls [data-testid=office-offscreen-show]')
+  const stageHeight = () => stage().evaluate(el => el.getBoundingClientRect().height)
+  await scene().evaluate((el, who) => el.querySelector(`button[data-office-worker-id="${who}"]`).scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }), waitingWho)
+  await waits('no chip is shown while the waiting person is inside the stage', () => document.querySelectorAll('[data-testid=office-offscreen-show]').length === 0, undefined, 4000)
+  const heightWith = await stageHeight()
+  const moved = await scene().evaluate((el, who) => {
+    const s = el.querySelector('[data-testid=office-stage]')
+    const b = el.querySelector(`button[data-office-worker-id="${who}"]`)
+    for (const [left, top] of [[0, 0], [1e6, 1e6], [0, 1e6], [1e6, 0]]) {
+      s.scrollTo({ left, top, behavior: 'instant' })
+      const sr = s.getBoundingClientRect(); const r = b.getBoundingClientRect()
+      if (r.right < sr.left || r.left > sr.right || r.bottom < sr.top || r.top > sr.bottom) return true
+    }
+    return false
+  }, waitingWho)
+  check(moved, 'the waiting person can be scrolled fully out of the stage at 4x')
+  await waits('a chip naming the waiting person appears in the controls row', () => {
+    const chip = document.querySelector('.office-controls [data-testid=office-offscreen-show]')
+    return !!chip && /needs you/.test(chip.getAttribute('aria-label') ?? '')
+  }, undefined, 4000)
+  const chipLabel = await chips.first().getAttribute('aria-label')
+  const personName = await scene().locator(`button[data-office-worker-id="${waitingWho}"] .office-person-name`).textContent()
+  check(!!chipLabel && chipLabel.includes(personName ?? '?') && /off screen/.test(chipLabel), 'the chip names the person, the reason and the direction', `${chipLabel} / ${personName}`)
+  check(Math.abs(await stageHeight() - heightWith) <= 0.5, 'a chip appearing does not change the stage height', `${heightWith} -> ${await stageHeight()}`)
+  await chips.first().click()
+  await waits('the chip goes away once the person is on screen', () => document.querySelectorAll('[data-testid=office-offscreen-show]').length === 0, undefined, 6000)
+  await waits('keyboard focus is on the person (not the page body)', id => document.activeElement?.dataset?.officeWorkerId === id, waitingWho, 3000)
+  await waits('pressing the chip brings the person fully into view (after the smooth pan)', who => {
+    const button = document.querySelector(`button[data-office-worker-id="${who}"]`)
+    const s = document.querySelector('[data-testid=office-stage]').getBoundingClientRect()
+    const r = button.getBoundingClientRect()
+    return r.left >= s.left - 1 && r.right <= s.right + 1 && r.top >= s.top - 1 && r.bottom <= s.bottom + 1
+  }, waitingWho, 5000)
+  check(Math.abs(await stageHeight() - heightWith) <= 0.5, 'a chip disappearing does not change the stage height', `${heightWith} -> ${await stageHeight()}`)
+  await stage().focus()
+  await page.keyboard.press('Home')
+  await settle()
   await card.getByRole('button', { name: 'Allow once', exact: true }).click()
   await sleep(400)
   await endSession(page)
