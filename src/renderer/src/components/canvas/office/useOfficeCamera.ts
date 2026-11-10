@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react'
 import {
-  clampScroll, defaultView, fitView, panBy, pinScroll, revealScroll, stageCentre, stepZoom, toContent, toScreen, toWorld, zoomLabel, zoomName, FIND_RING_MS,
+  clampScroll, defaultView, fitView, panBy, pinScroll, revealScroll, stageCentre, stepZoom, toContent, toScreen, toWorld, zoomLabel, zoomName, FIND_RING_MS, REVEAL_MARGIN,
   OFFICE_TILE_PX, type Point, type Rect, type Size, type View, type Zoom
 } from '../../../lib/office/camera'
 import { tokenMs } from '../../../lib/useExitPresence'
@@ -11,6 +11,8 @@ const PLATE_MIN_WIDTH = 96
 /** Room above the head for a three-line message bubble and its tail, CSS pixels. */
 const BUBBLE_RESERVE = 72
 const SPRITE = { width: 16, height: 24 }
+/** Below this margin a taller target gives up an extra (bubble room, mark, plate) instead of squeezing further. */
+const MIN_REVEAL_MARGIN = 8
 
 export interface OfficeCameraOptions {
   stage: RefObject<HTMLDivElement | null>
@@ -71,6 +73,7 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
   const snapshot = useRef<{ area: Rect; zoom: number; client: Size; positions: ReadonlyMap<string, Point> } | null>(null)
   const drag = useRef<{ pointer: number; startX: number; startY: number; left: number; top: number } | null>(null)
   const findTimer = useRef(0)
+  const follow = useRef<{ id: string; above: number } | null>(null)
 
 
   const scrollOf = (): Point => ({ x: stage.current?.scrollLeft ?? 0, y: stage.current?.scrollTop ?? 0 })
@@ -150,6 +153,7 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
   const changeZoom = (next: Zoom): void => {
     if (next === zoom) return
     touched.current = true
+    follow.current = null
     const view = viewNow()
     let anchor: { world: Point; screen: Point } | null = null
     // Keep the keyboard-focused person under the same screen point first (they must not leave the view), then the selection.
@@ -171,35 +175,72 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
   const fit = (): void => { touched.current = true; const view = fitView(area, client); requestPin(view.zoom, view.focus, stageCentre(client)) }
   const home = (): void => { touched.current = false; const view = defaultView(area, lobby, client); requestPin(view.zoom, view.focus, stageCentre(client)) }
 
-  /** Content-space rectangle of a person plus plate, for reveal maths. */
-  const personRect = (id: string, above = 0): Rect | null => {
+  /** Content-space rectangle of a person with the wanted extras (mark above the head, bubble room, plate below), for reveal maths. */
+  const personRect = (id: string, above: number, mark: boolean, plate: number): Rect | null => {
     const position = positions.get(id)
     if (!position) return null
     const origin = toContent({ area, zoom }, position)
     const plateWidth = Math.max(PLATE_MIN_WIDTH, 4 * OFFICE_TILE_PX * zoom - 4)
     const centre = origin.x + (SPRITE.width * zoom) / 2
-    const left = Math.min(origin.x, centre - plateWidth / 2)
-    const right = Math.max(origin.x + SPRITE.width * zoom, centre + plateWidth / 2)
-    const top = origin.y - 16 * zoom - above
-    return { x: left, y: Math.max(0, top), width: right - left, height: origin.y + SPRITE.height * zoom + PLATE_RESERVE - Math.max(0, top) }
+    const left = plate ? Math.min(origin.x, centre - plateWidth / 2) : origin.x
+    const right = plate ? Math.max(origin.x + SPRITE.width * zoom, centre + plateWidth / 2) : origin.x + SPRITE.width * zoom
+    const top = Math.max(0, origin.y - (mark ? 16 * zoom : 0) - above)
+    return { x: left, y: top, width: right - left, height: origin.y + SPRITE.height * zoom + plate - top }
+  }
+
+  /** The person's native button (at least 24 px, centred on the sprite) in content-space pixels. */
+  const buttonRect = (id: string): Rect | null => {
+    const position = positions.get(id)
+    if (!position) return null
+    const origin = toContent({ area, zoom }, position)
+    const width = Math.max(24, SPRITE.width * zoom)
+    const height = Math.max(24, SPRITE.height * zoom)
+    return { x: origin.x + (SPRITE.width * zoom) / 2 - width / 2, y: origin.y + (SPRITE.height * zoom) / 2 - height / 2, width, height }
+  }
+
+  /**
+   * The scroll that brings a person into the stage as it is now. It tries the roomiest target first (bubble room, mark,
+   * plate) and gives up one extra at a time when the stage is too short for it, ending with the button alone; the margin
+   * shrinks before the person would miss. So the button is inside whenever the stage is at least as large as the button.
+   */
+  const revealFor = (id: string, above: number): Point | null => {
+    const view = viewNow()
+    const targets = [personRect(id, above, true, PLATE_RESERVE), personRect(id, 0, true, PLATE_RESERVE), personRect(id, 0, false, PLATE_RESERVE), buttonRect(id)]
+    for (let i = 0; i < targets.length; i++) {
+      const rect = targets[i]
+      if (!rect) return null
+      const room = Math.floor(Math.min(client.height - rect.height, client.width - rect.width) / 2)
+      const margin = Math.min(REVEAL_MARGIN, room)
+      if (margin >= MIN_REVEAL_MARGIN || i === targets.length - 1) return revealScroll(view, rect, Math.max(0, margin))
+    }
+    return null
   }
 
   const reveal = (id: string): void => {
-    const rect = personRect(id)
-    if (!rect) return
-    scrollTo(revealScroll(viewNow(), rect), 'auto')
+    const next = revealFor(id, 0)
+    if (next) scrollTo(next, 'auto')
   }
+
+  // Show and Find select the person first, and selecting resizes the stage (the inspector opens, the directory changes
+  // height) after this render's measurement. So the pan is repeated, instantly, against each new size while the ring shows.
+  useLayoutEffect(() => {
+    const target = follow.current
+    if (!target || !client.width || !client.height) return
+    const next = revealFor(target.id, target.above)
+    if (next) scrollTo(next, 'auto')
+  }, [client])
 
   const show = (id: string): void => {
     // Show and Find usually follow a message: leave room for a three-line bubble above the head too.
-    const rect = personRect(id, BUBBLE_RESERVE)
-    if (!rect) return
+    const next = revealFor(id, BUBBLE_RESERVE)
+    if (!next) return
     touched.current = true
     const instant = motionOff
-    scrollTo(revealScroll(viewNow(), rect), instant ? 'auto' : 'smooth')
+    scrollTo(next, instant ? 'auto' : 'smooth')
+    follow.current = { id, above: BUBBLE_RESERVE }
     window.clearTimeout(findTimer.current)
     setFoundId(id)
-    findTimer.current = window.setTimeout(() => setFoundId(null), tokenMs('--office-find-duration') || FIND_RING_MS)
+    findTimer.current = window.setTimeout(() => { follow.current = null; setFoundId(null) }, tokenMs('--office-find-duration') || FIND_RING_MS)
     const text = describe(id)
     if (text) announce?.(text)
   }
@@ -213,6 +254,7 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
       if (step) {
         event.preventDefault()
         touched.current = true
+        follow.current = null
         const current = scrollOf()
         scrollTo(clampScroll({ area, zoom, client }, { x: current.x + step.x, y: current.y + step.y }), 'auto')
         return
@@ -232,6 +274,7 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
     const element = event.currentTarget
     drag.current = { pointer: event.pointerId, startX: event.clientX, startY: event.clientY, left: element.scrollLeft, top: element.scrollTop }
     touched.current = true
+    follow.current = null
     element.setPointerCapture(event.pointerId)
     element.dataset.dragging = 'true'
   }
@@ -258,7 +301,7 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
     stageProps: {
       onKeyDown, onPointerDown, onPointerMove, onPointerUp: endDrag, onPointerCancel: endDrag,
       onScroll: () => { lastScroll.current = scrollOf() },
-      onWheel: () => { touched.current = true }
+      onWheel: () => { touched.current = true; follow.current = null }
     }
   }
 }

@@ -154,6 +154,14 @@ Open after the rework (outside the Office files or needing a decision):
 - Department names come from the lead's name, so leads' Team plates repeat it, and earlier-session departments carry an "Earlier session N" prefix in Live, which gives them a different room look than in Team.
 - Unverified: screen-reader speech (Pause, Find, zoom announcements), a real minimised window, more than 12 animated people with 3 walks and a full arrival queue in the app, the doorway-walk fallback, a failed report (the mock fails only the root), macOS and Linux.
 
+### QA fixes (F1 to F6, `qa-pocket-office-rework.md`)
+
+- F1: the strip is `3 x 24 px + 1 px` = 73 px (was 48), `overflow: hidden`, reserved when empty. The stage loses 25 px at every size, so the permission-card stage at 1024 x 640 now sits at its 100 px minimum.
+- F2: Find, Show and the chip pan against a stale stage and an oversized target. `show()` ran before selecting resized the stage (inspector, directory), and the bubble + mark + plate target (about 200 px at 2x) was taller than a 100 to 120 px stage, so `revealScroll` aligned its top and left and left the person below it. Now `revealFor` picks the roomiest target that fits (bubble, mark, plate, then the button alone, margin shrinking from 24 to 0), and while the ring shows a client-size change repeats the pan instantly. A user pan, wheel, key or zoom cancels the follow.
+- F3: names in a row clip at 24 characters; the Show label ellipsises (max 40% of the row), the text keeps `min-width: 6em`; the full name stays in the button's accessible name and title. The runtime already bounds a handle to about 64 characters.
+- F5: a later bubble that overlaps an earlier one stacks above it (below if no room); the tail then points slightly off its person. F6: room labels carry the full label in `title` (the ellipsis was already there; `scrollWidth > clientWidth` is what an ellipsis is).
+- F4 (focus after Remove role in Team) lives in `TeamView` and is not changed here.
+
 ## Not in this rework
 
 Multi-storey buildings; night lighting or weather; ambient walking, visitors or invented chatter; sitting poses; sound; sprite upscaling beyond 4x; camera following a conversation automatically; a minimap; keeping the scene visible when a permission card shrinks the stage (evaluation item 8, separate layout work); the Graph presentation; any provider, IPC or shared-type change.
