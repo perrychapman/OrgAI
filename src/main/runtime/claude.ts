@@ -210,6 +210,32 @@ const ROOT_ID = ROOT_AGENT_ID
 const ORGAI_MCP = 'orgai'
 const ORGAI_TOOL_PREFIX = `mcp__${ORGAI_MCP}__`
 
+/**
+ * The built-in tool a subagent reports through on SDK 0.3.318 in permission mode 'auto' (input `{ message }`). Its turn
+ * ends on the call, so SubagentStop then carries no last_assistant_message (sdk-facts, SubagentHandback).
+ */
+const HANDBACK_TOOL = 'SubagentHandback'
+/** Handbacks captured and not yet consumed by a SubagentStop; a run can have many agents. */
+const HANDBACK_CAPTURE_LIMIT = 200
+
+/** A SubagentHandback result that delivered the report (`{ success: true }`); a refused call answers success false. */
+function handbackDelivered(response: unknown): boolean {
+  if (response && typeof response === 'object') return (response as { success?: unknown }).success === true
+  if (typeof response === 'string') {
+    try {
+      return (JSON.parse(response) as { success?: unknown }).success === true
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+/** An Agent result whose child never handed its report back ('withheld'): nothing reached the caller. */
+function handbackWithheld(response: unknown): boolean {
+  return !!response && typeof response === 'object' && (response as { handback?: unknown }).handback === 'withheld'
+}
+
 /** Activity string for an SDK tool name; harness tools lose their MCP prefix first. */
 /** The Agent tool's answer to a background spawn ('async_launched'): the child has not reported yet. */
 function isAsyncLaunch(response: unknown): boolean {
@@ -1184,6 +1210,8 @@ export class ClaudeSession implements RuntimeSession {
   private toolUseIssuer = new Map<string, string>()
   /** Agent tool_use id -> spawned task/agent id */
   private taskByToolUse = new Map<string, string>()
+  /** Subagent id -> the report its SubagentHandback delivered in its current activation (consumed at SubagentStop). */
+  private handbacks = new Map<string, string>()
   /** Agents task_started has already reported to the delegation gate (noteSpawn); a later task_started for one is a resume. */
   private gateKnown = new Set<string>()
   /** tool name -> last agent seen requesting it (permission attribution fallback) */
@@ -1796,6 +1824,30 @@ export class ClaudeSession implements RuntimeSession {
     if (!this.queryInitSeen) this.preInit.push(message)
   }
 
+  /** A subagent's SubagentHandback delivered its report: kept until its SubagentStop (newest wins; the map stays bounded). */
+  private noteHandback(agentId: string, message: string): void {
+    this.handbacks.delete(agentId)
+    if (this.handbacks.size >= HANDBACK_CAPTURE_LIMIT) this.handbacks.delete(this.handbacks.keys().next().value!)
+    this.handbacks.set(agentId, message)
+  }
+
+  /**
+   * The provisional delegation check for a subagent's SubagentHandback: the wait or correction text when its required
+   * reports are missing (the call is then denied and the agent keeps going), else undefined (allow and fail are decided
+   * at SubagentStop, which records the verdict).
+   */
+  private handbackDenial(agentId: string, agentType: string | undefined, toolInput: unknown): string | undefined {
+    const gate = this.ctx.delegation
+    if (!gate) return undefined
+    const message = ((toolInput ?? {}) as { message?: unknown }).message
+    const decision = gate.completion(agentId, { canCorrect: true, canWait: true, reportText: typeof message === 'string' ? message : '', provisional: true })
+    if ((decision.action !== 'wait' && decision.action !== 'correct') || !decision.text) return undefined
+    const a = this.ensureAgent(agentId, { roleSlug: agentType })
+    this.transcript(a.id, { kind: 'system', text: decision.text }, { source: 'harness' })
+    this.log('info', `${a.name}: ${decision.action === 'wait' ? 'told to wait for its required reports' : 'corrected: required reports are missing'} before handing back.`)
+    return decision.text
+  }
+
   /** An agent called SendMessage: draw it on the canvas and keep a copy in the sender's transcript. */
   private onAgentMessage(fromId: string, toolInput: Record<string, unknown>): void {
     const m = mapSendMessage(fromId, toolInput, this.agents.values())
@@ -2312,6 +2364,14 @@ export class ClaudeSession implements RuntimeSession {
         // skill.used is emitted from PostToolUse for this tool_use id, i.e. only once the call actually ran.
         this.gatedSkillCalls.set(input.tool_use_id, { agentId, skill: verdict.skill })
       }
+      // Required delegation on SDK 0.3.318: SubagentHandback delivers the report to the caller when it runs, before
+      // SubagentStop, and a block at SubagentStop after it is ignored (the agent ends anyway). So a report with missing
+      // required reports is told here, provisionally, and its handback denied; SubagentStop records the verdict. Only a
+      // subagent has a handback contract: the root's call (no agent_id) is left to the CLI, which refuses it.
+      if (input.tool_name === HANDBACK_TOOL && input.agent_id) {
+        const reason = this.handbackDenial(input.agent_id, input.agent_type, input.tool_input)
+        if (reason) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
+      }
       this.lastToolAgent.set(input.tool_name, agentId)
       if (input.tool_name.startsWith(ORGAI_TOOL_PREFIX)) this.harnessCallers.record(input.tool_name, input.tool_use_id, input.agent_id)
       const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
@@ -2485,6 +2545,11 @@ export class ClaudeSession implements RuntimeSession {
           void this.ctx.noteArchitectureUpdated().catch((e) => this.log('warn', `Could not record the architecture update: ${(e as Error).message}`))
         }
       }
+      // A subagent's report delivered through SubagentHandback is its report text at SubagentStop (this hook runs first).
+      if (input.tool_name === HANDBACK_TOOL && input.agent_id && handbackDelivered(input.tool_response)) {
+        const message = ((input.tool_input ?? {}) as { message?: unknown }).message
+        if (typeof message === 'string') this.noteHandback(input.agent_id, message)
+      }
       const a = this.agents.get(agentId)
       // Between tool calls the orchestrator's node shows the plan step it is on.
       const activity = (agentId === ROOT_ID && !this.isSetup ? stepActivity(this.ctx.getPlan()) : undefined) ?? 'Thinking…'
@@ -2497,7 +2562,8 @@ export class ClaudeSession implements RuntimeSession {
       if (staffingNote) this.staffingNotes.delete(input.tool_use_id)
       if (gate && (input.tool_name === SPAWN_TOOL || input.tool_name === 'Task')) {
         const child = this.taskByToolUse.get(input.tool_use_id)
-        if (child && !isAsyncLaunch(input.tool_response)) {
+        // 'withheld': the child ended without handing its report back, so the caller got none (no delivery, no receipt).
+        if (child && !isAsyncLaunch(input.tool_response) && !handbackWithheld(input.tool_response)) {
           gate.delivered(child)
           const receipt = gate.receiptText(child)
           if (receipt) return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: staffingNote ? `${receipt}\n\n${staffingNote}` : receipt } }
@@ -2529,15 +2595,23 @@ export class ClaudeSession implements RuntimeSession {
     const subagentStop: HookCallback = async (raw) => {
       const input = raw as SubagentStopHookInput
       const a = this.ensureAgent(input.agent_id, { roleSlug: input.agent_type })
-      const decision = this.ctx.delegation?.completion(a.id, { canCorrect: true, canWait: true, reportText: input.last_assistant_message ?? '' })
-      if ((decision?.action === 'wait' || decision?.action === 'correct') && decision.text) {
+      // A repeated stop of an activation that already finished (the CLI asking it again to hand back): nothing new to record.
+      if (a.state === 'done' && input.stop_hook_active) return {}
+      // The report is what SubagentHandback delivered in this activation, else the closing text. A handed-back report has
+      // already reached the caller and a block would be ignored, so the verdict is final (PreToolUse made the provisional one).
+      const handback = this.handbacks.get(a.id)
+      this.handbacks.delete(a.id)
+      const reportText = handback ?? input.last_assistant_message ?? ''
+      const open = handback === undefined
+      const decision = this.ctx.delegation?.completion(a.id, { canCorrect: open, canWait: open, reportText })
+      if (open && (decision?.action === 'wait' || decision?.action === 'correct') && decision.text) {
         // The subagent keeps going and gets the reason as a new turn (verified, sdk-facts). Not done, nothing integrated.
         this.transcript(a.id, { kind: 'system', text: decision.text }, { source: 'harness' })
         this.log('info', `${a.name}: ${decision.action === 'wait' ? 'told to wait for its required reports' : 'corrected: required reports are missing'}.`)
         return { decision: 'block', reason: decision.text }
       }
       const failed = decision?.action === 'fail'
-      a.result = input.last_assistant_message
+      a.result = reportText
       a.state = 'done'
       a.activity = failed ? 'Skipped required reports' : 'Reported back'
       a.endedAt = Date.now()
@@ -3756,6 +3830,7 @@ export class ClaudeSession implements RuntimeSession {
           } else {
             // A resume (SendMessage to a finished subagent): a delegation-held branch is active again; the gate is asked at its next stop.
             this.integrator.unhold(msg.task_id)
+            this.handbacks.delete(msg.task_id)
             this.ctx.delegation?.resumed(msg.task_id)
             this.setState(msg.task_id, 'thinking', 'Thinking…')
           }
@@ -3778,7 +3853,13 @@ export class ClaudeSession implements RuntimeSession {
             if (msg.status !== 'completed') this.ctx.delegation?.ended(a.id)
             a.state = msg.status === 'completed' ? 'done' : 'error'
             a.activity = msg.status === 'completed' ? 'Reported back' : `Task ${msg.status}`
-            a.result = a.result ?? msg.summary
+            // With a handback the summary is a harness note, not the report: the report is the captured handback, else
+            // the notification's handback_report (an internal field of 0.3.318, not in the typings).
+            const hb = msg as { handback?: unknown; handback_report?: { text?: unknown } }
+            const notified = typeof hb.handback_report?.text === 'string' && hb.handback_report.text ? hb.handback_report.text : undefined
+            const captured = this.handbacks.get(a.id)
+            this.handbacks.delete(a.id)
+            a.result = captured ?? notified ?? a.result ?? (hb.handback === undefined ? msg.summary : undefined)
             a.endedAt = Date.now()
             this.staffingBook.ended(a.id, { failed: msg.status === 'failed' })
             this.upsert(a)

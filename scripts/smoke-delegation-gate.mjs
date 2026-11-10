@@ -3,6 +3,8 @@
 //   S2: does PostToolUse additionalContext (variant A) / updatedToolOutput (variant B) on the Agent call reach the parent?
 //   S3: does run_in_background:false make a nested Agent call return only after the child's SubagentStop, and what is the
 //       event order? Variant C leaves the default (background) for the nested spawn: does the manager get its worker's report?
+//   S5 (SDK 0.3.318, SubagentHandback): the logs show the SubagentHandback hooks (agent_id, tool_response), what
+//       SubagentStop then carries, the task_notification handback fields and, in variant A, what a block after a handback does.
 //   S4 (variant D): does additionalContext on a SUBAGENT's (the manager's) Agent call reach that subagent? The manager
 //       delegates to fact-worker (foreground); the PostToolUse hook adds a receipt code for the manager's call, and the
 //       manager is told to end its report with it. The lead then echoes it: the code in the final answer proves it arrived.
@@ -20,7 +22,7 @@ const hooks = {
     {
       hooks: [
         async (input) => {
-          log('hook:PreToolUse', { agent: input.agent_type ?? 'root', tool: input.tool_name, id: input.tool_use_id, bg: input.tool_input?.run_in_background, sub: input.tool_input?.subagent_type })
+          log('hook:PreToolUse', { agent: input.agent_type ?? 'root', agent_id: input.agent_id, tool: input.tool_name, id: input.tool_use_id, bg: input.tool_input?.run_in_background, sub: input.tool_input?.subagent_type, handback: input.tool_name === 'SubagentHandback' ? String(input.tool_input?.message ?? '').slice(0, 160) : undefined })
           if (input.tool_name === 'Agent' && variant !== 'C') {
             return { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { ...input.tool_input, run_in_background: false } } }
           }
@@ -34,7 +36,7 @@ const hooks = {
       hooks: [
         async (input) => {
           const out = typeof input.tool_response === 'string' ? input.tool_response : JSON.stringify(input.tool_response)
-          log('hook:PostToolUse', { agent: input.agent_type ?? 'root', tool: input.tool_name, id: input.tool_use_id, response: out?.slice(0, 160) })
+          log('hook:PostToolUse', { agent: input.agent_type ?? 'root', agent_id: input.agent_id, tool: input.tool_name, id: input.tool_use_id, responseType: typeof input.tool_response, response: out?.slice(0, 400) })
           if (variant === 'D') {
             // A subagent (agent_id set) made this Agent call: the receipt goes to it, not to the root.
             if (input.tool_name !== 'Agent' || !input.agent_id) return {}
@@ -51,11 +53,12 @@ const hooks = {
     }
   ],
   SubagentStart: [{ hooks: [async (input) => (log('hook:SubagentStart', { id: input.agent_id, type: input.agent_type }), {})] }],
+  PostToolUseFailure: [{ hooks: [async (input) => (log('hook:PostToolUseFailure', { agent_id: input.agent_id, tool: input.tool_name, error: String(input.error).slice(0, 200) }), {})] }],
   SubagentStop: [
     {
       hooks: [
         async (input) => {
-          log('hook:SubagentStop', { id: input.agent_id, type: input.agent_type, stop_hook_active: input.stop_hook_active, last: input.last_assistant_message?.slice(0, 160) })
+          log('hook:SubagentStop', { id: input.agent_id, type: input.agent_type, stop_hook_active: input.stop_hook_active, lastLen: input.last_assistant_message?.length, last: input.last_assistant_message?.slice(0, 160), keys: Object.keys(input) })
           if (input.agent_type === 'manager' && variant !== 'C' && variant !== 'D') {
             managerStops++
             if (managerStops === 1) {
@@ -108,7 +111,7 @@ for await (const msg of query({
   }
 })) {
   if (msg.type === 'system' && (msg.subtype === 'task_started' || msg.subtype === 'task_notification' || msg.subtype === 'task_updated'))
-    log(`system:${msg.subtype}`, { task_id: msg.task_id, tool_use_id: msg.tool_use_id, parent_task_id: msg.parent_task_id, type: msg.subagent_type, status: msg.status ?? msg.patch?.status, summary: msg.summary?.slice(0, 120) })
+    log(`system:${msg.subtype}`, { task_id: msg.task_id, tool_use_id: msg.tool_use_id, parent_task_id: msg.parent_task_id, type: msg.subagent_type, status: msg.status ?? msg.patch?.status, summary: msg.summary?.slice(0, 120), handback: msg.handback, handback_report: msg.handback_report ? JSON.stringify(msg.handback_report).slice(0, 160) : undefined, keys: Object.keys(msg) })
   else if (msg.type === 'assistant')
     log('assistant', { agent_id: msg.agent_id ?? 'root', blocks: msg.message.content.map((b) => (b.type === 'tool_use' ? `tool_use:${b.name}:${b.id}:${JSON.stringify(b.input).slice(0, 80)}` : b.type === 'text' ? `text:${b.text.slice(0, 160)}` : b.type)) })
   else if (msg.type === 'user')
