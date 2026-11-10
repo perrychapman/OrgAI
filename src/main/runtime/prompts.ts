@@ -107,6 +107,20 @@ export interface PromptFlags {
    * docs/agent-notes/permissions.md). Missing = neither (Codex and mock spawn through their own tools).
    */
   spawnCallFields?: boolean
+  /**
+   * The root keeps working while its reports run (docs/design/split-execution.md 3.3): teamSizingText tells a lead that
+   * fans out to keep a piece itself. Missing = `spawnCallFields !== true`: Codex spawn_report and mock return at once,
+   * while Claude's native Agent spawns run in the foreground and block the lead today. Claude passes true here once
+   * reports that are not required run in the background (claude.ts buildAgents).
+   */
+  workBesideReports?: boolean
+  /**
+   * The adapter's spawn tool takes `files` (paths whose content the harness puts into the report's first message,
+   * split-execution 3.2): teamSizingText asks the lead to pass the files it already read. Not wired yet: Codex passes
+   * `spawnFiles: true` in codex.ts (the buildRolePrompt call of its role prompt) and mock in rolePromptFor once their
+   * spawn_report takes `files`. Claude's Agent tool has no such field. Missing = false.
+   */
+  spawnFiles?: boolean
 }
 
 /**
@@ -247,8 +261,12 @@ export function reportsText(
  * it, writers that run together are told to keep to disjoint files (with it, orchestratorIsolationText says why it is safe).
  * `review`: the project's review policy (reviewPolicyOf, default 'risk'); its sentence (reviewPolicyText) is the
  * paragraph's only review rule, shown whatever the staffing mode.
+ * Split execution (docs/design/split-execution.md 3.2 to 3.4), all about handed-out work: the interface and acceptance
+ * criteria go into each brief (`spawnFiles`: with the files the lead already read); `beside` (default true, as
+ * buildRolePrompt's default for an adapter whose spawns return at once; false on Claude today): a lead that fans out
+ * keeps a piece itself; the lead does not repeat a piece's checks and checks the integrated result once.
  */
-export function teamSizingText(opts: { required?: boolean; isolation?: boolean; review?: ReviewPolicy } = {}): string {
+export function teamSizingText(opts: { required?: boolean; isolation?: boolean; review?: ReviewPolicy; beside?: boolean; spawnFiles?: boolean } = {}): string {
   return (
     'Unless your instructions, the brief or required reports say otherwise, do the work yourself when it is one contained piece and you hold the tools. ' +
     "Hand work out when what the brief asks for splits into independent pieces of more than a couple of minutes each, needs a report's tools, skills or connections, or a rule demands it; " +
@@ -259,10 +277,11 @@ export function teamSizingText(opts: { required?: boolean; isolation?: boolean; 
     'Run several instances of a role on disjoint scopes. ' +
     'Start every ready piece in one message: calls in one message run together, separate messages run in sequence. ' +
     (opts.isolation ? '' : 'Parallel writers need disjoint files. ') +
-    'Once interface and acceptance criteria are set, start tests and checks of handed-out work beside it. ' +
+    `Once interface and acceptance criteria are set, put them in each brief${opts.spawnFiles ? ', pass the files you read as files,' : ''} and start tests and checks of handed-out work beside it. ` +
     `${reviewPolicyText(opts.review)} ` +
+    (opts.beside !== false ? "When you fan out, keep a piece yourself (the integration or the hardest to explain) unless all need a report's tools. " : '') +
     'While reports run, do only work you kept, never work you handed out, or end your turn and wait. ' +
-    'Do not re-run checks a report ran on the same result; read its evidence.'
+    'Do not re-run checks a report ran on its piece; read its evidence and check the integrated result once.'
   )
 }
 
@@ -302,6 +321,12 @@ export function staffingText(goal: StaffingGoal = 'balanced'): string {
     line
   )
 }
+
+/**
+ * A writing report of a team work run (no reports of its own; not the root, a quick or a single run): it runs the
+ * checks for its piece and says what it ran, so the lead reads the evidence instead (teamSizingText, split-execution 3.4).
+ */
+export const REPORT_CHECKS_TEXT = 'Before reporting, run the checks that cover your change and say what you ran and the result.'
 
 /** For the root orchestrator when isolation is on: how merges and conflicts work. */
 export function orchestratorIsolationText(): string {
@@ -647,14 +672,24 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     if (spawnCall.text) parts.push(spawnCall.text)
     // Team work-run roots only: not setup-like runs, the Chat, the single assistant or a report (a mid-level lead included).
     if (isRoot && !isSetup && !flags.quick && flags.team !== 'single') {
-      parts.push(teamSizingText({ required: requiredSlugs.length > 0, isolation, review: reviewPolicyOf(project) }))
+      parts.push(
+        teamSizingText({
+          required: requiredSlugs.length > 0,
+          isolation,
+          review: reviewPolicyOf(project),
+          beside: flags.workBesideReports ?? flags.spawnCallFields !== true,
+          spawnFiles: flags.spawnFiles === true
+        })
+      )
       // Run staffing: only when the project lets the harness staff each assignment ('fixed' = roles' own model and effort).
       if (staffingModeOf(project) === 'auto') parts.push(staffingText(flags.staffingGoal ?? staffingGoalOf(project)))
     }
     if (isolation && isRoot) parts.push(orchestratorIsolationText())
     if (!isSetup) parts.push(networkLeadText(reports))
   } else if (!isSetup) {
-    parts.push('You have no reports. Do the assigned work yourself and report back concisely when finished.')
+    // A writing report of a team work run checks its own piece, so the lead need not (split-execution 3.4).
+    const checks = !isRoot && canWrite(role) && !flags.quick && flags.team !== 'single'
+    parts.push(`You have no reports. Do the assigned work yourself and report back concisely when finished.${checks ? ` ${REPORT_CHECKS_TEXT}` : ''}`)
   }
   if (!isSetup && role.reportsTo !== null && role.tools.includes(MESSAGE_TOOL)) parts.push(networkPeerText())
   if (isolation && !isRoot && canWrite(role)) parts.push(reportIsolationText(reports.some(canWrite)))

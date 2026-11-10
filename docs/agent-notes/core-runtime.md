@@ -80,6 +80,10 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   decision 2026-11-10, no lab run on that wording). The team listing says how ("To hand work out, use the Agent tool"), not that the lead must;
   required reports keep "You must delegate to ...". Sizes are pinned in `prompts.test.ts`. Lab-checked on the root of
   the default chart only; a mid-level lead and a setup root get the new listing line with no live run behind it.
+  Split execution (split-execution 3.2-3.4, unit tests only, no lab run): criteria go "in each brief" (`spawnFiles`
+  adds the files clause, unwired until codex.ts/mock `spawn_report` take `files`); "keep a piece yourself" only with
+  `workBesideReports` (default `!spawnCallFields`: not Claude today); the integrated result is checked once; writing
+  leaf reports of team work runs get `REPORT_CHECKS_TEXT`.
 - Staffing profile wiring (2026-11-10, spec 4.5, D8): `store/staffingProfile.ts` holds the lifecycle helpers.
   `staffingProfileApplies(summary, project)` = kind 'work', not quick, not Ask (`team: 'single'`), no buildWorkspace,
   not a virtual project, `staffingModeOf` 'auto'. Read: RunManager reads `<data>/staffing/<projectId>.json` once at
