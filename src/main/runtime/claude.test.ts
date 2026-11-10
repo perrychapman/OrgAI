@@ -99,6 +99,7 @@ import { ROOT_AGENT_ID, type ResolvedMcpServer, type RuntimeContext } from './ty
 import { addRules } from './permissionRules'
 import { refreshRoleGrants } from './runManager'
 import { REFERENCE_COPY_HINT, allowScopePersist, claudeAdditionalDirectories } from './claude'
+import { CLAUDE_SDK_DEFAULT_EFFORT, reportEffort, sessionEffort } from './claude'
 import { buildRolePrompt } from './prompts'
 
 // buildRolePrompt is the real one, wrapped so tests can read the flags the adapter passes.
@@ -262,6 +263,43 @@ describe('agentMcpServerNames and buildAgents', () => {
     const ctx = fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) })
     const agents = buildAgents(ctx, [], false)
     expect(agents.lead.tools).not.toContain('SendMessage')
+  })
+})
+
+describe('root effort (Options.effort) and report efforts', () => {
+  it('sessionEffort is the root role\'s effort, else undefined', () => {
+    expect(sessionEffort({ effort: 'low' })).toBe('low')
+    expect(sessionEffort({ effort: 'max' })).toBe('max') // passed as is; the CLI downgrades what a model does not take
+    expect(sessionEffort({})).toBeUndefined()
+    expect(sessionEffort(undefined)).toBeUndefined()
+  })
+
+  it('reportEffort: own effort wins; the SDK default only when the session carries an effort; else nothing', () => {
+    expect(CLAUDE_SDK_DEFAULT_EFFORT).toBe('medium')
+    expect(reportEffort({ effort: 'high' }, 'low')).toBe('high')
+    expect(reportEffort({ effort: 'xhigh' }, undefined)).toBe('xhigh')
+    expect(reportEffort({}, 'low')).toBe('medium')
+    expect(reportEffort({}, undefined)).toBeUndefined()
+  })
+
+  it('writes the default regardless of the report\'s model (smoke check 9: a model without effort levels spawns and ignores it)', () => {
+    expect(reportEffort({ model: 'claude-haiku-4-5-20251001' } as { effort?: undefined }, 'high')).toBe('medium')
+  })
+
+  it('buildAgents: with a root effort, an effort-less report gets the explicit default and an own effort is kept', () => {
+    const roles = orgChart().map((r) => (r.slug === 'lead' ? { ...r, effort: 'low' as const } : r.slug === 'reviewer' ? { ...r, effort: 'high' as const } : r))
+    const agents = buildAgents(fakeCtx({ project: project({ roles }) }), [], false)
+    expect(agents.lead.effort).toBe('low')
+    expect(agents.engineer.effort).toBe('medium')
+    expect(agents.reviewer.effort).toBe('high')
+  })
+
+  it('buildAgents: without a root effort the definitions are as before (no effort key on effort-less roles)', () => {
+    const roles = orgChart().map((r) => (r.slug === 'reviewer' ? { ...r, effort: 'high' as const } : r))
+    const agents = buildAgents(fakeCtx({ project: project({ roles }) }), [], false)
+    expect('effort' in agents.lead).toBe(false)
+    expect('effort' in agents.engineer).toBe(false)
+    expect(agents.reviewer.effort).toBe('high')
   })
 })
 
@@ -535,6 +573,7 @@ describe('buildCompletionOptions', () => {
     const o = buildCompletionOptions({ cwd: process.cwd(), system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0])
     expect(o.strictMcpConfig).toBe(true)
     expect(o.mcpServers).toEqual({})
+    expect('effort' in o).toBe(false) // one-shots (run titles) never carry a role effort
   })
 })
 
@@ -882,6 +921,47 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     expect(q2.options.agents.engineer.tools).not.toContain('mcp__github')
     expect((await decision(q2, 'mcp__github__list', { id: 'a2', type: 'engineer' }))?.permissionDecision).toBe('deny')
   }, 10_000)
+
+  it('passes the root role\'s effort as Options.effort, keeps it on a restart, and pins reports at the default', async () => {
+    const servers: McpServerSpec[] = []
+    const roles = orgChart().map((r) => (r.slug === 'lead' ? { ...r, effort: 'low' as const } : r.slug === 'reviewer' ? { ...r, effort: 'high' as const } : r))
+    const { session } = start(servers, {}, { roles })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q1 = sdk.queries[0]!
+    expect(q1.options.agent).toBe('lead')
+    expect(q1.options.effort).toBe('low')
+    expect(q1.options.agents.engineer.effort).toBe('medium')
+    expect(q1.options.agents.reviewer.effort).toBe('high')
+    q1.emit(init)
+    await vi.waitFor(() => expect(q1.inputs.length).toBeGreaterThan(0))
+    servers.push(mcpSpec({ id: 'mcp-pg', name: 'pg', roles: ['engineer'], secretEnv: [] }))
+    sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+    await attach(session, servers[0]!)
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
+    const q2 = sdk.queries[1]!
+    expect(q2.options.resume).toBe('sess-1')
+    expect(q2.options.effort).toBe('low')
+    expect(q2.options.agents.engineer.effort).toBe('medium')
+    expect(q2.options.agents.reviewer.effort).toBe('high')
+  }, 10_000)
+
+  it('a resumed session keeps the root effort', async () => {
+    const roles = orgChart().map((r) => (r.slug === 'lead' ? { ...r, effort: 'xhigh' as const } : r))
+    start([], { resumeSessionId: 'old-sess' }, { roles })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    expect(q.options.resume).toBe('old-sess')
+    expect(q.options.effort).toBe('xhigh')
+  })
+
+  it('without a root effort the options carry no effort key and report definitions have none', async () => {
+    start([])
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    expect('effort' in q.options).toBe(false)
+    for (const def of Object.values(q.options.agents as Record<string, object>)) expect('effort' in def).toBe(false)
+  })
 
   it('on LiteLLM passes each report role its own model id across families, unaliased (owner decision 2026-11-03)', async () => {
     const models: Record<string, string> = { lead: 'claude-sonnet-4-5', engineer: 'gpt-5', reviewer: 'gemini-2.5-pro' }

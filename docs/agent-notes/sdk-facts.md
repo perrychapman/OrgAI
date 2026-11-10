@@ -105,6 +105,18 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
 - Effort inheritance (check 8b): with `Options.effort: 'low'` and a `worker` definition with NO `effort` field
   (sonnet), the worker's own Bash `PreToolUse` input reported `effort.level = "low"`: a report without an effort of
   its own inherits the session's `Options.effort` (it did not fall back to the default `medium`). One run, sonnet.
+- Definition effort on a model without effort levels (check 9, 2026-11-10, one run): `supportedModels()` lists
+  `claude-haiku-4-5-20251001` with no `supportsEffort` / `supportedEffortLevels` (every other row lists levels). A
+  haiku root spawning a `worker` defined with `model: 'claude-haiku-4-5-20251001'`, `effort: 'medium'`: the subagent
+  started, its assistant messages carry `claude-haiku-4-5-20251001`, its Bash ran, and its `PreToolUse` input had no
+  `effort` (`effort.level` null). So an explicit effort on such a model is accepted and silently dropped, no error.
+- OrgAI behaviour since this (Claude adapter, `claude.ts` `sessionEffort` / `reportEffort`; unit tests in
+  `claude.test.ts` with the fake `query`, live facts from checks 5, 8b and 9 above): the work session passes the root
+  role's effort as `Options.effort` (every build, so restarts and resumes keep it; no key when the root has none).
+  Only when it does, a report role without an effort gets `effort: 'medium'` (`CLAUDE_SDK_DEFAULT_EFFORT`) in its
+  definition so it stays at the default instead of inheriting the root's; written for any model, since check 9 shows
+  it is harmless where effort is unsupported. Roles with an effort keep theirs; values a model does not take go
+  through unchanged, as before. `buildCompletionOptions` sets no effort. Not live-checked end to end in a run.
 - Parallel foreground spawns: works. Two Agent calls in ONE assistant message (same `message.id`), both forced to
   `run_in_background = false` by the hook, each child running `sleep 5` (about 7.5 s per child including model
   turns): SubagentStart at 1.3 s and 1.6 s, SubagentStop at 8.9 s and 9.2 s, so they overlapped almost completely.

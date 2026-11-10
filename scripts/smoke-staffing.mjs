@@ -1,9 +1,9 @@
 // Smoke for docs/design/orchestration-efficiency.md §2, §4.2, §4.3: per-spawn model and effort, parallel foreground
 // spawns, one-shot latency. Spends real tokens (haiku; sonnet only where a check needs effort or a second model).
-// About 14 short model sessions: checks 1-6 are one each (plus 5b), check 7 is 5 sequential one-shots, check 8 is two. Run once, do not loop.
+// About 14 short model sessions: checks 1-6 are one each (plus 5b), check 7 is 5 sequential one-shots, check 8 is two, check 9 is one. Run once, do not loop.
 // Check 7 MIRRORS buildCompletionOptions in src/main/runtime/claude.ts (importing the adapter drags in Electron),
 // minus the OrgAI env isolation (it inherits this shell's login).
-// Usage: node scripts/smoke-staffing.mjs [1 2 3 4 5 6 7 8]   (default: all; 5 also runs 5b)
+// Usage: node scripts/smoke-staffing.mjs [1 2 3 4 5 6 7 8 9]   (default: all; 5 also runs 5b)
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { mkdtempSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,7 +11,7 @@ import { join } from 'node:path'
 
 const dir = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-smoke-staffing-')))
 process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }) } catch {} })
-const want = new Set(process.argv.slice(2).length ? process.argv.slice(2) : ['1', '2', '3', '4', '5', '6', '7', '8'])
+const want = new Set(process.argv.slice(2).length ? process.argv.slice(2) : ['1', '2', '3', '4', '5', '6', '7', '8', '9'])
 const results = []
 let sessions = 0
 const verdict = (id, v, evidence) => { results.push({ id, v, evidence }); console.log(`\n[${id}] ${v}: ${evidence}\n`) }
@@ -152,6 +152,16 @@ if (want.has('8')) {
   const rb = b.pre.filter((p) => p.agent === 'root' && p.tool === 'Bash').map((p) => p.effort)
   const cb = childEffort(b)
   verdict('8b Options.effort reaches a root chosen by Options.agent', authFail(b) || !rb.length ? 'INCONCLUSIVE' : rb.every((x) => x === 'low') ? 'PASS' : 'FAIL', `Options.effort=low, agent=lead (no effort field); (i) root Bash effort.level=${JSON.stringify(rb)}; (ii) child with no effort of its own, Bash effort.level=${JSON.stringify(cb)} (observed fact: ${cb.length ? (cb.every((x) => x === 'low') ? 'inherits the session effort' : 'does not inherit') : 'child Bash not observed'}); error=${b.error ?? 'none'}`)
+}
+if (want.has('9')) {
+  // A definition effort on a model whose supportedModels() row lists no effort levels: does the spawn work, and what
+  // effort.level does the child's hook input report? (Decides whether OrgAI may write an explicit default effort there.)
+  const id = 'claude-haiku-4-5-20251001'
+  const row = models.find((m) => m.value === id || m.resolvedModel === id)
+  const ev = await run('9 definition effort medium on a model without listed effort levels', spawnPrompt, { ...base, model: 'haiku', agents: { lead: rootDef(), worker: workerDef({ model: id, effort: 'medium' }) } }, () => ({ run_in_background: false }))
+  const e = childEffort(ev); const m = childModels(ev)
+  const spawned = ev.starts.length > 0 && e.length > 0
+  verdict('9 definition effort on a model without effort levels', authFail(ev) ? 'INCONCLUSIVE' : spawned ? 'PASS' : 'FAIL', `worker def model=${id} effort=medium; supportedModels row=${JSON.stringify(row ? { value: row.value, supportsEffort: row.supportsEffort, levels: row.supportedEffortLevels } : null)}; subagent started=${ev.starts.length > 0}; child Bash effort.level=${JSON.stringify(e)} (null = no effort reported); child models=${JSON.stringify(m)}; Agent tool_results=${JSON.stringify(ev.toolResults.slice(0, 2))}; error=${ev.error ?? 'none'}`)
 }
 console.log(`\n=== SUMMARY (${sessions} model sessions)`)
 for (const r of results) console.log(`${r.v.padEnd(12)} ${r.id}`)
