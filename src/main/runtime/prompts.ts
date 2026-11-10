@@ -127,7 +127,9 @@ export function reportsText(
   bridged: PromptFlags['bridgedRoles'] = [],
   via: PromptFlags['bridgeVia'] = 'delegate_agent',
   /** Slugs of the reports this role must delegate to (obligationsFor): adds the required-delegation paragraph. */
-  required: readonly string[] = []
+  required: readonly string[] = [],
+  /** The run's root on a delegate_agent adapter: one clause on background: true when a listed report is bridged. */
+  background = false
 ): string {
   const mark = (r: Role): string => {
     const b = bridged?.find((x) => x.roleId === r.id)
@@ -136,6 +138,9 @@ export function reportsText(
   return (
     `You lead the following specialists. Delegate to them with the Agent tool, passing subagent_type exactly as written:\n` +
     reports.map((r) => `- ${r.slug}${mark(r)}: ${r.description}`).join('\n') +
+    (background && via === 'delegate_agent' && reports.some((r) => bridged?.some((b) => b.roleId === r.id))
+      ? `\nPass background: true to ${BRIDGE_HARNESS_TOOLS.delegate} to keep working while that report runs; its report arrives as a harness message.`
+      : '') +
     `\nYou may only delegate to these roles. Give each delegate a complete, self-contained brief.` +
     (required.length
       ? `\nYou must delegate to ${joinAnd(required)} and wait for their reports before you finish; the harness checks the run's record and will not accept your report without them.`
@@ -542,7 +547,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
   if (reports.length) {
     const requiredIds = obligationsFor(roles, flags.strictDelegation === true)[role.id] ?? []
     const requiredSlugs = requiredIds.map((id) => roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
-    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs))
+    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs, isRoot && !isSetup))
     // Team work-run roots only: not setup-like runs, the Chat, the single assistant or a report (a mid-level lead included).
     if (isRoot && !isSetup && !flags.quick && flags.team !== 'single') {
       parts.push(teamSizingText({ required: requiredSlugs.length > 0, isolation, review: reviewPolicyOf(project) }))

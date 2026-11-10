@@ -31,7 +31,7 @@ import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, PluginSpec,
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, connectionName, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgedRole, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgedRole, type BridgeSpawnResult, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { quickEditCard, quickEditFree } from './quickEditCard'
 import { hiddenCharIn } from '../capabilities/sanitize'
@@ -44,7 +44,7 @@ import { countUsage, setModelTokens } from './runUsage'
 import { requireClaudeExecutable } from './claudeBinary'
 import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
-import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
+import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolCaller, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
 import {
   REFERENCE_EDIT_TOOLS,
@@ -1286,6 +1286,10 @@ export class ClaudeSession implements RuntimeSession {
   private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string; restart?: boolean }>()
   /** Attach notices that arrived while the run was held: prepended to the user's next message. */
   private heldNotices: string[] = []
+  /** Bridged reports delegate_agent started in the background and still working (not in `agents`): agent id -> report. */
+  private bridgedLive = new Map<string, BackgroundReport>()
+  /** Epoch ms the newest background bridged report ended; bookkeeping for the continuation wait. */
+  private lastBridgedEndedAt?: number
   /** The session ended paused (a restarted query could not start); emitEnd is skipped. */
   private pausedEnd = false
   /** The current query has emitted its init message. */
@@ -1321,7 +1325,8 @@ export class ClaudeSession implements RuntimeSession {
       },
       notify: (text) => this.notifyOrchestrator(text)
     })
-    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error').length
+    // Background bridged reports (delegate_agent background: true) are not subagents of this session but still count.
+    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size
     // The plan tools count free agent slots from ctx.liveReports; only this adapter knows its live threads.
     // A child or fake context without it reads as zero live reports.
     ctx.liveReports = live
@@ -1342,7 +1347,7 @@ export class ClaudeSession implements RuntimeSession {
       slots: () => agentSlots(ctx, live()),
       ownRoles: () => rootRoleNames(ctx.roles),
       lastReportEndedAt: () => {
-        let last: number | undefined
+        let last = this.lastBridgedEndedAt
         for (const a of this.agents.values()) if (a.id !== ROOT_ID && a.endedAt !== undefined && (last === undefined || a.endedAt > last)) last = a.endedAt
         return last
       },
@@ -1448,6 +1453,7 @@ export class ClaudeSession implements RuntimeSession {
       !this.restarting &&
       !this.nextQuery &&
       this.backgroundTasks.size === 0 &&
+      this.bridgedLive.size === 0 &&
       this.heldNotices.length === 0 &&
       this.input.peek().length === 0 &&
       !this.integrator.hasPendingWork() &&
@@ -1638,6 +1644,42 @@ export class ClaudeSession implements RuntimeSession {
     if (!this.ctx.delegation) return false
     const obligations = obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)
     return (!!caller && !!obligations[caller.id]?.includes(target.id)) || (obligations[target.id]?.length ?? 0) > 0
+  }
+
+  /**
+   * delegate_agent background: true runs in the foreground (and says why) unless the caller is the orchestrator (harness
+   * messages reach only the root) and the report is no required delegation (its receipt needs the tool result).
+   */
+  private backgroundBlocker(caller: HarnessToolCaller, roleId: string): string | undefined {
+    if (caller.agentId !== undefined && caller.agentId !== ROOT_ID) return 'only the orchestrator can delegate in the background'
+    // The caller is a first-in-first-out guess: no agent id is the root only while no report that may delegate is live.
+    if (caller.agentId === undefined) {
+      const spawnerLive = [...this.agents.values()].some((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error' && !!this.ctx.roles.find((r) => r.id === a.roleId)?.canSpawn)
+      if (spawnerLive) return 'the caller could not be confirmed as the orchestrator'
+    }
+    const target = this.ctx.roles.find((r) => r.id === roleId)
+    if (target && this.receiptBearingSpawn(this.root, target)) return 'required delegations run in the foreground'
+    return undefined
+  }
+
+  /**
+   * A background bridged report ended: it stops counting as live and its result (bridgedResultText) goes to the
+   * orchestrator as a harness message. While the run is held (interrupt, window cap) or when the harness stopped the
+   * child (an interrupt stops bridged reports before the session's own interrupt lands), the result waits for the
+   * user's next message instead of starting a turn. Once the session is ending nothing is delivered.
+   */
+  private backgroundEnded(report: BackgroundReport, result: BridgeSpawnResult, text: string): void {
+    this.bridgedLive.delete(report.agentId)
+    this.lastBridgedEndedAt = Date.now()
+    this.noteActivity('report')
+    if (this.ending || this.abort.signal.aborted) {
+      this.log('info', `Bridged report ${report.handle} ended after the session stopped; its report was not delivered.`)
+      return
+    }
+    const message = `Harness: ${text}`
+    const summary = result.stopped ? `${report.handle} was stopped.` : result.ok ? `${report.handle} reported back.` : `${report.handle} failed.`
+    if (result.stopped || this.held || this.capTripped) this.holdNotice(message, summary)
+    else this.notifyOrchestrator(message, 'Reading a report…', { summary })
   }
 
   /** RuntimeSession.nudge: the root's one delegation correction. A harness message, never counted as an auto-continue. */
@@ -3052,7 +3094,15 @@ export class ClaudeSession implements RuntimeSession {
         if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
       },
       addMcpServer: (spec) => this.addMcpServer(spec),
-      configChanged: (change) => this.configChanged(change)
+      configChanged: (change) => this.configChanged(change),
+      backgroundDelegation: {
+        blocker: (caller, roleId) => this.backgroundBlocker(caller, roleId),
+        started: (report) => {
+          this.bridgedLive.set(report.agentId, report)
+          this.noteActivity('subagent')
+        },
+        ended: (report, result, text) => this.backgroundEnded(report, result, text)
+      }
     }, { nativeSkills: true })
     this.harnessAudiences = new Map(this.harnessTools.map((t) => [t.name, t.audience]))
   }

@@ -376,7 +376,7 @@ describe('BridgedSessions.spawn', () => {
     await tick()
     expect(r.b.activeCount()).toBe(2)
     await r.b.stopAll('the run was stopped')
-    expect(await a).toMatchObject({ ok: false, text: 'Stopped: the run was stopped' })
+    expect(await a).toMatchObject({ ok: false, text: 'Stopped: the run was stopped', stopped: true })
     expect(await c).toMatchObject({ ok: false, text: 'Stopped: the run was stopped' })
     expect(r.codex.sessions[0]!.stop).toHaveBeenCalledTimes(1)
     expect(r.claude.sessions[0]!.stop).toHaveBeenCalledTimes(1)

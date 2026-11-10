@@ -5,8 +5,8 @@ import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { cleanRequiredReports, mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
-import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
+import { datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import {
@@ -35,6 +35,7 @@ import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOS
 import { bridgedRolesOf, bridgedSpawnDenial } from './claude'
 import { BRIDGE_HARNESS_TOOLS } from '@shared/types'
 import { buildRolePrompt } from './prompts'
+import { obligationsFor } from './delegation'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -1185,6 +1186,8 @@ export function knowledgeFactId(result: string, text: string): string | undefine
 }
 
 export const BRIDGED_TOKEN = '[mock:bridged]'
+/** Like [mock:bridged], with background: true: the root carries on with the default script and the report arrives as a harness message. */
+export const BRIDGED_BG_TOKEN = '[mock:bridged-bg]'
 /** The brief the [mock:bridged] root hands its first bridged report. */
 export const MOCK_BRIDGED_BRIEF = 'Mock bridged brief.'
 /** The root's sentence when [mock:bridged] is set but the run has no bridged report (no ctx.bridge or no bridged roles). */
@@ -1199,9 +1202,10 @@ export const MOCK_BRIDGED_CHILD_TEXT = 'Mock bridged report done.'
  * first bridged role), say the result's first line, then the default script. Without a bridged role: one sentence,
  * then the default script.
  */
-export function bridgedSteps(slug: string | undefined, rest: MockStep[]): MockStep[] {
+export function bridgedSteps(slug: string | undefined, rest: MockStep[], background = false): MockStep[] {
   if (!slug) return [{ type: 'text', text: MOCK_BRIDGED_NONE }, ...rest]
-  return [{ type: 'harness', name: BRIDGE_HARNESS_TOOLS.delegate, retryOnRevise: false, args: { role: slug, brief: MOCK_BRIDGED_BRIEF }, echoFirstLine: MOCK_BRIDGED_DONE }, ...rest]
+  const args = { role: slug, brief: MOCK_BRIDGED_BRIEF, ...(background ? { background: true } : {}) }
+  return [{ type: 'harness', name: BRIDGE_HARNESS_TOOLS.delegate, retryOnRevise: false, args, echoFirstLine: MOCK_BRIDGED_DONE }, ...rest]
 }
 
 export const CONFIG_CHANGE_TOKEN = '[mock:config-change]'
@@ -1291,6 +1295,14 @@ export class MockSession implements RuntimeSession {
   private stopped = false
   private ended = false
   private interrupted = false
+  /** Interrupted by the user, until their next message (Claude's `held`): background reports' results wait for that message. */
+  private held = false
+  /** Harness notices that arrived while held: they come with the user's next message (Claude's heldNotices). */
+  private heldNotices: string[] = []
+  /** Bridged reports delegate_agent started in the background and still working: agent id -> report. */
+  private bridgedLive = new Map<string, BackgroundReport>()
+  /** Epoch ms the newest background bridged report ended; bookkeeping for the continuation wait. */
+  private lastBridgedEndedAt?: number
   /** Root turn ends so far (RootTurnEnd.turnGen). */
   private rootTurnGen = 0
   /** A root turn is being played (turn()). */
@@ -1334,13 +1346,27 @@ export class MockSession implements RuntimeSession {
       const activity = stepActivity(plan)
       if (a && activity && a.state !== 'done' && a.state !== 'error') this.setState(ROOT_AGENT_ID, a.state, activity)
     }
-    this.hooks = { onDecided, onPlanUpdated, addMcpServer: (spec) => this.addMcpServer(spec), configChanged: (change) => this.configChanged(change) }
+    this.hooks = {
+      onDecided,
+      onPlanUpdated,
+      addMcpServer: (spec) => this.addMcpServer(spec),
+      configChanged: (change) => this.configChanged(change),
+      backgroundDelegation: {
+        blocker: (caller, roleId) => this.backgroundBlocker(caller.agentId, roleId),
+        started: (report) => {
+          this.bridgedLive.set(report.agentId, report)
+          this.noteActivity('subagent')
+        },
+        ended: (report, result, text) => this.backgroundEnded(report, result, text)
+      }
+    }
     this.tools = harnessToolsFor(ctx, this.hooks)
     this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
     this.plugins.push(...(ctx.plugins?.() ?? []).filter((p) => p.enabled))
     if (ctx.connection) this.connection = { adapter: ctx.connection.adapter, connection: ctx.connection.connection }
     this.continueTurns = [...(script.continue ?? [])]
-    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length
+    // Background bridged reports are not agents of this session but still count as working reports.
+    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size
     // The plan tools count free agent slots from ctx.liveReports; only this adapter knows its live threads.
     // A child or fake context without it reads as zero live reports.
     ctx.liveReports = live
@@ -1361,7 +1387,7 @@ export class MockSession implements RuntimeSession {
       slots: () => agentSlots(ctx, live()),
       ownRoles: () => rootRoleNames(ctx.roles),
       lastReportEndedAt: () => {
-        let last: number | undefined
+        let last = this.lastBridgedEndedAt
         for (const a of this.agents.values()) if (a.id !== ROOT_AGENT_ID && a.endedAt !== undefined && (last === undefined || a.endedAt > last)) last = a.endedAt
         return last
       },
@@ -1386,8 +1412,12 @@ export class MockSession implements RuntimeSession {
 
   async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
+    this.held = false
     this.transcript(ROOT_AGENT_ID, images?.length ? { kind: 'user', text, images } : { kind: 'user', text })
-    this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m))) })
+    // Notices held while the run waited for the user come first, like the Claude adapter's.
+    const notes = this.heldNotices.splice(0)
+    const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: notes.length ? `${notes.join('\n\n')}\n\n---\n${body}` : body })
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
     // An image-only message is still a turn; give the scripted reply something to echo.
     const n = images?.length ?? 0
@@ -1398,6 +1428,7 @@ export class MockSession implements RuntimeSession {
   /** Ends the current turn before its next step; a blocking request in flight still waits for its answer. */
   async interrupt(): Promise<void> {
     this.continuation.hold()
+    this.held = true
     this.interrupted = true
     this.poke()
   }
@@ -1429,6 +1460,35 @@ export class MockSession implements RuntimeSession {
     }
   }
 
+  /** delegate_agent background: true blocks for a report's call (harness messages reach only the root) and a required delegation. */
+  private backgroundBlocker(callerId: string | undefined, roleId: string): string | undefined {
+    if (callerId !== undefined && callerId !== ROOT_AGENT_ID) return 'only the orchestrator can delegate in the background'
+    if (!this.ctx.delegation) return undefined
+    const obligations = obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)
+    if (obligations[this.root.id]?.includes(roleId) || (obligations[roleId]?.length ?? 0) > 0) return 'required delegations run in the foreground'
+    return undefined
+  }
+
+  /**
+   * A background bridged report ended (the Claude adapter's backgroundEnded): no longer live; its result is a harness
+   * message, or waits for the user's next message while held or when the harness stopped it; nothing after stop.
+   */
+  private backgroundEnded(report: BackgroundReport, result: BridgeSpawnResult, text: string): void {
+    this.bridgedLive.delete(report.agentId)
+    this.lastBridgedEndedAt = Date.now()
+    this.noteActivity('report')
+    if (this.stopped || this.ended) {
+      this.log('info', `Bridged report ${report.handle} ended after the session stopped; its report was not delivered.`)
+      return
+    }
+    const message = `Harness: ${text}`
+    const summary = result.stopped ? `${report.handle} was stopped.` : result.ok ? `${report.handle} reported back.` : `${report.handle} failed.`
+    if (result.stopped || this.held) {
+      this.heldNotices.push(message)
+      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: message }, { source: 'harness' })
+    } else this.deliverHarness(message, 'Reading a report…', { summary })
+  }
+
   /** RuntimeSession.nudge: a harness message for the orchestrator (the delegation correction), not an auto-continue. */
   async nudge(text: string): Promise<void> {
     this.deliverHarness(text, 'Reading a harness reminder…')
@@ -1443,7 +1503,7 @@ export class MockSession implements RuntimeSession {
       rootIdle,
       continuationSettled: this.continuation.isSettledForTurn(this.rootTurnGen),
       nudgeTurn1Sent: this.continuation.nudgeTurn1Sent,
-      quiescent: !this.inTurn && this.inbox.length === 0
+      quiescent: !this.inTurn && this.inbox.length === 0 && this.bridgedLive.size === 0 && this.heldNotices.length === 0
     }
   }
 
@@ -1841,16 +1901,17 @@ export class MockSession implements RuntimeSession {
   /**
    * Bridged reports (work runs, default script), or null. A bridged child session's root (ctx.bridgedChild) says
    * MOCK_BRIDGED_CHILD_TEXT and its turn ends (idle; never nudged, autoContinue is false). [mock:bridged] on a parent
-   * run: bridgedSteps for the first bridged role, then the default script.
+   * run: bridgedSteps for the first bridged role, then the default script; [mock:bridged-bg] the same with background: true.
    */
   private bridgedTurnSteps(): MockStep[] | null {
     if (this.isSetup || this.ctx.run.kind !== 'work' || this.ctx.run.quick || this.script.work !== DEFAULT_WORK) return null
     if (this.ctx.bridgedChild) return [{ type: 'text', text: MOCK_BRIDGED_CHILD_TEXT }]
-    if (!this.ctx.prompt.includes(BRIDGED_TOKEN)) return null
+    const background = this.ctx.prompt.includes(BRIDGED_BG_TOKEN)
+    if (!background && !this.ctx.prompt.includes(BRIDGED_TOKEN)) return null
     const first = bridgedRolesOf(this.ctx)[0]
     const available = !!first && this.tools.some((t) => t.name === BRIDGE_HARNESS_TOOLS.delegate)
     if (!available) this.log('info', 'Mock [mock:bridged]: this run has no bridged report, so the delegation step is skipped.')
-    return bridgedSteps(available ? first.slug : undefined, DEFAULT_WORK)
+    return bridgedSteps(available ? first.slug : undefined, DEFAULT_WORK, background)
   }
 
   /**
