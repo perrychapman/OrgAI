@@ -10,7 +10,7 @@ import {
   type TeamFileWarning,
   type ToolName
 } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, cleanRequiredReports, newId, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, cleanRequiredReports, cleanRoleStaffing, newId, reviewPolicyOf, staffingGoalOf, staffingModeOf, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { skippedNote } from '../capabilities/localSkills'
 import { safeKitRelPath } from '../skills/files'
@@ -164,6 +164,12 @@ export function docFromProject(project: Project, skillContent: (spec: SkillSpec)
   put('autoContinue', project.autoContinue, typeof project.autoContinue === 'boolean')
   put('maxAutoContinues', project.maxAutoContinues, okNum(project.maxAutoContinues, 0, 1000, true))
   put('runMessaging', project.runMessaging, typeof project.runMessaging === 'boolean')
+  // Staffing settings are written only when not on their default, read through the shared helpers (a bad value is the default).
+  if (staffingModeOf(project) === 'fixed') settings.staffing = 'fixed'
+  const goal = staffingGoalOf(project)
+  if (goal !== 'balanced') settings.staffingGoal = goal
+  const policy = reviewPolicyOf(project)
+  if (policy !== 'risk') settings.reviewPolicy = policy
   if (project.teamReview) settings.teamReview = teamReviewOf(project)
   if (project.skillEvaluation) settings.skillEvaluation = storedSkillEvaluation(project.skillEvaluation)
 
@@ -293,6 +299,8 @@ export function docFromProject(project: Project, skillContent: (spec: SkillSpec)
       notes.push(`${r.slug}: its model is not a valid model id and is written as "inherit".`)
     }
     if (r.effort && EFFORT_VALUES.includes(r.effort)) doc.effort = r.effort
+    const staffing = cleanRoleStaffing(r.staffing)
+    if (staffing) doc.staffing = staffing
     if ((r.responsibilities ?? []).length > TEAM_RESPONSIBILITIES_MAX) t.cut = true
     if (t.stripped) track.stripped = true
     if (t.cut) notes.push(`The text of ${r.slug} was shortened to fit the team files.`)
@@ -338,6 +346,7 @@ export function teamKey(project: Project): string {
       r.tier ?? null,
       r.model,
       r.effort ?? null,
+      cleanRoleStaffing(r.staffing) ?? null,
       r.canSpawn,
       names(r.spawnable, slugById),
       names(cleanRequiredReports(r), slugById),
@@ -364,6 +373,9 @@ export function teamKey(project: Project): string {
     project.autoContinue,
     project.maxAutoContinues,
     project.runMessaging,
+    staffingModeOf(project),
+    staffingGoalOf(project),
+    reviewPolicyOf(project),
     project.teamReview ?? null,
     project.skillEvaluation ?? null,
     project.plugins?.length ?? 0
@@ -435,6 +447,7 @@ export function rolesFromDoc(project: Project, doc: TeamDoc, ctx: RolesFromDocCo
       model: r.tier ? (ctx.tierModel(r.tier) ?? 'inherit') : (r.model ?? 'inherit'),
       ...(r.tier ? { tier: r.tier } : {}),
       ...(r.effort ? { effort: r.effort } : {}),
+      ...(r.staffing ? { staffing: { ...r.staffing } } : {}),
       canSpawn: r.canSpawn,
       spawnable: r.spawnable.map((s) => proposedId.get(s)).filter((x): x is string => x !== undefined),
       ...(r.requiredReports ? { requiredReports: r.requiredReports.map((s) => proposedId.get(s)).filter((x): x is string => x !== undefined) } : {}),
@@ -454,6 +467,8 @@ export function rolesFromDoc(project: Project, doc: TeamDoc, ctx: RolesFromDocCo
     const out: Role = { ...role, slug: d.slug, color: d.color }
     if (d.effort) out.effort = d.effort
     else delete out.effort
+    if (d.staffing) out.staffing = { ...d.staffing }
+    else delete out.staffing
     if (d.tier) {
       out.tier = d.tier
       out.model = ctx.tierModel(d.tier) ?? 'inherit'
@@ -493,6 +508,9 @@ export function settingsFromDoc(project: Project, doc: TeamDoc): Project {
   assign('autoContinue')
   assign('maxAutoContinues')
   assign('runMessaging')
+  assign('staffing')
+  assign('staffingGoal')
+  assign('reviewPolicy')
   assign('teamReview')
   assign('skillEvaluation')
   if (s.preferEverydayNearLimit === undefined) {

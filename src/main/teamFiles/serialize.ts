@@ -50,6 +50,11 @@ export function serializeRole(role: TeamRoleDoc): string {
   if (r.tier !== undefined) lines.push(`tier: ${yamlQuote(r.tier)}`)
   else lines.push(`model: ${yamlQuote(r.model ?? 'inherit')}`)
   if (r.effort !== undefined) lines.push(`effort: ${yamlQuote(r.effort)}`)
+  if (r.staffing) {
+    lines.push(`staffing: ${yamlQuote(r.staffing.mode)}`)
+    if (r.staffing.minTier !== undefined) lines.push(`staffing_min_tier: ${yamlQuote(r.staffing.minTier)}`)
+    if (r.staffing.maxEffort !== undefined) lines.push(`staffing_max_effort: ${yamlQuote(r.staffing.maxEffort)}`)
+  }
   lines.push(`canSpawn: ${r.canSpawn ? 'true' : 'false'}`)
   lines.push(...listLines('spawnable', r.spawnable))
   if (r.requiredReports) lines.push(...listLines('required_reports', r.requiredReports))
@@ -83,6 +88,9 @@ export function serializeTeamJson(doc: TeamDoc): string {
   set('autoContinue')
   set('maxAutoContinues')
   set('runMessaging')
+  set('staffing')
+  set('staffingGoal')
+  set('reviewPolicy')
   if (s.teamReview) out.teamReview = { auto: s.teamReview.auto, everyRuns: s.teamReview.everyRuns, tokenBudget: s.teamReview.tokenBudget }
   if (s.skillEvaluation) out.skillEvaluation = { ...(s.skillEvaluation.enabled !== undefined ? { enabled: s.skillEvaluation.enabled } : {}), tokenBudget: s.skillEvaluation.tokenBudget }
   const disabled = n.skills.filter((k) => !k.enabled).map((k) => k.name)
