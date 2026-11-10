@@ -2542,6 +2542,7 @@ export class MockSession implements RuntimeSession {
   private async finishStep(step: Extract<MockStep, { type: 'finish' }>): Promise<void> {
     const gate = this.ctx.delegation
     let text = step.result
+    let failed = false
     if (gate) {
       const ask = (): ReturnType<typeof gate.completion> => gate.completion(step.id, { canCorrect: true, canWait: true, reportText: step.result })
       let d = ask()
@@ -2561,10 +2562,11 @@ export class MockSession implements RuntimeSession {
       }
       if (d.action === 'none' || d.action === 'correct') return
       this.pendingFinish.delete(step.id)
+      failed = d.action === 'fail'
       const receipt = gate.receiptText(step.id)
       if (receipt) text = `${receipt}\n\n${step.result}`
     }
-    this.staffing.ended(step.id)
+    this.staffing.ended(step.id, { failed })
     const a = this.ensureAgent(step.id)
     a.result = step.result
     a.state = 'done'

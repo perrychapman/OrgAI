@@ -48,12 +48,12 @@ function setup(steps: PlanStep[] | undefined, over: Partial<StaffingBookDeps> = 
     box.plan = { goal: 'g', steps: next, status: 'active', autoContinues: 0, updatedAt: 1 }
   }
   let n = 0
-  /** decide + started + ended in one go; returns the decision. */
-  const runOnce = (input: Omit<StaffingDecideInput, 'key'>) => {
+  /** decide + started + ended in one go (the attempt fails unless `failed` is false); returns the decision. */
+  const runOnce = (input: Omit<StaffingDecideInput, 'key'>, failed = true) => {
     const key = `k${++n}`
     const d = book.decide({ key, ...input })
     book.started(key, `a${n}`, n)
-    book.ended(`a${n}`)
+    book.ended(`a${n}`, { failed })
     return d
   }
   return { book, box, patch, replace, runOnce }
@@ -128,7 +128,7 @@ describe('StaffingBook: binding', () => {
     const { book } = setup([step('p1', 'dev'), step('p2', 'dev')])
     book.decide({ key: 'k1', role: DEV })
     book.started('k1', 'a1', 1)
-    book.ended('a1')
+    book.ended('a1', { failed: true })
     // p1 has ended, p2 was never attempted: p2 first.
     const two = book.decide({ key: 'k2', role: DEV })
     expect(two).toMatchObject({ stepId: 'p2', retry: false })
@@ -260,10 +260,10 @@ describe('StaffingBook: retries', () => {
     book.started('k1', 'a1', 1)
     book.decide({ key: 'k2', role: DEV })
     book.started('k2', 'a2', 2)
-    book.ended('a1')
+    book.ended('a1', { failed: true })
     expect(book.decide({ key: 'k3', role: DEV }).retry).toBe(false)
     book.cancel('k3')
-    book.ended('a2')
+    book.ended('a2', { failed: true })
     expect(book.decide({ key: 'k4', role: DEV }).retry).toBe(true)
   })
 
@@ -344,7 +344,7 @@ describe('StaffingBook: started, cancel, ended', () => {
     book.started('k1', 'a1', 1)
     expect(book.decide({ key: 'k2', role: DEV, onCall: { effort: 'high' } })).toMatchObject({ stepId: 'p1', retry: false })
     book.cancel('k2')
-    book.ended('a1')
+    book.ended('a1', { failed: true })
     // The retry escalates from a1 (everyday / low), not from the cancelled everyday / high.
     expect(book.decide({ key: 'k3', role: DEV }).resolved).toMatchObject({ tier: 'everyday', effort: 'medium', source: 'escalated' })
   })
@@ -485,5 +485,109 @@ describe('StaffingBook: bounded memory', () => {
     patch('p2', { status: 'done' })
     // p1 (open, older still) was kept: a retry.
     expect(book.decide({ key: 'x2', role: DEV })).toMatchObject({ stepId: 'p1', retry: true })
+  })
+})
+
+describe('StaffingBook: failed versus finished attempts, and the escalation count', () => {
+  const ENG: BookRole = { id: 'r-eng', slug: 'engineer', model: 'sonnet', tier: 'everyday', staffing: { mode: 'auto', maxEffort: 'max' } }
+  const stepLow = (title = 'Implement'): PlanStep => ({ id: 'p1', title, status: 'in_progress', staff: { role: 'engineer', effort: 'low' } })
+
+  it('B1 a re-spawn after an attempt that ended without failure is a plain new attempt, not an escalation', () => {
+    const { book, runOnce } = setup([stepLow()])
+    const first = runOnce({ role: ENG }, false)
+    expect(first.resolved.effort).toBe('low')
+    const second = book.decide({ key: 'again', role: ENG })
+    expect(second).toMatchObject({ stepId: 'p1', retry: false })
+    expect(second.resolved.effort).toBe('low')
+    expect(second.resolved.source).not.toBe('escalated')
+  })
+
+  it('a plain new attempt takes the pick on the call, else the step staff, and never counts as an escalation', () => {
+    const { book, runOnce } = setup([stepLow()])
+    runOnce({ role: ENG }, false)
+    expect(runOnce({ role: ENG, onCall: { effort: 'high' } }, false).resolved).toMatchObject({ effort: 'high', source: 'orchestrator' })
+    // Then failures: both escalations are still available, so the step has not used any.
+    expect(runOnce({ role: ENG }, true).resolved.effort).toBe('low')
+    expect(runOnce({ role: ENG }).resolved).toMatchObject({ effort: 'medium', source: 'escalated' })
+    expect(runOnce({ role: ENG }).resolved).toMatchObject({ effort: 'high', source: 'escalated' })
+    expect(runOnce({ role: ENG }).resolved.note).toMatch(/^Retry limit reached/)
+  })
+
+  it('a re-spawn after a failed attempt escalates one step', () => {
+    const { runOnce } = setup([stepLow()])
+    runOnce({ role: ENG }, true)
+    const d = runOnce({ role: ENG }, true)
+    expect(d).toMatchObject({ retry: true })
+    expect(d.resolved).toMatchObject({ effort: 'medium', source: 'escalated' })
+  })
+
+  it('an attempt that fails and a later one that succeeds: the next spawn is plain again, on the escalated values', () => {
+    const { book, runOnce } = setup([stepLow()])
+    runOnce({ role: ENG }, true) // low, fails
+    expect(runOnce({ role: ENG }, false).resolved.effort).toBe('medium') // escalated, succeeds
+    const third = book.decide({ key: 'k3', role: ENG })
+    expect(third.retry).toBe(false)
+    expect(third.resolved.source).not.toBe('escalated')
+    expect(third.resolved.effort).toBe('low') // the step's own staff again; nothing raised
+  })
+
+  it('plain attempts still count toward the attempts cap', () => {
+    const { book, runOnce } = setup([stepLow()])
+    for (let i = 0; i < STAFFING_BOOK_STEP_ATTEMPTS_MAX + 3; i++) runOnce({ role: ENG }, false)
+    const b = book as unknown as { steps: Map<string, { attempts: unknown[] }> }
+    expect(b.steps.get('p1')!.attempts.length).toBe(STAFFING_BOOK_STEP_ATTEMPTS_MAX)
+  })
+
+  it('a cancelled spawn gives back its step (and an escalation it would have used)', () => {
+    const { book, runOnce } = setup([stepLow()])
+    runOnce({ role: ENG }, true)
+    book.decide({ key: 'c1', role: ENG }) // retry 1, cancelled
+    book.cancel('c1')
+    expect(runOnce({ role: ENG }, true).resolved).toMatchObject({ effort: 'medium', source: 'escalated' })
+    expect(runOnce({ role: ENG }, true).resolved).toMatchObject({ effort: 'high', source: 'escalated' })
+  })
+
+  it('B2 retitling the step, or switching its role and back, does not reset the escalation limit', () => {
+    const { box, patch, runOnce } = setup([stepLow()])
+    const efforts: (string | undefined)[] = []
+    const attempt = () => efforts.push(runOnce({ role: ENG }, true).resolved.effort)
+    attempt() // low
+    attempt() // medium (escalation 1)
+    attempt() // high (escalation 2)
+    attempt() // high (limit)
+    box.plan = { ...box.plan!, steps: [{ ...stepLow('Implement it'), staff: { role: 'engineer', effort: 'high' } }] } // same id, new title
+    attempt() // first attempt of the changed step: high
+    attempt() // still at the limit: not raised
+    patch('p1', { staff: { role: 'other', effort: 'high' } })
+    attempt() // a spawn of another role in between would be a different role; here none matches, so no step
+    patch('p1', { staff: { role: 'engineer', effort: 'high' } })
+    attempt()
+    attempt()
+    expect(efforts.slice(0, 4)).toEqual(['low', 'medium', 'high', 'high'])
+    expect(efforts).not.toContain('xhigh')
+    expect(efforts).not.toContain('max')
+  })
+
+  it('the escalation count lasts while the id is in the plan and goes with the step', () => {
+    const { replace, runOnce } = setup([stepLow()])
+    runOnce({ role: ENG }, true)
+    runOnce({ role: ENG }, true)
+    runOnce({ role: ENG }, true)
+    replace([{ id: 'p2', title: 'Other', status: 'pending', staff: { role: 'engineer', effort: 'low' } }])
+    runOnce({ role: ENG }, true) // forces the book to see the plan without p1
+    replace([stepLow()]) // p1 is a new step now
+    expect(runOnce({ role: ENG }, true).resolved.effort).toBe('low')
+    expect(runOnce({ role: ENG }, true).resolved).toMatchObject({ effort: 'medium', source: 'escalated' })
+  })
+
+  it('the escalation counts are bounded', () => {
+    const { book, replace, runOnce } = setup([])
+    const steps: PlanStep[] = Array.from({ length: STAFFING_BOOK_STEPS_MAX + 20 }, (_, i) => ({ id: `s${i}`, title: `t${i}`, status: 'pending' as const, staff: { role: 'engineer' } }))
+    replace(steps)
+    for (let i = 0; i < steps.length; i++) {
+      runOnce({ role: ENG }, true)
+      runOnce({ role: ENG }, true)
+    }
+    expect((book as unknown as { escalations: Map<string, number> }).escalations.size).toBeLessThanOrEqual(STAFFING_BOOK_STEPS_MAX)
   })
 })

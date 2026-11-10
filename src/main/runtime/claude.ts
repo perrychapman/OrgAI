@@ -2441,7 +2441,7 @@ export class ClaudeSession implements RuntimeSession {
       a.state = 'done'
       a.activity = failed ? 'Skipped required reports' : 'Reported back'
       a.endedAt = Date.now()
-      this.staffingBook.ended(a.id)
+      this.staffingBook.ended(a.id, { failed })
       this.partial.clear(a.id, true)
       this.upsert(a)
       this.reportFinished()
@@ -3680,7 +3680,7 @@ export class ClaudeSession implements RuntimeSession {
             a.activity = msg.status === 'completed' ? 'Reported back' : `Task ${msg.status}`
             a.result = a.result ?? msg.summary
             a.endedAt = Date.now()
-            this.staffingBook.ended(a.id)
+            this.staffingBook.ended(a.id, { failed: msg.status === 'failed' })
             this.upsert(a)
             if (firstFinish) this.reportFinished()
             else this.noteActivity('report')

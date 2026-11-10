@@ -1569,6 +1569,21 @@ describe('mock [mock:staffing]', () => {
     await session.stop()
   })
 
+  it('tells the book how each report ended: a finished report is not failed', async () => {
+    const ctx = fakeCtx({
+      autoContinue: false,
+      prompt: `Staff the work ${STAFFING_TOKEN}`,
+      project: project({ roles: defaultRoles() }),
+      connection: { connection: 'anthropic', adapter: 'mock', tierModels: { top: 'm-top', deep: 'm-deep', everyday: 'm-everyday', fast: 'm-fast' } }
+    })
+    const session = (await new MockAdapter({ script: { delayMs: 20 } }).start(ctx)) as MockSession
+    const ended = vi.spyOn((session as unknown as { staffing: { ended(id: string, o?: { failed?: boolean }): void } }).staffing, 'ended')
+    await vi.waitFor(() => expect(ended).toHaveBeenCalledTimes(2), { timeout: 3000 })
+    expect(ended.mock.calls.map((c) => c[0])).toEqual(['mock-staffed-1', 'mock-staffed-2'])
+    expect(ended.mock.calls.every((c) => c[1]?.failed === false)).toBe(true)
+    await session.stop()
+  })
+
   it('Project.staffing fixed changes nothing: no override, the report keeps the model it always had', async () => {
     const { ctx, session } = await run({ project: project({ roles: defaultRoles(), staffing: 'fixed' }) })
     expect(session.staffedFor('mock-staffed-1')).toBeUndefined()

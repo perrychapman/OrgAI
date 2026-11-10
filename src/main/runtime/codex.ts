@@ -1200,7 +1200,7 @@ class CodexSession implements RuntimeSession {
     }
     this.ctx.delegation?.ended(agent.id)
     this.heldReports.delete(agent.id)
-    this.finishAgent(agent.id)
+    this.finishAgent(agent.id, true)
     if (result) agent.result = result
     agent.state = 'error'
     agent.activity = NATIVE_FAIL_ACTIVITY
@@ -1271,7 +1271,7 @@ class CodexSession implements RuntimeSession {
     // Interrupted or failed: no accepted completion.
     if (u.status !== 'completed') this.ctx.delegation?.ended(agentId)
     this.heldReports.delete(agentId)
-    this.finishAgent(agentId)
+    this.finishAgent(agentId, u.status === 'failed')
     if (u.result) child.result = u.result
     if (u.status === 'interrupted') {
       child.state = 'done'
@@ -1318,11 +1318,11 @@ class CodexSession implements RuntimeSession {
       return
     }
     this.heldReports.delete(child.id)
-    this.finishAgent(child.id)
+    const failed = d.action === 'fail'
+    this.finishAgent(child.id, failed)
     if (result) child.result = result
     child.state = 'done'
     child.endedAt = Date.now()
-    const failed = d.action === 'fail'
     child.activity = failed ? 'Skipped required reports' : 'Reported back'
     this.upsert(child)
     this.noteActivity('report')
@@ -1924,10 +1924,10 @@ class CodexSession implements RuntimeSession {
     if (parent && this.heldReports.get(parentId)?.waiting) this.recheckParent({ ...parent, id: r.agentId, parentId } as AgentInstance)
   }
 
-  /** A report's turn ended with any outcome: free its network slot and tell the staffing book. */
-  private finishAgent(agentId: string): void {
+  /** A report's turn ended with any outcome: free its network slot and tell the staffing book whether it failed (not an interrupt). */
+  private finishAgent(agentId: string, failed = false): void {
     this.net.finish(agentId)
-    this.staffing.ended(agentId)
+    this.staffing.ended(agentId, { failed })
   }
 
   /** A held bridged result for a report (not the orchestrator), delivered once the user spoke. Its row was written when it landed. */
@@ -1936,7 +1936,7 @@ class CodexSession implements RuntimeSession {
     this.deliverTo(parentId, text, { transcript: false }).catch((e) => this.log('warn', `Could not deliver a held report to ${this.agents.get(parentId)?.handle ?? parentId}: ${(e as Error).message}`))
   }
 
-  private async spawnChild(req: SpawnRequest): Promise<{ staffing?: string }> {
+  private async spawnChild(req: SpawnRequest): Promise<{ staffing?: string; note?: string }> {
     const parent = this.agents.get(req.parentId)
     const parentRole = this.net.roleOf(req.parentId) ?? this.root
     // Run staffing: bind to the plan step and resolve tier / effort before anything is created (cancelled below on failure).
@@ -1951,21 +1951,23 @@ class CodexSession implements RuntimeSession {
     const { resolved } = decision
     const staffedModel = resolved.tierChanged && validModelId(resolved.model) ? resolved.model : undefined
     const staffedEffort = resolved.effortChanged ? resolved.effort : undefined
-    let staffingStarted = false
     try {
+      // `started` runs only once the first message was accepted, so a spawn that did not start leaves no row and no attempt.
       await this.spawnChildNow(req, parent, parentRole, { model: staffedModel, effort: staffedEffort }, () => {
-        staffingStarted = true
         const row = this.staffing.started(req.id, req.id, Date.now())
         if (row) recordStaffing(this.ctx, row).catch((e: Error) => this.log('warn', `Could not record the staffing of ${req.handle}: ${e.message}`))
       })
     } catch (e) {
-      if (staffingStarted) this.staffing.ended(req.id)
-      else this.staffing.cancel(req.id)
+      this.staffing.cancel(req.id)
       this.threadEffort.delete(this.agentThread.get(req.id) ?? '')
       this.staffedModel.delete(req.id)
       throw e
     }
-    return resolved.mode === 'auto' ? { staffing: decision.label } : {}
+    const ignored = resolved.mode === 'fixed' && (req.onCall?.tier || req.onCall?.effort)
+    return {
+      ...(resolved.mode === 'auto' ? { staffing: decision.label } : {}),
+      ...(ignored ? { note: `It runs on its configured model and effort; the ${req.onCall?.tier && req.onCall?.effort ? 'tier and effort' : req.onCall?.tier ? 'tier' : 'effort'} you gave ${req.onCall?.tier && req.onCall?.effort ? 'were' : 'was'} ignored.` } : {})
+    }
   }
 
   private async spawnChildNow(
@@ -2013,13 +2015,13 @@ class CodexSession implements RuntimeSession {
         ...(worktree ? { worktree } : {})
       })
       registered = true
-      onStarted()
       this.ctx.delegation?.noteSpawn(req.id, req.parentId, req.role.id)
       this.transcript(req.id, { kind: 'user', text: req.brief })
       const effort = staffed.effort ? { effort: staffed.effort } : req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
       // After newAgent, so the "Added N known items" row lands on the report; the block stays out of its transcript entry.
       const knownItems = spawnKnowledge(this.ctx, req.brief, req.id, (m) => this.log('warn', m))
       await this.sendToThread(started.threadId, childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), undefined, effort)
+      onStarted()
     } catch (e) {
       if (this.agents.delete(req.id)) this.emit({ type: 'agent.remove', runId: this.ctx.run.id, agentId: req.id })
       const gate = this.ctx.delegation
