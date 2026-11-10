@@ -22,8 +22,11 @@ export function Button({
   ariaLabel,
   inert,
   ariaDescribedBy,
-  id
+  id,
+  pressed
 }: {
+  /** Toggle button state (aria-pressed); leave unset for a plain button. */
+  pressed?: boolean
   /** DOM id, for code that moves focus here. */
   id?: string
   /** Looks disabled and ignores click, Enter and Space, but stays focusable so its reason can be heard (aria-disabled). */
@@ -58,6 +61,7 @@ export function Button({
       title={title}
       aria-label={ariaLabel}
       aria-disabled={inert ? 'true' : undefined}
+      aria-pressed={pressed}
       aria-describedby={ariaDescribedBy}
       onClick={inert ? (e) => e.preventDefault() : onClick}
       data-testid={testId}
