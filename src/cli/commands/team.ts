@@ -21,6 +21,7 @@ import { confirm, hostCall, requireProject, runSubcommands, withHost, type Subco
 import { emit, note, safe, safeLine } from '../output'
 import { CliError, EXIT, type CommandFn } from '../types'
 import { checkArg, findRole, NO_UNDO, NO_UNDO_AFTER, onlyPositionals, projectJson, roleTierWord } from './org'
+import { effortWord, runsOnWords } from '../roleText'
 import { connectionLabels, roleAdd, roleMove, roleRemove, roleSet, roleSummaryLines } from './teamRoleEdit'
 
 const USAGE =
@@ -131,18 +132,19 @@ const teamRoles: SubcommandFn = async (ctx, args) => {
   return withHost(ctx, ['read'], async (client) => {
     const project = await requireProject(ctx, client)
     const nameOf = new Map(project.roles.map((r) => [r.id, r.name]))
+    const label = await connectionLabels(client)
     emit(
       ctx,
       {
         project: projectJson(project),
-        roles: project.roles.map((r) => ({ id: r.id, slug: r.slug, name: r.name, model: r.model, tier: r.tier ?? null, reportsTo: r.reportsTo, grants: grantCount(r) }))
+        roles: project.roles.map((r) => ({ id: r.id, slug: r.slug, name: r.name, model: r.model, tier: r.tier ?? null, effort: r.effort ?? null, runsOn: runsOnWords(r, project, label), reportsTo: r.reportsTo, grants: grantCount(r) }))
       },
       () => [
         `${project.roles.length} role${project.roles.length === 1 ? '' : 's'} in ${safeLine(project.name)}:`,
         ...project.roles.map((r) => {
           const boss = r.reportsTo ? `reports to ${safeLine(nameOf.get(r.reportsTo) ?? r.reportsTo)}` : 'root'
           const g = grantCount(r)
-          return `  ${safeLine(r.name)} [${safeLine(r.slug)}] · ${safeLine(roleTierWord(r))} · ${boss} · ${g} grant${g === 1 ? '' : 's'}`
+          return `  ${safeLine(r.name)} [${safeLine(r.slug)}] · ${safeLine(roleTierWord(r))} · effort ${safeLine(effortWord(r))} · runs on ${safeLine(runsOnWords(r, project, label))} · ${boss} · ${g} grant${g === 1 ? '' : 's'}`
         })
       ]
     )

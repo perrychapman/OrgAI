@@ -589,6 +589,31 @@ Because `claude.ts:3155-3165` and `codex.ts:765-766` emit `run.status: 'idle'` b
    - Supports `status`, `start`, `stop [--force]`, `restart [--force]`, and `logs`.
    - `host.status` (`'read'` scope) and `host.stop` (`'configure'` scope) are version-independent RPC methods supported across all `protocolVersion >= 1` builds, so even when `clientVersion !== appVersion`, `orgai daemon status`, `orgai daemon stop`, `orgai daemon restart`, `orgai runs list`, `orgai watch`, and `orgai decide` work cleanly!
 
+### 6.4 Commands added after Wave 7 (cli-parity, `docs/design/cli-parity.md`)
+
+Each command below is a row of the command table (`src/cli/commandTable.ts`, entries in `src/cli/entries/`), so it appears in `orgai --help` with its summary, in `orgai help <command>` and in the generated shell completions. Scopes are what the command asks the host for.
+
+| Command | Scope | What it does |
+| --- | --- | --- |
+| `orgai settings [list] \| get <key> \| set <key> <value>` | read / configure | The app settings that matter in a terminal (project defaults, assistant and setup models), one validated field per `settings:set`. |
+| `orgai connections tier <id> [<tier>=<model> ...] [--reset <tier>] [--force] [--dry-run]` | read / configure | Show or change which model a tier maps to on one connection; lists the roles a change touches. |
+| `orgai models list \| resolve \| refresh \| prices \| remap` | read / operate / configure | The model catalog (connections shown by display name), each tier and role resolved to a model, prices and role remaps. |
+| `orgai models prices set <model> --input <usd> --output <usd> [--cache-read] [--cache-write] [--connection <id>]` / `prices unset <model>` | configure | Price overrides per million tokens (`AppSettings.modelPrices`). |
+| `orgai team role add \| set \| rm \| move` | read / configure | Edit one role of the current project with the desktop editor's save and checks; spend-raising changes ask first (`--yes` without a terminal). |
+| `orgai team roles` / `orgai org show` | read | The chart; each role line carries effort, staffing in words and the connection it runs on. |
+| `orgai org draft "<text>" [--apply [--yes]] \| draft --from <file> --apply` | operate / configure | Draft an org chart with the Team assistant; apply it now or from a draft file saved earlier. |
+| `orgai org revise "<instruction>"` | operate | Ask the Team assistant to revise the chart. |
+| `orgai runs show <run> [--logs [--level warn\|info\|all]]` | read | A saved run; `--logs` adds the harness log; the number of outputs the run made shows when not zero. |
+| `orgai runs model <run> [<tier\|model id>] [--connection <id>] [--yes]` | read / operate | Show or switch a run's model behind the desktop's guard. |
+| `orgai resume <run> --now \| --cancel-auto-resume` | operate | Resume a run paused for a usage limit now, or keep it paused. |
+| `orgai exec --image <file>` (also `resume --exec`, repeatable) | operate | Attach images (PNG, JPEG, GIF, WebP; 5 MB each, at most 10) to the first message. |
+| `orgai outputs list [--run <run>]` | read | The project's run outputs (id, title, kind, version, size, open notes, path). |
+| `orgai outputs show <output>` | read | One output's metadata and a text preview for text-like kinds; the path for the rest. |
+| `orgai outputs revise <output> "<instruction>" [--run <run> \| --new]` | operate | `outputs:revise` for the whole current version, to the run that made it when live or continuable, else a new run. |
+| `orgai outputs note <output> "<text>" [--version <n>]` | operate | `outputs:noteAdd`, anchored to the whole version. Opening, saving, forgetting and deleting outputs stay desktop-only or configure channels and have no command. |
+
+The terminal UI has `/model` (a picker; connections by display name), `/logs` and `/outputs` (the followed run's outputs in the pager overlay).
+
 ---
 
 ## 7. Packaging, Build & Version Compatibility

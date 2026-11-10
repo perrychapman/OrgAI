@@ -38,6 +38,7 @@ function fakeCtx(state: TuiState = stateWith()) {
     stop: vi.fn(async () => {}),
     listRuns: vi.fn(async () => [summary('a', { startedAt: 2, title: 'Second\x1b[31m run' }), summary('b', { startedAt: 1, status: 'finished' })]),
     worktreeDiff: vi.fn(async () => ({ stat: ' a.ts | 1 +', patch: '+x\x1b]52;c;QQ==\x07\n' })),
+    listOutputs: vi.fn(async () => [{ id: 'out_1', projectId: 'p1', runId: 'r1', kind: 'markdown', title: 'Plan\x1b[31m', fileName: 'plan.md', path: '/w/plan.md', relPath: 'outputs/plan.md', bytes: 10, createdAt: 1, source: 'produced', version: 1 }, { id: 'out_2', projectId: 'p1', runId: 'other', kind: 'png', title: 'Elsewhere', fileName: 'e.png', path: '/w/e.png', relPath: 'e.png', bytes: 1, createdAt: 1, source: 'produced' }]),
   } as unknown as TuiSessionApi
   const ctx = {
     session,
@@ -218,6 +219,21 @@ describe('helpers', () => {
 
   it('resolveDiffTarget without worktrees', () => {
     expect(resolveDiffTarget(stateWith(), '')).toEqual({ error: 'No agent in this run has a worktree.' })
+  })
+})
+
+describe('/outputs', () => {
+  it('opens the followed run\'s outputs only, cleaned', async () => {
+    const { ctx } = fakeCtx()
+    await cmd('outputs').run(ctx, '')
+    const [title, text] = (ctx.openText as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string]
+    expect(title).toBe('Outputs')
+    expect(text).toContain('Plan [out_1] markdown')
+    expect(text).not.toContain('Elsewhere')
+    expect(text).not.toContain('\x1b')
+  })
+  it('needs a followed run', () => {
+    expect(cmd('outputs').available?.(stateWith({ activeRunId: undefined }))).toBe(false)
   })
 })
 

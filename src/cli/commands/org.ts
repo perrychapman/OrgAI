@@ -55,6 +55,8 @@ import { confirm, hostCall, hostError, requireProject, runSubcommands, subscribe
 import { emit, emitLine, isJsonOutput, note, printText, safe, safeLine, type Json } from '../output'
 import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
+import { effortWord, runsOnWords, staffingWords } from '../roleText'
+import { connectionLabels } from './teamRoleEdit'
 import { runInteractiveRun } from './interactive'
 import { hasTty, managedOf, worktreeRefusal } from './tui'
 
@@ -171,6 +173,7 @@ const orgShow: SubcommandFn = async (ctx, args) => {
     const rows = roleTree(roles)
     const limits = effectiveSubagentLimits(project)
     const nameOf = new Map(roles.map((r) => [r.id, r.name]))
+    const label = await connectionLabels(client)
     emit(
       ctx,
       {
@@ -189,6 +192,9 @@ const orgShow: SubcommandFn = async (ctx, args) => {
             canSpawn: role.canSpawn,
             spawnable: role.spawnable,
             requiredReports: role.requiredReports ?? [],
+            effort: role.effort ?? null,
+            staffing: staffingWords(role, project),
+            runsOn: runsOnWords(role, project, label),
             tools: role.tools,
             mcpServers: g.mcp.map((m) => m.id),
             skills: g.skills.map((s) => s.id)
@@ -202,6 +208,7 @@ const orgShow: SubcommandFn = async (ctx, args) => {
           const pad = '  '.repeat(depth + 1)
           const g = roleGrants(project, role)
           lines.push(`${pad}${safeLine(role.name)} [${safeLine(role.slug)}] · ${safeLine(roleTierWord(role))}`)
+          lines.push(`${pad}    effort ${safeLine(effortWord(role))} · ${safeLine(staffingWords(role, project))} · runs on ${safeLine(runsOnWords(role, project, label))}`)
           const spawn = role.canSpawn
             ? `spawns: ${role.spawnable.length ? role.spawnable.map((id) => safeLine(nameOf.get(id) ?? id)).join(', ') : 'none listed'}`
             : 'cannot spawn'

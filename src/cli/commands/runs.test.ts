@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { RunRecord, TranscriptEntry } from '../../shared/types'
 import { fakeContext, project, record, summary } from '../testing/fakeContext'
@@ -105,6 +108,25 @@ describe('orgai runs show', () => {
     expect(out).toContain('Orchestrator → Ran')
     expect(out).toContain('· Continued by the harness')
     expect(out).toContain('Cost: $0.42')
+  })
+
+  it('prints the number of outputs the run made when it is not zero', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-runs-'))
+    try {
+      const none = fakeContext({ cwd: '/work/app', paths: { userDataDir: dir, dataDir: dir }, store: { projects: [p1], runs, records: { run_five55: rec } } })
+      expect(await runRuns(none.ctx, ['show', 'R5'])).toBe(EXIT.ok)
+      expect(none.out()).not.toContain('Outputs:')
+      mkdirSync(join(dir, 'projects', 'p1'), { recursive: true })
+      writeFileSync(join(dir, 'projects', 'p1', 'outputs.json'), JSON.stringify({ version: 2, outputs: [{ id: 'out_1', runId: 'run_five55' }, { id: 'out_2', runId: 'run_five55' }, { id: 'out_3', runId: 'run_one111' }] }))
+      const f = fakeContext({ cwd: '/work/app', paths: { userDataDir: dir, dataDir: dir }, store: { projects: [p1], runs, records: { run_five55: rec } } })
+      expect(await runRuns(f.ctx, ['show', 'R5'])).toBe(EXIT.ok)
+      expect(f.out()).toContain('Outputs: 2 (orgai outputs list --run R5)')
+      const j = fakeContext({ cwd: '/work/app', paths: { userDataDir: dir, dataDir: dir }, globals: { outputFormat: 'json' }, store: { projects: [p1], runs, records: { run_five55: rec } } })
+      expect(await runRuns(j.ctx, ['show', 'R5'])).toBe(EXIT.ok)
+      expect(JSON.parse(j.out()).outputCount).toBe(2)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('--tail limits the rows; --transcript shows all', async () => {

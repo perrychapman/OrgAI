@@ -28,6 +28,15 @@ export async function loadModelCatalog(call: HostCall): Promise<ModelCatalog> {
   return { connections, models, failed }
 }
 
+const BUILTIN_NAMES: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+
+/** A connection's display name (a proxy by its own name), else the built-in label; the id itself when unknown. */
+export function connectionName(catalog: Pick<ModelCatalog, 'connections'>, id: ConnectionId): string {
+  const c = catalog.connections.find((x) => x.connection.id === id)?.connection as { name?: unknown } | undefined
+  if (typeof c?.name === 'string' && c.name.trim()) return c.name.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()
+  return BUILTIN_NAMES[id] ?? id
+}
+
 export const tierMapOf = (catalog: ModelCatalog, connection: ConnectionId): Partial<Record<ModelTier, string>> =>
   (catalog.connections.find((c) => c.connection.id === connection)?.connection.tierModels ?? {}) as Partial<Record<ModelTier, string>>
 
