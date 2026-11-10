@@ -73,6 +73,7 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.runsStart]: OBJECT,
   [IPC.runsSend]: OBJECT,
   [IPC.runsSwitchModel]: OBJECT,
+  [IPC.runsSetPermissionMode]: OBJECT,
   [IPC.runsInterrupt]: ID,
   [IPC.runsStop]: ID,
   [IPC.runsList]: ID,

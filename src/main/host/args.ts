@@ -53,6 +53,7 @@ import type {
   QuestionAnswer,
   ContinueRunInput,
   SendRunInput,
+  SetRunPermissionModeInput,
   StartRunInput,
   McpLibrarySecretInput,
   McpProjectOverridesInput,
@@ -76,6 +77,8 @@ import {
   HARNESS_PROJECT_ID,
   PROXY_KINDS,
   isBuiltinConnectionId,
+  isEffort,
+  isPermissionMode,
   isProxyConnectionId,
   KNOWLEDGE_FACT_MAX_CHARS,
   KNOWLEDGE_LINK_ID_RE,
@@ -1077,21 +1080,52 @@ function messageParts(text: unknown, images: unknown, what: string): { text: str
   return { text, images: images as ImageAttachment[] }
 }
 
-/** runs:start: { projectId, prompt, scaffold?, images?, team? }, rebuilt; team only 'single'. */
+const MODEL_ID_MAX_CHARS = 200
+const MODEL_ID_HIDDEN_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
+
+/**
+ * A per-run root model choice ({ model, connection }), rebuilt: undefined and null are absent. The model is trimmed text
+ * of 1 to 200 characters without control characters; the connection a built-in or proxy id (shape only, the catalog
+ * check is RunManager's). Extra keys are dropped.
+ */
+function modelSelectionArg(v: unknown): { model: string; connection: ConnectionId } | undefined {
+  if (v === undefined || v === null) return undefined
+  if (!isPlain(v)) throw badInput('modelSelection must be an object with a model and a connection.')
+  const model = typeof v.model === 'string' ? v.model.trim() : ''
+  if (!model || model.length > MODEL_ID_MAX_CHARS || MODEL_ID_HIDDEN_RE.test(model)) throw badInput('The model must be text of 1 to 200 characters without control characters.')
+  if (!isBuiltinConnectionId(v.connection) && !isProxyConnectionId(v.connection)) throw badInput('Unknown connection.')
+  return { model, connection: v.connection }
+}
+
+/** runs:start: { projectId, prompt, scaffold?, images?, team?, overrides?, modelSelection?, effort?, permissionMode? }, rebuilt; team only 'single'. */
 export function startRunArgs(input: unknown): StartRunInput {
   if (!isPlain(input)) throw badInput('Unknown run input.')
   if (!isValidId(input.projectId)) throw badInput('Project not found')
   const { text, images } = messageParts(input.prompt, input.images, 'prompt')
   if (input.scaffold !== undefined && input.scaffold !== null && typeof input.scaffold !== 'boolean') throw badInput('scaffold must be true or false.')
   const overrides: RunOverrides | undefined = runOverridesArgs(input.overrides)
+  const modelSelection = modelSelectionArg(input.modelSelection)
+  if (input.effort !== undefined && input.effort !== null && !isEffort(input.effort)) throw badInput('effort is not a known reasoning effort.')
+  if (input.permissionMode !== undefined && input.permissionMode !== null && !isPermissionMode(input.permissionMode)) throw badInput('permissionMode is not a known permission mode.')
   return {
     projectId: input.projectId,
     prompt: text,
     ...(input.scaffold === true ? { scaffold: true } : {}),
     ...(images ? { images } : {}),
     ...(input.team === 'single' ? { team: 'single' as const } : {}),
-    ...(overrides ? { overrides } : {})
+    ...(overrides ? { overrides } : {}),
+    ...(modelSelection ? { modelSelection } : {}),
+    ...(isEffort(input.effort) ? { effort: input.effort } : {}),
+    ...(isPermissionMode(input.permissionMode) ? { permissionMode: input.permissionMode } : {})
   }
+}
+
+/** runs:setPermissionMode: { runId, mode }, rebuilt; extra fields dropped. */
+export function setPermissionModeArgs(input: unknown): SetRunPermissionModeInput {
+  if (!isPlain(input)) throw badInput('Unknown run.')
+  const runId = refField(input, 'runId', 'run')
+  if (!isPermissionMode(input.mode)) throw badInput('mode is not a known permission mode.')
+  return { runId, mode: input.mode }
 }
 
 /** runs:send: { runId, text, images? }, rebuilt; every other field (overrides, exec included) is dropped. */

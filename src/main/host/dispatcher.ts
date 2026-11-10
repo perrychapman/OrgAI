@@ -142,7 +142,7 @@ import type { QuickRunService } from '../quick/quickRuns'
 import { createScratchDir } from '../quick/scratch'
 import { folderConfigReview } from '../runtime/folderConfigTrust'
 import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
-import type { RunManager } from '../runtime/runManager'
+import type { RunManager, StartUserChoice } from '../runtime/runManager'
 import { overridesWidening } from '../runtime/runOverrides'
 import type { TeamFilesService } from '../teamFiles/service'
 import type { TemplateService } from '../setup/templates'
@@ -177,6 +177,7 @@ import {
   continueRunArgs,
   runMessageArgs,
   startRunArgs,
+  setPermissionModeArgs,
   checkQuickContinue,
   connectionIdArg,
   folderConfigProjectArg,
@@ -553,13 +554,22 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
     const o = checkRunOverrides(ctx, project, input.overrides)
+    // Per-run root choices are the desktop's alone: any other surface that sends one is refused (fail closed), never ignored.
+    const choice: StartUserChoice = {
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.permissionMode ? { permissionMode: input.permissionMode } : {})
+    }
+    const chosen = Object.keys(choice)
+    if (chosen.length && ctx.surface !== 'desktop') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app only: ${chosen.join(', ')}.`)
     return runs.start({
       project,
       prompt: input.prompt,
       scaffold: input.scaffold,
       images: input.images,
       ...(input.team === 'single' ? { team: 'single' as const } : {}),
-      ...(o.overrides ? { overrides: o.overrides, allowWidening: o.allowWidening } : {})
+      ...(o.overrides ? { overrides: o.overrides, allowWidening: o.allowWidening } : {}),
+      ...(chosen.length ? { userChoice: choice } : {})
     })
   })
   handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
@@ -627,9 +637,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
     // Headless fields only from socket / inproc clients; overrides are checked against the project the run continues as.
-    if (ctx.surface === 'desktop' || (!input.overrides && input.exec === undefined)) {
-      return runs.continueRun(project, input.runId, input.text, input.images)
-    }
+    if (ctx.surface === 'desktop') return runs.continueRun(project, input.runId, input.text, input.images, { desktop: true })
+    if (!input.overrides && input.exec === undefined) return runs.continueRun(project, input.runId, input.text, input.images)
     const o = checkRunOverrides(ctx, project, input.overrides)
     return runs.continueRun(project, input.runId, input.text, input.images, {
       ...(o.overrides ? { overrides: o.overrides } : {}),
@@ -637,8 +646,13 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       allowWidening: !!ctx.grantedScopes?.includes('configure')
     })
   })
-  handle(IPC.runsResumeNow, (_e, runId: string) => runs.resumeNow(runId))
+  handle(IPC.runsResumeNow, (ctx, runId: string) => (ctx.surface === 'desktop' ? runs.resumeNow(runId, { desktop: true }) : runs.resumeNow(runId)))
   handle(IPC.runsSwitchModel, (_e, raw: unknown) => runs.switchModel(raw as import('@shared/types').SwitchRunModelInput))
+  // Desktop only: the registry scope ('configure') only gates the params; this refusal comes first, before any parsing.
+  handle(IPC.runsSetPermissionMode, (ctx, raw: unknown) => {
+    if (ctx.surface !== 'desktop') throw new HostRpcFailure('scope_denied', "Changing a run's permission mode is available in the desktop app only.")
+    return runs.setPermissionMode(setPermissionModeArgs(raw))
+  })
   handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
   handle(
     IPC.setupAnswer,
