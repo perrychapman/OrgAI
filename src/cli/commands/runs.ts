@@ -7,6 +7,7 @@ import { DEFAULT_MAX_AUTO_CONTINUES, VIRTUAL_PROJECT_LABELS, isVirtualProjectId,
 import { formatDate } from '../../shared/view/dates'
 import { chainOf } from '../../shared/view/runChains'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
+import { countRunOutputs } from '../outputsText'
 import { autoContinueState, statusText } from '../../shared/view/runStatus'
 import { parseFlags } from '../flags'
 import { LOG_LEVEL_WORDS, filterLogs, logLine, type LogLevelFilter } from '../logText'
@@ -161,7 +162,9 @@ async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
     const st = styleFor(ctx)
     const rows = tailRows(rec.transcript, rec.agents, st, values.transcript ? 0 : tail)
 
+    const outputCount = countRunOutputs(ctx.paths.dataDir, s.projectId, s.id)
     const value: Json = {
+      outputCount,
       hostState: src.hostState,
       liveInboxAvailable: false,
       tag,
@@ -186,6 +189,7 @@ async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
         record: rec
       })
       const auto = autoContinueState({ status: s.status, plan: rec.plan, autoContinue: project?.autoContinue, maxAutoContinues: project?.maxAutoContinues, kind: s.kind }, DEFAULT_MAX_AUTO_CONTINUES)
+      if (outputCount > 0) lines.push(`  ${st.dim('Outputs:')} ${outputCount} (orgai outputs list --run ${tag})`)
       if (rec.plan) lines.push(...planLines(rec.plan, st), `  ${st.dim('Auto-continues:')} ${auto.count} of ${auto.max}${project?.autoContinue === false ? st.dim(' (off for this project)') : ''}`)
       if (values.logs) {
         const shown = filterLogs(rec.logs ?? [], level)

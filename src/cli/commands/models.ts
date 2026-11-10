@@ -65,6 +65,16 @@ export function contextText(tokens: number | undefined): string {
   return `${Math.round(tokens / 1000)}k`
 }
 
+/** Connection display names (proxies by their own name) from connections:list; built-in labels otherwise. */
+export function nameFrom(infos: unknown): (id: string) => string {
+  const names: Record<string, string> = {}
+  for (const i of Array.isArray(infos) ? (infos as ConnectionInfo[]) : []) {
+    const c = i?.connection as { id?: string; name?: unknown } | undefined
+    if (c?.id && typeof c.name === 'string' && c.name.trim()) names[c.id] = safeLine(c.name)
+  }
+  return (id) => labelOfId(id, names)
+}
+
 const queryParams = (q: Json): unknown[] => (Object.keys(q).length ? [q] : [])
 
 // ---------- list / refresh ----------
@@ -78,6 +88,7 @@ const runList = async (ctx: CliContext, args: string[]): Promise<number> => {
     const infos = await client.call<ConnectionInfo[]>('connections:list', []).catch(() => [] as ConnectionInfo[])
     const prices = await client.call<ModelPriceInfo[]>('models:prices', queryParams(q)).catch(() => [] as ModelPriceInfo[])
     const tierMap = new Map((Array.isArray(infos) ? infos : []).map((i) => [i.connection.id, i.connection.tierModels]))
+    const label = nameFrom(infos)
     const rows = (Array.isArray(models) ? models : []).map((m) => {
       const p = priceForModel(m, Array.isArray(prices) ? prices : [])
       return { model: m, tiers: tiersOf(m.id, tierMap.get(m.connection)), ...p }
@@ -103,7 +114,7 @@ const runList = async (ctx: CliContext, args: string[]): Promise<number> => {
         const st = styleFor(ctx)
         return table(
           [{ header: 'MODEL', flex: true, min: 10, ellipsis: 'middle' }, { header: 'CONNECTION', min: 7 }, { header: 'TIERS', min: 5 }, { header: 'SOURCE', min: 6 }, { header: 'CONTEXT', min: 6, align: 'right' }, { header: 'PRICE IN / OUT PER MTOK', min: 10 }],
-          rows.map((r) => [safeLine(r.model.id), r.model.connection, r.tiers.join(', '), r.model.source, contextText(r.model.contextWindow), priceText(r.price)]),
+          rows.map((r) => [safeLine(r.model.id), label(r.model.connection), r.tiers.join(', '), r.model.source, contextText(r.model.contextWindow), priceText(r.price)]),
           termWidth(ctx),
           st
         )
@@ -305,9 +316,10 @@ const runResolve = async (ctx: CliContext, args: string[]): Promise<number> => {
     emit(ctx, { projectId: project.id, connection, tiers: tiers.map((t) => clean({ ...t, model: t.model })), roles: roles.map((r) => clean({ ...r, model: r.model })) }, () => {
       const st = styleFor(ctx)
       const w = termWidth(ctx)
+      const label = nameFrom(infos)
       const model = (r: ResolvedModel): string => (r.model === null ? 'unmapped' : safeLine(r.model))
       return [
-        st.bold(`Tiers on ${labelOfId(connection)}`),
+        st.bold(`Tiers on ${label(connection)}`),
         ...table(
           [{ header: 'TIER', min: 4 }, { header: 'MODEL', flex: true, min: 10, ellipsis: 'middle' }, { header: 'FALLBACK', min: 8 }, { header: 'SOURCE', min: 6 }, { header: 'CONTEXT', min: 6, align: 'right' }],
           tiers.map((t) => [t.tier, model(t), fallbackText(t), t.source ?? '', t.model === null ? '' : contextText(t.contextWindow)]),
@@ -320,7 +332,7 @@ const runResolve = async (ctx: CliContext, args: string[]): Promise<number> => {
           ? ['No roles.']
           : table(
               [{ header: 'ROLE', flex: true, min: 8, ellipsis: 'end' }, { header: 'CONNECTION', min: 7 }, { header: 'TIER', min: 4 }, { header: 'MODEL', flex: true, min: 10, ellipsis: 'middle' }, { header: 'FALLBACK', min: 8 }, { header: 'SOURCE', min: 6 }, { header: 'CONTEXT', min: 6, align: 'right' }],
-              roles.map((r) => [safeLine(r.name), r.connection, r.tier ?? '', model(r), fallbackText(r), r.source ?? '', r.model === null || r.model === 'inherit' ? '' : contextText(r.contextWindow)]),
+              roles.map((r) => [safeLine(r.name), label(r.connection), r.tier ?? '', model(r), fallbackText(r), r.source ?? '', r.model === null || r.model === 'inherit' ? '' : contextText(r.contextWindow)]),
               w,
               st
             ))

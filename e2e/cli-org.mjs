@@ -53,6 +53,7 @@ try {
   // ---------- org show ----------
   let r = await at(['org', 'show'])
   check(r.code === 0 && r.out.includes(`CLI org e2e: ${roleCount} role`) && r.out.includes('Subagent limits:'), 'org show prints the tree and limits', show(r))
+  check(/effort \S+ · .*runs on \S+/.test(r.out), 'org show names effort, staffing and the connection each role runs on', show(r))
   let j = await jsonOf(['org', 'show'])
   check(j.r.code === 0 && j.v?.roles?.length === roleCount && j.v.roles[0].depth === 0 && typeof j.v.roles[0].model === 'string', 'org show JSON: roles with depth and model id', show(j.r))
 

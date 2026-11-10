@@ -98,8 +98,8 @@ describe('team roles / role', () => {
   it('lists name, tier, manager and grants', async () => {
     const { f } = setup({})
     expect(await runTeam(f.ctx, ['roles'])).toBe(0)
-    expect(f.out()).toContain('Lead [lead] · deep · root · 1 grant')
-    expect(f.out()).toContain('Dev [dev] · everyday · reports to Lead · 0 grants')
+    expect(f.out()).toContain("Lead [lead] · deep · effort default · runs on Anthropic (the project's connection) · root · 1 grant")
+    expect(f.out()).toContain("Dev [dev] · everyday · effort default · runs on Anthropic (the project's connection) · reports to Lead · 0 grants")
   })
 
   it('shows one role with hidden characters made visible and escapes stripped', async () => {

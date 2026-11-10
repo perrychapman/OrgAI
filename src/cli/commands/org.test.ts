@@ -85,6 +85,8 @@ describe('org show', () => {
     expect(out).toMatch(/\n {4}DevRED.*\[dev\] · everyday/)
     expect(out).toMatch(/\n {6}Qa \[qa\]/)
     expect(out).toContain('spawns: DevRED')
+    expect(out).toMatch(/effort default · always as configured: deep at the default effort \(the top of the chart\) · runs on Anthropic \(the project's connection\)/)
+    expect(out).toMatch(/effort \S+ · automatic, .* · runs on Anthropic/)
     expect(out).toContain('MCP: github · skills: code-review')
     expect(out).toContain('Subagent limits: depth 3 (automatic), 8 at once (automatic)')
   })

@@ -81,7 +81,7 @@ describe('/model', () => {
     const { ctx, session } = fakeCtx(stateWith())
     await cmd('model').run(ctx, 'fast')
     expect(session.switchModel).toHaveBeenCalledWith(expect.objectContaining({ id: 'haiku', connection: 'anthropic' }), expect.any(Object))
-    expect(ctx.notify).toHaveBeenLastCalledWith('Model changed to haiku via anthropic.')
+    expect(ctx.notify).toHaveBeenLastCalledWith('Model changed to haiku via Anthropic.')
     const confirm = (session.switchModel.mock.calls[0] as unknown[])[1] as { confirm(): Promise<boolean> }
     await confirm.confirm()
     expect(ctx.confirm).toHaveBeenCalledWith(expect.stringContaining('End this session and switch model? Your conversation stays here.'))
@@ -92,14 +92,14 @@ describe('/model', () => {
     const { ctx, session } = fakeCtx(stateWith(), { pick })
     await cmd('model').run(ctx, '')
     const [title, options] = pick.mock.calls[0] as unknown as [string, { value: string; label: string }[]]
-    expect(title).toBe('Model (current: opus via anthropic)')
-    expect(options.map((o) => o.label)).toEqual(['haiku · anthropic · fast', 'opus · anthropic · deep · current', 'gpt · openai · ends session'])
+    expect(title).toBe('Model (current: opus via Anthropic)')
+    expect(options.map((o) => o.label)).toEqual(['haiku · Anthropic · fast', 'opus · Anthropic · deep · current', 'gpt · OpenAI · ends session'])
     expect(session.switchModel).not.toHaveBeenCalled()
     pick.mockResolvedValueOnce(options[2].value)
     session.switchModel.mockResolvedValueOnce({ kind: 'next', run: summary(), stopped: true })
     await cmd('model').run(ctx, '')
     expect(session.switchModel).toHaveBeenCalledWith(expect.objectContaining({ id: 'gpt', connection: 'openai' }), expect.any(Object))
-    expect(ctx.notify).toHaveBeenLastCalledWith('Model selected for the next message: gpt via openai.')
+    expect(ctx.notify).toHaveBeenLastCalledWith('Model selected for the next message: gpt via OpenAI.')
   })
 
   it('without a picker it opens the list; the current model and unknown ids only notify; host errors are one danger line', async () => {
@@ -107,7 +107,7 @@ describe('/model', () => {
     await cmd('model').run(ctx, '')
     expect(ctx.openText).toHaveBeenCalledWith('Models', expect.stringContaining('Switch: /model <tier|model id>'))
     await cmd('model').run(ctx, 'deep')
-    expect(ctx.notify).toHaveBeenLastCalledWith('Already on opus via anthropic.')
+    expect(ctx.notify).toHaveBeenLastCalledWith('Already on opus via Anthropic.')
     await cmd('model').run(ctx, 'nope')
     expect(ctx.notify).toHaveBeenLastCalledWith('Model nope is not available on a connected connection.', 'warn')
     session.switchModel.mockRejectedValueOnce(new Error('Answer the open decisions\nbefore changing models.'))

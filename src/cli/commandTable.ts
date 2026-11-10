@@ -21,6 +21,7 @@ import { ENTRY as KIT_ENTRY } from './entries/kit'
 import { ENTRY as PROJECTS_ENTRY } from './entries/projects'
 import { ENTRY as SECRETS_ENTRY } from './entries/secrets'
 import { ENTRY as SETTINGS_ENTRY } from './entries/settings'
+import { ENTRY as OUTPUTS_ENTRY } from './entries/outputs'
 
 export interface CommandFlag {
   /** Long name without the dashes. */
@@ -207,7 +208,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   KIT_ENTRY,
   PROJECTS_ENTRY,
   SECRETS_ENTRY,
-  SETTINGS_ENTRY
+  SETTINGS_ENTRY,
+  OUTPUTS_ENTRY
 ]
 
 export function findCommand(name: string): CommandEntry | undefined {

@@ -21,6 +21,7 @@ import { runProjects } from './commands/projects'
 import { runRuns } from './commands/runs'
 import { runSecrets } from './commands/secrets'
 import { runSettings } from './commands/settings'
+import { runOutputs } from './commands/outputs'
 import { runSkills } from './commands/skills'
 import { runStatus } from './commands/status'
 import { runTeam } from './commands/team'
@@ -61,7 +62,8 @@ export const ROUTES: Record<string, CommandFn> = {
   kit: runKit,
   projects: runProjects,
   secrets: runSecrets,
-  settings: runSettings
+  settings: runSettings,
+  outputs: runOutputs
 }
 
 export interface MainOverrides {

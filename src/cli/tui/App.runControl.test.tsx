@@ -103,14 +103,14 @@ describe('/model in the shell', () => {
     await tick()
     await app.typed('/model\r')
     const f = app.frame()
-    expect(f).toContain('Model (current: opus via anthropic)')
-    expect(f).toContain('> haiku · anthropic · fast')
-    expect(f).toContain('opus · anthropic · current')
+    expect(f).toContain('Model (current: opus via Anthropic)')
+    expect(f).toContain('> haiku · Anthropic · fast')
+    expect(f).toContain('opus · Anthropic · current')
     expect(f).toContain('Enter picks')
     await app.send(named('enter'))
     await tick()
     expect(app.session.switchModel).toHaveBeenCalledWith(expect.objectContaining({ id: 'haiku' }), expect.any(Object))
-    expect(app.frame()).toContain('Model changed to haiku via anthropic.')
+    expect(app.frame()).toContain('Model changed to haiku via Anthropic.')
   })
 
   it('Esc closes the picker without switching', async () => {

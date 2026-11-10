@@ -63,6 +63,7 @@ import type {
   UsageStatus,
   RunStatus,
   RunSummary,
+  RunOutput,
   RunTeam,
   TranscriptEntry,
   UserQuestion,
@@ -543,6 +544,8 @@ export interface TuiSessionApi {
   stop(): Promise<void>
   decide(call: DecisionCall): Promise<DecisionOutcome>
   worktreeDiff(branch: string): Promise<WorktreeDiff>
+  /** outputs:list of the followed run's project (/outputs filters to the run). */
+  listOutputs(): Promise<RunOutput[]>
   listRuns(): Promise<RunSummary[]>
   /** An Org retrospective of an ended work run (setup:retro, operate scope); follows the new run. */
   startRetro(runId?: string): Promise<RunSummary>

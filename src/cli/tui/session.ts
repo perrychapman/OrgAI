@@ -23,6 +23,7 @@ import {
   type RunOverrides,
   type RunRecord,
   type RunSummary,
+  type RunOutput,
   type RunTeam,
   type WorktreeDiff
 } from '../../shared/types'
@@ -557,6 +558,10 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     },
     async worktreeDiff(branch: string): Promise<WorktreeDiff> {
       return call<WorktreeDiff>('maintenance:diff', [{ projectId: projectIdOf(state.activeRunId), branch }])
+    },
+    async listOutputs() {
+      const list = await call<RunOutput[]>('outputs:list', [projectIdOf(state.activeRunId)])
+      return Array.isArray(list) ? list : []
     },
     async listRuns() {
       const list = await call<RunSummary[]>('runs:list', [projectIdOf()])

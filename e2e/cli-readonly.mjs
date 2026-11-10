@@ -39,6 +39,12 @@ try {
   const doctor = await cli(['doctor'])
   check(doctor.code === 0 && /product +.*marked orgai-cli/.test(doctor.out) && /No other orgai is running/.test(doctor.out), 'doctor: marker, no other orgai', doctor.out + doctor.err)
   check(!fs.existsSync(DAEMON_JSON), 'the read-only commands started no host')
+  // outputs list reads through a host (outputs:list), so it runs after the files-only checks; the mock run made none.
+  const outs = await cli(['--project', repo, 'outputs', 'list'])
+  check(outs.code === 0 && /No outputs yet\.|ID\s+TITLE/.test(outs.out), 'outputs list answers (none for the mock run)', show(outs))
+  const outsJson = await cli(['--project', repo, '--output-format', 'json', 'outputs', 'list'])
+  check(outsJson.code === 0 && Array.isArray(json(outsJson.out)?.outputs), 'outputs list JSON has an outputs array', show(outsJson))
+  check(!fs.existsSync(DAEMON_JSON), 'outputs list left no host behind')
 
   // ---------- 2. A second orgai ----------
   const slow = startCli(['--output-format', 'stream-json', 'exec', '[mock:exec-slow] take your time'], { cwd: repo })

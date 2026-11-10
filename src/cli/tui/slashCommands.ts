@@ -3,6 +3,7 @@
  * notice built from host data goes through sanitizeTty, and a command's failure becomes one danger notice (a command
  * never throws into the shell).
  */
+import { outputsOfRun, outputsOverlayText } from '../outputsText'
 import { LOG_LEVEL_WORDS, logsOverlayText, type LogLevelFilter } from '../logText'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { agentLabel, statusWordOfSummary } from '../render'
@@ -12,7 +13,7 @@ import { offersRetro } from './selectors'
 import { usageText } from './usageText'
 import { MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE } from '../../shared/liveModelSwitch'
 import type { ProviderModel, RunOverrides, RunSummary } from '../../shared/types'
-import { modelChoices, pickModel } from '../modelSwitch'
+import { connectionName, modelChoices, pickModel } from '../modelSwitch'
 import { parseSlashRunArgs } from '../runStartFlags'
 import type { SlashCommand, SlashContext, TuiState } from './types'
 
@@ -98,7 +99,7 @@ function startArgs(args: string): { prompt: string; overrides?: RunOverrides } {
 }
 
 /** "model-id via Anthropic" for notices. */
-const selectionLabel = (m: Pick<ProviderModel, 'id' | 'connection'>): string => `${cleanLine(m.id, 120)} via ${cleanLine(m.connection, 60)}`
+const selectionLabel = (m: Pick<ProviderModel, 'id' | 'connection'>, name?: string): string => `${cleanLine(m.id, 120)} via ${cleanLine(name ?? m.connection, 60)}`
 
 /** /model: no argument lists the choices (a picker when the shell has one), else resolves a tier or id and switches. */
 async function runModel(ctx: SlashContext, args: string): Promise<void> {
@@ -116,10 +117,10 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
       ctx.notify('No models available on connected connections.', 'warn')
       return
     }
-    const current = run.modelSelection ? selectionLabel({ id: run.modelSelection.model, connection: run.modelSelection.connection }) : 'not recorded'
+    const current = run.modelSelection ? selectionLabel({ id: run.modelSelection.model, connection: run.modelSelection.connection }, connectionName(catalog, run.modelSelection.connection)) : 'not recorded'
     const options = choices.map((c) => ({
       value: JSON.stringify([c.connection, c.id]),
-      label: cleanLine(`${c.label !== c.id ? `${c.label} (${c.id})` : c.id} · ${c.connection}${c.tiers.length ? ` · ${c.tiers.join(', ')}` : ''}${c.current ? ' · current' : c.handoff ? ' · ends session' : ''}`, 160)
+      label: cleanLine(`${c.label !== c.id ? `${c.label} (${c.id})` : c.id} · ${connectionName(catalog, c.connection)}${c.tiers.length ? ` · ${c.tiers.join(', ')}` : ''}${c.current ? ' · current' : c.handoff ? ' · ends session' : ''}`, 160)
     }))
     if (!ctx.pick) {
       await ctx.openText('Models', [`Current: ${current}`, '', ...options.map((o) => `  ${o.label}`), '', 'Switch: /model <tier|model id>'].join('\n'))
@@ -139,13 +140,13 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
   }
   if (!selected) return
   if (run.modelSelection?.model === selected.id && run.modelSelection.connection === selected.connection) {
-    ctx.notify(`Already on ${selectionLabel(selected)}.`)
+    ctx.notify(`Already on ${selectionLabel(selected, connectionName(catalog, selected.connection))}.`)
     return
   }
   const out = await ctx.session.switchModel(selected, { confirm: () => ctx.confirm(`${MODEL_HANDOFF_TITLE} ${MODEL_HANDOFF_BODY}`) })
   if (out.kind === 'cancelled') ctx.notify('Model unchanged.')
-  else if (out.kind === 'applied') ctx.notify(`Model changed to ${selectionLabel(selected)}.`)
-  else ctx.notify(`Model selected for the next message: ${selectionLabel(selected)}.`)
+  else if (out.kind === 'applied') ctx.notify(`Model changed to ${selectionLabel(selected, connectionName(catalog, selected.connection))}.`)
+  else ctx.notify(`Model selected for the next message: ${selectionLabel(selected, connectionName(catalog, selected.connection))}.`)
 }
 
 function retroReason(s: TuiState): string | undefined {
@@ -401,6 +402,18 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
         const st = ctx.state()
         const run = st.activeRunId ? st.runs[st.activeRunId] : undefined
         await ctx.openText('Logs', logsOverlayText(run?.logs, level))
+      })
+  },
+  {
+    name: 'outputs',
+    summary: "The files this run produced (orgai outputs show <id> previews one)",
+    available: (s) => s.activeRunId !== undefined,
+    unavailableReason: needsRunReason,
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        const runId = ctx.state().activeRunId
+        const all = await ctx.session.listOutputs()
+        await ctx.openText('Outputs', outputsOverlayText(runId ? outputsOfRun(all, runId) : []))
       })
   },
   {
