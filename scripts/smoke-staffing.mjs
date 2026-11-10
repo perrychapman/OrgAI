@@ -1,9 +1,9 @@
 // Smoke for docs/design/orchestration-efficiency.md §2, §4.2, §4.3: per-spawn model and effort, parallel foreground
 // spawns, one-shot latency. Spends real tokens (haiku; sonnet only where a check needs effort or a second model).
-// About 14 short model sessions: checks 1-6 are one each (plus 5b), check 7 is 5 sequential one-shots, check 8 is two, check 9 is one. Run once, do not loop.
+// About 14 short model sessions: checks 1-6 are one each (plus 5b), check 7 is 5 sequential one-shots, check 8 is two, check 9 is one, check 10 is three (the control makes one sonnet call). Run once, do not loop.
 // Check 7 MIRRORS buildCompletionOptions in src/main/runtime/claude.ts (importing the adapter drags in Electron),
 // minus the OrgAI env isolation (it inherits this shell's login).
-// Usage: node scripts/smoke-staffing.mjs [1 2 3 4 5 6 7 8 9]   (default: all; 5 also runs 5b)
+// Usage: node scripts/smoke-staffing.mjs [1 2 3 4 5 6 7 8 9 10]   (default: all; 5 also runs 5b)
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { mkdtempSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,7 +11,7 @@ import { join } from 'node:path'
 
 const dir = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-smoke-staffing-')))
 process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }) } catch {} })
-const want = new Set(process.argv.slice(2).length ? process.argv.slice(2) : ['1', '2', '3', '4', '5', '6', '7', '8', '9'])
+const want = new Set(process.argv.slice(2).length ? process.argv.slice(2) : ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'])
 const results = []
 let sessions = 0
 const verdict = (id, v, evidence) => { results.push({ id, v, evidence }); console.log(`\n[${id}] ${v}: ${evidence}\n`) }
@@ -39,7 +39,7 @@ async function run(label, prompt, options, pre) {
     for await (const msg of query({ prompt, options: { cwd: dir, settingSources: [], env, maxTurns: 12, hooks, abortController, ...options } })) {
       if (msg.type === 'system' && msg.subtype === 'init') ev.init = { t: stamp(), model: msg.model }
       else if (msg.type === 'system' && msg.subtype.startsWith('task_')) ev.tasks.push({ t: stamp(), sub: msg.subtype, id: msg.task_id })
-      else if (msg.type === 'assistant') ev.assistants.push({ t: stamp(), who: msg.parent_tool_use_id ? 'child' : 'root', model: msg.message.model, mid: msg.message.id, tools: msg.message.content.filter((b) => b.type === 'tool_use').map((b) => b.name) })
+      else if (msg.type === 'assistant') ev.assistants.push({ t: stamp(), who: msg.parent_tool_use_id ? 'child' : 'root', ptu: msg.parent_tool_use_id ?? null, agentUses: msg.message.content.filter((b) => b.type === 'tool_use' && b.name === 'Agent').map((b) => ({ id: b.id, type: b.input?.subagent_type })), model: msg.message.model, mid: msg.message.id, tools: msg.message.content.filter((b) => b.type === 'tool_use').map((b) => b.name) })
       else if (msg.type === 'user' && Array.isArray(msg.message.content)) { for (const b of msg.message.content) if (b.type === 'tool_result' && !msg.parent_tool_use_id) ev.toolResults.push({ t: stamp(), err: !!b.is_error, text: JSON.stringify(b.content).slice(0, 300) }) }
       else if (msg.type === 'result') ev.result = { t: stamp(), subtype: msg.subtype, cost: msg.total_cost_usd, models: Object.keys(msg.modelUsage ?? {}), text: (msg.result ?? '').slice(0, 120) }
     }
@@ -162,6 +162,22 @@ if (want.has('9')) {
   const e = childEffort(ev); const m = childModels(ev)
   const spawned = ev.starts.length > 0 && e.length > 0
   verdict('9 definition effort on a model without effort levels', authFail(ev) ? 'INCONCLUSIVE' : spawned ? 'PASS' : 'FAIL', `worker def model=${id} effort=medium; supportedModels row=${JSON.stringify(row ? { value: row.value, supportsEffort: row.supportsEffort, levels: row.supportedEffortLevels } : null)}; subagent started=${ev.starts.length > 0}; child Bash effort.level=${JSON.stringify(e)} (null = no effort reported); child models=${JSON.stringify(m)}; Agent tool_results=${JSON.stringify(ev.toolResults.slice(0, 2))}; error=${ev.error ?? 'none'}`)
+}
+if (want.has('10')) {
+  // Does ANTHROPIC_DEFAULT_SONNET_MODEL redirect the alias `sonnet` on a subscription login with no ANTHROPIC_BASE_URL?
+  // (OrgAI sets it only on proxy connections.) Mapped target: the haiku id check 9 uses. The SDK stream carries no child
+  // assistant messages here, so each spawn gets its own session and the child model is read from modelUsage (childModels).
+  const mapped = 'claude-haiku-4-5-20251001'
+  const one = (t) => `Spawn the agent "${t}" with the Agent tool (subagent_type "${t}", prompt "Reply with the word ok."), foreground, then reply "done".`
+  const defs = { lead: rootDef(), wa: { description: 'Replies ok', prompt: 'Reply with the single word ok.', tools: [] }, wb: { description: 'Replies ok', prompt: 'Reply with the single word ok.', tools: [], model: 'sonnet' } }
+  const hookSonnet = () => ({ model: 'sonnet', run_in_background: false })
+  const noHook = () => ({ run_in_background: false })
+  const withVar = { ...base, model: 'haiku', env: { ...env, ANTHROPIC_DEFAULT_SONNET_MODEL: mapped }, agents: defs }
+  const a = await run('10a variable set; hook writes sonnet; definition has no model', one('wa'), withVar, hookSonnet)
+  const b = await run('10b variable set; definition model sonnet; no hook change', one('wb'), withVar, noHook)
+  const c = await run('10c control, no variable; hook writes sonnet', one('wa'), { ...base, model: 'haiku', agents: defs }, hookSonnet)
+  const kind = (ev) => { const m = childModels(ev); return m.length ? `${JSON.stringify(m)} -> ${m.every((x) => x === mapped) ? 'mapped id (variable applies)' : m.some((x) => /sonnet/i.test(x ?? '')) ? 'SDK sonnet (variable does not apply)' : 'other'}` : 'none observed' }
+  verdict('10 ANTHROPIC_DEFAULT_SONNET_MODEL on a subscription login', [a, b, c].some(authFail) || !childModels(c).length ? 'INCONCLUSIVE' : 'PASS', `variable=${mapped}; (a) hook alias sonnet, definition without model: spawned=${a.starts.length > 0}, child model(s)=${kind(a)}, modelUsage=${JSON.stringify(a.result?.models)}; (b) definition model sonnet, no hook change: spawned=${b.starts.length > 0}, child model(s)=${kind(b)}, modelUsage=${JSON.stringify(b.result?.models)}; (c) control without variable, hook sonnet: spawned=${c.starts.length > 0}, child model(s)=${kind(c)}, modelUsage=${JSON.stringify(c.result?.models)}; errors=${a.error ?? 'none'}/${b.error ?? 'none'}/${c.error ?? 'none'}`)
 }
 console.log(`\n=== SUMMARY (${sessions} model sessions)`)
 for (const r of results) console.log(`${r.v.padEnd(12)} ${r.id}`)
