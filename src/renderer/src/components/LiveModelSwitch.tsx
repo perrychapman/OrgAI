@@ -9,6 +9,7 @@ import { useConfirm } from './ui/ConfirmDialog'
 import { ModelPickerList, focusSearchWhenOpen, useModelCatalog } from './runSettings/ModelPickerList'
 import { connectionLabel } from '../lib/connectionLabel'
 import { useAppStore } from '../store/useAppStore'
+import { LIVE_MODEL_HELP_ASSISTANT, LIVE_MODEL_HELP_TEAM } from '../lib/runSettings'
 import { liveModelLabel, modelKey, modelSessionEnded, needsModelHandoff, performModelSwitch } from '../lib/liveModelSwitch'
 import '../styles/live-model-switch.css'
 import '../styles/run-settings.css'
@@ -48,6 +49,8 @@ export function LiveModelSwitch({ run, onRunChanged, className, inRow }: { run: 
   const currentModel = (cachedModels ?? models).find((model) => model.id === applied?.model && model.connection === applied.connection)
   const current = applied ? `${currentModel?.label || applied.model} · ${name(applied.connection)}` : 'Current model unavailable'
   const nextMessage = modelSessionEnded(run)
+  // Only a team run has other roles that could follow the lead's model.
+  const teamRun = run.kind === 'work' && !run.quick && run.team !== 'single'
   const handoff = !!selected && !nextMessage && (requiresHandoff || needsModelHandoff(run, selected))
   const unchanged = !!selected && selected.id === applied?.model && selected.connection === applied.connection
 
@@ -107,14 +110,14 @@ export function LiveModelSwitch({ run, onRunChanged, className, inRow }: { run: 
     <Popover placement="top-start" label="Choose conversation model" triggerTestId="live-model-change" testId="live-model-picker" className="live-model-switch__picker"
       triggerClassName="run-chip live-model-switch__trigger" triggerTitle={applied ? liveModelLabel(applied.model, applied.connection) : current}
       triggerLabel={`${busy ? 'Changing model. ' : ''}Conversation model: ${nextMessage ? 'Next message: ' : ''}${current}${applied ? ` (${applied.model})` : ''}`}
-      trigger={<><span className="run-chip__value" data-testid="live-model-current">{busy ? 'Changing model…' : <>{nextMessage && 'Next message: '}{current}</>}</span><Icon icon={ChevronDown} size="xs" /></>}
+      trigger={<><span className="run-chip__label">Model:</span><span className="run-chip__value" data-testid="live-model-current">{busy ? 'Changing model…' : <>{nextMessage && 'Next message: '}{current}</>}</span><Icon icon={ChevronDown} size="xs" /></>}
       onOpenChange={(value) => { if (!value && !confirming.current) epoch.current++; setOpen(value); if (value) { if (reopening.current) { reopening.current = false; return }; setQuery(''); setChoice(applied ? modelKey(applied.connection, applied.model) : ''); setError(''); setRequiresHandoff(false) } }}>
       {({ close }) => <>
         <ModelPickerList testIdPrefix="live-model" catalog={catalog} query={query} onQuery={setQuery} choice={choice} disabled={busy} searchRef={focusSearch} onEscape={close}
           current={applied ?? null} currentText={current}
           onChoose={(model) => { setChoice(modelKey(model.connection, model.id)); setError(''); setRequiresHandoff(false) }} />
         <div className="live-model-switch__footer">
-          <p>Applies to this conversation’s lead agent.</p>
+          <p data-testid="live-model-help">{teamRun ? LIVE_MODEL_HELP_TEAM : LIVE_MODEL_HELP_ASSISTANT}</p>
           {selected && !unchanged && <p data-testid="live-model-pending">{handoff ? 'Starts a new session with a transcript handoff. Your draft stays unsent.' : run.status === 'running' ? 'Interrupts the current reply, then switches when idle.' : nextMessage ? 'Your next message uses this selection.' : 'Selection not applied yet.'}</p>}
           <p className="live-model-switch__error" role="alert" data-testid="live-model-error">{error}</p>
           <div className="live-model-switch__actions">

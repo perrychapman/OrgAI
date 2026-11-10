@@ -6,7 +6,7 @@ import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import { connectionLabel } from '../../lib/connectionLabel'
 import { modelKey } from '../../lib/liveModelSwitch'
-import type { RunModel } from '../../lib/runSettings'
+import { MODEL_HELP_ASK, MODEL_HELP_TEAM, type RunModel } from '../../lib/runSettings'
 import { useTriggerAttrs } from './triggerAttrs'
 import { ModelPickerList, focusSearchWhenOpen, useModelCatalog } from './ModelPickerList'
 import '../../styles/run-settings.css'
@@ -50,7 +50,7 @@ export function StartModelControl({
         testId="run-model-picker"
         className="live-model-switch__picker run-model-picker"
         triggerClassName="run-chip"
-        triggerTitle={shown ? `${shown.model} via ${connectionLabel(shown.connection)}. ${ask ? 'Model for the assistant.' : 'Model for the lead agent. Team members keep the models set in the Team tab.'}` : 'Model for the lead agent.'}
+        triggerTitle={shown ? `${shown.model} via ${connectionLabel(shown.connection)}. ${ask ? MODEL_HELP_ASK : MODEL_HELP_TEAM}` : MODEL_HELP_TEAM}
         trigger={
           <>
             <span className="run-chip__label">Model:</span>
@@ -85,7 +85,7 @@ export function StartModelControl({
               onEscape={close}
             />
             <div className="live-model-switch__footer">
-              <p>{ask ? 'Model for the assistant.' : 'Model for the lead agent. Team members keep the models set in the Team tab.'}</p>
+              <p data-testid="run-model-help">{ask ? MODEL_HELP_ASK : MODEL_HELP_TEAM}</p>
               <div className="live-model-switch__actions">
                 <Button
                   size="sm"

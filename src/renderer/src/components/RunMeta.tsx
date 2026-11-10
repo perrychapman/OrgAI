@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { Bot, ClipboardList, Clock, Database, Files, Folder, ShieldAlert } from 'lucide-react'
+import { Bot, ClipboardList, Clock, Database, Files, Folder, Shield, ShieldAlert } from 'lucide-react'
+import { isPermissiveMode, metaPermissionMode, permissionModeHelp, permissionModeName } from '../lib/runSettings'
+import '../styles/run-settings.css'
 import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
 import { useOutputAnnouncements } from './outputs/useOutputAnnouncements'
 import { chipLabel } from '../lib/outputRevise'
@@ -34,7 +36,7 @@ import { isOrgChangeRun, ORG_CHANGE_KIND_LABEL } from '../lib/orgChange'
 
 /**
  * The run's quiet metadata line at the start of the canvas toolbar (12 px, tertiary): the run it continues, agents,
- * plan steps (opens the Plan tab), cost, start time and "unattended". Items drop from the end in a narrow frame
+ * plan steps (opens the Plan tab), cost, start time and the permission mode when it is not the plain default. Items drop from the end in a narrow frame
  * (container queries in run.css); the status is not here, the active tab carries it.
  */
 export default function RunMeta({ run, project, agentCount }: { run: RunState; project: Project; agentCount: number }): ReactElement {
@@ -119,6 +121,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     maxAutoContinues: project.maxAutoContinues,
     kind: summary.kind
   })
+  const metaMode = metaPermissionMode(summary, project)
   const next = useAppStore((s) => s.proposalNextByRun[summary.id])
   const nextCopy = next ? PROPOSAL_NEXT_COPY[next.kind] : null
   const goNext = (): void => {
@@ -180,6 +183,27 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
+      {metaMode && (
+        // Early in the line: the items at the end are the first to be cut in a narrow frame, and this one is a safety cue.
+        <span
+          className={`run-meta-item run-meta-permission${metaMode === 'auto' ? ' run-meta-unattended' : ''}`}
+          data-testid="run-meta-permission"
+          data-mode={metaMode}
+          data-tone={isPermissiveMode(metaMode) ? 'warning' : undefined}
+          title={`${permissionModeName(metaMode)}${summary.permissionModeChosen ? ' (this run)' : ''}: ${
+            metaMode === 'auto'
+              ? "the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."
+              : permissionModeHelp(metaMode)
+          }`}
+        >
+          <Icon icon={isPermissiveMode(metaMode) ? ShieldAlert : Shield} size="xs" />
+          {permissionModeName(metaMode)}
+          <span className="sr-only">
+            {' '}
+            (permission mode{summary.permissionModeChosen ? ', this run' : ''})
+          </span>
+        </span>
+      )}
       {(counts.working > 0 || counts.ready > 0) && (
         <span className="run-meta-item run-meta-staffing" data-testid="run-meta-staffing" title="Agents working now and plan steps ready to start">
           {counts.working > 0 && <span data-testid="run-meta-working">{counts.working} working</span>}
@@ -266,15 +290,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
       {summary.team === 'single' && !summary.quick && !isVirtualProjectId(summary.projectId) && (
         <span className="run-meta-item" data-testid="run-meta-ask">
           Ask · one assistant
-        </span>
-      )}
-      {project.permissionMode === 'auto' && !summary.quick && summary.kind === 'work' && summary.team !== 'single' && !isVirtualProjectId(summary.projectId) && (
-        <span
-          className="run-meta-item run-meta-unattended"
-          title="Permission mode is auto: the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."
-        >
-          <Icon icon={ShieldAlert} size="xs" />
-          unattended
         </span>
       )}
     </div>

@@ -4,9 +4,10 @@
  * contract is StartRunInput.modelSelection / effort / permissionMode, RunSummary.rootEffort / permissionMode /
  * permissionModeChosen and runs:setPermissionMode (src/shared/types.ts). Nothing here changes project settings.
  */
-import type { ConnectionId, Effort, ModelTier, ModelRef, PermissionMode, Project, ProviderId, ProviderModel, RunSummary, StartRunInput } from '@shared/types'
+import type { ConnectionId, Effort, ModelTier, ModelRef, PermissionMode, Project, ProviderId, ProviderModel, RunSummary, StaffingGoal, StartRunInput } from '@shared/types'
 import { EFFORTS, runPermissionModeChoices } from '@shared/types'
-import { adapterOnConnection, effortOptionsFor, modelFamily, projectConnection, resolveModelSetting } from '@shared/defaults'
+import { adapterOnConnection, effortOptionsFor, modelFamily, projectConnection, resolveModelSetting, staffingGoalOf } from '@shared/defaults'
+import { showsGoalChoice } from './runGoal'
 import { PERMISSION_MODE_SHORT } from '@shared/view/settingsCopy'
 import { PERMISSION_MODE_TRADEOFF } from '@shared/view/permissionCopy'
 
@@ -188,6 +189,92 @@ export function permissionOutcomeText(result: { applied: boolean; reason?: strin
   }
   return { tone: 'refused', text: result.reason || 'The permission mode was not changed.' }
 }
+
+// ---------- The live composer's row ----------
+
+/** Statuses of a session that is over; its next message continues it (RunSummary.permissionMode then says what that uses). */
+export function permissionSessionEnded(status: RunSummary['status']): boolean {
+  return status === 'finished' || status === 'error' || status === 'paused'
+}
+
+/**
+ * The mode the live permission chip shows. A live run shows the mode in force. An ended or paused run shows the mode its
+ * next continuation uses, so a carried wider mode is seen before Send: the user's per-run choice when there is one, else
+ * the run's exec override, else the project's mode.
+ */
+export function livePermissionValue(
+  run: Pick<RunSummary, 'status' | 'permissionMode' | 'permissionModeChosen' | 'overrides' | 'kind' | 'quick' | 'buildWorkspace'>,
+  project: Pick<Project, 'permissionMode'>
+): { mode: PermissionMode; next: boolean } {
+  if (!permissionSessionEnded(run.status)) return { mode: effectiveRunMode(run, runPermissionMode(run, project)), next: false }
+  if (run.permissionModeChosen && run.permissionMode) return { mode: run.permissionMode, next: true }
+  return { mode: effectiveRunMode(run, run.overrides?.permissionMode ?? project.permissionMode), next: true }
+}
+
+/**
+ * Chat and build sessions are trust-restricted: their adapters ask in place of a mode that asks less (see
+ * runPermissionModeChoices), so a project mode of auto or bypass must not be shown as theirs. A mode the run accepts stays.
+ */
+function effectiveRunMode(run: Pick<RunSummary, 'kind' | 'quick' | 'buildWorkspace'>, mode: PermissionMode): PermissionMode {
+  const accepted = runPermissionModeChoices(run)
+  return accepted.length > 0 && !accepted.includes(mode) ? 'default' : mode
+}
+
+/**
+ * Running reports that kept the earlier mode (SetRunPermissionModeResult.reportsUnchanged). Read defensively: a build
+ * whose shared type does not carry the field yet answers 0.
+ */
+export function reportsUnchangedOf(result: object): number {
+  const n = (result as { reportsUnchanged?: unknown }).reportsUnchanged
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+}
+
+/** "2 running reports keep the earlier mode until they finish." (empty for none). */
+export function reportsUnchangedText(count: number): string {
+  if (!(count > 0)) return ''
+  return count === 1 ? '1 running report keeps the earlier mode until it finishes.' : `${count} running reports keep the earlier mode until they finish.`
+}
+
+/** The visible and spoken outcome of a live mode change: permissionOutcomeText plus the reports that kept the old mode. */
+export function livePermissionOutcome(
+  result: { applied: boolean; reason?: string; run: Pick<RunSummary, 'status' | 'permissionMode'> },
+  mode: PermissionMode
+): { tone: 'ok' | 'saved' | 'refused'; text: string; reports: string; message: string } {
+  const base = permissionOutcomeText(result, mode)
+  const reports = base.tone === 'ok' ? reportsUnchangedText(reportsUnchangedOf(result)) : ''
+  return { ...base, reports, message: reports ? `${base.text} ${reports}` : base.text }
+}
+
+/** True when a refusal leaves a way forward: the run is replying now, so an interrupt may open a boundary. */
+export function offersInterruptToChange(outcome: { tone: string }, status: RunSummary['status']): boolean {
+  return outcome.tone === 'refused' && status === 'running'
+}
+
+/** The effort a live run shows: its own record, else the root role's for a team run, else none (the model's default). */
+export function liveEffort(run: Pick<RunSummary, 'rootEffort' | 'kind' | 'quick' | 'team'>, project: Pick<Project, 'roles'>): Effort | undefined {
+  if (run.rootEffort) return run.rootEffort
+  if (run.kind !== 'work' || run.quick || run.team === 'single') return undefined
+  return rootRole(project)?.effort
+}
+
+/** The goal a live team run shows (null when the run has none to show: Ask, Chat, assistants, a fixed-staffing project). */
+export function liveGoal(run: Pick<RunSummary, 'kind' | 'quick' | 'team' | 'overrides'>, project: Pick<Project, 'staffing' | 'staffingGoal'>): StaffingGoal | null {
+  if (run.kind !== 'work' || run.quick || run.team === 'single' || !showsGoalChoice(project, false)) return null
+  return run.overrides?.goal ?? staffingGoalOf(project)
+}
+
+/** The mode RunMeta names (null: nothing to show). Work runs only, Chat and Ask included; setup-like runs pin their mode. */
+export function metaPermissionMode(run: Pick<RunSummary, 'kind' | 'permissionMode' | 'quick' | 'buildWorkspace'>, project: Pick<Project, 'permissionMode'>): PermissionMode | null {
+  if (run.kind !== 'work') return null
+  const mode = effectiveRunMode(run, runPermissionMode(run, project))
+  return showsModeInMeta(mode) ? mode : null
+}
+
+/** The model chip's help line (start page title, live picker footer): which agents the choice reaches. */
+export const MODEL_HELP_TEAM = 'Model for the lead agent. Roles set to inherit follow it; other team members keep the models set in the Team tab.'
+export const MODEL_HELP_ASK = 'Model for the assistant.'
+export const LIVE_MODEL_HELP_TEAM = 'Applies to this conversation’s lead agent. Roles set to inherit follow it; other team members keep the models set in the Team tab.'
+export const LIVE_MODEL_HELP_ASSISTANT = 'Applies to this conversation’s lead agent.'
 
 // ---------- What a start sends ----------
 
