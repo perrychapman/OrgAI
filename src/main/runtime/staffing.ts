@@ -280,8 +280,11 @@ export function isDeepOrTopModelRef(model: string | undefined, tierModels: Parti
  *    staffing.minTier when not above the ceiling. Effort ceiling: staffing.maxEffort ?? role.effort ?? 'high' (xhigh
  *    and max only when the chart allows them).
  * 3. Pick (auto). tier = requested ?? profile ?? ceiling; effort = requested ?? profile ?? role.effort (may stay
- *    undefined: no effort is sent). Source 'orchestrator' when a requested field was used, else 'profile' when a
- *    profile field was used, else 'role'.
+ *    undefined: no effort is sent and the adapter's default, DEFAULT_EFFORT_BASELINE, applies). Exception: when the
+ *    effort is still undefined after rules 4 to 7 and the effort ceiling is below that default (a maxEffort of low on
+ *    a role with no effort), the ceiling is sent, so the default never runs above the cap; this is skipped when the
+ *    adapter sends no effort at all, and effortChanged is then true. Source 'orchestrator' when a requested field was
+ *    used, else 'profile' when a profile field was used, else 'role'.
  * 4. Clamp into the bounds; any clamp gives source 'clamped' and a note naming what was asked and what was allowed.
  *    `top` results only when the ceiling is top (D9).
  * 5. Escalation (escalatedFrom set): with a request, missing request fields default to the previous attempt's values
@@ -500,6 +503,9 @@ export function resolveStaffing(input: ResolveStaffingInput): ResolvedStaffing {
       if (!asked.tier) asked.tier = wanted
     }
   }
+
+  // ---- 3 (end). no effort under a cap below the adapter default: send the cap, else the default would exceed it ----
+  if (!effort && adapterEfforts.length && compareEffort(effortCeiling, DEFAULT_EFFORT_BASELINE) < 0) effort = effortCeiling
 
   // ---- 8. effort vs adapter ----
   if (effort) {

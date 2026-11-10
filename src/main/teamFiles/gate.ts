@@ -1,5 +1,5 @@
-import { AGENT_IMPORT_ELEVATED_TOOLS, TEAM_FILES_AGENTS_DIR, TEAM_FILES_JSON, TEAM_FILES_MCP_JSON, TEAM_FILES_SKILLS_DIR, DEFAULT_MAX_AUTO_CONTINUES, type ModelTier, type PermissionMode, type TeamFileChange, type TeamFileChangeKind } from '@shared/types'
-import { cleanRoleStaffing, compareEffort, compareTier, effectiveRoleStaffing, effectiveSubagentLimits, skillEvaluationOf, staffingModeOf, teamReviewOf } from '@shared/defaults'
+import { AGENT_IMPORT_ELEVATED_TOOLS, TEAM_FILES_AGENTS_DIR, TEAM_FILES_JSON, TEAM_FILES_MCP_JSON, TEAM_FILES_SKILLS_DIR, DEFAULT_MAX_AUTO_CONTINUES, type Effort, type ModelTier, type PermissionMode, type TeamFileChange, type TeamFileChangeKind } from '@shared/types'
+import { compareEffort, compareTier, effectiveRoleStaffing, effectiveSubagentLimits, skillEvaluationOf, staffingModeOf, teamReviewOf } from '@shared/defaults'
 import { fullTarget, safeText } from '../kit/format'
 import type { TeamDoc, TeamMcpDoc, TeamRoleDoc, TeamSettingsDoc, TeamSkillDoc } from './doc'
 import { canonicalJson, normalizeDoc } from './digest'
@@ -47,26 +47,165 @@ function modelMayCostMore(a: TeamRoleDoc, d: TeamRoleDoc): boolean {
 }
 const effortRaised = (a: TeamRoleDoc, d: TeamRoleDoc): boolean => (d.effort === undefined ? false : (EFFORT_RANK[d.effort] ?? 99) > (a.effort === undefined ? -1 : (EFFORT_RANK[a.effort] ?? 99)))
 
-/** The effort ceiling the staffing resolver enforces when none is set (runtime/staffing.ts rule 2). */
-const UNSET_EFFORT_CEILING = 'high' as const
+/** The effort ceiling the staffing resolver enforces on an automatic role when none is set (runtime/staffing.ts rule 2). */
+const UNSET_EFFORT_CEILING: Effort = 'high'
+/**
+ * What a run gets when no effort is sent: the adapter's default (claude.ts CLAUDE_SDK_DEFAULT_EFFORT, staffing.ts
+ * DEFAULT_EFFORT_BASELINE). A fixed role with no effort runs at it.
+ */
+const DEFAULT_SENT_EFFORT: Effort = 'medium'
 
-/** What a role's staffing lets a run spend: its effective mode, effort ceiling (high when none) and the raw tier floor. */
-function staffingSpend(r: TeamRoleDoc, projectStaffing: TeamSettingsDoc['staffing']): { fixed: boolean; ceiling: NonNullable<TeamRoleDoc['effort']>; floor: ModelTier | undefined } {
-  const e = effectiveRoleStaffing({ model: r.model ?? '', tier: r.tier, effort: r.effort, staffing: r.staffing }, { staffing: projectStaffing })
-  return { fixed: e.mode === 'fixed', ceiling: e.maxEffort ?? UNSET_EFFORT_CEILING, floor: cleanRoleStaffing(r.staffing)?.minTier }
+/**
+ * What a role lets a run spend under a project staffing mode: whether it is fixed, the most effort a run may send (a
+ * fixed role sends its effort, else the adapter default; an automatic role may be picked up to
+ * `staffing.maxEffort ?? effort ?? high`) and the effective tier floor (effectiveRoleStaffing: a floor above the role's
+ * tier does nothing and is left out). The floor is counted in either mode: a floor set while fixed starts to work the
+ * moment the role becomes automatic, and that switch is judged on effort only.
+ */
+interface Spend {
+  fixed: boolean
+  most: Effort
+  floor?: ModelTier
+}
+function spendOf(r: TeamRoleDoc, project: TeamSettingsDoc['staffing']): Spend {
+  const e = effectiveRoleStaffing({ model: r.model ?? '', tier: r.tier, effort: r.effort, staffing: r.staffing }, { staffing: project })
+  const fixed = e.mode === 'fixed'
+  const out: Spend = { fixed, most: fixed ? (r.effort ?? DEFAULT_SENT_EFFORT) : (e.maxEffort ?? UNSET_EFFORT_CEILING) }
+  if (e.minTier) out.floor = e.minTier
+  return out
 }
 
 /**
- * Whether moving a role from `a` to `d` (its tier, model and effort already as the gate settled them) can make a run
- * spend more: a raised effort ceiling (a removed one counts when it raises the effective one), a raised or added tier
- * floor, or automatic becoming fixed. `pa` and `pd` are the project staffing before and after the gate settled it.
+ * How moving from spend `x` to spend `y` can make a run spend more: 'fixed' automatic becomes fixed (a fixed role always
+ * runs at its configured model and effort); 'auto' fixed becomes automatic and the most it may send rises; 'most' the
+ * most it may send rises in the same mode; 'floor' the effective tier floor is added or raised. Empty: it spends no more.
  */
-function staffingMayCostMore(a: TeamRoleDoc, d: TeamRoleDoc, pa: TeamSettingsDoc['staffing'], pd: TeamSettingsDoc['staffing']): boolean {
-  const x = staffingSpend(a, pa)
-  const y = staffingSpend(d, pd)
-  if (!x.fixed && y.fixed) return true
-  if (compareEffort(y.ceiling, x.ceiling) > 0) return true
-  return y.floor !== undefined && (x.floor === undefined || compareTier(y.floor, x.floor) > 0)
+type SpendRise = 'fixed' | 'auto' | 'most' | 'floor'
+function spendRises(x: Spend, y: Spend): SpendRise[] {
+  const out: SpendRise[] = []
+  if (!x.fixed && y.fixed) out.push('fixed')
+  else if (compareEffort(y.most, x.most) > 0) out.push(x.fixed && !y.fixed ? 'auto' : 'most')
+  if (y.floor !== undefined && (x.floor === undefined || compareTier(y.floor, x.floor) > 0)) out.push('floor')
+  return out
+}
+
+type SpendKey = 'tier' | 'model' | 'effort' | 'staffing'
+const SPEND_KEYS: readonly SpendKey[] = ['tier', 'model', 'effort', 'staffing']
+
+/**
+ * How a role's model, effort and staffing settle when the files move it from `ar` to `dr` under the project staffing
+ * modes `projects` (the settled one, plus the one on disk while a change to it waits: a step applies only when it spends
+ * no more under every one of them, so approving the waiting project change later never lets an already applied role
+ * change spend more): the role as it will stand (`role`), the keys that apply and the held rows ('model', 'effort',
+ * 'staffing' with their summaries). In order, each step judged on the state the steps before it settled:
+ * 1. model: only a strictly lower tier applies;
+ * 2. a raised effort (or one set over none) is held;
+ * 3. staffing, on its own (the approved effort): held when, against the approved role, it makes the role fixed, raises
+ *    the most effort a run may send or adds or raises the effective tier floor (spendRises);
+ * 4. any other effort change (lowered or removed), on the staffing as step 3 settled it: held when the most effort a
+ *    run may send rises (a removed effort lets a fixed role run at the default and an automatic one up to its cap or high).
+ * Each step spends no more than the one before it, so the settled role spends no more than the approved one. Pure.
+ */
+function settleSpend(ar: TeamRoleDoc, dr: TeamRoleDoc, projects: readonly TeamSettingsDoc['staffing'][], who: string): { role: TeamRoleDoc; apply: SpendKey[]; held: { id: SpendKey; summary: string }[] } {
+  const role: TeamRoleDoc = { ...ar }
+  const apply = new Set<SpendKey>()
+  const held: { id: SpendKey; summary: string }[] = []
+  const put = (into: TeamRoleDoc, k: SpendKey): void => {
+    const r = into as unknown as Record<string, unknown>
+    if (dr[k] === undefined) delete r[k]
+    else r[k] = structuredClone(dr[k])
+  }
+  if (!same([ar.tier, ar.model], [dr.tier, dr.model])) {
+    if (modelMayCostMore(ar, dr)) held.push({ id: 'model', summary: `${who}'s model changes and may spend more.` })
+    else {
+      put(role, 'tier')
+      put(role, 'model')
+      apply.add('tier').add('model')
+    }
+  }
+  const effortChanged = !same(ar.effort, dr.effort)
+  const raised = effortChanged && effortRaised(ar, dr)
+  if (raised) held.push({ id: 'effort', summary: `${who}'s reasoning effort is raised and may spend more.` })
+  if (!same(ar.staffing, dr.staffing)) {
+    const next: TeamRoleDoc = { ...role }
+    put(next, 'staffing')
+    const rise = firstRise(ar, next, projects)
+    if (rise) held.push({ id: 'staffing', summary: staffingSummary(who, rise.rises, rise.x, rise.y, ar, next) })
+    else {
+      put(role, 'staffing')
+      apply.add('staffing')
+    }
+  }
+  if (effortChanged && !raised) {
+    const next: TeamRoleDoc = { ...role }
+    put(next, 'effort')
+    const rise = firstRise(role, next, projects)
+    if (rise) {
+      const { x, y } = rise
+      const how = y.fixed ? `it runs at the default effort (${y.most}) instead of ${x.most}` : `it may be picked up to ${y.most} effort instead of ${x.most}`
+      held.push({ id: 'effort', summary: `${who}'s reasoning effort is removed, so ${how}. This may spend more.` })
+    } else {
+      put(role, 'effort')
+      apply.add('effort')
+    }
+  }
+  return { role, apply: SPEND_KEYS.filter((k) => apply.has(k)), held }
+}
+
+/** The first project mode under which moving a role from `a` to `d` spends more, with both spends; undefined when none. */
+function firstRise(a: TeamRoleDoc, d: TeamRoleDoc, projects: readonly TeamSettingsDoc['staffing'][]): { rises: SpendRise[]; x: Spend; y: Spend } | undefined {
+  for (const p of projects) {
+    const x = spendOf(a, p)
+    const y = spendOf(d, p)
+    const rises = spendRises(x, y)
+    if (rises.length) return { rises, x, y }
+  }
+  return undefined
+}
+
+/** A held staffing row's summary: names what changed (becomes fixed or automatic, effort ceiling raised or removed, floor). */
+function staffingSummary(who: string, rises: SpendRise[], x: Spend, y: Spend, a: TeamRoleDoc, d: TeamRoleDoc): string {
+  const parts = rises.map((k): string => {
+    switch (k) {
+      case 'fixed':
+        return `${who} becomes fixed: it always runs at its configured model and effort`
+      case 'auto':
+        return `${who} becomes automatic and may be picked up to ${y.most} effort (it ran at ${x.most})`
+      case 'most':
+        return a.staffing?.maxEffort !== undefined && d.staffing?.maxEffort === undefined
+          ? `${who}'s effort ceiling is removed, so it may be picked up to ${y.most} effort (up to ${x.most} before)`
+          : `${who}'s effort ceiling is raised from ${x.most} to ${y.most}`
+      case 'floor':
+        return x.floor === undefined ? `${who} gets a lowest tier of ${y.floor}` : `${who}'s lowest tier is raised from ${x.floor} to ${y.floor}`
+    }
+  })
+  return `${parts.join('; ')}. This may spend more.`
+}
+
+/**
+ * The project's staffing mode moving from `a` to `d`, judged against every role on both sides (whether or not its own
+ * staffing changed): each role as approved under the approved mode against the same role as it would settle under the
+ * new mode (settleSpend). Returns the names of the roles that would spend more. A role only spends more here by its
+ * effective mode flipping: in an unchanged mode settleSpend already keeps it at or below the approved role.
+ */
+function projectStaffingRises(a: TeamDoc, d: TeamDoc): string[] {
+  const dRoles = new Map(d.roles.map((r) => [r.slug, r]))
+  const out: string[] = []
+  for (const ar of a.roles) {
+    const dr = dRoles.get(ar.slug)
+    if (!dr) continue
+    const settled = settleSpend(ar, dr, [d.settings.staffing], '').role
+    if (spendRises(spendOf(ar, a.settings.staffing), spendOf(settled, d.settings.staffing)).length) out.push(dr.name)
+  }
+  return out
+}
+
+/** The sentence a held project staffing change adds: who would spend more, and how. */
+function projectStaffingSentence(names: string[], toFixed: boolean): string {
+  const one = names.length === 1
+  return toFixed
+    ? ` ${joinAnd(names)} would then always run at ${one ? 'its' : 'their'} configured model and effort, which may spend more.`
+    : ` ${joinAnd(names)} may then be picked up to a higher effort than ${one ? 'it runs' : 'they run'} at now.`
 }
 
 const MODE_RANK: Record<PermissionMode, number> = { plan: 0, dontAsk: 1, default: 2, acceptEdits: 3, auto: 4, bypassPermissions: 5 }
@@ -210,9 +349,9 @@ function loosens(k: keyof TeamSettingsDoc, a: TeamDoc, d: TeamDoc): boolean {
       const eff = (v: unknown): number => (typeof v === 'number' ? v : DEFAULT_MAX_AUTO_CONTINUES)
       return eff(dv) > eff(av)
     }
-    // Fixed means every role always runs at its ceiling; unset and 'auto' are the same.
+    // Judged against every role: held when any role becomes fixed or may be picked up above what it ran at when fixed.
     case 'staffing':
-      return staffingModeOf({ staffing: av as TeamSettingsDoc['staffing'] }) === 'auto' && staffingModeOf({ staffing: dv as TeamSettingsDoc['staffing'] }) === 'fixed'
+      return projectStaffingRises(a, d).length > 0
     // The goal and the review policy move spend only inside ceilings the user already approved.
     case 'staffingGoal':
     case 'reviewPolicy':
@@ -255,7 +394,8 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
     if (same(av, dv)) continue
     const label = SETTING_LABELS[k]
     const needs = loosens(k, a, d)
-    const summary = k === 'brief' ? 'The project brief changed.' : `${label} changes from ${showSetting(k, av)} to ${showSetting(k, dv)}.`
+    let summary = k === 'brief' ? 'The project brief changed.' : `${label} changes from ${showSetting(k, av)} to ${showSetting(k, dv)}.`
+    if (k === 'staffing' && needs) summary += projectStaffingSentence(projectStaffingRises(a, d), staffingModeOf({ staffing: dv as TeamSettingsDoc['staffing'] }) === 'fixed')
     const draft: Draft = { id: `settings:${k}`, kind: 'settings', name: label, file: TEAM_FILES_JSON, action: 'changed', summary }
     if (k === 'brief') {
       draft.before = longText(String(av ?? ''))
@@ -400,34 +540,13 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
     if ((ar.reportsTo === null) !== (dr.reportsTo === null)) {
       record({ ...base, id: `role:${slug}:root`, action: 'changed', summary: dr.reportsTo === null ? `${who} would become the top of the chart.` : `${who} would stop being the top of the chart.` }, true, 'Changes who is at the top of the chart')
     } else detailKeys.push('reportsTo')
-    // A model that may spend more waits: a higher tier, any pinned model, or leaving a tier for anything but a lower one.
-    let modelOk = true
-    let effortOk = true
-    if (!same([ar.tier, ar.model], [dr.tier, dr.model])) {
-      if (modelMayCostMore(ar, dr)) modelOk = false
-      if (modelMayCostMore(ar, dr)) record({ ...base, id: `role:${slug}:model`, action: 'changed', summary: `${who}'s model changes and may spend more.` }, true, 'May spend more')
-      else detailKeys.push('tier', 'model')
-    }
-    if (!same(ar.effort, dr.effort)) {
-      if (effortRaised(ar, dr)) effortOk = false
-      if (effortRaised(ar, dr)) record({ ...base, id: `role:${slug}:effort`, action: 'changed', summary: `${who}'s reasoning effort is raised and may spend more.` }, true, 'May spend more')
-      else detailKeys.push('effort')
-    }
-    // Staffing: held when it can make a run spend more. Judged on the role as it will stand after the rows above (a held
-    // model or effort stays at the approved value) and on the project's staffing as settled above.
-    const settled: TeamRoleDoc = { ...dr, tier: modelOk ? dr.tier : ar.tier, model: modelOk ? dr.model : ar.model, effort: effortOk ? dr.effort : ar.effort }
-    let staffingOk = true
-    if (!same(ar.staffing, dr.staffing)) {
-      if (staffingMayCostMore(ar, settled, a.settings.staffing, eff.settings.staffing)) {
-        staffingOk = false
-        record({ ...base, id: `role:${slug}:staffing`, action: 'changed', summary: `${who}'s staffing limits are raised and may spend more.` }, true, 'May spend more')
-      } else detailKeys.push('staffing')
-    }
-    // Removing the effort (which the rule above lets through) lifts the effective ceiling to high when no maxEffort holds it.
-    if (effortOk && !same(ar.effort, dr.effort) && staffingMayCostMore(ar, { ...settled, staffing: staffingOk ? dr.staffing : ar.staffing }, a.settings.staffing, eff.settings.staffing)) {
-      detailKeys.splice(detailKeys.indexOf('effort'), 1)
-      record({ ...base, id: `role:${slug}:effort`, action: 'changed', summary: `${who}'s reasoning effort is removed, which raises its effort ceiling and may spend more.` }, true, 'May spend more')
-    }
+    // Model, effort and staffing (settleSpend): anything that may make a run spend more waits, judged under the project's
+    // staffing mode as settled above (an applied project switch was already judged against this role) and, while a
+    // project switch waits, under the mode on disk too.
+    const modes = staffingModeOf(eff.settings) === staffingModeOf(d.settings) ? [eff.settings.staffing] : [eff.settings.staffing, d.settings.staffing]
+    const spend = settleSpend(ar, dr, modes, who)
+    for (const h of spend.held) record({ ...base, id: `role:${slug}:${h.id}`, action: 'changed', summary: h.summary }, true, 'May spend more')
+    detailKeys.push(...spend.apply)
     const changedDetails = detailKeys.filter((k) => !same(ar[k], dr[k]))
     if (changedDetails.length) {
       const labels = changedDetails.map((k) => (k === 'reportsTo' ? 'reporting line' : k === 'staffing' ? 'staffing limits' : k === 'tier' || k === 'model' ? 'model' : k))

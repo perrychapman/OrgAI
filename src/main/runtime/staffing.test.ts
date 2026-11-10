@@ -178,6 +178,31 @@ describe('rule 2: ceilings and floors', () => {
     expect(r).toMatchObject({ tier: 'everyday', source: 'role', overrides: false })
     expect(staffingLabel(r)).toBe("everyday (the role's setting)")
   })
+
+  it('a cap below the adapter default is sent when nothing else gives an effort (the default would exceed it)', () => {
+    // The reviewed defect: no role effort, maxEffort low, nothing requested -> no effort -> the adapter's medium.
+    const capped: R = { ...EVERYDAY, staffing: { mode: 'auto', maxEffort: 'low' } }
+    const r = run({ role: capped })
+    expect(r).toMatchObject({ mode: 'auto', tier: 'everyday', effort: 'low', source: 'role', overrides: true, tierChanged: false, effortChanged: true })
+    expect(r.note).toBeUndefined()
+    expect(staffingLabel(r)).toBe("everyday / low (the role's setting)")
+    // A request or an escalation that gives no effort leaves it to the cap as well.
+    expect(run({ role: capped, requested: { tier: 'fast' } })).toMatchObject({ tier: 'fast', effort: 'low', effortChanged: true })
+    expect(run({ role: capped, escalatedFrom: {} }).effort).toBe('low')
+  })
+
+  it('a cap at or above the adapter default still sends nothing, and so do an adapter with no efforts and a fixed role', () => {
+    for (const maxEffort of ['medium', 'high', 'xhigh', 'max'] as const) {
+      const r = run({ role: { ...EVERYDAY, staffing: { mode: 'auto', maxEffort } } })
+      expect(r.effort, maxEffort).toBeUndefined()
+      expect(r, maxEffort).toMatchObject({ overrides: false, effortChanged: false })
+    }
+    const none = run({ role: { ...EVERYDAY, staffing: { mode: 'auto', maxEffort: 'low' } }, adapterEfforts: [] })
+    expect(none.effort).toBeUndefined()
+    expect(none).toMatchObject({ effortChanged: false })
+    expect(none.note).toBeUndefined()
+    expect(run({ role: { ...EVERYDAY, staffing: { mode: 'fixed', maxEffort: 'low' } } }).effort).toBeUndefined()
+  })
 })
 
 describe('rule 3: pick and source', () => {

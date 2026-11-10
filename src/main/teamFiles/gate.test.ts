@@ -616,17 +616,63 @@ describe('gateTeam staffing', () => {
     held(staffed((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'low' }), (d) => delete dev(d).staffing), 'role:dev:staffing')
   })
 
-  it('holds a removed role effort that lifts the ceiling, and keeps the approved effort', () => {
+  const summary = (r: ReturnType<typeof gate>, id: string): string | undefined => r.pending.find((c) => c.id === id)?.summary
+  /** Every role on an effort of its own at or above high: a project switch to automatic then raises nobody's maximum. */
+  const allHigh = (d: TeamDoc): void => void d.roles.forEach((r) => (r.effort = r.effort ?? 'high'))
+
+  it('holds a removed role effort when it raises the most a run may send, and keeps the approved effort', () => {
+    // Automatic, no cap: low -> picked up to high.
     const r = staffed((d) => (dev(d).effort = 'low'), (d) => delete dev(d).effort)
     held(r, 'role:dev:effort')
     expect(dev(r.effective).effort).toBe('low')
-    // With a maxEffort that keeps the ceiling where it was, removing the effort applies.
+    expect(summary(r, 'role:dev:effort')).toBe("Dev's reasoning effort is removed, so it may be picked up to high effort instead of low. This may spend more.")
+    // Rewritten ('ok', from the review): automatic with a cap of low. The cap still bounds it (the resolver sends the cap
+    // when no effort is given, runtime/staffing.ts rule 3), so the most a run may send stays low and it applies.
     const ok = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => delete dev(d).effort)
     expect(ok.pending).toEqual([])
     expect(dev(ok.effective).effort).toBeUndefined()
-    // Removing the effort and adding the cap in one change applies too.
+    // The same removal on a fixed role (or under a fixed project) runs at the default, medium: held (defect 2 below).
+    // Removing an effort at or above the default, or above an automatic role's reach, applies.
+    expect(staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'medium')), (d) => delete dev(d).effort).pending).toEqual([])
+    expect(staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'high')), (d) => delete dev(d).effort).pending).toEqual([])
+    expect(gate((d) => delete lead(d).effort).pending).toEqual([])
+    // A lowered effort applies in either mode.
+    expect(gate((d) => (lead(d).effort = 'low')).pending).toEqual([])
+    expect(staffed((d) => (d.settings.staffing = 'fixed'), (d) => (lead(d).effort = 'low')).pending).toEqual([])
+  })
+
+  it('a removed effort with a cap added in the same save applies when the cap keeps the maximum, as it does over two saves', () => {
+    // Rewritten ('both', from the review): automatic, effort low removed and cap low added: the most a run may send stays
+    // low (the staffing row is judged alone, the effort row on the staffing as it settles), so both apply.
     const both = staffed((d) => (dev(d).effort = 'low'), (d) => (delete dev(d).effort, (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })))
     expect(both.pending).toEqual([])
+    expect(dev(both.effective).effort).toBeUndefined()
+    expect(dev(both.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'low' })
+    expect(both.applied.find((c) => c.id === 'role:dev:details')?.summary).toBe("Dev's effort and staffing limits changed.")
+    // Split over two saves: the cap first, then the effort; the same team at the end.
+    const first = staffed((d) => (dev(d).effort = 'low'), (d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'low' }))
+    expect(first.pending).toEqual([])
+    const second = gate((d) => delete dev(d).effort, { approved: first.effective })
+    expect(second.pending).toEqual([])
+    expect(second.effective).toEqual(both.effective)
+    // The other order: the effort alone waits (nothing caps it yet); once the cap is approved it applies.
+    held(staffed((d) => (dev(d).effort = 'low'), (d) => delete dev(d).effort), 'role:dev:effort')
+    // Under a fixed project the cap does nothing and the effort falls to the default, medium: the effort row waits, in one
+    // save or in two.
+    const fixedBoth = staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'low')), (d) => (delete dev(d).effort, (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })))
+    held(fixedBoth, 'role:dev:effort')
+    expect(dev(fixedBoth.effective)).toMatchObject({ effort: 'low', staffing: { mode: 'auto', maxEffort: 'low' } })
+    expect(summary(fixedBoth, 'role:dev:effort')).toBe("Dev's reasoning effort is removed, so it runs at the default effort (medium) instead of low. This may spend more.")
+    const fixedFirst = staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'low')), (d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'low' }))
+    expect(fixedFirst.pending).toEqual([])
+    held(gate((d) => delete dev(d).effort, { approved: fixedFirst.effective }), 'role:dev:effort')
+  })
+
+  it('a removed effort with an inert staffing change holds only the effort row', () => {
+    const r = staffed((d) => (dev(d).effort = 'low'), (d) => (delete dev(d).effort, (dev(d).staffing = { mode: 'auto' })))
+    held(r, 'role:dev:effort')
+    expect(dev(r.effective)).toMatchObject({ effort: 'low', staffing: { mode: 'auto' } })
+    expect(r.ids.applied).toEqual(['role:dev:details'])
   })
 
   it('keeps a raised effort held and judges staffing against the approved effort', () => {
@@ -635,37 +681,105 @@ describe('gateTeam staffing', () => {
     expect(r.ids.pending.sort()).toEqual(['role:dev:effort', 'role:dev:staffing'])
     expect(dev(r.effective).effort).toBe('low')
     expect(dev(r.effective).staffing).toBeUndefined()
+    expect(summary(r, 'role:dev:effort')).toBe("Dev's reasoning effort is raised and may spend more.")
+    expect(summary(r, 'role:dev:staffing')).toBe("Dev's effort ceiling is raised from low to high. This may spend more.")
   })
 
   it('holds a tier floor that is added or raised and applies one that is lowered or removed', () => {
     const setup = (d: TeamDoc): void => void (lead(d).staffing = { mode: 'auto', minTier: 'everyday' })
-    held(gate((d) => (lead(d).staffing = { mode: 'auto', minTier: 'fast' })), 'role:lead:staffing')
-    held(staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', minTier: 'deep' })), 'role:lead:staffing')
+    const added = gate((d) => (lead(d).staffing = { mode: 'auto', minTier: 'fast' }))
+    held(added, 'role:lead:staffing')
+    expect(summary(added, 'role:lead:staffing')).toBe('Lead gets a lowest tier of fast. This may spend more.')
+    const raised = staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', minTier: 'deep' }))
+    held(raised, 'role:lead:staffing')
+    expect(summary(raised, 'role:lead:staffing')).toBe("Lead's lowest tier is raised from everyday to deep. This may spend more.")
     expect(staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', minTier: 'fast' })).pending).toEqual([])
     expect(staffed(setup, (d) => (lead(d).staffing = { mode: 'auto' })).pending).toEqual([])
     expect(staffed(setup, (d) => delete lead(d).staffing).pending).toEqual([])
   })
 
-  it('holds a role going from automatic to fixed and applies fixed to automatic', () => {
+  it('judges the effective floor: one above the role tier does nothing and applies; on a role with no tier it counts', () => {
+    // lead is deep, dev everyday: a floor above them is dropped at run time (effectiveRoleStaffing).
+    expect(gate((d) => (lead(d).staffing = { mode: 'auto', minTier: 'top' })).pending).toEqual([])
+    const above = gate((d) => (dev(d).staffing = { mode: 'auto', minTier: 'deep' }))
+    expect(above.pending).toEqual([])
+    expect(dev(above.effective).staffing).toEqual({ mode: 'auto', minTier: 'deep' })
+    // reviewer inherits (no tier): any floor works.
+    held(gate((d) => (reviewer(d).staffing = { mode: 'auto', minTier: 'deep' })), 'role:reviewer:staffing')
+    // A floor on a fixed role is counted too: it starts to work when the role becomes automatic.
+    held(staffed((d) => (dev(d).staffing = { mode: 'fixed' }), (d) => (dev(d).staffing = { mode: 'fixed', minTier: 'fast' })), 'role:dev:staffing')
+  })
+
+  it('holds a role going from automatic to fixed, and fixed to automatic only when its maximum rises', () => {
     const toFixed = gate((d) => (dev(d).staffing = { mode: 'fixed' }))
     held(toFixed, 'role:dev:staffing')
     expect(dev(toFixed.effective).staffing).toBeUndefined()
+    expect(summary(toFixed, 'role:dev:staffing')).toBe('Dev becomes fixed: it always runs at its configured model and effort. This may spend more.')
     held(staffed((d) => (dev(d).staffing = { mode: 'auto' }), (d) => (dev(d).staffing = { mode: 'fixed' })), 'role:dev:staffing')
+    // Even with a low cap: a fixed role ignores it.
+    held(gate((d) => (dev(d).staffing = { mode: 'fixed', maxEffort: 'low' })), 'role:dev:staffing')
+    // Rewritten: fixed with no effort ran at the default (medium); automatic may pick it up to high.
     const toAuto = staffed((d) => (dev(d).staffing = { mode: 'fixed' }), (d) => (dev(d).staffing = { mode: 'auto' }))
-    expect(toAuto.pending).toEqual([])
-    expect(dev(toAuto.effective).staffing).toEqual({ mode: 'auto' })
+    held(toAuto, 'role:dev:staffing')
+    expect(dev(toAuto.effective).staffing).toEqual({ mode: 'fixed' })
+    expect(summary(toAuto, 'role:dev:staffing')).toBe('Dev becomes automatic and may be picked up to high effort (it ran at medium). This may spend more.')
+    // Fixed at high (or at low with a low cap) to automatic raises nothing: it applies.
+    const even = staffed((d) => ((dev(d).effort = 'high'), (dev(d).staffing = { mode: 'fixed' })), (d) => (dev(d).staffing = { mode: 'auto' }))
+    expect(even.pending).toEqual([])
+    expect(dev(even.effective).staffing).toEqual({ mode: 'auto' })
+    expect(staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'fixed', maxEffort: 'low' })), (d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })).pending).toEqual([])
     // A role that is automatic only because the project is not fixed: fixed on the role is still a raise.
     held(staffed((d) => (d.settings.staffing = undefined), (d) => (dev(d).staffing = { mode: 'fixed' })), 'role:dev:staffing')
   })
 
-  it('holds the project going from auto to fixed and applies fixed to auto', () => {
+  it('names a raised or removed effort ceiling in the summary', () => {
+    const raised = staffed((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'medium' }), (d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'xhigh' }))
+    expect(summary(raised, 'role:lead:staffing')).toBe("Lead's effort ceiling is raised from medium to xhigh. This may spend more.")
+    const removed = staffed((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'low' }), (d) => (dev(d).staffing = { mode: 'auto' }))
+    expect(summary(removed, 'role:dev:staffing')).toBe("Dev's effort ceiling is removed, so it may be picked up to high effort (up to low before). This may spend more.")
+    // Two things at once are both named.
+    const twice = gate((d) => (reviewer(d).staffing = { mode: 'fixed', minTier: 'everyday' }))
+    expect(summary(twice, 'role:reviewer:staffing')).toBe('Reviewer becomes fixed: it always runs at its configured model and effort; Reviewer gets a lowest tier of everyday. This may spend more.')
+  })
+
+  it('holds the project going from auto to fixed, and fixed to auto only when some role may then spend more', () => {
     const toFixed = gate((d) => (d.settings.staffing = 'fixed'))
     held(toFixed, 'settings:staffing')
     expect(toFixed.effective.settings.staffing).toBeUndefined()
+    expect(summary(toFixed, 'settings:staffing')).toBe(
+      'Automatic staffing changes from automatic to off (every role runs as configured). Dev, Lead and Reviewer would then always run at their configured model and effort, which may spend more.'
+    )
+    // Every role already fixed on its own: nothing becomes fixed, so it applies.
+    const allFixed = (d: TeamDoc): void => void d.roles.forEach((r) => (r.staffing = { mode: 'fixed' }))
+    expect(staffed(allFixed, (d) => (d.settings.staffing = 'fixed')).pending).toEqual([])
+    // Rewritten: fixed to automatic with dev and reviewer on no effort (the default, medium): they may be picked up to high.
     const toAuto = staffed((d) => (d.settings.staffing = 'fixed'), (d) => delete d.settings.staffing)
-    expect(toAuto.pending).toEqual([])
-    expect(toAuto.effective.settings.staffing).toBeUndefined()
-    expect(toAuto.ids.applied).toEqual(['settings:staffing'])
+    held(toAuto, 'settings:staffing')
+    expect(toAuto.effective.settings.staffing).toBe('fixed')
+    expect(summary(toAuto, 'settings:staffing')).toBe(
+      'Automatic staffing changes from off (every role runs as configured) to automatic. Dev and Reviewer may then be picked up to a higher effort than they run at now.'
+    )
+    // With every role on high, or capped at what fixed ran at, it applies.
+    const even = staffed((d) => ((d.settings.staffing = 'fixed'), allHigh(d)), (d) => delete d.settings.staffing)
+    expect(even.pending).toEqual([])
+    expect(even.ids.applied).toEqual(['settings:staffing'])
+    const capped = staffed(
+      (d) => ((d.settings.staffing = 'fixed'), (dev(d).staffing = { mode: 'auto', maxEffort: 'medium' }), (reviewer(d).effort = 'low'), (reviewer(d).staffing = { mode: 'auto', maxEffort: 'low' })),
+      (d) => delete d.settings.staffing
+    )
+    expect(capped.pending).toEqual([])
+  })
+
+  it('judges a project switch against every role, also roles whose own staffing does not change', () => {
+    // Only reviewer would rise; its file is untouched.
+    const r = staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'high')), (d) => delete d.settings.staffing)
+    held(r, 'settings:staffing')
+    expect(summary(r, 'settings:staffing')).toContain('Reviewer may then be picked up to a higher effort than it runs at now.')
+    // A role edit that lowers its reach in the same save is taken into account: a cap on reviewer makes the switch safe.
+    const withCap = staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'high')), (d) => (delete d.settings.staffing, (reviewer(d).staffing = { mode: 'auto', maxEffort: 'medium' })))
+    expect(withCap.pending).toEqual([])
+    expect(withCap.effective.settings.staffing).toBeUndefined()
+    expect(reviewer(withCap.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'medium' })
   })
 
   it('does not hold the goal or the review policy, and still lists them', () => {
@@ -678,12 +792,42 @@ describe('gateTeam staffing', () => {
   })
 
   it('a project that is fixed does not hide a raised role ceiling', () => {
+    // Rewritten so the switch alone raises nobody (every role on high): it applies, and the raised cap is held.
     const r = staffed(
-      (d) => ((d.settings.staffing = 'fixed'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })),
+      (d) => ((d.settings.staffing = 'fixed'), allHigh(d), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })),
       (d) => ((delete d.settings.staffing), (dev(d).staffing = { mode: 'auto', maxEffort: 'max' }))
     )
     expect(r.ids.applied).toContain('settings:staffing')
     held(r, 'role:dev:staffing')
+    // While the switch itself waits, a role change is judged under the mode on disk too: the cap raise, inert under
+    // fixed, still waits instead of applying and riding along when the switch is approved.
+    const waiting = staffed(
+      (d) => ((d.settings.staffing = 'fixed'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })),
+      (d) => ((delete d.settings.staffing), (dev(d).staffing = { mode: 'auto', maxEffort: 'max' }))
+    )
+    expect(waiting.ids.pending.sort()).toEqual(['role:dev:staffing', 'settings:staffing'])
+    expect(dev(waiting.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'low' })
+  })
+
+  it('defect 2: a removed effort on a fixed role or under a fixed project is held (the default, medium, is above low)', () => {
+    const role = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'fixed', maxEffort: 'low' })), (d) => delete dev(d).effort)
+    held(role, 'role:dev:effort')
+    expect(dev(role.effective).effort).toBe('low')
+    const project = staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'low'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => delete dev(d).effort)
+    held(project, 'role:dev:effort')
+    expect(dev(project.effective).effort).toBe('low')
+  })
+
+  it('defect 3: fixed becoming automatic is held when it lets a role run above what fixed ran at', () => {
+    // The project: dev has no effort and ran at the default (medium); automatic may pick it up to high.
+    const project = staffed((d) => (d.settings.staffing = 'fixed'), (d) => delete d.settings.staffing)
+    held(project, 'settings:staffing')
+    expect(project.effective.settings.staffing).toBe('fixed')
+    // The role: fixed at low with a max ceiling; automatic may pick it up to max.
+    const role = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'fixed', maxEffort: 'max' })), (d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'max' }))
+    held(role, 'role:dev:staffing')
+    expect(dev(role.effective).staffing).toEqual({ mode: 'fixed', maxEffort: 'max' })
+    expect(summary(role, 'role:dev:staffing')).toBe('Dev becomes automatic and may be picked up to max effort (it ran at low). This may spend more.')
   })
 
   it('with everything forced pending nothing staffing-related applies', () => {
