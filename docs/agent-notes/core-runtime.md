@@ -97,18 +97,30 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   A failed write logs one warning (step and errno code, no path) and never fails the end. Unit tests only
   (staffingProfile, runManagerStaffing, mock, claude, claudeKnowledge, codexStaffing); no live run.
 - Context pack on spawn (2026-11-10, split-execution 3.2; `runtime/contextPack.ts`): Codex `spawn_report` and the mock
-  spawn step take `files` (paths the lead read). At spawn time the host reads them and appends them to the report's
-  first message under `CONTEXT_PACK_HEADING`, one fence per file with its path (the transcript keeps the brief only).
-  Limits: the first 8 entries, 24,000 characters per file, 60,000 in total, UTF-8 text with no NUL byte. Checks per
-  file: not a network path (`isNetworkPath`), `checkSelfControlDenial('Read', ...)` on the path as written and on its
-  real path (unavailable protected paths refuse every file), and the real path (`realpathSync.native`) inside the
-  project folder, the lead's or the report's working folder, or the run's allowed or reference folders
-  (`contextPackRoots`, `isInsideEither`). Trust-restricted and setup-like runs get none (`contextPackRefusal`). Every
+  spawn step take `files` (files inside the folders this run may read; the harness does not check that the lead read
+  them). At spawn time the host reads them and appends them to the report's first message under
+  `CONTEXT_PACK_HEADING`, one fence per file with its path (the transcript keeps the brief only). Limits: the first 8
+  entries (the Codex schema says `maxItems: 8`; extra entries from other callers collapse into one "and N more" line),
+  24,000 characters per file, 60,000 in total, UTF-8 text with no NUL byte. Checks per file: not a network path
+  (`isNetworkPath`); the path as written (absolute, lexically normalized) inside a folder before any file system call,
+  so an outside path reads "outside" whether it exists or not (a missing file behind a linked folder that leads outside
+  too: no existence oracle); `checkSelfControlDenial('Read', ...)` on the path as written and on its real path
+  (unavailable protected paths refuse every file); the real path (`realpathSync.native`) inside the project folder, the
+  lead's or the report's working folder, or the run's allowed or reference folders (`contextPackRoots`,
+  `isInsideEither`). Then one open (`O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, each flag where defined, so a FIFO never
+  blocks the main process), `fstat` of the handle a regular file within the cap, `realpath` again equal to the checked
+  real path, `stat` of that path the same dev and ino as the handle, the handle not a protected file under another
+  name (dev and ino against each protected path and, when `nlink > 1`, the files under protected folders, a bounded walk
+  that fails closed), and only then a bounded read from the handle, always closed. A swap between the checks and the
+  open (a link to an outside or control file, a linked parent folder, a FIFO) is skipped as "unreadable" or "not a
+  file". Trust-restricted and setup-like runs get none (`contextPackRefusal`). Every
   file left out is named with its reason in the tool result (`contextPackResultLine`). A bridged report gets no pack
   (the result says so); `delegate_agent` and the Claude Agent tool take no `files` (the Agent tool is the SDK's own and a
   rewrite of a well-formed spawn costs a classifier request; note in claude.ts' spawn hook). Without `files` nothing
-  changes. spawn_report's definition grew 126 chars (Codex team-root budget 20,050, `toolDefinitionSize.test.ts`).
-  Unit tests only (contextPack, codexContextPack, mockContextPack); no live run, `reportStartMs` not measured yet.
+  changes. spawn_report's definition grew 126 chars, then the security pass's `maxItems` and wording (Codex team-root
+  budget 20,050 unchanged, `toolDefinitionSize.test.ts`). Unit tests only (contextPack with swap tests through a
+  wrapped `openSync`, POSIX only for links and FIFOs; codexContextPack, mockContextPack); no live run, `reportStartMs`
+  not measured yet. `prompts.ts` still says "pass the files you read" (owned elsewhere, not changed here).
 - One report and a waiting lead (2026-11-10, split-execution 3.6; `runtime/waitingNote.ts`, pure `waitingNote`): after
   a successful spawn by the run's root (not a bridged child's root) that leaves exactly one of the root's reports
   running, for a role that is not one of the root's required reports (`obligationsFor`), with an active plan that has a
