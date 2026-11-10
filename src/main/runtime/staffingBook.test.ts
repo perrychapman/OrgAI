@@ -395,6 +395,19 @@ describe('StaffingBook: parent tier', () => {
     expect(setup(undefined, { rootTier: undefined }).book.decide({ key: 'k1', role: HELPER }).resolved.mode).toBe('fixed')
   })
 
+  it('reads a rootTier function at each decision, and passes it as the plan guard\'s inheritTier', () => {
+    const root: { tier: ModelTier | undefined } = { tier: 'deep' }
+    const { book } = setup(undefined, { rootTier: () => root.tier })
+    expect(book.decide({ key: 'k1', role: HELPER }).resolved).toMatchObject({ mode: 'auto', tier: 'deep' })
+    root.tier = 'everyday'
+    expect(book.decide({ key: 'k2', role: HELPER }).resolved).toMatchObject({ mode: 'auto', tier: 'everyday' })
+    // An unknown parent gives no tier, but the guard still judges 'inherit' by the root's live tier.
+    root.tier = 'deep'
+    expect(book.decide({ key: 'k3', role: HELPER, parentAgentId: 'ghost', planGuard: true }).resolved).toMatchObject({ tier: 'everyday', source: 'plan-guard' })
+    root.tier = 'everyday'
+    expect(book.decide({ key: 'k4', role: HELPER, parentAgentId: 'ghost', planGuard: true }).resolved).toMatchObject({ mode: 'fixed', source: 'role' })
+  })
+
   it('tierOf survives the agent ending (until the cap) and is undefined before started', () => {
     const { book } = setup(undefined)
     book.decide({ key: 'k1', role: QA })

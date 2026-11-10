@@ -16,6 +16,7 @@ import {
   settingTier,
   STAFFING_NOTE_MAX_CHARS,
   staffingGoalOf,
+  staffingModeOf,
   tierForModel
 } from '@shared/defaults'
 import {
@@ -72,6 +73,12 @@ export interface ResolveStaffingInput {
   adapterEfforts: readonly Effort[]
   /** The plan guard is engaged (usage near the weekly limit): deep and top assignments go to everyday. */
   planGuard?: boolean
+  /**
+   * The tier an 'inherit' role runs on when the spawn writes no model: the main thread's (the root's) live tier. Read
+   * only by the plan guard of a fixed (or unsizable) 'inherit' role, so the guard is judged on the model 'inherit'
+   * resolves to even when parentTier is unknown (a parent from before a resume) or names no deep tier.
+   */
+  inheritTier?: ModelTier
   /**
    * This spawn retries an attempt that failed verification or came back unresolved; the value is what that attempt ran
    * on (its ResolvedStaffing tier and effort; a missing field = what the role resolves to by default). The result goes
@@ -169,6 +176,8 @@ const WORDS = {
   note: {
     fixedIgnored: (asked: string) => `the role is fixed, so the request for ${asked} was ignored`,
     fixedNoEscalation: 'the role is fixed, so the retry was not escalated',
+    projectFixedIgnored: (asked: string) => `the project's staffing is fixed, so the request for ${asked} was ignored`,
+    projectFixedNoEscalation: "the project's staffing is fixed, so the retry was not escalated",
     noCeilingIgnored: (asked: string) =>
       `no tier ceiling is known for the role (it inherits and the parent's tier is unknown, or its model names no tier), so it runs as configured and the request for ${asked} was ignored`,
     noCeilingNoEscalation:
@@ -267,6 +276,20 @@ export function isDeepOrTopModelRef(model: string | undefined, tierModels: Parti
   return m === tierModels?.deep?.trim() || m === tierModels?.top?.trim()
 }
 
+/**
+ * The tier a role's own model setting runs on, the one reading the resolver and the Claude adapter (claude.ts
+ * definitionTier) share. The agent definition sends `role.model` itself, so a tier name or Claude alias decides first
+ * (a role with model `opus` and tier `everyday` runs on opus); a concrete id runs on the role's chart tier (`role.tier`),
+ * else, with `byFamily`, the tier its family names (tierForModel; the resolver never derives a ceiling that way).
+ * Undefined for 'inherit' or an empty model (the caller supplies the parent's or root's tier) and when nothing is known.
+ * Pure.
+ */
+export function roleModelTier(role: Pick<Role, 'model' | 'tier'>, byFamily = false): ModelTier | undefined {
+  const model = typeof role.model === 'string' ? role.model.trim() : ''
+  if (!model || model === 'inherit') return undefined
+  return settingTier(model) ?? (isModelTier(role.tier) ? role.tier : undefined) ?? (byFamily ? tierForModel(model) : undefined)
+}
+
 // ---------- resolveStaffing ----------
 
 /**
@@ -275,8 +298,9 @@ export function isDeepOrTopModelRef(model: string | undefined, tierModels: Parti
  * 1. effectiveRoleStaffing(role, project) decides the mode. 'fixed': the role's own model, tier and effort exactly as
  *    configured, source 'role', overrides false; a request (or escalation) is ignored with a note. Only the plan
  *    guard (6) still applies.
- * 2. Bounds (auto). Tier ceiling: the role's tier; for an 'inherit' role, parentTier; else the tier its model names
- *    (a tier name or legacy alias). No ceiling known: treated as fixed (mode 'fixed'), never guessed upward. Floor:
+ * 2. Bounds (auto). Tier ceiling: for a role on its own model, roleModelTier (the tier a tier name or legacy alias in
+ *    `model` names, else the role's tier), which is what its agent definition runs on; for an 'inherit' role, its tier,
+ *    else parentTier. No ceiling known: treated as fixed (mode 'fixed'), never guessed upward. Floor:
  *    staffing.minTier when not above the ceiling. Effort ceiling: staffing.maxEffort ?? role.effort ?? 'high' (xhigh
  *    and max only when the chart allows them).
  * 3. Pick (auto). tier = requested ?? profile ?? ceiling; effort = requested ?? profile ?? role.effort (may stay
@@ -295,7 +319,8 @@ export function isDeepOrTopModelRef(model: string | undefined, tierModels: Parti
  *    connection), else nothing changes and the note says so (source stays 'escalated').
  * 6. Plan guard: a deep or top result goes to everyday (source 'plan-guard') when the connection maps an everyday
  *    model different from the one it would have run on; otherwise nothing changes. It applies after the clamp and may
- *    go below minTier (the user's usage setting outranks the role's floor).
+ *    go below minTier (the user's usage setting outranks the role's floor). A fixed result is steered when its chart
+ *    tier or model is deep or top, or, for an 'inherit' role, when inheritTier is.
  * 7. Availability: an unmapped tier moves to the nearest lower mapped tier not below the floor, else the nearest higher
  *    one not above the ceiling (source 'clamped' unless the plan guard set it); else the role's own model and chart
  *    tier with the effort resolved so far, source 'role', adjustment 'unmapped'.
@@ -313,23 +338,37 @@ export function resolveStaffing(input: ResolveStaffingInput): ResolvedStaffing {
   const roleTier = isModelTier(role.tier) ? role.tier : undefined
   const roleEffort = isEffort(role.effort) ? role.effort : undefined
   const parent = isModelTier(parentTier) ? parentTier : undefined
-  const ceiling: ModelTier | undefined = eff.maxTier ?? (inherit ? parent : settingTier(roleModel))
+  // A role on its own model: the tier that model runs on (roleModelTier, the reading the Claude adapter shares), so the
+  // ceiling is never below what the definition actually runs. An 'inherit' role: its chart tier, else the parent's.
+  const ceiling: ModelTier | undefined = inherit ? (eff.maxTier ?? parent) : roleModelTier(role)
   /** The tier the chart runs this role on today (for overrides and for the fixed result). */
-  const chartTier: ModelTier | undefined = roleTier ?? (inherit ? parent : (settingTier(roleModel) ?? tierForModel(roleModel)))
+  const chartTier: ModelTier | undefined = inherit ? (roleTier ?? parent) : roleModelTier(role, true)
 
   // ---- 1. fixed (or no ceiling known: treated as fixed) ----
   if (eff.mode === 'fixed' || !ceiling) {
     const notes: string[] = []
     const fixedRole = eff.mode === 'fixed'
-    if (requested) notes.push(fixedRole ? WORDS.note.fixedIgnored(fmt(requested)) : WORDS.note.noCeilingIgnored(fmt(requested)))
-    else if (escalatedFrom) notes.push(fixedRole ? WORDS.note.fixedNoEscalation : WORDS.note.noCeilingNoEscalation)
+    const fixedProject = staffingModeOf(project) === 'fixed'
+    if (requested) {
+      notes.push(
+        fixedProject
+          ? WORDS.note.projectFixedIgnored(fmt(requested))
+          : fixedRole
+            ? WORDS.note.fixedIgnored(fmt(requested))
+            : WORDS.note.noCeilingIgnored(fmt(requested))
+      )
+    } else if (escalatedFrom) {
+      notes.push(fixedProject ? WORDS.note.projectFixedNoEscalation : fixedRole ? WORDS.note.fixedNoEscalation : WORDS.note.noCeilingNoEscalation)
+    }
     const model = roleModel || fallbackModel(tierModels, chartTier ?? 'everyday')?.model || ''
     const base: ResolvedStaffing = { mode: 'fixed', model, source: 'role', overrides: false, tierChanged: false, effortChanged: false }
     if (chartTier) base.tier = chartTier
     if (roleEffort) base.effort = roleEffort
-    // 6. The plan guard, exactly as the Claude adapter's steerToEveryday: by the role's tier or by its model.
+    // 6. The plan guard, as the Claude adapter's old steerToEveryday: by the role's tier, by its model, or for an
+    // 'inherit' role by the model 'inherit' resolves to (the root's, inheritTier).
     if (planGuard) {
-      const deep = chartTier === 'deep' || chartTier === 'top' || isDeepOrTopModelRef(roleModel, tierModels)
+      const inheritDeep = inherit && (input.inheritTier === 'deep' || input.inheritTier === 'top')
+      const deep = chartTier === 'deep' || chartTier === 'top' || inheritDeep || isDeepOrTopModelRef(roleModel, tierModels)
       const to = mapped(tierModels, 'everyday')
       if (deep && to && to !== model) {
         notes.push(WORDS.note.planGuard(to, roleModel || 'its configured model'))

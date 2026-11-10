@@ -7,6 +7,7 @@ import {
   isDeepOrTopModelRef,
   recordStaffing,
   resolveStaffing,
+  roleModelTier,
   staffingAssignment,
   staffingLabel,
   staffRequestForSpawn,
@@ -55,11 +56,42 @@ describe('isDeepOrTopModelRef (same cases as claude.ts isDeepOrTopModel)', () =>
   })
 })
 
+describe('roleModelTier (the one reading of a role\'s tier, shared with claude.ts definitionTier)', () => {
+  it.each<[R, boolean, ModelTier | undefined]>([
+    [{ model: 'opus', tier: 'everyday' }, false, 'deep'],
+    [{ model: 'everyday', tier: 'deep' }, false, 'everyday'],
+    [{ model: 'claude-opus-5-1', tier: 'everyday' }, false, 'everyday'],
+    [{ model: 'claude-opus-5-1' }, false, undefined],
+    [{ model: 'claude-opus-5-1' }, true, 'deep'],
+    [{ model: 'inherit', tier: 'deep' }, true, undefined],
+    [{ model: '' }, true, undefined]
+  ])('%j byFamily=%s -> %s', (r, byFamily, want) => {
+    expect(roleModelTier(r, byFamily)).toBe(want)
+  })
+
+  it('a role whose alias names a higher tier than role.tier is sized by the alias it runs on', () => {
+    const r = run({ role: { model: 'opus', tier: 'everyday' } })
+    expect(r).toMatchObject({ mode: 'auto', tier: 'deep', tierChanged: false })
+    expect(run({ role: { model: 'opus', tier: 'everyday' }, requested: { tier: 'top' } })).toMatchObject({ tier: 'deep', source: 'clamped' })
+    expect(run({ role: { model: 'opus', tier: 'everyday' }, planGuard: true })).toMatchObject({ tier: 'everyday', source: 'plan-guard', tierChanged: true })
+  })
+})
+
+describe('inheritTier (plan guard of a fixed inherit role)', () => {
+  it("steers a fixed 'inherit' role when the tier 'inherit' resolves to is deep, also without parentTier", () => {
+    const inherit: R = { model: 'inherit' }
+    expect(run({ role: inherit, planGuard: true, inheritTier: 'deep' })).toMatchObject({ mode: 'fixed', tier: 'everyday', source: 'plan-guard' })
+    expect(run({ role: inherit, project: { staffing: 'fixed' }, parentTier: 'everyday', planGuard: true, inheritTier: 'top' })).toMatchObject({ tier: 'everyday', source: 'plan-guard' })
+    expect(run({ role: inherit, planGuard: true, inheritTier: 'everyday' })).toMatchObject({ mode: 'fixed', source: 'role' })
+    expect(run({ role: inherit, inheritTier: 'deep' })).toMatchObject({ mode: 'fixed', source: 'role' })
+  })
+})
+
 describe('rule 1: fixed roles', () => {
   it('a fixed project runs every role as configured and ignores a request with a note', () => {
     const r = run({ project: { staffing: 'fixed' }, requested: { tier: 'everyday', effort: 'low' } })
     expect(r).toMatchObject({ mode: 'fixed', tier: 'deep', model: 'opus', effort: 'high', source: 'role', overrides: false })
-    expect(r.note).toMatch(/the role is fixed, so the request for everyday \/ low was ignored/i)
+    expect(r.note).toMatch(/the project's staffing is fixed, so the request for everyday \/ low was ignored/i)
     expect(staffingLabel(r)).toBe('opus / high (fixed by the role)')
   })
 
