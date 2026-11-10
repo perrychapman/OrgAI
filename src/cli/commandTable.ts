@@ -32,6 +32,8 @@ export interface CommandFlag {
   /** Fixed values, for completion. */
   values?: readonly string[]
   summary: string
+  /** A value flag that may repeat (parsed as a list). */
+  repeatable?: boolean
 }
 
 export interface CommandEntry {
@@ -73,6 +75,7 @@ export const DEFAULT_TUI_FLAGS: readonly CommandFlag[] = [
 
 /** Exec flags shared by `orgai exec` and `orgai resume --exec` (cli-spec 6.2). */
 const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
+  { name: 'image', takesValue: true, repeatable: true, summary: 'Attach an image (PNG, JPEG, GIF or WebP, up to 5 MB, at most 10); repeatable' },
   { name: 'permission-mode', takesValue: true, values: PERMISSION_MODES, summary: 'Permission mode for this run (narrowing needs no extra access)' },
   { name: 'no-auto-continue', takesValue: false, summary: 'Do not continue automatically until the plan is done' },
   { name: 'max-auto-continues', takesValue: true, summary: 'At most this many automatic continues' },
@@ -124,14 +127,16 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'runs',
     summary: 'List or show saved runs (open one with `orgai tui <run>`)',
-    usage: 'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>]',
+    usage: 'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>] [--logs [--level warn|info|all]]',
     subcommands: ['list', 'show'],
     flags: [
       { name: 'all-projects', takesValue: false, summary: 'Runs of every project' },
       { name: 'status', takesValue: true, values: ['running', 'needs you', 'idle', 'paused', 'finished', 'stopped', 'ended when orgai closed', 'failed'], summary: 'Only runs with this status' },
       { name: 'limit', short: 'n', takesValue: true, summary: 'At most this many runs' },
       { name: 'transcript', takesValue: false, summary: 'runs show: the whole transcript' },
-      { name: 'tail', takesValue: true, summary: 'runs show: the last N transcript rows' }
+      { name: 'tail', takesValue: true, summary: 'runs show: the last N transcript rows' },
+      { name: 'logs', takesValue: false, summary: 'runs show: the run\'s harness log (warnings and errors by default)' },
+      { name: 'level', takesValue: true, values: ['warn', 'info', 'all'], summary: 'runs show --logs: warn (warnings and errors, default), info or all' }
     ],
     available: true
   },

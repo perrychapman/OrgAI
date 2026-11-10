@@ -407,3 +407,24 @@ describe('addNotice', () => {
     expect(addNotice(s, '   ')).toBe(s)
   })
 })
+
+describe('run logs and plan usage (cli-parity 3.5)', () => {
+  const run = (): TuiState => applyRecord(createInitialState('/p'), record(summary('r1'), { logs: [{ at: 1, level: 'warn', message: 'early' }] }))
+  const logEv = (level: 'info' | 'warn' | 'error', message: string): RunsEventParams => ({ seq: 1, event: { type: 'log', runId: 'r1', level, message } }) as RunsEventParams
+
+  it('keeps every log of the run after the notice expires, merged with the record without duplicates', () => {
+    let s = run()
+    s = applyEvent(s, logEv('error', 'late'), { now: 5 })
+    s = applyEvent(s, logEv('info', 'fyi'), { now: 6 })
+    expect(s.runs.r1.logs?.map((l) => l.message)).toEqual(['early', 'late', 'fyi'])
+    expect(s.notices.map((n) => n.text)).toEqual(['late'])
+    s = applyRecord(s, record(summary('r1'), { logs: [{ at: 1, level: 'warn', message: 'early' }, { at: 5, level: 'error', message: 'late' }] }), { preferLive: true })
+    expect(s.runs.r1.logs?.map((l) => l.message)).toEqual(['early', 'late', 'fyi'])
+  })
+
+  it('keeps the newest usage.status for the status bar', () => {
+    const usage = { authMode: 'subscription', subscriptionType: 'max', available: true, windows: { fiveHour: { utilization: 42, resetsAt: null } } }
+    const s = applyEvent(createInitialState('/p'), { seq: 1, event: { type: 'usage.status', runId: '', usage } } as RunsEventParams)
+    expect(s.planUsage).toEqual(usage)
+  })
+})

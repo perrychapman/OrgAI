@@ -57,6 +57,7 @@ import { readStdinText } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { staffingLine } from '../staffingText'
+import { loadImages } from '../images'
 import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
@@ -80,11 +81,13 @@ const usage = (message: string): CliError => new CliError(message, EXIT.usage)
 /** A parseFlags spec from a commandTable entry (value flags are strings, the rest booleans). */
 function specOf(command: string): FlagSpec {
   const spec: FlagSpec = {}
-  for (const f of findCommand(command)?.flags ?? []) spec[f.name] = { type: f.takesValue ? 'string' : 'boolean', ...(f.short ? { short: f.short } : {}) }
+  for (const f of findCommand(command)?.flags ?? []) spec[f.name] = { type: f.takesValue ? 'string' : 'boolean', ...(f.repeatable ? { multiple: true } : {}), ...(f.short ? { short: f.short } : {}) }
   return spec
 }
 
 type Values = Record<string, string | boolean | string[] | undefined>
+
+const strs = (v: Values, name: string): string[] => (Array.isArray(v[name]) ? (v[name] as string[]) : [])
 
 const str = (v: Values, name: string): string | undefined => (typeof v[name] === 'string' ? (v[name] as string) : undefined)
 
@@ -311,6 +314,7 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
   if (v['allow-edits'] === true && !quick) throw usage('--allow-edits applies to --quick runs only.')
   if (quick && ctx.globals.project !== undefined) throw usage('--quick runs in the current folder; leave out --project.')
   const prompt = await readPrompt(ctx, positionals[0], promptFile, 'Give a prompt: orgai exec "<prompt>", --prompt-file <path>, or - to read it from stdin.')
+  const images = await loadImages(strs(v, 'image'), ctx.cwd)
 
   // cwd checks before any host is started: an agent worktree, and (while no host runs) an unregistered folder.
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
@@ -329,7 +333,7 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
     if (quick) {
       if (overridesNeedConfigure(undefined, overrides)) await session.needConfigure()
       return call<RunSummary>(session.client, 'runs:startQuick', [
-        { prompt, folder: ctx.cwd, team: team ?? 'single', allowEdits: v['allow-edits'] === true, overrides }
+        { prompt, folder: ctx.cwd, team: team ?? 'single', allowEdits: v['allow-edits'] === true, ...(images.length ? { images } : {}), overrides }
       ])
     }
     const projects = await call<Project[]>(session.client, 'projects:list', [])
@@ -345,7 +349,7 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
       if (!isJsonOutput(ctx)) printText(ctx, styleFor(ctx).dim(`Created the project ${safeLine(project.name)}.`))
     }
     if (overridesNeedConfigure(project, overrides)) await session.needConfigure()
-    return call<RunSummary>(session.client, 'runs:start', [{ projectId: project.id, prompt, ...(team === 'single' ? { team: 'single' } : {}), overrides }])
+    return call<RunSummary>(session.client, 'runs:start', [{ projectId: project.id, prompt, ...(team === 'single' ? { team: 'single' } : {}), ...(images.length ? { images } : {}), overrides }])
   })
 }
 
@@ -370,6 +374,7 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
   const promptFile = str(v, 'prompt-file')
   if ([flagPrompt !== undefined, promptFile !== undefined, dash.length > 0].filter(Boolean).length > 1) throw usage('Give one of --prompt <text>, --prompt-file <path> or -.')
   const prompt = await readPrompt(ctx, flagPrompt ?? (dash.length ? '-' : undefined), promptFile, 'Give a message to continue with: --prompt "<text>", --prompt-file <path>, or - to read it from stdin.')
+  const images = await loadImages(strs(v, 'image'), ctx.cwd)
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
 
   const session = await openSession(ctx, false)
@@ -404,7 +409,7 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
     const from = runs.find((r) => r.id === runId)
     const project = from ? projects.find((p) => p.id === from.projectId) : undefined
     if (overridesNeedConfigure(project, overrides)) await session.needConfigure()
-    return call<RunSummary>(session.client, 'runs:continue', [{ runId, text: prompt, overrides, exec: true }])
+    return call<RunSummary>(session.client, 'runs:continue', [{ runId, text: prompt, ...(images.length ? { images } : {}), overrides, exec: true }])
   })
 }
 

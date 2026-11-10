@@ -67,6 +67,25 @@ async function partA() {
   const stored = storedProject(cj?.project?.id)
   check(stored && stored.maxBudgetUsd === undefined && stored.maxSubagentDepth === undefined && stored.preferEverydayNearLimit === false, 'the cleared fields are stored as unset', JSON.stringify(stored && { b: stored.maxBudgetUsd, d: stored.maxSubagentDepth }))
 
+  // Run staffing, review and retention flags (cli-parity 3.2).
+  const sShown = json((await cli(['projects', 'show', '--output-format', 'json'], { cwd: codeDir })).out)
+  const sp = sShown?.project
+  check(sp && sp.staffing === 'auto' && sp.staffingGoal === 'balanced' && sp.reviewPolicy === 'risk' && sp.reviewMerges === false && sp.maxWindowShare === null && sp.keepRuns === 100 && sp.brief === '', 'projects show --output-format json returns staffing, staffingGoal, reviewPolicy, reviewMerges, maxWindowShare, keepRuns and brief', JSON.stringify(sp))
+  const fixed = await cli(['projects', 'set', '--staffing', 'fixed', '--staffing-goal', 'speed', '--review-policy', 'always', '--review-merges', 'on', '--max-window-share', '40', '--keep-runs', '7', '--output-format', 'json'], { cwd: codeDir })
+  const fj = json(fixed.out)?.project
+  check(fixed.code === 0 && fj?.staffing === 'fixed' && fj.staffingGoal === 'speed' && fj.reviewPolicy === 'always' && fj.reviewMerges === true && fj.maxWindowShare === 40 && fj.keepRuns === 7, 'projects set --staffing fixed --staffing-goal speed --review-policy always --review-merges on --max-window-share 40 --keep-runs 7', show(fixed))
+  const sStored = storedProject(cj?.project?.id)
+  check(sStored && sStored.staffing === 'fixed' && sStored.staffingGoal === 'speed' && sStored.reviewPolicy === 'always' && sStored.reviewMerges === true && sStored.maxWindowShare === 40 && sStored.keepRuns === 7, 'the staffing, review and retention fields are stored', JSON.stringify(sStored))
+  const refused = await cli(['projects', 'set', '--staffing', 'auto'], { cwd: codeDir })
+  check(refused.code !== 0 && storedProject(cj?.project?.id)?.staffing === 'fixed', '--staffing auto from fixed without --yes (no terminal) changes nothing', show(refused))
+  const auto = await cli(['projects', 'set', '--staffing', 'auto', '--yes', '--staffing-goal', 'balanced', '--review-policy', 'risk', '--review-merges', 'off', '--max-window-share', 'auto', '--keep-runs', 'auto', '--output-format', 'json'], { cwd: codeDir })
+  const aj = json(auto.out)?.project
+  check(auto.code === 0 && aj?.staffing === 'auto' && aj.staffingGoal === 'balanced' && aj.reviewPolicy === 'risk' && aj.reviewMerges === false && aj.maxWindowShare === null && aj.keepRuns === 100, 'projects set --staffing auto --yes and the other defaults restore them', show(auto))
+  const badShare = await cli(['projects', 'set', '--max-window-share', '0.4'], { cwd: codeDir })
+  check(badShare.code === 2 && /--max-window-share/.test(badShare.err), '--max-window-share as a fraction exits 2', show(badShare))
+  const badPolicy = await cli(['projects', 'set', '--review-policy', 'sometimes'], { cwd: codeDir })
+  check(badPolicy.code === 2 && /--review-policy must be one of/.test(badPolicy.err), '--review-policy outside always|risk|never exits 2', show(badPolicy))
+
   const badKind = await cli(['projects', 'create', engDir, '--kind', 'website'])
   check(badKind.code === 2, '--kind outside code|engagement exits 2', show(badKind))
 

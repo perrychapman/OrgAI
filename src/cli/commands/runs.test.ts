@@ -118,6 +118,24 @@ describe('orgai runs show', () => {
     expect(g.out()).toContain('Look at this')
   })
 
+  it('--logs prints the harness log (warnings and errors by default) and the auto-continue count', async () => {
+    const withLogs = { ...rec, plan: { ...rec.plan!, autoContinues: 3 }, logs: [{ at: 1000, level: 'info' as const, message: 'Models: x' }, { at: 2000, level: 'warn' as const, message: 'Slow \x1b[31mtool' }, { at: 3000, level: 'error' as const, message: 'Boom' }] }
+    const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: withLogs } } })
+    expect(await runRuns(f.ctx, ['show', 'R5', '--logs'])).toBe(EXIT.ok)
+    expect(f.out()).toContain('Auto-continues: 3 of 40')
+    expect(f.out()).toContain('Logs (warnings and errors; 2 of 3):')
+    expect(f.out()).toMatch(/WARN {3}Slow tool/)
+    expect(f.out()).toMatch(/ERROR {2}Boom/)
+    expect(f.out()).not.toContain('Models: x')
+    const g = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: withLogs } } })
+    await runRuns(g.ctx, ['show', 'R5', '--logs', '--level', 'all'])
+    expect(g.out()).toContain('Logs (all levels; 3 of 3):')
+    expect(g.out()).toContain('Models: x')
+    const h = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: withLogs } } })
+    await expect(runRuns(h.ctx, ['show', 'R5', '--logs', '--level', 'loud'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runRuns(h.ctx, ['show', 'R5', '--level', 'all'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+  })
+
   it('JSON omits image bytes', async () => {
     const f = fakeContext({ cwd: '/work/app', globals: { outputFormat: 'json' }, store: { projects: [p1], runs, records: { run_five55: rec } } })
     await runRuns(f.ctx, ['show', 'R5', '--transcript'])

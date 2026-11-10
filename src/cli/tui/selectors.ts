@@ -5,7 +5,7 @@
  * count from decisionCount (cli-spec 2 item 4).
  */
 import { DELEGATION_BADGE_SHORT, delegationBadges } from '../../shared/delegationView'
-import { VIRTUAL_PROJECT_IDS, type AgentInstance, type AgentState, type CardKind, type RunSummary, type TranscriptEntry } from '../../shared/types'
+import { VIRTUAL_PROJECT_IDS, type AgentInstance, type AgentState, type CardKind, type RunSummary, type TranscriptEntry, type UsageStatus } from '../../shared/types'
 import { agentCostInput, costView, formatDuration, formatTokens, runCostInput, sumCosts } from '../../shared/view/cost'
 import { normalizeParents } from '../../shared/view/agentTree'
 import { foldFinished, isSettledAt } from '../../shared/view/foldFinished'
@@ -22,7 +22,8 @@ import { latestByAgent, latestForStep, liveModelOf, modelsUsedBy, rootModelOf, r
 import { readyCount, stepFlows, usesGraph } from './planGraph'
 import { isWorkingAgentState } from './activity'
 import { agentLabel, imageLabel, mediaLabel, pendingItems, resultPartsLabel, statusViewOf, toolNamesOf } from '../render'
-import { statusText } from '../../shared/view/runStatus'
+import { autoContinueState, statusText } from '../../shared/view/runStatus'
+import { DEFAULT_MAX_AUTO_CONTINUES } from '../../shared/types'
 import { CARD_BUCKETS, cardArrivalSeq } from './state'
 import {
   cardKey,
@@ -741,6 +742,19 @@ export function offersRetro(summary: Pick<RunSummary, 'kind' | 'quick' | 'projec
   return summary.kind === 'work' && summary.team !== 'single' && !summary.quick && !(VIRTUAL_PROJECT_IDS as readonly string[]).includes(summary.projectId) && (summary.status === 'finished' || summary.status === 'error')
 }
 
+/** The plan windows as "5h 42% · 7d 18%" (whole percent); undefined before a report or when neither window has a figure. */
+export function windowText(u: UsageStatus | undefined): string | undefined {
+  if (!u || !u.available) return undefined
+  const parts: string[] = []
+  const pct = (w: { utilization: number | null } | undefined): string | undefined =>
+    w && typeof w.utilization === 'number' && Number.isFinite(w.utilization) ? `${Math.round(Math.min(100, Math.max(0, w.utilization)))}%` : undefined
+  const five = pct(u.windows?.fiveHour)
+  const seven = pct(u.windows?.sevenDay)
+  if (five) parts.push(`5h ${five}`)
+  if (seven) parts.push(`7d ${seven}`)
+  return parts.length > 0 ? parts.join(' · ') : undefined
+}
+
 export function statusSummary(s: TuiState): StatusSummary {
   const live = Object.values(s.runs).filter((r) => isOpenStatus(r.summary.status))
   const chips = runChips(s)
@@ -753,6 +767,8 @@ export function statusSummary(s: TuiState): StatusSummary {
     ...(s.hostKind ? { hostKind: s.hostKind } : {}),
     ...(s.readOnlyReason ? { readOnlyReason: safeLine(s.readOnlyReason) } : {})
   }
+  const windows = windowText(s.planUsage)
+  if (windows) out.windowText = windows
   const run = activeRun(s)
   if (!run) return out
   const graph = !!run.plan && Array.isArray(run.plan.steps) && usesGraph(run.plan.steps)
@@ -763,6 +779,10 @@ export function statusSummary(s: TuiState): StatusSummary {
     if (ready > 0) out.readySteps = ready
   }
   const view = statusViewOf({ summary: run.summary, plan: run.plan, agents: run.agents }, openDecisions(run) > 0, s.project)
+  if (run.plan) {
+    const auto = autoContinueState({ status: run.summary.status, plan: run.plan, autoContinue: s.project?.autoContinue, maxAutoContinues: s.project?.maxAutoContinues, kind: run.summary.kind }, DEFAULT_MAX_AUTO_CONTINUES)
+    out.autoText = s.project?.autoContinue === false ? 'auto-continue off' : `auto ${auto.count}/${auto.max}`
+  }
   const chain = chainRuns(s)
   const cost = costView(chain.length > 1 ? sumCosts(chain.map((r) => runCostInput(r.summary))) : runCostInput(run.summary))
   // A failed root turn leaves the run idle (it takes another message): say so instead of a plain Idle (issue #29 M5).

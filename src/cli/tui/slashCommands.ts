@@ -3,6 +3,7 @@
  * notice built from host data goes through sanitizeTty, and a command's failure becomes one danger notice (a command
  * never throws into the shell).
  */
+import { LOG_LEVEL_WORDS, logsOverlayText, type LogLevelFilter } from '../logText'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { agentLabel, statusWordOfSummary } from '../render'
 import { helpKeyLines } from './keymap'
@@ -279,6 +280,25 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       guarded(ctx, async () => {
         if (ctx.startRetro) await ctx.startRetro()
         else ctx.notify('The Org retrospective is not available here.', 'warn')
+      })
+  },
+  {
+    name: 'logs',
+    args: '[info|all]',
+    summary: "The run's warnings and errors, kept for the whole run (info or all adds the rest)",
+    available: (s) => s.activeRunId !== undefined,
+    unavailableReason: needsRunReason,
+    run: (ctx, args) =>
+      guarded(ctx, async () => {
+        const word = cleanLine(args, 20).toLowerCase()
+        const level: LogLevelFilter = word === '' || word === 'warn' ? 'warn' : word === 'info' ? 'info' : word === 'all' ? 'all' : 'warn'
+        if (word !== '' && !LOG_LEVEL_WORDS.includes(word as LogLevelFilter)) {
+          ctx.notify('Use /logs, /logs info or /logs all.', 'warn')
+          return
+        }
+        const st = ctx.state()
+        const run = st.activeRunId ? st.runs[st.activeRunId] : undefined
+        await ctx.openText('Logs', logsOverlayText(run?.logs, level))
       })
   },
   {

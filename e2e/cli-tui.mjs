@@ -252,6 +252,14 @@ try {
       await t.waitFor('E2E-MARK-OMEGA', 30_000).catch(() => undefined)
       await sleep(400)
 
+      // /logs: the run's warnings and errors in a scrollable overlay (cli-parity 3.5).
+      await type(t, '/logs')
+      t.key('enter')
+      await t.waitFor(/Warnings and errors: \d+ of \d+/, 10_000)
+      check(true, 'a: /logs opens the run\'s warnings and errors with a count')
+      t.key('escape')
+      await sleep(300)
+
       // b. Resize.
       const splitAt = locate(t, /E2E-MARK-(ALPHA|OMEGA)/)
       const splitTree = locate(t, UI.treeHeading)

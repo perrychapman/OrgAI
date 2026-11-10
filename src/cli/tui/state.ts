@@ -29,6 +29,7 @@ import { safeLine } from '../output'
 import { StreamSanitizers, sanitizeTty } from './sanitizeTty'
 import {
   cardKey,
+  TUI_LOGS_MAX,
   TUI_NOTICE_MAX,
   TUI_RESOLVED_MAX,
   TUI_MESSAGES_MAX,
@@ -232,6 +233,23 @@ function withoutPartial(run: TuiRun, agentId: string): TuiRun {
   return { ...run, partials }
 }
 
+type RunLogLine = NonNullable<TuiRun['logs']>[number]
+
+function withLog(run: TuiRun, line: RunLogLine): TuiRun {
+  const logs = [...(run.logs ?? []), line]
+  return { ...run, logs: logs.length > TUI_LOGS_MAX ? logs.slice(logs.length - TUI_LOGS_MAX) : logs }
+}
+
+/** The record's logs first, then kept ones the record does not have (same level and message): events that arrived after it. */
+function mergeLogs(kept: readonly RunLogLine[] | undefined, record: readonly RunLogLine[] | undefined): RunLogLine[] | undefined {
+  const rec = Array.isArray(record) ? record.filter((l) => l && typeof l.message === 'string') : []
+  const have = new Set(rec.map((l) => `${l.level}\n${l.message}`))
+  const extra = (kept ?? []).filter((l) => !have.has(`${l.level}\n${l.message}`))
+  const all = [...rec, ...extra]
+  if (all.length === 0) return undefined
+  return all.length > TUI_LOGS_MAX ? all.slice(all.length - TUI_LOGS_MAX) : all
+}
+
 function putRun(s: TuiState, run: TuiRun): TuiState {
   return { ...s, runs: { ...s.runs, [run.summary.id]: run } }
 }
@@ -359,6 +377,8 @@ export function applyRecord(s: TuiState, rec: RunRecord, opts: { omitted?: numbe
     omitted: omitted || undefined,
     recordLoaded: true
   })
+  const logs = mergeLogs(prev.logs, rec.logs)
+  if (logs) run.logs = logs
   if (!run.omitted) delete run.omitted
   let out = putRun(s, run)
   out = { ...out, runOrder: withOrder(out, [rec.summary]) }
@@ -418,15 +438,19 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   let out: TuiState = typeof p.seq === 'number' && (s.lastSeq === undefined || p.seq > s.lastSeq) ? { ...s, lastSeq: p.seq } : s
 
   switch (e.type) {
-    case 'log':
+    case 'log': {
+      // Every level is kept on the run for /logs; warnings and errors also raise a notice (it expires, the list does not).
+      if (typeof e.message === 'string' && s.runs[e.runId]) out = putRun(out, withLog(out.runs[e.runId], { at: now, level: e.level, message: e.message }))
       if (e.level === 'warn' || e.level === 'error') return addNotice(out, e.message, e.level === 'error' ? 'danger' : 'warn', now)
       // The run-start models line (cli-parity 3.1) is the one info log worth a notice.
       if (e.level === 'info' && typeof e.message === 'string' && e.message.startsWith('Models: ')) return addNotice(out, e.message, undefined, now)
       return out
+    }
     case 'project.updated':
       return out.project && e.project && out.project.id === e.project.id ? { ...out, project: e.project } : out
     case 'usage.status':
-      return out
+      // The plan windows (run-less report, runId ''): the status bar shows the newest.
+      return e.usage && typeof e.usage === 'object' ? { ...out, planUsage: e.usage } : out
     default:
       break
   }
