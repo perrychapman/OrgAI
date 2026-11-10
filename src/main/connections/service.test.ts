@@ -300,6 +300,30 @@ describe('runConnection anthropic key', () => {
     expect(ctx.service.runConnection(undefined, choice).env).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-x' })
     vi.unstubAllEnvs()
   })
+
+  it('run staffing: sets ANTHROPIC_DEFAULT_*_MODEL for each tier mapped to a concrete id, skips aliases, none for a fixed project', () => {
+    const ctx = setup()
+    const choice = { adapter: 'claude' as const, connection: 'anthropic' as const, mismatched: [] }
+    const s = ctx.settings.get()
+    const tierModels = { top: 'fable', deep: 'claude-opus-5-1', everyday: ' claude-sonnet-5-5 ', fast: 'deep' }
+    ctx.settings.set({ ...s, connections: { ...s.connections, anthropic: { ...s.connections.anthropic, tierModels } } })
+    const auto = project({ provider: { id: 'claude', label: 'x', auth: { kind: 'subscription' }, connection: 'anthropic' } })
+    // An alias (fable) or a tier name (deep) is skipped: it already resolves natively.
+    expect(ctx.service.runConnection(auto, choice).env).toEqual({ ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-1', ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5' })
+    // Project.staffing 'fixed' keeps today's environment exactly; no project (one-shot callers) sets nothing either.
+    expect(ctx.service.runConnection({ ...auto, staffing: 'fixed' }, choice).env).toEqual({})
+    expect(ctx.service.runConnection(undefined, choice).env).toEqual({})
+    // The API key still comes with them.
+    const keyed = { ...auto, provider: { ...auto.provider, auth: { kind: 'apiKey' as const, envVar: 'ORGAI_TEST_ANTH_KEY' } } }
+    vi.stubEnv('ORGAI_TEST_ANTH_KEY', 'sk-ant-x')
+    expect(ctx.service.runConnection(keyed, choice).env).toEqual({ ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-1', ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5', ANTHROPIC_API_KEY: 'sk-ant-x' })
+    vi.unstubAllEnvs()
+    // A bridged Claude role on the Anthropic connection under a project on another connection gets them too (auto only).
+    const other = project({ provider: { id: 'codex', label: 'x', auth: { kind: 'subscription' }, connection: 'openai' } })
+    const target = { connection: 'anthropic' as const, adapter: 'claude' as const }
+    expect(ctx.service.runConnectionFor(other, target).env).toEqual({ ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-1', ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5' })
+    expect(ctx.service.runConnectionFor({ ...other, staffing: 'fixed' }, target).env).toEqual({})
+  })
 })
 
 describe('remapModels', () => {

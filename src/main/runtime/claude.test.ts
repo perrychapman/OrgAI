@@ -981,11 +981,12 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     // The tier mapping for tier-valued roles still reaches the CLI through the connection env.
     expect(q.options.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('claude-sonnet-4-5')
     expect(q.options.env.ANTHROPIC_BASE_URL).toBe('http://proxy')
-    // The spawn hook neither rewrites nor drops a cross-family model.
+    // A full id on the call is dropped (the SDK rejects anything but an alias there); the definition's cross-family
+    // model applies unchanged.
     const spawn = async (input: Record<string, unknown>) =>
       (await preToolUse(q)({ ...call('Agent'), tool_input: input }, 'x', {})).hookSpecificOutput as { updatedInput?: Record<string, unknown> } | undefined
     const explicit = await spawn({ subagent_type: 'engineer', prompt: 'x', model: 'gpt-5' })
-    expect(explicit?.updatedInput?.model).toBe('gpt-5')
+    expect(explicit?.updatedInput && 'model' in explicit.updatedInput).toBe(false)
     const implicit = await spawn({ subagent_type: 'reviewer', prompt: 'x' })
     expect(implicit?.updatedInput && 'model' in implicit.updatedInput).toBe(false)
   })
@@ -2346,5 +2347,187 @@ describe('plan guard steering', () => {
       expect(await spawn()).toBeUndefined()
       expect(logs()).not.toContain(AUTO_LOG)
     }
+  })
+})
+
+describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Hook = (i: unknown, id: string, o: unknown) => Promise<Record<string, any>>
+  type Internals = {
+    applyUsage(u: unknown): void
+    buildHooks(): { PreToolUse: Array<{ hooks: Hook[] }>; PostToolUse: Array<{ hooks: Hook[] }> }
+    handle(msg: unknown): void
+    stop(): Promise<void>
+  }
+  const live: Internals[] = []
+  afterEach(async () => {
+    for (const s of live.splice(0)) await s.stop()
+    sdk.queries.length = 0
+  })
+  const weekly = (utilization: number) => ({
+    authMode: 'subscription' as const,
+    subscriptionType: 'max',
+    available: true,
+    windows: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization, resetsAt: null } },
+    status: 'allowed' as const,
+    updatedAt: 0
+  })
+  /** Lead (deep, root) -> engineer (deep, high, may spawn helper) + reviewer (everyday); helper inherits. */
+  function chart() {
+    return [
+      role({ id: 'r-lead', slug: 'lead', name: 'Lead', model: 'opus', tier: 'deep', canSpawn: true, spawnable: ['r-eng', 'r-rev'] }),
+      role({ id: 'r-eng', slug: 'engineer', name: 'Engineer', model: 'opus', tier: 'deep', effort: 'high', reportsTo: 'r-lead', canSpawn: true, spawnable: ['r-help'] }),
+      role({ id: 'r-rev', slug: 'reviewer', name: 'Reviewer', model: 'sonnet', tier: 'everyday', reportsTo: 'r-lead' }),
+      role({ id: 'r-help', slug: 'helper', name: 'Helper', model: 'inherit', reportsTo: 'r-eng' })
+    ]
+  }
+  function session(opts: { roles?: ReturnType<typeof chart>; project?: Partial<Project>; plan?: RunPlan; ctx?: Partial<RuntimeContext> } = {}) {
+    const roles = opts.roles ?? chart()
+    const ctx = fakeCtx({
+      project: project({ roles, provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, ...opts.project }),
+      roles,
+      autoContinue: false,
+      ...(opts.plan ? { getPlan: () => opts.plan } : {}),
+      ...opts.ctx
+    })
+    const s = new ClaudeSession(ctx) as unknown as Internals
+    live.push(s)
+    const hooks = s.buildHooks()
+    const spawn = async (id: string, input: Record<string, unknown>, by?: { id: string; type: string }) => {
+      const out = await hooks.PreToolUse[0].hooks[0](
+        { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: id, tool_input: { prompt: 'x', ...input }, cwd: '/repo', ...(by ? { agent_id: by.id, agent_type: by.type } : {}) },
+        't',
+        { signal: new AbortController().signal }
+      )
+      return out.hookSpecificOutput?.updatedInput as Record<string, unknown> | undefined
+    }
+    const post = async (id: string) =>
+      (await hooks.PostToolUse[0].hooks[0]({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_use_id: id, tool_input: {}, tool_response: {} }, 't', { signal: new AbortController().signal }))
+        .hookSpecificOutput?.additionalContext as string | undefined
+    const started = (toolUseId: string, agentId: string, slug: string) =>
+      s.handle({ type: 'system', subtype: 'task_started', task_id: agentId, task_type: 'local_agent', subagent_type: slug, tool_use_id: toolUseId, description: 'work', session_id: 'sess-1', uuid: `u-${agentId}` })
+    const refused = (toolUseId: string) =>
+      s.handle({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'refused', is_error: true }] }, parent_tool_use_id: null, session_id: 'sess-1', uuid: `r-${toolUseId}` })
+    const logs = () => ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
+    return { s, ctx, spawn, post, started, refused, logs }
+  }
+  const plan = (steps: RunPlan['steps']): RunPlan => ({ goal: 'g', steps, status: 'active', autoContinues: 0, updatedAt: 0 })
+
+  it("applies a plan step's pick (alias and effort) and records the row with the agent id and step id", async () => {
+    const p = plan([{ id: 'p1', title: 'Implement', status: 'pending', staff: { role: 'engineer', tier: 'everyday', effort: 'low' } }])
+    const { ctx, spawn, started, logs } = session({ plan: p })
+    const input = await spawn('t1', { subagent_type: 'engineer', name: 'eng-1' })
+    expect(input).toMatchObject({ model: 'sonnet', effort: 'low' })
+    expect(logs()).toContain('Staffing Engineer: everyday / low (chosen by the orchestrator) (plan step p1).')
+    started('t1', 'a1', 'engineer')
+    await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ roleId: 'r-eng', agentId: 'a1', stepId: 'p1', tier: 'everyday', effort: 'low', model: 'sonnet', source: 'orchestrator' })
+  })
+
+  it('clamps an alias on the call above the role ceiling, and tells the caller after the spawn', async () => {
+    const { spawn, post } = session()
+    const input = await spawn('t1', { subagent_type: 'reviewer', name: 'rev-1', model: 'opus' })
+    // The reviewer's ceiling is everyday, which its definition already runs on: no model at all.
+    expect(input && 'model' in input).toBe(false)
+    expect(await post('t1')).toBe('[OrgAI harness] Reviewer was spawned on everyday (capped by the role: asked for deep).')
+    expect(await post('t1')).toBeUndefined()
+  })
+
+  it('drops a full model id on the call (the SDK rejects it), so the definition model applies', async () => {
+    const { spawn, logs } = session()
+    const input = await spawn('t1', { subagent_type: 'engineer', name: 'eng-1', model: 'claude-opus-5-1' })
+    expect(input).toEqual({ subagent_type: 'engineer', name: 'eng-1', prompt: 'x' })
+    expect(logs()).toContain('Dropped the model "claude-opus-5-1" on a spawn of engineer: a spawn takes only fable, opus, sonnet, haiku.')
+  })
+
+  it('replaces an effort on the call above the ceiling', async () => {
+    const roles = chart().map((r) => (r.slug === 'reviewer' ? { ...r, effort: 'high' as const, staffing: { mode: 'auto' as const, maxEffort: 'medium' as const } } : r))
+    const { spawn } = session({ roles })
+    // Engineer: ceiling high = its definition's effort, so the call's max is removed and the definition applies.
+    const eng = await spawn('t1', { subagent_type: 'engineer', name: 'eng-1', effort: 'max' })
+    expect(eng && 'effort' in eng).toBe(false)
+    // Reviewer: ceiling medium below its definition's high, so medium is written.
+    expect((await spawn('t2', { subagent_type: 'reviewer', name: 'rev-1', effort: 'max' }))?.effort).toBe('medium')
+    // A role whose definition would run above its ceiling gets the ceiling even when nothing asks.
+    const low = chart().map((r) => (r.slug === 'reviewer' ? { ...r, staffing: { mode: 'auto' as const, maxEffort: 'low' as const } } : r))
+    expect((await session({ roles: low }).spawn('t3', { subagent_type: 'reviewer', name: 'rev-2' }))?.effort).toBe('low')
+  })
+
+  it("Project.staffing 'fixed' leaves the call as it is today, except a full id (dropped) and the plan guard (an alias)", async () => {
+    const p = plan([{ id: 'p1', title: 'Implement', status: 'pending', staff: { role: 'engineer', tier: 'fast', effort: 'low' } }])
+    const { s, spawn } = session({ project: { staffing: 'fixed' }, plan: p })
+    // Today: an alias and an effort the model wrote pass through, a named spawn with nothing to change returns {}.
+    expect(await spawn('t1', { subagent_type: 'engineer', name: 'eng-1', model: 'haiku', effort: 'max' })).toBeUndefined()
+    expect(await spawn('t2', { subagent_type: 'engineer', name: 'eng-2' })).toBeUndefined()
+    expect(await spawn('t3', { subagent_type: 'reviewer', name: 'rev-1', model: 'opus', effort: 'low' })).toBeUndefined()
+    // Changed: a full id is dropped instead of failing the spawn in the SDK.
+    expect(await spawn('t4', { subagent_type: 'engineer', name: 'eng-3', model: 'claude-opus-5-1', effort: 'low' })).toEqual({ subagent_type: 'engineer', name: 'eng-3', prompt: 'x', effort: 'low' })
+    // Plan guard: the deep role and a deep alias on the call both go to the everyday alias.
+    s.applyUsage(weekly(90))
+    expect((await spawn('t5', { subagent_type: 'engineer', name: 'eng-4' }))?.model).toBe('sonnet')
+    expect(await spawn('t6', { subagent_type: 'reviewer', name: 'rev-2', model: 'opus', effort: 'low' })).toEqual({ subagent_type: 'reviewer', name: 'rev-2', prompt: 'x', model: 'sonnet', effort: 'low' })
+  })
+
+  it('the plan guard writes sonnet, never a full id, also for a fixed role on a concrete deep model', async () => {
+    const roles = chart().map((r) => (r.slug === 'engineer' ? { ...r, model: 'claude-opus-5-1', tier: undefined } : r))
+    const connection = { connection: 'anthropic' as const, adapter: 'claude' as const, tierModels: { deep: 'claude-opus-5-1', everyday: 'claude-sonnet-5-5' } }
+    const { s, spawn, post, logs } = session({ roles, ctx: { connection } })
+    s.applyUsage(weekly(90))
+    expect((await spawn('t1', { subagent_type: 'engineer', name: 'eng-1' }))?.model).toBe('sonnet')
+    expect(logs()).toContain('Spawning Engineer on the everyday tier (sonnet) instead of claude-opus-5-1: the weekly usage window is near its limit.')
+    expect(await post('t1')).toBe('[OrgAI harness] Engineer was spawned on everyday / high (usage guard).')
+  })
+
+  it("an 'inherit' child follows its parent's resolved tier, below the root's", async () => {
+    const p = plan([{ id: 'p1', title: 'Implement', status: 'pending', staff: { role: 'engineer', tier: 'everyday' } }])
+    const { spawn, started } = session({ plan: p })
+    expect((await spawn('t1', { subagent_type: 'engineer', name: 'eng-1' }))?.model).toBe('sonnet')
+    started('t1', 'a1', 'engineer')
+    // The helper's definition says 'inherit' (the root's deep model); its parent runs on everyday, so it does too.
+    expect((await spawn('t2', { subagent_type: 'helper', name: 'help-1' }, { id: 'a1', type: 'engineer' }))?.model).toBe('sonnet')
+    // Spawned by an agent the book does not know: runs as configured.
+    expect(await spawn('t3', { subagent_type: 'helper', name: 'help-2' }, { id: 'zz', type: 'engineer' })).toBeUndefined()
+  })
+
+  it('cancels the decision of a refused spawn, so the next spawn binds the same step', async () => {
+    const p = plan([
+      { id: 'p1', title: 'First', status: 'pending', staff: { role: 'engineer', tier: 'everyday', effort: 'low' } },
+      { id: 'p2', title: 'Second', status: 'pending', staff: { role: 'engineer', tier: 'fast', effort: 'low' } }
+    ])
+    const { ctx, spawn, started, refused } = session({ plan: p })
+    expect((await spawn('t1', { subagent_type: 'engineer', name: 'eng-1' }))?.model).toBe('sonnet')
+    refused('t1')
+    expect((await spawn('t2', { subagent_type: 'engineer', name: 'eng-2' }))?.model).toBe('sonnet')
+    started('t1', 'ghost', 'engineer')
+    started('t2', 'a2', 'engineer')
+    await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ agentId: 'a2', stepId: 'p1' })
+  })
+
+  it('two spawns in one hook tick bind two different ready steps', async () => {
+    const p = plan([
+      { id: 'p1', title: 'First', status: 'pending', staff: { role: 'engineer', tier: 'everyday', effort: 'low' } },
+      { id: 'p2', title: 'Second', status: 'pending', staff: { role: 'engineer', tier: 'fast', effort: 'medium' } }
+    ])
+    const { ctx, spawn, started } = session({ plan: p })
+    const [a, b] = await Promise.all([spawn('t1', { subagent_type: 'engineer', name: 'eng-1' }), spawn('t2', { subagent_type: 'engineer', name: 'eng-2' })])
+    expect(a).toMatchObject({ model: 'sonnet', effort: 'low' })
+    expect(b).toMatchObject({ model: 'haiku', effort: 'medium' })
+    started('t1', 'a1', 'engineer')
+    started('t2', 'a2', 'engineer')
+    await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(2))
+    expect(ctx.getStaffing()!.assignments.map((r) => [r.agentId, r.stepId, r.tier])).toEqual([
+      ['a1', 'p1', 'everyday'],
+      ['a2', 'p2', 'fast']
+    ])
+  })
+
+  it('passes the run staffing goal to the role prompts', () => {
+    vi.mocked(buildRolePrompt).mockClear()
+    buildAgents(fakeCtx({ staffingGoal: 'cost' }), [], false)
+    expect(vi.mocked(buildRolePrompt).mock.calls.every((c) => c[3]?.staffingGoal === 'cost')).toBe(true)
+    vi.mocked(buildRolePrompt).mockClear()
+    buildAgents(fakeCtx(), [], false)
+    expect(vi.mocked(buildRolePrompt).mock.calls.some((c) => 'staffingGoal' in (c[3] ?? {}))).toBe(false)
   })
 })

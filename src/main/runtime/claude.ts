@@ -27,10 +27,12 @@ import {
   type SDKUserMessage,
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, ModelTier, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
-import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId } from '@shared/types'
-import { ANTHROPIC_BUILTIN_MODELS, connectionName, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
+import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
+import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingModeOf, tierForModel } from '@shared/defaults'
+import { CLAUDE_TIER_ALIAS, recordStaffing } from './staffing'
+import { StaffingBook } from './staffingBook'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgedRole, type BridgeSpawnResult, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { quickEditCard, quickEditFree } from './quickEditCard'
@@ -118,6 +120,35 @@ export function isDeepOrTopModel(model: string | undefined, tierModels: RunConne
 /** The model a steered spawn runs on: the connection's everyday model, else the anthropic builtin everyday entry. */
 export function everydayReplacement(tierModels: RunConnection['tierModels']): string | undefined {
   return tierModels?.everyday?.trim() || ANTHROPIC_BUILTIN_MODELS.find((m) => m.tier === 'everyday')?.id
+}
+
+/**
+ * The only `model` values an Agent call may carry (CLAUDE_TIER_ALIAS): the SDK rejects anything else there, a full id
+ * included (docs/agent-notes/sdk-facts.md, "Verified against v0.3.318 by scripts/smoke-staffing.mjs").
+ */
+const SPAWN_MODEL_ALIASES: ReadonlySet<string> = new Set(Object.values(CLAUDE_TIER_ALIAS))
+
+/**
+ * The run staffing tier map of a Claude session: the connection's tierModels, and on the Anthropic connection (or none)
+ * each unmapped tier filled from ANTHROPIC_BUILTIN_MODELS, where an alias resolves natively to its family (as
+ * everydayReplacement does for the plan guard). A proxy keeps only its own map. Pure.
+ */
+export function claudeStaffingTierModels(ctx: Pick<RuntimeContext, 'connection'>): Partial<Record<ModelTier, string>> {
+  const own: Partial<Record<ModelTier, string>> = { ...(ctx.connection?.tierModels ?? {}) }
+  if (usesProxy(ctx)) return own
+  for (const m of ANTHROPIC_BUILTIN_MODELS) if (m.tier && !own[m.tier]?.trim()) own[m.tier] = m.id
+  return own
+}
+
+/**
+ * The tier a role's AgentDefinition runs on when a spawn sets no `model`: buildAgents writes `role.model` (or 'inherit',
+ * the main thread's model, here `rootTier`). An alias or tier name says its tier; a concrete id runs on the role's chart
+ * tier, else the tier its family names. Undefined = unknown. Pure.
+ */
+export function definitionTier(role: Pick<Role, 'model' | 'tier'>, rootTier: ModelTier | undefined): ModelTier | undefined {
+  const model = role.model && validModelId(role.model) ? role.model : 'inherit'
+  if (model === 'inherit') return rootTier
+  return settingTier(model) ?? (isModelTier(role.tier) ? role.tier : undefined) ?? tierForModel(model)
 }
 
 /** Map a supportedModels() response (untrusted) to AdapterModelInfo rows. */
@@ -710,6 +741,8 @@ export function buildAgents(
         isolation,
         ...(ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}),
         ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
+        // Run staffing: the rubric paragraph names the run's goal (the per-run override included).
+        ...(ctx.staffingGoal ? { staffingGoal: ctx.staffingGoal } : {}),
         // Single-agent work runs ('single'): the prompt drops delegation and plan wording.
         ...(ctx.run.team ? { team: ctx.run.team } : {}),
         // The run's allowed directories, so agents know where a plain `cd` and edits need no approval.
@@ -1305,11 +1338,32 @@ export class ClaudeSession implements RuntimeSession {
   private lastRunCost = 0
   private lastSdkTotal = 0
   private prevQuerySdkTotal = 0
+  /**
+   * Run staffing (orchestration-efficiency 4.3): binds each native spawn to a plan step and resolves its tier and effort
+   * (spawn hook), records the row at task_started, forgets a refused spawn, notes ended reports. Lives on the session,
+   * so it survives query restarts; a resume in a new process starts with an empty book.
+   */
+  private staffingBook: StaffingBook
+  /** Agent tool_use id -> the line the spawn's caller reads in its tool result when staffing moved off what was asked. */
+  private staffingNotes = new Map<string, string>()
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
     if (!root) throw new Error('Project has no roles')
     this.root = root
+    const rootTier = isModelTier(root.tier) ? root.tier : settingTier(root.model)
+    this.staffingBook = new StaffingBook({
+      // Live: RunManager may replace ctx.project; only `staffing` is read.
+      project: {
+        get staffing() {
+          return ctx.project.staffing
+        }
+      },
+      ...(rootTier ? { rootTier } : {}),
+      tierModels: () => claudeStaffingTierModels(ctx),
+      adapterEfforts: effortOptionsFor('claude'),
+      plan: () => ctx.getPlan()
+    })
     this.isSetup = isSetupLikeRun(ctx.run.kind)
     this.isolation = !this.isSetup && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
@@ -1835,18 +1889,108 @@ export class ClaudeSession implements RuntimeSession {
     this.ctx.rateLimited({ ...(until ? { until } : {}), ...(window ? { window } : {}) })
   }
 
-  /** The everyday model to spawn this report on instead of its deep/top one while the weekly window is near its limit, if any. */
-  private steerToEveryday(target: Role | undefined, toolInput: Record<string, unknown>): { from: string; to: string } | undefined {
-    if (!this.planGuardArmed()) return undefined
-    const explicit = typeof toolInput.model === 'string' && validModelId(toolInput.model) ? toolInput.model : undefined
-    let model = explicit ?? (target?.model && validModelId(target.model) ? target.model : 'inherit')
-    if (model === 'inherit') model = this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
-    const tierModels = this.ctx.connection?.tierModels
-    const deep = target?.tier === 'deep' || target?.tier === 'top' || isDeepOrTopModel(model, tierModels)
-    if (!deep || !shouldSteerToEveryday(this.usage, this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD)) return undefined
-    const to = everydayReplacement(tierModels)
-    if (!to || to === model) return undefined
-    return { from: model || 'its configured model', to }
+  /**
+   * The plan guard steers new spawns now: armed (planGuardArmed, which writes its one engage line) and the weekly window
+   * is over the threshold. staffing.ts resolveStaffing makes the deep/top -> everyday decision from it.
+   */
+  private planGuardSteers(): boolean {
+    return this.planGuardArmed() && shouldSteerToEveryday(this.usage, this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD)
+  }
+
+  /**
+   * Run staffing for a native spawn that is going to be allowed (orchestration-efficiency 4.3): StaffingBook.decide under
+   * the Agent call's tool_use_id, then the call's final `model` and `effort`. Returns what to set and which keys the
+   * model wrote that must go.
+   * - `model`: CLAUDE_TIER_ALIAS[resolved tier] when the resolver moved the spawn off the tier its definition runs on
+   *   (definitionTier), or the plan guard steered it; otherwise none, so the definition's model applies. Any other
+   *   `model` the call carried is dropped (the SDK rejects a full id; an alias is only a request).
+   * - `effort`: the resolved effort when it differs from the definition's (reportEffort); otherwise none.
+   * Project.staffing 'fixed' keeps today's call: an alias and an effort on the call stay as they are; only a non-alias
+   * model is dropped and the plan guard writes the everyday alias.
+   */
+  private staffSpawn(
+    key: string,
+    parentAgentId: string | undefined,
+    target: Role,
+    toolInput: Record<string, unknown>
+  ): { model?: string; effort?: Effort; drop: Array<'model' | 'effort'> } {
+    const fixedProject = staffingModeOf(this.ctx.project) === 'fixed'
+    const callModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : undefined
+    const callAlias = callModel && SPAWN_MODEL_ALIASES.has(callModel) ? callModel : undefined
+    if ('model' in toolInput && !callAlias) {
+      const shown = callModel && validModelId(callModel) ? `the model "${callModel}"` : 'an invalid model'
+      this.log('warn', `Dropped ${shown} on a spawn of ${target.slug}: a spawn takes only ${[...SPAWN_MODEL_ALIASES].join(', ')}.`)
+    }
+    const callTier = callModel ? settingTier(callModel) : undefined
+    const callEffort = isEffort(toolInput.effort) ? toolInput.effort : undefined
+    const onCall = callTier || callEffort ? { ...(callTier ? { tier: callTier } : {}), ...(callEffort ? { effort: callEffort } : {}) } : undefined
+    const planGuard = this.planGuardSteers()
+    const decision = this.staffingBook.decide({
+      key,
+      role: target,
+      ...(parentAgentId ? { parentAgentId } : {}),
+      ...(onCall ? { onCall } : {}),
+      planGuard
+    })
+    const resolved = decision.resolved
+    const inherit = !(target.model && validModelId(target.model)) || target.model === 'inherit'
+    const rootTier = definitionTier(this.root, undefined)
+    const defTier = definitionTier(target, rootTier)
+    const steered = resolved.source === 'plan-guard'
+    let model: string | undefined
+    if (resolved.tier && resolved.tier !== defTier && (steered || (resolved.mode === 'auto' && (resolved.overrides || inherit)))) {
+      model = CLAUDE_TIER_ALIAS[resolved.tier]
+    }
+    const defEffort = reportEffort(target, sessionEffort(this.root))
+    let effort = resolved.effort && resolved.effort !== defEffort ? resolved.effort : undefined
+    // An auto role with an effort ceiling below the level it would run at, and no effort resolved (the role sets none):
+    // the definition's or the SDK's default would exceed the ceiling, so the ceiling is written.
+    const maxEffort = resolved.mode === 'auto' && !resolved.effort ? effectiveRoleStaffing(target, this.ctx.project).maxEffort : undefined
+    if (maxEffort && compareEffort(maxEffort, defEffort ?? CLAUDE_SDK_DEFAULT_EFFORT) < 0) effort = maxEffort
+
+    let from = target.model && !inherit ? target.model : this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
+    let guarded = steered && model !== undefined
+    if (fixedProject && !model && callAlias) {
+      // Today's call: the model's alias stays, steered by the plan guard when it names a deep or top tier.
+      const aliasTier = settingTier(callAlias)
+      if (planGuard && (aliasTier === 'deep' || aliasTier === 'top') && claudeStaffingTierModels(this.ctx).everyday?.trim()) {
+        model = CLAUDE_TIER_ALIAS.everyday
+        from = callAlias
+        guarded = true
+      } else model = callAlias
+    }
+    if (guarded) {
+      this.log('info', `Spawning ${target.name} on the everyday tier (${model}) instead of ${from || 'its configured model'}: the weekly usage window is near its limit.`)
+    }
+    this.log('info', `Staffing ${target.name}: ${decision.label}${decision.stepId ? ` (plan step ${decision.stepId})` : ''}.`)
+    if (resolved.adjustment || steered) {
+      if (this.staffingNotes.size >= 100) this.staffingNotes.delete(this.staffingNotes.keys().next().value!)
+      this.staffingNotes.set(key, `[OrgAI harness] ${target.name} was spawned on ${decision.label}.`)
+    }
+    const drop: Array<'model' | 'effort'> = []
+    if ('model' in toolInput && model === undefined) drop.push('model')
+    if (!fixedProject && 'effort' in toolInput && effort === undefined) drop.push('effort')
+    const out: { model?: string; effort?: Effort; drop: Array<'model' | 'effort'> } = { drop }
+    if (model !== undefined) out.model = model
+    if (!fixedProject && effort !== undefined) out.effort = effort
+    return out
+  }
+
+  /** The spawn decided under `toolUseId` started as `agentId`: record its staffing row (a failure is logged, never thrown). */
+  private staffingStarted(toolUseId: string, agentId: string): void {
+    const row = this.staffingBook.started(toolUseId, agentId, Date.now())
+    if (!row) return
+    try {
+      void recordStaffing(this.ctx, row).catch((e) => this.log('warn', `Could not record the staffing of ${agentId}: ${(e as Error).message}`))
+    } catch (e) {
+      this.log('warn', `Could not record the staffing of ${agentId}: ${(e as Error).message}`)
+    }
+  }
+
+  /** A spawn's Agent call came back as an error before its agent started: forget its staffing decision. */
+  private staffingRefused(toolUseId: string): void {
+    this.staffingBook.cancel(toolUseId)
+    this.staffingNotes.delete(toolUseId)
   }
 
   /** The run's reference folders now (live): undefined when the run has no list, 'unreadable' when reading it throws. */
@@ -2110,12 +2254,6 @@ export class ClaudeSession implements RuntimeSession {
         const target = this.rolesBySlug.get(requested)
         const parentIsolated = !input.agent_id || !!this.integrator.worktreeOf(input.agent_id)
         const updates: Record<string, unknown> = {}
-        // A model-chosen model must be a plain model id; anything else is dropped so the role's own model applies.
-        let dropModel = false
-        if ('model' in toolInput && !(typeof toolInput.model === 'string' && validModelId(toolInput.model))) {
-          dropModel = true
-          this.log('warn', `Dropped an invalid model on a spawn of ${requested}.`)
-        }
         // Every report gets a handle so peers and its lead can reach it with SendMessage({to: handle}).
         const { handle, generated } = spawnHandle(this.handles, requested, toolInput.name)
         this.spawnHandles.set(input.tool_use_id, handle)
@@ -2124,13 +2262,17 @@ export class ClaudeSession implements RuntimeSession {
           this.isolatedSpawns.set(input.tool_use_id, agentId)
           updates.isolation = 'worktree'
         }
-        // Near the weekly limit, new deep/top reports run on the everyday tier (plan guard: planGuardOf / planGuardEngaged).
-        const steer = this.steerToEveryday(target, toolInput)
-        if (steer && validModelId(steer.to)) {
-          updates.model = steer.to
-          dropModel = false
-          this.log('info', `Spawning ${target?.name ?? requested} on the everyday tier (${steer.to}) instead of ${steer.from}: the weekly usage window is near its limit.`)
-        }
+        // Run staffing (orchestration-efficiency 4.3): the resolver decides the call's model alias and effort, the plan
+        // guard included (near the weekly limit deep/top reports run on the everyday tier). Values the model wrote that
+        // the resolver did not confirm are dropped. Decided only here, after every denial above.
+        const drop = new Set<string>()
+        if (target) {
+          const staff = this.staffSpawn(input.tool_use_id, input.agent_id, target, toolInput)
+          for (const k of staff.drop) drop.add(k)
+          // A value the call already carries is left as it is (no updatedInput for an unchanged call).
+          if (staff.model !== undefined && staff.model !== toolInput.model) updates.model = staff.model
+          if (staff.effort !== undefined && staff.effort !== toolInput.effort) updates.effort = staff.effort
+        } else if ('model' in toolInput && !(typeof toolInput.model === 'string' && SPAWN_MODEL_ALIASES.has(toolInput.model))) drop.add('model')
         // Known items named in the brief go beside it. The new agent's id is unknown until task_started and the block
         // must be in this input, so no id is passed: no dedupe, and the row lands on the root (RuntimeContext.knowledgeContext).
         const brief = typeof toolInput.prompt === 'string' ? toolInput.prompt : ''
@@ -2139,9 +2281,9 @@ export class ClaudeSession implements RuntimeSession {
         // Required delegation (spec 5.4): a spawn that earns a receipt runs in the foreground, so the child's report and
         // the receipt reach the caller in one tool result. Adaptive spawns keep the SDK default (background).
         if (target && this.receiptBearingSpawn(parentRole, target)) updates.run_in_background = false
-        if (!Object.keys(updates).length && !dropModel) return {}
+        if (!Object.keys(updates).length && !drop.size) return {}
         const updated: Record<string, unknown> = { ...toolInput, ...updates }
-        if (dropModel) delete updated.model
+        for (const k of drop) if (!(k in updates)) delete updated[k]
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
@@ -2249,14 +2391,19 @@ export class ClaudeSession implements RuntimeSession {
       if (a && a.state !== 'done' && a.state !== 'error') this.setState(agentId, 'thinking', activity)
       // A completed (foreground) spawn: the report reached the caller. Confirm it and hand the caller the receipt.
       const gate = this.ctx.delegation
+      // Run staffing: when the spawn runs on other values than were asked (a clamp, the plan guard), its caller reads
+      // one line about it beside the result (with the receipt, when there is one).
+      const staffingNote = this.staffingNotes.get(input.tool_use_id)
+      if (staffingNote) this.staffingNotes.delete(input.tool_use_id)
       if (gate && (input.tool_name === SPAWN_TOOL || input.tool_name === 'Task')) {
         const child = this.taskByToolUse.get(input.tool_use_id)
         if (child && !isAsyncLaunch(input.tool_response)) {
           gate.delivered(child)
           const receipt = gate.receiptText(child)
-          if (receipt) return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: receipt } }
+          if (receipt) return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: staffingNote ? `${receipt}\n\n${staffingNote}` : receipt } }
         }
       }
+      if (staffingNote) return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: staffingNote } }
       return {}
     }
 
@@ -2294,6 +2441,7 @@ export class ClaudeSession implements RuntimeSession {
       a.state = 'done'
       a.activity = failed ? 'Skipped required reports' : 'Reported back'
       a.endedAt = Date.now()
+      this.staffingBook.ended(a.id)
       this.partial.clear(a.id, true)
       this.upsert(a)
       this.reportFinished()
@@ -3468,6 +3616,8 @@ export class ClaudeSession implements RuntimeSession {
           const candidate = msg.parent_task_id ?? (msg.tool_use_id ? this.toolUseIssuer.get(msg.tool_use_id) : undefined)
           const parentId = resolveParent(this.agents, msg.task_id, candidate, ROOT_ID)
           if (msg.tool_use_id) this.taskByToolUse.set(msg.tool_use_id, msg.task_id)
+          // Run staffing: the spawn decided under this Agent call started; its row is recorded once.
+          if (msg.tool_use_id) this.staffingStarted(msg.tool_use_id, msg.task_id)
           const slug = msg.subagent_type ?? 'general-purpose'
           const role = this.rolesBySlug.get(slug)
           const existing = this.agents.get(msg.task_id)
@@ -3530,6 +3680,7 @@ export class ClaudeSession implements RuntimeSession {
             a.activity = msg.status === 'completed' ? 'Reported back' : `Task ${msg.status}`
             a.result = a.result ?? msg.summary
             a.endedAt = Date.now()
+            this.staffingBook.ended(a.id)
             this.upsert(a)
             if (firstFinish) this.reportFinished()
             else this.noteActivity('report')
@@ -3636,6 +3787,8 @@ export class ClaudeSession implements RuntimeSession {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_result') {
+              // An Agent call that failed before its agent started (refused, rejected input): forget its staffing.
+              if (block.is_error) this.staffingRefused(block.tool_use_id)
               // A resumed session (continued run or MCP restart) may replay history; show each result once.
               if ((this.ctx.resumeSessionId || this.restarts > 0) && this.seenToolResults.has(block.tool_use_id)) continue
               this.seenToolResults.add(block.tool_use_id)

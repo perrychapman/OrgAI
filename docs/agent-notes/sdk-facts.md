@@ -130,6 +130,28 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   definition so it stays at the default instead of inheriting the root's; written for any model, since check 9 shows
   it is harmless where effort is unsupported. Roles with an effort keep theirs; values a model does not take go
   through unchanged, as before. `buildCompletionOptions` sets no effort. Not live-checked end to end in a run.
+  Run staffing at spawn (spec 4.3; `claude.ts` `staffSpawn`, unit tests "run staffing at spawn" in `claude.test.ts`
+  with the fake `query`, live facts from checks 1 to 4 and 10): each `ClaudeSession` holds one `StaffingBook`. For a
+  native spawn that passed every denial the hook calls `decide` under the Agent call's `tool_use_id` (the parent is the
+  hook's `agent_id`; a tier from an alias or tier name on the call and a valid effort are the `onCall` request; the plan
+  guard is its `planGuard` input). The call's final `model` is `CLAUDE_TIER_ALIAS[tier]` only when the resolved tier
+  differs from the tier the role's definition runs on (an `inherit` role: the root's), else no key; `effort` only when
+  it differs from the definition's (`reportEffort`), else no key, except that an auto role whose `staffing.maxEffort`
+  is below the level it would run at gets that ceiling. Whatever else the model wrote in `model` or `effort` is
+  removed; a full id is never passed (it used to pass and fail the spawn), and the plan guard now writes `sonnet`
+  instead of the everyday model id. When the spawn runs on other values than were asked (a clamp or the plan guard),
+  the caller gets one line, "[OrgAI harness] <Role> was spawned on <label>.", through `PostToolUse`
+  `additionalContext` on that Agent call (beside the receipt when there is one); that path is verified for foreground
+  spawns (delegation gate facts above), for a background spawn's `async_launched` result it is unverified. The row is
+  recorded at `task_started` (`recordStaffing`), an Agent `tool_result` with `is_error` before the agent started
+  cancels the decision, and `SubagentStop` or a finishing `task_notification` calls `ended`. `Project.staffing:
+  'fixed'` keeps the call as before: an alias and an effort on it stay, only a non-alias model is dropped and the plan
+  guard writes the everyday alias (also for a deep alias on the call). The book survives query restarts; a resume in a
+  new process starts with an empty book, so an `inherit` child of a report spawned before the resume runs as
+  configured (the root's model), and a step attempted before it counts as never attempted. A report resumed by
+  `SendMessage` stays ended in the book. Not live-checked end to end in a run; whether `inherit` in a nested spawn
+  follows the main thread or the spawning subagent is unverified (OrgAI writes the alias whenever the resolved tier
+  differs from the root's, which is correct either way and never above the parent's tier).
 - Parallel foreground spawns: works. Two Agent calls in ONE assistant message (same `message.id`), both forced to
   `run_in_background = false` by the hook, each child running `sleep 5` (about 7.5 s per child including model
   turns): SubagentStart at 1.3 s and 1.6 s, SubagentStop at 8.9 s and 9.2 s, so they overlapped almost completely.
