@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { Effort, ModelTier, Project, RunRecord, RunSummary, StaffingGoal } from '@shared/types'
 import { EFFORTS, isModelTier, isVirtualProjectId } from '@shared/types'
 import { compareEffort, compareTier, isSafeId, staffingGoalOf, staffingModeOf } from '@shared/defaults'
+import { FILE_WRITE_TOOLS } from '../runtime/runUsage'
 import type { StaffingRequest } from '../runtime/staffing'
 import type { RuntimeContext } from '../runtime/types'
 import { DurableFsError, errorCode, writeFileDurable } from './durableFs'
@@ -41,6 +42,10 @@ export interface StaffingProfileEntry {
   wallMs?: number
   /** The agent's cost in USD, when known. */
   costUsd?: number
+  /** Agent start to its first file-writing tool use (transcript Edit, Write, MultiEdit, NotebookEdit), ms; absent when it wrote nothing. */
+  reportStartMs?: number
+  /** The run's RunEfficiency.afterLastReportMs (the same on every entry of a run), ms, when known. */
+  afterLastReportMs?: number
   /** When the assignment was made, epoch ms. */
   at: number
 }
@@ -88,6 +93,13 @@ export function profileEntriesFromRun(run: RunRecord): StaffingProfileEntry[] {
   const steps = new Map((run.plan?.steps ?? []).map((s) => [s.id, s]))
   const receipts = run.delegation?.receipts ?? []
   const runId = run.summary?.id
+  const afterLast = run.summary?.usage?.efficiency?.afterLastReportMs
+  const firstWrite = new Map<string, number>()
+  for (const t of run.transcript ?? []) {
+    if (t.block?.kind !== 'tool_use' || !FILE_WRITE_TOOLS.has(t.block.name) || !finiteNonNeg(t.at)) continue
+    const cur = firstWrite.get(t.agentId)
+    if (cur === undefined || t.at < cur) firstWrite.set(t.agentId, t.at)
+  }
   const out: StaffingProfileEntry[] = []
   for (const a of assignments) {
     if (!a.agentId) continue
@@ -107,6 +119,9 @@ export function profileEntriesFromRun(run: RunRecord): StaffingProfileEntry[] {
     }
     const cost = agent?.usage?.costUsd
     if (finiteNonNeg(cost)) entry.costUsd = cost
+    const wrote = firstWrite.get(a.agentId)
+    if (agent && wrote !== undefined && finiteNonNeg(agent.startedAt)) entry.reportStartMs = Math.max(0, wrote - agent.startedAt)
+    if (finiteNonNeg(afterLast)) entry.afterLastReportMs = afterLast
     if (a.stepId && stepCount.get(a.stepId) === 1 && steps.get(a.stepId)?.status === 'done') {
       entry.passedFirstTime = receipts.some(
         (r) => r.childId === a.agentId && r.delivered && r.verdict !== 'failed' && r.reportChars > 0
@@ -162,6 +177,31 @@ export function profileCells(profile: StaffingProfile): StaffingProfileCell[] {
     cells.push(cell)
   }
   return cells
+}
+
+/** Project-wide timing medians from the raw entries. */
+export interface StaffingProfileTiming {
+  /** Median of the entries' reportStartMs (agent start to its first file write), ms. */
+  medianReportStartMs?: number
+  /** Median over runs (one value per runId; entries without a run id count singly) of afterLastReportMs, ms. */
+  medianAfterLastReportMs?: number
+}
+
+/** Per-project timing medians; a figure with no data is absent. Pure. */
+export function profileTiming(profile: StaffingProfile): StaffingProfileTiming {
+  const out: StaffingProfileTiming = {}
+  const start = median(profile.entries.flatMap((e) => (finiteNonNeg(e.reportStartMs) ? [e.reportStartMs] : [])))
+  if (start !== undefined) out.medianReportStartMs = start
+  const perRun = new Map<string, number>()
+  const loose: number[] = []
+  for (const e of profile.entries) {
+    if (!finiteNonNeg(e.afterLastReportMs)) continue
+    if (e.runId) perRun.set(e.runId, e.afterLastReportMs)
+    else loose.push(e.afterLastReportMs)
+  }
+  const after = median([...perRun.values(), ...loose])
+  if (after !== undefined) out.medianAfterLastReportMs = after
+  return out
 }
 
 // An absent tier or effort ranks below every real one.
@@ -305,6 +345,12 @@ function cleanEntry(x: unknown): StaffingProfileEntry | undefined {
   if (r.costUsd !== undefined) {
     if (!finiteNonNeg(r.costUsd)) return undefined
     e.costUsd = r.costUsd
+  }
+  for (const k of ['reportStartMs', 'afterLastReportMs'] as const) {
+    if (r[k] !== undefined) {
+      if (!finiteNonNeg(r[k])) return undefined
+      e[k] = r[k]
+    }
   }
   return e
 }

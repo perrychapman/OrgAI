@@ -136,7 +136,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   or a proxy reports.
   - `RunUsage.efficiency` (2026-11-09, `RunEfficiency` in types.ts; orchestration-efficiency.md 4.2): derived by
     `computeRunEfficiency` (runUsage.ts) from the root's direct reports' `startedAt` / `endedAt`, nothing tracked at
-    runtime: reports, firstSpawnMs, reportSumMs, reportBusyMs (union), maxParallel, tailMs (after the first wave). Absent
+    runtime: reports, firstSpawnMs, reportSumMs, reportBusyMs (union), maxParallel, tailMs (after the first wave), afterLastReportMs (run end minus the last report's end) and reportStartMs
+    (median over reports of first Edit/Write/MultiEdit/NotebookEdit `tool_use` in the transcript minus the report's start; Codex
+    fileChange is already normalized to Edit/Write; `RunUsageInputs.transcript`, passed by RunManager.currentUsage; reports that
+    never wrote are left out; absent without a transcript). Both optional, cleaned like readyIdleMs. The staffing profile
+    entries carry both (`profileTiming` gives per-project `medianReportStartMs` / `medianAfterLastReportMs`; not in the brief
+    text) and the Usage Efficiency panel shows "After the last report" beside Tail. Absent
     without a direct report; `cleanRunEfficiency` drops a malformed stored value whole (`normalizeRunRecord`,
     `cleanStoredUsage`); `sumRunUsage` never sums it. Verified by unit tests only (runUsage.test.ts, incl. the
     dashboard run of spec 1.3); no live run has checked it.

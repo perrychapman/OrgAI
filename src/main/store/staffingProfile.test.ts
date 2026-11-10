@@ -15,6 +15,7 @@ import {
   profileCells,
   profileDefault,
   profileEntriesFromRun,
+  profileTiming,
   readStaffingProfile,
   staffingBrief,
   writeStaffingProfile,
@@ -357,5 +358,47 @@ describe('run lifecycle', () => {
     out.knowledgeContext!('x', { purpose: 'message' })
     expect(knowledgeContext).toHaveBeenCalledWith('x', { purpose: 'message' })
     expect(withRootStaffingBrief({ ...base, staffingProfile: undefined, hiddenContext: undefined }).hiddenContext).toBeUndefined()
+  })
+})
+
+describe('report timing in the profile', () => {
+  it('records the first write per agent and the run afterLastReportMs on every entry', () => {
+    const tr = [
+      { id: 't1', agentId: 'a1', at: 1600, block: { kind: 'tool_use', id: 'x', name: 'Edit', input: {} } },
+      { id: 't2', agentId: 'a1', at: 1300, block: { kind: 'tool_use', id: 'y', name: 'Read', input: {} } },
+      { id: 't3', agentId: 'a2', at: 1500, block: { kind: 'tool_use', id: 'z', name: 'Bash', input: {} } }
+    ]
+    const rec = {
+      ...run({ assignments: [{ agentId: 'a1' }, { agentId: 'a2' }], agents: { a1: { startedAt: 1000, endedAt: 4000 }, a2: { startedAt: 1000 } } }),
+      summary: runSummary({ id: 'r_1', usage: { efficiency: { afterLastReportMs: 900 } } as never }),
+      transcript: tr
+    } as unknown as RunRecord
+    const [a, b] = profileEntriesFromRun(rec)
+    expect(a).toMatchObject({ reportStartMs: 600, afterLastReportMs: 900 })
+    expect(b.reportStartMs).toBeUndefined()
+    expect(b.afterLastReportMs).toBe(900)
+  })
+  it('takes project medians (afterLast once per run) and leaves a missing figure out', () => {
+    expect(profileTiming(prof([entry()]))).toEqual({})
+    const t = profileTiming(
+      prof([
+        entry({ runId: 'r1', reportStartMs: 100, afterLastReportMs: 1000 }),
+        entry({ runId: 'r1', reportStartMs: 300, afterLastReportMs: 1000 }),
+        entry({ runId: 'r2', reportStartMs: 500, afterLastReportMs: 3000 }),
+        entry({ runId: 'r3' })
+      ])
+    )
+    expect(t).toEqual({ medianReportStartMs: 300, medianAfterLastReportMs: 2000 })
+  })
+  it('round-trips the fields and drops an entry with a bad one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'staffing-'))
+    try {
+      mkdirSync(join(dir, 'staffing'))
+      const good = entry({ reportStartMs: 5, afterLastReportMs: 0 })
+      writeFileSync(join(dir, 'staffing', 'p.json'), JSON.stringify({ projectId: 'p', entries: [{ ...good, reportStartMs: -1 }, { ...good, afterLastReportMs: 'x' }, good] }))
+      expect(readStaffingProfile(dir, 'p').entries).toEqual([good])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

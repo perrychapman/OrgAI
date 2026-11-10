@@ -196,7 +196,8 @@ export default function EfficiencyPanel({ data, overview, onPickSignal, announce
           {[
             { id: 'first-spawn', name: 'Time to first spawn', value: timing.firstSpawnMs === null ? '—' : minutesText(timing.firstSpawnMs), def: TIMING_DEFINITIONS.firstSpawn },
             { id: 'overlap', name: 'Overlap', value: overlapText(timing.overlap), def: TIMING_DEFINITIONS.overlap },
-            { id: 'tail', name: 'Tail', value: timing.tailShare === null ? '—' : percentText(timing.tailShare), def: TIMING_DEFINITIONS.tail }
+            { id: 'tail', name: 'Tail', value: timing.tailShare === null ? '—' : percentText(timing.tailShare), def: TIMING_DEFINITIONS.tail },
+            { id: 'after-last', name: 'After the last report', value: timing.afterLastShare === null ? '—' : percentText(timing.afterLastShare), def: TIMING_DEFINITIONS.afterLast }
           ].map((t) => (
             <dl key={t.id} className="usage-eff-item" data-testid="usage-timing-item" data-signal={t.id} data-value={t.value}>
               <div className="usage-eff-name">
