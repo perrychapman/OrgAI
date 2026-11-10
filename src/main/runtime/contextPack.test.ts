@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CONTEXT_PACK_FILE_MAX_CHARS,
   CONTEXT_PACK_HEADING,
@@ -17,6 +18,21 @@ import {
 } from './contextPack'
 import { controlProtectedPaths } from './selfControlGate'
 
+// The race tests swap a file between the checks and the open: openSync runs `hooks.beforeOpen` first (unset otherwise).
+const hooks = vi.hoisted(() => ({ beforeOpen: undefined as ((path: string) => void) | undefined }))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  const openSync = ((...args: Parameters<typeof actual.openSync>) => {
+    const hook = hooks.beforeOpen
+    hooks.beforeOpen = undefined
+    hook?.(String(args[0]))
+    return actual.openSync(...args)
+  }) as typeof actual.openSync
+  return { ...actual, default: { ...actual, openSync }, openSync }
+})
+
+const posix = process.platform !== 'win32'
+
 describe('context pack', () => {
   let base = ''
   let proj = ''
@@ -31,7 +47,10 @@ describe('context pack', () => {
     writeFileSync(join(proj, 'README.md'), 'Hello ``` fenced ```` text')
     writeFileSync(join(outside, 'secret.txt'), 'not yours')
   })
-  afterEach(() => rmSync(base, { recursive: true, force: true }))
+  afterEach(() => {
+    hooks.beforeOpen = undefined
+    rmSync(base, { recursive: true, force: true })
+  })
 
   const opts = (over: Partial<ContextPackOptions> = {}): ContextPackOptions => ({ callerCwd: proj, readRoots: [proj], protectedPaths: [], ...over })
 
@@ -112,9 +131,85 @@ describe('context pack', () => {
       { path: './part0.txt', reason: 'listed twice' }
     ])
     expect(pack.files.reduce((n, f) => n + f.text.length, 0)).toBeLessThanOrEqual(CONTEXT_PACK_TOTAL_MAX_CHARS)
-    const many = buildContextPack(Array.from({ length: CONTEXT_PACK_MAX_FILES + 2 }, () => 'src/a.ts'), opts())
+    // Entries past the limit collapse into one line, however many there are.
+    const many = buildContextPack(Array.from({ length: CONTEXT_PACK_MAX_FILES + 500 }, () => 'src/a.ts'), opts())
     expect(many.files).toHaveLength(1)
-    expect(many.skipped.filter((s) => s.reason === 'over the 8-file limit')).toHaveLength(2)
+    expect(many.skipped).toHaveLength(CONTEXT_PACK_MAX_FILES - 1 + 1)
+    expect(many.skipped.at(-1)).toEqual({ path: 'and 500 more', reason: 'not considered, over the 8-file limit' })
+  })
+
+  it('no existence oracle: an outside path reads the same whether it exists or not, also behind a linked folder', () => {
+    symlinkSync(outside, join(proj, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    const pack = buildContextPack([join(outside, 'secret.txt'), join(outside, 'missing.txt'), '/no/such/dir/x', '../outside/secret.txt', '../outside/missing.txt', 'linked/secret.txt', 'linked/missing.txt', 'linked/no/x'], opts())
+    expect(pack.files).toEqual([])
+    expect(new Set(pack.skipped.map((s) => s.reason))).toEqual(new Set(['outside the folders the report may read']))
+    expect(pack.skipped).toHaveLength(8)
+  })
+
+  it.skipIf(!posix)('a file swapped for a link to an outside file between the checks and the open is skipped', () => {
+    writeFileSync(join(proj, 'swap.txt'), 'inside')
+    hooks.beforeOpen = (path) => {
+      unlinkSync(path)
+      symlinkSync(join(outside, 'secret.txt'), path)
+    }
+    const pack = buildContextPack(['swap.txt'], opts())
+    expect(pack.files).toEqual([])
+    expect(pack.skipped).toEqual([{ path: 'swap.txt', reason: 'unreadable' }])
+  })
+
+  it.skipIf(!posix)('a file swapped for a link to a control file is skipped', () => {
+    const data = join(base, 'data')
+    mkdirSync(data)
+    writeFileSync(join(data, 'secrets.json'), '{"key":"s3cret"}')
+    writeFileSync(join(proj, 'swap.json'), '{}')
+    hooks.beforeOpen = (path) => {
+      unlinkSync(path)
+      symlinkSync(join(data, 'secrets.json'), path)
+    }
+    const pack = buildContextPack(['swap.json'], opts({ protectedPaths: controlProtectedPaths(data) }))
+    expect(pack.files).toEqual([])
+    expect(pack.skipped).toEqual([{ path: 'swap.json', reason: 'unreadable' }])
+    expect(contextPackBlock(pack)).not.toContain('s3cret')
+  })
+
+  it.skipIf(!posix)('a parent folder swapped for a link between the checks and the open is skipped', () => {
+    mkdirSync(join(proj, 'dir'))
+    writeFileSync(join(proj, 'dir', 'secret.txt'), 'inside')
+    hooks.beforeOpen = () => {
+      rmSync(join(proj, 'dir'), { recursive: true })
+      symlinkSync(outside, join(proj, 'dir'), 'dir')
+    }
+    const pack = buildContextPack(['dir/secret.txt'], opts())
+    expect(pack.files).toEqual([])
+    expect(pack.skipped).toEqual([{ path: 'dir/secret.txt', reason: 'unreadable' }])
+  })
+
+  it.skipIf(!posix)('a file swapped for a FIFO is skipped at once, never blocking', () => {
+    writeFileSync(join(proj, 'pipe.txt'), 'inside')
+    hooks.beforeOpen = (path) => {
+      unlinkSync(path)
+      execFileSync('mkfifo', [path])
+    }
+    const started = Date.now()
+    const pack = buildContextPack(['pipe.txt'], opts())
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(pack.files).toEqual([])
+    expect(pack.skipped).toEqual([{ path: 'pipe.txt', reason: 'not a file' }])
+  }, 5_000)
+
+  it('a hard link to a control file is refused, also to one inside a protected folder', () => {
+    const data = join(base, 'data')
+    mkdirSync(join(data, 'codex'), { recursive: true })
+    writeFileSync(join(data, 'secrets.json'), '{"key":"s3cret"}')
+    writeFileSync(join(data, 'codex', 'auth.json'), '{"token":"t0ken"}')
+    linkSync(join(data, 'secrets.json'), join(proj, 'notes.json'))
+    linkSync(join(data, 'codex', 'auth.json'), join(proj, 'auth-copy.json'))
+    const pack = buildContextPack(['notes.json', 'auth-copy.json', 'src/a.ts'], opts({ protectedPaths: controlProtectedPaths(data) }))
+    expect(pack.skipped).toEqual([
+      { path: 'notes.json', reason: "OrgAI's control files are never shared" },
+      { path: 'auth-copy.json', reason: "OrgAI's control files are never shared" }
+    ])
+    expect(pack.files.map((f) => f.path)).toEqual(['src/a.ts'])
   })
 
   it('a trust-restricted or setup-like run gets no pack, and says why per file', () => {

@@ -37,7 +37,7 @@ export const spawnArgs = z.object({
   description: z.string().optional().describe('Three to six words for the org chart'),
   tier: z.enum(MODEL_TIERS as [ModelTier, ...ModelTier[]]).optional().describe('Model tier; wins over the plan step'),
   effort: z.enum(EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort; wins over the plan step'),
-  files: z.array(z.string()).optional().describe('Paths you read, inlined (max 8; 24k chars each, 60k total)')
+  files: z.array(z.string()).max(8).optional().describe('Files in folders this run may read, inlined (24k chars each, 60k total)')
 })
 export const messageArgs = z.object({
   to: z.string().min(1).describe('A running agent\'s handle (e.g. implementer-2) or "main"'),

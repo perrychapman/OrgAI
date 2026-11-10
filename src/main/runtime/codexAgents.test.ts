@@ -242,6 +242,8 @@ describe('tool exposure', () => {
     expect(schema.type).toBe('object')
     expect(schema.required).toEqual(['role', 'brief'])
     expect(Object.keys(schema.properties)).toEqual(['role', 'brief', 'name', 'description', 'tier', 'effort', 'files'])
+    // The context pack's file list is capped in the schema, so a call cannot inflate the result.
+    expect(schema.properties.files).toMatchObject({ type: 'array', maxItems: 8 })
     expect(specs[1].inputSchema).toMatchObject({ type: 'object', properties: {} })
     expect(JSON.stringify(specs)).not.toContain('$schema')
   })
