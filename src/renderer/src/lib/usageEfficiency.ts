@@ -20,7 +20,7 @@ export const TEAM_ASK_MIN_RUNS = 3
 export const isLegacyRow = (r: Pick<UsageOverviewRow, 'legacy' | 'usage'>): boolean => !!(r.legacy || r.usage.legacy)
 
 /** Known cost of a row: priced, complete, and something was spent. Partial and unknown are left out. */
-function knownCost(r: UsageOverviewRow): number | null {
+export function knownCost(r: UsageOverviewRow): number | null {
   const u = r.usage
   if (u.costUsd === null || u.costPartial || u.costSource === 'unknown') return null
   return totalTokens(u.tokens) > 0 ? u.costUsd : null
