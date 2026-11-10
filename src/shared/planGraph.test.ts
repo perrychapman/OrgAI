@@ -41,6 +41,30 @@ describe('readySteps and stepViews', () => {
 })
 
 describe('path overlap', () => {
+  it('reverses a conflict wait that would create a cycle and completes without concurrent conflicts', () => {
+    const p = plan([
+      step('p1', { after: ['p4'], paths: ['a.ts'] }),
+      step('p2', { paths: ['a.ts'] }),
+      step('p3', { after: ['p2'], paths: ['b.ts'] }),
+      step('p4', { paths: ['b.ts'] })
+    ])
+    expect(pathOverlaps(p)).toEqual([
+      { first: 'p1', second: 'p2', path: 'a.ts' },
+      { first: 'p4', second: 'p3', path: 'b.ts' }
+    ])
+    const completed: string[] = []
+    while (completed.length < p.steps.length) {
+      const ready = readySteps(p)
+      expect(ready.length).toBeGreaterThan(0)
+      const paths = ready.flatMap((s) => s.paths ?? [])
+      expect(new Set(paths).size).toBe(paths.length)
+      for (const s of ready) {
+        s.status = 'done'
+        completed.push(s.id)
+      }
+    }
+    expect(completed).toEqual(['p4', 'p1', 'p2', 'p3'])
+  })
   it('makes the later of two parallel steps wait for the earlier', () => {
     const p = plan([step('p1', { paths: ['src/a'] }), step('p2', { paths: ['src/a/b.ts'] }), step('p3', { paths: ['docs'] })])
     expect(pathOverlaps(p)).toEqual([{ first: 'p1', second: 'p2', path: 'src/a' }])

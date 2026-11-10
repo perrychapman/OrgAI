@@ -4,7 +4,7 @@ import type { PlanStepStatus } from './types'
  * The plan graph, one definition for the main process, the desktop renderer and the terminal UI. Pure: no Node or DOM.
  * A pending step is ready when every step in its `after` that exists is done or skipped (an id that names no step is
  * ignored; a step that names itself waits for itself), and of two otherwise parallel steps (neither waits for the other,
- * directly or through others) whose `paths` overlap, the later one in plan order waits for the earlier. Never throws and
+ * directly or through others) whose `paths` overlap, plan order determines the wait unless that would create a cycle. Never throws and
  * never loops on a cycle: the steps in it just keep waiting on each other.
  */
 
@@ -25,14 +25,14 @@ export type StepState = 'running' | 'ready' | 'waiting' | 'blocked' | 'finished'
 
 export interface StepView {
   state: StepState
-  /** Ids of the unfinished steps this one waits for: its `after` (in order), then the earlier steps it shares a path with. Empty unless `waiting`. */
+  /** Ids of the unfinished steps this one waits for: its `after` (in order), then steps it shares a path with. Empty unless `waiting`. */
   waitingOn: string[]
 }
 
 export interface PathOverlap {
-  /** The step earlier in plan order, which goes first. */
+  /** The step which goes first. */
   first: string
-  /** The later step, which waits for `first`. */
+  /** The step which waits for `first`. */
   second: string
   /** The path both name (the folder when one is inside the other). */
   path: string
@@ -94,20 +94,30 @@ function ancestorSets(steps: readonly GraphStepLike[]): Set<number>[] {
 /**
  * Pairs of unfinished steps that could run together (neither waits for the other, directly or through other steps) and
  * whose `paths` overlap: equal after normalising separators and trailing slashes, or one a folder prefix of the other.
- * The later step in plan order is treated as ordered after the earlier one. Pure.
+ * Prefer plan order, reversing a path wait when earlier accepted waits would otherwise make a cycle. Pure.
  */
 export function pathOverlaps(plan: GraphPlanLike): PathOverlap[] {
   const steps = plan.steps
-  const anc = ancestorSets(steps)
+  const explicit = ancestorSets(steps)
+  const anc = explicit.map((set) => new Set(set))
   const out: PathOverlap[] = []
   for (let j = 1; j < steps.length; j++) {
     const b = steps[j]
     if (finished(b) || !b.paths?.length) continue
     for (let i = 0; i < j; i++) {
       const a = steps[i]
-      if (finished(a) || !a.paths?.length || anc[j].has(i) || anc[i].has(j)) continue
+      if (finished(a) || !a.paths?.length || explicit[j].has(i) || explicit[i].has(j)) continue
       const hit = firstOverlap(a.paths, b.paths)
-      if (hit !== undefined) out.push({ first: a.id, second: b.id, path: hit })
+      if (hit === undefined) continue
+      const [first, second] = anc[i].has(j) ? [j, i] : [i, j]
+      out.push({ first: steps[first].id, second: steps[second].id, path: hit })
+      // Propagate this wait to every dependent so later edges see the whole combined graph.
+      for (let k = 0; k < steps.length; k++) {
+        if (k === second || anc[k].has(second)) {
+          anc[k].add(first)
+          for (const ancestor of anc[first]) anc[k].add(ancestor)
+        }
+      }
     }
   }
   return out
