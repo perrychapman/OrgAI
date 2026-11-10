@@ -10,7 +10,7 @@
  *   desktop's cleaning and the team files gate's spend rule (teamRoleEdit.ts).
  * - `team plugins [list]`, `team plugins add --path <dir> [--name] [--id] [--disabled] [--skip-mcp]`, `team plugins
  *   remove <id> [--yes]` (configure).
- * - `team files [status]` (read, cli-parity 3.4): pending team-file changes; approving is the TUI's /approvals only.
+ * - `team files [status]` (read, cli-parity 3.4): pending team-file changes; approving is done in the desktop app for now.
  */
 import { isAbsolute, resolve } from 'node:path'
 import { newId } from '../../shared/defaults'
@@ -35,7 +35,7 @@ export const runTeam: CommandFn = (ctx, args) => runSubcommands(ctx, args, { tem
 /**
  * `team files [status]` lists the pending team-file changes (teamFiles:listAttention, read scope) with the gate's
  * summary of each. `team files approve | reject | undo | commit | enable` never decide anything: they say where a
- * person decides (the TUI's /approvals, behind the host's terminal attestation) and exit 2 without starting a host,
+ * person decides (the desktop app for now: a terminal cannot yet prove a person is answering) and exit 2 without starting a host,
  * whatever flags follow (--yes included).
  */
 const teamFilesRouter: SubcommandFn = (ctx, args) => {

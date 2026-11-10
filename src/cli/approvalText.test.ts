@@ -107,15 +107,16 @@ describe('team files text', () => {
     expect(teamFilesDetailLines(s).join('\n')).toContain('Undo brings back no difference OrgAI can describe.')
   })
 
-  it('the approve-shaped commands do not overclaim', () => {
-    expect(NO_APPROVE_COMMAND).toContain('it does not stop a program that already runs as you')
-    expect(NO_APPROVE_COMMAND).not.toMatch(/nothing an agent runs can/i)
+  it('the approve-shaped commands say approving is not in the terminal, where it is, and why', () => {
+    expect(NO_APPROVE_COMMAND).toContain('a terminal cannot yet prove that a person, not an agent, is answering')
+    expect(NO_APPROVE_COMMAND).toContain('desktop app')
+    expect(NO_APPROVE_COMMAND).not.toContain('/approvals')
   })
 
   it('the run-start line: only while changes wait for this project', () => {
     const s = status()
     expect(pendingTeamFilesLine([s], 'p1')).toBe(
-      'Team files: 3 team-file changes wait for approval; runs use the last approved team. Review: orgai team files status. Approve: orgai, then /approvals.'
+      'Team files: 3 team-file changes wait for approval; runs use the last approved team. Review: orgai team files status (approving is done in the OrgAI desktop app for now).'
     )
     expect(pendingTeamFilesLine([s], 'p2')).toBeUndefined()
     expect(pendingTeamFilesLine([status({ state: 'in-sync', changes: [] })], 'p1')).toBeUndefined()
@@ -123,10 +124,6 @@ describe('team files text', () => {
     expect(pendingTeamFilesLine([s])).toContain('(App)')
   })
 
-  it('the approve-shaped commands name the only place a person approves, and why', () => {
-    expect(NO_APPROVE_COMMAND).toMatch(/\/approvals/)
-    expect(NO_APPROVE_COMMAND).toMatch(/--yes/)
-  })
 })
 
 describe('folder trust text', () => {

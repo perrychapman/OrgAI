@@ -32,6 +32,6 @@ export const ENTRY: CommandEntry = {
   ],
   available: true,
   notes: [
-    "projects trust [show]: the folder's own agent config (hooks, MCP servers, env, allow rules) and whether agents load it. Allowing or denying it happens only inside the orgai terminal UI (/approvals), at an interactive terminal the host has checked; no command or flag does it."
+    "projects trust [show]: the folder's own agent config (hooks, MCP servers, env, allow rules) and whether agents load it. orgai does not allow or deny it: a terminal cannot yet prove that a person, not an agent, is answering, so this is done in the OrgAI desktop app for now."
   ]
 }

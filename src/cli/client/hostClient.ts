@@ -7,7 +7,6 @@
 import { connect as netConnect, type Socket } from 'node:net'
 import {
   HOST_KINDS,
-  HOST_SCOPES,
   HOST_PROTOCOL_VERSION,
   RPC_BULK_FRAME_MAX_BYTES,
   RPC_MAX_INFLIGHT_PER_SOCKET,
@@ -349,7 +348,7 @@ async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive:
 }
 
 const KINDS: ReadonlySet<string> = new Set<string>(HOST_KINDS)
-const SCOPES: ReadonlySet<string> = new Set<string>(HOST_SCOPES)
+const SCOPES = new Set(['read', 'operate', 'decide', 'configure'])
 
 function parseHelloResult(v: unknown): RpcHelloResult | null {
   if (!isObj(v)) return null

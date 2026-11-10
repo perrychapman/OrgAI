@@ -137,10 +137,6 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'outputs:noteRemove', 'outputs:revise', 'outputs:watch', 'outputs:unwatch'
   ],
   decide: ['runs:decide', 'permissions:decideRequest', 'setup:decide', 'setup:answer', 'merges:decide', 'mcp:answerInstall'],
-  // Approvals at the terminal (cli-parity 3.4): granted only to the terminal UI's own connection after the host attested
-  // its terminal (socketServer.ts hello, host/terminalAttestation.ts). Nothing else lives in this scope, and the desktop's
-  // team files and folder trust decisions stay desktop_only below.
-  attested_approve: ['approvals:offer', 'approvals:answer'],
   configure: [
     'host.stop', 'settings:set', 'projects:create', 'projects:save', 'projects:remove', 'projects:remapModels',
     'projects:applyImport', 'projects:exportOrg', 'projects:updateEngagementDocument', 'projects:saveNote',
@@ -240,7 +236,6 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],
-  'host dispatcher (HOST_IPC, socket only; host/approvalGate.ts, cli-parity 3.4)': [HOST_IPC.approvalsOffer, HOST_IPC.approvalsAnswer],
   'host dispatcher (SECRETS_IPC; SecretStore vault, cli-standalone.md 5.6, Wave 7)': [
     SECRETS_IPC.secretsStatus, SECRETS_IPC.secretsInit, SECRETS_IPC.secretsReset, SECRETS_IPC.secretsUndelete,
     SECRETS_IPC.secretsConfirmDelete

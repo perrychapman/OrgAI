@@ -8,7 +8,6 @@ import { Box, Text } from 'ink'
 import { basename } from 'node:path'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Project, ProjectPathCheck, RunOverrides, RunStatus, RunSummary, RunTeam } from '../../shared/types'
-import { APPROVAL_WRONG_CODE_MESSAGE } from '../../shared/types'
 import { nextSettleAt, settleTimerDelay } from '../../shared/view/foldFinished'
 import { isOpenStatus } from '../../shared/view/runChains'
 import { statusOfRun, statusText } from '../../shared/view/runStatus'
@@ -36,7 +35,6 @@ import { runPickLines, runPickRows, type RunPickRow } from './runPick'
 import { adjacentLiveRun, agentDetail, cardsByAgent, collapseTarget, composerMode, offersRetro, orgTreeRows, partialRows, planView, resolveSelectedRow, runTagOf, statusSummary, subtreeIds, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
 import { usageText } from './usageText'
 import { SLASH_COMMANDS } from './slashCommands'
-import { approvalFooter, approvalKey, loadingView, offerView, refusedView, type ApprovalItem, type ApprovalView } from './approvals'
 import { SlashPalette } from './SlashPalette'
 import { StatusBar } from './StatusBar'
 import type { TuiTerminal } from './terminal'
@@ -118,8 +116,6 @@ type Overlay =
   | { kind: 'runs'; rows: RunPickRow[]; sel: number }
   /** A short list (/model): Enter picks, Esc dismisses (undefined). */
   | { kind: 'pick'; title: string; options: readonly { value: string; label: string }[]; sel: number; resolve(value: string | undefined): void }
-  /** /approvals (cli-parity 3.4): one offer of the host's, answered here; `token` ties async answers to this overlay. */
-  | { kind: 'approval'; token: number; view: ApprovalView }
 
 const isOpen = (status: RunStatus | undefined): boolean => status !== undefined && isOpenStatus(status)
 const isWorking = (status: RunStatus | undefined): boolean => status === 'starting' || status === 'running'
@@ -538,8 +534,6 @@ export function App(props: AppProps) {
   // Rows an overlay's lines get: its box is the body (the tray and composer stay), minus two borders, the title and the hint.
   const overlayRoom = inline ? Math.max(1, size.rows - 6) : Math.max(1, bodyRows - (framed ? 4 : 2))
   const overlayWidth = Math.max(10, size.cols - 2 - (framed ? 2 : 0))
-  /** The approval overlay's body rows: the overlay's room less the message line. */
-  const approvalRoom = Math.max(1, overlayRoom - 1)
   const inspectorBox = inline
     ? { width: size.cols, height: Math.max(6, Math.min(16, size.rows - 5)) }
     : plan.mode === 'split'
@@ -686,74 +680,6 @@ export function App(props: AppProps) {
       pendingPick.current = undefined
     },
     []
-  )
-
-  // /approvals (cli-parity 3.4): the overlay shows only what an offer of the host returned; a newer overlay (token) wins.
-  const approvalSeq = useRef(0)
-  /** The newest approval view, set synchronously: keys that arrive together (fast typing) build on each other. */
-  const approvalLive = useRef<{ token: number; view: ApprovalView } | undefined>(undefined)
-  const setApproval = useCallback((token: number, view: ApprovalView) => {
-    approvalLive.current = { token, view }
-    setOverlay({ kind: 'approval', token, view })
-  }, [])
-  const showApproval = useCallback((token: number, view: ApprovalView) => {
-    if (approvalLive.current?.token !== token) return
-    approvalLive.current = { token, view }
-    setOverlay((cur) => (cur && cur.kind === 'approval' && cur.token === token ? { kind: 'approval', token, view } : cur))
-  }, [])
-  const offerInto = useCallback(
-    async (token: number, item: ApprovalItem, message?: ApprovalView['message']): Promise<void> => {
-      const api = session.approvals
-      if (!api) return
-      try {
-        showApproval(token, offerView(item, await api.offer(item), message))
-      } catch (e) {
-        showApproval(token, refusedView(item, errText(e)))
-      }
-    },
-    [session, showApproval]
-  )
-  const openApproval = useCallback(
-    (item: ApprovalItem): void => {
-      const api = session.approvals
-      if (!api) {
-        notify('Approvals are not available here.', 'warn')
-        return
-      }
-      const token = ++approvalSeq.current
-      const withheld = api.withheld()
-      if (withheld) {
-        setApproval(token, refusedView(item, withheld))
-        return
-      }
-      setApproval(token, loadingView(item))
-      void offerInto(token, item)
-    },
-    [session, notify, offerInto, setApproval]
-  )
-  const answerApproval = useCallback(
-    (token: number, view: ApprovalView, action: Parameters<NonNullable<TuiSessionApi['approvals']>['answer']>[1], code?: string): void => {
-      const api = session.approvals
-      const offer = view.offer
-      if (!api || !offer) return
-      // Shown again from a fresh offer either way: what the host reads now, never the list's older digest.
-      const again: ApprovalItem = { ...view.item, digest: undefined }
-      api.answer(offer.offerId, action, code).then(
-        (r) => {
-          notify(sanitizeTty(r.message), 'ok')
-          void offerInto(token, again, { text: sanitizeTty(r.message), tone: 'ok' })
-        },
-        (e: unknown) => {
-          const code = (e as { code?: string }).code
-          // A mistyped code keeps the offer (a few tries); changed content is shown again from a fresh offer; anything
-          // else (refused terminal, spent or expired offer) ends here, and /approvals opens it again.
-          if (code === 'bad_request' && errText(e).startsWith(APPROVAL_WRONG_CODE_MESSAGE)) showApproval(token, { ...view, phase: 'code', typed: '', message: { text: errText(e), tone: 'danger' } })
-          else if (code === 'stale_target_digest') void offerInto(token, again, { text: errText(e), tone: 'danger' })
-          else showApproval(token, refusedView(view.item, errText(e)))
-        }
-      )
-    },
-    [session, notify, offerInto, showApproval]
   )
 
   // A confirm that is replaced by another (or still open at unmount) answers "no", so no caller waits forever.
@@ -924,7 +850,7 @@ export function App(props: AppProps) {
         .finally(() => setCheckingFolder(false))
       return
     }
-    // cli-parity 3.4: say on open when team files or this folder's config wait for a person (/approvals decides).
+    // cli-parity 3.4: say on open when team files or this folder's config wait for approval (/approvals reads them).
     session.approvals
       ?.waiting()
       .then((text) => {
@@ -1117,7 +1043,6 @@ export function App(props: AppProps) {
       notify('Type the prompt for the new run.')
     },
     pick,
-    openApproval,
     switchRun: async (ref) => {
       const id = runForRef(session.getState(), ref)
       if (!id) {
@@ -1160,19 +1085,6 @@ export function App(props: AppProps) {
 
   const overlayKey = (e: InputEvent): void => {
     if (!overlay || e.type !== 'key') return
-    if (overlay.kind === 'approval') {
-      const live = approvalLive.current?.token === overlay.token ? approvalLive.current.view : overlay.view
-      const total = wrapOverlayLines(live.lines, overlayWidth).length
-      const { view, effect } = approvalKey(live, e, approvalRoom, total)
-      if (effect?.kind === 'close') {
-        approvalLive.current = undefined
-        setOverlay(undefined)
-        return
-      }
-      setApproval(overlay.token, view)
-      if (effect?.kind === 'answer') answerApproval(overlay.token, view, effect.action, effect.code)
-      return
-    }
     if (overlay.kind === 'runs') {
       const n = overlay.rows.length
       const row = overlay.rows[overlay.sel]
@@ -1644,30 +1556,6 @@ export function App(props: AppProps) {
           {['Up / Down select', 'Enter picks', 'Esc closes'].join(listSep)}
         </Text>
       </Box>
-    ) : overlay.kind === 'approval' ? (
-      (() => {
-        const v = overlay.view
-        const wrapped = wrapOverlayLines(v.lines, overlayWidth)
-        const offset = Math.min(v.offset, Math.max(0, wrapped.length - approvalRoom))
-        const cue = overlayCue(offset, approvalRoom, wrapped.length, listSep)
-        const toneStyle = v.message ? styleFor({ tone: v.message.tone }, env) : dimStyle
-        return (
-          <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, bodyRows)}>
-            <Text {...boldStyle} wrap="truncate-end">{sanitizeTty(v.item.label)}</Text>
-            {wrapped.slice(offset, offset + approvalRoom).map((l, i) => (
-              <Text key={i} wrap="truncate-end">
-                {l || ' '}
-              </Text>
-            ))}
-            <Text wrap="truncate-end" {...toneStyle}>
-              {v.message ? sanitizeTty(v.message.text) : cue || ' '}
-            </Text>
-            <Text wrap="truncate-end" {...(v.phase === 'code' ? boldStyle : dimStyle)}>
-              {sanitizeTty(approvalFooter(v))}
-            </Text>
-          </Box>
-        )
-      })()
     ) : overlay.kind === 'confirm' ? (
       <Box {...boxBorder} flexDirection="column" paddingX={1} width={size.cols} height={inlineConfirmation ? plan.tray.height : undefined} flexShrink={0} overflow="hidden">
         <Text {...boldStyle}>{sanitizeTty(overlay.question)}</Text>

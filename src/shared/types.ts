@@ -6649,89 +6649,10 @@ export const HOST_IPC = {
    * `orgai decide` lookup (cli-spec 6.3): which run holds a pending card, or how a recently resolved one ended
    * (RunManager tombstones). Scope 'read', socket only, params `[requestId]`, result DecisionLookup.
    */
-  runsFindDecision: 'runs:findDecision',
-  /**
-   * Approvals at the terminal (cli-parity 3.4): an offer for one pending team-file change or folder config review, bound
-   * to the connection that asked, the content digest it shows and a short-lived code. Scope 'attested_approve', socket
-   * only, params `[ApprovalOfferInput]`, result ApprovalOffer. The host re-checks the terminal (host/terminalAttestation.ts).
-   */
-  approvalsOffer: 'approvals:offer',
-  /**
-   * The answer to an offer: single use, same connection, before it expires, with the typed code for the actions that add
-   * power. Scope 'attested_approve', socket only, params `[ApprovalAnswerInput]`, result ApprovalAnswerResult.
-   */
-  approvalsAnswer: 'approvals:answer'
+  runsFindDecision: 'runs:findDecision'
 } as const
 
 export type HostIpcChannel = (typeof HOST_IPC)[keyof typeof HOST_IPC]
-
-/** What an approval at the terminal is about: a project's team files, or its folder config trust. */
-export type ApprovalKind = 'teamFiles' | 'folderTrust'
-
-/**
- * teamFiles: approve / reject (the pending change), undo (the last applied or approved batch), commit (the team files
- * git has not committed). folderTrust: allow / deny (accept the folder's own config, or keep or make it ignored).
- */
-export type ApprovalAction = 'approve' | 'reject' | 'undo' | 'commit' | 'allow' | 'deny'
-
-/** approvals:answer's refusal (bad_request) for a mistyped code while the offer has tries left; it continues "N tries left." */
-export const APPROVAL_WRONG_CODE_MESSAGE = 'The code did not match; nothing was changed.'
-
-/** Actions that need the typed code: those that can give agents more than they had, and commit (it writes git history). */
-export const APPROVAL_CODE_ACTIONS: readonly ApprovalAction[] = ['approve', 'undo', 'allow', 'commit']
-
-/**
- * approvals:offer input: the item and, when the terminal listed it, the digest it showed (TeamFilesStatus /
- * FolderConfigReview); a digest that no longer matches is refused stale_target_digest.
- */
-export interface ApprovalOfferInput {
-  kind: ApprovalKind
-  projectId: string
-  digest?: string
-}
-
-/** approvals:offer result. `code` is shown to the user, who types it to run an action in `codeActions`. */
-export interface ApprovalOffer {
-  offerId: string
-  kind: ApprovalKind
-  projectId: string
-  digest: string
-  /** What may be done with this offer, given the item's state now. Empty: nothing can be done (see `blockedReason`). */
-  actions: ApprovalAction[]
-  /** The subset of `actions` that needs the code. */
-  codeActions: ApprovalAction[]
-  /** 4 capital letters. */
-  code: string
-  /** Epoch ms after which the offer is refused. */
-  expiresAt: number
-  /** Why approve / allow is not offered (problems in the files, too many changes, an unreviewable config). */
-  blockedReason?: string
-  /** The content this offer binds (`digest` is its digest): the terminal shows exactly this. */
-  teamFiles?: TeamFilesStatus
-  folderConfig?: FolderConfigReview
-  /** teamFiles with undo open: what Undo would bring back (every difference from the team in use). */
-  undoChanges?: TeamFileChange[]
-}
-
-/** approvals:answer input. */
-export interface ApprovalAnswerInput {
-  offerId: string
-  action: ApprovalAction
-  /** The code as typed (case folded by the host); required for APPROVAL_CODE_ACTIONS. */
-  code?: string
-}
-
-/** approvals:answer result: what happened in one sentence, and the item's fresh state. */
-export interface ApprovalAnswerResult {
-  kind: ApprovalKind
-  action: ApprovalAction
-  projectId: string
-  message: string
-  teamFiles?: TeamFilesStatus
-  folderConfig?: FolderConfigReview
-  /** teamFiles commit: the files committed. */
-  committed?: string[]
-}
 
 /** Who ended a run (RunSummary.endedBy, run.status). 'policy' and 'budget' are host-finalized exec runs. */
 export type RunEndedBy = 'user' | 'app' | 'policy' | 'budget'
@@ -6739,14 +6660,9 @@ export type RunEndedBy = 'user' | 'app' | 'policy' | 'budget'
 /** Wire protocol version of the host socket (host.challenge / host.hello). */
 export const HOST_PROTOCOL_VERSION = 1
 
-/**
- * What an authenticated client may do. 'read' < 'operate' < 'decide' < 'configure' by convention; each is granted explicitly.
- * 'attested_approve' (cli-parity 3.4) is outside that order: approvals of team files and folder config trust
- * (HOST_IPC approvals:*). The host grants it only to the terminal UI's own connection, and its approval gate attests
- * the terminal at every offer and answer (host/terminalAttestation.ts); 'configure' does not include it.
- */
-export type HostScope = 'read' | 'operate' | 'decide' | 'configure' | 'attested_approve'
-export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure', 'attested_approve']
+/** What an authenticated client may do. 'read' < 'operate' < 'decide' < 'configure' by convention; each is granted explicitly. */
+export type HostScope = 'read' | 'operate' | 'decide' | 'configure'
+export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
 
 /** Who says host.hello: the orgai command ('tui' counts as interactive). The OrgAI app is never a socket client. */
 export type HostClientKind = 'tui' | 'cli'
@@ -8081,6 +7997,11 @@ export interface TeamFilesStatus {
   undo?: TeamFilesUndoInfo
   /** The last Undo that ran: which files it rewrote. */
   lastUndo?: TeamFilesUndoInfo
+  /**
+   * teamFiles:listAttention only, with `undo`: what Undo would bring back, as every difference from the team in use to the
+   * team Undo restores (TeamFilesService.undoChanges). Read-only; the terminal shows it.
+   */
+  undoChanges?: TeamFileChange[]
 }
 
 /** teamFiles:approve and teamFiles:reject input. A digest other than the current one is refused ("Review them again."). */

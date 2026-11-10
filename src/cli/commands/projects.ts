@@ -600,8 +600,8 @@ const runSaveChat: CommandFn = async (ctx, args) => {
 
 /**
  * `projects trust [show]` (read): the folder's own agent config as the host reviews it (projects:folderConfig) and
- * whether agents load it. `projects trust allow | deny` decide nothing: allowing is the TUI's /approvals only (behind
- * the host's terminal attestation); they exit 2 without starting a host, whatever flags follow.
+ * whether agents load it. `projects trust allow | deny` decide nothing: allowing is done in the desktop app for now (a
+ * terminal cannot yet prove a person is answering); they exit 2 without starting a host, whatever flags follow.
  */
 const runTrust = async (ctx: CliContext, args: string[]): Promise<number> => {
   const sub = args[0]

@@ -25,8 +25,6 @@
  *   accepted). The server belongs to the orgai process that started the host: a hello whose ownerProof verifies against
  *   the server's in-memory `ownerKey` (only that process holds it; it is never written to disk) gets every requested
  *   scope. Every other client, one holding daemon.secret included, is refused not_owner before any method runs.
- *   Except 'attested_approve' (cli-parity 3.4): granted only to a 'tui' owner connection; the approval gate
- *   (approvalGate.ts) attests the terminal at every offer and answer.
  *   It answers an RpcHelloResult with hostProof (and
  *   versionSkewWarning when clientVersion !== appVersion) and raises the line cap to RPC_BULK_FRAME_MAX_BYTES. A
  *   refused hello closes the socket once the error frame is flushed.
@@ -645,9 +643,8 @@ export class HostSocketServer {
     // Re-check after the await: another hello may have taken the last slot, or a drain may have begun.
     const after = gateProblem()
     if (after) return fail(after)
-    // The owner gets every requested scope (deduplicated, in order), except 'attested_approve' (cli-parity 3.4), which
-    // only its terminal UI connection gets; the approval gate attests the terminal at every offer and answer.
-    const grantedScopes: HostScope[] = [...new Set(p.requestedScopes)].filter((s) => s !== 'attested_approve' || p.clientKind === 'tui')
+    // The owner gets every requested scope (deduplicated, in order).
+    const grantedScopes: HostScope[] = [...new Set(p.requestedScopes)]
     const result: RpcHelloResult = {
       protocolVersion: 1,
       hostInstanceId: this.opts.hostInstanceId,
@@ -716,7 +713,7 @@ export class HostSocketServer {
     conn.inflight++
     let p: Promise<unknown>
     try {
-      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, connectionId: String(conn.id), grantedScopes, owner: conn.owner === true })
+      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, connectionId: String(conn.id), grantedScopes })
     } catch (e) {
       p = Promise.reject(e)
     }

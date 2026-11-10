@@ -53,13 +53,12 @@ async function open(h: FakeHostClient, opts: { project?: typeof P; runId?: strin
 }
 
 describe('connectTuiHost', () => {
-  it('starts this process\'s host and connects with read / operate / decide (and asks for attested_approve) as a tui client; no skew or access notices', async () => {
+  it('starts this process\'s host and connects with read / operate / decide as a tui client; no skew or access notices', async () => {
     const h = host()
     const f = fakeContext({ connect: [h] })
     const conn = await connectTuiHost(f.ctx)
     expect(f.inprocCalls).toHaveLength(1)
-    // 'attested_approve' is asked for; the host grants it only after attesting the terminal (cli-parity 3.4).
-    expect(f.connectCalls).toEqual([{ scopes: [...SCOPES, 'attested_approve'], opts: { clientKind: 'tui', waitStartingMs: HOST_STARTING_WAIT_MS } }])
+    expect(f.connectCalls).toEqual([{ scopes: SCOPES, opts: { clientKind: 'tui', waitStartingMs: HOST_STARTING_WAIT_MS } }])
     expect(conn.client).toBe(h)
     expect(await conn.projects()).toEqual([P])
     const session = await openTuiSession(conn, { folder: '/work' })

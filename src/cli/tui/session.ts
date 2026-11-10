@@ -12,9 +12,6 @@
  */
 import {
   VIRTUAL_PROJECT_IDS,
-  type ApprovalAction,
-  type ApprovalAnswerResult,
-  type ApprovalOffer,
   type FolderConfigReview,
   type TeamFilesStatus,
   type CardKind,
@@ -66,11 +63,7 @@ import type {
   TuiState
 } from './types'
 
-/**
- * 'attested_approve' (cli-parity 3.4): granted to the terminal UI's own connection; the host attests this terminal at
- * every approval offer and answer and says why when it refuses.
- */
-export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'attested_approve']
+export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide']
 export const TUI_CONFIGURE_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
 /** How long a decision call may take (a proposal approval applies changes before it answers). */
 export const TUI_DECIDE_TIMEOUT_MS = 120_000
@@ -483,12 +476,12 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return summary
   }
 
-  // /approvals reads (read scope): every project's pending team files, and the current code project's folder config.
-  const waitingReads = async (): Promise<{ attention: TeamFilesStatus[]; folderConfig?: FolderConfigReview }> => {
+  // Read-only /approvals (read scope): every project's pending team files, and this code project's folder config.
+  const waitingItems = async (): Promise<ApprovalItem[]> => {
     const attention = await call<TeamFilesStatus[]>('teamFiles:listAttention', [])
     const p = state.project
     const folderConfig = p && projectKindOf(p) === 'code' ? await call<FolderConfigReview>('projects:folderConfig', [p.id]).catch(() => undefined) : undefined
-    return { attention: Array.isArray(attention) ? attention : [], ...(folderConfig ? { folderConfig } : {}) }
+    return approvalItems(Array.isArray(attention) ? attention : [], p ? { id: p.id, name: p.name, ...(folderConfig ? { folderConfig } : {}) } : undefined)
   }
 
   const api: TuiSessionApi = {
@@ -546,20 +539,8 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     },
     modelCatalog: () => loadModelCatalog(call),
     approvals: {
-      withheld: () => (client().hello.grantedScopes.includes('attested_approve') ? undefined : 'This connection to OrgAI was not given approvals.'),
-      async list() {
-        const { attention, folderConfig } = await waitingReads()
-        const p = state.project
-        return approvalItems(attention, p ? { id: p.id, name: p.name, code: projectKindOf(p) === 'code', ...(folderConfig ? { folderConfig } : {}) } : undefined)
-      },
-      async waiting() {
-        const { attention, folderConfig } = await waitingReads()
-        return waitingNotice(attention, folderConfig)
-      },
-      offer: (item: ApprovalItem) =>
-        call<ApprovalOffer>('approvals:offer', [{ kind: item.kind, projectId: item.projectId, ...(item.digest ? { digest: item.digest } : {}) }], { timeoutMs: 30_000 }),
-      answer: (offerId: string, action: ApprovalAction, code?: string) =>
-        call<ApprovalAnswerResult>('approvals:answer', [{ offerId, action, ...(code ? { code } : {}) }], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+      list: () => waitingItems(),
+      waiting: async () => waitingNotice(await waitingItems())
     },
     async switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }) {
       const runId = activeId()

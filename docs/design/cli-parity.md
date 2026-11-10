@@ -137,12 +137,11 @@ self-help entry point; clearing the knowledge graph; run rename, dismiss and pro
   `exec`, never to a session whose ancestry includes an agent process, never with `--yes`. The TUI offers the
   same as cards in the Decision Tray.
 - This phase gets an independent security review before merge; a Medium or higher finding blocks it.
-- As built (cp/approvals; the gate, its checks and residual risks are in `docs/agent-notes/cli-host.md` "Approvals at
-  the terminal"): the desktop channels stay `desktop_only`; two new socket-only channels `approvals:offer` /
-  `approvals:answer` form the scope `attested_approve`, granted only to the TUI's own connection; the host attests its
-  terminal at every offer and answer. Deciding happens only in the TUI's `/approvals` overlay (a typed code for
-  approve, undo, allow and commit); `team files approve|reject|undo|commit` and `projects trust allow|deny` only say so
-  (exit 2). This removes the scripted ways to approve; it is not a boundary against code that already runs as the user.
+- As built (cp/approvals, read-only; `docs/agent-notes/cli-host.md` "Approvals at the terminal"): `orgai team files
+  status`, `orgai projects trust show`, the run-start line and a read-only TUI `/approvals` ship; nothing in the terminal
+  approves. The approve path was built and held back: two independent reviews found that a terminal session cannot be
+  told apart from one an agent drives. Approving from a terminal needs an OS-level confirmation and a store agents cannot
+  write; until then approving is done in the desktop app. The channels stay `desktop_only`; no scope was added.
 
 ### 3.5 Acting on a run (B8, I7, I8, I9, I15)
 
@@ -176,7 +175,8 @@ updated in the same change.
 2. **Set it.** 3.2.
 3. **The team.** 3.3.
 4. **Run control.** 3.5.
-5. **Approvals.** 3.4, with the security review.
+5. **Approvals.** 3.4, with the security review. As built: read-only (see 3.4); approving waits for an OS-level
+   confirmation.
 6. **After a run.** 3.6.
 7. **TUI panes.** 3.7.
 8. **Docs.** `docs/design/cli-spec.md` command reference, `docs/agent-notes/cli-host.md`, `README` CLI section,
@@ -187,8 +187,8 @@ updated in the same change.
 - A user with only a terminal can: see the model id of every agent in a live run and after it; see and change what
   each tier maps to; be warned at run start when a tier points at an old or fallback model; see every compaction;
   switch a project between automatic and fixed staffing; edit any field of any role; keep a drafted chart; learn
-  of, approve and reject team-file changes at an interactive terminal; switch a run's model; read a run's
-  warnings.
+  of team-file changes and read them in full (approving them at a terminal is deferred, see 3.4 "As built"); switch a
+  run's model; read a run's warnings.
 - Every new command has `--output-format json`, unit tests beside it and a row in the CLI e2e scripts.
 - No approval command succeeds from `exec`, from a non-interactive session or from an agent's shell (tested).
 

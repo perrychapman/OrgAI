@@ -17,7 +17,6 @@ import { HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, a
 import { newNonce } from '../main/host/protocol'
 import { ShutdownRefusedError } from '../main/host/shutdown'
 import { HostSocketServer } from '../main/host/socketServer'
-import { attestThisTerminal, type AttestTerminalFn } from '../main/host/terminalAttestation'
 import { installLogging, log } from '../main/log'
 import { stopSystemCertRead, trustSystemCertificates } from '../main/systemCerts'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from '../main/runtime/selfControlGate'
@@ -73,12 +72,6 @@ export interface StartInprocHostOptions {
   exitAtHardLimit?: () => void
   /** The shutdown's hard limit and tree-kill waits (bootOrgAIHost shutdownLimits); tests shorten them. */
   shutdownLimits?: { hardLimitMs?: number; kill?: { termGraceMs?: number; waitMs?: number; stepMs?: number } }
-  /**
-   * cli-parity 3.4: how this process's terminal is attested for approvals (the approvals:* channels).
-   * Default attestThisTerminal (the OS process table). Code only: no flag or environment variable reaches it; tests
-   * inject a fake.
-   */
-  attestTerminal?: AttestTerminalFn
 }
 
 /** What the terminal is told when the in-process host ends at its hard limit. */
@@ -164,7 +157,6 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   // In memory only (never daemon.json, daemon.secret or a log): this process's proof that it started the host, so its
   // own commands get every scope; any other client of the socket is refused as not_owner (spec 4.1).
   const ownerKey = newNonce()
-  const attestTerminal = opts.attestTerminal ?? attestThisTerminal
   const server = new HostSocketServer({
     dataDir,
     hostKind,
@@ -281,7 +273,6 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       openExternal: (url) => openUrl(url),
       mock: opts.mock,
       processEnv: opts.env,
-      attestTerminal,
       ...(opts.startBackground === false ? { startBackground: false } : {}),
       ...(opts.background ? { background: opts.background } : {}),
       // The shutdown sequence: flush the host.stop reply, then release, then this cleanup.

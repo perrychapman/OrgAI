@@ -18,7 +18,7 @@
     "prepreview": "node scripts/mac-dev-app-name.mjs",
     "prestart": "node scripts/mac-dev-app-name.mjs",
     "build": "electron-vite build && vite build -c vite.cli.config.ts",
-    "cli": "node out/cli/orgai.mjs",
+    "cli": "node --disable-sigusr1 out/cli/orgai.mjs",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",

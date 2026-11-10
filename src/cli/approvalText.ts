@@ -1,6 +1,6 @@
 /**
- * The words of approvals at the terminal (cli-parity 3.4): `orgai team files status`, `orgai projects trust show`, the
- * one line a run start prints while team-file changes wait, and the TUI's /approvals overlay. Pure: no host, ink or
+ * The words of what waits for approval (cli-parity 3.4, read-only as built): `orgai team files status`, `orgai projects
+ * trust show`, the one line a run start prints while team-file changes wait, and the TUI's read-only /approvals. Pure: no host, ink or
  * electron. Every string from a repository (role names, prompts, summaries, MCP targets, file names, settings) is
  * untrusted: hidden characters are written out (showHidden), then terminal controls are removed (safe / safeLine).
  */
@@ -16,12 +16,13 @@ const visibleLines = (s: unknown): string[] => safe(showHidden(String(s ?? '')))
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`
 
-/** Where a human approves. Said wherever a pending change is reported; there is no other way. */
-export const APPROVE_WHERE = 'Approve or reject them at an interactive terminal: run orgai there and type /approvals.'
-export const TRUST_WHERE = "Allow or deny this folder's own config at an interactive terminal: run orgai there and type /approvals."
-/** Printed by the approve-shaped subcommands, which never approve. */
-export const NO_APPROVE_COMMAND =
-  'Team-file changes and folder config trust are decided only inside the orgai terminal UI, at a terminal OrgAI checks: run orgai and type /approvals. No command, flag (--yes), environment variable or JSON mode approves. This removes the scripted ways to approve; it does not stop a program that already runs as you.'
+/** Why approving is not offered in a terminal (cli-parity 3.4 as built). */
+export const NOT_IN_TERMINAL_WHY = 'a terminal cannot yet prove that a person, not an agent, is answering'
+/** Said wherever a pending change is reported. */
+export const APPROVE_WHERE = `Approving is done in the OrgAI desktop app for now: ${NOT_IN_TERMINAL_WHY}.`
+export const TRUST_WHERE = `Allowing a folder's own config is done in the OrgAI desktop app for now: ${NOT_IN_TERMINAL_WHY}.`
+/** Printed by the approve-shaped subcommands (team files approve|reject|undo|commit|enable, projects trust allow|deny). */
+export const NO_APPROVE_COMMAND = `Approving, rejecting, undoing or committing team-file changes, and allowing a folder's own config, are not done in the terminal: ${NOT_IN_TERMINAL_WHY}. This is done in the OrgAI desktop app for now. To see what waits: orgai team files status, orgai projects trust show.`
 
 export const shortDigest = (d: string | undefined): string => (d ? d.slice(0, 12) : 'none')
 
@@ -87,6 +88,7 @@ export function teamFilesStatusLines(s: TeamFilesStatus): string[] {
   }
   if (s.omittedChanges) out.push(`  ...and ${plural(s.omittedChanges, 'more change')} not listed (too many to review at once).`)
   if (s.applied.length) out.push(`  Applied at once (undo available): ${s.applied.map((c) => visibleLine(c.summary)).join(' ')}`)
+  if (s.undo && s.undoChanges?.length) out.push(`  Undo would bring back: ${s.undoChanges.map((c) => visibleLine(c.summary)).join(' ')}`)
   for (const w of s.warnings) out.push(`  warning: ${visibleLine(w.file)}: ${visibleLine(w.message)}`)
   if (s.state === 'pending' || s.state === 'problem' || s.state === 'rejected') out.push(`  ${writtenByLine(s)}`)
   return out
@@ -100,7 +102,7 @@ export function pendingTeamFilesLine(statuses: readonly TeamFilesStatus[], proje
   const problem = mine.some((s) => s.state === 'problem')
   const what = n ? `${plural(n, 'team-file change')} ${n === 1 ? 'waits' : 'wait'} for approval` : 'the team files have a problem'
   const where = projectId === undefined ? ` (${mine.map((s) => visibleLine(s.projectName)).join(', ')})` : ''
-  return `Team files: ${what}${problem && n ? ' (and a file has a problem)' : ''}${where}; runs use the last approved team. Review: orgai team files status. Approve: orgai, then /approvals.`
+  return `Team files: ${what}${problem && n ? ' (and a file has a problem)' : ''}${where}; runs use the last approved team. Review: orgai team files status (approving is done in the OrgAI desktop app for now).`
 }
 
 // ---------- folder config trust ----------
@@ -135,9 +137,9 @@ export function folderTrustLines(r: FolderConfigReview, projectName: string): st
 
 /**
  * The whole team files change list for the approval overlay: every change in full, prompts before and after; with
- * `undoChanges` (ApprovalOffer.undoChanges), what Undo would bring back, role by role.
+ * `undoChanges` (TeamFilesStatus.undoChanges from teamFiles:listAttention), what Undo would bring back, role by role.
  */
-export function teamFilesDetailLines(s: TeamFilesStatus, undoChanges: readonly TeamFileChange[] = []): string[] {
+export function teamFilesDetailLines(s: TeamFilesStatus, undoChanges: readonly TeamFileChange[] = s.undoChanges ?? []): string[] {
   const out = teamFilesStatusLines(s).slice(0, 2)
   for (const p of s.problems) out.push(`problem: ${visibleLine(p.file)}: ${visibleLine(p.message)}`)
   const pending = pendingChanges(s)

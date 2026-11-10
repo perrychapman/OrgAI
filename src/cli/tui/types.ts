@@ -71,7 +71,7 @@ import type {
 } from '../../shared/types'
 import type { HostClient, InprocHostHandle } from '../types'
 import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
-import type { ApprovalItem, ApprovalsApi } from './approvals'
+import type { ApprovalsApi } from './approvals'
 
 // Re-exported for the onboarding props (Onboarding.tsx).
 export type { AgentImportSource }
@@ -522,7 +522,7 @@ export interface OpenTuiSessionOptions {
 }
 
 export interface TuiSessionApi {
-  /** /approvals (cli-parity 3.4): team files and folder config trust, decided here behind the host's terminal attestation. */
+  /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
   approvals?: ApprovalsApi
   getState(): TuiState
   subscribe(listener: () => void): () => void
@@ -732,8 +732,6 @@ export interface SlashContext {
   newRun(opts: { prompt?: string; team?: RunTeam; overrides?: RunOverrides }): Promise<void>
   /** A short list to choose from (/model); undefined when dismissed. Optional: without it the command prints the list. */
   pick?(title: string, options: readonly { value: string; label: string }[]): Promise<string | undefined>
-  /** /approvals: open one item in the approval overlay (optional: older test contexts lack it). */
-  openApproval?(item: ApprovalItem): void
   switchRun(ref: string): Promise<void>
   confirm(question: string): Promise<boolean>
   openText(title: string, text: string): Promise<void>

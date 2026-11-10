@@ -375,24 +375,6 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect(res.error.data.code).toBe('not_owner')
   })
 
-  it("'attested_approve' (cli-parity 3.4) goes only to the owner's tui connection; cli connections get the rest; a non-owner is refused first", async () => {
-    await start()
-    const scopes: HostScope[] = ['read', 'operate', 'decide', 'attested_approve']
-    expect((await hello(await client(), { kind: 'tui', scopes })).res.result.grantedScopes).toEqual(scopes)
-    // exec, resume --exec and every management command connect as 'cli'.
-    expect((await hello(await client(), { kind: 'cli', scopes })).res.result.grantedScopes).toEqual(['read', 'operate', 'decide'])
-    expect((await hello(await client(), { kind: 'tui', scopes: ['attested_approve'], ownerKey: 'ef'.repeat(32) })).res.error.data.code).toBe('not_owner')
-  })
-
-  it('the request context says whether the connection is the owner (approvalGate.ts refuses without it)', async () => {
-    await start()
-    const c = await client()
-    await hello(c, { kind: 'tui', scopes: ['read'] })
-    c.send(rpcRequest(7, 'runs:list', ['p1']))
-    await c.response(7)
-    expect(st.calls[0].ctx).toMatchObject({ owner: true, clientKind: 'tui' })
-  })
-
   it('refuses every hello while the owner reports an unprotected daemon.secret, and runs no ACL step of its own (review follow-up)', async () => {
     let problem: string | undefined = 'icacls failed: access denied'
     await start({ secretAclProblem: () => problem })

@@ -310,6 +310,6 @@ describe('CLI and host contracts (cli-spec Wave 0)', () => {
       humanGraceMs: 60_000
     })
     expect(DEFAULT_EXEC_STALL_TIMEOUT_MS).toBe(300_000)
-    expect(HOST_SCOPES).toEqual(['read', 'operate', 'decide', 'configure', 'attested_approve'])
+    expect(HOST_SCOPES).toEqual(['read', 'operate', 'decide', 'configure'])
   })
 })

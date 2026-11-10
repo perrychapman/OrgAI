@@ -276,9 +276,6 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [HOST_IPC.kitApplyBundle]: OBJECT,
   // [requestId]
   [HOST_IPC.runsFindDecision]: STRING,
-  // [ApprovalOfferInput] / [ApprovalAnswerInput] (approvalGate.ts rebuilds both)
-  [HOST_IPC.approvalsOffer]: OBJECT,
-  [HOST_IPC.approvalsAnswer]: OBJECT,
 
   // ---- SECRETS_IPC (Wave 7, cli-standalone.md 5.6) ----
   // SecretsStatusInput / SecretsInitInput: every field optional, so the input may be left out.

@@ -302,60 +302,28 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   (`runStartFlags.ts`, validated by exec's `overridesFromFlags`, `execMode` dropped; headless-only flags are refused).
   `session.ts` sends `overrides` on start, continue and quick; widening ones go through a one-call 'configure'
   connection (`callConfigured`), as exec asks for 'configure'.
-- Approvals at the terminal (cli-parity 3.4 and principle 4, branch cp/approvals, 2026-11-10, revised after the
-  security review; unit, ink and in-process integration tests only, nothing live, e2e rows in `e2e/cli-org.mjs` not
-  run). What it does: approving team files and folder config trust happens only inside the TUI, at a terminal the host
-  checks. That removes the scripted ways to approve (a command, a flag, an environment variable, `exec`, a hook or MCP
-  server running the CLI, a pty an agent opens, a multiplexer it drives) and raises the cost of the rest. It is not a
-  boundary against code that already runs as the user with arbitrary commands: such code can rewrite
-  `<data>/projects/<id>/team-files/approved.json` or the project store directly.
-  - Read-only (read scope): `orgai team files [status]` (`teamFiles:listAttention`; each change with the gate's summary,
-    "May spend more: ..." first, tools gained, MCP target, secrets, reach, and git's view of who wrote it: OrgAI records no
-    author) and `orgai projects trust [show]` (`projects:folderConfig`). `exec` and `resume --exec` print one stderr line
-    (text mode) before the run while the project's team files wait; the TUI shows a notice on open. `team files
-    approve|reject|undo|commit|enable` and `projects trust allow|deny` only say where a person decides: exit 2, no host
-    started, whatever flags.
-  - Channels and scope: the desktop's `teamFiles:approve` / `reject` / `undo` / `commit` / `enable` and
-    `projects:setFolderConfigTrust` stay `desktop_only`. Two socket-only HOST_IPC channels, `approvals:offer` and
-    `approvals:answer`, are the whole scope `attested_approve` (registry tests: exactly these two; no other scope reaches
-    them; it opens nothing else; nothing else moved). socketServer grants it to the owner's `tui` connection only (no
-    check at connect time); `exec`, `resume --exec` and the management commands connect as 'cli' and never get it.
-  - The gate (`host/approvalGate.ts`): the caller must be surface 'socket', `owner` (the in-memory owner proof, so the
-    client is this process), 'tui', with the scope. An offer is refused while any run of the project is alive in this
-    host (its agents share the terminal; "stop it first"). The item is read first (reading runs git), then the terminal
-    is checked; again after the key press. One live offer at a time, bound to the connection, project and the digest of
-    the content it returns for the screen (for undo also the undo record), 3 minutes; any answer spends it except a
-    mistyped code (3 tries in all). The digest is compared again synchronously right before the service call; changed
-    content is refused and shown again. Approve, undo, allow and commit need the offer's 4-letter code typed back (no
-    paste); reject and deny need the key press and y. The undo screen lists what Undo brings back role by role
-    (`TeamFilesService.undoChanges`, tools now and after).
-  - The terminal check (`host/terminalAttestation.ts`, all from the OS: fixed absolute ps / lsof, minimal environment,
-    new session, no terminal fds; unreadable facts refuse): macOS or Linux; stdin and stdout are the controlling
-    terminal's device; no ancestor is a multiplexer (tmux, screen, zellij, dtach, abduco; by the process tree, never
-    TMUX / STY; the refusal says to open a plain terminal window), an agent runtime or another OrgAI host; the session
-    leader's parent is a terminal application or sshd by executable path (`TERMINAL_APPS`, an explicit per-platform list;
-    lsof's txt entry on macOS, `/proc/<pid>/exe` on Linux; argv[0] does not count) or a root-owned sshd by name (Linux
-    privilege separation: a same-user sshd-session under a root one); python, script, expect, node, `login` and a leader
-    whose parent is pid 1 all fail, as does anything unknown. At offer and answer also: every process whose controlling
-    terminal this is, and every process that has the device open at all (`lsof -t <device>` on macOS, `/proc/*/fd` on
-    Linux; a list without this process counts as unreadable), is this process, an ancestor, the launcher or a non-agent
-    job of the terminal's shell.
-  - The CLI starts Node with the inspector signal disabled (`src/cli/inspectorSignal.ts`, imported first by index.ts;
-    `inspectorSignal.test.ts` signals a child Node with and without it).
-  - Checked by: `terminalAttestation.test.ts` (every refusal path with fake process tables, executable facts and fd
-    lists, the allow-lists per platform, a spoofed argv[0], a double-forked python pty, a same-user "sshd", `login -pf`,
-    each multiplexer, holders of the device without it as controlling terminal), `approvalGate.test.ts`,
-    `socketServer.test.ts`, `registry.test.ts`, `approvalText.test.ts`, `tui/approvals.test.ts`, `App.approvals.test.tsx`,
-    the command tests and `src/cli/approvals.int.test.ts` (real in-process host and socket; under an agent session the
-    real check refuses, which is the mechanism itself).
-  - Residual risks: same-user code that runs arbitrary commands (it can edit the data folder); a visible window the agent
-    opens with a listed terminal application (`open -a Terminal`, `xterm` on a display) and then drives through that
-    application's automation (AppleScript, kitty / wezterm remote control, a virtual X display with xdotool); keystroke
-    injection into the user's own terminal through such automation; an agent that adds its key to authorized_keys and
-    ssh-es to localhost; `/Applications` is writable by admin accounts, so an allow-listed path there could be replaced
-    (Terminal.app's path is on the sealed system volume); ptrace of the TUI where `ptrace_scope` is 0; a process that
-    touches the terminal only between the two checks; a terminal application missing from the list is refused (iTerm2's
-    persistent-session server and Orca's terminal host run from user-writable folders and are not listed).
-  - Unverified: never run in a real terminal; Linux facts (`/proc` exe, fds, sshd privilege separation, the Linux paths)
-    are from tests with injected facts only; that agents share the TUI's controlling terminal was read from the spawn
-    code; Windows refuses by design. `selfControlGate.ts` is unchanged and not relied on.
+- Approvals at the terminal (cli-parity 3.4 and principle 4, branch cp/approvals, 2026-11-10; read-only as built; unit,
+  ink and in-process integration tests, e2e rows in `e2e/cli-org.mjs` not run). What ships:
+  - `orgai team files [status]` (read scope, `teamFiles:listAttention`): each pending change with the gate's summary,
+    "May spend more: ..." first, tools gained, MCP target, secrets, reach, git's view of who wrote it (OrgAI records no
+    author) and, when undo is open, what Undo would bring back (`TeamFilesStatus.undoChanges`, filled by the
+    listAttention handler from `TeamFilesService.undoChanges`; the service's own status and the desktop push do not
+    carry it). `orgai projects trust [show]` (read scope, `projects:folderConfig`). Both with `--output-format json`.
+  - `exec` and `resume --exec` print one stderr line (text mode) before the run while the project's team files wait
+    (`approvalText.ts` `pendingTeamFilesLine`); the TUI shows a notice on open.
+  - TUI `/approvals` (aliases team-files, trust) is read-only: a text overlay with every waiting item in full (the same
+    words, prompts before and after, what Undo would bring back, a folder's own config) ending with "Approving is done in
+    the OrgAI desktop app for now: a terminal cannot yet prove that a person, not an agent, is answering."
+  - `orgai team files approve|reject|undo|commit|enable` and `orgai projects trust allow|deny` decide nothing: they say
+    so, exit 2 and start no host, whatever flags follow.
+  - No new channel or scope: the registry is unchanged; the desktop's team files decisions and
+    `projects:setFolderConfigTrust` stay `desktop_only`.
+  - The CLI starts Node with the inspector signal disabled (`src/cli/inspectorSignal.ts`; `src/cli/bin.ts` is the
+    bundle's entry and loads it before the rest of the CLI, which comes in as its own chunk; `npm run cli` also passes
+    `--disable-sigusr1`; `inspectorSignal.test.ts`).
+  - Why approving was held: an approval path at the terminal was built and reviewed twice. Both independent reviews
+    found that a terminal session cannot be told apart from one an agent drives, so an agent could approve its own change.
+    Approving from a terminal needs a confirmation from the operating system that an agent cannot produce, and a record of
+    what was approved that agents cannot write. That work is preserved on the local branch `cp/approvals-full-gate`.
+  - Known gap: the desktop app keeps its own data folder, so approving there does not clear a pending change of a project
+    in the CLI's data folder; a terminal-only user can see such a change but not clear it today.

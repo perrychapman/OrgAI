@@ -1,14 +1,13 @@
 /**
- * /approvals in the real App (cli-parity 3.4): the overlay shows what the host's offer returned, takes the typed code,
- * re-offers after an answer or a refusal, and shows the host's reason when this terminal may not approve. The host is
- * faked here (its gate is tested in host/approvalGate.test.ts and the integration test).
+ * The read-only /approvals in the real App (cli-parity 3.4 as built): it shows what waits, in full, ending with where
+ * approving is done and why, and offers no key that decides anything. The host reads are faked.
  */
 import { render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ApprovalOffer, ProviderModel, TeamFilesStatus } from '../../shared/types'
+import type { ProviderModel, TeamFilesStatus } from '../../shared/types'
 import { project, summary } from '../testing/fakeContext'
 import { App } from './App'
-import type { ApprovalItem, ApprovalsApi } from './approvals'
+import { approvalItems, type ApprovalsApi } from './approvals'
 import { DEFAULT_TUI_ENV } from './context'
 import { KeyParser } from './input/keys'
 import { addNotice, createInitialState, setComposeTarget } from './state'
@@ -23,7 +22,9 @@ function stateWith(): TuiState {
   return { ...createInitialState('/work'), project: project('p1', '/work', { name: 'Demo' }), connection: 'live' }
 }
 
-const status = (over: Partial<TeamFilesStatus> = {}): TeamFilesStatus => ({
+const m = (id: string): ProviderModel => ({ id, label: id, connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }) as ProviderModel
+
+const status: TeamFilesStatus = {
   projectId: 'p1',
   projectName: 'Demo',
   state: 'pending',
@@ -35,15 +36,8 @@ const status = (over: Partial<TeamFilesStatus> = {}): TeamFilesStatus => ({
   applied: [],
   problems: [],
   notes: [],
-  warnings: [],
-  ...over
-})
-
-const m = (id: string): ProviderModel => ({ id, label: id, connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }) as ProviderModel
-
-const ITEM: ApprovalItem = { kind: 'teamFiles', projectId: 'p1', projectName: 'Demo', digest: 'ab'.repeat(32), label: 'Team files of Demo: 1 change to approve' }
-
-const offerOf = (code: string, st = status()): ApprovalOffer => ({ offerId: 'f'.repeat(32), kind: 'teamFiles', projectId: 'p1', digest: st.digest!, actions: st.state === 'pending' ? ['approve', 'reject'] : [], codeActions: st.state === 'pending' ? ['approve'] : [], code, expiresAt: 1, teamFiles: st })
+  warnings: []
+}
 
 const mounted: { unmount(): void }[] = []
 afterEach(() => {
@@ -117,117 +111,37 @@ function mount(opts: { state?: TuiState; launch?: TuiLaunch; approvals?: Approva
 }
 
 
-function api(over: Partial<ApprovalsApi> = {}): ApprovalsApi & { offers: ApprovalItem[]; answers: unknown[][] } {
-  const offers: ApprovalItem[] = []
-  const answers: unknown[][] = []
-  let n = 0
-  return {
-    offers,
-    answers,
-    withheld: () => undefined,
-    list: async () => [ITEM],
-    waiting: async () => undefined,
-    offer: async (item) => (offers.push(item), offerOf(++n === 1 ? 'KMNP' : 'WXYA', n === 1 ? status() : status({ state: 'in-sync', changes: [] }))),
-    answer: async (...args) => (answers.push(args), { kind: 'teamFiles', action: 'approve', projectId: 'p1', message: 'Approved 1 change to the team of Demo.' }),
-    ...over
-  }
-}
 
-describe('/approvals in the shell', () => {
-  it('opens the offer the host returned, takes the typed code and sends it; then shows the fresh offer', async () => {
-    const a = api()
-    const app = mount({ approvals: a })
+const api = (over: Partial<ApprovalsApi> = {}): ApprovalsApi => ({ list: async () => approvalItems([status]), waiting: async () => undefined, ...over })
+
+describe('read-only /approvals in the shell', () => {
+  it('shows what waits in full and where approving is done; keys only scroll and close', async () => {
+    const app = mount({ approvals: api() })
     await tick()
     await app.typed('/approvals\r')
     await tick()
     let f = app.frame()
-    expect(f).toContain('Team files of Demo: 1 change to approve')
+    expect(f).toContain('Team files of Demo: 1 change waits for approval')
     expect(f).toContain('Reviewer gains Bash. (New tools)')
-    expect(f).toContain('a approve · r reject')
-    expect(a.offers).toEqual([ITEM])
+    expect(f).toContain('Approving is done in the OrgAI desktop app for now')
     await app.typed('a')
-    expect(app.frame()).toContain('Type KMNP to approve, then Enter')
-    await app.typed('kmnp')
-    await app.send(named('enter'))
-    await tick()
-    expect(a.answers).toEqual([['f'.repeat(32), 'approve', 'KMNP']])
-    // Re-offered without the list's digest: the host binds what it reads now.
-    expect(a.offers[1]).toMatchObject({ projectId: 'p1', digest: undefined })
-    f = app.frame()
-    expect(f).toContain('Approved 1 change to the team of Demo.')
-    expect(f).toContain('Nothing to approve, reject, undo or commit here right now.')
     await app.send(named('escape'))
-    expect(app.frame()).not.toContain('Team files of Demo: 1 change')
-  })
-
-  it("a terminal the host did not attest shows the host's reason and offers nothing", async () => {
-    const a = api({ withheld: () => 'This orgai was started from inside an agent (claude, pid 7); approvals are never taken there.' })
-    const app = mount({ approvals: a })
-    await tick()
-    await app.typed('/approvals\r')
-    await tick()
-    const f = app.frame()
-    expect(f).toContain('Not approved:')
-    expect(f).toContain('inside an agent (claude, pid 7)')
-    expect(a.offers).toEqual([])
-    await app.typed('a')
-    expect(a.answers).toEqual([])
-  })
-
-  it('a refused offer (the terminal fails the check now) shows the reason; a stale answer is shown again from a fresh offer', async () => {
-    const refusing = api({ offer: async () => Promise.reject(Object.assign(new Error('A process OrgAI started shares this terminal (claude, pid 9).'), { code: 'scope_denied' })) })
-    const app = mount({ approvals: refusing })
-    await tick()
-    await app.typed('/approvals\r')
-    await tick()
-    expect(app.frame()).toContain('shares this terminal (claude, pid 9)')
-
-    const stale = api({ answer: async () => Promise.reject(Object.assign(new Error('This changed since you looked. Review it again.'), { code: 'stale_target_digest' })) })
-    const app2 = mount({ approvals: stale })
-    await tick()
-    await app2.typed('/approvals\r')
-    await tick()
-    await app2.typed('aKMNP')
-    await app2.send(named('enter'))
-    await tick()
-    expect(app2.frame()).toContain('This changed since you looked. Review it again.')
-    expect(stale.offers).toHaveLength(2)
-  })
-
-  it('a mistyped code stays on the same offer with the host words; a spent offer ends and is not offered again by itself', async () => {
-    let n = 0
-    const a = api({
-      answer: async () => {
-        n += 1
-        throw Object.assign(new Error(n === 1 ? 'The code did not match; nothing was changed. 2 tries left.' : 'The code did not match too many times; nothing was changed. Open the approval again for a new code.'), {
-          code: n === 1 ? 'bad_request' : 'stale_revision'
-        })
-      }
-    })
-    const app = mount({ approvals: a })
-    await tick()
-    await app.typed('/approvals\r')
-    await tick()
-    await app.typed('aKMNA')
-    await app.send(named('enter'))
-    await tick()
-    let f = app.frame()
-    expect(f).toContain('2 tries left.')
-    expect(f).toContain('Type KMNP to approve')
-    expect(a.offers).toHaveLength(1)
-    await app.typed('KMNX')
-    await app.send(named('enter'))
-    await tick()
     f = app.frame()
-    expect(f).toContain('Not approved:')
-    expect(f).toContain('too many times')
-    expect(a.offers).toHaveLength(1)
+    expect(f).not.toContain('Team files of Demo: 1 change waits')
+  })
+
+  it('nothing waits: a notice, no overlay', async () => {
+    const app = mount({ approvals: api({ list: async () => [] }) })
+    await tick()
+    await app.typed('/approvals\r')
+    await tick()
+    expect(app.frame()).toContain('Nothing waits for approval.')
   })
 
   it('says on open when something waits', async () => {
-    const app = mount({ approvals: api({ waiting: async () => 'Waiting for your approval: team files of 1 project. Type /approvals.' }) })
+    const app = mount({ approvals: api({ waiting: async () => 'Waiting for approval: team files of 1 project. Type /approvals to read them.' }) })
     await tick()
     await tick()
-    expect(app.frame()).toContain('Waiting for your approval: team files of 1 project. Type /approvals.')
+    expect(app.frame()).toContain('Waiting for approval: team files of 1 project. Type /approvals to read them.')
   })
 })

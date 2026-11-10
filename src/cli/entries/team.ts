@@ -38,7 +38,7 @@ export const ENTRY: CommandEntry = {
   ],
   available: true,
   notes: [
-    'team files [status]: the changes to .orgai/team.json and .orgai/agents/*.md that wait for approval, with what each would give the team. Approving, rejecting, undoing and committing them happens only inside the orgai terminal UI (/approvals), at an interactive terminal the host has checked; no command, flag (--yes) or environment variable does it.',
+    'team files [status]: the changes to .orgai/team.json and .orgai/agents/*.md that wait for approval, with what each would give the team. orgai does not approve, reject, undo or commit them: a terminal cannot yet prove that a person, not an agent, is answering, so this is done in the OrgAI desktop app for now. In the terminal UI, /approvals shows the same, read-only.',
     'Role edits go through the same save as the desktop editor. A change that may make a role spend more (a higher tier or effort, automatic staffing or a raised ceiling, another connection, spawning switched on) prints why and asks first; pass --yes without a terminal. Lowering never asks.'
   ]
 }

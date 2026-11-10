@@ -10,6 +10,7 @@ import { helpKeyLines } from './keymap'
 import { sanitizeTty } from './sanitizeTty'
 import { offersRetro } from './selectors'
 import { usageText } from './usageText'
+import { approvalsText } from './approvals'
 import { MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE } from '../../shared/liveModelSwitch'
 import type { ProviderModel, RunOverrides, RunSummary } from '../../shared/types'
 import { modelChoices, pickModel } from '../modelSwitch'
@@ -149,13 +150,12 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
 }
 
 /**
- * /approvals (cli-parity 3.4): what waits for a person (every project's pending team files, this project's team files
- * for undo and commit, this folder's own config); one item opens at once, several give a pick. The host attests this
- * terminal when the overlay asks for an offer, and again after the key press.
+ * /approvals (cli-parity 3.4 as built, read-only): what waits for approval, in full (the gate's summary, "May spend
+ * more", what an undo would bring back, a folder's own config), ending with where approving is done and why.
  */
 async function runApprovals(ctx: SlashContext): Promise<void> {
   const api = ctx.session.approvals
-  if (!api || !ctx.openApproval) {
+  if (!api) {
     ctx.notify('Approvals are not available here.', 'warn')
     return
   }
@@ -164,17 +164,7 @@ async function runApprovals(ctx: SlashContext): Promise<void> {
     ctx.notify('Nothing waits for approval.')
     return
   }
-  let item = items[0]
-  if (items.length > 1) {
-    if (!ctx.pick) {
-      await ctx.openText('Approvals', items.map((it) => `  ${cleanLine(it.label, 160)}`).join('\n'))
-      return
-    }
-    const value = await ctx.pick('Approvals', items.map((it, i) => ({ value: String(i), label: cleanLine(it.label, 160) })))
-    if (value === undefined) return
-    item = items[Number(value)] ?? items[0]
-  }
-  ctx.openApproval(item)
+  await ctx.openText('Approvals', approvalsText(items))
 }
 
 function retroReason(s: TuiState): string | undefined {
@@ -346,8 +336,8 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   {
     name: 'approvals',
-    aliases: ['approve', 'team-files', 'trust'],
-    summary: 'Team-file changes and folder config waiting for you: review, approve, reject, undo, commit',
+    aliases: ['team-files', 'trust'],
+    summary: 'Read the team-file changes and folder config that wait for approval (approving is in the desktop app)',
     run: (ctx) => guarded(ctx, () => runApprovals(ctx))
   },
   {

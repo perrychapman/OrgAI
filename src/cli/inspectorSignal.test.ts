@@ -48,9 +48,13 @@ describe('the inspector signal', () => {
     expect(() => disableInspectorSignal(win as never)).not.toThrow()
   })
 
-  it('index.ts imports it before anything else', () => {
-    const src = readFileSync(join(here, 'index.ts'), 'utf8')
-    const firstImport = /^import\s.*$/m.exec(src)?.[0]
-    expect(firstImport).toBe("import './inspectorSignal'")
+  it('bin.ts (the bundle entry) and index.ts import it before anything else; bin.ts loads the rest of the CLI only after', () => {
+    for (const f of ['bin.ts', 'index.ts']) {
+      const src = readFileSync(join(here, f), 'utf8')
+      expect(/^import\s.*$/m.exec(src)?.[0], f).toBe("import './inspectorSignal'")
+    }
+    const bin = readFileSync(join(here, 'bin.ts'), 'utf8')
+    expect(bin.match(/^import\s.*$/gm)).toEqual(["import './inspectorSignal'"])
+    expect(bin).toContain("await import('./index')")
   })
 })
