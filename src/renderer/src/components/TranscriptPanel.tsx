@@ -37,6 +37,8 @@ import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
 import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
+import { planHasGraph, stepViews, waitingOnText } from '../lib/planGraph'
+import { agentStaffingView, assignmentOf, stepStaffLabel } from '../lib/runStaffing'
 import { Cost } from './ui/Cost'
 import { agentCostInput } from '../lib/cost'
 import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
@@ -129,6 +131,8 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
   const auto = project?.autoContinue !== false
   const cont = autoContinueLine(auto, plan.autoContinues, max)
   const status = plan.status === 'active' ? 'In progress' : plan.status === 'done' ? 'Done' : 'Blocked'
+  // Ready / waiting lines only for a plan that uses the graph (after, paths or staff); older plans look as they always did.
+  const views = planHasGraph(plan) ? stepViews(plan) : null
   return (
     <div className="plan-view">
       <div className="plan-head">
@@ -144,7 +148,11 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
       </div>
       {plan.status === 'blocked' && plan.blockedReason && <div className="plan-blocked">Blocked: {plan.blockedReason}</div>}
       <ol className="plan-steps">
-        {plan.steps.map((s) => (
+        {plan.steps.map((s, i) => {
+          const view = views?.[i]
+          const stateText =
+            view?.state === 'running' ? 'Running now' : view?.state === 'ready' ? 'Ready to start' : view?.state === 'waiting' ? waitingOnText(plan, view.waitingOn) : ''
+          return (
           <li key={s.id} className={`plan-step ${s.status}`}>
             <span className="plan-icon" title={STEP_LABELS[s.status]} role="img" aria-label={STEP_LABELS[s.status]}>
               <Icon icon={STEP_ICONS[s.status]} size="sm" />
@@ -155,9 +163,20 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
                 {s.owner && <span className="plan-owner">{s.owner}</span>}
               </div>
               {s.note && <div className="plan-note">{s.note}</div>}
+              {stateText && (
+                <div className="plan-state" data-testid="plan-step-state" data-state={view?.state} title={view?.state === 'waiting' ? stateText : undefined}>
+                  {stateText}
+                </div>
+              )}
+              {s.staff && (
+                <div className="plan-staff" data-testid="plan-step-staff">
+                  {stepStaffLabel(s.staff)}
+                </div>
+              )}
             </div>
           </li>
-        ))}
+          )
+        })}
       </ol>
       {plan.summary && (
         <div className="plan-summary">
@@ -408,6 +427,8 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const bottom = useRef<HTMLDivElement>(null)
   const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
   const plan = useAppStore((s) => s.runs[runId]?.plan)
+  const agentAssignment = useAppStore((s) => (agent ? assignmentOf(s.runs[runId]?.staffing, agent.id) : undefined))
+  const agentStaffing = agentStaffingView(agentAssignment)
   const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
   const runConnection = useAppStore((s) => s.runs[runId]?.summary.connection)
   const index = useRunIndexes().get(tagRunId ?? runId)
@@ -736,6 +757,17 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             </span>
           )}
         </div>
+      )}
+      {agent && tab === 'transcript' && agentStaffing && (
+        <details className="agent-staffing" data-testid="agent-staffing-detail">
+          <summary data-testid="agent-staffing-summary" title={agentStaffing.reason}>
+            {agentStaffing.label}
+          </summary>
+          <div className="agent-staffing-body">
+            <div data-testid="agent-staffing-reason">{agentStaffing.reason}</div>
+            <div data-testid="agent-staffing-model">Model: {agentStaffing.model}</div>
+          </div>
+        </details>
       )}
       {agent && tab === 'transcript' && (
         <div className="transcript-bar">

@@ -15,6 +15,7 @@ import { Badge } from './ui/Badge'
 import { DELEGATION_BADGE_LABEL, delegationBadges, type DelegationBadgeKind } from '@shared/delegationView'
 import { activeRun, useAppStore } from '../store/useAppStore'
 import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
+import { agentStaffingView, assignmentOf } from '../lib/runStaffing'
 
 /** `arrived`: new since the canvas was shown (pops in once). `breathe`: its phase slot when it is one of the first 12 working nodes. */
 export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean; arrived?: boolean; breathe?: number }, 'agent'>
@@ -74,6 +75,9 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
   const runConnection = useAppStore((s) => activeRun(s)?.summary.connection)
   const onTag = connectionTag(agent.connection, runConnection)
   const onTitle = onTag && agent.connection && runConnection ? connectionTagTitle(agent.connection, runConnection, 'run') : (onTag ?? undefined)
+  // Resolved tier and effort from the run's newest assignment for this agent; nothing for the orchestrator or older runs.
+  const assignment = useAppStore((s) => assignmentOf(activeRun(s)?.staffing, agent.id))
+  const staffing = agentStaffingView(assignment)
   const costInput = agentCostInput(agent)
   const hasCost = !costView(costInput).empty
   // Ended without result text: its tokens bought nothing. A quiet dim and a tooltip, no badge.
@@ -116,6 +120,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
     label === agent.name ? '' : agent.name,
     [agent.handle ? '' : agent.roleSlug, shortModel].filter(Boolean).join(' · '),
     activity,
+    staffing ? `${staffing.label}: ${staffing.reason}` : '',
     worktreeText,
     delegationKinds.map((k) => DELEGATION_BADGE_LABEL[k]).join(', '),
     onTitle ?? '',
@@ -143,7 +148,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
           <div className="station-name">
             <ClippedLabel label={label} />
           </div>
-          <span className="sr-only">{[activity, worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>
+          <span className="sr-only">{[activity, staffing ? `${staffing.label}, ${staffing.reason}` : '', worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>
         </>
       )}
       {hex && (
@@ -158,7 +163,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
               {badges}
             </div>
             <div className="hex-name">{label}</div>
-            <span className="sr-only">{[activity, worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>
+            <span className="sr-only">{[activity, staffing ? `${staffing.label}, ${staffing.reason}` : '', worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>
           </div>
         </>
       )}
@@ -173,11 +178,16 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
             {compact ? <ClippedLabel label={label} /> : agent.name}
           </div>
           {/* The tooltip is not read by keyboard or screen-reader users: say what the card would show. */}
-          {compact && <span className="sr-only">{[activity, worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>}
+          {compact && <span className="sr-only">{[activity, staffing ? `${staffing.label}, ${staffing.reason}` : '', worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>}
           {!compact && (
             <div className="sub">
               <span title={agent.handle ? `Handle ${agent.handle} (role ${agent.roleSlug})` : undefined}>{agent.handle ?? agent.roleSlug}</span>
               {shortModel && <span>· {shortModel}</span>}
+              {staffing && (
+                <span className="agent-staffing-chip" data-testid="agent-staffing" title={`${staffing.reason}\nModel: ${staffing.model}`}>
+                  {staffing.label}
+                </span>
+              )}
               {onTag && (
                 <span className="agent-connection" data-testid="agent-connection" data-connection={agent.connection} title={onTitle}>
                   {onTag}

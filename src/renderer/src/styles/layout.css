@@ -353,6 +353,10 @@ html[data-columns-moving] .side-panel-body {
   align-items: center;
   gap: var(--space-1);
 }
+/* Working / ready counts: two quiet figures that appear only above zero. */
+.run-meta-staffing {
+  gap: var(--space-2);
+}
 button.run-meta-item {
   padding: 0;
   border: 0;
@@ -395,7 +399,8 @@ button.run-meta-item:focus-visible {
   .run-meta-cost,
   .run-meta-wall,
   .run-meta-sessions,
-  .run-meta-agents {
+  .run-meta-agents,
+  .run-meta-staffing {
     display: none;
   }
 }

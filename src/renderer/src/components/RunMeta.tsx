@@ -18,6 +18,8 @@ import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
+import { staffingCounts } from '../lib/planGraph'
+import { isWorkingAgent } from '../lib/agentActivity'
 import { agentCostInput, formatDuration, runCostInput, sumCosts, costView } from '../lib/cost'
 import { Cost } from './ui/Cost'
 import { chainOf, relativeTime } from '../lib/runChains'
@@ -107,6 +109,8 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     }
     return undefined
   })
+  // Agents working now and steps ready to start; both 0 (nothing shown) for runs without staffing data or a plan graph.
+  const counts = staffingCounts({ agents: Object.values(run.agents), isWorking: isWorkingAgent, plan: run.plan, hasAssignments: (run.staffing?.assignments.length ?? 0) > 0 })
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -176,6 +180,12 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
+      {(counts.working > 0 || counts.ready > 0) && (
+        <span className="run-meta-item run-meta-staffing" data-testid="run-meta-staffing" title="Agents working now and plan steps ready to start">
+          {counts.working > 0 && <span data-testid="run-meta-working">{counts.working} working</span>}
+          {counts.ready > 0 && <span data-testid="run-meta-ready">{counts.ready} ready</span>}
+        </span>
+      )}
       {recorded > 0 && (
         <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title={recordedTitle(recordedText, sessions, recordedPartial)} onClick={() => openRecorded(summary.id)}>
           <Icon icon={Database} size="xs" />
