@@ -14,7 +14,11 @@ import {
   nudgeBlocked,
   peerDeliveryBlocked,
   planNudgesApply,
+  pathOverlaps,
   planProgressLabel,
+  readyLine,
+  readyReports,
+  readySteps,
   remainingSteps,
   stepActivity,
   type ContinuationHost,
@@ -713,5 +717,227 @@ describe('ContinuationDriver wait after the last report', () => {
       // userMessage unsettles; hold and dispose settle a turn end that was still waiting (as before this change).
       expect(d.isSettledForTurn(1), cancel).toBe(cancel !== 'userMessage')
     }
+  })
+})
+
+const ids = (steps: PlanStep[]): string[] => steps.map((s) => s.id)
+const mk = (steps: PlanStep[], over: Partial<RunPlan> = {}): RunPlan => plan({ steps, ...over })
+
+describe('readySteps', () => {
+  it('a step with no after is ready; done, in-progress, blocked and skipped steps are not', () => {
+    const p = mk([step('p1', 'a', 'done'), step('p2', 'b', 'in_progress'), step('p3', 'c', 'blocked'), step('p4', 'd', 'skipped'), step('p5', 'e'), step('p6', 'f')])
+    expect(ids(readySteps(p))).toEqual(['p5', 'p6'])
+  })
+
+  it('a chain releases one step at a time; done or skipped dependencies release', () => {
+    const chain = (a: PlanStep['status'], b: PlanStep['status']): RunPlan => mk([step('p1', 'a', a), step('p2', 'b', b, { after: ['p1'] }), step('p3', 'c', 'pending', { after: ['p2'] })])
+    expect(ids(readySteps(chain('pending', 'pending')))).toEqual(['p1'])
+    expect(ids(readySteps(chain('in_progress', 'pending')))).toEqual([])
+    expect(ids(readySteps(chain('done', 'pending')))).toEqual(['p2'])
+    expect(ids(readySteps(chain('skipped', 'done')))).toEqual(['p3'])
+  })
+
+  it('a diamond releases both middle steps together, the join only after both', () => {
+    const d = (b: PlanStep['status']): RunPlan =>
+      mk([step('p1', 'a', 'done'), step('p2', 'b', b, { after: ['p1'] }), step('p3', 'c', 'pending', { after: ['p1'] }), step('p4', 'd', 'pending', { after: ['p2', 'p3'] })])
+    expect(ids(readySteps(d('pending')))).toEqual(['p2', 'p3'])
+    expect(ids(readySteps(d('done')))).toEqual(['p3'])
+  })
+
+  it('a cycle already broken by the cleaner leaves the earlier step ready', () => {
+    const p = mk([step('p1', 'a'), step('p2', 'b', 'pending', { after: ['p1'] })])
+    expect(ids(readySteps(p))).toEqual(['p1'])
+  })
+
+  it('orders steps that could run together and share a path by plan order', () => {
+    const p = mk([step('p1', 'a', 'pending', { paths: ['src/api/'] }), step('p2', 'b', 'pending', { paths: ['./src\\api'] }), step('p3', 'c', 'pending', { paths: ['docs'] })])
+    expect(ids(readySteps(p))).toEqual(['p1', 'p3'])
+    p.steps[0].status = 'in_progress'
+    expect(ids(readySteps(p))).toEqual(['p3'])
+    p.steps[0].status = 'done'
+    expect(ids(readySteps(p))).toEqual(['p2', 'p3'])
+    p.steps[0].status = 'skipped'
+    expect(ids(readySteps(p))).toEqual(['p2', 'p3'])
+  })
+
+  it('a folder is a prefix of the files inside it, but not of a sibling that merely starts with its name', () => {
+    const p = mk([step('p1', 'a', 'pending', { paths: ['src/api'] }), step('p2', 'b', 'pending', { paths: ['src/api/routes.ts'] }), step('p3', 'c', 'pending', { paths: ['src/api-docs'] })])
+    expect(ids(readySteps(p))).toEqual(['p1', 'p3'])
+  })
+
+  it('steps ordered by after (directly or through others) do not count as overlapping', () => {
+    const p = mk([step('p1', 'a', 'pending', { paths: ['src'] }), step('p2', 'b', 'pending', { after: ['p1'] }), step('p3', 'c', 'pending', { after: ['p2'], paths: ['src/x.ts'] })])
+    expect(pathOverlaps(p)).toEqual([])
+    expect(ids(readySteps(p))).toEqual(['p1'])
+  })
+})
+
+describe('pathOverlaps', () => {
+  it('lists each pair once with the earlier step first and the shared folder', () => {
+    const p = mk([step('p1', 'a', 'pending', { paths: ['src/api'] }), step('p2', 'b', 'pending', { paths: ['src/api/x.ts', 'web'] }), step('p3', 'c', 'pending', { paths: ['web/'] })])
+    expect(pathOverlaps(p)).toEqual([
+      { first: 'p1', second: 'p2', path: 'src/api' },
+      { first: 'p2', second: 'p3', path: 'web' }
+    ])
+  })
+
+  it('ignores finished steps and steps without paths', () => {
+    const p = mk([step('p1', 'a', 'done', { paths: ['src'] }), step('p2', 'b', 'pending', { paths: ['src'] }), step('p3', 'c')])
+    expect(pathOverlaps(p)).toEqual([])
+  })
+})
+
+describe('readyReports and readyLine', () => {
+  const staffed = mk([step('p1', 'lead work'), step('p2', 'a', 'pending', { staff: { role: 'implementer' } }), step('p3', 'b', 'pending', { staff: { role: 'Lead' } }), step('p4', 'c', 'pending', { staff: { role: 'researcher' } })])
+  it('lists only ready steps that name a report other than the caller own role', () => {
+    expect(ids(readyReports(staffed, ['lead', 'Lead']))).toEqual(['p2', 'p4'])
+    expect(ids(readyReports(staffed))).toEqual(['p2', 'p3', 'p4'])
+  })
+
+  it('formats none, one, several, more than the free slots, and no free slot', () => {
+    const [a, b, c] = readyReports(staffed)
+    expect(readyLine([], { free: 3, limit: 8 })).toBe('')
+    expect(readyLine([a], { free: 3, limit: 8 })).toBe('Ready now: p2 (implementer).')
+    expect(readyLine([a, b, c], { free: 6, limit: 8 })).toBe('Ready now: p2 (implementer), p3 (Lead), p4 (researcher). 6 of 8 agent slots are free. Start them in one message: calls in one message run together.')
+    expect(readyLine([a, b, c], { free: 2, limit: 8 })).toBe('Ready now: p2 (implementer), p3 (Lead), p4 (researcher). 2 of 8 agent slots are free, so only 2 fit now. Start those in one message: calls in one message run together.')
+    expect(readyLine([a], { free: 0, limit: 8 })).toBe('Ready now: p2 (implementer). 0 of 8 agent slots are free; start it when a report ends.')
+  })
+})
+
+describe('nextNudge: ready', () => {
+  const rp = (over: Partial<RunPlan> = {}): RunPlan =>
+    mk([step('p1', 'Design', 'done'), step('p2', 'Build API', 'pending', { staff: { role: 'implementer' } }), step('p3', 'Build UI', 'pending', { staff: { role: 'implementer' } }), step('p4', 'Own work', 'pending')], over)
+  const ri = (over: Partial<NudgeInput> = {}): NudgeInput => input({ plan: rp(), liveReports: 2, slots: { free: 6, limit: 8 }, ownRoles: ['lead', 'Lead'], ...over })
+
+  it('fires while reports run, naming the ready reports and the free slots', () => {
+    const d = nextNudge(ri())
+    expect(d.kind).toBe('ready')
+    expect(d.readySignature).toBe('p2,p3')
+    expect(d.text).toBe(
+      'Harness: Ready now: p2 (implementer), p3 (implementer). 6 of 8 agent slots are free. Start them in one message (calls in one message run together), or call update_plan if they should wait.'
+    )
+    expect(d.summary).toBe('Continuing: p2, p3 ready, asked the orchestrator to start them.')
+  })
+
+  it('says how many fit when more steps are ready than slots are free', () => {
+    expect(nextNudge(ri({ slots: { free: 1, limit: 8 } })).text).toContain('1 of 8 agent slots are free, so only 1 fit now. Start the first 1 in one message')
+  })
+
+  it('stays silent without slots info, without a free slot, without ready reports, or for the same set', () => {
+    expect(nextNudge(ri({ slots: undefined })).kind).toBe('none')
+    expect(nextNudge(ri({ slots: { free: 0, limit: 8 } })).kind).toBe('none')
+    expect(nextNudge(ri({ plan: mk([step('p1', 'a', 'in_progress', { staff: { role: 'implementer' } }), step('p2', 'b', 'pending')]) })).kind).toBe('none')
+    expect(nextNudge(ri({ plan: mk([step('p1', 'a', 'pending', { staff: { role: 'lead' } })]) })).kind).toBe('none')
+    expect(nextNudge(ri({ lastReadySignature: 'p2,p3' })).kind).toBe('none')
+    expect(nextNudge(ri({ lastReadySignature: 'p2' })).kind).toBe('ready')
+  })
+
+  it('respects every other blocker', () => {
+    for (const over of [{ kind: 'setup' as const }, { autoContinue: false }, { stopping: true }, { rateLimited: true }, { pendingInteractions: 1 }, { orchestratorBusy: true }, { plan: rp({ status: 'blocked' }) }, { plan: rp({ status: 'done' }) }, { plan: undefined }]) {
+      expect(nextNudge(ri(over)).kind, JSON.stringify(over)).toBe('none')
+    }
+  })
+
+  it('counts against the limit: at the limit it sends nothing and reports the limit once the set is new', () => {
+    const d = nextNudge(ri({ plan: rp({ autoContinues: 40 }) }))
+    expect(d).toEqual({ kind: 'none', limitReached: true })
+    expect(nextNudge(ri({ plan: rp({ autoContinues: 40 }), lastReadySignature: 'p2,p3' }))).toEqual({ kind: 'none' })
+  })
+
+  it('with no report running the continue decision keeps precedence', () => {
+    expect(nextNudge(ri({ liveReports: 0 })).kind).toBe('continue')
+    expect(nextNudge(ri({ liveReports: 0, plan: undefined, turnsWithoutPlan: 1 })).kind).toBe('set-plan')
+  })
+})
+
+describe('ContinuationDriver: ready nudge', () => {
+  let current: RunPlan | undefined
+  let live: number
+  let host: ContinuationHost & { nudges: [string, string, string][]; settled: number[]; told: string[] }
+  const readyPlan = (): RunPlan => mk([step('p1', 'Design', 'done'), step('p2', 'API', 'pending', { staff: { role: 'implementer' } }), step('p3', 'UI', 'pending', { staff: { role: 'implementer' } })])
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    current = readyPlan()
+    live = 1
+    const nudges: [string, string, string][] = []
+    const settled: number[] = []
+    const told: string[] = []
+    host = {
+      kind: 'work',
+      autoContinue: true,
+      maxAutoContinues: 2,
+      delayMs: 1500,
+      getPlan: () => current,
+      updatePlan: async (p: RunPlan) => {
+        current = p
+      },
+      liveReports: () => live,
+      slots: () => ({ free: 7, limit: 8 }),
+      ownRoles: () => ['lead'],
+      pendingInteractions: () => 0,
+      rateLimited: () => false,
+      stopping: () => false,
+      orchestratorBusy: () => false,
+      nudge: (t, a, s) => nudges.push([t, a, s]),
+      log: () => undefined,
+      tellUser: (t) => told.push(t),
+      onSettled: (g) => settled.push(g),
+      nudges,
+      settled,
+      told
+    }
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('nudges once per ready set while a report runs, counts it, and leaves the turn unsettled', async () => {
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(1)
+    expect(host.nudges[0][0]).toContain('Ready now: p2 (implementer), p3 (implementer). 7 of 8 agent slots are free.')
+    expect(host.nudges[0][1]).toBe('Starting ready steps: p2,p3')
+    expect(current?.autoContinues).toBe(1)
+    expect(d.isSettledForTurn(1)).toBe(false)
+    expect(host.settled).toEqual([])
+    d.turnEnded(2)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(1)
+    expect(current?.autoContinues).toBe(1)
+    expect(host.settled).toEqual([2])
+    expect(d.isSettledForTurn(2)).toBe(true)
+  })
+
+  it('nudges again for a different ready set, up to the limit, then tells the user once', async () => {
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    current = { ...current!, steps: [...current!.steps, step('p4', 'Docs', 'pending', { staff: { role: 'researcher' } })] }
+    d.turnEnded(2)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(2)
+    expect(current?.autoContinues).toBe(2)
+    current = { ...current!, steps: [...current!.steps, step('p5', 'More', 'pending', { staff: { role: 'researcher' } })] }
+    d.turnEnded(3)
+    await vi.advanceTimersByTimeAsync(1600)
+    d.turnEnded(4)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(2)
+    expect(host.told).toEqual([limitReachedText(2)])
+  })
+
+  it('does not fire without a slots member', async () => {
+    const d = new ContinuationDriver({ ...host, slots: undefined })
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(0)
+  })
+
+  it('with no report running the continue nudge applies instead', async () => {
+    live = 0
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges[0][0]).toContain('Harness: plan 1 of 3 done.')
   })
 })

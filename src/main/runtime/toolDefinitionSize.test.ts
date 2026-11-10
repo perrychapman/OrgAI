@@ -12,11 +12,20 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  *   single assistant   Claude 15,420 ->  9,197   Codex 16,335 ->  9,754
  * Each bound is about 5% above the figure after the diet. Raising a bound is a deliberate decision: say in the
  * change why the new tool text earns its place on every request, and update the figures here.
+ *
+ * Plan graph (set_plan / update_plan take after, paths and staff {role, tier enum, effort enum}; orchestration-efficiency
+ * 4.2): +1,060 chars on both adapters, because staff is declared in full in three places (set_plan steps, update_plan
+ * steps and add) so the model sees the allowed tiers and efforts and every provider's schema conversion keeps them.
+ *   team root          Claude 16,699 -> 17,759   Codex 18,581 -> 19,641
+ *   single assistant   Claude  9,197 -> 10,257   Codex  9,754 -> 10,814
+ *   writing report     unchanged (no plan tools)
+ * Bounds rose to the next 50 above the new figure (about 0.3% to 1.5% headroom). The fields earn their place because
+ * the ready lines and the ready nudge need them to let the root start independent steps together.
  */
 const BUDGET: Record<string, { claude: number; codex: number }> = {
-  orchestrator: { claude: 17_450, codex: 19_425 },
+  orchestrator: { claude: 17_800, codex: 19_700 },
   implementer: { claude: 6_200, codex: 6_725 },
-  single: { claude: 9_575, codex: 10_150 }
+  single: { claude: 10_300, codex: 10_850 }
 }
 
 const CASES: { label: string; slug: MeasureSlug; opts: { isolation: boolean; arch: boolean } }[] = [

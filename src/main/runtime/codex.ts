@@ -46,7 +46,7 @@ import {
   type SpawnRequest
 } from './codexAgents'
 import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
-import { ContinuationDriver, stepActivity } from './continuation'
+import { ContinuationDriver, agentSlots, rootRoleNames, stepActivity } from './continuation'
 import { obligationsFor } from './delegation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
@@ -378,6 +378,10 @@ class CodexSession implements RuntimeSession {
       },
       notify: (text) => this.notifyOrchestrator(text)
     })
+    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size
+    // The plan tools count free agent slots from ctx.liveReports; only this adapter knows its live threads, bridged ones included.
+    // A child or fake context without it reads as zero live reports.
+    ctx.liveReports = live
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
       projectKind: projectKindOf(ctx.project),
@@ -392,7 +396,9 @@ class CodexSession implements RuntimeSession {
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
       // Bridged reports are not threads of this session but still count as working reports.
-      liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size,
+      liveReports: live,
+      slots: () => agentSlots(ctx, live()),
+      ownRoles: () => rootRoleNames(ctx.roles),
       lastReportEndedAt: () => {
         let last = this.lastBridgedEndedAt
         for (const a of this.agents.values()) if (a.id !== ROOT_AGENT_ID && a.endedAt !== undefined && (last === undefined || a.endedAt > last)) last = a.endedAt

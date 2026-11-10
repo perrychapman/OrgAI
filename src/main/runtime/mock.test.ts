@@ -223,6 +223,15 @@ describe('mock adapter harness transcript rows', () => {
     for (let i = 0; i < 300 && !cond(); i++) await new Promise((r) => setTimeout(r, 10))
   }
 
+  it('wires ctx.liveReports so the plan tools can count free agent slots', async () => {
+    const ctx = fakeCtx({ autoContinue: false })
+    const session = (await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'text', text: 'Hi.' }] } }).start(ctx)) as MockSession
+    expect(typeof ctx.liveReports).toBe('function')
+    expect(ctx.liveReports?.()).toBe(0)
+    await session.stop()
+    await session.finished
+  })
+
   it('records a nudge as a harness row with the summary as text and the full instruction as detail', async () => {
     const ctx = fakeCtx({ autoContinue: true, continuationDelayMs: 1 })
     const session = (await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'text', text: 'First part done.' }] } }).start(ctx)) as MockSession

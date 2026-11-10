@@ -514,6 +514,11 @@ export interface RuntimeContext {
   staffingGoal?: StaffingGoal
   /** Cards waiting for the user: pending permissions, proposals, questions and merge reviews. */
   pendingInteractions(): number
+  /**
+   * Reports running now (subagent threads and bridged reports of this session, any depth). The plan tools subtract it
+   * from the project's concurrency limit to say how many agent slots are free. Missing = none running.
+   */
+  liveReports?(): number
   /** Work runs: keep the orchestrator going until the plan is complete (project.autoContinue). Default true. */
   autoContinue?: boolean
   /** Automatic continues allowed in this run (project.maxAutoContinues). */
