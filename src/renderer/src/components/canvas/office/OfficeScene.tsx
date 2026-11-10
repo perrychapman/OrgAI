@@ -98,7 +98,17 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const revealId = useCallback((id: string) => latest.current.reveal(id), [])
   /** Select, then pan to and ring the person (Find a person; the strip's Show buttons use this too). One announcement: "Showing ...". */
   // Someone still waiting outside to walk in is not drawn yet: select them (the inspector opens) but do not pan, ring or announce a spot they are not at.
-  const showPerson = useCallback((id: string) => { latest.current.onSelect(id); if (!latest.current.queued.has(id)) latest.current.show(id) }, [])
+  const showPerson = useCallback((id: string) => {
+    latest.current.onSelect(id)
+    if (!latest.current.queued.has(id)) { latest.current.show(id); return }
+    const agent = latest.current.byId.get(id)
+    if (agent) latest.current.announce?.(`${agent.name} is arriving`)
+  }, [])
+  /** An off-screen chip unmounts once its person is on screen: hand keyboard focus to that person instead of the page. */
+  const showFromChip = useCallback((id: string) => {
+    showPerson(id)
+    requestAnimationFrame(() => spriteRefs.current.get(id)?.button?.focus({ preventScroll: true }))
+  }, [showPerson])
 
   useImperativeHandle(controlRef, () => ({ zoomIn: camera.zoomIn, zoomOut: camera.zoomOut, fit: camera.fit }), [camera.zoomIn, camera.zoomOut, camera.fit])
 
@@ -131,7 +141,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
         size="sm" testId="office-pause" pressed={paused} onClick={() => setPaused(value => !value)}
         inert={reduced} title={reduced ? 'Motion is already off: Reduce motion is on in Settings' : undefined}
       >Pause motion</Button>}
-      <OfficeOffscreen stage={stage} items={cueItems} positions={positionsNow} area={area} zoom={zoom} client={client} onShow={showPerson} />
+      <OfficeOffscreen stage={stage} items={cueItems} positions={positionsNow} area={area} zoom={zoom} client={client} onShow={showFromChip} />
     </div>
     <div
       className="office-stage" data-testid="office-stage" data-width={building.bounds.width} data-height={building.bounds.height}

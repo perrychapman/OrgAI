@@ -165,6 +165,7 @@ export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDel
     if (mode !== 'live' || document.hidden || !scheduler.current.active.length) return
     let handle = 0
     let timer = 0
+    let wasMoving = false
     const frame = (): void => {
       if (document.hidden) { scheduler.current = baseline(messages); return }
       const now = Date.now()
@@ -173,7 +174,9 @@ export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDel
       if (!live.current.motionOff) admitJourneys(now)
       const moving = !live.current.motionOff && [...journeys.current.values()].some(journey => now < journey.ends)
       const changed = before.active !== scheduler.current.active.length || before.queued !== scheduler.current.queued.length || before.walks !== journeys.current.size
-      if (moving || changed) setTick(now)
+      // One more render on the frame a walk ends, so the sender is drawn seated again (not frozen mid-step).
+      if (moving || changed || wasMoving) setTick(now)
+      wasMoving = moving
       if (moving) { handle = requestAnimationFrame(frame); return }
       if (!scheduler.current.active.length) return
       const next = Math.min(...scheduler.current.active.map(deliveryEnd))

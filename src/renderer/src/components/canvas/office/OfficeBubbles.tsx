@@ -76,7 +76,8 @@ export function useDeliveryBoundaries(deliveries: readonly Delivery[], motionOff
   let next = Infinity
   for (const delivery of deliveries) {
     const window = bubbleWindow(delivery)
-    for (const time of [delivery.started, delivery.started + TALK_MARK_TICKS * stepMs, window.start, window.end, deliveryEnd(delivery)]) if (time > now && time < next) next = time
+    const walkEnd = delivery.durationMs !== undefined ? delivery.started + delivery.durationMs : Infinity
+    for (const time of [delivery.started, delivery.started + TALK_MARK_TICKS * stepMs, window.start, window.end, walkEnd, deliveryEnd(delivery)]) if (time > now && time < next) next = time
   }
   useEffect(() => {
     // Also with motion on: the delivery loop only renders per frame while someone walks, not during bubble-only phases.
