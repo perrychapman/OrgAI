@@ -13,9 +13,15 @@
 //   12  background report hand-back: the model writes run_in_background true, then makes one Bash call of its own.
 //   13  SubagentStart hookSpecificOutput.additionalContext: does the subagent see the marker; is it a spawn rewrite?
 //   14  PostToolUse additionalContext on a BACKGROUND Agent call (async_launched): does the root see the line?
+// Checks 15-16 (context pack from the lead's Read, src/main/runtime/contextPack.ts completeReadText) are never in the
+// default set; each is ONE live haiku session in permission mode 'default' in its own temp project. completeReadText is
+// imported from the TypeScript source through jiti (the '@shared' alias as in vitest.config.ts):
+//   15  Read PostToolUse payload: whole, offset/limit, a 3000-line file Read paginates, and a subagent's Read.
+//   16  a Read denied by a project deny rule (settingSources ['project'], as claudeSettingSources gives) and a Read of
+//       a missing file: which hooks fire, what tool_response holds, does completeReadText reject it.
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync, realpathSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -264,15 +270,19 @@ const liveEnv = () => {
 }
 const short = (v, n = 200) => { const s = typeof v === 'string' ? v : JSON.stringify(v); return s !== undefined && s.length > n ? `${s.slice(0, n)}...` : s }
 const AUTO_HOOKS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification', 'Stop', 'SubagentStart', 'SubagentStop', 'TaskCreated', 'TaskCompleted', 'PermissionRequest', 'PermissionDenied']
-async function runAuto(label, prompt, agents, hookOut = {}) {
+// `extra` overrides query options (cwd, settingSources, permissionMode); `closeOnResult` ends the input at the first
+// result (no background work to wait for). Every hook input is also kept whole in `raw`.
+async function runAuto(label, prompt, agents, hookOut = {}, { closeOnResult = false, ...extra } = {}) {
   sessions++
   console.log(`--- ${label}`)
   const t0 = Date.now(); const stamp = () => Date.now() - t0
   const log = []; const add = (kind, data) => { const e = { t: stamp(), kind, ...data }; log.push(e); console.log(JSON.stringify(e)) }
   const debugFile = join(dir, `debug-${label.split(' ')[0]}.log`)
-  let canUse = 0, reportBack = false, closeInput, error
+  let canUse = 0, reportBack = closeOnResult, closeInput, error
+  const raw = []
   const closed = new Promise((r) => { closeInput = r })
   const hooks = Object.fromEntries(AUTO_HOOKS.map((name) => [name, [{ hooks: [async (i) => {
+    raw.push({ t: stamp(), name, input: i })
     const rest = Object.fromEntries(Object.entries(i).filter(([k]) => !['session_id', 'transcript_path', 'cwd', 'hook_event_name', 'permission_mode', 'agent_transcript_path'].includes(k)))
     add(`hook:${name}`, Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, short(v, /last_assistant_message|tool_response/.test(k) ? 500 : 200)])))
     const out = hookOut[name]?.(i)
@@ -287,7 +297,7 @@ async function runAuto(label, prompt, agents, hookOut = {}) {
   const timer = setTimeout(() => { add('timeout', {}); abortController.abort() }, 150_000)
   const results = []
   try {
-    for await (const msg of query({ prompt: input, options: { cwd: dir, settingSources: [], env: liveEnv(), debugFile, abortController, maxTurns: 12, permissionMode: 'auto', model: 'haiku', agent: 'lead', agents, hooks,
+    for await (const msg of query({ prompt: input, options: { cwd: dir, settingSources: [], env: liveEnv(), debugFile, abortController, maxTurns: 12, permissionMode: 'auto', model: 'haiku', agent: 'lead', agents, hooks, ...extra,
       canUseTool: async (tool, toolInput, o) => { canUse++; add('canUseTool', { tool, agent: o?.agentID }); return { behavior: 'allow', updatedInput: toolInput } } } })) {
       const who = msg.parent_tool_use_id ? 'child' : 'root'
       if (msg.type === 'system' && msg.subtype === 'init') add('init', { model: msg.model, permissionMode: msg.permissionMode })
@@ -313,7 +323,7 @@ async function runAuto(label, prompt, agents, hookOut = {}) {
   console.log(`debug log: ${lines.length} lines; classifier lines:`); for (const l of classifierLines) console.log('  ', l)
   // total_cost_usd is cumulative per session (each result repeats the running total); the classifier is not in it.
   const cost = Math.max(0, ...results.map((r) => r.total_cost_usd ?? 0))
-  return { log, canUse, started, classifierLines, cost, error, debugLines: lines.length }
+  return { log, raw, canUse, started, classifierLines, cost, error, debugLines: lines.length }
 }
 const firstOf = (r, kind, pred = () => true) => r.log.find((e) => e.kind === kind && pred(e))
 const allOf = (r, kind, pred = () => true) => r.log.filter((e) => e.kind === kind && pred(e))
@@ -362,6 +372,66 @@ if (want.has('14')) {
   const stop = firstOf(r, 'hook:SubagentStop'); const note = firstOf(r, 'system:task_notification')
   const elsewhere = r.log.filter((e) => has(e, 'teal-kite-3') && !['hook-returned', 'assistant:root', 'result'].includes(e.kind)).map((e) => `${e.kind}@${e.t}`)
   verdict('14 PostToolUse additionalContext on a background Agent call', r.error || !post ? 'INCONCLUSIVE' : said.length ? 'PASS (root saw it)' : 'FAIL', `root Agent PostToolUse at ${post?.t}ms, tool_response=${short(post?.tool_response, 200)}; worker SubagentStop at ${stop?.t}ms, task_notification at ${note?.t}ms; root assistant text with the marker at ${JSON.stringify(said)}ms; marker also seen in ${JSON.stringify(elsewhere)}; ${classifierSummary(r)}; cost=${r.cost}; error=${r.error ?? 'none'}`)
+}
+// ---------- checks 15-16: the Read hook payload the context pack is built from ----------
+const loadCompleteReadText = async () => {
+  try {
+    const { createJiti } = await import('jiti')
+    const root = new URL('..', import.meta.url).pathname
+    const jiti = createJiti(root, { alias: { '@shared': join(root, 'src/shared') } })
+    return { fn: (await jiti.import(join(root, 'src/main/runtime/contextPack.ts'))).completeReadText, how: 'imported (jiti)' }
+  } catch (e) {
+    // Fallback: the rule restated (keep equal to contextPack.ts).
+    const fn = (r) => { if (!r || typeof r !== 'object' || r.type !== 'text' || !r.file || typeof r.file !== 'object') return undefined; const f = r.file; if (typeof f.content !== 'string' || typeof f.numLines !== 'number' || typeof f.totalLines !== 'number') return undefined; if (f.startLine !== 1 || f.numLines !== f.totalLines || (f.truncatedByTokenCap !== undefined && f.truncatedByTokenCap !== false)) return undefined; return f.content }
+    return { fn, how: `restated inline (import failed: ${e.message})` }
+  }
+}
+// Field names and types of a tool_response; for a string `content` its length, first 80 characters and whether its
+// lines carry `cat -n` style number prefixes.
+const shape = (v, depth = 0) => {
+  if (v === null || typeof v !== 'object') return typeof v
+  if (Array.isArray(v)) return `array(${v.length})${v.length ? `[${shape(v[0], depth + 1)}]` : ''}`
+  return `{ ${Object.entries(v).map(([k, x]) => `${k}: ${k === 'content' && typeof x === 'string' ? `string(len ${x.length}, numbered ${/^\s*\d+(\t|→)/m.test(x)}, first80 ${JSON.stringify(x.slice(0, 80))})` : typeof x === 'number' || typeof x === 'boolean' ? `${typeof x} ${x}` : typeof x === 'string' ? `string ${JSON.stringify(x.slice(0, 120))}` : shape(x, depth + 1)}`).join(', ')} }`
+}
+const readHooks = (r) => r.raw.filter((h) => h.input.tool_name === 'Read' || h.name === 'PermissionDenied')
+const showReads = (r, crt, files = {}) => readHooks(r).map((h) => {
+  const i = h.input
+  const resp = i.tool_response
+  const verdictText = h.name === 'PostToolUse' ? (() => { const t = crt(resp); return t === undefined ? 'rejected' : `accepted (len ${t.length}, equals the file on disk: ${files[i.tool_input?.file_path] === undefined ? 'n/a' : t === files[i.tool_input.file_path]})` })() : '-'
+  return `${h.name}@${h.t} agent_id=${i.agent_id ?? 'none'} agent_type=${i.agent_type ?? 'none'} input=${JSON.stringify(i.tool_input)}${'tool_response' in i ? ` tool_response=${shape(resp)}` : ''}${'error' in i ? ` error=${short(i.error, 300)}` : ''}${'reason' in i ? ` reason=${short(i.reason, 300)}` : ''} completeReadText=${verdictText}`
+})
+if (want.has('15')) {
+  const { fn: crt, how } = await loadCompleteReadText()
+  const proj = join(dir, 'p15'); mkdirSync(proj)
+  const small = 'alpha\nbeta\ngamma\ndelta\nepsilon\n'
+  const other = 'one\ntwo\nthree\n'
+  const big = Array.from({ length: 3000 }, (_, k) => `line ${k + 1}`).join('\n') + '\n'
+  const files = { [join(proj, 'small.txt')]: small, [join(proj, 'other.txt')]: other, [join(proj, 'big.txt')]: big }
+  for (const [f, t] of Object.entries(files)) writeFileSync(f, t)
+  const agents = {
+    lead: { description: 'Lead', prompt: 'You are the lead. Follow the user\'s steps exactly, in order, one tool call per step.', tools: ['Read', 'Agent'], model: 'haiku' },
+    worker: { description: 'Reads one file', prompt: 'Read the file you are given with the Read tool (no offset, no limit), then reply with its first word.', tools: ['Read'], model: 'haiku' }
+  }
+  const p = `Do these steps in order, one tool call each. (1) Read ${join(proj, 'small.txt')} with the Read tool, no offset and no limit. (2) Read ${join(proj, 'small.txt')} again with offset 2 and limit 2. (3) Read ${join(proj, 'big.txt')} with no offset and no limit. (4) Spawn the agent "worker" with the Agent tool: subagent_type "worker", run_in_background false, prompt "Read ${join(proj, 'other.txt')}". Then reply "done".`
+  const r = await runAuto('15 Read PostToolUse payload', p, agents, {}, { cwd: proj, permissionMode: 'default', closeOnResult: true })
+  const lines = showReads(r, crt, files)
+  for (const l of lines) console.log('  READ', l)
+  const posts = readHooks(r).filter((h) => h.name === 'PostToolUse')
+  verdict('15 Read PostToolUse payload', r.error || posts.length < 3 ? 'INCONCLUSIVE' : 'OBSERVED', `completeReadText ${how}; Read hooks: ${lines.join(' || ')}; cost=${r.cost}; error=${r.error ?? 'none'}`)
+}
+if (want.has('16')) {
+  const { fn: crt, how } = await loadCompleteReadText()
+  const proj = join(dir, 'p16'); mkdirSync(join(proj, '.claude'), { recursive: true })
+  writeFileSync(join(proj, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(./secret.env)'] } }))
+  const files = { [join(proj, 'secret.env')]: 'TOKEN=not-a-real-secret\n', [join(proj, 'notes.md')]: '# Notes\nhello\n' }
+  for (const [f, t] of Object.entries(files)) writeFileSync(f, t)
+  const agents = { lead: { description: 'Lead', prompt: 'You are the lead. Follow the user\'s steps exactly, in order, one tool call per step, even when a step fails.', tools: ['Read'], model: 'haiku' } }
+  const p = `Do these steps in order, one Read tool call each, and continue even if a step fails. (1) Read ${join(proj, 'secret.env')}. (2) Read ${join(proj, 'notes.md')}. (3) Read ${join(proj, 'missing.txt')}. Then reply "done".`
+  const r = await runAuto('16 denied and failed Read', p, agents, {}, { cwd: proj, permissionMode: 'default', settingSources: ['project'], closeOnResult: true })
+  const lines = showReads(r, crt, files)
+  for (const l of lines) console.log('  READ', l)
+  const results16 = allOf(r, 'user:root').map((e) => short(e.content, 220))
+  verdict('16 denied and failed Read', r.error || !lines.length ? 'INCONCLUSIVE' : 'OBSERVED', `completeReadText ${how}; Read hooks: ${lines.join(' || ')}; root tool_results: ${results16.join(' || ')}; canUseTool calls=${r.canUse}; cost=${r.cost}; error=${r.error ?? 'none'}`)
 }
 console.log(`\n=== SUMMARY (${sessions} model sessions)`)
 for (const r of results) console.log(`${r.v.padEnd(12)} ${r.id}`)
