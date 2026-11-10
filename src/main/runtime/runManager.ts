@@ -77,6 +77,10 @@ import type {
   RunSummary,
   SwitchRunModelInput,
   SwitchRunModelResult,
+  SetRunPermissionModeInput,
+  SetRunPermissionModeResult,
+  Effort,
+  PermissionMode,
   RunSurface,
   SkillUseCount,
   UserQuestion
@@ -942,6 +946,19 @@ export interface StartInput {
   overrides?: RunOverrides
   /** The caller holds the 'configure' scope: widening overrides apply (runOverrides.ts effectiveRunProject). */
   allowWidening?: boolean
+  /**
+   * The desktop user's start-time choices (StartRunInput.modelSelection / effort / permissionMode). Only the desktop
+   * runs:start handler sets it; RunManager validates each against the catalog, effortOptionsFor and
+   * runPermissionModeChoices and refuses (throws) before a run exists.
+   */
+  userChoice?: StartUserChoice
+}
+
+/** StartInput.userChoice. */
+export interface StartUserChoice {
+  modelSelection?: { model: string; connection: ConnectionId }
+  effort?: Effort
+  permissionMode?: PermissionMode
 }
 
 /** Internal ContinueRunOptions key: the automatic rate-limit resume (keeps the exec fields like `exec`). */
@@ -955,6 +972,8 @@ export interface ContinueRunOptions {
   exec?: boolean
   /** The caller holds the 'configure' scope. */
   allowWidening?: boolean
+  /** The desktop surface (or RunManager's own resume timer): a widening per-run permission mode the user chose carries. */
+  desktop?: true
   /** Set only by RunManager's own auto-resume. */
   [AUTO_RESUME]?: true
 }
@@ -4694,8 +4713,13 @@ export class RunManager {
    * Continue a paused run now, with the harness's resume message. A manual resume (Desktop or RPC) holds its own
    * resume lease across the async setup.prepare gap; the timer path takes the lease itself and calls resumeUnleased.
    */
-  resumeNow(runId: string): Promise<RunSummary> {
+  resumeNow(runId: string, _opts: { desktop?: true } = {}): Promise<RunSummary> {
     return this.withResumeLease(() => this.resumeUnleased(runId))
+  }
+
+  /** runs:setPermissionMode (desktop only). Contract: SetRunPermissionModeInput / SetRunPermissionModeResult. */
+  async setPermissionMode(_input: SetRunPermissionModeInput): Promise<SetRunPermissionModeResult> {
+    throw new Error('Not implemented yet')
   }
 
   /**
