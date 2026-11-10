@@ -1,5 +1,6 @@
-import type { PlanStep, ProjectKind, RunKind, RunPlan, RunSummary } from '@shared/types'
+import type { PlanStep, Project, ProjectKind, Role, RunKind, RunPlan, RunSummary } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
+import { effectiveSubagentLimits } from '@shared/defaults'
 
 /**
  * Unattended execution, vendor-neutral. The orchestrator keeps a plan with the harness's plan tools
@@ -51,6 +52,158 @@ export function finishedCount(plan: RunPlan): number {
   return plan.steps.length - remainingSteps(plan).length
 }
 
+/** A path as compared for overlap: '/'-separated, no leading './', no repeated or trailing slashes. '.' = the whole project. */
+function normalizePlanPath(p: string): string {
+  const parts = p.trim().replace(/\\/g, '/').split('/').filter((x) => x !== '' && x !== '.')
+  return parts.length ? parts.join('/') : '.'
+}
+
+/** The path both name when they overlap (equal, or one a folder prefix of the other: the folder), else undefined. */
+function overlapOf(a: string, b: string): string | undefined {
+  const x = normalizePlanPath(a)
+  const y = normalizePlanPath(b)
+  if (x === y) return x
+  if (x === '.') return y === '.' ? '.' : x
+  if (y === '.') return y
+  if (y.startsWith(`${x}/`)) return x
+  if (x.startsWith(`${y}/`)) return y
+  return undefined
+}
+
+/** Indexes of the steps each step transitively waits for (follows `after`; ids that name no step are ignored). */
+function ancestorSets(plan: RunPlan): Set<number>[] {
+  const index = new Map<string, number>()
+  plan.steps.forEach((s, i) => {
+    if (!index.has(s.id)) index.set(s.id, i)
+  })
+  const direct = plan.steps.map((s) => (s.after ?? []).map((id) => index.get(id)).filter((j): j is number => j !== undefined))
+  return plan.steps.map((_, i) => {
+    const seen = new Set<number>()
+    const stack = [...direct[i]]
+    while (stack.length) {
+      const j = stack.pop() as number
+      if (seen.has(j) || j === i) continue
+      seen.add(j)
+      stack.push(...direct[j])
+    }
+    return seen
+  })
+}
+
+export interface PathOverlap {
+  /** The step earlier in plan order, which goes first. */
+  first: string
+  /** The later step, which waits for `first`. */
+  second: string
+  /** The path both name (the folder when one is inside the other). */
+  path: string
+}
+
+const finished = (s: PlanStep): boolean => s.status === 'done' || s.status === 'skipped'
+
+/**
+ * Pairs of unfinished steps that could run together (neither waits for the other, directly or through other steps) and
+ * whose `paths` overlap: equal after normalising separators and trailing slashes, or one a folder prefix of the other.
+ * The later step in plan order is treated as ordered after the earlier one (readySteps). Pure.
+ */
+export function pathOverlaps(plan: RunPlan): PathOverlap[] {
+  const anc = ancestorSets(plan)
+  const out: PathOverlap[] = []
+  for (let j = 1; j < plan.steps.length; j++) {
+    const b = plan.steps[j]
+    if (finished(b) || !b.paths?.length) continue
+    for (let i = 0; i < j; i++) {
+      const a = plan.steps[i]
+      if (finished(a) || !a.paths?.length || anc[j].has(i) || anc[i].has(j)) continue
+      const hit = firstOverlap(a.paths, b.paths)
+      if (hit !== undefined) out.push({ first: a.id, second: b.id, path: hit })
+    }
+  }
+  return out
+}
+
+function firstOverlap(as: readonly string[], bs: readonly string[]): string | undefined {
+  for (const x of as) for (const y of bs) {
+    const hit = overlapOf(x, y)
+    if (hit !== undefined) return hit
+  }
+  return undefined
+}
+
+/**
+ * Steps that can start now: `pending` with every `after` step done or skipped (no `after` = ready). Two steps that could
+ * run together and share a path are ordered by plan order: the later one is not ready until the earlier is done or
+ * skipped. Pure.
+ */
+export function readySteps(plan: RunPlan): PlanStep[] {
+  const done = new Set(plan.steps.filter(finished).map((s) => s.id))
+  const byId = new Map(plan.steps.map((s) => [s.id, s]))
+  const waitingOnPath = new Map<string, Set<string>>()
+  for (const o of pathOverlaps(plan)) {
+    const set = waitingOnPath.get(o.second) ?? new Set<string>()
+    set.add(o.first)
+    waitingOnPath.set(o.second, set)
+  }
+  return plan.steps.filter((s) => {
+    if (s.status !== 'pending') return false
+    if ((s.after ?? []).some((id) => byId.has(id) && !done.has(id))) return false
+    for (const first of waitingOnPath.get(s.id) ?? []) if (!done.has(first)) return false
+    return true
+  })
+}
+
+/** Ready steps that name a report (`staff.role` set) other than the caller's own role (`ownRoles`: its slug and name). */
+export function readyReports(plan: RunPlan, ownRoles: readonly string[] = []): PlanStep[] {
+  const own = ownRoles.map((r) => r.trim().toLowerCase()).filter(Boolean)
+  return readySteps(plan).filter((s) => {
+    const role = s.staff?.role.trim().toLowerCase()
+    return !!role && !own.includes(role)
+  })
+}
+
+export interface AgentSlots {
+  free: number
+  limit: number
+}
+
+/** Free agent slots: the project's concurrency limit (effectiveSubagentLimits) minus the reports running now. */
+export function agentSlots(ctx: { project: Project; roles: Role[] }, liveReports: number): AgentSlots {
+  const limit = effectiveSubagentLimits({ ...ctx.project, roles: ctx.roles }).concurrency
+  return { free: Math.max(0, limit - Math.max(0, liveReports)), limit }
+}
+
+/** The orchestrator's own role as plan steps may name it: slug and name (the root role). */
+export function rootRoleNames(roles: readonly Role[]): string[] {
+  const root = roles.find((r) => r.reportsTo === null) ?? roles[0]
+  return root ? [root.slug, root.name] : []
+}
+
+/**
+ * What can start now, for a plan tool result (`nudge` false) or the idle nudge (true). '' when nothing is ready.
+ * One step with a free slot is just named; several give the free slots and how to start them.
+ */
+export function readyLine(ready: readonly PlanStep[], slots: AgentSlots, nudge = false): string {
+  if (!ready.length) return ''
+  const list = ready.map((s) => `${s.id} (${s.staff?.role ?? 'lead'})`).join(', ')
+  const head = `Ready now: ${list}.`
+  const count = `${slots.free} of ${slots.limit} agent slots are free`
+  if (slots.free <= 0) return `${head} ${count}; start ${ready.length === 1 ? 'it' : 'them'} when a report ends.`
+  const fit = ready.length > slots.free
+  const how = 'in one message: calls in one message run together.'
+  if (nudge) {
+    const names = fit ? `the first ${slots.free}` : ready.length === 1 ? 'it' : 'them'
+    return `${head} ${count}${fit ? `, so only ${slots.free} fit now` : ''}. Start ${names} in one message (calls in one message run together), or call update_plan if they should wait.`
+  }
+  if (fit) return `${head} ${count}, so only ${slots.free} fit now. Start those ${how}`
+  if (ready.length === 1) return head
+  return `${head} ${count}. Start them ${how}`
+}
+
+/** The signature of a ready set: sorted step ids. */
+export function readySignature(ready: readonly PlanStep[]): string {
+  return ready.map((s) => s.id).sort().join(',')
+}
+
 /** The step being worked on now, or the next one to start. */
 export function nextStep(plan: RunPlan): PlanStep | undefined {
   return plan.steps.find((s) => s.status === 'in_progress') ?? plan.steps.find((s) => s.status === 'pending') ?? remainingSteps(plan)[0]
@@ -79,7 +232,7 @@ export function describePlanChange(previous: RunPlan | undefined, next: RunPlan)
     if (next.status === 'blocked') return `Plan blocked: ${next.blockedReason ?? 'no reason given'}`
     return `Plan active again: ${progress}.`
   }
-  const key = (p: RunPlan): string => JSON.stringify([p.goal, p.steps.map((s) => [s.id, s.title, s.status, s.note ?? '', s.owner ?? ''])])
+  const key = (p: RunPlan): string => JSON.stringify([p.goal, p.steps.map((s) => [s.id, s.title, s.status, s.note ?? '', s.owner ?? '', s.after ?? [], s.paths ?? [], s.staff ?? null])])
   if (key(previous) === key(next)) return null
   return `Plan updated: ${progress}.`
 }
@@ -150,10 +303,18 @@ export interface NudgeInput {
   orchestratorBusy?: boolean
   /** The run's project kind; wording of the nudges only. Missing = 'code'. */
   projectKind?: ProjectKind
+  /** Agent slots free now and the project's limit. Missing = the `ready` nudge never fires. */
+  slots?: AgentSlots
+  /** The orchestrator's own role (slug and name): ready steps naming it are its own work, not reports. */
+  ownRoles?: readonly string[]
+  /** readySignature of the last ready set a `ready` nudge was sent for. */
+  lastReadySignature?: string
 }
 
 export interface NudgeDecision {
-  kind: 'continue' | 'set-plan' | 'none'
+  kind: 'continue' | 'set-plan' | 'ready' | 'none'
+  /** Set with a `ready` nudge: the signature of the ready set it names. */
+  readySignature?: string
   /** The full instruction for the orchestrator. */
   text?: string
   /** One human line for the transcript (set with `text`). */
@@ -174,9 +335,34 @@ export function nudgeBlocked(input: NudgeInput): string | null {
   return null
 }
 
+/**
+ * The `ready` nudge (decision D7), the one that may fire while reports run: ready steps that name a report, a free slot
+ * and a ready set not yet nudged for. Counts against maxAutoContinues like a continue nudge.
+ */
+function readyNudge(input: NudgeInput): NudgeDecision {
+  const { plan, slots } = input
+  if (!plan || plan.status !== 'active' || !slots || slots.free < 1) return { kind: 'none' }
+  const ready = readyReports(plan, input.ownRoles)
+  if (!ready.length) return { kind: 'none' }
+  const signature = readySignature(ready)
+  if (signature === input.lastReadySignature) return { kind: 'none' }
+  if (plan.autoContinues >= Math.max(0, input.maxAutoContinues)) return { kind: 'none', limitReached: true }
+  return {
+    kind: 'ready',
+    readySignature: signature,
+    text: `Harness: ${readyLine(ready, slots, true)}`,
+    summary: `Continuing: ${ready.map((s) => s.id).join(', ')} ready, asked the orchestrator to start ${ready.length === 1 ? 'it' : 'them'}.`
+  }
+}
+
 /** What the harness should tell the orchestrator after a turn ended. Pure. */
 export function nextNudge(input: NudgeInput): NudgeDecision {
-  if (nudgeBlocked(input)) return { kind: 'none' }
+  const blocked = nudgeBlocked(input)
+  if (blocked === 'reports are running') {
+    // Everything else that blocks a nudge still blocks the ready nudge.
+    return nudgeBlocked({ ...input, liveReports: 0 }) ? { kind: 'none' } : readyNudge(input)
+  }
+  if (blocked) return { kind: 'none' }
   const { plan } = input
   if (!plan) return input.turnsWithoutPlan === 1 ? { kind: 'set-plan', text: SET_PLAN_NUDGE, summary: SET_PLAN_SUMMARY } : { kind: 'none' }
   if (plan.status !== 'active') return { kind: 'none' }
@@ -220,6 +406,12 @@ export interface ContinuationHost {
   getPlan(): RunPlan | undefined
   updatePlan(plan: RunPlan): Promise<void>
   liveReports(): number
+  /**
+   * Agent slots free now and the project's concurrency limit. Optional: without it the `ready` nudge never fires.
+   */
+  slots?(): AgentSlots
+  /** The orchestrator's own role (slug and name), so ready steps naming it are not counted as reports. */
+  ownRoles?(): string[]
   /**
    * Epoch ms at which the newest report (any subagent or report thread of this session, any depth) finished, or
    * undefined when none has. Optional: a host without it keeps the full delay after every turn end.
@@ -266,6 +458,8 @@ export class ContinuationDriver {
   /** The newest generation evaluated without a nudge (or skipped); -1 = none yet, or unsettled by a user message. */
   private lastEvaluatedTurnGen = -1
   private setPlanNudgeSent = false
+  /** Signature of the last ready set a `ready` nudge was sent for. */
+  private lastReadySignature: string | undefined
 
   constructor(private host: ContinuationHost) {}
 
@@ -394,6 +588,9 @@ export class ContinuationDriver {
       stopping: this.held || this.host.stopping(),
       turnsWithoutPlan: this.turnsWithoutPlan,
       orchestratorBusy: this.host.orchestratorBusy(),
+      ...(this.host.slots ? { slots: this.host.slots() } : {}),
+      ...(this.host.ownRoles ? { ownRoles: this.host.ownRoles() } : {}),
+      ...(this.lastReadySignature !== undefined ? { lastReadySignature: this.lastReadySignature } : {}),
       ...(this.host.projectKind ? { projectKind: this.host.projectKind } : {})
     }
     if (!plan && !nudgeBlocked(input)) input.turnsWithoutPlan = ++this.turnsWithoutPlan
@@ -413,6 +610,12 @@ export class ContinuationDriver {
       activity = step ? `Continuing: ${step.title}`.slice(0, 90) : this.host.projectKind === 'engagement' ? 'Continuing: review' : 'Continuing: verification'
       summary = continueSummary(updated)
       this.host.log('info', `Automatic continue ${updated.autoContinues} of ${input.maxAutoContinues}: ${planProgressLabel(updated)} done.`)
+    } else if (decision.kind === 'ready' && plan) {
+      const updated: RunPlan = { ...plan, autoContinues: plan.autoContinues + 1, updatedAt: Date.now() }
+      await this.host.updatePlan(updated)
+      this.lastReadySignature = decision.readySignature
+      activity = `Starting ready steps: ${decision.readySignature}`.slice(0, 90)
+      this.host.log('info', `Automatic continue ${updated.autoContinues} of ${input.maxAutoContinues}: ready steps ${decision.readySignature}.`)
     } else {
       this.host.log('info', 'The orchestrator ended a turn without a plan; asking it to set one.')
     }

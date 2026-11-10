@@ -5,19 +5,20 @@ import type { OutputProduceInput, OutputReadInput, OutputRegisterInput, SlideDec
 import { OUTPUT_ID_RE, OUTPUT_KINDS, OUTPUT_PRODUCE_KINDS, OUTPUT_TOOLS } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
 import { describeAnchor, indentLines, neutraliseUserMarker, splitLines } from '../outputs/revise'
-import type { ConnectionId, EngagementNote, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProjectKind, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
+import type { Effort, ModelTier, ConnectionId, EngagementNote, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProjectKind, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
 import { BRIDGE_BRIEF_MAX_CHARS, BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, ENGAGEMENT_CONTEXT_TOOL_MAX_CHARS, HARNESS_PROJECT_ID, KNOWLEDGE_COMMON_KINDS, KNOWLEDGE_COMMON_RELATIONS, KNOWLEDGE_EDGE_NOTE_MAX_CHARS, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_NAME_MAX_CHARS, KNOWLEDGE_RECALL_QUERY_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_SEARCH_LIMIT, KNOWLEDGE_SUMMARY_MAX_CHARS, KNOWLEDGE_TOOL, KNOWLEDGE_TOOL_ACTIONS, MCP_HARNESS_TOOLS, PERMISSION_MODES, PROJECT_CLIENT_MAX_CHARS, PROJECT_PEEK_BRIEF_CHARS, RUN_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_CONFIG_ACTIONS, SKILL_HARNESS_TOOLS, SKILL_PROPOSAL_MAX_ITEMS, TOOL_CATALOG } from '@shared/types'
 import { knowledgeEdgesOf, knowledgeSearchLimit, knowledgeVocabulary, matchKnowledgeNodes, normalizeKnowledgeKey, resolveKnowledgeNode, searchKnowledge } from '@shared/knowledge'
 import { fenceDatum, fencedBlock, knowledgeField, knowledgeListItem } from '@shared/knowledgeIndex'
 import { skillProposalProblem } from '../skills/assist'
-import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId, projectDocumentPath, projectKindOf } from '@shared/defaults'
+import { PLAN_STEP_AFTER_MAX, cleanPlanStepGraph, MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId, projectDocumentPath, projectKindOf } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { revisedRoleModel, toRoles, type DraftModelContext } from '../ai/draft'
 import { mergeOrgChart, type OrgMergeResult } from '../setup/orgMerge'
 import { sameDefinition, specFromRegistry, validateLibraryEntry, validateSpec, type RegistryChoice } from '../mcp/validate'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RunMessageOutcome, type RunSkill, type RuntimeContext } from './types'
 import { pendingWorktrees } from './worktrees'
-import { PLAN_TOOLS, finishedCount, remainingSteps } from './continuation'
+import { PLAN_TOOLS, agentSlots, finishedCount, pathOverlaps, readyLine, readyReports, remainingSteps } from './continuation'
+import { EFFORTS, MODEL_TIERS, type PlanStepStaff } from '@shared/types'
 import { PERMISSION_HARNESS_TOOLS, type PermissionRuleDecision } from '@shared/types'
 import { isValidRule } from './ruleMatch'
 import { hiddenCharProblem } from '../capabilities/sanitize'
@@ -189,7 +190,7 @@ function defineTool<S extends z.ZodRawShape>(def: HarnessToolDef<S>): HarnessToo
  */
 export const ENGAGEMENT_TOOL_DESCRIPTIONS: Record<string, string> = {
   set_plan:
-    "Create or replace this run's plan: the goal and concrete steps in order (the last step is a review of the deliverables against the brief, then the final report). Step ids are p1..pn; the run keeps going until the plan is complete.",
+    "Create or replace this run's plan: the goal and concrete steps in order (the last step is a review of the deliverables against the brief, then the final report). Step ids are p1..pn; the run keeps going until the plan is complete. Steps may set after (ids), paths, staff {role, tier, effort}.",
   complete_plan: 'Mark the plan complete once every step is done and the deliverables were reviewed. Ends the automatic continuation.',
   propose_architecture:
     'Propose the engagement charter: summary (client, field, phase, goal), stack (platforms and systems involved), modules (workstreams with their folders), conventions (working agreements and deliverable standards), commands (recurring procedures, may be empty) and risks. Blocks until the user approves or asks for changes.'
@@ -828,7 +829,76 @@ export const proposeOrgChange = defineTool({
 const STEP_STATUSES = ['pending', 'in_progress', 'done', 'blocked', 'skipped'] as const
 
 function stepLine(s: PlanStep): string {
-  return `${s.id} ${s.title}${s.owner ? ` [${s.owner}]` : ''}`
+  const graph = [s.after?.length ? `after ${s.after.join(', ')}` : '', s.staff ? [s.staff.role, [s.staff.tier, s.staff.effort].filter(Boolean).join(' / ')].filter(Boolean).join(', ') : ''].filter(Boolean).join('; ')
+  return `${s.id} ${s.title}${s.owner ? ` [${s.owner}]` : ''}${graph ? ` (${graph})` : ''}`
+}
+
+/** PlanStep.staff as the tools declare it (one object shared by set_plan, update_plan.steps and update_plan.add). */
+const staffInput = z.object({
+  role: z.string(),
+  tier: z.enum(MODEL_TIERS as [ModelTier, ...ModelTier[]]).optional(),
+  effort: z.enum(EFFORTS as [Effort, ...Effort[]]).optional()
+})
+
+/** The graph fields a plan tool accepts on a step (after, paths, staff), before cleaning. */
+const graphFields = {
+  after: z.array(z.string()).optional(),
+  paths: z.array(z.string()).optional(),
+  staff: staffInput.optional()
+}
+interface GraphInput {
+  after?: string[]
+  paths?: string[]
+  staff?: z.infer<typeof staffInput>
+}
+
+/** The graph fields as stored (trimmed; an invalid tier or effort is dropped and reported in `notes`). */
+function graphOf(ctx: RuntimeContext, g: GraphInput, id: string, notes: string[]): Pick<PlanStep, 'after' | 'paths' | 'staff'> {
+  const out: Pick<PlanStep, 'after' | 'paths' | 'staff'> = {}
+  if (g.after) out.after = g.after.map((x) => x.trim()).filter(Boolean)
+  if (g.paths) out.paths = g.paths
+  if (g.staff) {
+    // Bind to a real role: the spawn paths compare staff.role with the role's slug exactly, so the slug is what is stored.
+    const wanted = g.staff.role.trim().toLowerCase()
+    const role = ctx.roles.find((r) => r.slug.toLowerCase() === wanted) ?? ctx.roles.find((r) => r.name.trim().toLowerCase() === wanted)
+    if (!role) notes.push(`${id} staff role "${g.staff.role.trim()}" matches no role (roles: ${ctx.roles.map((r) => r.slug).join(', ')}); staff dropped`)
+    else out.staff = { role: role.slug, ...(g.staff.tier ? { tier: g.staff.tier } : {}), ...(g.staff.effort ? { effort: g.staff.effort } : {}) }
+  }
+  return out
+}
+
+/** Clean the plan's graph (ids, cycles, caps) and say which `after` entries were dropped and why. */
+function cleanedSteps(raw: PlanStep[], notes: string[]): PlanStep[] {
+  const ids = new Set(raw.map((s) => s.id))
+  const steps = cleanPlanStepGraph(raw)
+  const dropped: string[] = []
+  raw.forEach((r, i) => {
+    let valid = 0 // distinct ids of other steps seen so far: the cleaner keeps the first PLAN_STEP_AFTER_MAX of them
+    for (const id of new Set(r.after ?? [])) {
+      const real = id !== r.id && ids.has(id)
+      const rank = real ? valid++ : 0
+      if (steps[i].after?.includes(id)) continue
+      dropped.push(`${r.id} after ${id} (${id === r.id ? 'itself' : !real ? 'no such step' : rank >= PLAN_STEP_AFTER_MAX ? `more than ${PLAN_STEP_AFTER_MAX}` : 'cycle'})`)
+    }
+  })
+  if (dropped.length) notes.push(`Dropped: ${dropped.join(', ')}.`)
+  return steps
+}
+
+/** Notes, then what can start now, for the end of a plan tool result. */
+function planGraphNotes(ctx: RuntimeContext, plan: RunPlan, caller: HarnessToolCaller, notes: string[]): string {
+  const out = notes.map((n) => (n.endsWith('.') ? n : `${n}.`))
+  const overlaps = pathOverlaps(plan)
+  if (overlaps.length) {
+    out.push(...overlaps.slice(0, 3).map((o) => `${o.first} and ${o.second} both change ${o.path}; ${o.second} waits for ${o.first}.`), 'Give them separate paths to run them together.')
+  }
+  if (plan.status === 'active') {
+    const roleId = callerRoleId(ctx, caller)
+    const role = ctx.roles.find((r) => r.id === roleId)
+    const line = readyLine(readyReports(plan, role ? [role.slug, role.name] : []), agentSlots(ctx, ctx.liveReports?.() ?? 0))
+    if (line) out.push(line)
+  }
+  return out.length ? ` ${out.join(' ')}` : ''
 }
 
 function progressLine(plan: RunPlan): string {
@@ -841,22 +911,27 @@ function progressLine(plan: RunPlan): string {
 
 const stepInput = z.object({
   title: z.string().min(1),
-  owner: z.string().optional()
+  owner: z.string().optional(),
+  ...graphFields
 })
 
 export const setPlan = defineTool({
   name: PLAN_TOOLS.set,
   description:
-    "Create or replace this run's plan: the goal and concrete steps in order (the last step is verification: build and tests, then the final report). Step ids are p1..pn; the run keeps going until the plan is complete.",
+    "Create or replace this run's plan: the goal and concrete steps in order (the last step is verification: build and tests, then the final report). Step ids are p1..pn; the run keeps going until the plan is complete. Steps may set after (ids), paths, staff {role, tier, effort}.",
   inputSchema: z.object({
     goal: z.string().min(1),
     steps: z.array(stepInput).min(1).max(40)
   }),
-  async handler(ctx, { goal, steps }, hooks) {
+  async handler(ctx, { goal, steps }, hooks, caller) {
     const previous = ctx.getPlan()
+    const notes: string[] = []
     const plan: RunPlan = {
       goal: goal.trim(),
-      steps: steps.map((s, i) => ({ id: `p${i + 1}`, title: s.title.trim(), status: 'pending' as const, ...(s.owner?.trim() ? { owner: s.owner.trim() } : {}) })),
+      steps: cleanedSteps(
+        steps.map((s, i) => ({ id: `p${i + 1}`, title: s.title.trim(), status: 'pending' as const, ...(s.owner?.trim() ? { owner: s.owner.trim() } : {}), ...graphOf(ctx, s, `p${i + 1}`, notes) })),
+        notes
+      ),
       status: 'active',
       // Re-planning keeps the run's automatic-continue count, so the limit still holds.
       autoContinues: previous?.autoContinues ?? 0,
@@ -866,7 +941,8 @@ export const setPlan = defineTool({
     hooks.onPlanUpdated?.(plan)
     return (
       `Plan saved with ${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}: ${plan.steps.map(stepLine).join('; ')}. ` +
-      'Mark each step with update_plan as you go (in_progress when you start it, done when it is finished) and call complete_plan when every step is done. Start on p1 now.'
+      'Mark each step with update_plan as you go (in_progress when you start it, done when it is finished) and call complete_plan when every step is done. Start on p1 now.' +
+      planGraphNotes(ctx, plan, caller, notes)
     )
   }
 })
@@ -874,12 +950,13 @@ export const setPlan = defineTool({
 export const updatePlan = defineTool({
   name: PLAN_TOOLS.update,
   description:
-    'Set step statuses by id (in_progress when you start one, done, skipped, blocked with a note); add appends steps. Reactivates a blocked plan.',
+    'Set step statuses by id (in_progress when you start one, done, skipped, blocked with a note); add appends steps. Reactivates a blocked plan. Steps take after, paths, staff.',
   inputSchema: z.object({
-    steps: z.array(z.object({ id: z.string(), status: z.enum(STEP_STATUSES), note: z.string().optional() })).optional(),
+    steps: z.array(z.object({ id: z.string(), status: z.enum(STEP_STATUSES).optional(), note: z.string().optional(), ...graphFields })).optional(),
     add: z.array(stepInput).optional()
   }),
-  async handler(ctx, { steps, add }, hooks) {
+  async handler(ctx, { steps, add }, hooks, caller) {
+    const notes: string[] = []
     const current = ctx.getPlan()
     if (!current) return 'There is no plan yet. Call set_plan with the goal and the steps first.'
     const byId = new Map(current.steps.map((s) => [s.id, { ...s }]))
@@ -891,19 +968,25 @@ export const updatePlan = defineTool({
         unknown.push(u.id)
         continue
       }
-      step.status = u.status
+      if (u.status) step.status = u.status
       if (u.note?.trim()) step.note = u.note.trim()
-      changed.push(`${step.id} ${u.status}`)
+      const g = graphOf(ctx, u, step.id, notes)
+      for (const k of ['after', 'paths', 'staff'] as const) {
+        if (u[k] === undefined) continue
+        if (g[k] === undefined) delete step[k]
+        else (step as unknown as Record<string, unknown>)[k] = g[k]
+      }
+      changed.push(`${step.id} ${u.status ?? 'updated'}`)
     }
     const next: PlanStep[] = current.steps.map((s) => byId.get(s.id) ?? s)
     let n = current.steps.reduce((max, s) => Math.max(max, Number(/^p(\d+)$/.exec(s.id)?.[1] ?? 0)), 0)
     for (const a of add ?? []) {
       n++
-      next.push({ id: `p${n}`, title: a.title.trim(), status: 'pending', ...(a.owner?.trim() ? { owner: a.owner.trim() } : {}) })
+      next.push({ id: `p${n}`, title: a.title.trim(), status: 'pending', ...(a.owner?.trim() ? { owner: a.owner.trim() } : {}), ...graphOf(ctx, a, `p${n}`, notes) })
       changed.push(`p${n} added`)
     }
     const reopened = current.status !== 'active'
-    const plan: RunPlan = { ...current, steps: next, status: 'active', updatedAt: Date.now() }
+    const plan: RunPlan = { ...current, steps: cleanedSteps(next, notes), status: 'active', updatedAt: Date.now() }
     delete plan.blockedReason
     if (reopened) delete plan.summary
     await ctx.updatePlan(plan)
@@ -912,7 +995,7 @@ export const updatePlan = defineTool({
     if (unknown.length) parts.push(`Unknown step ids: ${unknown.join(', ')}. The plan has ${current.steps.map((s) => s.id).join(', ')}.`)
     if (reopened) parts.push('The plan is active again.')
     parts.push(progressLine(plan))
-    return parts.join(' ')
+    return parts.join(' ') + planGraphNotes(ctx, plan, caller, notes)
   }
 })
 
