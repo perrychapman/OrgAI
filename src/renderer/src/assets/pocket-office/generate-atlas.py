@@ -10,9 +10,23 @@ PALETTES = {
     'color': ['#30283a', '#a86845', '#dfb67c', '#f5e4bc'],
 }
 DIRS = ['down', 'left', 'right', 'up']
-POSES = ['idle', 'walk-1', 'walk-2', 'work', 'wait', 'done', 'error']
+# 'type' and 'hand' were appended for the living-office rework; earlier poses keep their columns.
+POSES = ['idle', 'walk-1', 'walk-2', 'work', 'wait', 'done', 'error', 'type', 'hand']
 SILHOUETTES = ['crop', 'part', 'bun', 'wide', 'long', 'cap', 'afro', 'ponytail', 'bob', 'bald', 'braid', 'vest']
-PROPS = ['desk', 'desk-wide', 'crt', 'crt-side', 'chair', 'chair-side', 'shelf', 'cabinet', 'plant', 'plant-tall', 'meeting-table', 'coffee-station', 'mug', 'partition', 'sofa', 'whiteboard', 'window', 'printer', 'lamp', 'side-table']
+# crt-b, crt-off and crt-error continue the 32 x 32 grid (items 20-22); the 16 x 16 marks sit on a strip below it.
+MARKS = ['mark-wait', 'mark-done', 'mark-error', 'mark-talk']
+PROPS = ['desk', 'desk-wide', 'crt', 'crt-side', 'chair', 'chair-side', 'shelf', 'cabinet', 'plant', 'plant-tall', 'meeting-table', 'coffee-station', 'mug', 'partition', 'sofa', 'whiteboard', 'window', 'printer', 'lamp', 'side-table',
+         'crt-b', 'crt-off', 'crt-error'] + MARKS
+MARK_Y = 192  # top of the 16-px mark strip, directly under the sixth row of 32 px items (crt-b, crt-off, crt-error at y = 160)
+# Mark ramps for the Color palette: [outline and glyph, shade, badge, highlight]. Neutral and Green use their own ramp,
+# so the marks there are told apart by glyph and badge silhouette alone.
+MARK_RAMPS = [
+    ['#3b2410', '#c98a1e', '#f2b84b', '#fff0c2'],  # wait: amber
+    ['#143a22', '#3d9a55', '#7fd08a', '#e6f8dc'],  # done: green
+    ['#3f1018', '#b83a44', '#ee6a68', '#ffd9d0'],  # error: red
+    ['#30283a', '#cbb98d', '#f5e4bc', '#fffaf0'],  # talk: cream
+]
+CRT_ERROR_RAMP = ['#303744', '#687987', '#e0555a', '#ffe0d0']
 # Additional material colors are local art indices, never application UI tokens.
 MATERIALS = ['#282b39', '#e8ddd0', '#748899', '#bd784d', '#5b814d', '#d6a65b', '#b95e63', '#89c6cb', '#f8f0d8', '#707a55', '#735d76', '#6a4b39']
 
@@ -42,7 +56,13 @@ def worker(sil, direction, pose):
     if sil == 'long': box(d, (3, 2, 12, 4), 0); box(d, (3, 4, 4, 10), 0); box(d, (11, 4, 12, 10), 0)
     if sil == 'cap': box(d, (3, 1, 12, 3), 0); box(d, (5, 1, 10, 1), 2)
     if pose == 'work': box(d, (1, 13, 4, 15), 0); box(d, (11, 13, 14, 15), 0)
+    # type: the left hand sits one pixel lower and the right one pixel higher than in work, so work <-> type alternates
+    # key presses. The 1 px offset of the left hand is the brief; the opposite 1 px on the right is added because a single
+    # moving hand did not read at 1x.
+    if pose == 'type': box(d, (1, 14, 4, 16), 0); box(d, (11, 12, 14, 14), 0)
     if pose == 'wait': box(d, (2, 12, 4, 18), 0); box(d, (11, 12, 13, 18), 0)
+    # hand: the left arm hangs as in wait; the right arm is drawn raised at the end of worker().
+    if pose == 'hand': box(d, (2, 12, 4, 18), 0)
     if pose == 'done': box(d, (0, 9, 4, 11), 0); box(d, (11, 9, 15, 11), 0)
     if pose == 'error': box(d, (2, 11, 5, 13), 0); box(d, (10, 11, 13, 13), 0)
     # Human anatomy: a neck and separate sleeves, hands, trousers and shoes.
@@ -126,6 +146,12 @@ def worker(sil, direction, pose):
         box(d, (5, 14, 10, 15), 2)
     elif pose == 'done':
         box(d, (1, 9, 3, 10), 2); box(d, (12, 9, 14, 10), 2)
+    elif pose == 'type':
+        box(d, (2, 15, 5, 16), 2); box(d, (10, 13, 13, 14), 2)
+    elif pose == 'hand':
+        box(d, (5, 14, 8, 15), 2)
+        # Raised right arm: outline, sleeve and a hand reaching the top of the head.
+        box(d, (12, 0, 15, 12), 0); box(d, (13, 4, 14, 11), 1); box(d, (13, 1, 14, 3), 2)
     return im
 
 def tile(i):
@@ -161,10 +187,16 @@ def prop(i):
         box(d, (1, 5, 30, 23), 0); box(d, (2, 6, 29, 19), 2); box(d, (3, 20, 28, 22), 1)
         box(d, (4, 23, 6, 27), 0); box(d, (25, 23, 27, 27), 0)
         if i == 1: box(d, (3, 8, 28, 9), 3)
-    elif i in (2, 3): # CRT with casing, screen, stand and side depth
-        box(d, (5, 4, 26, 20), 0); box(d, (7, 6, 23, 17), 1); box(d, (9, 7, 21, 14), 2)
-        box(d, (10, 8, 17, 8), 3); box(d, (24, 6, 25, 18), 2); box(d, (12, 21, 19, 23), 0); box(d, (9, 24, 22, 25), 0)
+    elif i in (2, 3, 20, 21, 22): # CRT with casing, screen, stand and side depth; 20-22 are crt-b, crt-off, crt-error
+        box(d, (5, 4, 26, 20), 0); box(d, (7, 6, 23, 17), 1); box(d, (9, 7, 21, 14), 0 if i == 21 else 2)
+        if i in (2, 3): box(d, (10, 8, 17, 8), 3)
+        box(d, (24, 6, 25, 18), 2); box(d, (12, 21, 19, 23), 0); box(d, (9, 24, 22, 25), 0)
         if i == 3: box(d, (22, 7, 25, 16), 1)
+        if i == 21: # dark glass with a glint, so off reads as glass and not as a hole
+            box(d, (10, 8, 12, 8), 1); box(d, (10, 9, 10, 10), 1)
+        if i == 22: # crossed glass: shape-coded for palettes without a hue
+            for dx in (0, 1):
+                d.line((11+dx, 8, 17+dx, 13), fill=0); d.line((17+dx, 8, 11+dx, 13), fill=0)
     elif i in (4, 5):
         box(d, (8, 4, 23, 12), 0); box(d, (10, 6, 21, 10), 1); box(d, (7, 13, 24, 22), 0); box(d, (9, 14, 22, 19), 2); box(d, (14, 23, 17, 27), 0); box(d, (10, 27, 21, 28), 0)
         if i == 5: box(d, (20, 7, 24, 20), 1)
@@ -218,9 +250,13 @@ def prop(i):
         box(d, (4,7 if i < 2 else 9,27,7 if i < 2 else 9), 12)
         box(d, (5,17,16,17), 7); box(d, (20,11,25,15), 12)
         box(d, (20,16,25,16), 6)
-    elif i in (2,3):
-        box(d, (10,10,18,10), 12); box(d, (10,12,15,12), 11)
-        box(d, (22,18,23,18), 8); box(d, (8,26,23,27), 6)
+    elif i in (2,3,20,21,22):
+        if i in (2,3):
+            box(d, (10,10,18,10), 12); box(d, (10,12,15,12), 11)
+        elif i == 20: # same silhouette as crt, text lines moved down a row and re-measured: reads as screen flicker
+            box(d, (10,9,15,9), 3); box(d, (10,11,19,11), 12); box(d, (10,13,13,13), 11); box(d, (17,13,18,13), 12)
+        # LED: green on, dim off, red on error
+        box(d, (22,18,23,18), {21: 1, 22: 10}.get(i, 8)); box(d, (8,26,23,27), 6)
         for x in range(10,23,3): box(d, (x,26,x,26), 12)
     elif i == 6:
         for row in (6,13,20):
@@ -239,6 +275,28 @@ def prop(i):
         box(d, (19,12,25,12), 12)
     return im
 
+def mark(i):
+    """16 x 16 state marks drawn above a head. Index 0 outlines the badge and draws the glyph, 2 fills it, 3 is a glint.
+    Badge silhouettes differ (round, round, triangle, speech bubble) as well as the glyphs, so Neutral and Green stay readable."""
+    im = Image.new('P', (16, 16), 255); d = ImageDraw.Draw(im)
+    if i == 0: # question mark in a round badge
+        d.ellipse((0, 0, 15, 15), fill=2, outline=0)
+        for xy in [(6,3,9,3),(5,4,6,5),(9,4,10,5),(9,6,10,6),(8,7,9,7),(7,8,8,9),(7,11,8,12)]: box(d, xy, 0)
+        box(d, (3,4,3,4), 3); box(d, (4,3,4,3), 3)
+    elif i == 1: # check in a round badge
+        d.ellipse((0, 0, 15, 15), fill=2, outline=0)
+        d.line([(3,8),(6,11),(12,4)], fill=0, width=2)
+        box(d, (3,4,3,4), 3); box(d, (4,3,4,3), 3)
+    elif i == 2: # exclamation in a warning triangle
+        d.polygon([(7,0),(8,0),(15,15),(0,15)], fill=2, outline=0)
+        box(d, (7,5,8,10), 0); box(d, (7,12,8,13), 0)
+    else: # three dots in a speech bubble with a tail
+        d.rounded_rectangle((0, 0, 15, 11), radius=3, fill=2, outline=0)
+        d.polygon([(3,11),(8,11),(3,15)], fill=2, outline=0); box(d, (4,11,7,11), 2)
+        for x in (3, 7, 11): box(d, (x,4,x+1,5), 0)
+        box(d, (2,2,2,2), 3)
+    return im
+
 def save_sheet(name, image):
     for palette_name, colors in PALETTES.items():
         rgba = Image.new('RGBA', image.size, (0, 0, 0, 0))
@@ -254,8 +312,10 @@ def save_sheet(name, image):
                     ramp = [['#554037','#cda67c','#e6cba0','#f5e4bc'],['#493741','#977579','#d5b8a3','#f5e4bc'],['#49364b','#9d6170','#d7a28a','#f5e4bc'],['#48333a','#9d6146','#d9a77a','#f6dcad'],['#4a3c48','#9d7771','#d5bcb0','#f5e4bc'],['#51443b','#bc8d62','#e3c596','#f5e4bc']][family]
                 elif name == 'props':
                     item = (y//32)*4+x//32
-                    if item in (8,9): ramp = ['#31473a','#4f9255','#91c576','#e8e2ae']
-                    elif item in (2,3): ramp = ['#303744','#687987','#8ed2c4','#e4f1d2']
+                    if y >= MARK_Y: ramp = MARK_RAMPS[x//16]
+                    elif item in (8,9): ramp = ['#31473a','#4f9255','#91c576','#e8e2ae']
+                    elif item in (2,3,20,21): ramp = ['#303744','#687987','#8ed2c4','#e4f1d2']
+                    elif item == 22: ramp = CRT_ERROR_RAMP
                     elif item in (4,5): ramp = ['#473648','#a95c69','#db8991','#f5d5bc']
                     else: ramp = ['#493037','#a45f3d','#dfae76','#f9dfab']
                 else:
@@ -281,12 +341,16 @@ sheet = Image.new('P', (128, 96), 255)
 for i in range(48):
     x, y = (i % 8)*16, (i // 8)*16; sheet.paste(tile(i), (x,y)); name = f'tile.{i:02d}'; tiles[name] = {'x':x,'y':y,'w':16,'h':16}
 save_sheet('tiles', sheet)
-sheet = Image.new('P', (128, 160), 255)
+sheet = Image.new('P', (128, MARK_Y + 16), 255)
 for i, name in enumerate(PROPS):
+    if name in MARKS: # 16 x 16 overlay marks: no footprint, no anchors, depth at the bottom edge of the mark
+        x,y=MARKS.index(name)*16,MARK_Y; sheet.paste(mark(MARKS.index(name)),(x,y)); frames[f'prop.{name}']={'x':x,'y':y,'w':16,'h':16}
+        props[name]={'frame':f'prop.{name}', 'placement':'overlay', 'footprint':[], 'interactionAnchors':[], 'depthAnchor':[8,15]}
+        continue
     x,y=(i%4)*32,(i//4)*32; sheet.paste(prop(i),(x,y)); frames[f'prop.{name}']={'x':x,'y':y,'w':32,'h':32}
-    props[name]={'frame':f'prop.{name}', 'placement':'tabletop' if name in ('crt','crt-side','mug') else 'floor', 'footprint':[[0,0],[1,0],[0,1],[1,1]], 'interactionAnchors':[{'cell':[0,2],'facing':'up'},{'cell':[1,2],'facing':'up'}], 'depthAnchor':[16,28]}
+    props[name]={'frame':f'prop.{name}', 'placement':'tabletop' if name in ('crt','crt-side','mug','crt-b','crt-off','crt-error') else 'floor', 'footprint':[[0,0],[1,0],[0,1],[1,1]], 'interactionAnchors':[{'cell':[0,2],'facing':'up'},{'cell':[1,2],'facing':'up'}], 'depthAnchor':[16,28]}
 save_sheet('props',sheet)
-sheet = Image.new('P', (16*7, 24*4*len(SILHOUETTES)), 255)
+sheet = Image.new('P', (16*len(POSES), 24*4*len(SILHOUETTES)), 255)
 for s, sil in enumerate(SILHOUETTES):
     for di, direction in enumerate(DIRS):
         for pi, pose in enumerate(POSES):
@@ -324,3 +388,42 @@ for i, sil in enumerate(SILHOUETTES):
         review.alpha_composite(crop.resize((32,48),Image.Resampling.NEAREST),(x+dx,y+24))
 review.convert('RGB').save(HERE/'review-workers-2x.png')
 review.convert('RGB').resize((960,384),Image.Resampling.NEAREST).save(HERE/'review-workers-4x.png')
+
+# Living-office rework contact sheet: per palette, six identities in work / type / wait / hand for each direction, the four
+# crt frames and the four marks on a light and a dark ground. 1x is the exact sheet pixels; 2x and 4x are nearest-neighbor.
+# Labels are review annotations, never baked into production sprites.
+def rework_sheet():
+    from PIL import ImageFont
+    font = ImageFont.load_default()
+    pose_order = ['work', 'type', 'wait', 'hand']; shown = ['crop', 'wide', 'long', 'afro', 'ponytail', 'bald']
+    label_w, group_w, row_h = 44, 68, 26
+    block_h = 14 + len(shown)*row_h + 40
+    sheet_img = Image.new('RGBA', (label_w + group_w*4 + 4, block_h*len(PALETTES) + 4), '#ffffff')
+    sd = ImageDraw.Draw(sheet_img)
+    for pi_, (pname, colors) in enumerate(PALETTES.items()):
+        wsheet = Image.open(HERE/f'workers-{pname}.png'); psheet = Image.open(HERE/f'props-{pname}.png')
+        oy = 2 + pi_*block_h
+        sd.rectangle((0, oy, sheet_img.width, oy + block_h - 2), fill=colors[3])
+        sd.text((2, oy+1), pname, fill=colors[0], font=font)
+        for di, direction in enumerate(DIRS): sd.text((label_w + di*group_w + 2, oy+1), direction, fill=colors[0], font=font)
+        for si, sil in enumerate(shown):
+            ry = oy + 14 + si*row_h
+            sd.text((2, ry+8), sil, fill=colors[0], font=font)
+            for di, direction in enumerate(DIRS):
+                for k, pose in enumerate(pose_order):
+                    f = workers[f'worker.{sil}.{direction}.{pose}']
+                    sheet_img.alpha_composite(wsheet.crop((f['x'],f['y'],f['x']+16,f['y']+24)), (label_w + di*group_w + k*16, ry))
+        cy = oy + 14 + len(shown)*row_h + 2
+        for k, n in enumerate(['crt', 'crt-b', 'crt-off', 'crt-error']):
+            f = frames[f'prop.{n}']
+            sheet_img.alpha_composite(psheet.crop((f['x'],f['y'],f['x']+32,f['y']+32)), (2 + k*34, cy))
+        for ground, gx in ((colors[3], 150), (colors[1], 150 + 4*18 + 6)):
+            sd.rectangle((gx-2, cy, gx + 4*18 + 1, cy + 19), fill=ground)
+            for k, n in enumerate(MARKS):
+                f = frames[f'prop.{n}']
+                sheet_img.alpha_composite(psheet.crop((f['x'],f['y'],f['x']+16,f['y']+16)), (gx + k*18, cy + 2))
+    flat = sheet_img.convert('RGB')
+    flat.save(HERE/'review-rework-1x.png')
+    flat.resize((flat.width*2, flat.height*2), Image.Resampling.NEAREST).save(HERE/'review-rework-2x.png')
+    flat.resize((flat.width*4, flat.height*4), Image.Resampling.NEAREST).save(HERE/'review-rework-4x.png')
+rework_sheet()
