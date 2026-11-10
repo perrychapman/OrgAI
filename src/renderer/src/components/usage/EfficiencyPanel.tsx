@@ -7,6 +7,8 @@ import {
   efficiencyByProject,
   efficiencyItems,
   efficiencySummary,
+  minutesText,
+  percentText,
   sortEfficiencyRows,
   sortedByText,
   type EfficiencyColumn,
@@ -14,6 +16,7 @@ import {
   type EfficiencyItem,
   type SortDir
 } from '../../lib/usageEfficiency'
+import { overlapText, reportTimingSummary, TIMING_DEFINITIONS } from '../../lib/usageStaffing'
 import { useRovingFocus } from '../connectors/useRovingFocus'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
@@ -155,6 +158,7 @@ export default function EfficiencyPanel({ data, overview, onPickSignal, announce
   const baseSummary = useMemo(() => efficiencySummary(data.rows, opts), [data.rows, opts])
   // Efficiency is read from the returned rows only; say so when main cut the list (the banner already says it for folded figures).
   const summary = overview.truncated && !data.folded ? `${baseSummary} From the newest ${TRUNCATED_LIMIT_LABEL} runs.` : baseSummary
+  const timing = useMemo(() => reportTimingSummary(data.rows), [data.rows])
   const byProject = useMemo(() => efficiencyByProject(data.rows, opts), [data.rows, opts])
   const [sort, setSort] = useState<{ col: EfficiencyColumn; dir: SortDir }>({ col: 'runs', dir: 'desc' })
   const table = useMemo(() => sortEfficiencyRows(byProject, sort.col, sort.dir), [byProject, sort])
@@ -184,6 +188,29 @@ export default function EfficiencyPanel({ data, overview, onPickSignal, announce
         <div ref={groupRef} className="usage-eff-grid" role="group" aria-label="Efficiency measures. Arrow keys move between them; press a value to sort Runs worth a look by it." onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
           {items.map((item) => (
             <Instrument key={item.signal} item={item} onPick={pick} />
+          ))}
+        </div>
+      )}
+      {timing.runs > 0 && (
+        <div className="usage-eff-grid" role="group" aria-label="Team timing" data-testid="usage-timing">
+          {[
+            { id: 'first-spawn', name: 'Time to first spawn', value: timing.firstSpawnMs === null ? '—' : minutesText(timing.firstSpawnMs), def: TIMING_DEFINITIONS.firstSpawn },
+            { id: 'overlap', name: 'Overlap', value: overlapText(timing.overlap), def: TIMING_DEFINITIONS.overlap },
+            { id: 'tail', name: 'Tail', value: timing.tailShare === null ? '—' : percentText(timing.tailShare), def: TIMING_DEFINITIONS.tail }
+          ].map((t) => (
+            <dl key={t.id} className="usage-eff-item" data-testid="usage-timing-item" data-signal={t.id} data-value={t.value}>
+              <div className="usage-eff-name">
+                <dt>{t.name}</dt>
+              </div>
+              <dd className="usage-eff-valuewrap">
+                <span className="usage-eff-value" data-testid="usage-timing-value">
+                  {t.value}
+                </span>
+              </dd>
+              <dd className="usage-eff-detail">
+                {t.def} Median over {timing.runs.toLocaleString()} {timing.runs === 1 ? 'run' : 'runs'} with reports.
+              </dd>
+            </dl>
           ))}
         </div>
       )}
