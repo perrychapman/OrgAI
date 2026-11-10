@@ -163,10 +163,12 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   (`staffing.ts` `roleModelTier`): the definition sends `role.model`, so an alias or tier name in it decides before
   `role.tier`. The root's tier is read live (`switchModel` changes it). An automatic role always gets an explicit
   effort, the resolved one or `medium` (`CLAUDE_SDK_DEFAULT_EFFORT`, never above its ceiling), written unless the
-  definition already carries it, so neither the CLI's per-model default nor a project `effortLevel` decides; a fixed
+  definition already carries it (since 2026-11-10 an automatic report's definition carries `definitionEffort`, the effort
+  the resolver picks when nothing is asked, so only a pick, profile default or retry writes one), so neither the CLI's per-model default nor a project `effortLevel` decides; a fixed
   role keeps its definition's effort. The row records what was sent: for a written alias the model it resolves to on
-  the connection (the mapped concrete id, else the alias itself, e.g. `sonnet` when `everyday` maps to `sonnet[1m]`,
-  for which no variable is set); with nothing written the definition's model (an `inherit` report of the root: the
+  the connection (its `ANTHROPIC_DEFAULT_<ALIAS>_MODEL` variable, else on a proxy the mapped id, else on the Anthropic
+  connection the alias itself: since 2026-11-10 a concrete id in the Anthropic tier map that the session carries no
+  variable for is not recorded, because the alias then resolves natively); with nothing written the definition's model (an `inherit` report of the root: the
   root's live model; a nested one: `inherit`). Whatever
   else the model wrote in `model` or `effort` is
   removed; a full id is never passed (it used to pass and fail the spawn), and the plan guard now writes `sonnet`
@@ -183,10 +185,22 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   book survives query restarts; a resume in a new process starts with an empty book, so an `inherit` child of a report
   spawned before the resume runs as configured (the root's model, steered by the plan guard), and a step attempted
   before it counts as never attempted. A report resumed by `SendMessage` stays ended in the book. Not live-checked end
-  to end in a run; whether `inherit` in a nested spawn follows the main thread or the spawning subagent is unverified,
-  and the typings disagree, so OrgAI writes the resolved tier's alias on every automatic nested `inherit` spawn the
-  connection can resolve instead of relying on either reading. On a proxy whose map lacks that tier nothing is written
-  and the open question remains.
+  to end in a run. A nested `inherit` follows the spawning subagent (check 11 below); OrgAI still writes the resolved
+  tier's alias on every automatic nested `inherit` spawn the connection can resolve, and on a proxy whose map lacks that
+  tier nothing is written and the row keeps `inherit` with the parent's tier, which is what runs.
+- Nested `inherit` (check 11, 2026-11-10; `scripts/smoke-staffing.mjs 11stub`, zero spend, and `11`, one live session,
+  about $0.02): root `lead` on sonnet spawns `mid` (definition model `haiku`), which spawns `grand` (definition model
+  `inherit`). Stub (a local Messages stub that tells the agents apart by their system prompts): the grandchild's
+  requests went to `claude-haiku-5-5`, the parent's model, not the root's `claude-sonnet-5-5`. Live (Max login, SDK
+  0.3.318, `forwardSubagentText`, messages attributed by `parent_tool_use_id`): root `claude-sonnet-5-5`, mid
+  `claude-haiku-5-5`, grandchild `claude-haiku-5-5`. So `inherit` in a nested spawn means the spawning subagent's model.
+  Only `inherit` from a definition was checked, not an Agent call that omits `model` under a definition without one.
+- `SubagentStart` additional context (Unverified, from the typings only): SDK 0.3.318 `sdk.d.ts` declares
+  `SubagentStartHookSpecificOutput { hookEventName: 'SubagentStart'; additionalContext?: string }`, and the hook input
+  carries `agent_id` and `agent_type` but no Agent `tool_use_id` (its `toolUseID` argument is a hook invocation id,
+  above). It could carry the spawn's knowledge block without changing the Agent input (the spawn hook's `prompt`
+  rewrite, which costs an auto mode classifier request), but where the context lands and how a start is matched to its
+  Agent call are not established; nothing uses it yet.
 - Parallel foreground spawns: works. Two Agent calls in ONE assistant message (same `message.id`), both forced to
   `run_in_background = false` by the hook, each child running `sleep 5` (about 7.5 s per child including model
   turns): SubagentStart at 1.3 s and 1.6 s, SubagentStop at 8.9 s and 9.2 s, so they overlapped almost completely.

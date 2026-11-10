@@ -30,7 +30,7 @@ import {
 import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, ModelTier, PluginSpec, Project, RunSummary, Role, RunEvent, StaffingAssignment, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
-import { ANTHROPIC_BUILTIN_MODELS, connectionName, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingModeOf, tierForModel } from '@shared/defaults'
+import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingModeOf, tierForModel } from '@shared/defaults'
 import { CLAUDE_TIER_ALIAS, recordStaffing, roleModelTier } from './staffing'
 import { StaffingBook } from './staffingBook'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgedRole, type BridgeSpawnResult, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
@@ -128,6 +128,17 @@ export function everydayReplacement(tierModels: RunConnection['tierModels']): st
  * included (docs/agent-notes/sdk-facts.md, "Verified against v0.3.318 by scripts/smoke-staffing.mjs").
  */
 const SPAWN_MODEL_ALIASES: ReadonlySet<string> = new Set(Object.values(CLAUDE_TIER_ALIAS))
+
+/** Why the spawn hook rewrote an Agent call (countSpawn): a key it set, or 'drop' for a key it removed. */
+type SpawnRewriteReason = 'name' | 'isolation' | 'model' | 'effort' | 'prompt' | 'background' | 'drop'
+const SPAWN_REWRITE_KEYS: Record<string, SpawnRewriteReason> = {
+  name: 'name',
+  isolation: 'isolation',
+  model: 'model',
+  effort: 'effort',
+  prompt: 'prompt',
+  run_in_background: 'background'
+}
 
 /**
  * The run staffing tier map of a Claude session: the connection's tierModels, and on the Anthropic connection (or none)
@@ -742,6 +753,37 @@ export function reportEffort(role: Pick<Role, 'effort'>, session: Effort | undef
   return session ? CLAUDE_SDK_DEFAULT_EFFORT : undefined
 }
 
+/** The effort ceiling of an automatic role that sets neither `effort` nor `staffing.maxEffort` (staffing.ts UNSET_EFFORT_CEILING). */
+const AUTO_EFFORT_CEILING: Effort = 'high'
+
+/**
+ * The effort run staffing gives an automatic role when nothing asks for one: no plan step pick, no value on the call,
+ * no profile default, no retry (staffing.ts resolveStaffing rules 3, 4 and the cap below the default, then staffSpawn's
+ * CLAUDE_SDK_DEFAULT_EFFORT for "none"): the role's own effort brought under its effort ceiling, else the default,
+ * else the ceiling when that is lower. It does not depend on the tier, the parent or the connection, so an agent
+ * definition can carry it and an unrequested spawn needs no `effort` rewrite. Pure.
+ */
+export function autoDefaultEffort(role: Pick<Role, 'model' | 'tier' | 'effort' | 'staffing'>, project: Pick<Project, 'staffing'>): Effort {
+  const ceiling = effectiveRoleStaffing(role, project).maxEffort ?? AUTO_EFFORT_CEILING
+  const own = isEffort(role.effort) ? role.effort : undefined
+  if (own) return compareEffort(own, ceiling) > 0 ? ceiling : own
+  return compareEffort(ceiling, CLAUDE_SDK_DEFAULT_EFFORT) < 0 ? ceiling : CLAUDE_SDK_DEFAULT_EFFORT
+}
+
+/**
+ * The `AgentDefinition.effort` of a role, and what staffSpawn compares the resolved effort with: a report the project
+ * staffs automatically carries autoDefaultEffort (what the resolver picks when nothing is asked), so only a pick,
+ * profile default or retry that moves it is written at spawn; the root and fixed roles keep reportEffort. Pure.
+ */
+export function definitionEffort(
+  role: Pick<Role, 'model' | 'tier' | 'effort' | 'staffing' | 'reportsTo'>,
+  project: Pick<Project, 'staffing'>,
+  session: Effort | undefined
+): Effort | undefined {
+  if (role.reportsTo !== null && effectiveRoleStaffing(role, project).mode === 'auto') return autoDefaultEffort(role, project)
+  return reportEffort(role, session)
+}
+
 /**
  * The AgentDefinitions for a run. The root gets every harness tool, a canSpawn role the 'spawners' ones; each
  * role gets a server-level rule and an mcpServers entry for every MCP server granted to it.
@@ -799,13 +841,15 @@ export function buildAgents(
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {}),
         // Multi-provider org charts: bridged reports are marked "delegate with delegate_agent"; a bridged child's root is a report.
         ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
-        ...(ctx.bridgedChild ? { bridged: true } : {})
+        ...(ctx.bridgedChild ? { bridged: true } : {}),
+        // The Agent call fields the spawn hook would otherwise write (a rewrite costs an auto mode classifier request).
+        spawnCallFields: true
       }),
       tools,
       model: role.model && validModelId(role.model) ? role.model : 'inherit'
     }
     if (mcp.length) def.mcpServers = mcp
-    const effort = reportEffort(role, session)
+    const effort = definitionEffort(role, ctx.project, session)
     if (effort) def.effort = effort
     agents[role.slug] = def
   }
@@ -1243,6 +1287,8 @@ export class ClaudeSession implements RuntimeSession {
   private handles = new HandleNamer()
   /** Agent tool_use id -> the handle the report was spawned with; stored on the agent at task_started. */
   private spawnHandles = new Map<string, string>()
+  /** Native spawns this session let through and how many the hook rewrote, by reason (countSpawn). */
+  private spawnStats = { spawns: 0, rewritten: 0, reasons: new Map<SpawnRewriteReason, number>(), summarized: false }
   /** agent id -> message id -> latest usage, so streamed and re-sent messages are counted once. */
   private usageByMessage = new Map<string, Map<string, { input: number; output: number; model?: string; mix: TokenMix }>>()
   /** Per-model USD rates from the latest result message; applied to new tokens until the next result. */
@@ -1575,6 +1621,7 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   async stop(): Promise<void> {
+    this.logSpawnSummary()
     this.continuation.dispose()
     this.clearRestartTimers()
     this.stopUsagePolling()
@@ -1987,17 +2034,16 @@ export class ClaudeSession implements RuntimeSession {
    * The model a spawn's `model: CLAUDE_TIER_ALIAS[tier]` makes the CLI run on this connection, or undefined when the
    * alias would not resolve to a model the connection serves. The connection's ANTHROPIC_DEFAULT_<ALIAS>_MODEL variable
    * when set; else on a proxy the tier's mapped model (the variables come only from that map: without it the CLI would
-   * send its own native id to the proxy); else on the Anthropic connection the mapped concrete id, or the alias itself
-   * when the tier maps to nothing, an alias or a suffixed alias such as "sonnet[1m]" (connections/service.ts
-   * anthropicTierEnv sets no variable for those, so the alias resolves natively).
+   * send its own native id to the proxy); else, on the Anthropic connection, the alias itself: without the variable the
+   * CLI resolves the alias natively, whatever concrete id the tier map names (a mapped id the session does not carry
+   * as a variable is not what runs, so the row must not name it).
    */
   private aliasTarget(tier: ModelTier): string | undefined {
     const alias = CLAUDE_TIER_ALIAS[tier]
     const fromEnv = this.ctx.connection?.env?.[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`]?.trim()
     if (fromEnv) return fromEnv
-    const mapped = this.ctx.connection?.tierModels?.[tier]?.trim()
-    if (usesProxy(this.ctx)) return mapped || undefined
-    return mapped && settingTier(mapped.replace(/\[[^\]]*\]$/, '')) === undefined ? mapped : alias
+    if (usesProxy(this.ctx)) return this.ctx.connection?.tierModels?.[tier]?.trim() || undefined
+    return alias
   }
 
   /** The model the root runs on now: its own (switchModel included), else what the session reported at init, else 'inherit'. */
@@ -2067,14 +2113,29 @@ export class ClaudeSession implements RuntimeSession {
       sentModel = write ? this.aliasTarget(resolved.tier) : undefined
       if (sentModel) model = CLAUDE_TIER_ALIAS[resolved.tier]
     }
+    // An alias the call wrote that runs the same model as writing none is left on the call (no rewrite, so auto mode's
+    // own verdict on the call stands): it must be the resolved tier's alias, resolvable on this connection, and the
+    // model the spawn runs without it must be that alias (or tier name) or what the alias resolves to. A report of the
+    // root that would inherit a pinned root id keeps it (the alias is dropped); a nested 'inherit' report is not
+    // compared (whether it follows the main thread or its parent is unverified).
+    if (model === undefined && callAlias && resolved.tier && callAlias === CLAUDE_TIER_ALIAS[resolved.tier]) {
+      const resolvesTo = this.aliasTarget(resolved.tier)
+      const unwritten = inherit ? (byRoot ? this.liveRootModel() : undefined) : target.model.trim()
+      if (resolvesTo && unwritten && (settingTier(unwritten) === resolved.tier || unwritten === resolvesTo)) {
+        model = callAlias
+        sentModel = resolvesTo
+      }
+    }
 
-    const defEffort = reportEffort(target, sessionEffort(this.root))
+    const defEffort = definitionEffort(target, this.ctx.project, sessionEffort(this.root))
     let effort: Effort | undefined
     let runEffort = defEffort
     if (auto) {
       runEffort = resolved.effort ?? CLAUDE_SDK_DEFAULT_EFFORT
       if (runEffort !== defEffort) effort = runEffort
     }
+    // An effort the call wrote that equals what runs stays on the call (no rewrite).
+    if (effort === undefined && callEffort !== undefined && callEffort === runEffort) effort = callEffort
 
     // The row records what was sent: the written alias as the connection resolves it, else the definition's model.
     const ran: StaffingRan =
@@ -2114,6 +2175,35 @@ export class ClaudeSession implements RuntimeSession {
     if (model !== undefined) out.model = model
     if (effort !== undefined) out.effort = effort
     return out
+  }
+
+  /**
+   * Count a native spawn that passed every denial, and whether the hook rewrote it (orchestration-efficiency 4.6, the
+   * spawn check under auto): an updatedInput that changes an Agent call voids the API's safety verdict on it, and the
+   * CLI then sends one auto mode classifier request of its own (docs/agent-notes/permissions.md). One info line per
+   * rewritten spawn names the reasons; stop() writes the run's summary.
+   */
+  private countSpawn(slug: string, updates: Record<string, unknown>, drop: ReadonlySet<string>): void {
+    this.spawnStats.spawns++
+    const reasons: SpawnRewriteReason[] = []
+    for (const k of Object.keys(updates)) {
+      const reason = SPAWN_REWRITE_KEYS[k]
+      if (reason) reasons.push(reason)
+    }
+    if (drop.size && [...drop].some((k) => !(k in updates))) reasons.push('drop')
+    if (!reasons.length) return
+    this.spawnStats.rewritten++
+    for (const r of reasons) this.spawnStats.reasons.set(r, (this.spawnStats.reasons.get(r) ?? 0) + 1)
+    this.log('info', `Spawn of ${slug} rewritten by the harness (${reasons.join(', ')}); under auto mode this costs one classifier request.`)
+  }
+
+  /** The run's spawn rewrite summary (countSpawn), once, when there was a spawn. */
+  private logSpawnSummary(): void {
+    const { spawns, rewritten, reasons } = this.spawnStats
+    if (!spawns || this.spawnStats.summarized) return
+    this.spawnStats.summarized = true
+    const by = [...reasons.entries()].map(([r, n]) => `${r} ${n}`).join(', ')
+    this.log('info', `Spawns: ${spawns}, rewritten by the harness: ${rewritten}${by ? ` (${by})` : ''}.`)
   }
 
   /** The spawn decided under `toolUseId` started as `agentId`: record its staffing row (a failure is logged, never thrown). */
@@ -2418,14 +2508,21 @@ export class ClaudeSession implements RuntimeSession {
         const { handle, generated } = spawnHandle(this.handles, requested, toolInput.name)
         this.spawnHandles.set(input.tool_use_id, handle)
         if (generated) updates.name = handle
-        if (this.isolation && parentIsolated && target && canWrite(target) && !toolInput.isolation) {
+        // A call that already asks for the worktree is left as it is (the prompt tells the model to), but it is tracked
+        // the same way, so the integrator merges its branch.
+        const drop = new Set<string>()
+        if (this.isolation && parentIsolated && target && canWrite(target)) {
           this.isolatedSpawns.set(input.tool_use_id, agentId)
-          updates.isolation = 'worktree'
+          if (toolInput.isolation !== 'worktree') updates.isolation = 'worktree'
+        } else if ('isolation' in toolInput) {
+          // Isolation is the harness's decision: a worktree it does not track is never merged back, and a reader in one
+          // does not see the checkout's uncommitted work. So an isolation the call wrote on its own is removed.
+          drop.add('isolation')
+          this.log('warn', `Dropped isolation on a spawn of ${requested}: the harness decides which reports get a worktree.`)
         }
         // Run staffing (orchestration-efficiency 4.3): the resolver decides the call's model alias and effort, the plan
         // guard included (near the weekly limit deep/top reports run on the everyday tier). Values the model wrote that
         // the resolver did not confirm are dropped. Decided only here, after every denial above.
-        const drop = new Set<string>()
         if (target) {
           const staff = this.staffSpawn(input.tool_use_id, input.agent_id, target, toolInput)
           for (const k of staff.drop) drop.add(k)
@@ -2440,7 +2537,8 @@ export class ClaudeSession implements RuntimeSession {
         if (knownItems) updates.prompt = withSpawnKnowledge(brief, knownItems)
         // Required delegation (spec 5.4): a spawn that earns a receipt runs in the foreground, so the child's report and
         // the receipt reach the caller in one tool result. Adaptive spawns keep the SDK default (background).
-        if (target && this.receiptBearingSpawn(parentRole, target)) updates.run_in_background = false
+        if (target && this.receiptBearingSpawn(parentRole, target) && toolInput.run_in_background !== false) updates.run_in_background = false
+        this.countSpawn(requested, updates, drop)
         if (!Object.keys(updates).length && !drop.size) return {}
         const updated: Record<string, unknown> = { ...toolInput, ...updates }
         for (const k of drop) if (!(k in updates)) delete updated[k]

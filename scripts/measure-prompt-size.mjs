@@ -46,7 +46,10 @@ function candidates(role, roles, project, flags, extra = []) {
   if (role.responsibilities.length) add('role responsibilities', `Your responsibilities:\n${role.responsibilities.map((r) => `- ${r}`).join('\n')}`)
   if (reports.length) {
     const req = (obligationsFor(roles, flags.strictDelegation === true)[role.id] ?? []).map((id) => roles.find((r) => r.id === id)?.slug).filter(Boolean)
-    add('reports list (delegation)', P.reportsText(reports, flags.bridgedRoles, flags.bridgeVia, req))
+    // Claude's Agent call fields (spawnCallFields): the marks on the report lines and their paragraph.
+    const spawnCall = P.spawnCallParts(role, roles, project, flags)
+    add('reports list (delegation)', P.reportsText(reports, flags.bridgedRoles, flags.bridgeVia, req, false, spawnCall.limits))
+    add('spawnCallText', spawnCall.text)
     // Whichever variant the builder used is found in the prompt; overlapping misses are skipped by segment().
     for (const isolation of [true, false]) add('teamSizingText', P.teamSizingText({ required: req.length > 0, isolation, review: reviewPolicyOf(project) }))
     // Staffing 'auto' only; the goal variants extend the balanced text, so the longer ones are looked for first.
@@ -117,7 +120,14 @@ for (const slug of BASE_ROLES) for (const v of variants) caseList.push({ slug, v
 caseList.push({ slug: 'single', variant: 'arch', isolation: false, arch: true }, { slug: 'single', variant: 'noarch', isolation: false, arch: false })
 const label = (c) => `${c.slug === 'orchestrator' ? 'team root (orchestrator)' : c.slug === 'implementer' ? 'writing report (implementer)' : c.slug === 'single' ? 'single assistant' : c.slug} [${c.variant}]`
 
-const ctxFor = (project, team, dir) => S.measureCtx(project, team, dir)
+// Run staffing reads and writes the run's staffing record at spawn (recordStaffing); measureCtx predates it.
+const ctxFor = (project, team, dir) => {
+  const ctx = S.measureCtx(project, team, dir)
+  let staffing
+  ctx.getStaffing ??= () => staffing
+  ctx.updateStaffing ??= async (next) => { staffing = next }
+  return ctx
+}
 
 // ---------- Claude ----------
 function claudeCase(c) {
@@ -128,7 +138,7 @@ function claudeCase(c) {
   const role = ctx.roles.find((r) => r.slug === roleSlug)
   const def = agents[roleSlug]
   const isRoot = role.reportsTo === null
-  const flags = { isSetup: false, isolation, ...(team ? { team } : {}) }
+  const flags = { isSetup: false, isolation, spawnCallFields: true, ...(team ? { team } : {}) }
   const parts = segment(def.prompt, candidates(role, ctx.roles, project, flags))
   const given = S.harnessToolsForRole(harness, role, isRoot)
   const tools = given.map((t) => ({ name: `mcp__orgai__${t.name}`, chars: S.claudeToolDefinitionChars(t), descriptionChars: t.description.length }))

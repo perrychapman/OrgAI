@@ -85,6 +85,20 @@ Prompt fatigue (#14): allowed folders, rule matching, suggestions, and the permi
     server's verdict, or a local request when there is none, stub). A subagent that acted and ended with plain text
     got a local review in the stub. Documented but not seen in OrgAI runs: "reviews its work and its final report"
     (Unverified for OrgAI's path).
+  - Spawns without a rewrite (2026-11-10; `claude.ts` spawn hook, unit tests "a well-formed spawn needs no rewrite" in
+    `claude.test.ts`; the hook's `{}` is verified by unit tests only, its effect on the classifier rests on live run A):
+    the role prompt of every Claude role with reports names the Agent call fields the hook would otherwise write
+    (`prompts.ts` `spawnCallText`, each report line carrying its limits, `spawnLimitMark`: "up to sonnet / high",
+    "fixed", "worktree", "foreground"); an automatic report's definition carries the effort an unrequested spawn
+    resolves to (`definitionEffort`); and the hook leaves a value that runs the same anyway (an alias of the resolved
+    tier whose model equals the unwritten one, an effort equal to what runs, `run_in_background: false` already set, a
+    writer's own `isolation: "worktree"`, which is tracked for integration like a harness-set one). A clamp, a missing
+    `name`, a knowledge block and a value the resolver moves still rewrite, and so does an `isolation` the call wrote
+    where the harness sets none (a reader, a project that does not isolate, a parent without a worktree): it is
+    removed, because a worktree the harness does not track is never merged back. Each rewritten spawn logs one info line
+    "Spawn of <slug> rewritten by the harness (<reasons>) ...", reasons from name, isolation, model, effort, prompt,
+    background, drop; `stop()` logs "Spawns: N, rewritten by the harness: M (<reason> <count>, ...)". The stub cannot
+    show the difference: without a server verdict (`server_no_result`) the CLI classifies every call locally.
 
 ## Renderer
 

@@ -1,10 +1,11 @@
 import type { Project, ProjectKind, QuickRunInfo, ReviewPolicy, Role, RunTeam, StaffingGoal } from '@shared/types'
-import { projectKindOf, reviewPolicyOf, staffingGoalOf, staffingModeOf } from '@shared/defaults'
+import { effectiveRoleStaffing, projectKindOf, reviewPolicyOf, staffingGoalOf, staffingModeOf } from '@shared/defaults'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, OUTPUT_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
 import { obligationsFor } from './delegation'
+import { CLAUDE_TIER_ALIAS, roleModelTier } from './staffing'
 
 /**
  * Prompt text the harness gives every role, independent of the provider. Pure functions of the role,
@@ -99,6 +100,90 @@ export interface PromptFlags {
    * staffing paragraph of a team root (staffingText).
    */
   staffingGoal?: StaffingGoal
+  /**
+   * Claude's native Agent call (claude.ts buildAgents passes it on work runs): every role with reports gets
+   * spawnCallText and its report lines carry the limits that text refers to (spawnLimitMark), so a well-formed call
+   * needs no rewrite by the spawn hook (a rewritten call costs one auto mode classifier request,
+   * docs/agent-notes/permissions.md). Missing = neither (Codex and mock spawn through their own tools).
+   */
+  spawnCallFields?: boolean
+}
+
+/**
+ * The bracket after a report's name for spawnCallText: its model and effort limits ("up to sonnet / high"; an
+ * 'inherit' role without a tier: "up to your tier / high"; a fixed role: "fixed"), then "worktree" when the Agent call
+ * must ask for isolation and "foreground" when it must run in the foreground. The limits are the run staffing
+ * resolver's bounds (staffing.ts roleModelTier, effectiveRoleStaffing; an effort ceiling of high when the chart sets
+ * none), so values inside them are kept by the spawn hook as written. Pure.
+ */
+export function spawnLimitMark(report: Role, project: Pick<Project, 'staffing'>, opts: { worktree?: boolean; foreground?: boolean } = {}): string {
+  const eff = effectiveRoleStaffing(report, project)
+  const parts: string[] = []
+  // A fixed project: spawnCallText says the call names no model or effort, so no report needs the word.
+  if (staffingModeOf(project) === 'fixed') {
+    /* no limits */
+  } else if (eff.mode === 'fixed') parts.push('fixed')
+  else {
+    const model = typeof report.model === 'string' ? report.model.trim() : ''
+    const tier = model && model !== 'inherit' ? roleModelTier(report) : eff.maxTier
+    parts.push(`up to ${tier ? CLAUDE_TIER_ALIAS[tier] : 'your tier'} / ${eff.maxEffort ?? 'high'}`)
+  }
+  if (opts.worktree) parts.push('worktree')
+  if (opts.foreground) parts.push('foreground')
+  return parts.length ? ` (${parts.join(', ')})` : ''
+}
+
+/**
+ * Claude, every role with reports (PromptFlags.spawnCallFields): the Agent call fields the spawn hook would otherwise
+ * write. Each value written here and kept by the hook leaves the call unchanged, so auto mode's own verdict on it
+ * stands. `auto`: the project staffs automatically (a fixed project's reports run as configured, so the call names no
+ * model or effort); `fixed`, `worktree`, `foreground`: some listed report carries that mark.
+ */
+export function spawnCallText(opts: { auto: boolean; fixed?: boolean; worktree?: boolean; foreground?: boolean }): string {
+  const fields = ['name (a short handle unique in this run, such as tester-2)']
+  if (opts.auto) fields.push('model (haiku fast, sonnet everyday, opus deep) and effort (low, medium or high) within the limits in parentheses after each specialist')
+  if (opts.worktree) fields.push('isolation: "worktree" if marked worktree')
+  if (opts.foreground) fields.push('run_in_background: false if marked foreground')
+  return (
+    `On every Agent call pass ${joinAnd(fields)}${opts.auto ? '' : ' but no model or effort'}.` +
+    (opts.auto && opts.fixed ? ' Omit model and effort for one marked fixed.' : '') +
+    ' The harness corrects a missing or out-of-limit value, which costs an extra safety check.'
+  )
+}
+
+/**
+ * The report marks (spawnLimitMark, by slug) and the spawnCallText paragraph buildRolePrompt gives `role` when
+ * PromptFlags.spawnCallFields is set on a work run and the role has a report it spawns with the Agent tool (not
+ * bridged); otherwise no marks and no text. Pure.
+ */
+export function spawnCallParts(
+  role: Role,
+  roles: Role[],
+  project: Project,
+  flags: Pick<PromptFlags, 'isSetup' | 'isolation' | 'spawnCallFields' | 'strictDelegation' | 'bridgedRoles' | 'bridged'>
+): { limits: Record<string, string>; text?: string } {
+  const limits: Record<string, string> = {}
+  if (flags.spawnCallFields !== true || flags.isSetup) return { limits }
+  const isRoot = role.reportsTo === null && !flags.bridged
+  const obligations = obligationsFor(roles, flags.strictDelegation === true)
+  const required = obligations[role.id] ?? []
+  // Only an isolated spawner's writers get a worktree (claude.ts: the root, or a writing lead in its own worktree).
+  const isolated = flags.isolation && (isRoot || canWrite(role))
+  let worktree = false
+  let foreground = false
+  let fixed = false
+  for (const r of reportsOf(role, roles)) {
+    if (flags.bridgedRoles?.some((b) => b.roleId === r.id)) continue
+    const w = isolated && canWrite(r)
+    // A receipt-bearing spawn (claude.ts receiptBearingSpawn) runs in the foreground.
+    const f = required.includes(r.id) || (obligations[r.id]?.length ?? 0) > 0
+    worktree ||= w
+    foreground ||= f
+    fixed ||= effectiveRoleStaffing(r, project).mode === 'fixed'
+    limits[r.slug] = spawnLimitMark(r, project, { worktree: w, foreground: f })
+  }
+  if (!Object.keys(limits).length) return { limits }
+  return { limits, text: spawnCallText({ auto: staffingModeOf(project) === 'auto', fixed, worktree, foreground }) }
 }
 
 /** One line for the root of a bridged child session: its final message is what the delegating agent receives. */
@@ -129,11 +214,13 @@ export function reportsText(
   /** Slugs of the reports this role must delegate to (obligationsFor): adds the required-delegation paragraph. */
   required: readonly string[] = [],
   /** The run's root on a delegate_agent adapter: one clause on background: true when a listed report is bridged. */
-  background = false
+  background = false,
+  /** Per report slug, the spawnLimitMark shown after its name (PromptFlags.spawnCallFields); a bridged report gets none. */
+  limits: Readonly<Record<string, string>> = {}
 ): string {
   const mark = (r: Role): string => {
     const b = bridged?.find((x) => x.roleId === r.id)
-    return b ? bridgedReportMark(b.connectionName, via) : ''
+    return b ? bridgedReportMark(b.connectionName, via) : (limits[r.slug] ?? '')
   }
   return (
     `You lead the following specialists. Delegate to them with the Agent tool, passing subagent_type exactly as written:\n` +
@@ -547,7 +634,10 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
   if (reports.length) {
     const requiredIds = obligationsFor(roles, flags.strictDelegation === true)[role.id] ?? []
     const requiredSlugs = requiredIds.map((id) => roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
-    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs, isRoot && !isSetup))
+    // Claude's Agent call: each report's limits on its line, and the fields to pass (spawnCallText).
+    const spawnCall = spawnCallParts(role, roles, project, flags)
+    parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs, isRoot && !isSetup, spawnCall.limits))
+    if (spawnCall.text) parts.push(spawnCall.text)
     // Team work-run roots only: not setup-like runs, the Chat, the single assistant or a report (a mid-level lead included).
     if (isRoot && !isSetup && !flags.quick && flags.team !== 'single') {
       parts.push(teamSizingText({ required: requiredSlugs.length > 0, isolation, review: reviewPolicyOf(project) }))
