@@ -297,14 +297,14 @@ export function roomOf(building: Building, agentId: string): BuildingRoom | unde
 
 const FOOTPRINT_FALLBACK: readonly (readonly number[])[] = [[0, 0], [1, 0], [0, 1], [1, 1]]
 
-/** Walls, desk and chair footprints of every agent, and the footprint of each static prop. */
+/**
+ * Walls, desk footprints of every agent, and the footprint of each static prop. The chair is drawn on the worker's own
+ * anchor cell (it is where they sit), so it blocks nothing beyond the anchor, which callers block per person.
+ */
 export function buildingBlocked(building: Building, props: readonly PlacedProp[]): Set<string> {
   const blocked = new Set(building.walls)
   const add = (x: number, y: number, footprint: readonly (readonly number[])[]): void => { for (const [dx, dy] of footprint) blocked.add(cellKey(x + dx, y + dy)) }
-  for (const desk of building.desks.values()) {
-    add(desk.furniture.x, desk.furniture.y, atlas.props.desk.footprint)
-    add(desk.furniture.x + 2, desk.furniture.y, atlas.props.chair.footprint)
-  }
+  for (const desk of building.desks.values()) add(desk.furniture.x, desk.furniture.y, atlas.props.desk.footprint)
   const known = atlas.props as Record<string, { footprint: number[][] } | undefined>
   for (const prop of props) add(prop.x, prop.y, known[prop.name]?.footprint ?? FOOTPRINT_FALLBACK)
   return blocked

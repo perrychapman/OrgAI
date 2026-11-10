@@ -54,12 +54,23 @@ function register(registry: SpriteRegistry, id: string, key: keyof SpriteRefs, e
   else registry.current.set(id, entry)
 }
 
+/** Chair art is 32 px wide with the seat centred at x 16: shift it 8 px left so it centres on the 16 px worker. */
+const CHAIR_INSET_X = 8
+/** The chair back (art row 4) lands at the worker's hips, so head, shoulders and torso stay visible above it. */
+const CHAIR_RISE = 4
+/** A seated worker's depth is their anchor row plus 8 px (feet), see officePeople. */
+const WORKER_DEPTH_FROM_ANCHOR = 8
+
 interface DeskProps { id: string; x: number; y: number; desk: string; chair: string; screen: string; mug: boolean; propSheet: string; registry: SpriteRegistry }
 /** Chair, desk, optional mug and the screen. The screen frame is the one thing the clock changes. */
 const Desk = memo(function Desk({ id, x, y, desk, chair, screen, mug, propSheet, registry }: DeskProps): ReactElement {
   const place = (name: string, left: number, extra = 0): CSSProperties => ({ left, top: y, zIndex: y + depthOffset(name) + extra, ...frameBackground(propFrames[`prop.${name}`], propSheet) })
+  // The chair sits on the worker's anchor (desk + 0,2 tiles), centred on the 16 px sprite and drawn just in front of a seated
+  // person, so its back covers their waist: someone facing the screen reads as sitting in it, and an empty desk keeps an empty chair.
+  const anchorY = y + 2 * OFFICE_TILE_PX
+  const chairStyle: CSSProperties = { left: x - CHAIR_INSET_X, top: anchorY - CHAIR_RISE, zIndex: anchorY + WORKER_DEPTH_FROM_ANCHOR + 1, ...frameBackground(propFrames[`prop.${chair}`], propSheet) }
   return <>
-    <i className="office-sprite office-desk-part" data-office-desk-for={id} style={place(chair, x + 2 * OFFICE_TILE_PX)} />
+    <i className="office-sprite office-desk-part office-chair" data-office-desk-for={id} style={chairStyle} />
     <i className="office-sprite office-desk-part" data-office-desk-for={id} style={place(desk, x)} />
     {mug && <i className="office-sprite office-desk-part" data-office-desk-for={id} style={place('mug', x, 1)} />}
     <i className="office-sprite office-screen" data-office-screen-for={id} data-office-screen={screen} ref={element => register(registry, id, 'screen', element)} style={place(screen, x, 2)} />
