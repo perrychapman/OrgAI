@@ -270,3 +270,17 @@ describe('Codex run staffing', () => {
     expect(rows[1]!.tier !== 'fast' || rows[1]!.effort !== 'low').toBe(true)
   })
 })
+
+describe('codexRootTier', () => {
+  it('reads the chart tier until the root switches models, then the tier the new model maps to', async () => {
+    const { codexRootTier } = await import('./codex')
+    const map = { deep: 'gpt-6-sol', everyday: 'gpt-6-terra', fast: 'gpt-6-luna' }
+    expect(codexRootTier({ model: 'gpt-6-sol', tier: 'deep' }, undefined, map)).toBe('deep')
+    expect(codexRootTier({ model: 'everyday' }, undefined, map)).toBe('everyday')
+    expect(codexRootTier({ model: 'gpt-6-sol', tier: 'deep' }, 'gpt-6-luna', map)).toBe('fast')
+    expect(codexRootTier({ model: 'gpt-6-sol', tier: 'deep' }, 'fast', map)).toBe('fast')
+    // A model nothing describes: unknown, never the stale chart tier.
+    expect(codexRootTier({ model: 'gpt-6-sol', tier: 'deep' }, 'some-other-model', map)).toBeUndefined()
+    expect(codexRootTier({ model: 'gpt-6-sol', tier: 'deep' }, '  ', map)).toBe('deep')
+  })
+})

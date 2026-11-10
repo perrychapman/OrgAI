@@ -249,6 +249,20 @@ function catalogPreparer(options: CodexAdapterOptions, models: () => string[], o
   }
 }
 
+/**
+ * The tier the root runs on now, the ceiling of an 'inherit' report: its chart tier, or after a model switch
+ * (`override`, switchModel) the tier that model names or the connection maps it to. Undefined = unknown, so an
+ * 'inherit' report runs as configured rather than on a stale ceiling. Pure.
+ */
+export function codexRootTier(root: Pick<Role, 'model' | 'tier'>, override: string | undefined, tierModels: Partial<Record<string, string>> | undefined): ReturnType<typeof settingTier> {
+  const model = override?.trim()
+  if (!model) return (isModelTier(root.tier) ? root.tier : undefined) ?? settingTier(root.model)
+  const named = settingTier(model)
+  if (named) return named
+  for (const [tier, id] of Object.entries(tierModels ?? {})) if (isModelTier(tier) && id?.trim() === model) return tier
+  return undefined
+}
+
 const ORGAI_SERVICE = 'orgai'
 const CLAUDE_ALIASES = new Set(['fable', 'opus', 'sonnet', 'haiku'])
 /** How long a restart waits for the old process to exit. */
@@ -383,7 +397,8 @@ class CodexSession implements RuntimeSession {
     const limits = effectiveSubagentLimits({ ...ctx.project, roles: ctx.roles })
     this.staffing = new StaffingBook({
       project: ctx.project,
-      rootTier: root.tier ?? settingTier(root.model),
+      // Live: switchModel moves the root to another model mid-run.
+      rootTier: () => codexRootTier(this.root, this.rootModelOverride, this.ctx.connection?.tierModels),
       tierModels: () => ctx.connection?.tierModels ?? {},
       adapterEfforts: effortOptionsFor('codex'),
       plan: () => ctx.getPlan()
