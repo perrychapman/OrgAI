@@ -24,6 +24,7 @@ import {
 } from '../render'
 import { checkProjectResolution, openReadSource, resolveRunFromSource, searchableProjectIds } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
+import { runRunsModel } from './runsModel'
 
 const DEFAULT_LIMIT = 20
 const DEFAULT_TAIL = 20
@@ -41,10 +42,11 @@ export const runRuns: CommandFn = async (ctx: CliContext, args: string[]): Promi
   const [sub, ...rest] = args
   if (sub === 'list') return runsList(ctx, rest)
   if (sub === 'show') return runsShow(ctx, rest)
+  if (sub === 'model') return runRunsModel(ctx, rest)
   throw new CliError(sub ? `Unknown runs command "${sub}". ${RUNS_USAGE}` : RUNS_USAGE, EXIT.usage)
 }
 
-const RUNS_USAGE = 'Use: orgai runs list | show <runId-or-R#>'
+const RUNS_USAGE = 'Use: orgai runs list | show <runId-or-R#> | model <runId-or-R#> [<tier|model id>]'
 
 function projectName(projects: readonly Project[], id: string): string {
   if (isVirtualProjectId(id)) return VIRTUAL_PROJECT_LABELS[id]

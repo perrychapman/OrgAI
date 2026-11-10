@@ -60,6 +60,7 @@ import { staffingLine } from '../staffingText'
 import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
+import { runPausedAction } from './resumeActions'
 import { runResumeTui } from './tui'
 
 export const EXEC_STDIN_MAX_BYTES = 1024 * 1024
@@ -354,6 +355,8 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
 export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, specOf('resume'))
   const v = values as Values
+  // --now / --cancel-auto-resume act on a paused run (resumeActions.ts); they take no prompt and no exec flags.
+  if (v.now === true || v['cancel-auto-resume'] === true) return runPausedAction(ctx, v, positionals)
   if (v.exec !== true) {
     // Without --exec this is the terminal UI: exec-only flags are a mistake, not something to ignore.
     const tuiOnly = new Set(['prompt', 'exec', ...TUI_FLAGS.map((f) => f.name)])

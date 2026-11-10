@@ -55,7 +55,9 @@ import type {
   ProjectKind,
   ProjectPathCheck,
   Proposal,
+  ProviderModel,
   RpcHelloResult,
+  RunOverrides,
   RunPlan,
   RunStaffing,
   RunStatus,
@@ -67,6 +69,7 @@ import type {
   WorktreeStatus
 } from '../../shared/types'
 import type { HostClient, InprocHostHandle } from '../types'
+import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
 
 // Re-exported for the onboarding props (Onboarding.tsx).
 export type { AgentImportSource }
@@ -494,6 +497,8 @@ export interface TuiHostConnection {
   /** Reconnects with the 'configure' scope (onboarding only). */
   createProject(input: ProjectCreateInput): Promise<Project>
   startSetup(projectId: string): Promise<RunSummary>
+  /** One call on a separate 'configure' connection (run options that widen the project's settings, as exec asks). */
+  callConfigured?<T>(method: string, params: unknown[]): Promise<T>
   close(opts?: { stopInproc?: boolean }): Promise<void>
 }
 
@@ -512,8 +517,17 @@ export interface TuiSessionApi {
   focusRun(runId: string): Promise<void>
   setComposeTarget(t: ComposeTarget): void
   /** Start, send or continue per the state; undefined when nothing was started. */
-  submitPrompt(text: string, opts?: { team?: RunTeam }): Promise<RunSummary | undefined>
-  startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam }): Promise<RunSummary>
+  /** `overrides` apply to a run this starts or continues (exec's run options, never execMode); a send ignores them. */
+  submitPrompt(text: string, opts?: { team?: RunTeam; overrides?: RunOverrides }): Promise<RunSummary | undefined>
+  startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam; overrides?: RunOverrides }): Promise<RunSummary>
+  /** The connected connections' model catalog (/model). */
+  modelCatalog(): Promise<ModelCatalog>
+  /** Switch the followed run's model behind the desktop's guard (modelSwitch.ts); `confirm` is asked for a handoff. */
+  switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }): Promise<SwitchOutcome>
+  /** runs:resumeNow on the followed run (paused for a usage limit); follows the resumed run. */
+  resumeNow(): Promise<RunSummary>
+  /** runs:cancelAutoResume on the followed run: it stays paused. */
+  cancelAutoResume(): Promise<void>
   interrupt(): Promise<void>
   stop(): Promise<void>
   decide(call: DecisionCall): Promise<DecisionOutcome>
@@ -701,7 +715,9 @@ export interface SlashContext {
   openAgent?(arg: string): void
   /** Hide finished agents on / off (optional: older test contexts lack it). */
   toggleFold?(): void
-  newRun(opts: { prompt?: string; team?: RunTeam }): Promise<void>
+  newRun(opts: { prompt?: string; team?: RunTeam; overrides?: RunOverrides }): Promise<void>
+  /** A short list to choose from (/model); undefined when dismissed. Optional: without it the command prints the list. */
+  pick?(title: string, options: readonly { value: string; label: string }[]): Promise<string | undefined>
   switchRun(ref: string): Promise<void>
   confirm(question: string): Promise<boolean>
   openText(title: string, text: string): Promise<void>
@@ -736,6 +752,8 @@ export interface TuiLaunch {
   runId?: string
   prompt?: string
   team?: RunTeam
+  /** Bare `orgai`'s run flags (runStartFlags.ts): for the first run this TUI starts. */
+  overrides?: RunOverrides
   resumeText?: string
   readOnlyReason?: string
   /** No project for the folder: show onboarding. */

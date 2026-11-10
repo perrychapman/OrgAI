@@ -11,6 +11,9 @@
 //    review M12).
 // 2. A `wait` decision policy is refused (exit 2): nothing but this process could answer. SIGINT to an exec process ends
 //    it 130 'interrupted' (POSIX). `resume R1 --exec --prompt more` exits 0, and `resume --exec --prompt-file` exits 0.
+// 3. Run control (cli-parity 3.5): `runs model R1` lists the selection and choices (json, exit 0); `resume R1
+//    --cancel-auto-resume` on an ended run exits 1 with the "not paused any more" hint (a pause lives only in its own
+//    orgai); `resume R1 --now` without a terminal exits 2; `--goal fastest` on bare orgai exits 2 (exec's parser).
 //
 // win32 (review H4): child.kill('SIGINT') is TerminateProcess there, so no handler would run and the exit code would
 // not be 130. The SIGINT case is skipped with a log line. The script has not been run on Windows yet.
@@ -148,6 +151,16 @@ try {
   check(resumed.code === 0 && json(resumed.out)?.exitCode === 0, 'resume R1 --exec --prompt more exits 0', show(resumed))
   const resumedFromFile = await cli(['resume', 'R1', '--exec', '--prompt-file', promptFile, '--output-format', 'json'], { cwd: repo })
   check(resumedFromFile.code === 0 && json(resumedFromFile.out)?.exitCode === 0, 'resume R1 --exec --prompt-file exits 0', show(resumedFromFile))
+
+  // ---------- 3. Run control ----------
+  const models = await cli(['runs', 'model', 'R1', '--output-format', 'json'], { cwd: repo })
+  check(models.code === 0 && typeof json(models.out)?.runId === 'string' && Array.isArray(json(models.out)?.choices), 'runs model R1 lists the selection and the choices', show(models))
+  const cancelEnded = await cli(['resume', 'R1', '--cancel-auto-resume'], { cwd: repo })
+  check(cancelEnded.code === 1 && cancelEnded.err.includes('is not paused any more'), 'resume --cancel-auto-resume on an ended run exits 1 with the hint', show(cancelEnded))
+  const nowNoTty = await cli(['resume', 'R1', '--now'], { cwd: repo })
+  check(nowNoTty.code === 2 && nowNoTty.err.includes('needs a terminal'), 'resume --now without a terminal exits 2', show(nowNoTty))
+  const badGoal = await cli(['--goal', 'fastest', '--', 'do it'], { cwd: repo })
+  check(badGoal.code === 2 && badGoal.err.includes('--goal must be one of balanced, speed, cost.'), "bare orgai validates --goal with exec's parser", show(badGoal))
 } catch (e) {
   check(false, 'cli-exec ran to the end', e instanceof Error ? e.stack : String(e))
 } finally {

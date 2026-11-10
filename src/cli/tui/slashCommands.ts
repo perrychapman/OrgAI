@@ -9,7 +9,10 @@ import { helpKeyLines } from './keymap'
 import { sanitizeTty } from './sanitizeTty'
 import { offersRetro } from './selectors'
 import { usageText } from './usageText'
-import type { RunSummary } from '../../shared/types'
+import { MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE } from '../../shared/liveModelSwitch'
+import type { ProviderModel, RunOverrides, RunSummary } from '../../shared/types'
+import { modelChoices, pickModel } from '../modelSwitch'
+import { parseSlashRunArgs } from '../runStartFlags'
 import type { SlashCommand, SlashContext, TuiState } from './types'
 
 /** One line of untrusted text, sanitized, whitespace folded, at most `max` characters. */
@@ -76,6 +79,73 @@ function stopReason(s: TuiState): string | undefined {
 }
 
 const needsRunReason = (): string => 'Follow a run first (/runs, or start one with /new).'
+
+/** The followed run is paused (a usage limit) and this TUI may act on it. */
+const pausedRun = (s: TuiState): boolean => !s.readOnlyReason && activeSummary(s)?.status === 'paused'
+
+function pausedReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  if (!activeSummary(s)) return needsRunReason()
+  return pausedRun(s) ? undefined : 'This run is not paused.'
+}
+
+/** /new and /ask arguments: leading run flags (exec's parsers, runStartFlags.ts), then the prompt. */
+function startArgs(args: string): { prompt: string; overrides?: RunOverrides } {
+  const { prompt, overrides } = parseSlashRunArgs(args)
+  const clean = cleanText(prompt)
+  return { prompt: clean, ...(overrides ? { overrides } : {}) }
+}
+
+/** "model-id via Anthropic" for notices. */
+const selectionLabel = (m: Pick<ProviderModel, 'id' | 'connection'>): string => `${cleanLine(m.id, 120)} via ${cleanLine(m.connection, 60)}`
+
+/** /model: no argument lists the choices (a picker when the shell has one), else resolves a tier or id and switches. */
+async function runModel(ctx: SlashContext, args: string): Promise<void> {
+  const run = activeSummary(ctx.state())
+  if (!run) {
+    ctx.notify(needsRunReason(), 'warn')
+    return
+  }
+  const catalog = await ctx.session.modelCatalog()
+  const want = cleanLine(args, 200)
+  let selected: ProviderModel | undefined
+  if (!want) {
+    const choices = modelChoices(run, catalog)
+    if (!choices.length) {
+      ctx.notify('No models available on connected connections.', 'warn')
+      return
+    }
+    const current = run.modelSelection ? selectionLabel({ id: run.modelSelection.model, connection: run.modelSelection.connection }) : 'not recorded'
+    const options = choices.map((c) => ({
+      value: JSON.stringify([c.connection, c.id]),
+      label: cleanLine(`${c.label !== c.id ? `${c.label} (${c.id})` : c.id} · ${c.connection}${c.tiers.length ? ` · ${c.tiers.join(', ')}` : ''}${c.current ? ' · current' : c.handoff ? ' · ends session' : ''}`, 160)
+    }))
+    if (!ctx.pick) {
+      await ctx.openText('Models', [`Current: ${current}`, '', ...options.map((o) => `  ${o.label}`), '', 'Switch: /model <tier|model id>'].join('\n'))
+      return
+    }
+    const value = await ctx.pick(`Model (current: ${current})`, options)
+    if (value === undefined) return
+    const [connection, id] = JSON.parse(value) as [string, string]
+    selected = catalog.models.find((m) => m.connection === connection && m.id === id)
+  } else {
+    const picked = pickModel(run, catalog, want)
+    if ('error' in picked) {
+      ctx.notify(cleanLine(picked.error, 200), 'warn')
+      return
+    }
+    selected = picked.model
+  }
+  if (!selected) return
+  if (run.modelSelection?.model === selected.id && run.modelSelection.connection === selected.connection) {
+    ctx.notify(`Already on ${selectionLabel(selected)}.`)
+    return
+  }
+  const out = await ctx.session.switchModel(selected, { confirm: () => ctx.confirm(`${MODEL_HANDOFF_TITLE} ${MODEL_HANDOFF_BODY}`) })
+  if (out.kind === 'cancelled') ctx.notify('Model unchanged.')
+  else if (out.kind === 'applied') ctx.notify(`Model changed to ${selectionLabel(selected)}.`)
+  else ctx.notify(`Model selected for the next message: ${selectionLabel(selected)}.`)
+}
 
 function retroReason(s: TuiState): string | undefined {
   if (s.readOnlyReason) return readOnlyText(s)
@@ -144,26 +214,26 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   {
     name: 'new',
-    args: '[prompt]',
+    args: '[--goal g] [--permission-mode m] [--strict-delegation] [prompt]',
     summary: 'Start a new team run',
     available: canStart,
     unavailableReason: startReason,
     run: (ctx, args) =>
       guarded(ctx, () => {
-        const prompt = cleanText(args)
-        return ctx.newRun(prompt ? { prompt } : {})
+        const { prompt, overrides } = startArgs(args)
+        return ctx.newRun({ ...(prompt ? { prompt } : {}), ...(overrides ? { overrides } : {}) })
       })
   },
   {
     name: 'ask',
-    args: '[prompt]',
+    args: '[--goal g] [--permission-mode m] [--strict-delegation] [prompt]',
     summary: 'Ask one assistant (no team)',
     available: canStart,
     unavailableReason: startReason,
     run: (ctx, args) =>
       guarded(ctx, () => {
-        const prompt = cleanText(args)
-        return ctx.newRun(prompt ? { prompt, team: 'single' } : { team: 'single' })
+        const { prompt, overrides } = startArgs(args)
+        return ctx.newRun({ ...(prompt ? { prompt } : {}), team: 'single', ...(overrides ? { overrides } : {}) })
       })
   },
   {
@@ -200,6 +270,38 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     available: interruptible,
     unavailableReason: interruptReason,
     run: (ctx) => guarded(ctx, () => ctx.session.interrupt())
+  },
+  {
+    name: 'model',
+    args: '[<tier|model id>]',
+    summary: "Switch the run's model (a short list without an argument)",
+    available: (s) => !s.readOnlyReason && s.activeRunId !== undefined,
+    unavailableReason: (s) => (s.readOnlyReason ? readOnlyText(s) : needsRunReason()),
+    run: (ctx, args) => guarded(ctx, () => runModel(ctx, args))
+  },
+  {
+    name: 'resume-now',
+    aliases: ['resumenow'],
+    summary: 'Resume this run, paused for a usage limit, now',
+    available: pausedRun,
+    unavailableReason: pausedReason,
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        await ctx.session.resumeNow()
+        ctx.notify('Resumed.')
+      })
+  },
+  {
+    name: 'cancel-resume',
+    aliases: ['keep-paused'],
+    summary: 'Keep this paused run paused (no automatic resume)',
+    available: (s) => pausedRun(s) && activeSummary(s)?.autoResume === true,
+    unavailableReason: (s) => pausedReason(s) ?? 'This run is not set to resume by itself.',
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        await ctx.session.cancelAutoResume()
+        ctx.notify('The run stays paused. /resume-now resumes it.')
+      })
   },
   {
     name: 'stop',
