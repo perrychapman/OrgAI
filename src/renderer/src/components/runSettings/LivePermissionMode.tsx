@@ -142,8 +142,23 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
       const now = permissionBaseline(summary, project)
       if (!retryNeedsConfirm(covered, now, target)) return true
       const accepted = await confirm(wideningConfirmOptions(now, target))
-      if (accepted) covered = now
-      return accepted
+      if (!accepted) {
+        if (alive.current) setNote(null)
+        return false
+      }
+      // The baseline can move again while the dialog is open: re-read once and stop rather than send unconfirmed.
+      const fresh = await window.orgai.runs.get(run.id).catch(() => null)
+      if (!fresh || retryNeedsConfirm(now, permissionBaseline(fresh.summary, project), target)) {
+        stop('The permission mode in force changed. Choose the mode again.')
+        return false
+      }
+      covered = now
+      return true
+    }
+    const stop = (message: string): void => {
+      if (!alive.current) return
+      setNote({ tone: 'refused', message, status: run.status, mode: target, covered, seen: inForce, canInterrupt: false })
+      setAnnouncement(message)
     }
     setPending(true)
     let interrupted = false
@@ -159,10 +174,7 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
       }
       // Before anything is interrupted: the run's mode may have moved since the choice was made (a project change
       // narrowed it), which can turn the retry into a widening nobody confirmed.
-      if (current && !(await confirmedAgainst(current.summary))) {
-        if (alive.current) setNote(null)
-        return
-      }
+      if (current && !(await confirmedAgainst(current.summary))) return
       interrupted = true
       await window.orgai.runs.interrupt(run.id)
       try {
@@ -174,10 +186,11 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
       }
       // The mode can also move while waiting for the boundary: check once more against what is in force now.
       const settled = await window.orgai.runs.get(run.id).catch(() => null)
-      if (settled && !(await confirmedAgainst(settled.summary))) {
-        if (alive.current) setNote(null)
+      if (!settled) {
+        stop('The permission mode was not changed. The conversation could not be read.')
         return
       }
+      if (!(await confirmedAgainst(settled.summary))) return
       record(target, await window.orgai.runs.setPermissionMode({ runId: run.id, mode: target }), true, covered)
     } catch (e) {
       if (!alive.current) return
