@@ -5,6 +5,7 @@ import type { Project, Role } from '@shared/types'
 import { projectConnection, roleConnection } from '@shared/defaults'
 import RoleModelPicker from './RoleModelPicker'
 import RoleCapabilities from './team/RoleCapabilities'
+import RoleStaffingControls from './team/RoleStaffingControls'
 import type { CapabilityKind } from './team/CapabilityBlock'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
@@ -155,6 +156,7 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
             <span className="role-fold-summary muted">{modelFoldSummary(roleModelSummary(role, tierModels ?? {}), roleConnection(role, project), projectConnection(project))}</span>
           </summary>
           <RoleModelPicker project={project} role={role} />
+          <RoleStaffingControls project={project} role={role} />
         </details>
 
         <section className="stack-2" aria-labelledby={id('delegation')}>

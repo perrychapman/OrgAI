@@ -1,3 +1,4 @@
+import { kitRoleSpend } from '../../lib/roleStaffing'
 import type { ReactElement } from 'react'
 import { useId, useState } from 'react'
 import { CircleAlert, CircleDot, Equal, KeyRound, TriangleAlert } from 'lucide-react'
@@ -293,6 +294,11 @@ function ItemDetail({ item }: { item: KitPreviewItem }): ReactElement | null {
           {item.roles.map((r, i) => (
             <li key={`${r.slug}-${i}`} className="kit-role">
               <span className="kit-role-name">{clampLabel(showHidden(r.name), 60)}</span>
+              {kitRoleSpend(r, {}) && (
+                <span className="muted" data-testid="kit-role-spend">
+                  {clampLabel(showHidden(kitRoleSpend(r, {})!.text), 80)}
+                </span>
+              )}
               {r.elevatedTools.map((t) => (
                 <Badge key={t} tone="attention">
                   {ELEVATED_LABEL[t] ?? showHidden(String(t))}
