@@ -274,6 +274,7 @@ Read from the installed typings, no smoke run (no tokens spent). Used by `setPer
   have applied it) marks the thread `unknown` in `policyPending`: it counts under the sent mode and every earlier one,
   between turns too, and its next turn/start sends all three policy fields (`fullPolicyOverride`) until one succeeds
   (review M1). Whether Codex applies a turn/start whose answer OrgAI timed out on is unverified live.
+- `setPermissionMode` refusals written by OrgAI as fixed text throw `PermissionModeRefusal` (`runtime/permissionModeRefusal.ts`, `userSafe`), which RunManager may show verbatim; anything derived from an SDK / CLI error stays a plain `Error` (Claude: "could not change its permission mode now", raw text only in the redacted run log). Fake-query / fake-app-server / mock unit tests; live unverified.
 - Accept-edits grants: each adapter calls `RuntimeContext.acceptEditsGranted()` once per applied session / project
   grant of a setMode acceptEdits (Claude where `updatedPermissions` carries it, Codex / mock where they set
   `sessionAcceptEdits`), never on allow-once, and drops its own grant when a live change goes to default, plan or

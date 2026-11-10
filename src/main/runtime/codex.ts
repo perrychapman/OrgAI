@@ -3,7 +3,8 @@ import { canNarrowPermissionMode } from './runOverrides'
 import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, projectKindOf, settingTier } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
-import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult, type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
+import { PermissionModeRefusal } from './permissionModeRefusal'
+import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult,type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, codexStartLockKey, withCodexStartLock, type CodexAppServerOptions } from './codexAppServer'
 import { catalogStartFailure, nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
 import { startCodexToolGateway } from './codexToolGateway'
@@ -625,16 +626,16 @@ class CodexSession implements RuntimeSession {
    * a card's session accept-edits grant. Open cards stay open; session rules are untouched.
    */
   async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
-    if (this.ctx.bridgedChild) throw new Error('Only the run root can change the permission mode.')
-    if (this.setupLike) throw new Error('This run keeps its own permission mode.')
-    if (this.ending || this.ended || !this.rootThreadId || !this.threads.has(this.rootThreadId)) throw new Error('This session is not live. The mode will apply when the run continues.')
-    if (this.restarting || this.mcpRestartPending || this.threadStarts > 0) throw new Error('The session is starting a thread or restarting. Try again in a moment.')
+    if (this.ctx.bridgedChild) throw new PermissionModeRefusal('Only the run root can change the permission mode.')
+    if (this.setupLike) throw new PermissionModeRefusal('This run keeps its own permission mode.')
+    if (this.ending || this.ended || !this.rootThreadId || !this.threads.has(this.rootThreadId)) throw new PermissionModeRefusal('This session is not live. The mode will apply when the run continues.')
+    if (this.restarting || this.mcpRestartPending || this.threadStarts > 0) throw new PermissionModeRefusal('The session is starting a thread or restarting. Try again in a moment.')
     if (isTrustRestrictedRun(this.ctx.run) && (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions')) {
-      throw new Error('This run asks before each change, so it cannot use that permission mode.')
+      throw new PermissionModeRefusal('This run asks before each change, so it cannot use that permission mode.')
     }
-    if (mode === 'bypassPermissions' && this.hasReferenceFolders()) throw new Error('Reference folders keep this run asking before writes outside the project, so it cannot use Bypass permissions.')
+    if (mode === 'bypassPermissions' && this.hasReferenceFolders()) throw new PermissionModeRefusal('Reference folders keep this run asking before writes outside the project, so it cannot use Bypass permissions.')
     if (this.activeTurn.has(this.rootThreadId) || this.queues.has(this.rootThreadId)) {
-      throw new Error('Codex applies a new permission mode when a turn starts. Interrupt the run or wait until the orchestrator is idle, then change it.')
+      throw new PermissionModeRefusal('Codex applies a new permission mode when a turn starts. Interrupt the run or wait until the orchestrator is idle, then change it.')
     }
     let reportsUnchanged = 0
     for (const [threadId, info] of this.threads) {

@@ -96,6 +96,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 })
 
 import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, cliProjectSettings, cliShellAskReason, CLI_SETTINGS_MAX_BYTES, CLI_SETTINGS_UNREADABLE_REASON, toSdkSessionUpdates, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudeMcpServersForArgv, toClaudePlugins, usesProxy } from './claude'
+import { PermissionModeRefusal } from './permissionModeRefusal'
 import { DEFAULT_MAX_CONCURRENT_SUBAGENTS, compareEffort, compareTier, effortOptionsFor, settingTier } from '@shared/defaults'
 import { resolveStaffing } from './staffing'
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
@@ -3121,6 +3122,7 @@ describe('ClaudeSession live permission mode (fake query)', () => {
     const plain = await live()
     expect(plain.q.options.allowDangerouslySkipPermissions).toBe(false)
     await expect(plain.session.setPermissionMode('bypassPermissions')).rejects.toThrow('applies from the next session')
+    await expect(plain.session.setPermissionMode('bypassPermissions')).rejects.toBeInstanceOf(PermissionModeRefusal)
     expect(plain.q.setPermissionMode).not.toHaveBeenCalled()
     await plain.session.stop()
     sdk.queries.length = 0
@@ -3420,6 +3422,8 @@ describe('ClaudeSession live permission mode (fake query)', () => {
     q.setPermissionMode.mockRejectedValueOnce(new Error('control request failed at C:\\secret\\path'))
     const err = await session.setPermissionMode('plan').catch((e: Error) => e)
     expect((err as Error).message).toBe('The session could not change its permission mode now.')
+    expect(err).not.toBeInstanceOf(PermissionModeRefusal)
+    expect((err as { userSafe?: boolean }).userSafe).toBeUndefined()
     expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('control request failed'))).toBe(true)
     await session.stop()
     await expect(session.setPermissionMode('plan')).rejects.toThrow('not live')
@@ -3430,6 +3434,7 @@ describe('ClaudeSession live permission mode (fake query)', () => {
 
   it('refuses setup-like runs', async () => {
     const { session, q } = await live({ run: runSummary({ kind: 'setup' }) })
+    await expect(session.setPermissionMode('plan')).rejects.toBeInstanceOf(PermissionModeRefusal)
     await expect(session.setPermissionMode('plan')).rejects.toThrow('keeps its own permission mode')
     expect(q.setPermissionMode).not.toHaveBeenCalled()
   })

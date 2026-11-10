@@ -34,7 +34,8 @@ import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConne
 import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingModeOf, tierForModel } from '@shared/defaults'
 import { CLAUDE_TIER_ALIAS, recordStaffing, roleModelTier } from './staffing'
 import { StaffingBook } from './staffingBook'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgedRole, type BridgeSpawnResult, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
+import { PermissionModeRefusal } from './permissionModeRefusal'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo,type BridgedRole, type BridgeSpawnResult, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { quickEditCard, quickEditFree } from './quickEditCard'
 import { hiddenCharIn } from '../capabilities/sanitize'
@@ -1673,16 +1674,16 @@ export class ClaudeSession implements RuntimeSession {
    * replaced, and re-issued once when a grant reached the CLI while the change was in flight (review M2).
    */
   async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
-    if (this.ctx.bridgedChild) throw new Error('Only the run root can change the permission mode.')
-    if (isSetupLikeRun(this.ctx.run.kind)) throw new Error('This run keeps its own permission mode.')
-    if (this.ending || this.abort.signal.aborted || !this.q) throw new Error('This session is not live. The mode will apply when the run continues.')
-    if (!this.queryInitSeen || this.restarting || this.nextQuery) throw new Error('The session is starting or restarting. Try again in a moment.')
-    if (this.pendingMode) throw new Error('A permission mode change is already in progress. Try again in a moment.')
+    if (this.ctx.bridgedChild) throw new PermissionModeRefusal('Only the run root can change the permission mode.')
+    if (isSetupLikeRun(this.ctx.run.kind)) throw new PermissionModeRefusal('This run keeps its own permission mode.')
+    if (this.ending || this.abort.signal.aborted || !this.q) throw new PermissionModeRefusal('This session is not live. The mode will apply when the run continues.')
+    if (!this.queryInitSeen || this.restarting || this.nextQuery) throw new PermissionModeRefusal('The session is starting or restarting. Try again in a moment.')
+    if (this.pendingMode) throw new PermissionModeRefusal('A permission mode change is already in progress. Try again in a moment.')
     const mapped = claudePermissionMode(this.ctx, mode)
-    if (mapped !== mode) throw new Error('This run asks before each change, so it cannot use that permission mode.')
+    if (mapped !== mode) throw new PermissionModeRefusal('This run asks before each change, so it cannot use that permission mode.')
     if (mode === 'bypassPermissions') {
-      if (!claudeAllowsBypass(this.ctx, mode)) throw new Error('This run cannot use Bypass permissions.')
-      if (!this.queryBypass) throw new Error('This session started without Bypass permissions, so it applies from the next session. End the session, then choose it before you continue.')
+      if (!claudeAllowsBypass(this.ctx, mode)) throw new PermissionModeRefusal('This run cannot use Bypass permissions.')
+      if (!this.queryBypass) throw new PermissionModeRefusal('This session started without Bypass permissions, so it applies from the next session. End the session, then choose it before you continue.')
     }
     const q = this.q
     const grantsBefore = this.acceptEditsGrants
@@ -1698,8 +1699,8 @@ export class ClaudeSession implements RuntimeSession {
         throw new Error('The session could not change its permission mode now.')
       }
       // The query changed under the await (a restart): the change reached a query that is gone (review L2).
-      if (this.ending || this.abort.signal.aborted) throw new Error('This session is not live. The mode will apply when the run continues.')
-      if (this.q !== q || this.restarting || this.nextQuery) throw new Error('The session is starting or restarting. Try again in a moment.')
+      if (this.ending || this.abort.signal.aborted) throw new PermissionModeRefusal('This session is not live. The mode will apply when the run continues.')
+      if (this.q !== q || this.restarting || this.nextQuery) throw new PermissionModeRefusal('The session is starting or restarting. Try again in a moment.')
       this.liveMode = mode
       if (this.acceptEditsGrants !== grantsBefore) {
         // A card's accept-edits grant reached the CLI while the change was in flight and may have landed after it
