@@ -21,8 +21,14 @@ export const ENTRY: CommandEntry = {
     { name: 'max-auto-continues', takesValue: true, summary: 'set: at most this many automatic continues' },
     { name: 'run-messaging', takesValue: true, values: ['on', 'off'], summary: 'set: let runs message each other' },
     { name: 'isolate-writers', takesValue: true, values: ['on', 'off'], summary: 'set: give each writing report its own worktree' },
-    { name: 'keep-runs', takesValue: false, summary: 'remove: keep the run records (code projects only)' },
-    { name: 'yes', short: 'y', takesValue: false, summary: 'remove: do not ask for confirmation' }
+    { name: 'staffing', takesValue: true, values: ['auto', 'fixed'], summary: 'set: let the harness pick each report\'s tier and effort (auto) or not (fixed)' },
+    { name: 'staffing-goal', takesValue: true, values: ['balanced', 'speed', 'cost'], summary: 'set: what automatic staffing optimizes for' },
+    { name: 'review-policy', takesValue: true, values: ['always', 'risk', 'never'], summary: 'set: when a report is reviewed' },
+    { name: 'review-merges', takesValue: true, values: ['on', 'off'], summary: 'set: pause to review each report\'s branch before it merges' },
+    { name: 'max-window-share', takesValue: true, summary: 'set: percent (1-100) of the five-hour plan window one run may use, or auto (off)' },
+    { name: 'connection', takesValue: true, summary: 'set: move the project to this connection and remap its role models' },
+    { name: 'keep-runs', takesValue: false, summary: 'remove: keep the run records (code projects only); set: takes <n|auto>, the run records to keep' },
+    { name: 'yes', short: 'y', takesValue: false, summary: 'remove / set: do not ask for confirmation' }
   ],
   available: true
 }

@@ -17,10 +17,20 @@ import {
   projectConnection,
   projectKindLabel,
   projectKindOf,
-  runMessagingOn
+  reviewPolicyOf,
+  runMessagingOn,
+  staffingGoalOf,
+  staffingModeOf
 } from '../../shared/defaults'
 import {
+  DEFAULT_KEEP_RUNS,
   DEFAULT_MAX_AUTO_CONTINUES,
+  REVIEW_POLICIES,
+  STAFFING_GOALS,
+  STAFFING_MODES,
+  isReviewPolicy,
+  isStaffingGoal,
+  isStaffingMode,
   isVirtualProjectId,
   type AgentImportSource,
   type OrgTemplateInfo,
@@ -30,9 +40,13 @@ import {
   type ProjectPathCheck,
   type ProjectRemoveResult,
   type QuickRunPromoteResult,
+  type RemapModelsInput,
+  type RemapModelsOutput,
+  type RemapResult,
   type RunSummary
 } from '../../shared/types'
 import { resolveProject } from '../client/resolveProject'
+import { connectionArg, labelOfId } from './connections'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, requireProject, runSubcommands, withHost } from '../manage'
 import { emit, isJsonOutput, plural, safe, safeLine, styleFor, table, termWidth, type Json } from '../output'
@@ -190,6 +204,13 @@ export function projectFacts(p: Project): Json {
     maxAutoContinues: p.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
     runMessaging: runMessagingOn(p),
     isolateWriters: isolateWritersOn(p),
+    staffing: staffingModeOf(p),
+    staffingGoal: staffingGoalOf(p),
+    reviewPolicy: reviewPolicyOf(p),
+    reviewMerges: p.reviewMerges === true,
+    maxWindowShare: typeof p.maxWindowShare === 'number' && p.maxWindowShare > 0 ? p.maxWindowShare : null,
+    keepRuns: p.keepRuns ?? DEFAULT_KEEP_RUNS,
+    brief: p.brief ?? '',
     roles: Array.isArray(p.roles) ? p.roles.length : 0,
     mcpServers: p.mcpServers?.length ?? 0,
     skills: p.skills?.length ?? 0,
@@ -221,8 +242,17 @@ export function projectLines(ctx: CliContext, p: Project): string[] {
     `  Auto-continue:   ${onOff(p.autoContinue !== false)} (at most ${p.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES})`,
     `  Run messaging:   ${onOff(runMessagingOn(p))}`,
     `  Isolate writers: ${onOff(isolateWritersOn(p))}`,
+    `  Review merges:   ${onOff(p.reviewMerges === true)}`,
+    `  Staffing:        ${staffingModeOf(p) === 'auto' ? 'Automatic' : 'Fixed'}`,
+    `  Staffing goal:   ${staffingGoalOf(p)}`,
+    `  Review policy:   ${reviewPolicyOf(p)}`,
+    `  Window share:    ${typeof p.maxWindowShare === 'number' && p.maxWindowShare > 0 ? `${p.maxWindowShare}% of the five-hour window per run` : 'off'}`,
+    `  Runs kept:       ${p.keepRuns === undefined ? `Automatic (${DEFAULT_KEEP_RUNS})` : String(p.keepRuns)}`,
     `  Team:            ${plural(Array.isArray(p.roles) ? p.roles.length : 0, 'role')}, ${plural(p.mcpServers?.length ?? 0, 'MCP server')}, ${plural(p.skills?.length ?? 0, 'skill')}`
   )
+  const brief = (p.brief ?? '').trim()
+  lines.push(`  Brief:           ${brief ? '' : st.dim('not set')}`.trimEnd())
+  if (brief) for (const l of safe(brief.length > 1000 ? `${brief.slice(0, 1000)}...` : brief).split('\n')) lines.push(`    ${l}`)
   const folders = (label: string, list: string[] | undefined): void => {
     if (!list?.length) return
     lines.push(`  ${label}`)
@@ -332,10 +362,18 @@ const SET_FLAGS = {
   'auto-continue': { type: 'string' },
   'max-auto-continues': { type: 'string' },
   'run-messaging': { type: 'string' },
-  'isolate-writers': { type: 'string' }
+  'isolate-writers': { type: 'string' },
+  staffing: { type: 'string' },
+  'staffing-goal': { type: 'string' },
+  'review-policy': { type: 'string' },
+  'review-merges': { type: 'string' },
+  'max-window-share': { type: 'string' },
+  'keep-runs': { type: 'string' },
+  connection: { type: 'string' },
+  yes: { type: 'boolean', short: 'y' }
 } as const
 
-type SetValues = Partial<Record<keyof typeof SET_FLAGS, string>>
+type SetValues = Partial<Record<Exclude<keyof typeof SET_FLAGS, 'yes'>, string>>
 
 /** A clearable field's "clear" value on the wire: null (the host decodes it to an own undefined). */
 const CLEAR = null
@@ -393,18 +431,84 @@ export function setPatch(project: Project, v: SetValues): Record<string, unknown
   if (v['max-auto-continues'] !== undefined) patch.maxAutoContinues = intArg('max-auto-continues', v['max-auto-continues'], 0, 1000)
   if (v['run-messaging'] !== undefined) patch.runMessaging = onOffArg('run-messaging', v['run-messaging'])
   if (v['isolate-writers'] !== undefined) patch.isolateWriters = onOffArg('isolate-writers', v['isolate-writers'])
+  // Run staffing, as Settings > Limits > Run staffing: the default value clears the field (an own undefined, which the
+  // JSON wire drops; these three are not in the codec's null list).
+  if (v.staffing !== undefined) {
+    if (!isStaffingMode(v.staffing)) throw usage(`--staffing must be one of ${STAFFING_MODES.join(', ')}.`)
+    patch.staffing = v.staffing === 'auto' ? undefined : v.staffing
+  }
+  if (v['staffing-goal'] !== undefined) {
+    if (!isStaffingGoal(v['staffing-goal'])) throw usage(`--staffing-goal must be one of ${STAFFING_GOALS.join(', ')}.`)
+    patch.staffingGoal = v['staffing-goal'] === 'balanced' ? undefined : v['staffing-goal']
+  }
+  if (v['review-policy'] !== undefined) {
+    if (!isReviewPolicy(v['review-policy'])) throw usage(`--review-policy must be one of ${REVIEW_POLICIES.join(', ')}.`)
+    patch.reviewPolicy = v['review-policy'] === 'risk' ? undefined : v['review-policy']
+  }
+  if (v['review-merges'] !== undefined) patch.reviewMerges = onOffArg('review-merges', v['review-merges'])
+  if (v['max-window-share'] !== undefined) {
+    // Stored as a percent of the five-hour window (1 to 100), as the desktop Limits field; auto = off.
+    const raw = v['max-window-share'].trim().replace(/%$/, '')
+    if (raw === 'auto') patch.maxWindowShare = CLEAR
+    else {
+      const n = /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : NaN
+      if (!(n >= 1 && n <= 100)) throw usage('--max-window-share must be a percent of the five-hour window from 1 to 100 (not a fraction), or auto.')
+      patch.maxWindowShare = n
+    }
+  }
+  if (v['keep-runs'] !== undefined) patch.keepRuns = v['keep-runs'].trim() === 'auto' ? CLEAR : intArg('keep-runs', v['keep-runs'], 1, 5000, true)
   return patch
 }
 
+/** One sentence when the patch moves staffing from fixed to automatic (it can raise spend); null otherwise. */
+export function staffingSpendSentence(project: Project, patch: Record<string, unknown>): string | null {
+  if (!('staffing' in patch) || patch.staffing !== undefined) return null
+  if (staffingModeOf(project) !== 'fixed') return null
+  return 'Automatic staffing lets each report run at a higher tier or effort than its role is set to, which may spend more.'
+}
+
+function connectionPatchArg(project: Project, raw: string): RemapModelsInput | null {
+  const to = connectionArg(raw)
+  return to === projectConnection(project) ? null : { projectId: project.id, connection: to }
+}
+
 const runSet: CommandFn = async (ctx, args) => {
-  const { values, positionals } = parseFlags(args, SET_FLAGS)
+  const { values: all, positionals } = parseFlags(args, SET_FLAGS)
+  const { yes, ...values } = all
   if (positionals.length > 1) throw usage('Use: orgai projects set [<id-or-path>] [--name ...] [--max-budget <usd|none>] [--max-depth <n|auto>] ...')
-  if (Object.keys(values).length === 0) throw usage(`Nothing to change. Flags: ${Object.keys(SET_FLAGS).map((f) => `--${f}`).join(', ')}.`)
+  if (Object.keys(values).length === 0) throw usage(`Nothing to change. Flags: ${Object.keys(SET_FLAGS).filter((f) => f !== 'yes').map((f) => `--${f}`).join(', ')}.`)
+  const { connection: connectionFlag, ...fields } = values
+  if (connectionFlag !== undefined) connectionArg(connectionFlag) // exit 2 before any host starts
   return withHost(ctx, [...CONFIGURE], async (client) => {
     const found = await projectFromArg(ctx, client, positionals[0])
     const fresh = await getProject(client, found.id)
-    const patch = setPatch(fresh, values)
-    const saved = await hostCall<Project>(client, 'projects:save', [{ ...fresh, ...patch }])
+    const patch = setPatch(fresh, fields)
+    const spend = staffingSpendSentence(fresh, patch)
+    if (spend && !(await confirm(ctx, `${spend} Switch ${safeLine(fresh.name)} to automatic staffing?`, yes === true))) {
+      emit(ctx, { saved: false }, () => 'Nothing changed.')
+      return EXIT.failure
+    }
+    // --connection goes through the preview and remap `orgai models remap --to <id> --apply` uses, never a raw write.
+    const remap = connectionFlag !== undefined ? connectionPatchArg(fresh, connectionFlag) : null
+    if (remap) {
+      const preview = await hostCall<RemapResult>(client, 'projects:previewRemap', [remap])
+      if (!isJsonOutput(ctx)) {
+        const n = preview.changes.length
+        ctx.io.stderr.write(
+          `${[
+            `${n} role model${n === 1 ? '' : 's'} in ${safeLine(fresh.name)} on ${labelOfId(preview.connection)}:`,
+            ...preview.changes.map((c) => `  ${safeLine(fresh.roles.find((r) => r.id === c.roleId)?.name ?? c.roleId)}: ${safeLine(c.from)} -> ${safeLine(c.to)}`)
+          ].join('\n')}\n`
+        )
+      }
+      if (!(await confirm(ctx, `Move ${safeLine(fresh.name)} to ${labelOfId(remap.connection!)} and save these models?`, yes === true))) {
+        emit(ctx, { saved: false }, () => 'Nothing changed.')
+        return EXIT.failure
+      }
+    }
+    let saved = fresh
+    if (Object.keys(patch).length) saved = await hostCall<Project>(client, 'projects:save', [{ ...fresh, ...patch }])
+    if (remap) saved = (await hostCall<RemapModelsOutput>(client, 'projects:remapModels', [remap])).project
     emit(ctx, { project: projectFacts(saved) }, () => [`Saved ${safeLine(saved.name)}.`, ...projectLines(ctx, saved).slice(1)])
     return EXIT.ok
   })
