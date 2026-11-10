@@ -137,6 +137,11 @@ self-help entry point; clearing the knowledge graph; run rename, dismiss and pro
   `exec`, never to a session whose ancestry includes an agent process, never with `--yes`. The TUI offers the
   same as cards in the Decision Tray.
 - This phase gets an independent security review before merge; a Medium or higher finding blocks it.
+- As built (cp/approvals; the gate, its checks and residual risks are in `docs/agent-notes/cli-host.md` "Approvals at
+  the terminal"): the desktop channels stay `desktop_only`; two new socket-only channels `approvals:offer` /
+  `approvals:answer` form the scope `attested_approve`, granted only to the TUI's own connection after the host attests
+  its terminal. Deciding happens only in the TUI's `/approvals` overlay (a typed code for approve, undo and allow);
+  `team files approve|reject|undo|commit` and `projects trust allow|deny` only say so (exit 2).
 
 ### 3.5 Acting on a run (B8, I7, I8, I9, I15)
 

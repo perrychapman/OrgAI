@@ -10,11 +10,13 @@
  *   desktop's cleaning and the team files gate's spend rule (teamRoleEdit.ts).
  * - `team plugins [list]`, `team plugins add --path <dir> [--name] [--id] [--disabled] [--skip-mcp]`, `team plugins
  *   remove <id> [--yes]` (configure).
+ * - `team files [status]` (read, cli-parity 3.4): pending team-file changes; approving is the TUI's /approvals only.
  */
 import { isAbsolute, resolve } from 'node:path'
 import { newId } from '../../shared/defaults'
 import { hasHidden, showHidden } from '../../shared/view/hiddenChars'
-import type { AgentImportApplyResult, OrgTemplateInfo, PluginSpec, Project, Role } from '../../shared/types'
+import type { AgentImportApplyResult, OrgTemplateInfo, PluginSpec, Project, Role, TeamFilesStatus } from '../../shared/types'
+import { APPROVE_WHERE, NO_APPROVE_COMMAND, teamFilesStatusLines } from '../approvalText'
 import { formatDate } from '../../shared/view/dates'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, requireProject, runSubcommands, withHost, type SubcommandFn } from '../manage'
@@ -24,9 +26,43 @@ import { checkArg, findRole, NO_UNDO, NO_UNDO_AFTER, onlyPositionals, projectJso
 import { connectionLabels, roleAdd, roleMove, roleRemove, roleSet, roleSummaryLines } from './teamRoleEdit'
 
 const USAGE =
-  'team templates [list] | templates save --name <name> [--description <text>] | templates apply <id> [--mode replace|merge] [--yes] | templates remove <id> [--yes] | roles | role <name-or-slug> | role add <name> --reports-to <role> [flags] | role set <role> [flags] | role rm <role> [--reparent-to <role>] | role move <role> --reports-to <role> | plugins [list] | plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp] | plugins remove <id> [--yes]'
+  'team files [status] | team templates [list] | templates save --name <name> [--description <text>] | templates apply <id> [--mode replace|merge] [--yes] | templates remove <id> [--yes] | roles | role <name-or-slug> | role add <name> --reports-to <role> [flags] | role set <role> [flags] | role rm <role> [--reparent-to <role>] | role move <role> --reports-to <role> | plugins [list] | plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp] | plugins remove <id> [--yes]'
 
-export const runTeam: CommandFn = (ctx, args) => runSubcommands(ctx, args, { templates: teamTemplates, roles: teamRoles, role: teamRoleRouter, plugins: teamPlugins }, USAGE)
+export const runTeam: CommandFn = (ctx, args) => runSubcommands(ctx, args, { templates: teamTemplates, roles: teamRoles, role: teamRoleRouter, plugins: teamPlugins, files: teamFilesRouter }, USAGE)
+
+// ---------- team files (cli-parity 3.4) ----------
+
+/**
+ * `team files [status]` lists the pending team-file changes (teamFiles:listAttention, read scope) with the gate's
+ * summary of each. `team files approve | reject | undo | commit | enable` never decide anything: they say where a
+ * person decides (the TUI's /approvals, behind the host's terminal attestation) and exit 2 without starting a host,
+ * whatever flags follow (--yes included).
+ */
+const teamFilesRouter: SubcommandFn = (ctx, args) => {
+  const sub = args[0]
+  if (sub === undefined || sub.startsWith('-') || sub === 'status') return teamFilesStatus(ctx, sub === 'status' ? args.slice(1) : args)
+  if (['approve', 'reject', 'undo', 'commit', 'enable'].includes(sub)) throw new CliError(NO_APPROVE_COMMAND, EXIT.usage)
+  throw new CliError(`Unknown subcommand 'files ${safeLine(sub).slice(0, 64)}'. Usage: orgai team files [status]`, EXIT.usage)
+}
+
+const teamFilesStatus: SubcommandFn = async (ctx, args) => {
+  const { positionals } = parseFlags(args, {})
+  onlyPositionals(positionals, 0, 'team files status')
+  return withHost(ctx, ['read'], async (client) => {
+    let list = await hostCall<TeamFilesStatus[]>(client, 'teamFiles:listAttention', [])
+    list = Array.isArray(list) ? list : []
+    let scope = ''
+    if (ctx.globals.project !== undefined) {
+      const project = await requireProject(ctx, client)
+      list = list.filter((s) => s.projectId === project.id)
+      scope = ` in ${safeLine(project.name)}`
+    }
+    emit(ctx, { teamFiles: list, approve: APPROVE_WHERE }, () =>
+      list.length ? [...list.flatMap((s, i) => [...(i ? [''] : []), ...teamFilesStatusLines(s)]), '', APPROVE_WHERE] : `No team-file changes wait for approval${scope}.`
+    )
+    return EXIT.ok
+  })
+}
 
 /** `team role <x>` shows a role; `team role add|set|rm|move|show` edit or show (a role named "set" is `team role show set`). */
 const ROLE_ACTIONS: Record<string, SubcommandFn> = { add: roleAdd, set: roleSet, rm: roleRemove, remove: roleRemove, move: roleMove, show: (ctx, args) => teamRole(ctx, args) }

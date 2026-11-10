@@ -12,6 +12,11 @@
  */
 import {
   VIRTUAL_PROJECT_IDS,
+  type ApprovalAction,
+  type ApprovalAnswerResult,
+  type ApprovalOffer,
+  type FolderConfigReview,
+  type TeamFilesStatus,
   type CardKind,
   type DecisionOutcome,
   type HostKind,
@@ -35,6 +40,8 @@ import { CliError, EXIT, type CliContext, type ConnectResult, type HostCallError
 import { overridesNeedConfigure } from '../commands/exec'
 import { loadModelCatalog, switchRunModel } from '../modelSwitch'
 import { composerMode, offersRetro } from './selectors'
+import { approvalItems, waitingNotice, type ApprovalItem } from './approvals'
+import { projectKindOf } from '../../shared/defaults'
 import {
   addNotice,
   applyEvent,
@@ -59,7 +66,11 @@ import type {
   TuiState
 } from './types'
 
-export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide']
+/**
+ * 'attested_approve' (cli-parity 3.4): the host grants it only after attesting this terminal (host.hello
+ * approvalsWithheld says why not); every other scope is unaffected when it is withheld.
+ */
+export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'attested_approve']
 export const TUI_CONFIGURE_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
 /** How long a decision call may take (a proposal approval applies changes before it answers). */
 export const TUI_DECIDE_TIMEOUT_MS = 120_000
@@ -472,6 +483,14 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return summary
   }
 
+  // /approvals reads (read scope): every project's pending team files, and the current code project's folder config.
+  const waitingReads = async (): Promise<{ attention: TeamFilesStatus[]; folderConfig?: FolderConfigReview }> => {
+    const attention = await call<TeamFilesStatus[]>('teamFiles:listAttention', [])
+    const p = state.project
+    const folderConfig = p && projectKindOf(p) === 'code' ? await call<FolderConfigReview>('projects:folderConfig', [p.id]).catch(() => undefined) : undefined
+    return { attention: Array.isArray(attention) ? attention : [], ...(folderConfig ? { folderConfig } : {}) }
+  }
+
   const api: TuiSessionApi = {
     getState: () => state,
     subscribe(listener) {
@@ -526,6 +545,26 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       return adopt(next)
     },
     modelCatalog: () => loadModelCatalog(call),
+    approvals: {
+      withheld: () => {
+        const hello = client().hello
+        if (hello.grantedScopes.includes('attested_approve')) return undefined
+        return hello.approvalsWithheld ?? 'This terminal was not granted approvals.'
+      },
+      async list() {
+        const { attention, folderConfig } = await waitingReads()
+        const p = state.project
+        return approvalItems(attention, p ? { id: p.id, name: p.name, code: projectKindOf(p) === 'code', ...(folderConfig ? { folderConfig } : {}) } : undefined)
+      },
+      async waiting() {
+        const { attention, folderConfig } = await waitingReads()
+        return waitingNotice(attention, folderConfig)
+      },
+      offer: (item: ApprovalItem) =>
+        call<ApprovalOffer>('approvals:offer', [{ kind: item.kind, projectId: item.projectId, ...(item.digest ? { digest: item.digest } : {}) }], { timeoutMs: 30_000 }),
+      answer: (offerId: string, action: ApprovalAction, code?: string) =>
+        call<ApprovalAnswerResult>('approvals:answer', [{ offerId, action, ...(code ? { code } : {}) }], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+    },
     async switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }) {
       const runId = activeId()
       const out = await switchRunModel(call, runId, selected, opts)

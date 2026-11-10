@@ -412,6 +412,8 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'kit:previewBundle': { note: 'rawBytesBase64 is base64 text; bulk.' }, // KitBundlePreviewInput
   'kit:applyBundle': { note: 'rawBytesBase64 is base64 text; bulk. stale_target_digest on a moved destination.' }, // KitBundleApplyInput
   'runs:findDecision': {}, // [requestId] -> DecisionLookup
+  'approvals:offer': {}, // [ApprovalOfferInput] -> ApprovalOffer
+  'approvals:answer': {}, // [ApprovalAnswerInput] -> ApprovalAnswerResult
 
   // ---- SECRETS_IPC (Wave 7; never a secret value either way) ----
   'secrets:status': {}, // [SecretsStatusInput?] -> SecretsStatusResult

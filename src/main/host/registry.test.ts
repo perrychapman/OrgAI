@@ -39,6 +39,7 @@ const SPEC_TABLE = {
   read: `host.status, host.subscribe, app:info, app:logPath, settings:get, auth:status, projects:list, projects:get, projects:checkPath, projects:previewRemap, projects:scanAgents, projects:previewImport, projects:removePreview, projects:engagementDocument, projects:listNotes, projects:getNote, runs:list, runs:get, runs:listLive, runs:pendingCards, runs:usageStats, runs:usageCsv, runs:usageOverview, runs:usageOverviewCsv, runs:subscribe, runs:findDecision, permissions:list, permissions:ignored, connections:list, models:list, models:prices, mcp:list, mcp:registrySearch, mcpLibrary:list, connectors:list, connectorPresets:list, skills:list, skills:read, skills:previewImport, skills:lastEvaluation, skillLibrary:list, skillLibrary:read, capabilities:lastReview, maintenance:listWorktrees, maintenance:diff, templates:list, knowledge:get, knowledge:inferredLinks, kit:previewBundle, projects:folderConfig, teamFiles:listAttention, secrets:status, app:reference, outputs:list, outputs:preview, outputs:deletePreview, outputs:versions, outputs:readSource, outputs:thumb, outputs:compare, outputs:notes, outputs:revisions, outputs:reviseOptions`,
   operate: `runs:start, runs:startQuick, runs:continue, runs:send, runs:switchModel, runs:interrupt, runs:stop, runs:resumeNow, runs:cancelAutoResume, setup:start, setup:retro, mcp:startAssist, skills:startAssist, usage:refresh, connections:test, models:refresh, mcp:test, mcpLibrary:test, capabilities:discover, capabilities:recommend, capabilities:cancel, capabilities:review, skills:evaluate, draft:orgChart, window:openRun, outputs:noteAdd, outputs:noteUpdate, outputs:noteRemove, outputs:revise, outputs:watch, outputs:unwatch`,
   decide: `runs:decide, permissions:decideRequest, setup:decide, setup:answer, merges:decide, mcp:answerInstall`,
+  attested_approve: `approvals:offer, approvals:answer`,
   configure: `host.stop, settings:set, projects:create, projects:save, projects:remove, projects:remapModels, projects:applyImport, projects:exportOrg, projects:updateEngagementDocument, projects:saveNote, projects:removeNote, runs:promoteQuick, permissions:add, permissions:remove, connections:connect, connections:update, connections:setSecret, connections:createProxy, connections:removeProxy, connections:login, connections:cancelLogin, connections:logout, connections:setDefault, mcp:upsert, mcp:remove, mcp:setSecret, mcp:linkLibrary, mcp:promote, mcp:authorize, mcp:cancelAuthorize, mcp:revokeAuth, mcp:copyFromLibrary, mcp:setProjectOverrides, mcpLibrary:upsert, mcpLibrary:remove, mcpLibrary:setSecret, connectors:add, connectors:setToken, connectorPresets:upsert, connectorPresets:remove, plugins:upsert, plugins:remove, skills:create, skills:update, skills:remove, skills:linkLibrary, skills:promote, skills:applyImport, skills:undoImport, skills:applySuggestion, skillLibrary:create, skillLibrary:addFromBundle, skillLibrary:update, skillLibrary:remove, capabilities:apply, capabilities:undo, capabilities:dismiss, capabilities:restore, maintenance:integrateWorktree, maintenance:discardWorktree, maintenance:uninstallRepo, templates:saveFromProject, templates:remove, templates:apply, knowledge:saveNode, knowledge:removeNode, knowledge:saveEdge, knowledge:removeEdge, knowledge:clear, knowledge:dismissLink, kit:exportBundle, kit:applyBundle, teamFiles:status, secrets:init, secrets:reset, secrets:undelete, secrets:confirmDelete, outputs:forget, outputs:delete, outputs:saveEdit, outputs:restore, outputs:update`,
   desktop_only: `projects:pickDirectory, skillLibrary:addFromFolder, kit:pickExportPath, kit:pickImportPath, kit:export, kit:previewImport, kit:applyImport, menu:setState, app:openPath, app:openLogs, app:setNotifications, app:cliCommandStatus, app:installCliCommand, app:cancelCliInstall, app:removeOldCliShim, projects:parseRepoSource, projects:repoTools, projects:cloneRepo, projects:cancelClone, projects:setFolderConfigTrust, teamFiles:approve, teamFiles:reject, teamFiles:undo, teamFiles:enable, teamFiles:commit, outputs:open, outputs:reveal, outputs:saveAs, outputs:saveImage`,
   socket_subscribable: `runs:event, settings:changed, connections:event, mcpLibrary:changed, skillLibrary:changed, capabilities:progress, capabilities:reviewUpdated, projects:engagementChanged, outputs:changed`,
@@ -63,9 +64,9 @@ function failure(fn: () => unknown): HostRpcFailure {
 const existing = [...new Set([...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC)])]
 
 describe('HOST_CHANNEL_REGISTRY coverage (Wave 1 gate)', () => {
-  it('has an entry for each of the 211 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
+  it('has an entry for each of the 211 existing channels, the 8 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
     expect(existing).toHaveLength(211)
-    expect(Object.values(HOST_IPC)).toHaveLength(6)
+    expect(Object.values(HOST_IPC)).toHaveLength(8)
     expect(Object.values(SECRETS_IPC)).toHaveLength(5)
     expect(Object.values(HOST_METHODS)).toHaveLength(5)
     for (const c of existing) expect(channelEntry(c), c).toBeDefined()
@@ -73,7 +74,7 @@ describe('HOST_CHANNEL_REGISTRY coverage (Wave 1 gate)', () => {
     for (const c of Object.values(SECRETS_IPC)) expect(channelEntry(c), c).toBeDefined()
     for (const c of Object.values(HOST_METHODS)) expect(channelEntry(c), c).toBeDefined()
     const expected = [...allChannels(), ...Object.values(HOST_METHODS)].sort()
-    expect(new Set(allChannels()).size).toBe(222)
+    expect(new Set(allChannels()).size).toBe(224)
     expect(Object.keys(HOST_CHANNEL_REGISTRY).sort()).toEqual(expected)
   })
 
@@ -115,7 +116,7 @@ describe('HOST_CHANNEL_REGISTRY coverage (Wave 1 gate)', () => {
 })
 
 describe('scope classification (cli-spec 3.3(3) table)', () => {
-  for (const scope of ['read', 'operate', 'decide', 'configure', 'desktop_only'] as const) {
+  for (const scope of ['read', 'operate', 'decide', 'configure', 'attested_approve', 'desktop_only'] as const) {
     it(`request: ${scope} matches the spec row`, () => {
       const actual = requestEntries()
         .filter(([, e]) => e.scope === scope)
@@ -194,7 +195,7 @@ describe('entry flags', () => {
     expect(bulk).toEqual([...RPC_BULK_CHANNELS].sort())
   })
 
-  it('socketOnly marks the 6 HOST_IPC channels and host.status / subscribe / stop', () => {
+  it('socketOnly marks the 8 HOST_IPC channels and host.status / subscribe / stop', () => {
     const socketOnly = requestEntries()
       .filter(([, e]) => e.socketOnly)
       .map(([c]) => c)
@@ -211,6 +212,49 @@ describe('entry flags', () => {
     expect(e.transport).toBeUndefined()
     expect(e.params).toEqual([{ kind: 'string' }])
     expect(socketInvokableChannels()).toContain(HOST_IPC.runsFindDecision)
+  })
+
+  it('attested_approve (cli-parity 3.4) holds exactly approvals:offer and approvals:answer: socket only, one object, mutations', () => {
+    const inScope = requestEntries()
+      .filter(([, e]) => e.scope === 'attested_approve')
+      .map(([c]) => c)
+      .sort()
+    expect(inScope).toEqual([HOST_IPC.approvalsAnswer, HOST_IPC.approvalsOffer].sort())
+    for (const c of inScope) {
+      const e = HOST_CHANNEL_REGISTRY[c] as RequestChannelEntry
+      expect(e.socketOnly, c).toBe(true)
+      expect(e.transport, c).toBeUndefined()
+      expect(e.bulk, c).toBe(false)
+      expect(e.storesSecret, c).toBeUndefined()
+      expect(e.params, c).toEqual([{ kind: 'object' }])
+      expect(gateRequest(c, [{}], ALL_SCOPES).mutation, c).toBe(true)
+    }
+  })
+
+  it('nothing else moved: the desktop team files and folder trust decisions stay desktop_only and every other scope keeps its row', () => {
+    const scopeOf = (c: string): string => (HOST_CHANNEL_REGISTRY[c] as RequestChannelEntry).scope
+    for (const c of ['teamFiles:approve', 'teamFiles:reject', 'teamFiles:undo', 'teamFiles:commit', 'teamFiles:enable', 'projects:setFolderConfigTrust']) {
+      expect(scopeOf(c), c).toBe('desktop_only')
+      expect(failure(() => gateRequest(c, [{}], ALL_SCOPES)).code, c).toBe('desktop_unavailable')
+    }
+    expect(scopeOf('teamFiles:listAttention')).toBe('read')
+    expect(scopeOf('projects:folderConfig')).toBe('read')
+    expect(scopeOf('teamFiles:status')).toBe('configure')
+  })
+
+  it("the approval channels need 'attested_approve' itself: every other scope together is refused", () => {
+    const others = only(['read', 'operate', 'decide', 'configure'])
+    for (const c of [HOST_IPC.approvalsOffer, HOST_IPC.approvalsAnswer]) {
+      const f = failure(() => gateRequest(c, [{}], others))
+      expect(f.code, c).toBe('scope_denied')
+      expect(f.message, c).toContain("'attested_approve'")
+    }
+    // And 'attested_approve' alone opens nothing else.
+    const approveOnly = only(['attested_approve'])
+    for (const [c, e] of requestEntries()) {
+      if (e.scope === 'attested_approve' || e.scope === 'desktop_only') continue
+      expect(() => gateRequest(c, [], approveOnly), c).toThrow()
+    }
   })
 
   it('transport marks runs:subscribe and host.subscribe; desktopRequired only window:openRun', () => {

@@ -224,6 +224,13 @@ async function start(over: Partial<HostSocketServerOptions> = {}, attach = true)
   return fake
 }
 
+/** Close the current server and its listener (a test that starts a second one on the same path). */
+async function stopServer(): Promise<void> {
+  for (const c of clients.splice(0)) c.destroy()
+  server.close()
+  await new Promise<void>((r) => netServer.close(() => r()))
+}
+
 async function client(): Promise<TestClient> {
   const c = await TestClient.open(sockPath)
   clients.push(c)
@@ -373,6 +380,53 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     await start({ hostKind: 'inproc' })
     const { res } = await hello(await client(), { scopes: ['read', 'decide', 'configure'], ownerKey: 'cd'.repeat(32) })
     expect(res.error.data.code).toBe('not_owner')
+  })
+
+  it("'attested_approve' (cli-parity 3.4) goes only to the owner's tui connection whose terminal attests, identity checks only; the rest get the other scopes and the reason", async () => {
+    const asked: { coResident: boolean }[] = []
+    let verdict: { ok: true; tty: string } | { ok: false; code: 'agent_ancestor'; reason: string } = { ok: true, tty: 'ttys009' }
+    await start({ attestTerminal: async (o) => (asked.push(o), verdict) })
+    const scopes: HostScope[] = ['read', 'operate', 'decide', 'attested_approve']
+    // The terminal UI on an attested terminal: granted. The hello asks for identity only (no co-resident processes).
+    const tui = await hello(await client(), { kind: 'tui', scopes })
+    expect(tui.res.result.grantedScopes).toEqual(scopes)
+    expect(tui.res.result.approvalsWithheld).toBeUndefined()
+    expect(asked).toEqual([{ coResident: false }])
+    // exec and every management command connect as 'cli': never granted, and the terminal is not even asked.
+    const cli = await hello(await client(), { kind: 'cli', scopes })
+    expect(cli.res.result.grantedScopes).toEqual(['read', 'operate', 'decide'])
+    expect(cli.res.result.approvalsWithheld).toMatch(/terminal UI/)
+    expect(asked).toHaveLength(1)
+    // A tui whose terminal does not attest (an agent ancestor): the other scopes, and the host's reason.
+    verdict = { ok: false, code: 'agent_ancestor', reason: 'This orgai was started from inside an agent (claude, pid 7).' }
+    const inAgent = await hello(await client(), { kind: 'tui', scopes })
+    expect(inAgent.res.result.grantedScopes).toEqual(['read', 'operate', 'decide'])
+    expect(inAgent.res.result.approvalsWithheld).toContain('inside an agent')
+    // A throwing attestation refuses too.
+    await stopServer()
+    await start({ attestTerminal: async () => Promise.reject(new Error('ps exploded')) })
+    const threw = await hello(await client(), { kind: 'tui', scopes })
+    expect(threw.res.result.grantedScopes).toEqual(['read', 'operate', 'decide'])
+    expect(threw.res.result.approvalsWithheld).toBe('OrgAI could not check this terminal.')
+  })
+
+  it("a host without attestTerminal never grants 'attested_approve'; a non-owner asking for it is refused not_owner first", async () => {
+    await start()
+    const tui = await hello(await client(), { kind: 'tui', scopes: ['read', 'attested_approve'] })
+    expect(tui.res.result.grantedScopes).toEqual(['read'])
+    expect(tui.res.result.approvalsWithheld).toMatch(/cannot check a terminal/)
+    await stopServer()
+    await start({ attestTerminal: async () => ({ ok: true, tty: 'ttys001' }) })
+    expect((await hello(await client(), { kind: 'tui', scopes: ['attested_approve'], ownerKey: 'ef'.repeat(32) })).res.error.data.code).toBe('not_owner')
+  })
+
+  it('the request context says whether the connection is the owner (approvalGate.ts refuses without it)', async () => {
+    await start()
+    const c = await client()
+    await hello(c, { kind: 'tui', scopes: ['read'] })
+    c.send(rpcRequest(7, 'runs:list', ['p1']))
+    await c.response(7)
+    expect(st.calls[0].ctx).toMatchObject({ owner: true, clientKind: 'tui' })
   })
 
   it('refuses every hello while the owner reports an unprotected daemon.secret, and runs no ACL step of its own (review follow-up)', async () => {

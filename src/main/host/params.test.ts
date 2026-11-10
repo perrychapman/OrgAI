@@ -238,6 +238,8 @@ const PAYLOADS: Record<string, unknown[]> = {
   'kit:previewBundle': [{ fileName: 'team.orgai-kit.json', rawBytesBase64: 'e30=' }],
   'kit:applyBundle': [{ rawBytesBase64: 'e30=', digest: 'e'.repeat(64), targetDigest: 'f'.repeat(64), choices: [] }],
   'runs:findDecision': ['perm_1'],
+  'approvals:offer': [{ kind: 'teamFiles', projectId: 'proj_1', digest: 'a'.repeat(64) }],
+  'approvals:answer': [{ offerId: 'b'.repeat(32), action: 'approve', code: 'ACDE' }],
   // SECRETS_IPC (Wave 7)
   'secrets:status': [{ probe: true }],
   'secrets:init': [{ keyFile: '/home/u/orgai.key', importKeyFile: true }],

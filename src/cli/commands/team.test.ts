@@ -154,3 +154,62 @@ describe('team plugins', () => {
     expect(s.client.callsOf('plugins:remove')).toEqual([[{ projectId: 'p1', pluginId: 'plg1' }]])
   })
 })
+
+describe('team files (cli-parity 3.4)', () => {
+  const pending = {
+    projectId: 'p1',
+    projectName: 'App',
+    state: 'pending',
+    digest: 'ab'.repeat(32),
+    isGitRepo: true,
+    uncommitted: true,
+    uncommittedFiles: ['.orgai/team.json'],
+    changes: [{ id: 'role:lead:staffing', kind: 'role', name: 'Lead', file: '.orgai/team.json', action: 'changed', summary: 'Lead may use the deep tier.', needsApproval: true, reason: 'May spend more' }],
+    applied: [],
+    problems: [],
+    notes: [],
+    warnings: []
+  }
+
+  it('status (bare and status) lists the pending changes with read scope only, and says where to approve', async () => {
+    for (const args of [['files'], ['files', 'status']]) {
+      const { f, client } = setup({ 'teamFiles:listAttention': () => [pending] })
+      expect(await runTeam(f.ctx, args)).toBe(0)
+      expect(f.connectCalls[0].scopes).toEqual(['read'])
+      expect(client.callsOf('teamFiles:listAttention')).toHaveLength(1)
+      expect(f.out()).toContain('App: 1 change waits for approval')
+      expect(f.out()).toContain('- May spend more: Lead may use the deep tier.')
+      expect(f.out()).toContain('/approvals')
+    }
+  })
+
+  it('status --output-format json carries every status; nothing pending says so', async () => {
+    const { f } = setup({ 'teamFiles:listAttention': () => [pending] }, { format: 'json' })
+    expect(await runTeam(f.ctx, ['files', 'status'])).toBe(0)
+    const j = JSON.parse(f.out())
+    expect(j.teamFiles[0].digest).toBe('ab'.repeat(32))
+    expect(j.approve).toMatch(/\/approvals/)
+    const empty = setup({ 'teamFiles:listAttention': () => [] })
+    expect(await runTeam(empty.f.ctx, ['files'])).toBe(0)
+    expect(empty.f.out()).toContain('No team-file changes wait for approval.')
+  })
+
+  it('approve / reject / undo / commit / enable decide nothing: exit 2 naming /approvals, no host started, --yes or not', async () => {
+    for (const sub of ['approve', 'reject', 'undo', 'commit', 'enable']) {
+      for (const extra of [[], ['--yes'], ['p1', '--output-format', 'json']]) {
+        const { f, client } = setup({})
+        let err: unknown
+        try {
+          await runTeam(f.ctx, ['files', sub, ...extra])
+        } catch (e) {
+          err = e
+        }
+        expect(err, sub).toBeInstanceOf(CliError)
+        expect((err as CliError).exitCode).toBe(2)
+        expect((err as CliError).message).toMatch(/\/approvals/)
+        expect(f.inprocCalls, sub).toHaveLength(0)
+        expect(client.calls, sub).toEqual([])
+      }
+    }
+  })
+})

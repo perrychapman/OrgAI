@@ -25,6 +25,8 @@
  *   accepted). The server belongs to the orgai process that started the host: a hello whose ownerProof verifies against
  *   the server's in-memory `ownerKey` (only that process holds it; it is never written to disk) gets every requested
  *   scope. Every other client, one holding daemon.secret included, is refused not_owner before any method runs.
+ *   Except 'attested_approve' (cli-parity 3.4): granted only to a 'tui' owner connection whose terminal passes
+ *   `attestTerminal({ coResident: false })` (terminalAttestation.ts); otherwise dropped, with `approvalsWithheld` saying why.
  *   It answers an RpcHelloResult with hostProof (and
  *   versionSkewWarning when clientVersion !== appVersion) and raises the line cap to RPC_BULK_FRAME_MAX_BYTES. A
  *   refused hello closes the socket once the error frame is flushed.
@@ -109,6 +111,7 @@ import {
 } from './protocol'
 import { HostRpcFailure, channelEntry, frameLimitFor, gateRequest, pushChannelsForTopic } from './registry'
 import { RunSubscription, parseRunsSubscribeInput, subscribeRuns } from './runSubscriptions'
+import type { AttestTerminalFn } from './terminalAttestation'
 
 export interface HostSocketServerOptions {
   /** `<userDataDir>/data`; daemon.secret is read from `<dataDir>/run`. */
@@ -141,6 +144,12 @@ export interface HostSocketServerOptions {
    * requested scope; everyone else is refused not_owner.
    */
   ownerKey?: string
+  /**
+   * cli-parity 3.4: the attestation of this process's terminal (terminalAttestation.ts attestThisTerminal on the orgai
+   * host). 'attested_approve' is granted at hello only to the owner's 'tui' connection whose terminal passes it (identity
+   * checks; the approval calls re-check with coResident). Absent = never granted.
+   */
+  attestTerminal?: AttestTerminalFn
 }
 
 /** The refusal of a hello without the owner proof on an in-process host. */
@@ -643,8 +652,17 @@ export class HostSocketServer {
     // Re-check after the await: another hello may have taken the last slot, or a drain may have begun.
     const after = gateProblem()
     if (after) return fail(after)
-    // The owner gets every requested scope (deduplicated, in order).
-    const grantedScopes: HostScope[] = [...new Set(p.requestedScopes)]
+    // The owner gets every requested scope (deduplicated, in order), except 'attested_approve' (cli-parity 3.4): only a
+    // 'tui' connection whose terminal the host attested gets it; anything else is told why (approvalsWithheld).
+    let grantedScopes: HostScope[] = [...new Set(p.requestedScopes)]
+    let approvalsWithheld: string | undefined
+    if (grantedScopes.includes('attested_approve')) {
+      approvalsWithheld = await this.approvalsRefusal(p.clientKind)
+      if (conn.state !== 'hello') return
+      if (approvalsWithheld) grantedScopes = grantedScopes.filter((s) => s !== 'attested_approve')
+      const again = gateProblem()
+      if (again) return fail(again)
+    }
     const result: RpcHelloResult = {
       protocolVersion: 1,
       hostInstanceId: this.opts.hostInstanceId,
@@ -665,6 +683,7 @@ export class HostSocketServer {
         grantedScopes
       })
     }
+    if (approvalsWithheld) result.approvalsWithheld = approvalsWithheld
     if (p.clientVersion !== this.opts.appVersion) {
       result.versionSkewWarning = `This orgai CLI is version ${p.clientVersion} and the running OrgAI is ${this.opts.appVersion}; update them to the same version.`
     }
@@ -682,6 +701,23 @@ export class HostSocketServer {
     for (const line of conn.pendingLines.splice(0)) {
       if (conn.state !== 'auth') break
       this.onLine(conn, line)
+    }
+  }
+
+  /**
+   * Why 'attested_approve' is not granted to this hello, or undefined when it is: the terminal UI only, on a host that can
+   * attest its terminal, whose terminal passes the identity checks (no agent or OrgAI ancestor, stdin and stdout on the
+   * controlling terminal). Only owner connections reach this (every other hello was refused not_owner).
+   */
+  private async approvalsRefusal(clientKind: HostClientKind): Promise<string | undefined> {
+    if (clientKind !== 'tui') return "Approvals are answered only in the orgai terminal UI ('/approvals')."
+    const attest = this.opts.attestTerminal
+    if (!attest) return 'This OrgAI cannot check a terminal, so it takes no approvals from one.'
+    try {
+      const r = await attest({ coResident: false })
+      return r.ok ? undefined : r.reason
+    } catch {
+      return 'OrgAI could not check this terminal.'
     }
   }
 
@@ -713,7 +749,7 @@ export class HostSocketServer {
     conn.inflight++
     let p: Promise<unknown>
     try {
-      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, connectionId: String(conn.id), grantedScopes })
+      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, connectionId: String(conn.id), grantedScopes, owner: conn.owner === true })
     } catch (e) {
       p = Promise.reject(e)
     }

@@ -259,6 +259,8 @@ const COVERED_ELSEWHERE: Record<string, string> = {
 const NEVER_WRITES_SECRETS: Record<string, string> = {
   'connections:removeProxy': "removes the proxy and deletes its key (a removal's delete never prepares)",
   'teamFiles:status': 'writes the project folder\'s team files only, no secrets',
+  'approvals:offer': 'records an in-memory offer only (approvalGate.ts), no secrets',
+  'approvals:answer': 'approves / rejects / undoes / commits team files or sets folder config trust; the team files gate never stores secret values (names only), no secrets',
   'outputs:forget': 'removes an output index entry in the project data folder only, no secrets',
   'outputs:delete': 'deletes an output file and its index entry, versions and notes, no secrets',
   'outputs:saveEdit': 'writes an output file and its stored version in the project and data folders, no secrets',

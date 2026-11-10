@@ -216,6 +216,7 @@ import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased 
 import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
 import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
 import { registerOutputsHandlers } from './outputsHandlers'
+import { ApprovalGate } from './approvalGate'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
 /** One request handler: the call context, then the positional arguments (what ipcRenderer.invoke passed). */
@@ -789,6 +790,16 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerCapabilityIpc(handle, capabilities)
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
+  // Approvals at the terminal (cli-parity 3.4; socket only, scope 'attested_approve'): the gate checks the caller, attests
+  // the terminal and binds each offer (approvalGate.ts). Without attestTerminal every call is refused.
+  const approvals = new ApprovalGate({
+    ...(teamFiles ? { teamFiles } : {}),
+    projects,
+    dataDir: () => settings.dataDir,
+    ...(services.attestTerminal ? { attest: services.attestTerminal } : {})
+  })
+  handle(HOST_IPC.approvalsOffer, (ctx, input: unknown) => approvals.offer(ctx, input))
+  handle(HOST_IPC.approvalsAnswer, (ctx, input: unknown) => approvals.answer(ctx, input))
   registerSecretsIpc(handle, services.secrets, mcp, state)
   registerOutputsHandlers(handle, { outputs: services.outputs, projects, events, dataDir: settings.dataDir, runs, watcher: services.outputWatcher })
 

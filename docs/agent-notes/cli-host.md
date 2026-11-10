@@ -302,3 +302,74 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   (`runStartFlags.ts`, validated by exec's `overridesFromFlags`, `execMode` dropped; headless-only flags are refused).
   `session.ts` sends `overrides` on start, continue and quick; widening ones go through a one-call 'configure'
   connection (`callConfigured`), as exec asks for 'configure'.
+- Approvals at the terminal (cli-parity 3.4 and principle 4, branch cp/approvals, 2026-11-10; unit, ink and in-process
+  integration tests only, nothing live, e2e rows added to `e2e/cli-org.mjs` but not run). Invariant: nothing an agent can
+  run may approve what an agent did.
+  - Read-only (read scope): `orgai team files [status]` (`teamFiles:listAttention`; each change with the gate's summary,
+    "May spend more: ..." first, tools gained, MCP target, secrets, reach, and git's view of who wrote it: OrgAI records no
+    author) and `orgai projects trust [show]` (`projects:folderConfig`). `exec` and `resume --exec` print one stderr line
+    (text mode) before the run while the project's team files wait (`noteTeamFiles`, `approvalText.ts`
+    `pendingTeamFilesLine`); the TUI shows a notice on open (`session.approvals.waiting()`). `team files
+    approve|reject|undo|commit|enable` and `projects trust allow|deny` exist only to say where a person decides: exit 2,
+    no host started, whatever flags (`--yes` included).
+  - The gate (host side, `src/main/host/approvalGate.ts`, `terminalAttestation.ts`). The desktop's `teamFiles:approve` /
+    `reject` / `undo` / `commit` / `enable` and `projects:setFolderConfigTrust` stay `desktop_only` (registry test
+    "nothing else moved"). Two new socket-only HOST_IPC channels, `approvals:offer` and `approvals:answer`, are the whole
+    of the new scope `attested_approve` (registry test: exactly these two; every other scope together cannot call them;
+    `attested_approve` alone opens nothing else). Who: the orgai host's socket serves only its own process (the in-memory
+    owner proof), so the client is provably this process; socketServer grants `attested_approve` at hello only to a
+    `clientKind 'tui'` owner connection whose terminal passes `attestTerminal({ coResident: false })`, else drops it and
+    sends `RpcHelloResult.approvalsWithheld` (display only, outside hostProof). exec, resume --exec and every management
+    command connect as 'cli' and never get it. The gate refuses any call that is not surface 'socket', `owner`
+    (`InvokeContext.owner`, set by socketServer), 'tui', with a connection id and the scope. Where: attestation reads the
+    OS, never the client, its flags or its environment (fixed absolute ps, minimal env, neutral cwd, ps in its own
+    session): macOS or Linux only; stdin and stdout are terminals and the same device (st_rdev) as `/dev/<tty>` of this
+    pid's controlling terminal; no ancestor up to launchd / init is an agent runtime (claude, codex, the Agent SDK,
+    @openai/codex, `command claude` / `npx codex` wrappers) or an OrgAI host (another orgai, a second host on another data
+    folder, OrgAI.app); and, at the offer and again after the key press (`coResident: true`), every other process whose
+    controlling terminal is this one is an ancestor or a job of the terminal's shell: a descendant of this orgai (agents,
+    MCP servers, tools: TIOCSTI could push keys), an agent runtime, or a stray process (reparented to launchd or a
+    subreaper off the terminal, e.g. a double-forked escapee) refuses. A table that cannot be read refuses. What: an offer
+    binds the connection, kind, project and the digest of the content it returns for the terminal to show
+    (`ApprovalOffer.teamFiles` / `folderConfig`; for undo also the undo record's time); a digest sent with the offer must
+    still match. Single use (taken out first), 3 minutes, one per connection. The digest is compared again synchronously
+    right before the service call (approve / reject / folder trust also compare inside the service): files that changed
+    since refuse `stale_target_digest` and the TUI shows them again from a fresh offer. How: approve, undo and allow need
+    the offer's 4-letter code typed back (a session member injecting keys blind cannot see it); reject, commit and deny
+    need the attested key press and a y (rejecting or committing never adds power, and an agent able to call them could
+    equally rewrite the files; kept behind the same gate anyway). 3 wrong codes in 10 minutes lock offers for 5 minutes.
+  - TUI: `/approvals` (aliases approve, team-files, trust) lists every project's pending team files, the current code
+    project's team files (undo, commit) and its folder config; the overlay (`tui/approvals.ts`, App `approval` overlay)
+    shows only what the offer returned, keys a / r / u / c (team files) and a / d (folder config), then the code and Enter
+    or y; a paste never types the code; approve / allow are inert until the list was scrolled to its end (as on the
+    desktop); after an answer or a refusal it re-offers without the list's digest.
+  - Checked by: `terminalAttestation.test.ts` (every refusal path with injected process tables: platform, redirected
+    stdio, no table, a gap in the ancestry, no controlling terminal, stdio on another tty, agent and OrgAI ancestors incl.
+    `script` and python ptys under an agent, a descendant sharing the terminal, `claude &` in the same tab, a stray
+    orphan, the tmux residual; the real gather reads a table that holds this pid), `approvalGate.test.ts` (caller checks,
+    no attest function, refusal at offer and after the key press, stale at offer and answer, other connection, expiry,
+    replacement, replay, wrong / missing code, lockout, blocked approve, folder trust allow / deny / stale),
+    `socketServer.test.ts` (grant only to an attested tui owner; cli never asked; a throwing attestation; a host without
+    one; not_owner first), `registry.test.ts`, `approvalText.test.ts`, `tui/approvals.test.ts`, `App.approvals.test.tsx`,
+    command tests, and `src/cli/approvals.int.test.ts` (real in-process host and socket: status lists the change; a 'cli'
+    connection, the real attestation under the test runner and a refusing attestation are refused; a terminal that fails
+    only after the offer is refused at the answer; a stale hash is refused; the verified path applies exactly the shown
+    change). The int test's real-attestation case asserts the grant equals the decision for this process; under an agent
+    session (no terminal on stdin) it refuses, which is the mechanism itself.
+  - Residual risk (not zero): same-user code that can run arbitrary commands is not stopped by this gate, as by no
+    OrgAI gate: it can rewrite `<data>/projects/<id>/team-files/approved.json` or the project store directly. In particular
+    a process that left every agent tree before acting (launchd / cron / at job, a daemonizing tmux or screen server, `open
+    -a Terminal`) can start orgai in a terminal it opened itself; the table then shows no agent (`terminalAttestation.test`
+    "RESIDUAL" documents the tmux case). Keystroke injection into the user's own terminal through the emulator's or
+    multiplexer's automation (tmux send-keys plus capture-pane, screen -X stuff, iTerm2 / Terminal AppleScript, kitty or
+    wezterm remote control, VS Code terminal APIs) can read the code and type it. Linux with ptrace_scope 0 lets a same-user
+    process read the TUI's memory. A process that joins the terminal after the offer and leaves before the key press (an
+    auto-resumed run) could read typed keys; it can only replay them into the same offer (approve what is shown, reject,
+    undo to the last approved team, commit). Commit's git add runs after the digest check, so files changed in that window
+    are committed (git only; OrgAI's team is not affected). Process names are matched by command line: a renamed agent
+    binary is not recognised as an agent (its ancestry to the host still is, and the host pattern covers orgai itself).
+  - Unverified: the gate never ran in a real terminal (no app launch, no e2e, no live model calls); Linux ps output and
+    `/dev/pts/N` rdev matching are unit-tested with injected tables only; whether the Claude SDK's `claude` and Codex
+    children share the TUI's controlling terminal (they are spawned without setsid, so they should, which refuses
+    approvals while a run's processes live: stop the run first) was read from the spawn code, not observed; Windows refuses
+    by design. `selfControlGate.ts` was not changed and is not relied on.

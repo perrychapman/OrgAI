@@ -148,6 +148,35 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
   else ctx.notify(`Model selected for the next message: ${selectionLabel(selected)}.`)
 }
 
+/**
+ * /approvals (cli-parity 3.4): what waits for a person (every project's pending team files, this project's team files
+ * for undo and commit, this folder's own config); one item opens at once, several give a pick. The host attests this
+ * terminal when the overlay asks for an offer, and again after the key press.
+ */
+async function runApprovals(ctx: SlashContext): Promise<void> {
+  const api = ctx.session.approvals
+  if (!api || !ctx.openApproval) {
+    ctx.notify('Approvals are not available here.', 'warn')
+    return
+  }
+  const items = await api.list()
+  if (!items.length) {
+    ctx.notify('Nothing waits for approval.')
+    return
+  }
+  let item = items[0]
+  if (items.length > 1) {
+    if (!ctx.pick) {
+      await ctx.openText('Approvals', items.map((it) => `  ${cleanLine(it.label, 160)}`).join('\n'))
+      return
+    }
+    const value = await ctx.pick('Approvals', items.map((it, i) => ({ value: String(i), label: cleanLine(it.label, 160) })))
+    if (value === undefined) return
+    item = items[Number(value)] ?? items[0]
+  }
+  ctx.openApproval(item)
+}
+
 function retroReason(s: TuiState): string | undefined {
   if (s.readOnlyReason) return readOnlyText(s)
   const run = activeSummary(s)
@@ -314,6 +343,12 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       guarded(ctx, async () => {
         if (await ctx.confirm('End this session?')) await ctx.session.stop()
       })
+  },
+  {
+    name: 'approvals',
+    aliases: ['approve', 'team-files', 'trust'],
+    summary: 'Team-file changes and folder config waiting for you: review, approve, reject, undo, commit',
+    run: (ctx) => guarded(ctx, () => runApprovals(ctx))
   },
   {
     // The owning orgai's own card list; not the removed `orgai inbox` command (spec 4.1).

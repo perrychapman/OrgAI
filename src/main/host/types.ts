@@ -38,6 +38,7 @@ import type { SkillEvaluationApi, SkillServiceApi } from '../skills/types'
 import type { ProjectStore } from '../store/projects'
 import type { SettingsStore } from '../store/settings'
 import type { SecretStoreApi } from '../store/vaultTypes'
+import type { AttestTerminalFn } from './terminalAttestation'
 import type { HostEventBus } from './events'
 
 /** What the host needs from its environment to answer app:info / app:logPath without Electron. */
@@ -127,6 +128,11 @@ export interface HostServices {
    * prepareWrite (registry storesSecret). Absent = secrets:* answer that this host has no secret store.
    */
   secrets?: SecretStoreApi
+  /**
+   * The terminal attestation of this process (host/terminalAttestation.ts attestThisTerminal on the orgai host) for the
+   * approvals:* channels. Absent = those channels refuse every call (the desktop has no terminal to attest).
+   */
+  attestTerminal?: AttestTerminalFn
 }
 
 /** How a call reached the dispatcher. */
@@ -140,6 +146,11 @@ export interface InvokeContext {
   pid?: number
   /** The socket connection's id (socket surface only; host-assigned, never client-reported). */
   connectionId?: string
+  /**
+   * The socket connection proved the in-memory owner key (socketServer.ts): it is this orgai process's own client. Set by
+   * the socket server only; the approval channels (approvalGate.ts) refuse every call without it.
+   */
+  owner?: boolean
   grantedScopes?: readonly HostScope[]
 }
 

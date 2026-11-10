@@ -23,6 +23,7 @@ import { authChildrenInFlight } from '../connections/anthropicAuth'
 import { KitService } from '../kit/service'
 import { log } from '../log'
 import { MaintenanceService } from '../maintenance'
+import type { AttestTerminalFn } from './terminalAttestation'
 import { TeamFilesService } from '../teamFiles/service'
 import { harnessProject } from '../mcp/assist'
 import { McpService } from '../mcp/service'
@@ -180,6 +181,8 @@ export interface BootOrgAIHostOptions {
    * e.g. the desktop's repository clones. A throw is logged.
    */
   quiesce?: () => void
+  /** cli-parity 3.4: the terminal attestation for the approvals:* channels (the orgai host's own). Absent = refused. */
+  attestTerminal?: AttestTerminalFn
 }
 
 export interface OrgAIHost {
@@ -739,7 +742,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     ...(opts.desktop ? { desktop: opts.desktop } : {}),
     host: hostControl,
-    secrets
+    secrets,
+    ...(opts.attestTerminal ? { attestTerminal: opts.attestTerminal } : {})
   }
   const dispatcher = new HostDispatcher(services)
   dispatcherRef = dispatcher
