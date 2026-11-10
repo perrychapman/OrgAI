@@ -257,8 +257,9 @@ try {
       t.key('enter')
       await t.waitFor(/Warnings and errors: \d+ of \d+/, 10_000)
       check(true, 'a: /logs opens the run\'s warnings and errors with a count')
-      t.key('escape')
-      await sleep(300)
+      // The overlay is the system pager: q leaves it (escape does not).
+      await type(t, 'q')
+      await sleep(500)
 
       // b. Resize.
       const splitAt = locate(t, /E2E-MARK-(ALPHA|OMEGA)/)

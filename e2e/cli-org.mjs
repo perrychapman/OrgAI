@@ -160,7 +160,8 @@ try {
   {
     const cur = await jsonOf(['org', 'show'])
     const base = cur.v?.roles?.[0]
-    const mk = (id, extra = {}) => ({ ...base, id, slug: id, name: id.toUpperCase(), reportsTo: null, ...extra })
+    // org show JSON omits the prompt; a draft file needs prompt, tools and model on every role.
+    const mk = (id, extra = {}) => ({ ...base, id, slug: id, name: id.toUpperCase(), reportsTo: null, prompt: `You are ${id}.`, tools: Array.isArray(base?.tools) ? base.tools : [], model: typeof base?.model === 'string' ? base.model : 'sonnet', ...extra })
     const draftFile = path.join(path.dirname(repo), `cliorg-draft-${process.pid}.json`)
     fs.writeFileSync(draftFile, JSON.stringify({ draft: { roles: [mk('draftlead', { canSpawn: true }), mk('draftdev', { reportsTo: 'draftlead' })], rationale: 'e2e' } }))
     r = await at(['org', 'draft', '--from', draftFile, '--apply'])
