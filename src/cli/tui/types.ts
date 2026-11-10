@@ -55,6 +55,7 @@ import type {
   Proposal,
   RpcHelloResult,
   RunPlan,
+  RunStaffing,
   RunStatus,
   RunSummary,
   RunTeam,
@@ -406,6 +407,8 @@ export interface TuiRun {
   agents: Record<string, AgentInstance>
   transcript: TranscriptEntry[]
   plan?: RunPlan
+  /** Latest staffing record (staffing.updated, or the run record). Not shown yet. */
+  staffing?: RunStaffing
   /** Sanitized display text per agent id (agent.partial, cumulative). */
   partials: Record<string, string>
   cards: PendingCards

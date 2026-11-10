@@ -606,6 +606,9 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
       case 'plan.updated':
         if (!json) printText(ctx, `${st.dim(tagOf(runId))} ${planUpdateLine(ev.plan)}`)
         return
+      case 'staffing.updated':
+        // Run staffing has no exec output yet (stream-json still carries the event).
+        return
       default:
         printCards(runId, cardOf(ev))
     }

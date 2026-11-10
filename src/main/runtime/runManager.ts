@@ -72,6 +72,7 @@ import type {
   RunKind,
   RunPeer,
   RunPlan,
+  RunStaffing,
   RunRecord,
   RunSummary,
   SwitchRunModelInput,
@@ -81,7 +82,7 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { BridgedSessions, bridgeKey } from './bridge'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import {
@@ -956,8 +957,8 @@ export interface ContinueRunOptions {
   [AUTO_RESUME]?: true
 }
 
-/** Narrowing overrides a continuation always keeps. */
-const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues', 'strictDelegation'] as const
+/** Narrowing overrides a continuation always keeps (goal never widens: picks stay inside the roles' ceilings). */
+const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues', 'strictDelegation', 'goal'] as const
 /** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
 const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
 
@@ -1710,6 +1711,17 @@ export class RunManager {
       }
     }
 
+    // Run staffing (shared/types.ts "Run staffing"): mirrors updatePlan. Cleaned here (cleanRunStaffing), stored on the
+    // record by recordEvent, persisted with the record's flush and broadcast. Nothing calls it yet.
+    const updateStaffing = async (staffing: RunStaffing): Promise<void> => {
+      const next = cleanRunStaffing(staffing)
+      if (!next) {
+        log.warn(`Run ${summary.id}: a staffing update that is not an object was ignored.`)
+        return
+      }
+      emit({ type: 'staffing.updated', runId: summary.id, staffing: next })
+    }
+
     const setupLike = isSetupLikeRun(kind)
     // Setup-like runs and the virtual projects (harness, skills, Chat) carry no project MCP servers, plugins or skills.
     const bare = setupLike || isVirtualProjectId(project.id)
@@ -2209,6 +2221,10 @@ export class RunManager {
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
         updatePlan,
+        getStaffing: () => active.record.staffing,
+        updateStaffing,
+        // The per-run override (RunOverrides.goal) on top of the project's goal, fixed at run start.
+        staffingGoal: staffingGoalOf(runProject, summary.overrides?.goal),
         pendingInteractions: () => pendingCount(active),
         // A Chat with the single assistant is a conversation: no plan nudges (planNudgesApply).
         autoContinue: runProject.autoContinue !== false && planNudgesApply(summary),
@@ -3385,6 +3401,9 @@ export class RunManager {
         break
       case 'plan.updated':
         r.plan = e.plan
+        break
+      case 'staffing.updated':
+        r.staffing = e.staffing
         break
       case 'run.title':
         // record.summary is the live summary object; this only schedules the save.

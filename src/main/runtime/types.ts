@@ -45,8 +45,10 @@ import type {
   RunKind,
   RunPeer,
   RunPlan,
+  RunStaffing,
   RunSummary,
   ProjectPeek,
+  StaffingGoal,
   SkillContent,
   SkillEvaluationReport,
   SkillFileInfo,
@@ -496,6 +498,20 @@ export interface RuntimeContext {
   getPlan(): RunPlan | undefined
   /** Store the plan on the run, persist it and tell the renderer (plan.updated). */
   updatePlan(plan: RunPlan): Promise<void>
+  /** Work runs: the run's staffing record (shared/types.ts "Run staffing"), if anything was recorded. Nothing writes it yet. */
+  getStaffing(): RunStaffing | undefined
+  /**
+   * Store the run's whole staffing record, persist it and tell the renderer (staffing.updated), like updatePlan.
+   * RunManager cleans it first (defaults.ts cleanRunStaffing: malformed rows dropped, the newest
+   * RUN_STAFFING_ASSIGNMENTS_MAX kept); a value that is not an object is ignored with a warning.
+   */
+  updateStaffing(staffing: RunStaffing): Promise<void>
+  /**
+   * The goal this run staffs for: defaults.ts staffingGoalOf(project, RunOverrides.goal), the per-run override on top
+   * of Project.staffingGoal, fixed at run start. RunManager sets it on every run; missing (fakes, older callers) =
+   * staffingGoalOf(ctx.project, ctx.run.overrides?.goal). Nothing reads it yet.
+   */
+  staffingGoal?: StaffingGoal
   /** Cards waiting for the user: pending permissions, proposals, questions and merge reviews. */
   pendingInteractions(): number
   /** Work runs: keep the orchestrator going until the plan is complete (project.autoContinue). Default true. */
@@ -662,8 +678,9 @@ export interface RuntimeContext {
    * bridged role with reportsTo null plus the roles reachable through its spawnable chain) is NOT the run's root:
    * harnessToolsFor gives it no 'root'-audience tools (no plan, proposal, org-change, messaging or ask_user tools),
    * adapters pass PromptFlags.bridged so it gets a report's prompt, the ContinuationDriver never nudges it
-   * (autoContinue false), and its run.status / run.title / run.finalized / run.usage / run.cost / plan.updated events
-   * are dropped by the wrapper (it reads 'idle' and the end of the session as "the report is done").
+   * (autoContinue false), and its run.status / run.title / run.finalized / run.usage / run.cost / plan.updated /
+   * staffing.updated events are dropped by the wrapper (it reads 'idle' and the end of the session as "the report is
+   * done"). Its getStaffing / updateStaffing are stubs, like getPlan / updatePlan: nothing reaches the parent run.
    */
   bridgedChild?: {
     /** The harness agent id the child's root appears under in the parent run. */

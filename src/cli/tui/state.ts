@@ -337,7 +337,7 @@ export function applySnapshot(s: TuiState, res: SnapshotResult, opts: { activeRu
 }
 
 /**
- * A run record (snapshot activeRun or runs:get): summary, agents and plan replaced, transcript merged by entry id,
+ * A run record (snapshot activeRun or runs:get): summary, agents, plan and staffing replaced, transcript merged by entry id,
  * recordLoaded set. `omitted` is the count of oldest entries the host left out. With `preferLive` (a runs:get answer
  * for a run the events already touched) the agents the state holds win over the record's.
  */
@@ -355,6 +355,7 @@ export function applyRecord(s: TuiState, rec: RunRecord, opts: { omitted?: numbe
     agents: opts.preferLive ? { ...(rec.agents ?? {}), ...prev.agents } : (rec.agents ?? {}),
     transcript: entries,
     ...(rec.plan ? { plan: rec.plan } : {}),
+    ...(rec.staffing ? { staffing: rec.staffing } : {}),
     omitted: omitted || undefined,
     recordLoaded: true
   })
@@ -485,6 +486,9 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     }
     case 'plan.updated':
       run = { ...run, plan: e.plan }
+      break
+    case 'staffing.updated':
+      run = { ...run, staffing: e.staffing }
       break
     case 'run.delegation': {
       const applied = applyRunDelegation(run.summary, run.agents, e)
