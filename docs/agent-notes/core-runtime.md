@@ -297,3 +297,36 @@ Application menu, run end and decision cards, settings, run titles, projects, us
 ## Desktop per-run goal
 
 `HostDispatcher.checkRunOverrides` (`src/main/host/dispatcher.ts`) used to drop every override on the desktop surface. It now keeps only a valid `overrides.goal` for `runs:start` (a bad value is refused as bad_request by `startRunArgs`) and passes it with `allowWidening: false`; permission mode, budget, strict delegation and the rest are still dropped. `runs:continue` and `runs:startQuick` still drop all overrides from the desktop (a continuation keeps the run's goal through `continuedOverrides`). Checked by unit tests only (`dispatcherExec.test.ts`).
+
+## Per-run root model, effort and permission mode (start and mid-run)
+
+- Contract: `StartRunInput.modelSelection` / `effort` / `permissionMode`, `RunSummary.rootEffort` / `permissionMode` /
+  `permissionModeChosen`, `runs:setPermissionMode` (`SetRunPermissionModeInput` / `Result`), `runPermissionModeChoices`
+  (shared/types.ts). Valid efforts per adapter come from `effortOptionsFor` (shared/defaults.ts: Codex low/medium/high, else
+  all five); there is no per-model effort data, so the renderer offers `effortOptionsFor(catalogEntry.adapter)`.
+- Surfaces: `runs:start` passes the three fields as `StartInput.userChoice` on the desktop only; a socket / inproc client
+  sending any of them gets bad_request (fail closed; their `overrides.permissionMode` rules are unchanged).
+  `runs:setPermissionMode` is in the 'configure' scope (the registry needs a scope) and its handler refuses every
+  non-desktop surface with scope_denied before parsing. Desktop `runs:continue` / `runs:resumeNow` pass `desktop: true`.
+- Start (RunManager.start, one commented block; pure `checkStartChoice` / `checkStartEffort`): all checks run before the
+  summary exists, so a refusal leaves no run. The model must be in the catalog on exactly that connection; an explicit
+  model wins over the single assistant's quick-run model; it then takes the existing `modelSelection` path (root role only).
+  Effort must be in `effortOptionsFor(adapter)`; it is set on the root of `ctx.roles` (claude.ts `sessionEffort`, codex.ts
+  `this.root.effort` read it), never on reports, so `staffing.ts` is untouched (checked by reading staffing.ts, claude.ts
+  `reportEffort` and codex.ts, not by a live run). An explicit model under a project cap needs a known price (same
+  resolution as the exec budget's `modelPriced`). The mode must be in `runPermissionModeChoices` (setup-like runs: none;
+  Chat / build sessions: default, dontAsk, plan; exec runs refused); it is laid over `effectiveRunProject` by
+  `runProjectFor`, which `setLive` also uses, so an approved project change cannot undo it. Every run records the mode in
+  force on `RunSummary.permissionMode` (setLive keeps it current). bypassPermissions stays gated where it was: the adapters
+  honour it only off setup-like and trust-restricted runs (`claudeAllowsBypass`, codex mapping); proposals and agents
+  still cannot set it.
+- Continuations: `rootEffort` carries (dropped with a warn line where the new adapter does not take it). A chosen mode
+  carries when it narrows the project's current mode, or the continuation is desktop, the resume timer or a 'configure'
+  caller; otherwise an info line says the project's mode applies.
+- Mid-run (`RunManager.setPermissionMode`): ended / paused runs save the mode for the continuation (`applied: false`).
+  A live run needs the optional `RuntimeSession.setPermissionMode` (runtime/types.ts); RunManager sets `ctx.project` first,
+  restores it if the session answers false or throws, and changes nothing when the method is missing. Open cards stay
+  open; session-only grants and staffing are untouched. Only the desktop IPC reaches it (no RuntimeContext hook or tool).
+- Checked by unit tests only: `runtime/runManager.startChoice.test.ts` (fake recording adapter), `host/argsRunChoice.test.ts`,
+  `host/dispatcherRunChoice.test.ts`, `store/runs.test.ts`. No adapter implements `setPermissionMode` yet; whether the
+  Claude SDK or Codex app-server can change a live session's mode is unverified (sdk-facts.md does not record it).

@@ -303,6 +303,19 @@ describe('start with a chosen permission mode', () => {
     expect(r.ctx().project.permissionMode).toBe('plan')
     await r.m.stopAll()
   })
+
+  it('moves the displayed mode when an approved project change switches the mode of a run without a choice', async () => {
+    const project: Project = { ...team(), permissionMode: 'default' }
+    const saveProjectPermissions = vi.fn((): Project => ({ ...project, permissionMode: 'acceptEdits' }))
+    const r = rig({ saveProjectPermissions } as Partial<RunManagerOptions>)
+    const run = await r.m.start({ project, prompt: 'go' })
+    expect(r.store.get(run.id)?.permissionMode).toBe('default')
+    expect(r.ctx().acceptEditsForProject!()).toBe(true)
+    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(r.store.get(run.id)?.permissionMode).toBe('acceptEdits')
+    expect(r.store.get(run.id)?.permissionModeChosen).toBeUndefined()
+    await r.m.stopAll()
+  })
 })
 
 describe('continuations carry the per-run choices', () => {

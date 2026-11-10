@@ -2027,6 +2027,11 @@ export class RunManager {
         live = noFolderWrites({ ...next, path: live.path })
         // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
         ctx.project = this.runProjectFor(active, live)
+        // RunSummary.permissionMode shows the mode in force: an approved project change (acceptEdits for project) moves it.
+        if (summary.permissionMode !== ctx.project.permissionMode) {
+          summary.permissionMode = ctx.project.permissionMode
+          this.store.upsert(summary)
+        }
         ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
         ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
         this.applyExecBudget(active, ctx)
