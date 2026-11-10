@@ -27,7 +27,7 @@ import {
   type SDKUserMessage,
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, connectionName, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
@@ -639,6 +639,35 @@ export function bridgedSpawnDenial(ctx: RuntimeContext, subagentType: string): s
 }
 
 /**
+ * The effort the Claude CLI uses when nothing sets one: `medium`, observed for haiku and sonnet roots and subagents in
+ * `scripts/smoke-staffing.mjs` (SDK 0.3.318, docs/agent-notes/sdk-facts.md, "default level was medium"; check 8b
+ * shows a report with no effort inherits `Options.effort` instead).
+ */
+export const CLAUDE_SDK_DEFAULT_EFFORT: Effort = 'medium'
+
+/**
+ * The work session's `Options.effort`: the root role's effort, or undefined (no key at all). The SDK ignores an
+ * `AgentDefinition.effort` on the agent chosen by `Options.agent` (smoke check 5), so this is the only way the
+ * root's chart effort applies (check 8). The value is passed as is: the CLI downgrades a level a model does not take,
+ * as it does for definitions. Pure.
+ */
+export function sessionEffort(root: Pick<Role, 'effort'> | undefined): Effort | undefined {
+  return root?.effort || undefined
+}
+
+/**
+ * The `AgentDefinition.effort` for a role: its own effort when it has one; else, only when the session carries an
+ * `Options.effort`, the SDK default, so a report without an effort keeps running at the default instead of
+ * inheriting the root's (check 8b); else undefined (definition unchanged). Written regardless of the role's model:
+ * a definition effort on a model without effort levels (claude-haiku-4-5-20251001) spawns normally and reports no
+ * effort (check 9), and the adapter does not know per-model effort support at run time. Pure.
+ */
+export function reportEffort(role: Pick<Role, 'effort'>, session: Effort | undefined): Effort | undefined {
+  if (role.effort) return role.effort
+  return session ? CLAUDE_SDK_DEFAULT_EFFORT : undefined
+}
+
+/**
  * The AgentDefinitions for a run. The root gets every harness tool, a canSpawn role the 'spawners' ones; each
  * role gets a server-level rule and an mcpServers entry for every MCP server granted to it.
  */
@@ -658,6 +687,8 @@ export function buildAgents(
   const bridgedRoles = bridgedRolesOf(ctx)
   const bridgedIds = new Set(bridgedRoles.map((b) => b.roleId))
   const agents: Record<string, AgentDefinition> = {}
+  // The root's effort goes on Options.effort (buildOptions, same root as ClaudeSession's constructor picks).
+  const session = sessionEffort(ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0])
   for (const role of ctx.roles) {
     const isRoot = role.reportsTo === null
     if (!isRoot && bridgedIds.has(role.id)) continue
@@ -697,7 +728,8 @@ export function buildAgents(
       model: role.model && validModelId(role.model) ? role.model : 'inherit'
     }
     if (mcp.length) def.mcpServers = mcp
-    if (role.effort) def.effort = role.effort
+    const effort = reportEffort(role, session)
+    if (effort) def.effort = effort
     agents[role.slug] = def
   }
   return agents
@@ -3162,6 +3194,10 @@ export class ClaudeSession implements RuntimeSession {
       if (validModelId(this.root.model)) options.model = this.root.model
       else this.log('warn', 'The root role has an invalid model id; using the CLI default.')
     }
+    // The root's chart effort: an AgentDefinition.effort does not reach the Options.agent root (smoke check 5).
+    // Built here, so every restart and resume (they all come through buildOptions) keeps it.
+    const effort = sessionEffort(this.root)
+    if (effort) options.effort = effort
     if (opts.maxBudgetUsd !== undefined) options.maxBudgetUsd = opts.maxBudgetUsd
     else if (!this.isSetup) {
       // ctx.budgetUsd (exec runs, the chain's prior cost already taken off) wins; 0 is a real budget (cli-spec 6.2(3)).
