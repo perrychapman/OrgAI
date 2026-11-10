@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { PLAN_BATCHING_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
+import { PLAN_BATCHING_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
 import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText } from './prompts'
@@ -153,8 +153,10 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, team sizing, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, self-knowledge (app_reference), brief
-    expect(parts).toHaveLength(17)
+    // prompt, reports, team sizing, staffing, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, self-knowledge (app_reference), brief
+    expect(parts).toHaveLength(18)
+    // Staffing 'fixed' drops only the staffing paragraph.
+    expect(buildRolePrompt(lead, roles, { ...withArch, staffing: 'fixed' }, { isSetup: false, isolation: true }).split('\n\n')).toHaveLength(17)
   })
 
   it('tells every work-run role to edit with the edit tools and avoid cd chains, never setup runs', () => {
@@ -593,13 +595,16 @@ describe('team sizing paragraph', () => {
   })
 
   it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
-    expect(teamSizingText({ isolation: false }).length).toBe(1039)
-    expect(teamSizingText({ isolation: true }).length).toBe(1001)
-    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1243)
-    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1205)
-    for (const required of [false, true]) for (const isolation of [false, true]) {
-      const t = teamSizingText({ required, isolation })
-      expect(t.length).toBeLessThanOrEqual(1300)
+    // Review policy 'risk' (the default) carries the longest review sentence.
+    expect(teamSizingText({ isolation: false }).length).toBe(1153)
+    expect(teamSizingText({ isolation: true }).length).toBe(1115)
+    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1357)
+    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1319)
+    expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1038)
+    expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1015)
+    for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
+      const t = teamSizingText({ required, isolation, review })
+      expect(t.length).toBeLessThanOrEqual(1400)
       expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
     }
   })
@@ -615,7 +620,7 @@ describe('team sizing paragraph', () => {
       'Cut the longest piece first',
       'Run several instances of a role on disjoint scopes',
       'tests, checks and docs beside the implementation',
-      'Review risky or large changes, or when a rule says so, beside the next step, not by habit',
+      'Ask for review beside the next step only when',
       'never work you handed out, or end your turn and wait',
       'read its evidence'
     ]) expect(t).toContain(s)
@@ -641,5 +646,145 @@ describe('plan calls batched with work', () => {
     expect(buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false })).toContain(PLAN_BATCHING_TEXT)
     expect(buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false, team: 'single' })).not.toContain(PLAN_BATCHING_TEXT)
     expect(buildRolePrompt(roles[1], roles, project(), { isSetup: false, isolation: false })).not.toContain(PLAN_BATCHING_TEXT)
+  })
+})
+
+describe('staffing paragraph', () => {
+  const roles = orgChart()
+  const [lead, eng] = roles
+  const flags = { isSetup: false, isolation: false }
+  const opening = 'In the plan, give every step a report will do staff (role, tier, effort)'
+
+  it('goes to the root of a team work run with reports when staffing is auto, right after the team sizing paragraph', () => {
+    const text = buildRolePrompt(lead, roles, project(), flags)
+    expect(text).toContain(`${teamSizingText({ isolation: false })}\n\n${staffingText()}\n\n`)
+    const iso = buildRolePrompt(lead, roles, project(), { ...flags, isolation: true })
+    expect(iso.indexOf(staffingText())).toBeLessThan(iso.indexOf(orchestratorIsolationText()))
+    expect(buildRolePrompt(lead, roles, project({ staffing: 'auto' }), flags)).toContain(staffingText())
+    expect(buildRolePrompt(lead, roles, project({ kind: 'engagement', setup: { kind: 'new', state: 'complete' } }), flags)).toContain(opening)
+  })
+
+  it('never goes to a report, a mid-level lead, the single assistant, a quick run, a setup run, a bridged child root or a root without reports', () => {
+    expect(buildRolePrompt(eng, roles, project(), flags)).not.toContain(opening)
+    const mid = { ...eng, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'] }
+    expect(buildRolePrompt(mid, [lead, mid, ...roles.slice(1)], project(), flags)).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, team: 'single' })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, isSetup: true })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, bridged: true })).not.toContain(opening)
+    const alone = { ...lead, canSpawn: false, spawnable: [] as string[] }
+    expect(buildRolePrompt(alone, [alone], project(), flags)).not.toContain(opening)
+  })
+
+  it('with staffing fixed the paragraph is absent and nothing else changes', () => {
+    for (const isolation of [false, true]) {
+      const auto = buildRolePrompt(lead, roles, project(), { ...flags, isolation })
+      const fixed = buildRolePrompt(lead, roles, project({ staffing: 'fixed' }), { ...flags, isolation })
+      expect(fixed).not.toContain(opening)
+      expect(fixed).toBe(auto.replace(`\n\n${staffingText()}`, ''))
+    }
+    // The review policy still applies without automatic staffing.
+    expect(buildRolePrompt(lead, roles, project({ staffing: 'fixed', reviewPolicy: 'always' }), flags)).toContain(reviewPolicyText('always'))
+  })
+
+  it('reports get nothing new, whatever the staffing settings', () => {
+    const plain = buildRolePrompt(eng, roles, project(), flags)
+    for (const over of [{ staffing: 'fixed' as const }, { staffingGoal: 'speed' as const }, { staffingGoal: 'cost' as const }, { reviewPolicy: 'always' as const }, { reviewPolicy: 'never' as const }]) {
+      expect(buildRolePrompt(eng, roles, project(over), flags)).toBe(plain)
+      expect(buildRolePrompt(eng, roles, project(over), { ...flags, staffingGoal: 'speed' })).toBe(plain)
+    }
+  })
+
+  it('takes the goal from the run (flags.staffingGoal) and else from the project', () => {
+    expect(buildRolePrompt(lead, roles, project(), flags)).toContain(`${staffingText('balanced')}\n\n`)
+    expect(buildRolePrompt(lead, roles, project({ staffingGoal: 'speed' }), flags)).toContain(staffingText('speed'))
+    expect(buildRolePrompt(lead, roles, project({ staffingGoal: 'cost' }), flags)).toContain(staffingText('cost'))
+    // The per-run override wins over the project's goal, in both directions.
+    expect(buildRolePrompt(lead, roles, project({ staffingGoal: 'speed' }), { ...flags, staffingGoal: 'cost' })).toContain(staffingText('cost'))
+    const balancedRun = buildRolePrompt(lead, roles, project({ staffingGoal: 'cost' }), { ...flags, staffingGoal: 'balanced' })
+    expect(balancedRun).toContain(`${staffingText('balanced')}\n\n`)
+    expect(balancedRun).not.toContain('This run favours')
+  })
+
+  it('goal lines: balanced adds none, speed treats every step as on the longest path, cost none and allows one cheaper report', () => {
+    expect(staffingText('balanced')).toBe(staffingText())
+    expect(staffingText('balanced')).not.toContain('This run favours')
+    expect(staffingText('speed')).toBe(`${staffingText()} This run favours speed: treat every step as on the longest path.`)
+    expect(staffingText('cost')).toBe(
+      `${staffingText()} This run favours cost: treat no step as on the longest path; one well-specified piece may go to a single report on a cheaper tier.`
+    )
+  })
+
+  it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
+    expect(staffingText('balanced').length).toBe(824)
+    expect(staffingText('speed').length).toBe(889)
+    expect(staffingText('cost').length).toBe(955)
+    expect(staffingText('balanced').length).toBeLessThanOrEqual(900)
+    for (const goal of ['balanced', 'speed', 'cost'] as const) {
+      const t = staffingText(goal)
+      expect(t.length).toBeLessThanOrEqual(1000)
+      expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
+    }
+    // The default chart's root (auto, balanced, risk) grows by at most 950 characters over the text before staffing.
+    const before = 'Review risky or large changes, or when a rule says so, beside the next step, not by habit.'
+    const growth = staffingText().length + 2 + reviewPolicyText().length - before.length
+    expect(growth).toBe(940)
+    expect(growth).toBeLessThanOrEqual(950)
+  })
+
+  it('covers staff, after and paths, the clamp, the rubric, the longest path and escalation', () => {
+    const t = staffingText()
+    for (const s of [
+      'staff (role, tier, effort)',
+      'after (steps it waits for; omit it if it can start now)',
+      'paths (files it will change)',
+      'the harness applies the tier and effort when you start that role, never above what the role allows',
+      'Tier fast for search, mechanical edits, running checks and summaries',
+      'everyday for well-specified implementation, tests and routine review',
+      'deep for ambiguous design, cross-module change, hard debugging and security review',
+      'Effort low for mechanical work, medium by default, high only where the reasoning is subtle',
+      'On the longest path prefer a higher tier at lower effort to a lower tier at high effort',
+      'off it prefer the cheaper tier, it has slack',
+      'If a step fails verification or comes back unresolved, retry it one step up in tier or effort, at most twice'
+    ]) expect(t).toContain(s)
+    // Only the automatic picks are named.
+    expect(t).not.toMatch(/\b(top|xhigh|max)\b/)
+  })
+})
+
+describe('review policy sentence', () => {
+  const roles = orgChart()
+  const [lead, eng] = roles
+  const flags = { isSetup: false, isolation: false }
+  const sentences = { risk: reviewPolicyText('risk'), always: reviewPolicyText('always'), never: reviewPolicyText('never') }
+
+  it('risk (the default): review on a rule or the brief, sensitive or security-relevant code, a large diff or a failed verification; else verify and finish', () => {
+    expect(reviewPolicyText()).toBe(sentences.risk)
+    for (const s of ['a rule or the brief demands it', 'sensitive or security-relevant code', 'the diff is large', 'verification failed once', 'else verify and finish', 'beside the next step'])
+      expect(sentences.risk).toContain(s)
+  })
+
+  it('always reviews every change before finishing; never asks only when a rule demands it', () => {
+    expect(sentences.always).toContain('Have every change reviewed before you finish')
+    expect(sentences.never).toContain('Do not ask for review unless a rule demands it')
+  })
+
+  it('the root reads exactly one review rule, the one its project asks for, and reports read none', () => {
+    for (const policy of ['risk', 'always', 'never'] as const) {
+      const over = policy === 'risk' ? {} : { reviewPolicy: policy }
+      for (const staffing of ['auto', 'fixed'] as const) {
+        const root = buildRolePrompt(lead, roles, project({ ...over, staffing }), flags)
+        for (const [other, sentence] of Object.entries(sentences)) {
+          if (other === policy) expect(root.split(sentence)).toHaveLength(2)
+          else expect(root).not.toContain(sentence)
+        }
+        expect(root).not.toContain('Review risky or large changes')
+      }
+      expect(teamSizingText({ review: policy })).toContain(sentences[policy])
+      const report = buildRolePrompt(eng, roles, project(over), flags)
+      for (const sentence of Object.values(sentences)) expect(report).not.toContain(sentence)
+    }
+    // The staffing paragraph names review only as kinds of work in the rubric, never as a rule.
+    expect(staffingText()).not.toMatch(/ask for review|reviewed/i)
   })
 })
