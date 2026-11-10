@@ -1,6 +1,7 @@
 # Split execution: making a fan-out beat one agent
 
-Status: draft 1, 2026-11-10. Nothing here is built. Follow-up to `orchestration-efficiency.md`, whose phase 6
+Status: built and measured, 2026-11-10 (section 8 has the results; sections 1 to 7 are the design as first written,
+with "as built" notes). When this draft was written nothing was built. Follow-up to `orchestration-efficiency.md`, whose phase 6
 comparison (its 1.1c) ended with one part of the goal undelivered: no run that split its work beat the native
 session on time. This document says why, from those runs, and what to build and measure next.
 
@@ -156,3 +157,60 @@ splitting pays only above some task size, the sizing rule gets that size, and th
   receipts were built on the foreground path and must be shown to hold.
 - Every change to the sizing paragraph can undo the phase 6 result (the lead keeping contained work). Its
   sentences and sizes are pinned in `prompts.test.ts`, and the small tasks are part of the acceptance run.
+
+## 8. Results (2026-11-10)
+
+Built on `feat/split-execution` (stacked on the orchestration-efficiency branch): the two metrics
+(`afterLastReportMs`, `reportStartMs`), the prompt rules of 3.2 to 3.4, the context pack on both adapters, the
+waiting note, tracked background reports on Claude, and the cost line of 3.5. The Claude facts 3.3 and 3.6 called
+unverified were settled by `scripts/smoke-staffing.mjs` checks 12 to 16 (`docs/agent-notes/sdk-facts.md`). The
+context pack went through four security reviews; its rules are in `docs/agent-notes/core-runtime.md`.
+
+Lab: a new task, "platform" (four independent modules and an integration layer behind a stated contract, 52 hidden
+tests; native Codex 266 s $0.18, native Claude Code 363 s $1.50), three campaigns
+(`phase3-20261110T162444Z`, `phase4-…T165554Z`, `phase5-…T173913Z`), one run per cell, $13.68 in all. Every trial
+passed every hidden test. P3 is the build before this work, P5 the final one (`oe-split2`).
+
+| Cell | P3 | P5 | P5 against native (time, cost) |
+|---|---|---|---|
+| Platform, Claude, unforced | 259 s, $1.86 | 147 s, $1.28 | 0.41x, 0.85x |
+| Platform, Claude, told how to split | 227 s, $1.22 (one report hung 100 s) | 160 s, $1.16 (P4) | 0.44x, 0.77x |
+| Platform, Codex, unforced | 324 s, $0.63 (151 provider errors) | 335 s, $0.53; 226 s on P4 (30 provider errors) | 1.26x, 2.92x |
+| Platform, Codex, told how to split | 142 s, $0.32 | 149 s, $0.30 (P4) | 0.56x, 1.68x |
+| Modules, Codex | 128 s, $0.15, lead and one report | 137 s, $0.12, the lead alone | 1.25x, 1.60x |
+| Inventory, Codex | 154 s, $0.13 (median of 3) | 129 s, $0.10, the lead alone | 0.93x, 0.88x |
+| Ledger, Codex | 60 s, $0.08 | 62 s, $0.06 | 1.11x, 1.35x |
+| Dashboard, Codex | 686 s, $0.56 | 548 s, $0.52 | 1.20x, 1.55x |
+| Ledger, Claude | 52 s, $0.24 (median of 3) | 50 s, $0.26 | 1.19x, 1.54x |
+| Modules, Claude | 73 s, $0.37 | 73 s, $0.35 | 0.87x, 0.93x |
+
+Against section 4:
+
+- **A split at 0.8x native time and 1.5x cost: met on Claude** (0.41x, 0.85x, unforced), with three background
+  reports overlapping (2.54) and the lead active 83% of the time they ran. **Not met on Codex unforced**; met on
+  time when the lead is told how (0.56x), at 1.68x cost.
+- **The lead works alone on the small tasks: met** on both adapters in P5. The cost line did this on Codex: on P4,
+  without it, the lead used two implementers and a reviewer on the module task and one implementer on the
+  inventory.
+- **Time after the last report under 20%: met where reports ran last** (26 to 29 s on the platform runs); the
+  dashboard's 188 s is the lead's own building after one early slice.
+
+What the runs show beyond the targets:
+
+- **A correct split wins even with one-minute pieces.** The break-even estimate of section 2 was too pessimistic
+  on Codex (a report writes after 10 to 20 s) and about right on Claude (25 to 45 s).
+- **Background reports were the largest single gain on Claude**: the lead's active share while reports ran went
+  from 12% to 83 to 93%, and the unforced run reached the told-how run.
+- **The Codex gap is now verification, not splitting.** In the P5 platform run the split ended at 122 s; a
+  reviewer (175 to 229 s) and a fix through a new implementer (241 to 307 s) followed, for findings no hidden test
+  needed. On the module task the lead worked alone, finished the code at 62 s and checked its own work for 73 s.
+  Review by risk covers any large change (the owner's decision, orchestration-efficiency section 6); narrowing it
+  for work whose reports ran their own checks is an open decision.
+- **The context pack has not been shown to help.** On Codex the lead named files in one run of three campaigns. On
+  Claude the lead named files on every spawn, but it reads with `cat`, not the Read tool, and since the fourth
+  security pass only text its own Read returned in full may be inlined, so nothing was. Report start to first
+  write did not change in any campaign. It is safe and inert; making it useful on Claude means crediting what the
+  lead saw through other tools, which reopens the review.
+- **The waiting note never fired** in any run.
+- Small samples: one run per cell, and both earlier unforced Codex platform runs were hit by provider errors.
+
