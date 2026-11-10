@@ -576,13 +576,18 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
     return rows.length === 3 && rows[0].includes('Wrap up now') && !rows.some(r => r.includes('Please review'))
   }, undefined, 40_000)
   const strip = await scene().evaluate(el => {
-    const region = el.querySelector('.office-message-strip').getBoundingClientRect()
+    const regionEl = el.querySelector('.office-message-strip')
+    const region = regionEl.getBoundingClientRect()
     return {
-      height: region.height, rows: [...el.querySelectorAll('[data-testid=office-caption]')].map(r => ({ text: r.querySelector('.office-strip-text').textContent, show: r.querySelector('[data-testid=office-show]')?.textContent ?? null, full: r.querySelector('.office-full-message')?.textContent ?? '' })),
+      height: region.height, scrollHeight: regionEl.scrollHeight, clientHeight: regionEl.clientHeight,
+      outside: [...el.querySelectorAll('[data-testid=office-caption]')].filter(r => { const b = r.getBoundingClientRect(); return b.top < region.top - 0.5 || b.bottom > region.bottom + 0.5 || b.left < region.left - 0.5 || b.right > region.right + 0.5 }).length,
+      rows: [...el.querySelectorAll('[data-testid=office-caption]')].map(r => ({ text: r.querySelector('.office-strip-text').textContent, show: r.querySelector('[data-testid=office-show]')?.textContent ?? null, full: r.querySelector('.office-full-message')?.textContent ?? '' })),
       script: el.querySelectorAll('[data-testid=office-caption] script').length
     }
   })
-  check(Math.abs(strip.height - 48) <= 1, 'the message strip is 48 px tall', String(strip.height))
+  // Sized to its three 24 px rows plus the 1 px top border (QA F1); it used to be 48 px and clipped the oldest row.
+  check(Math.abs(strip.height - 73) <= 1, 'the message strip is sized to its three rows (73 px: 3 x 24 + border)', String(strip.height))
+  check(strip.outside === 0 && strip.scrollHeight === strip.clientHeight, 'all three strip rows lie inside the strip and it does not scroll (scrollHeight equals clientHeight)', JSON.stringify({ outside: strip.outside, scrollHeight: strip.scrollHeight, clientHeight: strip.clientHeight }))
   check(strip.rows.length === 3 && /^Orchestrator to office-b · Wrap up now$/.test(strip.rows[0].text) && /^Orchestrator to office-b · Check the tests$/.test(strip.rows[1].text) && /^office-a to Orchestrator · On it\.$/.test(strip.rows[2].text), 'the strip lists the last three messages newest first as `{From} to {To} · {text}`', JSON.stringify(strip.rows.map(r => r.text)))
   check(strip.rows.map(r => r.show).join('|') === 'Show office-b|Show office-b|Show Orchestrator', 'each row has a `Show {To}` button', JSON.stringify(strip.rows.map(r => r.show)))
   check(strip.rows[2].full.includes('On it.') && strip.script === 0, 'rows keep the full text and render markup as text')
@@ -804,12 +809,13 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await card.waitFor({ timeout: 20_000 })
   await sleep(600)
   const small = await scene().evaluate(el => {
-    const strip = el.querySelector('.office-message-strip').getBoundingClientRect()
+    const stripEl = el.querySelector('.office-message-strip')
+    const strip = stripEl.getBoundingClientRect()
     const stageBox = el.querySelector('[data-testid=office-stage]').getBoundingClientRect()
-    return { strip: strip.height, stage: [stageBox.width, stageBox.height], sceneBottom: el.getBoundingClientRect().bottom, inner: innerHeight }
+    return { strip: strip.height, stripScroll: stripEl.scrollHeight - stripEl.clientHeight, stage: [stageBox.width, stageBox.height], sceneBottom: el.getBoundingClientRect().bottom, inner: innerHeight }
   })
   check(await noPageScroll(), 'the office with a permission card open has no page scroll at 1024x640', JSON.stringify(small))
-  check(Math.abs(small.strip - 48) <= 1, 'the message strip is still 48 px with a permission card open', String(small.strip))
+  check(Math.abs(small.strip - 73) <= 1 && small.stripScroll === 0, 'the message strip is still 73 px, unscrolled, with a permission card open', JSON.stringify(small))
   check(small.sceneBottom <= small.inner + 1, 'the office stays inside the window with a permission card open', JSON.stringify(small))
   await keyShot('permission-card-1024')
   await shot('office-permission-card')
@@ -825,7 +831,45 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   // pressing it brings them back and hands them keyboard focus, and the stage never changes height.
   const waitingWho = await page.evaluate(() => document.querySelector('[data-testid=office-scene] [data-office-state=waiting]')?.dataset.officeSpriteId ?? null)
   check(!!waitingWho, 'a person is waiting on the card', String(waitingWho))
-  // A roomy window: at 1024x640 with the card open the stage is only ~116 px tall, too short to reveal a 4x person with a plate and bubble room.
+  // A short stage (QA F2): at 1024x640 with the card open, Show/Find and the off-screen chip must still end with the person's button inside the stage.
+  const shortStageH = await stage().evaluate(el => el.getBoundingClientRect().height)
+  const buttonOutOf = who => scene().evaluate((el, id) => {
+    const s = el.querySelector('[data-testid=office-stage]')
+    const b = el.querySelector(`button[data-office-worker-id="${id}"]`)
+    for (const [left, top] of [[0, 0], [1e6, 1e6], [0, 1e6], [1e6, 0]]) {
+      s.scrollTo({ left, top, behavior: 'instant' })
+      const sr = s.getBoundingClientRect(); const r = b.getBoundingClientRect()
+      if (r.right < sr.left || r.left > sr.right || r.bottom < sr.top || r.top > sr.bottom) return true
+    }
+    return false
+  }, who)
+  const buttonInside = ([id]) => {
+    const button = document.querySelector(`button[data-office-worker-id="${id}"]`)
+    const s = document.querySelector('[data-testid=office-stage]').getBoundingClientRect()
+    if (!button) return false
+    const r = button.getBoundingClientRect()
+    return r.left >= s.left - 1 && r.right <= s.right + 1 && r.top >= s.top - 1 && r.bottom <= s.bottom + 1
+  }
+  check(await zoomTo(4), 'short stage: zoom in to 4x at 1024x640 with the card open', String(shortStageH))
+  if (await buttonOutOf(waitingWho)) {
+    await waits('short stage: a chip names the person who is out of the stage', () => !!document.querySelector('.office-controls [data-testid=office-offscreen-show]'), undefined, 4000)
+    await scene().locator('.office-controls [data-testid=office-offscreen-show]').first().click()
+    await waits(`short stage (${Math.round(shortStageH)} px): the off-screen chip's Show ends with the person's button inside the stage`, buttonInside, [waitingWho], 6000)
+  } else check(false, 'short stage: the waiting person could be scrolled out at 4x')
+  await openDirectory()
+  await settle()
+  const dirStageH = await stage().evaluate(el => el.getBoundingClientRect().height)
+  check(await zoomTo(3), 'short stage: zoom to 3x with the directory open')
+  if (await buttonOutOf(waitingWho)) {
+    // A DOM click: with the card and the directory both open the Decisions tray covers the roster at this size (F8, outside the Office).
+    await scene().locator(`button[data-office-agent-id="${waitingWho}"]`).evaluate(el => el.click())
+    await waits(`short stage with the directory open (${Math.round(dirStageH)} px): Find a person ends with the person's button inside the stage`, buttonInside, [waitingWho], 6000)
+    await sleep(600) // the inspector may open and resize the stage after the pan: the person must stay inside
+    check(await inStage(waitingWho), 'short stage: the person is still inside the stage after the inspector and directory settle', String(dirStageH))
+  } else check(false, 'short stage: the waiting person could be scrolled out at 3x with the directory open')
+  if (await page.locator('[data-testid=office-agent-back]').count()) await page.locator('[data-testid=office-agent-back]').evaluate(el => el.click())
+  await scene().locator('details.office-directory summary').evaluate(el => el.click())
+  // A roomy window: the next chip checks need a stage tall enough to keep a plate and bubble room as well.
   await resizeTo(1600, 1000)
   await settle()
   check(await zoomTo(4), 'zoom in to 4x so the building is larger than the stage')
@@ -868,6 +912,38 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await settle()
   await card.getByRole('button', { name: 'Allow once', exact: true }).click()
   await sleep(400)
+  await endSession(page)
+
+  // ---------- A 90-character unbroken agent name must not break a strip row (QA F3) ----------
+  const LONG_NAME = 'W'.repeat(90)
+  fs.writeFileSync(scriptFile, JSON.stringify({
+    delayMs: 300,
+    work: [
+      { type: 'spawn', id: LONG_NAME, name: LONG_NAME, description: 'Long name' },
+      { type: 'wait', ms: 1500 },
+      { type: 'message', to: LONG_NAME, text: 'Please confirm the long name stays contained.' },
+      { type: 'wait', ms: 60_000 }
+    ]
+  }))
+  await resizeTo(1280, 800)
+  await startRun('Office long name')
+  await waits('the strip logs the message to the long-named agent', () => /contained/.test(document.querySelector('[data-testid=office-caption] .office-strip-text')?.textContent ?? ''), undefined, 30_000)
+  const longRow = await scene().evaluate((el, full) => {
+    const row = el.querySelector('[data-testid=office-caption]')
+    const r = row.getBoundingClientRect()
+    const btn = row.querySelector('[data-testid=office-show]')
+    const text = row.querySelector('.office-strip-text')
+    const b = btn?.getBoundingClientRect()
+    const t = text.getBoundingClientRect()
+    return {
+      button: !!btn, btnInside: !!b && b.left >= r.left - 0.5 && b.right <= r.right + 0.5, btnWidth: b?.width ?? 0, textWidth: t.width, rowWidth: r.width,
+      label: btn?.getAttribute('aria-label'), title: btn?.getAttribute('title'), fullName: full, shown: btn?.textContent, rowText: text.textContent
+    }
+  }, LONG_NAME)
+  check(longRow.button && longRow.btnInside && longRow.btnWidth <= longRow.rowWidth * 0.45, 'a 90-character unbroken name keeps the Show button inside its row and bounded', JSON.stringify(longRow))
+  check(longRow.textWidth >= 150 && longRow.rowText.length < 120, 'the message text keeps a usable width and the names in the row text are bounded', JSON.stringify(longRow))
+  // The runtime already bounds a handle (about 64 characters); the strip clips it further for display only.
+  check(longRow.label?.startsWith('Show WWWW') && longRow.title === longRow.label && longRow.label.length > longRow.shown.length && longRow.shown.length <= 'Show '.length + 24, 'the Show button keeps the whole name in its accessible name and title while its label is clipped', JSON.stringify(longRow))
   await endSession(page)
 
   // ---------- A failed turn: failed state, error mark, no loop ----------

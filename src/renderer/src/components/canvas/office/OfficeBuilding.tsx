@@ -89,7 +89,7 @@ function paint(canvas: HTMLCanvasElement, d: Drawing): void {
 /** `{Department} · {n}` on each room's north wall; DOM so the text stays crisp at every zoom and in the accessibility tree. */
 export function OfficeRoomLabels({ building, area, zoom }: { building: Building; area: Rect; zoom: number }): ReactElement {
   return <>{building.rooms.map(room => <div
-    className="office-room-label" key={room.id} data-office-department-id={room.group} data-office-room-label={room.label}
+    className="office-room-label" key={room.id} data-office-department-id={room.group} data-office-room-label={room.label} title={`${room.label} · ${room.agents.length}`}
     style={{ left: (room.x + 1 - area.x) * OFFICE_TILE * zoom, top: (room.y - area.y) * OFFICE_TILE * zoom, maxWidth: (room.width - 2) * OFFICE_TILE * zoom }}
   >{room.label} · {room.agents.length}</div>)}</>
 }

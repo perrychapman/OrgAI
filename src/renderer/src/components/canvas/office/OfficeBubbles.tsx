@@ -128,6 +128,7 @@ function BubbleView({ bubble, x, y, senderX, zoom, area, size, spriteRefs }: Bub
     }
     element.style.left = `${Math.round(left)}px`
     element.style.top = `${Math.round(top)}px`
+    element.dataset.baseTop = String(Math.round(top))
     element.style.setProperty('--office-bubble-tail', `${Math.round(Math.min(Math.max(centre - left, 10), Math.max(10, width - 10)))}px`)
     element.dataset.placement = placement
   }, [centre, markTop, boxBottom, size.width, size.height, shown, spriteRefs, bubble.to, senderCentre])
@@ -139,9 +140,39 @@ function BubbleView({ bubble, x, y, senderX, zoom, area, size, spriteRefs }: Bub
   </div>
 }
 
+/** Gap kept between two bubbles that would otherwise overlap. */
+const BUBBLE_GAP = 4
+
+/**
+ * A later bubble that would cover an earlier one stacks above it (or below it when there is no room above). A simple
+ * rule, not a layout solver; the tail then points a little off its person, which still reads as "to them".
+ */
+function separateBubbles(layer: HTMLElement): void {
+  const placed: Array<{ left: number; right: number; top: number; bottom: number }> = []
+  for (const element of layer.querySelectorAll<HTMLElement>('.office-bubble')) {
+    const base = Number(element.dataset.baseTop)
+    if (!Number.isFinite(base)) continue
+    let top = base
+    const left = element.offsetLeft
+    const width = element.offsetWidth
+    const height = element.offsetHeight
+    const hit = (): { top: number; bottom: number } | undefined => placed.find(other => left < other.right && other.left < left + width && top < other.bottom && other.top < top + height)
+    const first = hit()
+    if (first) {
+      top = first.top - height - BUBBLE_GAP
+      if (top < 0 || hit()) top = Math.max(...placed.filter(other => left < other.right && other.left < left + width).map(other => other.bottom)) + BUBBLE_GAP
+    }
+    element.style.top = `${top}px`
+    placed.push({ left, right: left + width, top, bottom: top + height })
+  }
+}
+
 export function OfficeBubbles({ bubbles, positions, zoom, area, size, spriteRefs }: OfficeBubblesProps): ReactElement | null {
+  const layer = useRef<HTMLDivElement>(null)
+  // After every render (and after the bubbles' own placement effects): keep two live bubbles from covering each other.
+  useLayoutEffect(() => { if (layer.current) separateBubbles(layer.current) })
   if (!bubbles.length) return null
-  return <div className="office-bubbles" aria-hidden="true">
+  return <div className="office-bubbles" aria-hidden="true" ref={layer}>
     {bubbles.map(bubble => {
       const at = positions.get(bubble.to)
       return at ? <BubbleView key={bubble.id} bubble={bubble} x={at.x} y={at.y} senderX={positions.get(bubble.from)?.x ?? null} zoom={zoom} area={area} size={size} spriteRefs={spriteRefs} /> : null
