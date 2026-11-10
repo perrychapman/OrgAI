@@ -2,6 +2,7 @@ import { normalizeView } from '../lib/teamView'
 import { applyRunDelegation } from '@shared/delegationView'
 import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
+import { applyPermissionModePatch, permissionModeEventPatch } from '../lib/runSettings'
 import { clearKnowledgePrefs } from '../lib/knowledgePrefs'
 import { create } from 'zustand'
 import { useMemo } from 'react'
@@ -2110,6 +2111,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...(run ? { runs: { ...s.runs, [e.runId]: { ...run, summary: { ...run.summary, projectId: e.projectId } } } } : {}),
           ...(s.selectedProjectId ? { history: historyByProject[s.selectedProjectId] ?? s.history } : {})
         }
+      })
+      return
+    }
+    // A run's permission mode snapshot (RunManager only): replaces all three mode fields on a loaded run's summary.
+    const modePatch = permissionModeEventPatch(e)
+    if (modePatch) {
+      set((s) => {
+        const held = s.runs[modePatch.runId]
+        return held ? { runs: { ...s.runs, [modePatch.runId]: { ...held, summary: applyPermissionModePatch(held.summary, modePatch.fields) } } } : {}
       })
       return
     }

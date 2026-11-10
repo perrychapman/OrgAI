@@ -33,8 +33,17 @@ export function PermissionModeControl({
   disabled,
   busy,
   onChoose,
-  footer
+  footer,
+  valueSuffix,
+  inForce
 }: {
+  /** Shown after the value: the session's accept-edits grant ("edits accepted this session"). */
+  valueSuffix?: string
+  /**
+   * The mode actually in force when it asks less than `value` (Accept edits under a session grant): sets the tone, and
+   * re-applying `value` is allowed because a mode below Accept edits ends the grant.
+   */
+  inForce?: PermissionMode
   /** The mode shown on the chip. */
   value: PermissionMode
   /** The modes offered (newRunPermissionChoices, livePermissionChoices). */
@@ -60,7 +69,9 @@ export function PermissionModeControl({
   const [choice, setChoice] = useState<PermissionMode>(value)
   const [error, setError] = useState('')
   const [working, setWorking] = useState(false)
-  const permissive = isPermissiveMode(value)
+  const permissive = isPermissiveMode(inForce ?? value)
+  // Unchanged = nothing to apply, except re-applying the run's own mode to end a session grant.
+  const unchanged = choice === value && !(inForce && inForce !== value)
   const region = useTriggerAttrs({ 'data-default': isDefault ? 'true' : 'false', 'data-tone': permissive ? 'warning' : null })
   const { confirm, dialog } = useConfirm()
   const name = permissionModeName(value)
@@ -68,7 +79,7 @@ export function PermissionModeControl({
   const focusTrigger = (): void => region.current?.querySelector<HTMLButtonElement>('[data-testid="run-permission-change"]')?.focus()
 
   const apply = async (close: () => void): Promise<void> => {
-    if (choice === value || pending) return
+    if (unchanged || pending) return
     setError('')
     if (isWideningMode(baseline, choice)) {
       // The modal dismisses the popover; Cancel hands focus back to the chip.
@@ -102,16 +113,17 @@ export function PermissionModeControl({
           testId="run-permission-picker"
           className="run-permission-picker"
           triggerClassName={permissive ? 'run-chip run-chip--warning' : 'run-chip'}
-          triggerTitle={`${permissionModeName(value)}: ${permissionModeHelp(value)}`}
+          triggerTitle={`${permissionModeName(value)}${valueSuffix ? ` · ${valueSuffix}` : ''}: ${permissionModeHelp(value)}`}
           trigger={
             <>
               <Icon icon={permissive ? ShieldAlert : Shield} size="xs" />
-              <span className="run-chip__label">
-                {prefix}Permission:
-              </span>
+              {/* Same order as the model chip ("Model: Next message: …"): label, then the next-message prefix, then the value. */}
+              <span className="run-chip__label">Permission:</span>
+              {prefix && <span className="run-chip__prefix">{prefix}</span>}
               <span className="run-chip__value" data-testid="run-permission-current">
                 {name}
               </span>
+              {valueSuffix && <span className="run-chip__suffix" data-testid="run-permission-session"> · {valueSuffix}</span>}
               {showState && <span className="run-chip__state">{isDefault ? 'Default' : 'Changed'}</span>}
               <Icon icon={ChevronDown} size="xs" />
             </>
@@ -142,7 +154,7 @@ export function PermissionModeControl({
               </fieldset>
               {footer}
               <div className="live-model-switch__actions">
-                <Button size="sm" variant="primary" loading={working} disabled={choice === value || disabled} testId="run-permission-apply" onClick={() => void apply(close)}>
+                <Button size="sm" variant="primary" loading={working} disabled={unchanged || disabled} testId="run-permission-apply" onClick={() => void apply(close)}>
                   Use this mode
                 </Button>
                 <Button size="sm" onClick={close} testId="run-permission-cancel">

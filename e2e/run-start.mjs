@@ -489,11 +489,11 @@ try {
     await waitStatus(run.id, ['finished'])
     const v = await openRunWindow(run)
     await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
-    check(/^Next message:/.test(await text(v, T('run-permission-change'))), '7 (live row) an ended run labels the chip "Next message: Permission: ..."', await text(v, T('run-permission-change')))
+    check(/^Permission:\s*Next message:/.test(await text(v, T('run-permission-change'))), '7 (live row) an ended run labels the chip "Permission: Next message: ..."',await text(v, T('run-permission-change')))
     await chooseMode(v, 'plan')
     await v.waitForFunction(() => /applies from your next message/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
     check((await text(v, T('run-permission-note'))).includes('Plan only applies from your next message.'), '7 (live row) run-permission-note says "Plan only applies from your next message."', await text(v, T('run-permission-note')))
-    check(/^Next message:/.test(await text(v, T('run-permission-change'))) && (await text(v, T('run-permission-current'))) === MODE_NAME.plan, '7 (live row) the chip keeps the Next message prefix and shows the saved mode')
+    check(/^Permission:\s*Next message:/.test(await text(v, T('run-permission-change'))) &&(await text(v, T('run-permission-current'))) === MODE_NAME.plan, '7 (live row) the chip keeps the Next message prefix and shows the saved mode')
     const rec = await getRun(run.id)
     check(rec.summary.permissionMode === 'plan' && rec.summary.permissionModeChosen === true, '7 runs.get permissionMode is plan and permissionModeChosen is true', `${rec.summary.permissionMode} ${rec.summary.permissionModeChosen}`)
     // The next message carries it.

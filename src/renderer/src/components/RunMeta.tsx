@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { Bot, ClipboardList, Clock, Database, Files, Folder, Shield, ShieldAlert } from 'lucide-react'
-import { isPermissiveMode, metaPermissionMode, permissionModeHelp, permissionModeName } from '../lib/runSettings'
+import { isPermissiveMode, metaPermissionMode, modeInForce, modeInForceLabel, permissionModeHelp } from '../lib/runSettings'
 import '../styles/run-settings.css'
 import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
 import { useOutputAnnouncements } from './outputs/useOutputAnnouncements'
@@ -189,15 +189,15 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           className={`run-meta-item run-meta-permission${metaMode === 'auto' ? ' run-meta-unattended' : ''}`}
           data-testid="run-meta-permission"
           data-mode={metaMode}
-          data-tone={isPermissiveMode(metaMode) ? 'warning' : undefined}
-          title={`${permissionModeName(metaMode)}${summary.permissionModeChosen ? ' (this run)' : ''}: ${
+          data-tone={isPermissiveMode(modeInForce(summary, metaMode)) ? 'warning' : undefined}
+          title={`${modeInForceLabel(summary, metaMode)}${summary.permissionModeChosen ? ' (this run)' : ''}: ${
             metaMode === 'auto'
               ? "the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."
               : permissionModeHelp(metaMode)
           }`}
         >
-          <Icon icon={isPermissiveMode(metaMode) ? ShieldAlert : Shield} size="xs" />
-          {permissionModeName(metaMode)}
+          <Icon icon={isPermissiveMode(modeInForce(summary, metaMode)) ? ShieldAlert : Shield} size="xs" />
+          {modeInForceLabel(summary, metaMode)}
           <span className="sr-only">
             {' '}
             (permission mode{summary.permissionModeChosen ? ', this run' : ''})

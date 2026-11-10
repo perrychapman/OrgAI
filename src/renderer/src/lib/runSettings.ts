@@ -5,7 +5,7 @@
  * permissionModeChosen and runs:setPermissionMode (src/shared/types.ts). Nothing here changes project settings.
  */
 import type { ConnectionId, Effort, ModelTier, ModelRef, PermissionMode, Project, ProviderId, ProviderModel, RunSummary, StaffingGoal, StartRunInput } from '@shared/types'
-import { EFFORTS, runPermissionModeChoices } from '@shared/types'
+import { EFFORTS, isPermissionMode, runPermissionModeChoices } from '@shared/types'
 import { adapterOnConnection, effortOptionsFor, modelFamily, projectConnection, resolveModelSetting, staffingGoalOf } from '@shared/defaults'
 import { showsGoalChoice } from './runGoal'
 import { PERMISSION_MODE_SHORT } from '@shared/view/settingsCopy'
@@ -241,14 +241,59 @@ export function livePermissionOutcome(
   mode: PermissionMode
 ): { tone: 'ok' | 'saved' | 'refused'; text: string; reports: string; message: string } {
   const base = permissionOutcomeText(result, mode)
-  const reports = base.tone === 'ok' ? reportsUnchangedText(reportsUnchangedOf(result)) : ''
-  return { ...base, reports, message: reports ? `${base.text} ${reports}` : base.text }
+  // Main's reason is shown whenever present, applied or not (a refusal already is the text). The reports count may come
+  // with either outcome; when main's reason does not already say it, it is added in our words.
+  const reason = result.reason?.trim() ?? ''
+  const extra = base.tone !== 'refused' && reason && reason !== base.text ? reason : ''
+  const shown = `${base.text} ${extra}`
+  const count = reportsUnchangedOf(result)
+  const reports = count > 0 && !/keeps? the earlier mode/.test(shown) ? reportsUnchangedText(count) : ''
+  const message = [base.text, extra, reports].filter(Boolean).join(' ')
+  return { ...base, reports, message }
 }
 
 /** True when a refusal leaves a way forward: the run is replying now, so an interrupt may open a boundary. */
 export function offersInterruptToChange(outcome: { tone: string }, status: RunSummary['status']): boolean {
   return outcome.tone === 'refused' && status === 'running'
 }
+
+// ---------- Mode events and the session's accept-edits grant ----------
+
+/** The three main-owned mode fields of a run summary, as the run.permissionMode event carries them. */
+export interface PermissionModeFields {
+  permissionMode?: PermissionMode
+  permissionModeChosen?: true
+  sessionPermissionMode?: 'acceptEdits'
+}
+
+/**
+ * A run.permissionMode event (RunManager only; a snapshot of the three mode fields), read structurally so this file
+ * compiles against shared types with or without that event. Null for any other event or a malformed one.
+ */
+export function permissionModeEventPatch(e: unknown): { runId: string; fields: PermissionModeFields } | null {
+  if (!e || typeof e !== 'object') return null
+  const ev = e as { type?: unknown; runId?: unknown; permissionMode?: unknown; permissionModeChosen?: unknown; sessionPermissionMode?: unknown }
+  if (ev.type !== 'run.permissionMode' || typeof ev.runId !== 'string') return null
+  const fields: PermissionModeFields = {}
+  if (isPermissionMode(ev.permissionMode)) fields.permissionMode = ev.permissionMode
+  if (ev.permissionModeChosen === true) fields.permissionModeChosen = true
+  if (ev.sessionPermissionMode === 'acceptEdits') fields.sessionPermissionMode = 'acceptEdits'
+  return { runId: ev.runId, fields }
+}
+
+/** Replace all three mode fields (a snapshot: an absent field is absent on the summary too). */
+export function applyPermissionModePatch<T extends object>(summary: T, fields: PermissionModeFields): T {
+  const { permissionMode: _m, permissionModeChosen: _c, sessionPermissionMode: _s, ...rest } = summary as T & PermissionModeFields
+  return { ...rest, ...fields } as T
+}
+
+/** RunSummary.sessionPermissionMode, read structurally: an "always allow edits" grant in force over a narrower run mode. */
+export function sessionEditsAccepted(run: object): boolean {
+  return (run as { sessionPermissionMode?: unknown }).sessionPermissionMode === 'acceptEdits'
+}
+
+/** "edits accepted this session": the suffix on the chip and RunMeta while the grant is in force. */
+export const SESSION_EDITS_SUFFIX = 'edits accepted this session'
 
 /** The effort a live run shows: its own record, else the root role's for a team run, else none (the model's default). */
 export function liveEffort(run: Pick<RunSummary, 'rootEffort' | 'kind' | 'quick' | 'team'>, project: Pick<Project, 'roles'>): Effort | undefined {
@@ -263,11 +308,24 @@ export function liveGoal(run: Pick<RunSummary, 'kind' | 'quick' | 'team' | 'over
   return run.overrides?.goal ?? staffingGoalOf(project)
 }
 
-/** The mode RunMeta names (null: nothing to show). Work runs only, Chat and Ask included; setup-like runs pin their mode. */
+/**
+ * The mode RunMeta names (null: nothing to show). Work runs only, Chat and Ask included; setup-like runs pin their mode.
+ * A live session's accept-edits grant (sessionPermissionMode) counts: it is shown even over the plain default mode.
+ */
 export function metaPermissionMode(run: Pick<RunSummary, 'kind' | 'permissionMode' | 'quick' | 'buildWorkspace'>, project: Pick<Project, 'permissionMode'>): PermissionMode | null {
   if (run.kind !== 'work') return null
   const mode = effectiveRunMode(run, runPermissionMode(run, project))
-  return showsModeInMeta(mode) ? mode : null
+  return showsModeInMeta(mode) || sessionEditsAccepted(run) ? mode : null
+}
+
+/** RunMeta's / the chip's visible mode text: the short name, plus the session's accept-edits grant while it is in force. */
+export function modeInForceLabel(run: object, mode: PermissionMode): string {
+  return sessionEditsAccepted(run) && mode !== 'acceptEdits' ? `${permissionModeName(mode)} · ${SESSION_EDITS_SUFFIX}` : permissionModeName(mode)
+}
+
+/** The mode a widening is measured from: Accept edits while the session grant is in force over a narrower mode. */
+export function modeInForce(run: object, mode: PermissionMode): PermissionMode {
+  return sessionEditsAccepted(run) && isNarrowingMode('acceptEdits', mode) ? 'acceptEdits' : mode
 }
 
 /** The model chip's help line (start page title, live picker footer): which agents the choice reaches. */

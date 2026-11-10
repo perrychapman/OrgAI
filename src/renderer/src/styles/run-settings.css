@@ -85,6 +85,15 @@
   text-overflow: ellipsis;
   color: var(--text-primary);
 }
+.run-chip__prefix {
+  flex: none;
+  color: var(--text-secondary);
+}
+.run-chip__suffix {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .run-chip__state {
   flex: none;
   color: var(--text-tertiary);

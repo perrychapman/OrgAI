@@ -5,7 +5,7 @@ import { Button } from '../ui/Button'
 import { PermissionModeControl } from './PermissionModeControl'
 import { modelSessionEnded, modelSwitchBlock, waitForModelBoundary } from '../../lib/liveModelSwitch'
 import { cleanIpcError } from '../../lib/ipcError'
-import { livePermissionChoices, livePermissionOutcome, livePermissionValue, offersInterruptToChange } from '../../lib/runSettings'
+import { SESSION_EDITS_SUFFIX, livePermissionChoices, livePermissionOutcome, livePermissionValue, modeInForce, offersInterruptToChange, sessionEditsAccepted } from '../../lib/runSettings'
 import '../../styles/run-settings.css'
 
 interface Note {
@@ -23,8 +23,9 @@ const pause = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 
 
 /**
  * The live composer's permission chip (docs/design/ux-review-run-start-pre.md, H2): the run's mode, changed through
- * runs:setPermissionMode. Main owns the state and emits no event, so the returned run goes straight into the store
- * (`onRunChanged`). On an ended or paused run the chip shows the mode the next message uses ("Next message: ").
+ * runs:setPermissionMode. Main owns the state; the returned run goes straight into the store (`onRunChanged`) and the
+ * run.permissionMode event (useAppStore) keeps it current afterwards, including a card's accept-edits grant
+ * (sessionPermissionMode, shown as "· edits accepted this session"). On an ended or paused run the chip shows the mode the next message uses ("Next message: ").
  *
  * Outcomes are always said twice, as visible text (run-permission-note) and in a polite status region
  * (run-permission-status): applied, saved for the next message, or refused with the reason (the chip keeps its value).
@@ -34,6 +35,9 @@ const pause = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 
 export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSummary; project: Pick<Project, 'permissionMode'>; onRunChanged: (run: RunSummary) => void }): ReactElement | null {
   const choices = livePermissionChoices(run)
   const { mode, next } = livePermissionValue(run, project)
+  // An "always allow edits" grant from a card, in force over a narrower mode until the session ends (main-owned).
+  const live = !next
+  const sessionEdits = sessionEditsAccepted(run)
   const [pending, setPending] = useState(false)
   const [note, setNote] = useState<Note | null>(null)
   const [announcement, setAnnouncement] = useState('')
@@ -118,7 +122,9 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
     <>
       <PermissionModeControl
         value={mode}
-        baseline={mode}
+        baseline={live ? modeInForce(run, mode) : mode}
+        inForce={live && sessionEdits ? modeInForce(run, mode) : undefined}
+        valueSuffix={live && sessionEdits && mode !== 'acceptEdits' ? SESSION_EDITS_SUFFIX : undefined}
         choices={choices}
         isDefault={!run.permissionModeChosen}
         defaultMode={project.permissionMode}

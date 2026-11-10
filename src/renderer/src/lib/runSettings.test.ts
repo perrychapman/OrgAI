@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PermissionMode, Project, ProviderModel } from '@shared/types'
 import { PERMISSION_MODES } from '@shared/types'
+import { applyPermissionModePatch, metaPermissionMode as metaMode, modeInForce, modeInForceLabel, permissionModeEventPatch, sessionEditsAccepted } from './runSettings'
 import {
   EFFORT_LABEL,
   defaultRunEffort,
@@ -142,7 +143,11 @@ describe('live composer row', () => {
   it('adds the kept-earlier-mode line to an applied outcome only', () => {
     const base = { applied: true, reportsUnchanged: 2, run: { status: 'running', permissionMode: 'plan' } } as const
     expect(livePermissionOutcome(base, 'plan').message).toBe('Permission mode is now Plan only. 2 running reports keep the earlier mode until they finish.')
-    expect(livePermissionOutcome({ ...base, applied: false, reason: 'Nope.' }, 'plan')).toMatchObject({ tone: 'refused', message: 'Nope.', reports: '' })
+    // A count may come with a refusal too (a change that raced twice): it is said either way.
+    expect(livePermissionOutcome({ ...base, applied: false, reason: 'Nope.' }, 'plan')).toMatchObject({ tone: 'refused', message: 'Nope. 2 running reports keep the earlier mode until they finish.' })
+    // Main's reason is shown when present and not repeated in our words.
+    expect(livePermissionOutcome({ ...base, reason: '2 running reports keep the earlier mode until they finish.' }, 'plan').message).toBe('Permission mode is now Plan only. 2 running reports keep the earlier mode until they finish.')
+    expect(livePermissionOutcome({ applied: true, reason: 'Applied with a note.', run: { status: 'idle', permissionMode: 'plan' } }, 'plan').message).toBe('Permission mode is now Plan only. Applied with a note.')
     expect(livePermissionOutcome({ applied: true, run: { status: 'idle', permissionMode: 'plan' } }, 'plan').message).toBe('Permission mode is now Plan only.')
   })
   it('offers an interrupt only for a refusal on a running run', () => {
@@ -192,5 +197,28 @@ describe('startChoicesToSend', () => {
     expect(startChoicesToSend({ model: { model: 'gpt-5', connection: 'openai' }, effort: 'xhigh', permissionMode: null }, defaults, 'codex').effort).toBe('high')
     // The default effort (max) does not fit a Codex pick: it is sent fitted.
     expect(startChoicesToSend({ model: { model: 'gpt-5', connection: 'openai' }, effort: null, permissionMode: null }, defaults, 'codex').effort).toBe('high')
+  })
+})
+
+describe('run.permissionMode events and the session accept-edits grant', () => {
+  it('reads the event structurally and ignores other events', () => {
+    expect(permissionModeEventPatch({ type: 'run.permissionMode', runId: 'r', permissionMode: 'plan', permissionModeChosen: true })).toEqual({ runId: 'r', fields: { permissionMode: 'plan', permissionModeChosen: true } })
+    expect(permissionModeEventPatch({ type: 'run.permissionMode', runId: 'r', permissionMode: 'nope', sessionPermissionMode: 'acceptEdits' })).toEqual({ runId: 'r', fields: { sessionPermissionMode: 'acceptEdits' } })
+    expect(permissionModeEventPatch({ type: 'run.status', runId: 'r' })).toBeNull()
+    expect(permissionModeEventPatch(null)).toBeNull()
+  })
+  it('replaces all three fields as a snapshot', () => {
+    const before = { id: 'r', status: 'idle', permissionMode: 'auto', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' }
+    expect(applyPermissionModePatch(before, { permissionMode: 'plan' })).toEqual({ id: 'r', status: 'idle', permissionMode: 'plan' })
+  })
+  it('shows the grant as the mode in force', () => {
+    const run = { kind: 'work' as const, permissionMode: 'default' as const, sessionPermissionMode: 'acceptEdits' }
+    expect(sessionEditsAccepted(run)).toBe(true)
+    expect(modeInForce(run, 'default')).toBe('acceptEdits')
+    expect(modeInForce(run, 'auto')).toBe('auto')
+    expect(modeInForceLabel(run, 'default')).toBe('Ask for everything risky · edits accepted this session')
+    expect(modeInForceLabel({}, 'default')).toBe('Ask for everything risky')
+    expect(metaMode(run, { permissionMode: 'default' })).toBe('default')
+    expect(metaMode({ kind: 'work', permissionMode: 'default' }, { permissionMode: 'default' })).toBeNull()
   })
 })

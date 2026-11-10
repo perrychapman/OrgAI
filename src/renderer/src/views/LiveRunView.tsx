@@ -71,7 +71,7 @@ import { RunSettingsRow } from '../components/runSettings/RunSettingsRow'
 import { EffortReadOnly } from '../components/runSettings/EffortControl'
 import { GoalReadOnly } from '../components/runSettings/GoalControl'
 import { LivePermissionMode } from '../components/runSettings/LivePermissionMode'
-import { isWideningMode, liveEffort, liveGoal, livePermissionValue } from '../lib/runSettings'
+import { liveEffort, liveGoal } from '../lib/runSettings'
 import { formatUntil, layoutCanvas } from '../lib/layout'
 import { agentLabel, normalizeParents } from '../lib/agentTree'
 
@@ -714,20 +714,6 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       {!modelOnly && liveGoalShown && <GoalReadOnly goal={liveGoalShown} />}
     </RunSettingsRow>
   )
-  // An "Always allow edits" answer on a permission card can raise the run's mode to Accept edits in main, with no event.
-  // When the shown mode is narrower than that, read the run again and take its mode.
-  const refreshModeAfterCard = async (): Promise<void> => {
-    const current = useAppStore.getState().runs[runId]?.summary
-    if (!current || current.kind !== 'work') return
-    if (!isWideningMode(livePermissionValue(current, project).mode, 'acceptEdits')) return
-    const record = await window.orgai.runs.get(runId).catch(() => null)
-    if (!record) return
-    useAppStore.setState((state) => {
-      const held = state.runs[runId]
-      if (!held || (held.summary.permissionMode === record.summary.permissionMode && held.summary.permissionModeChosen === record.summary.permissionModeChosen)) return {}
-      return { runs: { ...state.runs, [runId]: { ...held, summary: { ...held.summary, permissionMode: record.summary.permissionMode, permissionModeChosen: record.summary.permissionModeChosen } } } }
-    })
-  }
 
   // Install approval cards: open ones first (one expanded, the rest collapsed), answered ones until dismissed.
   const openInstalls = run.mcpInstalls ?? []
@@ -1001,10 +987,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     ...run.permissions.map((p) => ({
       key: p.id,
       label: short(permissionTitle(p.toolName, p.input)),
-      node: <PermissionCard runId={runId} request={p} who={who(p.agentId)} onDecide={async (d) => {
-        await decide(p.id, d)
-        void refreshModeAfterCard()
-      }} />
+      node: <PermissionCard runId={runId} request={p} who={who(p.agentId)} onDecide={(d) => decide(p.id, d)} />
     })),
     ...cardItems.map((it) => ({
       key: it.request.id,
