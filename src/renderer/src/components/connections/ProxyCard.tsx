@@ -6,6 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
+import { Checkbox } from '../ui/Checkbox'
 import { ConnectionStatusBadge } from '../ui/ConnectionStatusBadge'
 import { IconButton } from '../ui/IconButton'
 import { Icon } from '../ui/Icon'
@@ -70,7 +71,7 @@ export default function ProxyCard({
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [showErrors, setShowErrors] = useState(false)
-  const saved = { name: conn.name, anthropicBaseUrl: conn.anthropicBaseUrl, openaiBaseUrl: conn.openaiBaseUrl ?? '', modelsUrl: conn.modelsUrl ?? '' }
+  const saved = { name: conn.name, anthropicBaseUrl: conn.anthropicBaseUrl, openaiBaseUrl: conn.openaiBaseUrl ?? '', modelsUrl: conn.modelsUrl ?? '', litellmFeatures: conn.litellmFeatures ?? conn.kind === 'litellm' }
   const [values, setValues] = useState(saved)
   const savedKey = JSON.stringify(saved)
   useEffect(() => {
@@ -166,18 +167,22 @@ export default function ProxyCard({
 
   const save = async (): Promise<ConnectionInfo | null> => {
     setShowErrors(true)
-    if (hasErrors) return null
+    if (hasErrors) {
+      document.getElementById(`pc-${id}-${Object.keys(errors)[0]}`)?.focus()
+      return null
+    }
     setBusy('save')
     setError(null)
     setNotice(null)
     try {
-      const urlChanged = values.anthropicBaseUrl !== saved.anthropicBaseUrl || values.openaiBaseUrl !== saved.openaiBaseUrl || values.modelsUrl !== saved.modelsUrl
+      const urlChanged = values.anthropicBaseUrl !== saved.anthropicBaseUrl || values.openaiBaseUrl !== saved.openaiBaseUrl || values.modelsUrl !== saved.modelsUrl || values.litellmFeatures !== saved.litellmFeatures
       const next: ProxyConnection = {
         ...conn,
         name: values.name.trim().replace(/\s+/g, ' '),
         anthropicBaseUrl: values.anthropicBaseUrl.trim(),
         openaiBaseUrl: values.openaiBaseUrl.trim() || undefined,
-        modelsUrl: values.modelsUrl.trim() || undefined
+        modelsUrl: values.modelsUrl.trim() || undefined,
+        litellmFeatures: values.litellmFeatures
       }
       const res = await window.orgai.connections.update(next as ProviderConnection)
       setInfo(res)
@@ -363,6 +368,7 @@ export default function ProxyCard({
           <div className="card-sec">
             <div className="conn-auth">
               <ProxyFields prefix={`pc-${id}`} values={values} errors={showErrors ? errors : {}} onChange={(p) => setValues((v) => ({ ...v, ...p }))} />
+              <Checkbox checked={values.litellmFeatures} onChange={(litellmFeatures) => setValues((v) => ({ ...v, litellmFeatures }))} label="Use LiteLLM reporting" description="The key must have access to LiteLLM reports and will be sent to the reporting endpoints. Prices or spend may be unavailable." testId="proxy-litellm-features" />
               <div className="field">
                 <label id={`pc-${id}-key-label`}>API key</label>
                 <SecretField
@@ -396,7 +402,7 @@ export default function ProxyCard({
                     Save changes
                   </Button>
                 )}
-                <Button variant="primary" loading={busy === 'connect'} disabled={busy !== null || !values.anthropicBaseUrl.trim()} onClick={() => void testAndConnect()} testId="proxy-test">
+                <Button variant="primary" loading={busy === 'connect'} disabled={busy !== null} onClick={() => void testAndConnect()} testId="proxy-test">
                   Test and connect
                 </Button>
                 {conn.hasApiKey && <Button onClick={() => void deleteKey()} testId="proxy-delete-key">Delete key</Button>}

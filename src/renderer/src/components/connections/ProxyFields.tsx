@@ -49,11 +49,11 @@ export function ProxyFields({
   return (
     <div className="conn-fields">
       {field('name', 'Name', { placeholder: 'Work gateway', testId: 'proxy-name' })}
-      {field('anthropicBaseUrl', 'Anthropic URL (Claude)', { mono: true, placeholder: 'https://proxy.example.com', testId: 'proxy-anthropic-url' })}
-      {field('openaiBaseUrl', 'OpenAI URL (Codex, optional)', {
+      {field('anthropicBaseUrl', 'Proxy base URL', { mono: true, placeholder: 'https://proxy.example.com', hint: 'Used for Claude-compatible requests. OpenAI requests use the address below.', testId: 'proxy-anthropic-url' })}
+      {field('openaiBaseUrl', 'OpenAI base URL (optional)', {
         mono: true,
         placeholder: openaiDefault || 'https://proxy.example.com/v1',
-        hint: openaiDefault ? `Left empty: ${openaiDefault}` : 'Left empty, it is the Anthropic URL plus /v1.',
+        hint: openaiDefault ? `Left empty: ${openaiDefault}` : 'Left empty, it is the proxy base URL plus /v1.',
         testId: 'proxy-openai-url'
       })}
       <div className="conn-field-wide">
