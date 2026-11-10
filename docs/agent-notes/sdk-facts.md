@@ -110,6 +110,19 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   haiku root spawning a `worker` defined with `model: 'claude-haiku-4-5-20251001'`, `effort: 'medium'`: the subagent
   started, its assistant messages carry `claude-haiku-4-5-20251001`, its Bash ran, and its `PreToolUse` input had no
   `effort` (`effort.level` null). So an explicit effort on such a model is accepted and silently dropped, no error.
+- Tier variable on a subscription login (check 10, 2026-11-10, two runs: the first put (a) and (b) in one session and the
+  SDK stream carried no child assistant messages, so the child model could not be attributed; the second used one session
+  per spawn and read the child model from `modelUsage`): haiku root, Max login, no `ANTHROPIC_BASE_URL`, `env` with
+  `ANTHROPIC_DEFAULT_SONNET_MODEL=claude-haiku-4-5-20251001`. (a) a subagent definition without a model, hook
+  `updatedInput.model = 'sonnet'`: spawned, `modelUsage` listed `claude-haiku-4-5-20251001` (the mapped id) and no
+  sonnet. (b) a definition with `model: 'sonnet'`, no hook change: spawned, `modelUsage` again the mapped id, no
+  sonnet. (c) control, same hook without the variable: `modelUsage` listed `claude-sonnet-5-5`. So the variable DOES
+  redirect the `sonnet` alias on a subscription login, from the hook and from a definition. Caveat: the child model
+  comes from `modelUsage` (root model plus the one extra id), not from child `message.model`, which this SDK stream
+  did not emit for subagents in these sessions. A further run of the final script gave the same three results. Only
+  `sonnet` on a Max login was tested: the other three variables and an API-key login are unverified. The control also
+  shows the bare aliases today: `sonnet` is `claude-sonnet-5-5`, and `supportedModels()` resolves `fable` to
+  `claude-fable-5-1`, not the default model `claude-fable-5-2`, so an alias is not always the newest model of its family.
 - OrgAI behaviour since this (Claude adapter, `claude.ts` `sessionEffort` / `reportEffort`; unit tests in
   `claude.test.ts` with the fake `query`, live facts from checks 5, 8b and 9 above): the work session passes the root
   role's effort as `Options.effort` (every build, so restarts and resumes keep it; no key when the root has none).
