@@ -129,7 +129,7 @@ export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunC
       triggerClassName="btn ghost sm live-model-switch__trigger" triggerTitle={applied ? liveModelLabel(applied.model, applied.connection) : current}
       triggerLabel={`${busy ? 'Changing model. ' : ''}Conversation model: ${nextMessage ? 'Next message: ' : ''}${current}${applied ? ` (${applied.model})` : ''}`}
       trigger={<span data-testid="live-model-current">{busy ? 'Changing model…' : <>{nextMessage && 'Next message: '}{current}</>}</span>}
-      onOpenChange={(value) => { if (!value && !confirming.current) epoch.current++; setOpen(value); if (value) { if (reopening.current) { reopening.current = false; return }; setQuery(''); setChoice(applied ? modelKey(applied.connection, applied.model) : ''); setError(''); setRequiresHandoff(false) } }}>
+      onOpenChange={(value) => { if (!value && !confirming.current) epoch.current++; setOpen(value); if (value) { setReload((n) => n + 1); if (reopening.current) { reopening.current = false; return }; setQuery(''); setChoice(applied ? modelKey(applied.connection, applied.model) : ''); setError(''); setRequiresHandoff(false) } }}>
       {({ close }) => <>
         <label htmlFor={`${id}-search`}>Search models</label>
         <input ref={focusSearch} id={`${id}-search`} className="input" type="search" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() } }} data-testid="live-model-search" />
