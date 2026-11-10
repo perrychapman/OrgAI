@@ -2472,6 +2472,10 @@ export class ClaudeSession implements RuntimeSession {
       this.pendingPermissionIssuers.set(key, [...(this.pendingPermissionIssuers.get(key) ?? []), agentId])
 
       if (input.tool_name === SPAWN_TOOL || input.tool_name === 'Task') {
+        // Not delivered here yet (split-execution 3.2, 3.6): the context pack (contextPack.ts) and the one-report-and-waiting
+        // note (waitingNote.ts), which Codex spawn_report and the mock give. The Agent tool is the SDK's own, so a pack would
+        // mean rewriting the prompt, and any rewrite of a well-formed spawn costs one auto mode classifier request
+        // (permissions.md "spawns without a rewrite"); the note would need the hook's additional context, unverified here.
         const parentSlug = input.agent_type ?? this.root.slug
         const parentRole = this.rolesBySlug.get(parentSlug)
         const requested = String(toolInput.subagent_type ?? '')
