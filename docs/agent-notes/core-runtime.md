@@ -38,6 +38,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
   `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
+- Continuation wait: `ContinuationDriver.turnEnded` waits `continuationWaitMs` (`continuation.ts`), not always the 1500 ms
+  default. A host that supplies `lastReportEndedAt()` (Claude, Codex, mock: newest non-root `endedAt`, plus bridged
+  finishes on Codex) waits 0 when no report is live and none ended within the window, else only the rest of the window;
+  live reports or a future timestamp keep the full delay; a host without it, or `delayMs` 0, is unchanged. The timer is
+  still a `setTimeout`, so cancel and settlement behave as before. Checked by unit tests only; the 1,579 ms figure came
+  from one lab run on the Codex adapter and the fix has NOT been measured in a live run.
   - Who ended it: `RunSummary.endedBy` is 'user' after End session (`RunManager.stop`, saved with the 'stopping'
     status so a quit or crash keeps it), 'app' when OrgAI quit (`stopAll({ reason: 'quit' })` through
     the `ShutdownCoordinator` in `host/shutdown.ts`, at most 3 s, then the synchronous `markQuit()` writes what is left) or crashed (RunStore boot

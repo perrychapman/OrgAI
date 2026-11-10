@@ -22,6 +22,21 @@ export const PLAN_TOOLS = {
 /** Wait this long after a turn ends before nudging, so a report that just landed can wake the orchestrator first. */
 export const DEFAULT_CONTINUATION_DELAY_MS = 1500
 
+/**
+ * How long turnEnded waits before evaluating. A host that does not report `lastReportEndedAt` (`known` false) always
+ * waits the full `delayMs`, as does one with live reports or a report end time in the future (clock went backwards).
+ * Otherwise only what is left of the window after the newest report ended: 0 when none ever ended or it ended at
+ * least `delayMs` ago. Never negative, never more than `delayMs`.
+ */
+export function continuationWaitMs(input: { delayMs: number; liveReports: number; lastReportEndedAt?: number; now: number; known: boolean }): number {
+  const { delayMs, liveReports, lastReportEndedAt, now, known } = input
+  if (!known || liveReports > 0) return delayMs
+  if (lastReportEndedAt === undefined) return 0
+  const elapsed = now - lastReportEndedAt
+  if (elapsed < 0) return delayMs
+  return Math.min(delayMs, Math.max(0, delayMs - elapsed))
+}
+
 export const SET_PLAN_NUDGE = 'Harness: before continuing, call set_plan with the goal and the concrete steps, then start on step 1.'
 /** What the user reads in the transcript for SET_PLAN_NUDGE (the full text is the entry's `detail`). */
 export const SET_PLAN_SUMMARY = 'Continuing: asked the orchestrator to write a plan before it works.'
@@ -205,6 +220,11 @@ export interface ContinuationHost {
   getPlan(): RunPlan | undefined
   updatePlan(plan: RunPlan): Promise<void>
   liveReports(): number
+  /**
+   * Epoch ms at which the newest report (any subagent or report thread of this session, any depth) finished, or
+   * undefined when none has. Optional: a host without it keeps the full delay after every turn end.
+   */
+  lastReportEndedAt?(): number | undefined
   pendingInteractions(): number
   rateLimited(): boolean
   stopping(): boolean
@@ -292,7 +312,14 @@ export class ContinuationDriver {
     this.timer = setTimeout(() => {
       this.timer = null
       void this.evaluate()
-    }, this.host.delayMs ?? DEFAULT_CONTINUATION_DELAY_MS)
+    }, this.waitMs())
+  }
+
+  private waitMs(): number {
+    const delayMs = this.host.delayMs ?? DEFAULT_CONTINUATION_DELAY_MS
+    const known = typeof this.host.lastReportEndedAt === 'function'
+    if (!known) return delayMs
+    return continuationWaitMs({ delayMs, liveReports: this.host.liveReports(), lastReportEndedAt: this.host.lastReportEndedAt?.(), now: Date.now(), known })
   }
 
   /** A failed or interrupted root turn: no nudge for it, and its generation counts as evaluated at once. */
