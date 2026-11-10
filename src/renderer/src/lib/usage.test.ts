@@ -29,11 +29,18 @@ describe('usage', () => {
     expect(spendRowLabel(s(1, null), 'proxy-0000dead')).toBe('Removed proxy · $1.00 spent')
     expect(spendSentence(s(1, null), 'proxy-0000dead')).toBe('Removed proxy spend: $1.00. No budget set.')
   })
-  it('only a litellm-kind proxy that has not said otherwise reports spend', () => {
+  it('uses the reporting capability with legacy fallback and respects a negative check', () => {
     expect(reportsSpend(proxyInfo('litellm', 'litellm'))).toBe(true)
     expect(reportsSpend(proxyInfo('litellm', 'litellm', true))).toBe(true)
     expect(reportsSpend(proxyInfo('litellm', 'litellm', false))).toBe(false)
     expect(reportsSpend(proxyInfo('proxy-0badf00d', 'openai-compatible'))).toBe(false)
+    const enabled = proxyInfo('proxy-0badf00d', 'openai-compatible')
+    enabled.connection = { ...enabled.connection, litellmFeatures: true } as typeof enabled.connection
+    expect(reportsSpend(enabled)).toBe(true)
+    expect(reportsSpend({ ...enabled, status: { checks: { reportsSpend: false } } })).toBe(false)
+    const disabled = proxyInfo('litellm', 'litellm')
+    disabled.connection = { ...disabled.connection, litellmFeatures: false } as typeof disabled.connection
+    expect(reportsSpend(disabled)).toBe(false)
     expect(reportsSpend({ connection: { id: 'anthropic', enabled: true, tierModels: {}, auth: { kind: 'subscription' } } })).toBe(false)
   })
   it('lists proxies in use after the built-ins, in list order', () => {
