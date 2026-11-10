@@ -189,6 +189,87 @@ export function planNudgesApply(run: Pick<RunSummary, 'kind' | 'quick' | 'team'>
   return run.kind === 'work' && run.quick?.team !== 'single' && run.team !== 'single'
 }
 
+/**
+ * Compactions of one agent's conversation without a plan step finished in between that are still healthy. One more and
+ * the run is thrashing: the context refills as fast as it is compacted, and a nudge would only start another round.
+ */
+export const COMPACTION_THRASH_LIMIT = 2
+
+/** Per agent: compactions since the plan last progressed, and the finished-step count they are measured from. */
+export interface CompactionTrack {
+  since: number
+  mark: number
+}
+
+/** One more compaction of an agent, given the plan's finished steps now. A step finished since the last one resets it. Pure. */
+export function noteCompaction(track: CompactionTrack | undefined, finished: number): CompactionTrack {
+  if (!track || finished > track.mark) return { since: 1, mark: finished }
+  return { since: track.since + 1, mark: track.mark }
+}
+
+/** True once an agent compacted more than COMPACTION_THRASH_LIMIT times with no plan step finished in between. Pure. */
+export function compactionThrash(track: CompactionTrack | undefined): boolean {
+  return !!track && track.since > COMPACTION_THRASH_LIMIT
+}
+
+/** What a compacted agent runs on, for the thrash warning. */
+export interface CompactedAgent {
+  agentId: string
+  name: string
+  model?: string
+  /** The context window the provider measures against (tokens), when known. */
+  contextWindow?: number
+}
+
+/** The warning (log) and the user's line when an agent's compactions stop the automatic continues. Pure. */
+export function compactionThrashText(agent: CompactedAgent, count: number): { warn: string; user: string } {
+  const window = agent.contextWindow ? `${Math.round(agent.contextWindow / 1000)}k-token context` : 'context window unknown'
+  const on = `${agent.model ? `${agent.model}, ` : ''}${window}`
+  const remedy = 'Use a model with a larger context for its tier (orgai connections tier, orgai models resolve), or split the work so one agent reads less.'
+  return {
+    warn: `${agent.name} compacted its context ${count} times (${on}) without finishing a plan step; automatic continues are stopped. ${remedy}`,
+    user: `Automatic continues stopped: ${agent.name} compacted its context ${count} times without finishing a plan step (${on}). ${remedy} Reply to continue.`
+  }
+}
+
+/** Most characters the state block after a compaction may hold (it rides on the CLI's SessionStart hook, 10,000 max). */
+export const COMPACTION_STATE_MAX_CHARS = 4000
+
+/** A report as the state block after a compaction names it. */
+export interface CompactionReport {
+  name: string
+  activity?: string
+}
+
+/**
+ * What the orchestrator gets right after its conversation was compacted (Claude: SessionStart source 'compact'): the
+ * plan with each step's state, the reports working now and the required reports not yet delivered, in one bounded
+ * block. '' when there is nothing to say. Pure.
+ */
+export function compactionStateText(input: { plan?: RunPlan; live: readonly CompactionReport[]; owed: readonly string[] }): string {
+  const clip = (t: string, n: number): string => {
+    const one = t.replace(/\s+/g, ' ').trim()
+    return one.length > n ? `${one.slice(0, n - 1)}…` : one
+  }
+  const lines: string[] = []
+  const { plan } = input
+  if (plan && plan.steps.length) {
+    lines.push(`Plan (${plan.status}, ${finishedCount(plan)} of ${plan.steps.length} steps done): ${clip(plan.goal, 200)}`)
+    const shown = plan.steps.slice(0, 30)
+    for (const st of shown) lines.push(`- ${st.id} [${st.status.replace('_', ' ')}] ${clip(st.title, 120)}${st.note ? ` (${clip(st.note, 80)})` : ''}`)
+    if (plan.steps.length > shown.length) lines.push(`- and ${plan.steps.length - shown.length} more steps`)
+  }
+  if (input.live.length) {
+    lines.push('Reports working now (their reports reach you when they finish; do not redo their work):')
+    for (const r of input.live.slice(0, 10)) lines.push(`- ${clip(r.name, 60)}${r.activity ? `: ${clip(r.activity, 100)}` : ''}`)
+    if (input.live.length > 10) lines.push(`- and ${input.live.length - 10} more`)
+  }
+  if (input.owed.length) lines.push(`Required reports not delivered yet: ${input.owed.slice(0, 10).map((n) => clip(n, 60)).join(', ')}.`)
+  if (!lines.length) return ''
+  const text = ['[OrgAI harness] Your conversation was just compacted. Where the run stands now:', ...lines, 'Continue from here; mark steps with update_plan as you go.'].join('\n')
+  return text.length > COMPACTION_STATE_MAX_CHARS ? `${text.slice(0, COMPACTION_STATE_MAX_CHARS - 1)}…` : text
+}
+
 export interface NudgeInput {
   plan: RunPlan | undefined
   kind: RunKind
@@ -213,6 +294,8 @@ export interface NudgeInput {
   ownRoles?: readonly string[]
   /** readySignature of the last ready set a `ready` nudge was sent for. */
   lastReadySignature?: string
+  /** An agent's compactions stopped the automatic continues (compactionThrash) until the user replies. */
+  compactionThrash?: boolean
 }
 
 export interface NudgeDecision {
@@ -232,6 +315,7 @@ export function nudgeBlocked(input: NudgeInput): string | null {
   if (input.kind !== 'work') return 'not a work run'
   if (!input.autoContinue) return 'automatic continue is off'
   if (input.stopping) return 'stopping'
+  if (input.compactionThrash) return 'compactions without progress'
   if (input.rateLimited) return 'rate limited'
   if (input.liveReports > 0) return 'reports are running'
   if (input.pendingInteractions > 0) return 'waiting for the user'
@@ -364,6 +448,10 @@ export class ContinuationDriver {
   private setPlanNudgeSent = false
   /** Signature of the last ready set a `ready` nudge was sent for. */
   private lastReadySignature: string | undefined
+  /** Per agent id: compactions since the plan last progressed (noteCompaction). */
+  private compactionTracks = new Map<string, CompactionTrack>()
+  /** An agent's compactions stopped the automatic continues; lifted by the user's next message. */
+  private thrashStopped = false
 
   constructor(private host: ContinuationHost) {}
 
@@ -427,10 +515,35 @@ export class ContinuationDriver {
     this.markSettled(turnGen)
   }
 
+  /**
+   * The provider compacted `agent`'s conversation. A compaction never counts as a turn and never nudges by itself; an
+   * agent that compacts more than COMPACTION_THRASH_LIMIT times with no plan step finished in between stops the
+   * automatic continues (one warning, one line to the user) until the user replies. Returns whether they are stopped.
+   */
+  compacted(agent: CompactedAgent): boolean {
+    const plan = this.host.getPlan()
+    const track = noteCompaction(this.compactionTracks.get(agent.agentId), plan ? finishedCount(plan) : 0)
+    this.compactionTracks.set(agent.agentId, track)
+    if (!this.thrashStopped && compactionThrash(track) && this.enabled && !this.disposed) {
+      this.thrashStopped = true
+      const text = compactionThrashText(agent, track.since)
+      this.host.log('warn', text.warn)
+      this.host.tellUser(text.user)
+    }
+    return this.thrashStopped
+  }
+
+  /** True from a thrash stop (compacted) until the user's next message. */
+  get compactionStopped(): boolean {
+    return this.thrashStopped
+  }
+
   /** The user spoke: drop a pending evaluation and lift an interrupt's hold. Unsettled until the next turn end. */
   userMessage(): void {
     this.cancel()
     this.held = false
+    this.thrashStopped = false
+    this.compactionTracks.clear()
     this.lastEvaluatedTurnGen = -1
   }
 
@@ -495,7 +608,8 @@ export class ContinuationDriver {
       ...(this.host.slots ? { slots: this.host.slots() } : {}),
       ...(this.host.ownRoles ? { ownRoles: this.host.ownRoles() } : {}),
       ...(this.lastReadySignature !== undefined ? { lastReadySignature: this.lastReadySignature } : {}),
-      ...(this.host.projectKind ? { projectKind: this.host.projectKind } : {})
+      ...(this.host.projectKind ? { projectKind: this.host.projectKind } : {}),
+      ...(this.thrashStopped ? { compactionThrash: true } : {})
     }
     if (!plan && !nudgeBlocked(input)) input.turnsWithoutPlan = ++this.turnsWithoutPlan
     const decision = nextNudge(input)

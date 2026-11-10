@@ -5,6 +5,7 @@
  */
 import { RUN_KIND_LABELS, type AgentInstance, type ImageAttachment, type PendingCards, type ProjectKind, type RunEvent, type RunPlan, type RunRecord, type RunSummary, type TranscriptEntry, type TranscriptMedia, type TranscriptContentPart } from '../shared/types'
 import { costView, formatTokens, runCostInput, agentCostInput } from '../shared/view/cost'
+import { compactionCount } from '../shared/view/compactionText'
 import { formatDateTime } from '../shared/view/dates'
 import { AGENT_LABEL_MAX, agentLabel as sharedAgentLabel } from '../shared/view/agentTree'
 import { waitingItems, type WaitingItem } from '../shared/view/needsYou'
@@ -97,7 +98,7 @@ export function agentTreeLines(summary: RunSummary, agents: Record<string, Agent
     if (seen.has(a.id) || depth > 50) return
     seen.add(a.id)
     const cost = costView(agentCostInput(a))
-    const facts = [safeLine(a.activity), cost.empty ? '' : cost.text].filter(Boolean).join(' · ')
+    const facts = [safeLine(a.activity), cost.empty ? '' : cost.text, compactionCount(a.compactions)].filter(Boolean).join(' · ')
     out.push(`${'  '.repeat(depth + 1)}${depth > 0 ? '└ ' : ''}${st.bold(agentLabelWithRole(a))}${facts ? st.dim(` · ${facts}`) : ''}`)
     for (const c of children.get(a.id) ?? []) walk(c, depth + 1)
   }

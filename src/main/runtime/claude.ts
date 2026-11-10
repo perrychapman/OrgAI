@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { validModelId } from '../connections/codexAccount'
 import { newerClaudeModel } from '../connections/catalog'
+import { ordinal } from '@shared/view/compactionText'
 import {
   createSdkMcpServer,
   query,
@@ -23,6 +24,7 @@ import {
   type PermissionUpdate,
   type PreToolUseHookInput,
   type PostToolUseHookInput,
+  type SessionStartHookInput,
   type SubagentStartHookInput,
   type SubagentStopHookInput,
   type SDKMessage,
@@ -61,7 +63,7 @@ import {
   referenceTouchOf
 } from './referenceDirectories'
 import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
-import { ContinuationDriver, agentSlots, rootRoleNames, stepActivity } from './continuation'
+import { ContinuationDriver, agentSlots, compactionStateText, rootRoleNames, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
@@ -1344,6 +1346,11 @@ export class ClaudeSession implements RuntimeSession {
   private rootCompacting = false
   /** Compactions of the orchestrator's conversation in this session (compact_boundary). */
   private compactions = 0
+  /** Root compactions started (status 'compacting'); the state block is re-attached once per value. */
+  private compactSeq = 0
+  private reattachedSeq = 0
+  /** The orchestrator's context window as the CLI measures it (getContextUsage), read once at the first compaction. */
+  private contextWindow?: Promise<number | undefined>
   /** The in-process harness MCP server; kept so setMcpServers can send it again. */
   private harnessServer?: McpSdkServerConfigWithInstance
   /** Secret values (MCP env/headers, connection tokens) redacted from logged lines. Never emitted. */
@@ -1783,6 +1790,7 @@ export class ClaudeSession implements RuntimeSession {
 
   /** The CLI started summarizing the orchestrator's conversation (system status 'compacting'). */
   private onRootCompacting(): void {
+    if (!this.rootCompacting) this.compactSeq += 1
     this.rootCompacting = true
     const root = this.agents.get(ROOT_ID)
     if (root && root.state !== 'done' && root.state !== 'error') this.setState(ROOT_ID, 'thinking', 'Compacting the conversation…')
@@ -1801,7 +1809,52 @@ export class ClaudeSession implements RuntimeSession {
     const k = (n: number): string => `${Math.round(n / 1000)}k`
     const size = `${k(meta.pre_tokens)}${meta.post_tokens !== undefined ? ` to ${k(meta.post_tokens)}` : ''} tokens`
     this.log('info', `Compaction ${this.compactions} of the orchestrator's conversation (${meta.trigger}): ${size}.`)
-    this.transcript(ROOT_ID, { kind: 'system', text: `The conversation was compacted (${size}).` }, { source: 'harness' })
+    this.transcript(ROOT_ID, { kind: 'system', text: `The conversation was compacted (${ordinal(this.compactions)} time, ${size}).` }, { source: 'harness' })
+    this.emit({
+      type: 'agent.compacted',
+      runId: this.ctx.run.id,
+      agentId: ROOT_ID,
+      at: Date.now(),
+      trigger: meta.trigger,
+      tokensBefore: meta.pre_tokens,
+      ...(meta.post_tokens !== undefined ? { tokensAfter: meta.post_tokens } : {})
+    })
+    // The thrash guard (continuation.ts): never a nudge of its own, and three compactions without a finished plan step
+    // stop the automatic continues.
+    if (this.isSetup) return
+    const root = this.agents.get(ROOT_ID)
+    void this.readContextWindow().then((contextWindow) =>
+      this.continuation.compacted({ agentId: ROOT_ID, name: root?.name ?? this.root.name, ...(root?.model ? { model: root.model } : {}), ...(contextWindow ? { contextWindow } : {}) })
+    )
+  }
+
+  /** The window the CLI measures the orchestrator's context against (token-free control request), once per session. */
+  private readContextWindow(): Promise<number | undefined> {
+    this.contextWindow ??= (async () => {
+      try {
+        const q = this.q as Partial<Pick<Query, 'getContextUsage'>>
+        if (typeof q.getContextUsage !== 'function') return undefined
+        const usage = await q.getContextUsage()
+        return typeof usage?.rawMaxTokens === 'number' && usage.rawMaxTokens > 0 ? usage.rawMaxTokens : undefined
+      } catch {
+        return undefined
+      }
+    })()
+    return this.contextWindow
+  }
+
+  /**
+   * The block the orchestrator gets right after its own compaction (SessionStart source 'compact'): plan, live reports
+   * and required reports not delivered yet (compactionStateText, bounded).
+   */
+  private compactionState(): string {
+    const live = [...this.agents.values()]
+      .filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error' && !this.stoppedBackground.has(a.id))
+      .map((a) => ({ name: a.handle ? `${a.handle} (${a.name})` : a.name, ...(a.activity ? { activity: a.activity } : {}) }))
+    const required = obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)[this.root.id] ?? []
+    const delivered = new Set([...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state === 'done' && !!a.result).map((a) => a.roleId))
+    const owed = required.filter((id) => !delivered.has(id)).map((id) => this.ctx.roles.find((r) => r.id === id)?.name ?? id)
+    return compactionStateText({ plan: this.ctx.getPlan(), live, owed })
   }
 
   private reportFinished(): void {
@@ -3197,12 +3250,25 @@ export class ClaudeSession implements RuntimeSession {
       return {}
     }
 
+    // After a compaction of the orchestrator's conversation (the stream said 'compacting'; a subagent's compaction runs
+    // the same hook without an agent id and without that message, sdk-facts "Compaction"): the run's state, once.
+    const sessionStart: HookCallback = async (raw) => {
+      const input = raw as SessionStartHookInput
+      if (input.source !== 'compact' || !this.rootCompacting || this.isSetup || this.reattachedSeq === this.compactSeq) return {}
+      this.reattachedSeq = this.compactSeq
+      const text = this.compactionState()
+      if (!text) return {}
+      this.log('info', `Re-attached the run's state after the compaction (${text.length} characters).`)
+      return { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } }
+    }
+
     return {
       PreToolUse: [{ hooks: [preToolUse] }],
       PostToolUse: [{ hooks: [postToolUse] }],
       SubagentStart: [{ hooks: [subagentStart] }],
       SubagentStop: [{ hooks: [subagentStop] }],
-      Stop: [{ hooks: [stop] }]
+      Stop: [{ hooks: [stop] }],
+      SessionStart: [{ hooks: [sessionStart] }]
     }
   }
 

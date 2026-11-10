@@ -27,3 +27,17 @@ describe('transcript media', () => {
     expect(JSON.stringify(rec)).toContain(image.data)
   })
 })
+
+describe('agentTreeLines: compactions (compaction investigation 2026-11-10)', () => {
+  it('names the count beside an agent that compacted, nothing for one that did not', async () => {
+    const { agentTreeLines } = await import('./render')
+    const st = styleFor(fakeContext({ globals: { color: false } }).ctx)
+    const base = { roleId: null, roleSlug: 'lead', parentId: null, spawnToolUseId: null, state: 'idle' as const, activity: 'Waiting', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1 }
+    const lines = agentTreeLines(summary('r1'), {
+      root: { ...base, id: 'root', name: 'Lead', compactions: 3 },
+      w: { ...base, id: 'w', name: 'Writer', roleSlug: 'writer', parentId: 'root', startedAt: 2 }
+    }, st)
+    expect(lines[0]).toContain('compacted 3x')
+    expect(lines[1]).not.toContain('compacted')
+  })
+})

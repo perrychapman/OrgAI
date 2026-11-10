@@ -109,7 +109,8 @@ import { waitingNote, waitingNoteExcluded } from './waitingNote'
  * 'blocked'. [mock:exec-question] (execQuestionSteps): ask_user with the options "(Recommended) Keep the default" and
  * "Change it", then a text that echoes the answer ("You chose: <answer>"). [mock:turn-fail] (turnFailSteps): one text,
  * then the root turn ends failed (RootTurnEnd errorSubtype 'error_during_execution', root state 'error', run.status
- * 'idle'; the session stays open). [mock:rate-limit] (rateLimitSteps): one text, then the rateLimit step with
+ * 'idle'; the session stays open). [mock:compact] (compactSteps): a two-step plan, then three root compactions with no
+ * step finished (agent.compacted; the thrash guard stops the automatic continues). [mock:rate-limit] (rateLimitSteps): one text, then the rateLimit step with
  * untilInMs 1500 and the session ends (RunManager pauses the run). [mock:exec-slow] (execSlowSteps): about 30 text
  * steps one second apart, cut short by interrupt and stop. Every root turn end calls ctx.onRootTurnEnded before
  * run.status 'idle' (the auth-fail marker reports ok false with isAuthError, before its 'error' status).
@@ -224,6 +225,8 @@ export type MockStep =
   | { type: 'planComplete'; summary: string }
   /** An API retry (rate limit or overload) against an agent's request; counted in usage.retries. */
   | { type: 'retry'; agent?: string }
+  /** The provider compacted an agent's conversation (agent.compacted; the continuation's thrash guard hears of it). */
+  | { type: 'compact'; agent?: string; before?: number; after?: number }
   /** Wait `ms` more before the next step (cut short by interrupt and stop). */
   | { type: 'wait'; ms: number }
   /**
@@ -693,6 +696,8 @@ export const EXEC_PLAN_TOKEN = '[mock:exec-plan]'
 export const EXEC_BLOCKED_TOKEN = '[mock:exec-blocked]'
 export const EXEC_QUESTION_TOKEN = '[mock:exec-question]'
 export const TURN_FAIL_TOKEN = '[mock:turn-fail]'
+/** [mock:compact] (compactSteps): a two-step plan, then three compactions of the root with no step finished. */
+export const COMPACT_TOKEN = '[mock:compact]'
 export const RATE_LIMIT_TOKEN = '[mock:rate-limit]'
 export const MODEL_SWITCH_TOKEN = '[mock:model-switch]'
 export const MEDIA_TOKEN = '[mock:media]'
@@ -763,6 +768,17 @@ export function execQuestionSteps(): MockStep[] {
 }
 
 /** [mock:turn-fail]: one text, then the root turn fails with error_during_execution. */
+/** [mock:compact]: the root plans two steps and compacts three times without finishing one (the thrash guard stops). */
+export function compactSteps(): MockStep[] {
+  return [
+    { type: 'plan', goal: 'Read the whole project', steps: ['Read everything', 'Change it'] },
+    { type: 'compact', before: 168_000, after: 12_000 },
+    { type: 'compact', before: 167_500, after: 14_000 },
+    { type: 'compact', before: 167_900, after: 15_000 },
+    { type: 'text', text: 'Still reading.' }
+  ]
+}
+
 export function turnFailSteps(): MockStep[] {
   return [
     { type: 'text', text: 'Starting on the request.' },
@@ -2042,6 +2058,7 @@ export class MockSession implements RuntimeSession {
     if (prompt.includes(EXEC_BLOCKED_TOKEN)) return execBlockedSteps()
     if (prompt.includes(EXEC_QUESTION_TOKEN)) return execQuestionSteps()
     if (prompt.includes(TURN_FAIL_TOKEN)) return turnFailSteps()
+    if (prompt.includes(COMPACT_TOKEN)) return compactSteps()
     if (prompt.includes(RATE_LIMIT_TOKEN)) return rateLimitSteps()
     if (prompt.includes(EXEC_SLOW_TOKEN)) return execSlowSteps(this.script.delayMs)
     return null
@@ -2191,6 +2208,13 @@ export class MockSession implements RuntimeSession {
       case 'fail':
         this.turnFailure = step.subtype ?? 'error_during_execution'
         return
+      case 'compact': {
+        const a = this.ensureAgent(step.agent ?? ROOT_AGENT_ID)
+        this.log('info', `Compaction of ${a.id === ROOT_AGENT_ID ? "the orchestrator's" : `${a.name}'s`} conversation (mock).`)
+        this.emit({ type: 'agent.compacted', runId: this.ctx.run.id, agentId: a.id, at: Date.now(), trigger: 'auto', ...(step.before ? { tokensBefore: step.before } : {}), ...(step.after ? { tokensAfter: step.after } : {}) })
+        this.continuation.compacted({ agentId: a.id, name: a.name, ...(a.model ? { model: a.model } : {}), contextWindow: 200_000 })
+        return
+      }
       case 'retry': {
         const a = this.ensureAgent(step.agent ?? ROOT_AGENT_ID)
         countUsage(a, 'retries')

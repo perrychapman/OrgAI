@@ -2924,6 +2924,11 @@ export interface AgentInstance {
    * first usage report.
    */
   usage?: AgentUsage
+  /**
+   * Times the provider compacted this agent's conversation (agent.compacted). Owned by RunManager, which counts the
+   * events and sets it on every agent.upsert (an adapter's own value is replaced). Absent = none.
+   */
+  compactions?: number
   startedAt: number
   endedAt?: number
   /** Last text the agent produced (truncated for the node card). */
@@ -3872,6 +3877,12 @@ export type RunEvent =
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }
   /** Text the agent is streaming right now; '' clears it once the completed message lands. Never persisted. */
   | { type: 'agent.partial'; runId: string; agentId: string; text: string }
+  /**
+   * The provider compacted an agent's conversation (Claude: compact_boundary, the orchestrator only; Codex: a
+   * contextCompaction item on the agent's thread). Token sizes when the provider said them. RunManager counts it into
+   * AgentInstance.compactions and re-sends the agent.
+   */
+  | { type: 'agent.compacted'; runId: string; agentId: string; at: number; trigger?: 'auto' | 'manual'; tokensBefore?: number; tokensAfter?: number }
   | { type: 'permission.request'; runId: string; request: PermissionRequest }
   /**
    * The card is answered or gone. `cancelled`: the run ended (finished, stopped, failed or paused) before the
