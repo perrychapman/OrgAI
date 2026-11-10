@@ -9,7 +9,6 @@ import {
   SERVER_REQUEST,
   buildLaunchConfig,
   codexToolName,
-  dynamicToolSpec,
   harnessToolName,
   lockNativeSkills,
   matchesBashRule,
@@ -40,8 +39,8 @@ import {
   codexToolNotes,
   createAgentWorktree,
   canonicalNetworkTool,
+  codexToolsFor,
   networkToolNames,
-  networkToolSpecs,
   reportMessage,
   type NetworkHost,
   type SpawnRequest
@@ -724,12 +723,7 @@ class CodexSession implements RuntimeSession {
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
-    const harness = this.harness.filter((t) => isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners'))
-    const network = networkToolNames(role, { setupLike: this.setupLike })
-    return {
-      specs: [...harness.map(dynamicToolSpec), ...networkToolSpecs(network)],
-      names: [...harness.map((t) => codexToolName(t.name)), ...network]
-    }
+    return codexToolsFor(this.harness, role, isRoot, { setupLike: this.setupLike })
   }
 
   private instructionsFor(role: Role, isRoot: boolean): string {

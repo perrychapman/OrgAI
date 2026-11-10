@@ -368,6 +368,15 @@ describe('MCP tools', () => {
     expect(ctx.requestMcpInstall).toHaveBeenCalledTimes(1)
   })
 
+  it('request_mcp_install: a call with neither registry nor manual is told both shapes and the secret rule', async () => {
+    const ctx = fakeCtx()
+    const text = await byName(workTools(ctx), 'request_mcp_install').call({ reason: 'need it' })
+    expect(text).toContain('registry (a server from search_mcp_registry: { name, version?, packageType? })')
+    expect(text).toContain('manual (a full description: { name, transport, command and pinned args for stdio, or url for http / sse; secrets by NAME in secretEnv or secretHeaders })')
+    expect(text).toContain('Nothing was requested from the user.')
+    expect(ctx.requestMcpInstall).not.toHaveBeenCalled()
+  })
+
   it('request_mcp_install: approve attaches the server and returns the tool prefix', async () => {
     const addMcpServer = vi.fn(async (s: McpServerSpec) => `mcp__${s.name}__`)
     const ctx = fakeCtx()
@@ -698,6 +707,11 @@ describe('request_permission_rules', () => {
   it('rejects malformed rules before asking, and answers DENIED when the run cannot grant rules', async () => {
     const ctx = fakeCtx({ requestPermissionRules: vi.fn(async () => ({ behavior: 'grant' as const, scope: 'run' as const })) })
     expect(await tool(ctx).call({ rules: ['gh repo create', 'Bash(gh:*)'], reason: 'r' })).toMatch(/^Invalid rule: gh repo create\./)
+    // The rule format left the description: the refusal names each form with an example.
+    const bad = await tool(ctx).call({ rules: ['gh repo create'], reason: 'r' })
+    expect(bad).toContain('Tool(prefix:*) for a shell command prefix (e.g. Bash(git push:*))')
+    expect(bad).toContain('Tool(exact command) (e.g. Bash(npm test))')
+    expect(bad).toContain('a bare tool name (e.g. WebFetch)')
     expect(await tool(ctx).call({ rules: ['Bash(gh:*)', 'Bash(git push‮:*)'], reason: 'r' })).toMatch(/^Invalid request: Rule 2 contains a hidden character \(U\+202E/)
     expect(await tool(ctx).call({ rules: ['Bash(g​h:*)'], reason: 'r' })).toMatch(/^Invalid request: Rule 1 contains a hidden character \(U\+200B/)
     expect(ctx.requestPermissionRules).not.toHaveBeenCalled()
@@ -1178,6 +1192,10 @@ describe('work run: propose_mcp_servers', () => {
     expect(await call(ctx, { upsert: [{ ...fresh, roles: ['ghost'] }] })).toMatch(/^REVISE/)
     expect(await call(ctx, { upsert: [{ name: 'github', roles: [] }] })).toMatch(/^REVISE\..*roles is empty/)
     expect(await call(ctx, { upsert: [{ name: 'unknown-server', enabled: true }] })).toMatch(/^REVISE\..*name and transport are required/)
+    // The item shapes left the description: the refusal shows a new server and a library link.
+    const shapes = await call(ctx, { upsert: [{ name: 'unknown-server', enabled: true }] })
+    expect(shapes).toContain('A new server is { name, transport, command and pinned args (stdio) or url (http / sse), secrets by NAME in secretEnv or secretHeaders }')
+    expect(shapes).toContain('a library link is { libraryId, roles? } with the id from list_mcp_servers')
     expect(ctx.requestProposal).not.toHaveBeenCalled()
   })
 

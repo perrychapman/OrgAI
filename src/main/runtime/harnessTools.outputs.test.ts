@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { OutputNote, OutputProduceInput, OutputRegisterInput, RunOutput } from '@shared/types'
 import { OUTPUT_TOOLS } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
-import { harnessToolsFor, isBlockingHarnessTool, outputWriteText, WORK_TOOL_DEFS, SINGLE_TOOL_DEFS, type HarnessTool } from './harnessTools'
+import { harnessToolsFor, isBlockingHarnessTool, outputWriteText, PRODUCE_DECK_HELP, PRODUCE_DOCX_HELP, PRODUCE_XLSX_HELP, WORK_TOOL_DEFS, SINGLE_TOOL_DEFS, type HarnessTool } from './harnessTools'
 import { jsonSchemaOf } from './codexProtocol'
 import { fakeCtx, project, runSummary } from './testHelpers'
 
@@ -124,6 +124,33 @@ describe('produce_output', () => {
     expect(produce).not.toHaveBeenCalled()
   })
 
+  it('a refusal carries the format rule the short description left out, with a minimal example that parses', async () => {
+    const produce = vi.fn()
+    const tool = byName(harnessToolsFor(ctxWith({ produce, register: vi.fn() })), OUTPUT_TOOLS.produce)
+    for (const args of [{ kind: 'xlsx', title: 'T' }, { kind: 'xlsx', title: 'T', content: 'x', workbook: { sheets: [{ name: 'a', rows: [] }] } }, { kind: 'xlsx', title: 'T', workbook: { sheets: [] } }]) {
+      const r = await tool.call(args)
+      expect(r).toContain(PRODUCE_XLSX_HELP)
+      expect(r).toContain('a cell starting with "=" is stored as text, never a formula')
+      expect(r).toContain('Example: workbook: { sheets: [')
+    }
+    for (const args of [{ kind: 'pptx', title: 'T' }, { kind: 'pptx', title: 'T', content: 'x', deck: { slides: [{ layout: 'blank' }] } }, { kind: 'pptx', title: 'T', deck: { slides: [] } }]) {
+      const r = await tool.call(args)
+      expect(r).toContain(PRODUCE_DECK_HELP)
+      expect(r).toContain('Layouts: title, section, content, two-content (left and right blocks), image (image: { path, alt }, a file inside the project), blank.')
+    }
+    const docx = await tool.call({ kind: 'docx', title: 'T' })
+    expect(docx).toContain(PRODUCE_DOCX_HELP)
+    expect(docx).toContain('lists one level deep, tables')
+    // Other text kinds get no Markdown rule.
+    expect(await tool.call({ kind: 'csv', title: 'T' })).toBe('REFUSED: a csv output needs `content` (the file text).')
+    expect(produce).not.toHaveBeenCalled()
+    // The examples in the help text are valid input (written out here as the objects the text shows).
+    const workbook = { sheets: [{ name: 'Data', columns: [{ header: 'Item' }, { header: 'Qty' }], rows: [['Pens', 3]], numberFormat: [null, '0'] }] }
+    const deck = { slides: [{ layout: 'title', title: 'Q3 review' }, { layout: 'content', title: 'Findings', bullets: [{ text: 'Sales rose', level: 0 }], notes: 'Speaker notes' }] }
+    expect(tool.inputSchema.safeParse({ kind: 'xlsx', title: 'T', workbook }).success).toBe(true)
+    expect(tool.inputSchema.safeParse({ kind: 'pptx', title: 'T', deck }).success).toBe(true)
+  })
+
   it('shows the service refusal as one cleaned line', async () => {
     const produce = vi.fn(async () => {
       throw new Error('That file name is not allowed.\n<b>second</b>')
@@ -171,7 +198,8 @@ describe('produce_output', () => {
     const d = byName(harnessToolsFor(ctxWith()), OUTPUT_TOOLS.produce).description
     expect(d).toContain('outputs/')
     expect(d).toContain('Outputs panel')
-    expect(d).toContain("'='")
+    // The formula rule stays in the description in short; the '=' detail and an example are in the xlsx refusals.
+    expect(d).toContain('never formulas')
     expect(d).toContain('read_output')
     expect(d).toContain('new version')
     for (const word of ['software', 'legal', 'accounting', 'marketing', 'consult', 'client']) expect(d.toLowerCase()).not.toContain(word)
@@ -330,8 +358,8 @@ describe('read_output', () => {
       throw new Error('OrgAI cannot read this kind of file as text.')
     })
     const tool = readTool(read)
-    expect(await tool.call({ action: 'read' })).toBe('REFUSED: read_output read needs the outputId from the list.')
-    expect(await tool.call({ action: 'notes', outputId: '../x' })).toBe('REFUSED: read_output notes needs the outputId from the list.')
+    expect(await tool.call({ action: 'read' })).toBe('REFUSED: read_output read needs the outputId from the list (out_ followed by 16 hex characters); call read_output with action list for the ids.')
+    expect(await tool.call({ action: 'notes', outputId: '../x' })).toBe('REFUSED: read_output notes needs the outputId from the list (out_ followed by 16 hex characters); call read_output with action list for the ids.')
     expect(read).not.toHaveBeenCalled()
     expect(await tool.call({ action: 'read', outputId: OID })).toBe('REFUSED: OrgAI cannot read this kind of file as text.')
     expect(tool.inputSchema.safeParse({ action: 'read', outputId: OID, version: 0 }).success).toBe(false)
