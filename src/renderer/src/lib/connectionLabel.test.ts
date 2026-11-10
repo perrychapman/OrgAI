@@ -80,8 +80,8 @@ describe('connectionLabel', () => {
     expect(isProxyId(undefined)).toBe(false)
   })
   it('words the kind for a badge', () => {
-    expect(connectionKindLabel(proxy('litellm', 'A').connection)).toBe('LiteLLM proxy')
-    expect(connectionKindLabel(proxy('proxy-1a2b3c4d', 'B', 'openai-compatible').connection)).toBe('OpenAI-compatible proxy')
+    expect(connectionKindLabel(proxy('litellm', 'A').connection)).toBe('Proxy')
+    expect(connectionKindLabel(proxy('proxy-1a2b3c4d', 'B', 'openai-compatible').connection)).toBe('Proxy')
     expect(connectionKindLabel(info({ id: 'openai', enabled: true, tierModels: {}, auth: { kind: 'chatgpt' } }).connection)).toBe('OpenAI')
     expect(connectionKindLabel(undefined)).toBe('Proxy')
   })

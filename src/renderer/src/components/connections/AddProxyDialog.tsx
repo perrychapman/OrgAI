@@ -1,14 +1,13 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import type { ProxyKind } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { Input } from '../ui/Input'
-import { Select } from '../ui/Select'
+import { Checkbox } from '../ui/Checkbox'
 import { cleanIpcError } from '../../lib/ipcError'
-import { PROXY_KIND_OPTIONS, kindHint, takenNames, validateProxyForm } from '../../lib/proxyForm'
+import { takenNames, validateProxyForm } from '../../lib/proxyForm'
 import type { ProxyFormValues } from '../../lib/proxyForm'
 import { ProxyFields } from './ProxyFields'
 
@@ -24,7 +23,7 @@ export interface ProxyAdded {
 function AddProxyForm({ taken, onClose, onAdded }: { taken: string[]; onClose: () => void; onAdded: (a: ProxyAdded) => void }): ReactElement {
   const setInfo = useAppStore((s) => s.setConnectionInfo)
   const loadModels = useAppStore((s) => s.loadModels)
-  const [values, setValues] = useState<ProxyFormValues>({ name: '', kind: 'litellm', anthropicBaseUrl: '', openaiBaseUrl: '', modelsUrl: '' })
+  const [values, setValues] = useState<ProxyFormValues>({ name: '', kind: 'openai-compatible', litellmFeatures: false, anthropicBaseUrl: '', openaiBaseUrl: '', modelsUrl: '' })
   const [apiKey, setApiKey] = useState('')
   const [showErrors, setShowErrors] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -35,13 +34,17 @@ function AddProxyForm({ taken, onClose, onAdded }: { taken: string[]; onClose: (
   const submit = async (): Promise<void> => {
     setShowErrors(true)
     setFailure(null)
-    if (Object.keys(errors).length > 0) return
+    if (Object.keys(errors).length > 0) {
+      document.getElementById(`add-proxy-${Object.keys(errors)[0]}`)?.focus()
+      return
+    }
     setBusy(true)
     let id = ''
     try {
       const created = await window.orgai.connections.createProxy({
         name: values.name.trim(),
         kind: values.kind,
+        litellmFeatures: values.litellmFeatures,
         anthropicBaseUrl: values.anthropicBaseUrl.trim(),
         ...(values.openaiBaseUrl.trim() ? { openaiBaseUrl: values.openaiBaseUrl.trim() } : {}),
         ...(values.modelsUrl.trim() ? { modelsUrl: values.modelsUrl.trim() } : {}),
@@ -78,20 +81,8 @@ function AddProxyForm({ taken, onClose, onAdded }: { taken: string[]; onClose: (
       }}
       noValidate
     >
-      <div className="field">
-        <label htmlFor="proxy-kind">Kind</label>
-        <Select
-          id="proxy-kind"
-          value={values.kind}
-          options={PROXY_KIND_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-          describedBy="proxy-kind-hint"
-          onChange={(v) => setValues((s) => ({ ...s, kind: v as ProxyKind }))}
-        />
-        <span className="hint" id="proxy-kind-hint">
-          {kindHint(values.kind)}
-        </span>
-      </div>
       <ProxyFields autofocusName prefix="add-proxy" values={values} errors={shown} onChange={(p) => setValues((s) => ({ ...s, ...p }))} />
+      <Checkbox checked={!!values.litellmFeatures} onChange={(litellmFeatures) => setValues((s) => ({ ...s, litellmFeatures }))} label="Use LiteLLM reporting" description="The key must have access to LiteLLM reports and will be sent to the reporting endpoints. Prices or spend may be unavailable." testId="proxy-litellm-features" />
       <div className="field">
         <label htmlFor="add-proxy-key">API key (optional)</label>
         <Input
