@@ -55,6 +55,20 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     End session (`withEndFacts` in runManager.ts; adapter-set values are dropped). Once quitting, start / continueRun / send / resumeNow refuse ("OrgAI is quitting") and a
     session still opening is stopped when it opens. The renderer's adoption of endedBy lands with the
     one-conversation UI change. Unit-tested; the real Electron quit path is not.
+- Run staffing contract (2026-11-10, docs/design/orchestration-efficiency.md section 5; types.ts "Run staffing"):
+  `RunRecord.staffing` (`RunStaffing { goal, assignments }`) mirrors the work-run plan: `RuntimeContext.updateStaffing`
+  (RunManager cleans it with defaults.ts `cleanRunStaffing`, stores it on the record through `recordEvent`, flushes it
+  with the record and broadcasts `staffing.updated`), `getStaffing`, and `staffingGoal` (`staffingGoalOf(project,
+  RunOverrides.goal)`, fixed at run start). Unlike the plan it is not carried to a continuation; `RunOverrides.goal` is
+  (NARROWING_KEYS). A bridged child gets stub get/update (nothing reaches the parent) and the parent's goal. Graph
+  fields `PlanStep.after / paths / staff`, `Role.staffing`, `Project.staffing / staffingGoal / reviewPolicy` and
+  `RunEfficiency.readyIdleMs` exist; stored values are cleaned on read (ProjectStore `sanitizeRoleModels` /
+  `withCleanAllowedDirectories`; `normalizeRunRecord` runs `cleanPlanStepGraph` and `cleanRunStaffing` on stored
+  records, also on `get()` of a live run). Nothing writes staffing yet, the plan tools do not call `cleanPlanStepGraph`
+  yet, and nothing computes `readyIdleMs`. The renderer store and TUI keep the latest `staffing` on the run; exec,
+  logs and notifications ignore the event. Checked by unit tests only (`src/shared/staffing.test.ts`,
+  `runManagerStaffing.test.ts`, `staffingGoalOverride.test.ts`, projects, runUsage, bridge, TUI state and renderer
+  store tests); no live run.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls

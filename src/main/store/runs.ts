@@ -4,7 +4,7 @@ import { dirname, join, relative, isAbsolute } from 'node:path'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
-import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, QUICK_PROJECT_ID, isPermissionMode } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, QUICK_PROJECT_ID, isPermissionMode, isStaffingGoal } from '@shared/types'
 import type {
   ExecOutcome,
   HeadlessDecisionPolicy,
@@ -78,6 +78,7 @@ export function cleanRunOverrides(v: unknown): RunOverrides | undefined {
     if (typeof v[key] === 'boolean') out[key] = v[key] as boolean
   }
   if (v.strictDelegation === true) out.strictDelegation = true
+  if (isStaffingGoal(v.goal)) out.goal = v.goal
   const mac = v.maxAutoContinues
   if (typeof mac === 'number' && Number.isInteger(mac) && mac >= 0 && mac <= MAX_AUTO_CONTINUES_LIMIT) out.maxAutoContinues = mac
   if (isNonNegative(v.maxBudgetUsd)) out.maxBudgetUsd = v.maxBudgetUsd

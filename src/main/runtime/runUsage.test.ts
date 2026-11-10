@@ -254,6 +254,35 @@ describe('normalizeRunRecord', () => {
     expect(normalizeRunRecord(oldRecord(), 5).summary.usage).toMatchObject({ legacy: true, costUsd: 0, costSource: 'none' })
   })
 
+  it('cleans a stored plan graph and staffing and leaves the rest of the record alone (run staffing)', () => {
+    const rec = { ...normalizeRunRecord(oldRecord({}, [priced({ id: 'root' }, 'claude-sonnet-4-5', tok(10))]), 4) }
+    rec.plan = { goal: 'g', status: 'active', autoContinues: 2, updatedAt: 1, steps: [
+      { id: 'p1', title: 'One', status: 'pending', after: ['p2', 'p9'], paths: [' src/a.ts ', ''], staff: { role: '' } },
+      { id: 'p2', title: 'Two', status: 'done', after: ['p1'], owner: 'eng' }
+    ] }
+    rec.staffing = { goal: 'warp' as never, assignments: [{ roleId: 'r', model: 'sonnet', source: 'role', at: 1 }, { roleId: 'r' } as never] }
+    const out = normalizeRunRecord(rec, 5)
+    expect(out.plan).toEqual({ goal: 'g', status: 'active', autoContinues: 2, updatedAt: 1, steps: [
+      { id: 'p1', title: 'One', status: 'pending', paths: ['src/a.ts'] },
+      { id: 'p2', title: 'Two', status: 'done', after: ['p1'], owner: 'eng' }
+    ] })
+    expect(out.staffing).toEqual({ goal: 'balanced', assignments: [{ roleId: 'r', model: 'sonnet', source: 'role', at: 1 }] })
+    expect(out.agents.root).toBe(rec.agents.root)
+    expect(out.summary).toBe(rec.summary)
+    expect(rec.plan!.steps[0].after).toEqual(['p2', 'p9']) // the input is untouched
+    expect(normalizeRunRecord(out, 6)).toBe(out)
+  })
+
+  it('removes stored staffing that is not an object and keeps a clean one as the same record', () => {
+    const fresh: RunRecord = oldRecord({}, [priced({ id: 'root' }, 'claude-sonnet-4-5', tok(10))])
+    const junk = normalizeRunRecord({ ...fresh, staffing: 'lots' as never })
+    expect('staffing' in junk).toBe(false)
+    expect(junk.agents.root).toBe(fresh.agents.root)
+    const clean = normalizeRunRecord(fresh)
+    const withStaffing: RunRecord = { ...clean, staffing: { goal: 'cost', assignments: [] }, plan: { goal: 'g', status: 'active', autoContinues: 0, updatedAt: 1, steps: [{ id: 'p1', title: 'x', status: 'pending' }] } }
+    expect(normalizeRunRecord(withStaffing)).toBe(withStaffing)
+  })
+
   it('is idempotent and leaves current records alone', () => {
     const once = normalizeRunRecord(oldRecord({ totalCostUsd: 1 }, [oldAgent('root', { inputTokens: 10, costUsd: 1 })]), 7)
     expect(normalizeRunRecord(once, 8)).toBe(once)
@@ -475,6 +504,15 @@ describe('computeRunEfficiency', () => {
     }
     expect(rec({ ...ok, tailMs: -5 }).summary.usage!.efficiency).toBeUndefined()
     expect(rec(ok).summary.usage!.efficiency).toEqual(ok)
+  })
+
+  it('keeps a valid readyIdleMs and drops a junk one alone (run staffing)', () => {
+    const ok = { reports: 2, firstSpawnMs: 1, reportSumMs: 5, reportBusyMs: 4, maxParallel: 2, tailMs: 0 }
+    expect(cleanRunEfficiency({ ...ok, readyIdleMs: 250 })).toEqual({ ...ok, readyIdleMs: 250 })
+    expect(cleanRunEfficiency({ ...ok, readyIdleMs: 0 })).toEqual({ ...ok, readyIdleMs: 0 })
+    for (const bad of [-1, Number.NaN, Infinity, '5', null]) expect(cleanRunEfficiency({ ...ok, readyIdleMs: bad })).toEqual(ok)
+    // Nothing computes it yet.
+    expect(computeRunEfficiency({ ...runSummary(), startedAt: 0, endedAt: 1000 }, [root, rep('a', 100, 600)], 1000)!.readyIdleMs).toBeUndefined()
   })
 
   it('is carried by computeRunUsage and not summed', () => {

@@ -394,6 +394,10 @@ export class BridgedSessions {
       noteArchitectureUpdated: async () => {},
       getPlan: () => undefined,
       updatePlan: async () => {},
+      // Like the plan: a bridged child has no staffing record of its own, and its updates never reach the parent run
+      // (the parent's adapter records the child's assignment itself; a child's staffing.updated is dropped too).
+      getStaffing: () => undefined,
+      updateStaffing: async () => {},
       rateLimited: (info) => {
         this.deps.emit({
           type: 'log',
@@ -436,6 +440,7 @@ export class BridgedSessions {
       pass(k)
     }
     if (p0.opusGuardThreshold !== undefined) ctx.opusGuardThreshold = p0.opusGuardThreshold
+    if (p0.staffingGoal !== undefined) ctx.staffingGoal = p0.staffingGoal
     if (p0.engagementNotes) {
       ctx.engagementNotes = {
         list: () => parentNow().engagementNotes!.list(),
@@ -522,8 +527,8 @@ export class BridgedSessions {
         this.deps.emit({ ...e, message: redactText(e.message, secrets) })
         return
       default:
-        // run.title / run.finalized / run.usage / run.cost / plan.updated / run.message / usage.status / project.updated and
-        // every card event: the parent owns them, a child's copy is dropped.
+        // run.title / run.finalized / run.usage / run.cost / plan.updated / staffing.updated / run.message / usage.status /
+        // project.updated and every card event: the parent owns them, a child's copy is dropped.
         return
     }
   }

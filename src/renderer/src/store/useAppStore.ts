@@ -50,6 +50,7 @@ import type {
   Role,
   RunEvent,
   RunPlan,
+  RunStaffing,
   RunSummary,
   SetupKind,
   TranscriptEntry,
@@ -200,6 +201,8 @@ export interface RunState {
   messages: AgentMessage[]
   /** Work runs: the orchestrator's plan, once it set one. */
   plan?: RunPlan
+  /** Work runs: the latest staffing record (staffing.updated, or the run record), once one exists. Not shown yet. */
+  staffing?: RunStaffing
   /** Open request_mcp_install approvals. */
   mcpInstalls: McpInstallRequest[]
   /** Answered installs (secret-free outcomes), keyed by request id, kept so the card shows its resolution. */
@@ -2214,6 +2217,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'plan.updated':
           run.plan = e.plan
+          break
+        case 'staffing.updated':
+          run.staffing = e.staffing
           break
         case 'run.delegation': {
           const applied = applyRunDelegation(run.summary, run.agents, e)
