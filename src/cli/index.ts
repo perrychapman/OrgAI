@@ -1,8 +1,10 @@
 /**
- * `orgai` CLI entry (bundled to out/cli/orgai.mjs; the build adds the `#!/usr/bin/env node` banner). Plain Node only:
+ * `orgai` CLI (bin.ts is the bundle's entry, out/cli/orgai.mjs, and loads this module as its own chunk). Plain Node only:
  * no desktop-shell import, ever. Routes over commandTable.ts (cli-spec 6.1): global flags first (flags.ts), then the
  * command. Exit codes are EXIT in types.ts; a CliError carries its own, anything else is 1.
  */
+// First (bin.ts loads it before this module too): inspectorSignal.ts.
+import './inspectorSignal'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { runCompletions } from './commands/completions'
@@ -307,7 +309,8 @@ function isEntry(): boolean {
   }
 }
 
-if (isEntry()) {
+/** Run the orgai command in this process (bin.ts, the bundle's entry, calls it once the CLI has loaded). */
+export function runCli(): void {
   // Before main() builds the context (which reads process.env) and before anything can spawn.
   scrubElectronRunAsNode(process.env)
   process.on('unhandledRejection', (reason: unknown) => {
@@ -327,3 +330,6 @@ if (isEntry()) {
     }
   )
 }
+
+// `node src/cli/index.ts` style runs (the bundle starts through bin.ts, whose module URL differs).
+if (isEntry()) runCli()

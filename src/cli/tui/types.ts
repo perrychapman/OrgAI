@@ -72,6 +72,7 @@ import type {
 } from '../../shared/types'
 import type { HostClient, InprocHostHandle } from '../types'
 import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
+import type { ApprovalsApi } from './approvals'
 
 // Re-exported for the onboarding props (Onboarding.tsx).
 export type { AgentImportSource }
@@ -522,6 +523,8 @@ export interface OpenTuiSessionOptions {
 }
 
 export interface TuiSessionApi {
+  /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
+  approvals?: ApprovalsApi
   getState(): TuiState
   subscribe(listener: () => void): () => void
   readonly hostKind: HostKind

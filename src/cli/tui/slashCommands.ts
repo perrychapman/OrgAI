@@ -11,6 +11,7 @@ import { helpKeyLines } from './keymap'
 import { sanitizeTty } from './sanitizeTty'
 import { offersRetro } from './selectors'
 import { usageText } from './usageText'
+import { approvalsText } from './approvals'
 import { MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE } from '../../shared/liveModelSwitch'
 import type { ProviderModel, RunOverrides, RunSummary } from '../../shared/types'
 import { connectionName, modelChoices, pickModel } from '../modelSwitch'
@@ -147,6 +148,24 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
   if (out.kind === 'cancelled') ctx.notify('Model unchanged.')
   else if (out.kind === 'applied') ctx.notify(`Model changed to ${selectionLabel(selected, connectionName(catalog, selected.connection))}.`)
   else ctx.notify(`Model selected for the next message: ${selectionLabel(selected, connectionName(catalog, selected.connection))}.`)
+}
+
+/**
+ * /approvals (cli-parity 3.4 as built, read-only): what waits for approval, in full (the gate's summary, "May spend
+ * more", what an undo would bring back, a folder's own config), ending with where approving is done and why.
+ */
+async function runApprovals(ctx: SlashContext): Promise<void> {
+  const api = ctx.session.approvals
+  if (!api) {
+    ctx.notify('Approvals are not available here.', 'warn')
+    return
+  }
+  const items = await api.list()
+  if (!items.length) {
+    ctx.notify('Nothing waits for approval.')
+    return
+  }
+  await ctx.openText('Approvals', approvalsText(items))
 }
 
 function retroReason(s: TuiState): string | undefined {
@@ -315,6 +334,12 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       guarded(ctx, async () => {
         if (await ctx.confirm('End this session?')) await ctx.session.stop()
       })
+  },
+  {
+    name: 'approvals',
+    aliases: ['team-files', 'trust'],
+    summary: 'Read the team-file changes and folder config that wait for approval (approving is in the desktop app)',
+    run: (ctx) => guarded(ctx, () => runApprovals(ctx))
   },
   {
     // The owning orgai's own card list; not the removed `orgai inbox` command (spec 4.1).

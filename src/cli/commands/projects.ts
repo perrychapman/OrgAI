@@ -1,5 +1,5 @@
 /**
- * `orgai projects <list|show|check|create|set|remove|save-chat>` (cli-spec 6.3, Wave 5).
+ * `orgai projects <list|show|check|create|set|remove|save-chat|trust>` (cli-spec 6.3, Wave 5; trust cli-parity 3.4).
  *
  * Reads take ['read']; create, set, remove and save-chat take ['read', 'configure']. Every project name, path, client
  * and host message is untrusted text and goes through safe / safeLine before any styling. projects:save has no
@@ -33,6 +33,7 @@ import {
   isStaffingMode,
   isVirtualProjectId,
   type AgentImportSource,
+  type FolderConfigReview,
   type OrgTemplateInfo,
   type Project,
   type ProjectCreateInput,
@@ -46,6 +47,7 @@ import {
   type RunSummary
 } from '../../shared/types'
 import { resolveProject } from '../client/resolveProject'
+import { folderTrustLines, NO_APPROVE_COMMAND, TRUST_WHERE } from '../approvalText'
 import { connectionArg, labelOfId } from './connections'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, requireProject, runSubcommands, withHost } from '../manage'
@@ -57,7 +59,7 @@ const READ = ['read'] as const
 const CONFIGURE = ['read', 'configure'] as const
 
 const usage = (message: string): CliError => new CliError(message, EXIT.usage)
-const USAGE = 'projects <list|show|check|create|set|remove|save-chat> [options]'
+const USAGE = 'projects <list|show|check|create|set|remove|save-chat|trust> [options]'
 
 // ---------- Shared helpers (also used by commands/init.ts) ----------
 
@@ -594,7 +596,30 @@ const runSaveChat: CommandFn = async (ctx, args) => {
   })
 }
 
+// ---------- trust (cli-parity 3.4) ----------
+
+/**
+ * `projects trust [show]` (read): the folder's own agent config as the host reviews it (projects:folderConfig) and
+ * whether agents load it. `projects trust allow | deny` decide nothing: allowing is done in the desktop app for now (a
+ * terminal cannot yet prove a person is answering); they exit 2 without starting a host, whatever flags follow.
+ */
+const runTrust = async (ctx: CliContext, args: string[]): Promise<number> => {
+  const sub = args[0]
+  if (sub === 'allow' || sub === 'deny') throw new CliError(NO_APPROVE_COMMAND, EXIT.usage)
+  if (sub !== undefined && !sub.startsWith('-') && sub !== 'show') throw usage(`Unknown subcommand 'trust ${safeLine(sub).slice(0, 64)}'. Usage: orgai projects trust [show]`)
+  const { positionals } = parseFlags(sub === 'show' ? args.slice(1) : args, {})
+  if (positionals.length) throw usage('Usage: orgai projects trust [show] (pick the project with --project)')
+  return withHost(ctx, [...READ], async (client) => {
+    const project = await requireProject(ctx, client)
+    const review = await hostCall<FolderConfigReview>(client, 'projects:folderConfig', [project.id])
+    const decide = review.state === 'none' ? [] : ['', TRUST_WHERE]
+    emit(ctx, { project: { id: project.id, name: project.name, path: project.path }, folderConfig: review }, () => [...folderTrustLines(review, project.name), ...decide])
+    return EXIT.ok
+  })
+}
+
 export const PROJECT_SUBCOMMANDS = {
+  trust: runTrust,
   list: runList,
   show: runShow,
   check: runCheck,

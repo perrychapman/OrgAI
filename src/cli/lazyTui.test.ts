@@ -98,6 +98,8 @@ describe('lazy TUI import graph', () => {
       if (/^import[^;'"]*from\s*"(?:ink|react|react\/[^"]*|react-reconciler)";?$/m.test(text)) bad.push(`${file} imports ink or react`)
       for (const m of text.matchAll(/^(?:import|export)[^;'"]*?from\s*"\.\/([^"]+)";?$/gm)) stack.push(m[1])
       for (const m of text.matchAll(/^import\s*"\.\/([^"]+)";?$/gm)) stack.push(m[1])
+      // The entry (bin.ts) loads the rest of the CLI with one dynamic import: that chunk counts as loaded at start.
+      if (file === 'orgai.mjs') for (const m of text.matchAll(/\bawait import\("\.\/([^"]+)"\)/g)) stack.push(m[1])
     }
     expect(seen.has('tui.mjs')).toBe(false)
     expect(bad).toEqual([])

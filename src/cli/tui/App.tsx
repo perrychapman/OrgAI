@@ -850,6 +850,13 @@ export function App(props: AppProps) {
         .finally(() => setCheckingFolder(false))
       return
     }
+    // cli-parity 3.4: say on open when team files or this folder's config wait for approval (/approvals reads them).
+    session.approvals
+      ?.waiting()
+      .then((text) => {
+        if (text) notify(sanitizeTty(text), 'warn')
+      })
+      .catch(() => undefined)
     if (launch.prompt) startLaunchRun(session, launch)
     else if (launch.resumeText) session.submitPrompt(launch.resumeText).catch((e: unknown) => notify(errText(e), 'danger'))
   }, [launch, conn, session, notify])

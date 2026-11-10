@@ -302,3 +302,28 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   (`runStartFlags.ts`, validated by exec's `overridesFromFlags`, `execMode` dropped; headless-only flags are refused).
   `session.ts` sends `overrides` on start, continue and quick; widening ones go through a one-call 'configure'
   connection (`callConfigured`), as exec asks for 'configure'.
+- Approvals at the terminal (cli-parity 3.4 and principle 4, branch cp/approvals, 2026-11-10; read-only as built; unit,
+  ink and in-process integration tests, e2e rows in `e2e/cli-org.mjs` not run). What ships:
+  - `orgai team files [status]` (read scope, `teamFiles:listAttention`): each pending change with the gate's summary,
+    "May spend more: ..." first, tools gained, MCP target, secrets, reach, git's view of who wrote it (OrgAI records no
+    author) and, when undo is open, what Undo would bring back (`TeamFilesStatus.undoChanges`, filled by the
+    listAttention handler from `TeamFilesService.undoChanges`; the service's own status and the desktop push do not
+    carry it). `orgai projects trust [show]` (read scope, `projects:folderConfig`). Both with `--output-format json`.
+  - `exec` and `resume --exec` print one stderr line (text mode) before the run while the project's team files wait
+    (`approvalText.ts` `pendingTeamFilesLine`); the TUI shows a notice on open.
+  - TUI `/approvals` (aliases team-files, trust) is read-only: a text overlay with every waiting item in full (the same
+    words, prompts before and after, what Undo would bring back, a folder's own config) ending with "Approving is done in
+    the OrgAI desktop app for now: a terminal cannot yet prove that a person, not an agent, is answering."
+  - `orgai team files approve|reject|undo|commit|enable` and `orgai projects trust allow|deny` decide nothing: they say
+    so, exit 2 and start no host, whatever flags follow.
+  - No new channel or scope: the registry is unchanged; the desktop's team files decisions and
+    `projects:setFolderConfigTrust` stay `desktop_only`.
+  - The CLI starts Node with the inspector signal disabled (`src/cli/inspectorSignal.ts`; `src/cli/bin.ts` is the
+    bundle's entry and loads it before the rest of the CLI, which comes in as its own chunk; `npm run cli` also passes
+    `--disable-sigusr1`; `inspectorSignal.test.ts`).
+  - Why approving was held: an approval path at the terminal was built and reviewed twice. Both independent reviews
+    found that a terminal session cannot be told apart from one an agent drives, so an agent could approve its own change.
+    Approving from a terminal needs a confirmation from the operating system that an agent cannot produce, and a record of
+    what was approved that agents cannot write. That work is preserved on the local branch `cp/approvals-full-gate`.
+  - Known gap: the desktop app keeps its own data folder, so approving there does not clear a pending change of a project
+    in the CLI's data folder; a terminal-only user can see such a change but not clear it today.

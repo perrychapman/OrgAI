@@ -1141,7 +1141,15 @@ function registerSecretsIpc(
  */
 function registerTeamFilesIpc(handle: Register, svc: TeamFilesService): void {
   handle(TEAM_FILES_IPC.teamFilesStatus, async (_e, input: unknown): Promise<TeamFilesStatus> => svc.statusWithGit(teamFilesArgs(input).projectId))
-  handle(TEAM_FILES_IPC.teamFilesListAttention, async (): Promise<TeamFilesStatus[]> => Promise.all(svc.listAttention().map((s) => svc.withGit(s))))
+  // With undo open, what Undo would bring back (read-only; the terminal's /approvals and `team files status` show it).
+  handle(TEAM_FILES_IPC.teamFilesListAttention, async (): Promise<TeamFilesStatus[]> =>
+    Promise.all(
+      svc.listAttention().map((s) => {
+        const back = s.undo ? svc.undoChanges(s.projectId) : []
+        return svc.withGit(back.length ? { ...s, undoChanges: back } : s)
+      })
+    )
+  )
 }
 
 function registerKitBundleIpc(handle: Register, kit: KitService): void {

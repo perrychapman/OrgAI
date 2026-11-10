@@ -7997,6 +7997,11 @@ export interface TeamFilesStatus {
   undo?: TeamFilesUndoInfo
   /** The last Undo that ran: which files it rewrote. */
   lastUndo?: TeamFilesUndoInfo
+  /**
+   * teamFiles:listAttention only, with `undo`: what Undo would bring back, as every difference from the team in use to the
+   * team Undo restores (TeamFilesService.undoChanges). Read-only; the terminal shows it.
+   */
+  undoChanges?: TeamFileChange[]
 }
 
 /** teamFiles:approve and teamFiles:reject input. A digest other than the current one is refused ("Review them again."). */

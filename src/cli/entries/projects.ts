@@ -4,8 +4,8 @@ import type { CommandEntry } from '../commandTable'
 export const ENTRY: CommandEntry = {
   name: 'projects',
   summary: 'Projects',
-  usage: 'projects <list|show|check|create|set|remove|save-chat> [options]',
-  subcommands: ['list', 'show', 'create', 'check', 'set', 'remove', 'save-chat'],
+  usage: 'projects <list|show|check|create|set|remove|save-chat> [options] | projects trust [show]',
+  subcommands: ['list', 'show', 'create', 'check', 'set', 'remove', 'save-chat', 'trust'],
   flags: [
     { name: 'name', takesValue: true, summary: 'create / set / save-chat: the project name' },
     { name: 'kind', takesValue: true, values: ['code', 'engagement'], summary: 'create: what the project is for (default code)' },
@@ -30,5 +30,8 @@ export const ENTRY: CommandEntry = {
     { name: 'keep-runs', takesValue: false, summary: 'remove: keep the run records (code projects only); set: takes <n|auto>, the run records to keep' },
     { name: 'yes', short: 'y', takesValue: false, summary: 'remove / set: do not ask for confirmation' }
   ],
-  available: true
+  available: true,
+  notes: [
+    "projects trust [show]: the folder's own agent config (hooks, MCP servers, env, allow rules) and whether agents load it. orgai does not allow or deny it: a terminal cannot yet prove that a person, not an agent, is answering, so this is done in the OrgAI desktop app for now."
+  ]
 }

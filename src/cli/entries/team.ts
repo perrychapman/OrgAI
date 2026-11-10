@@ -3,10 +3,10 @@ import type { CommandEntry } from '../commandTable'
 
 export const ENTRY: CommandEntry = {
   name: 'team',
-  summary: 'Team templates, roles and plugins',
+  summary: 'Team templates, roles, plugins and team files',
   usage:
-    'team templates [list] | templates save --name <name> [--description <text>] | templates apply <id> [--mode replace|merge] [--yes] | templates remove <id> [--yes] | roles | role [show] <name-or-slug> | role add <name> --reports-to <role> [role flags] | role set <role> [role flags] | role rm <role> [--reparent-to <role>] [--yes] | role move <role> --reports-to <role> [--yes] | plugins [list] | plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp] | plugins remove <id> [--yes]',
-  subcommands: ['templates', 'roles', 'role', 'plugins'],
+    'team files [status] | team templates [list] | templates save --name <name> [--description <text>] | templates apply <id> [--mode replace|merge] [--yes] | templates remove <id> [--yes] | roles | role [show] <name-or-slug> | role add <name> --reports-to <role> [role flags] | role set <role> [role flags] | role rm <role> [--reparent-to <role>] [--yes] | role move <role> --reports-to <role> [--yes] | plugins [list] | plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp] | plugins remove <id> [--yes]',
+  subcommands: ['templates', 'roles', 'role', 'plugins', 'files'],
   flags: [
     { name: 'name', takesValue: true, summary: 'templates save: the template name; plugins add: the plugin name; role set: rename the role (its slug follows)' },
     { name: 'description', takesValue: true, summary: 'templates save: a description; role add / set: when a manager should delegate to the role' },
@@ -38,6 +38,7 @@ export const ENTRY: CommandEntry = {
   ],
   available: true,
   notes: [
+    'team files [status]: the changes to .orgai/team.json and .orgai/agents/*.md that wait for approval, with what each would give the team. orgai does not approve, reject, undo or commit them: a terminal cannot yet prove that a person, not an agent, is answering, so this is done in the OrgAI desktop app for now. In the terminal UI, /approvals shows the same, read-only.',
     'Role edits go through the same save as the desktop editor. A change that may make a role spend more (a higher tier or effort, automatic staffing or a raised ceiling, another connection, spawning switched on) prints why and asks first; pass --yes without a terminal. Lowering never asks.'
   ]
 }

@@ -43,6 +43,7 @@ import {
   type RunRecord,
   type RunsEventParams,
   type RunSummary,
+  type TeamFilesStatus,
   type TranscriptEntry
 } from '../../shared/types'
 import { isOpenStatus } from '../../shared/view/runChains'
@@ -57,6 +58,7 @@ import { readStdinText } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { staffingLine } from '../staffingText'
+import { pendingTeamFilesLine } from '../approvalText'
 import { loadImages } from '../images'
 import { compactionLine } from '../../shared/view/compactionText'
 import { liveSource, resolveRunFromSource } from '../runRef'
@@ -300,6 +302,21 @@ async function openSession(ctx: CliContext, configure: boolean): Promise<Session
   return session
 }
 
+/**
+ * cli-parity 3.4: one stderr line (text mode) before a run starts while the project's team files have changes waiting
+ * for approval. A failed lookup says nothing: the run's own warning (TeamFilesService.beforeRun) still comes.
+ */
+export async function noteTeamFiles(ctx: CliContext, client: HostClient, projectId: string): Promise<void> {
+  if (isJsonOutput(ctx)) return
+  try {
+    const list = await client.call<TeamFilesStatus[]>('teamFiles:listAttention', [], { timeoutMs: 30_000 })
+    const line = pendingTeamFilesLine(Array.isArray(list) ? list : [], projectId)
+    if (line) note(ctx, line)
+  } catch {
+    // the run's warning covers it
+  }
+}
+
 // ---------- orgai exec ----------
 
 export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
@@ -351,6 +368,7 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
       if (!isJsonOutput(ctx)) printText(ctx, styleFor(ctx).dim(`Created the project ${safeLine(project.name)}.`))
     }
     if (overridesNeedConfigure(project, overrides)) await session.needConfigure()
+    await noteTeamFiles(ctx, session.client, project.id)
     return call<RunSummary>(session.client, 'runs:start', [{ projectId: project.id, prompt, ...(team === 'single' ? { team: 'single' } : {}), ...(images.length ? { images } : {}), overrides }])
   })
 }
@@ -413,6 +431,7 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
     const from = runs.find((r) => r.id === runId)
     const project = from ? projects.find((p) => p.id === from.projectId) : undefined
     if (overridesNeedConfigure(project, overrides)) await session.needConfigure()
+    if (project) await noteTeamFiles(ctx, session.client, project.id)
     return call<RunSummary>(session.client, 'runs:continue', [{ runId, text: prompt, ...(images.length ? { images } : {}), overrides, exec: true }])
   })
 }
