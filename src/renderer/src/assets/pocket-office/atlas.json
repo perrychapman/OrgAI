@@ -445,6 +445,48 @@
           "y": 128,
           "w": 32,
           "h": 32
+        },
+        "prop.crt-b": {
+          "x": 0,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "prop.crt-off": {
+          "x": 32,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "prop.crt-error": {
+          "x": 64,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "prop.mark-wait": {
+          "x": 0,
+          "y": 192,
+          "w": 16,
+          "h": 16
+        },
+        "prop.mark-done": {
+          "x": 16,
+          "y": 192,
+          "w": 16,
+          "h": 16
+        },
+        "prop.mark-error": {
+          "x": 32,
+          "y": 192,
+          "w": 16,
+          "h": 16
+        },
+        "prop.mark-talk": {
+          "x": 48,
+          "y": 192,
+          "w": 16,
+          "h": 16
         }
       }
     },
@@ -497,6 +539,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.crop.down.type": {
+          "x": 112,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.down.hand": {
+          "x": 128,
+          "y": 0,
+          "w": 16,
+          "h": 24
+        },
         "worker.crop.left.idle": {
           "x": 0,
           "y": 24,
@@ -535,6 +589,18 @@
         },
         "worker.crop.left.error": {
           "x": 96,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.type": {
+          "x": 112,
+          "y": 24,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.left.hand": {
+          "x": 128,
           "y": 24,
           "w": 16,
           "h": 24
@@ -581,6 +647,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.crop.right.type": {
+          "x": 112,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.right.hand": {
+          "x": 128,
+          "y": 48,
+          "w": 16,
+          "h": 24
+        },
         "worker.crop.up.idle": {
           "x": 0,
           "y": 72,
@@ -619,6 +697,18 @@
         },
         "worker.crop.up.error": {
           "x": 96,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.type": {
+          "x": 112,
+          "y": 72,
+          "w": 16,
+          "h": 24
+        },
+        "worker.crop.up.hand": {
+          "x": 128,
           "y": 72,
           "w": 16,
           "h": 24
@@ -665,6 +755,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.part.down.type": {
+          "x": 112,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.down.hand": {
+          "x": 128,
+          "y": 96,
+          "w": 16,
+          "h": 24
+        },
         "worker.part.left.idle": {
           "x": 0,
           "y": 120,
@@ -703,6 +805,18 @@
         },
         "worker.part.left.error": {
           "x": 96,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.type": {
+          "x": 112,
+          "y": 120,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.left.hand": {
+          "x": 128,
           "y": 120,
           "w": 16,
           "h": 24
@@ -749,6 +863,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.part.right.type": {
+          "x": 112,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.right.hand": {
+          "x": 128,
+          "y": 144,
+          "w": 16,
+          "h": 24
+        },
         "worker.part.up.idle": {
           "x": 0,
           "y": 168,
@@ -787,6 +913,18 @@
         },
         "worker.part.up.error": {
           "x": 96,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.type": {
+          "x": 112,
+          "y": 168,
+          "w": 16,
+          "h": 24
+        },
+        "worker.part.up.hand": {
+          "x": 128,
           "y": 168,
           "w": 16,
           "h": 24
@@ -833,6 +971,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.bun.down.type": {
+          "x": 112,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.down.hand": {
+          "x": 128,
+          "y": 192,
+          "w": 16,
+          "h": 24
+        },
         "worker.bun.left.idle": {
           "x": 0,
           "y": 216,
@@ -871,6 +1021,18 @@
         },
         "worker.bun.left.error": {
           "x": 96,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.type": {
+          "x": 112,
+          "y": 216,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.left.hand": {
+          "x": 128,
           "y": 216,
           "w": 16,
           "h": 24
@@ -917,6 +1079,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.bun.right.type": {
+          "x": 112,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.right.hand": {
+          "x": 128,
+          "y": 240,
+          "w": 16,
+          "h": 24
+        },
         "worker.bun.up.idle": {
           "x": 0,
           "y": 264,
@@ -955,6 +1129,18 @@
         },
         "worker.bun.up.error": {
           "x": 96,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.type": {
+          "x": 112,
+          "y": 264,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bun.up.hand": {
+          "x": 128,
           "y": 264,
           "w": 16,
           "h": 24
@@ -1001,6 +1187,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.wide.down.type": {
+          "x": 112,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.down.hand": {
+          "x": 128,
+          "y": 288,
+          "w": 16,
+          "h": 24
+        },
         "worker.wide.left.idle": {
           "x": 0,
           "y": 312,
@@ -1039,6 +1237,18 @@
         },
         "worker.wide.left.error": {
           "x": 96,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.type": {
+          "x": 112,
+          "y": 312,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.left.hand": {
+          "x": 128,
           "y": 312,
           "w": 16,
           "h": 24
@@ -1085,6 +1295,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.wide.right.type": {
+          "x": 112,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.right.hand": {
+          "x": 128,
+          "y": 336,
+          "w": 16,
+          "h": 24
+        },
         "worker.wide.up.idle": {
           "x": 0,
           "y": 360,
@@ -1123,6 +1345,18 @@
         },
         "worker.wide.up.error": {
           "x": 96,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.type": {
+          "x": 112,
+          "y": 360,
+          "w": 16,
+          "h": 24
+        },
+        "worker.wide.up.hand": {
+          "x": 128,
           "y": 360,
           "w": 16,
           "h": 24
@@ -1169,6 +1403,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.long.down.type": {
+          "x": 112,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.down.hand": {
+          "x": 128,
+          "y": 384,
+          "w": 16,
+          "h": 24
+        },
         "worker.long.left.idle": {
           "x": 0,
           "y": 408,
@@ -1207,6 +1453,18 @@
         },
         "worker.long.left.error": {
           "x": 96,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.type": {
+          "x": 112,
+          "y": 408,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.left.hand": {
+          "x": 128,
           "y": 408,
           "w": 16,
           "h": 24
@@ -1253,6 +1511,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.long.right.type": {
+          "x": 112,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.right.hand": {
+          "x": 128,
+          "y": 432,
+          "w": 16,
+          "h": 24
+        },
         "worker.long.up.idle": {
           "x": 0,
           "y": 456,
@@ -1291,6 +1561,18 @@
         },
         "worker.long.up.error": {
           "x": 96,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.type": {
+          "x": 112,
+          "y": 456,
+          "w": 16,
+          "h": 24
+        },
+        "worker.long.up.hand": {
+          "x": 128,
           "y": 456,
           "w": 16,
           "h": 24
@@ -1337,6 +1619,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.cap.down.type": {
+          "x": 112,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.down.hand": {
+          "x": 128,
+          "y": 480,
+          "w": 16,
+          "h": 24
+        },
         "worker.cap.left.idle": {
           "x": 0,
           "y": 504,
@@ -1375,6 +1669,18 @@
         },
         "worker.cap.left.error": {
           "x": 96,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.type": {
+          "x": 112,
+          "y": 504,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.left.hand": {
+          "x": 128,
           "y": 504,
           "w": 16,
           "h": 24
@@ -1421,6 +1727,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.cap.right.type": {
+          "x": 112,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.right.hand": {
+          "x": 128,
+          "y": 528,
+          "w": 16,
+          "h": 24
+        },
         "worker.cap.up.idle": {
           "x": 0,
           "y": 552,
@@ -1459,6 +1777,18 @@
         },
         "worker.cap.up.error": {
           "x": 96,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.type": {
+          "x": 112,
+          "y": 552,
+          "w": 16,
+          "h": 24
+        },
+        "worker.cap.up.hand": {
+          "x": 128,
           "y": 552,
           "w": 16,
           "h": 24
@@ -1505,6 +1835,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.afro.down.type": {
+          "x": 112,
+          "y": 576,
+          "w": 16,
+          "h": 24
+        },
+        "worker.afro.down.hand": {
+          "x": 128,
+          "y": 576,
+          "w": 16,
+          "h": 24
+        },
         "worker.afro.left.idle": {
           "x": 0,
           "y": 600,
@@ -1543,6 +1885,18 @@
         },
         "worker.afro.left.error": {
           "x": 96,
+          "y": 600,
+          "w": 16,
+          "h": 24
+        },
+        "worker.afro.left.type": {
+          "x": 112,
+          "y": 600,
+          "w": 16,
+          "h": 24
+        },
+        "worker.afro.left.hand": {
+          "x": 128,
           "y": 600,
           "w": 16,
           "h": 24
@@ -1589,6 +1943,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.afro.right.type": {
+          "x": 112,
+          "y": 624,
+          "w": 16,
+          "h": 24
+        },
+        "worker.afro.right.hand": {
+          "x": 128,
+          "y": 624,
+          "w": 16,
+          "h": 24
+        },
         "worker.afro.up.idle": {
           "x": 0,
           "y": 648,
@@ -1627,6 +1993,18 @@
         },
         "worker.afro.up.error": {
           "x": 96,
+          "y": 648,
+          "w": 16,
+          "h": 24
+        },
+        "worker.afro.up.type": {
+          "x": 112,
+          "y": 648,
+          "w": 16,
+          "h": 24
+        },
+        "worker.afro.up.hand": {
+          "x": 128,
           "y": 648,
           "w": 16,
           "h": 24
@@ -1673,6 +2051,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.ponytail.down.type": {
+          "x": 112,
+          "y": 672,
+          "w": 16,
+          "h": 24
+        },
+        "worker.ponytail.down.hand": {
+          "x": 128,
+          "y": 672,
+          "w": 16,
+          "h": 24
+        },
         "worker.ponytail.left.idle": {
           "x": 0,
           "y": 696,
@@ -1711,6 +2101,18 @@
         },
         "worker.ponytail.left.error": {
           "x": 96,
+          "y": 696,
+          "w": 16,
+          "h": 24
+        },
+        "worker.ponytail.left.type": {
+          "x": 112,
+          "y": 696,
+          "w": 16,
+          "h": 24
+        },
+        "worker.ponytail.left.hand": {
+          "x": 128,
           "y": 696,
           "w": 16,
           "h": 24
@@ -1757,6 +2159,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.ponytail.right.type": {
+          "x": 112,
+          "y": 720,
+          "w": 16,
+          "h": 24
+        },
+        "worker.ponytail.right.hand": {
+          "x": 128,
+          "y": 720,
+          "w": 16,
+          "h": 24
+        },
         "worker.ponytail.up.idle": {
           "x": 0,
           "y": 744,
@@ -1795,6 +2209,18 @@
         },
         "worker.ponytail.up.error": {
           "x": 96,
+          "y": 744,
+          "w": 16,
+          "h": 24
+        },
+        "worker.ponytail.up.type": {
+          "x": 112,
+          "y": 744,
+          "w": 16,
+          "h": 24
+        },
+        "worker.ponytail.up.hand": {
+          "x": 128,
           "y": 744,
           "w": 16,
           "h": 24
@@ -1841,6 +2267,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.bob.down.type": {
+          "x": 112,
+          "y": 768,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bob.down.hand": {
+          "x": 128,
+          "y": 768,
+          "w": 16,
+          "h": 24
+        },
         "worker.bob.left.idle": {
           "x": 0,
           "y": 792,
@@ -1879,6 +2317,18 @@
         },
         "worker.bob.left.error": {
           "x": 96,
+          "y": 792,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bob.left.type": {
+          "x": 112,
+          "y": 792,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bob.left.hand": {
+          "x": 128,
           "y": 792,
           "w": 16,
           "h": 24
@@ -1925,6 +2375,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.bob.right.type": {
+          "x": 112,
+          "y": 816,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bob.right.hand": {
+          "x": 128,
+          "y": 816,
+          "w": 16,
+          "h": 24
+        },
         "worker.bob.up.idle": {
           "x": 0,
           "y": 840,
@@ -1963,6 +2425,18 @@
         },
         "worker.bob.up.error": {
           "x": 96,
+          "y": 840,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bob.up.type": {
+          "x": 112,
+          "y": 840,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bob.up.hand": {
+          "x": 128,
           "y": 840,
           "w": 16,
           "h": 24
@@ -2009,6 +2483,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.bald.down.type": {
+          "x": 112,
+          "y": 864,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bald.down.hand": {
+          "x": 128,
+          "y": 864,
+          "w": 16,
+          "h": 24
+        },
         "worker.bald.left.idle": {
           "x": 0,
           "y": 888,
@@ -2047,6 +2533,18 @@
         },
         "worker.bald.left.error": {
           "x": 96,
+          "y": 888,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bald.left.type": {
+          "x": 112,
+          "y": 888,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bald.left.hand": {
+          "x": 128,
           "y": 888,
           "w": 16,
           "h": 24
@@ -2093,6 +2591,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.bald.right.type": {
+          "x": 112,
+          "y": 912,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bald.right.hand": {
+          "x": 128,
+          "y": 912,
+          "w": 16,
+          "h": 24
+        },
         "worker.bald.up.idle": {
           "x": 0,
           "y": 936,
@@ -2131,6 +2641,18 @@
         },
         "worker.bald.up.error": {
           "x": 96,
+          "y": 936,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bald.up.type": {
+          "x": 112,
+          "y": 936,
+          "w": 16,
+          "h": 24
+        },
+        "worker.bald.up.hand": {
+          "x": 128,
           "y": 936,
           "w": 16,
           "h": 24
@@ -2177,6 +2699,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.braid.down.type": {
+          "x": 112,
+          "y": 960,
+          "w": 16,
+          "h": 24
+        },
+        "worker.braid.down.hand": {
+          "x": 128,
+          "y": 960,
+          "w": 16,
+          "h": 24
+        },
         "worker.braid.left.idle": {
           "x": 0,
           "y": 984,
@@ -2215,6 +2749,18 @@
         },
         "worker.braid.left.error": {
           "x": 96,
+          "y": 984,
+          "w": 16,
+          "h": 24
+        },
+        "worker.braid.left.type": {
+          "x": 112,
+          "y": 984,
+          "w": 16,
+          "h": 24
+        },
+        "worker.braid.left.hand": {
+          "x": 128,
           "y": 984,
           "w": 16,
           "h": 24
@@ -2261,6 +2807,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.braid.right.type": {
+          "x": 112,
+          "y": 1008,
+          "w": 16,
+          "h": 24
+        },
+        "worker.braid.right.hand": {
+          "x": 128,
+          "y": 1008,
+          "w": 16,
+          "h": 24
+        },
         "worker.braid.up.idle": {
           "x": 0,
           "y": 1032,
@@ -2299,6 +2857,18 @@
         },
         "worker.braid.up.error": {
           "x": 96,
+          "y": 1032,
+          "w": 16,
+          "h": 24
+        },
+        "worker.braid.up.type": {
+          "x": 112,
+          "y": 1032,
+          "w": 16,
+          "h": 24
+        },
+        "worker.braid.up.hand": {
+          "x": 128,
           "y": 1032,
           "w": 16,
           "h": 24
@@ -2345,6 +2915,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.vest.down.type": {
+          "x": 112,
+          "y": 1056,
+          "w": 16,
+          "h": 24
+        },
+        "worker.vest.down.hand": {
+          "x": 128,
+          "y": 1056,
+          "w": 16,
+          "h": 24
+        },
         "worker.vest.left.idle": {
           "x": 0,
           "y": 1080,
@@ -2383,6 +2965,18 @@
         },
         "worker.vest.left.error": {
           "x": 96,
+          "y": 1080,
+          "w": 16,
+          "h": 24
+        },
+        "worker.vest.left.type": {
+          "x": 112,
+          "y": 1080,
+          "w": 16,
+          "h": 24
+        },
+        "worker.vest.left.hand": {
+          "x": 128,
           "y": 1080,
           "w": 16,
           "h": 24
@@ -2429,6 +3023,18 @@
           "w": 16,
           "h": 24
         },
+        "worker.vest.right.type": {
+          "x": 112,
+          "y": 1104,
+          "w": 16,
+          "h": 24
+        },
+        "worker.vest.right.hand": {
+          "x": 128,
+          "y": 1104,
+          "w": 16,
+          "h": 24
+        },
         "worker.vest.up.idle": {
           "x": 0,
           "y": 1128,
@@ -2467,6 +3073,18 @@
         },
         "worker.vest.up.error": {
           "x": 96,
+          "y": 1128,
+          "w": 16,
+          "h": 24
+        },
+        "worker.vest.up.type": {
+          "x": 112,
+          "y": 1128,
+          "w": 16,
+          "h": 24
+        },
+        "worker.vest.up.hand": {
+          "x": 128,
           "y": 1128,
           "w": 16,
           "h": 24
@@ -3317,6 +3935,172 @@
       "depthAnchor": [
         16,
         28
+      ]
+    },
+    "crt-b": {
+      "frame": "prop.crt-b",
+      "placement": "tabletop",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "crt-off": {
+      "frame": "prop.crt-off",
+      "placement": "tabletop",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "crt-error": {
+      "frame": "prop.crt-error",
+      "placement": "tabletop",
+      "footprint": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "interactionAnchors": [
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "facing": "up"
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "facing": "up"
+        }
+      ],
+      "depthAnchor": [
+        16,
+        28
+      ]
+    },
+    "mark-wait": {
+      "frame": "prop.mark-wait",
+      "placement": "overlay",
+      "footprint": [],
+      "interactionAnchors": [],
+      "depthAnchor": [
+        8,
+        15
+      ]
+    },
+    "mark-done": {
+      "frame": "prop.mark-done",
+      "placement": "overlay",
+      "footprint": [],
+      "interactionAnchors": [],
+      "depthAnchor": [
+        8,
+        15
+      ]
+    },
+    "mark-error": {
+      "frame": "prop.mark-error",
+      "placement": "overlay",
+      "footprint": [],
+      "interactionAnchors": [],
+      "depthAnchor": [
+        8,
+        15
+      ]
+    },
+    "mark-talk": {
+      "frame": "prop.mark-talk",
+      "placement": "overlay",
+      "footprint": [],
+      "interactionAnchors": [],
+      "depthAnchor": [
+        8,
+        15
       ]
     }
   }
