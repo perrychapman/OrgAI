@@ -42,6 +42,16 @@ export function frameBackground(frame: Frame, url: string): CSSProperties {
   return { width: frame.w, height: frame.h, backgroundImage: `url(${url})`, backgroundPosition: `-${frame.x}px -${frame.y}px` }
 }
 
+/** `background-position` of a frame, written by the clock (same value `frameBackground` renders). */
+export function framePosition(frame: Frame): string {
+  return `-${frame.x}px -${frame.y}px`
+}
+
+/** Top of a 16 x 24 sprite whose feet stand on anchor row `anchorY` (pixels): the single formula the render and the clock share. */
+export function spriteTop(anchorY: number): number {
+  return anchorY + 8 - WORKER_FEET[1]
+}
+
 export function workerFrameName(silhouette: string, direction: string, pose: string): string {
   return `worker.${silhouette}.${direction}.${pose}`
 }

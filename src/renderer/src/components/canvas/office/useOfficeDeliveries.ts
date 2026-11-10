@@ -23,8 +23,11 @@ export interface OfficeDeliveriesOptions {
   blocked: ReadonlySet<string>
   /** Ids of every person drawn. */
   agentIds: readonly string[]
-  /** Walks in progress that are not message walks (arrivals, S4); they share the three-walk cap. */
-  extraWalks?: number
+  /**
+   * Arrival walks in progress (S4, written by `useOfficeClock`): person id -> path in anchor cells. Read live, never at render time.
+   * They share the three-walk cap, an arriving person never starts a message walk, and a message walk never crosses an arrival path.
+   */
+  arriving?: { readonly current: ReadonlyMap<string, readonly Point[]> }
 }
 
 export interface OfficeDeliveries {
@@ -50,7 +53,7 @@ const cell = (pin: Pin): Point => ({ x: pin.x / OFFICE_TILE, y: pin.y / OFFICE_T
 const key = (p: Point): string => `${p.x},${p.y}`
 
 export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDeliveries {
-  const { messages, mode, runId, motionOff, building, blocked, agentIds, extraWalks = 0 } = options
+  const { messages, mode, runId, motionOff, building, blocked, agentIds, arriving } = options
   const [tick, setTick] = useState(Date.now())
   void tick
   const [, redraw] = useState(0)
@@ -81,11 +84,13 @@ export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDel
     maxMs: tokenMs('--office-delivery-max-duration') || DEFAULT_JOURNEY_TIMING.maxMs
   }), [])
 
-  const live = useRef({ building, blocked, ids, motionOff, mode, extraWalks, timing })
-  live.current = { building, blocked, ids, motionOff, mode, extraWalks, timing }
+  const live = useRef({ building, blocked, ids, motionOff, mode, arriving, timing })
+  live.current = { building, blocked, ids, motionOff, mode, arriving, timing }
 
   const admitJourneys = (now: number): void => {
-    const { building: b, blocked: base, ids: present, motionOff: off, mode: m, extraWalks: extra } = live.current
+    const { building: b, blocked: base, ids: present, motionOff: off, mode: m } = live.current
+    const arrivals = live.current.arriving?.current ?? new Map<string, readonly Point[]>()
+    const extra = arrivals.size
     const active = new Set(scheduler.current.active.map(d => d.message))
     for (const message of journeys.current.keys()) if (!active.has(message)) journeys.current.delete(message)
     for (const delivery of scheduler.current.active) {
@@ -96,7 +101,7 @@ export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDel
       if (!present.has(message.from) || !present.has(message.to)) continue
       const from = b.desks.get(message.from); const to = b.desks.get(message.to)
       if (!from || !to) continue
-      if (journeys.current.size + extra >= MAX_WALKS) continue
+      if (journeys.current.size + extra >= MAX_WALKS || arrivals.has(message.from)) continue
       if ([...journeys.current.keys()].some(other => [other.from, other.to].some(id => id === message.from || id === message.to))) continue
       const obstacles = new Set(base)
       const others: Point[] = []
@@ -112,7 +117,7 @@ export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDel
       if (!plan) continue
       const duration = journeyDuration(plan.path, live.current.timing)
       const pinCells = [...pinned.current.values()].map(cell)
-      if (duration === null || now - delivery.received >= 8000 || [...journeys.current.values()].some(journey => routesConflict(plan.path, journey.path)) || routesConflict(plan.path, pinCells)) continue
+      if (duration === null || now - delivery.received >= 8000 || [...journeys.current.values()].some(journey => routesConflict(plan.path, journey.path)) || [...arrivals.values()].some(path => routesConflict(plan.path, path)) || routesConflict(plan.path, pinCells)) continue
       attachWalk(delivery, now, duration, outboundDuration(plan.path, live.current.timing))
       journeys.current.set(message, { path: plan.path, started: now })
     }

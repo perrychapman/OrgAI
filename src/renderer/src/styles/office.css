@@ -63,3 +63,8 @@
 .office-sample-art { position: relative; width: 160px; height: 96px; transform: scale(2); transform-origin: top left; image-rendering: pixelated; }
 .office-sample-art i { position: absolute; image-rendering: pixelated; }
 .office-sample .office-sample-label { padding: var(--space-1) var(--space-2); color: var(--office-ink); background: var(--office-surface); border: 2px solid var(--office-border); }
+
+/* S4 clock and cues */
+/* The clock (useOfficeClock) writes frames, positions and data-office-cue straight to these elements; nothing here animates by itself. */
+.office-mark { pointer-events: none; }
+.office-person-art[data-office-motion-phase='arrive'], .office-person-art[data-office-motion-phase='sit'] { pointer-events: none; }
