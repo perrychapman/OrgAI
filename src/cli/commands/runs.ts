@@ -3,12 +3,13 @@
  * [--tail N]` (cli-spec 6.1; cli-standalone-default.md 4.3): read from the saved files, never a host. Live runs and
  * their cards exist only inside the owning `orgai`, which has the actions in its TUI. Status words come from statusText only.
  */
-import { VIRTUAL_PROJECT_LABELS, isVirtualProjectId, type Project, type RunSummary } from '../../shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, VIRTUAL_PROJECT_LABELS, isVirtualProjectId, type Project, type RunSummary } from '../../shared/types'
 import { formatDate } from '../../shared/view/dates'
 import { chainOf } from '../../shared/view/runChains'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
-import { statusText } from '../../shared/view/runStatus'
+import { autoContinueState, statusText } from '../../shared/view/runStatus'
 import { parseFlags } from '../flags'
+import { LOG_LEVEL_WORDS, filterLogs, logLine, type LogLevelFilter } from '../logText'
 import { emit, relativeTime, safeLine, styleFor, styleStatus, table, termWidth, type Json } from '../output'
 import {
   agentTreeLines,
@@ -134,8 +135,11 @@ async function runsList(ctx: CliContext, args: string[]): Promise<number> {
 }
 
 async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
-  const { values, positionals } = parseFlags(args, { transcript: { type: 'boolean' }, tail: { type: 'string' } })
-  if (positionals.length !== 1) throw new CliError('Use: orgai runs show <runId-or-R#> [--transcript] [--tail N]', EXIT.usage)
+  const { values, positionals } = parseFlags(args, { transcript: { type: 'boolean' }, tail: { type: 'string' }, logs: { type: 'boolean' }, level: { type: 'string' } })
+  if (positionals.length !== 1) throw new CliError('Use: orgai runs show <runId-or-R#> [--transcript] [--tail N] [--logs [--level warn|info|all]]', EXIT.usage)
+  if (values.level !== undefined && !values.logs) throw new CliError('--level applies with --logs.', EXIT.usage)
+  const level = (values.level ?? 'warn').toLowerCase() as LogLevelFilter
+  if (!LOG_LEVEL_WORDS.includes(level)) throw new CliError(`--level must be one of: ${LOG_LEVEL_WORDS.join(', ')}.`, EXIT.usage)
   const tail = intFlag('tail', values.tail, DEFAULT_TAIL)
   const src = await openReadSource(ctx)
   try {
@@ -179,7 +183,17 @@ async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
         waiting: false,
         record: rec
       })
-      if (rec.plan) lines.push(...planLines(rec.plan, st))
+      const auto = autoContinueState({ status: s.status, plan: rec.plan, autoContinue: project?.autoContinue, maxAutoContinues: project?.maxAutoContinues, kind: s.kind }, DEFAULT_MAX_AUTO_CONTINUES)
+      if (rec.plan) lines.push(...planLines(rec.plan, st), `  ${st.dim('Auto-continues:')} ${auto.count} of ${auto.max}${project?.autoContinue === false ? st.dim(' (off for this project)') : ''}`)
+      if (values.logs) {
+        const shown = filterLogs(rec.logs ?? [], level)
+        lines.push(st.bold(`Logs (${level === 'warn' ? 'warnings and errors' : level === 'info' ? 'info' : 'all levels'}; ${shown.length} of ${(rec.logs ?? []).length}):`))
+        if (shown.length === 0) lines.push(st.dim('  No log lines.'))
+        for (const l of shown) {
+          const line = logLine(l)
+          lines.push(`  ${l.level === 'error' ? st.red(line) : l.level === 'warn' ? st.yellow(line) : line}`)
+        }
+      }
       const tree = agentTreeLines(s, rec.agents, st, rec.staffing)
       if (tree.length > 0) lines.push(st.bold('Agents:'), ...tree)
       if (rows.total === 0) lines.push(st.dim('No transcript yet.'))

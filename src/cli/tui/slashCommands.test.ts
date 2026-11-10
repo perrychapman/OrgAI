@@ -220,3 +220,21 @@ describe('helpers', () => {
     expect(resolveDiffTarget(stateWith(), '')).toEqual({ error: 'No agent in this run has a worktree.' })
   })
 })
+
+describe('/logs', () => {
+  it('opens the run\'s warnings and errors, and everything with all', async () => {
+    const st = stateWith()
+    st.runs.r1.logs = [{ at: 1, level: 'info', message: 'fyi' }, { at: 2, level: 'warn', message: 'careful' }]
+    const { ctx } = fakeCtx(st)
+    await cmd('logs').run(ctx, '')
+    expect(ctx.openText).toHaveBeenLastCalledWith('Logs', expect.stringContaining('careful'))
+    expect((ctx.openText as ReturnType<typeof vi.fn>).mock.calls[0][1]).not.toContain('fyi')
+    await cmd('logs').run(ctx, 'all')
+    expect((ctx.openText as ReturnType<typeof vi.fn>).mock.calls[1][1]).toContain('fyi')
+    await cmd('logs').run(ctx, 'loud')
+    expect(ctx.notify).toHaveBeenCalledWith('Use /logs, /logs info or /logs all.', 'warn')
+  })
+  it('needs a followed run', () => {
+    expect(cmd('logs').available?.(stateWith({ activeRunId: undefined }))).toBe(false)
+  })
+})

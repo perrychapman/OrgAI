@@ -65,20 +65,23 @@ interface Level {
   project: boolean
   /** "N working" and "N ready": the first status segments to give way. */
   flow: boolean
+  /** The plan-window indicator ("5h 42% · 7d 18%"): the very first segment to give way. */
+  window: boolean
 }
 
 const LEVELS: readonly Level[] = [
-  { chips: 'full', cost: true, title: Infinity, project: true, flow: true },
-  { chips: 'compact', cost: true, title: Infinity, project: true, flow: false },
-  { chips: 'count', cost: true, title: Infinity, project: true, flow: false },
-  { chips: 'count', cost: false, title: Infinity, project: true, flow: false },
-  { chips: 'count', cost: false, title: 24, project: true, flow: false },
-  { chips: 'count', cost: false, title: 12, project: true, flow: false },
-  { chips: 'count', cost: false, title: 0, project: true, flow: false }
+  { chips: 'full', cost: true, title: Infinity, project: true, flow: true, window: true },
+  { chips: 'full', cost: true, title: Infinity, project: true, flow: true, window: false },
+  { chips: 'compact', cost: true, title: Infinity, project: true, flow: false, window: false },
+  { chips: 'count', cost: true, title: Infinity, project: true, flow: false, window: false },
+  { chips: 'count', cost: false, title: Infinity, project: true, flow: false, window: false },
+  { chips: 'count', cost: false, title: 24, project: true, flow: false, window: false },
+  { chips: 'count', cost: false, title: 12, project: true, flow: false, window: false },
+  { chips: 'count', cost: false, title: 0, project: true, flow: false, window: false }
 ]
 
 /** The very last resort (issue #34): only after the hint has shrunk to one item does the project name go. */
-const NO_PROJECT: Level = { chips: 'count', cost: false, title: 0, project: false, flow: false }
+const NO_PROJECT: Level = { chips: 'count', cost: false, title: 0, project: false, flow: false, window: false }
 
 /** `title` cut to `max` columns at a word boundary with an ellipsis; '' when no whole word fits. */
 function cutTitle(title: string, max: number, ellipsis: string): string {
@@ -106,6 +109,8 @@ function buildSegs(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'>, level: L
   // The root's live model (run.model): gives way together with the cost.
   if (s.rootModel && level.cost) out.push({ text: env.screenReader ? `model ${s.rootModel}` : s.rootModel, dim: true })
   if (s.costText && level.cost) out.push({ text: s.costText, dim: true })
+  if (s.autoText && level.cost) out.push({ text: s.autoText, dim: true })
+  if (s.windowText && level.window) out.push({ text: env.screenReader ? `plan usage ${s.windowText}` : s.windowText, dim: true })
   // "0 need you" means nothing before there is a project or a run (onboarding, R2-L5).
   if (!compact && (s.needsYou > 0 || s.projectName || s.runTag)) out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })
   if (!compact && level.flow) {

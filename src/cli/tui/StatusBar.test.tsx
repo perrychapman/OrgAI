@@ -38,6 +38,14 @@ describe('StatusBar', () => {
     expect(f).toBe('Shop · R2 Fix checkout · Needs you · $0.42 · 2 need you · 1 live   Tab focus  / commands')
   })
 
+  it('shows the auto-continue count and the plan windows, and the windows give way first', () => {
+    const summary = { ...SUMMARY, autoText: 'auto 3/40', windowText: '5h 42% · 7d 18%' }
+    expect(frame({ summary, width: 140 })).toContain('$0.42 · auto 3/40 · 5h 42% · 7d 18% · 2 need you')
+    const narrow = frame({ summary, width: 100 })
+    expect(narrow).not.toContain('5h 42%')
+    expect(narrow).toContain('auto 3/40')
+  })
+
   it('shows the launch title first (orgai init, the assistants)', () => {
     expect(frame({ summary: { ...SUMMARY, title: 'Architect setup' } })).toMatch(/^Architect setup · Shop · R2/)
   })

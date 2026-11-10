@@ -156,6 +156,47 @@ describe('exec flags', () => {
   })
 })
 
+describe('orgai exec / resume: --image', () => {
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
+  it('reads each --image and passes it as images; a bad file is a usage error naming it before any host call', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-exec-img-'))
+    try {
+      writeFileSync(join(dir, 'a.png'), PNG)
+      writeFileSync(join(dir, 'b.png'), PNG)
+      writeFileSync(join(dir, 'bad.png'), 'nope')
+      const h = execHost({ answers: { 'runs:subscribe': () => snapshotOf(record(finalSummary('completed'))) } })
+      const f = live({ connect: [h] })
+      expect(await runExec(f.ctx, ['--image', join(dir, 'a.png'), '--image', join(dir, 'b.png'), 'look'])).toBe(EXIT.ok)
+      const sent = (h.callsOf('runs:start')[0] as [{ images: { mediaType: string; name: string }[] }])[0].images
+      expect(sent.map((i) => [i.mediaType, i.name])).toEqual([['image/png', 'a.png'], ['image/png', 'b.png']])
+      const g = live({ connect: [] })
+      await expect(runExec(g.ctx, ['--image', join(dir, 'bad.png'), 'look'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--image ' + join(dir, 'bad.png')) })
+      expect(g.connectCalls).toEqual([])
+      // resume: --image is an exec-side flag, like --max-budget.
+      await expect(runResume(g.ctx, ['R1', '--image', join(dir, 'a.png')])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--image needs --exec') })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('resume --exec passes images to runs:continue', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-resume-img-'))
+    try {
+      writeFileSync(join(dir, 'a.png'), PNG)
+      const old = summary('run_old001', { startedAt: 50, status: 'finished', execOutcome: 'completed' })
+      const h = execHost({ answers: { 'runs:list': () => [old], 'runs:continue': () => started({ resumedFrom: 'run_old001' }) } })
+      const f = live({ connect: [h] })
+      const done = runResume(f.ctx, ['R1', '--exec', '--prompt', 'more', '--image', join(dir, 'a.png')])
+      await subscribed(h)
+      expect((h.callsOf('runs:continue')[0] as [{ images: unknown[] }])[0].images).toHaveLength(1)
+      h.push('runs:event', finalized(11, 'completed'))
+      expect(await done).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('orgai exec: prompt and project', () => {
   it('reads the prompt from stdin for "-" and when no positional is given with a non-TTY stdin', async () => {
     for (const argv of [['-'], []]) {

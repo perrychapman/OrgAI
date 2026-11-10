@@ -12,6 +12,7 @@ import {
   partialRows,
   planView,
   statusSummary,
+  windowText,
   topCard,
   transcriptRows,
   trayCards,
@@ -270,6 +271,17 @@ describe('planView and worktreeRows', () => {
       { agentId: 'w', runId: 'r1', label: 'w-1', branch: 'br', status: 'ready', changedFiles: 2, mergeTarget: 'main', reviewId: 'mr1' },
       { agentId: 'v', runId: 'r1', label: 'Worker', branch: 'br2', status: 'active', changedFiles: 0, mergeTarget: 'parent' }
     ])
+  })
+})
+
+describe('statusSummary: plan windows and auto-continues', () => {
+  it('formats the 5-hour and 7-day windows and the followed run\'s auto-continue count', () => {
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'running' })]), { activeRunId: 'r1' })
+    s = { ...s, planUsage: { authMode: 'subscription', subscriptionType: 'max', available: true, windows: { fiveHour: { utilization: 41.6, resetsAt: null }, sevenDay: { utilization: 18, resetsAt: null } } } as never }
+    s = { ...s, runs: { ...s.runs, r1: { ...s.runs.r1, plan: { goal: 'g', steps: [], status: 'active', autoContinues: 3, updatedAt: 1 } } } }
+    expect(statusSummary(s)).toMatchObject({ windowText: '5h 42% · 7d 18%', autoText: 'auto 3/40' })
+    expect(windowText({ authMode: 'apiKey', subscriptionType: null, available: false, windows: {} } as never)).toBeUndefined()
   })
 })
 

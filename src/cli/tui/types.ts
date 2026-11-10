@@ -58,6 +58,7 @@ import type {
   RpcHelloResult,
   RunPlan,
   RunStaffing,
+  UsageStatus,
   RunStatus,
   RunSummary,
   RunTeam,
@@ -92,6 +93,8 @@ export const CARD_SWAP_GUARD_MS = 750
 export const TUI_TRANSCRIPT_MAX = 5000
 /** Notices kept in state. */
 export const TUI_NOTICE_MAX = 20
+/** Log lines kept per run for /logs. */
+export const TUI_LOGS_MAX = 1000
 /** Resolved-card infos kept (for "Resolved by ..."). */
 export const TUI_RESOLVED_MAX = 50
 /** Agent-to-agent messages kept per run (counts only, never the text). */
@@ -366,6 +369,10 @@ export interface StatusSummary {
   /** Agents working now and steps ready to start; only set (above zero) for runs with staffing data or a graph plan. */
   working?: number
   readySteps?: number
+  /** Auto-continues used and the cap ("auto 3/40"), while the followed run has a plan. */
+  autoText?: string
+  /** Plan windows, "5h 42% · 7d 18%"; the first thing to give way when narrow. */
+  windowText?: string
   /** Live runs of the project as chips (R1* R2!), oldest first. */
   runChips?: RunChip[]
   hostKind?: HostKind
@@ -449,6 +456,8 @@ export interface TuiRun {
   recordLoaded: boolean
   /** Newest TUI_MESSAGES_MAX agent.message events (TUI-local). */
   messages?: RunMessageRec[]
+  /** The run's harness log, every level, newest TUI_LOGS_MAX (record logs plus `log` events); /logs reads it. */
+  logs?: { at: number; level: 'info' | 'warn' | 'error'; message: string }[]
 }
 
 export interface TuiNotice {
@@ -479,6 +488,8 @@ export interface TuiState {
   resolved: ResolvedCardInfo[]
   cardSeq: number
   lastSeq?: number
+  /** The newest plan-window report (usage.status): the status bar's 5-hour and 7-day figures. */
+  planUsage?: UsageStatus
 }
 
 // ---------- Session ----------
