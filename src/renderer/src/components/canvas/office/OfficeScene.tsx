@@ -7,7 +7,9 @@ import { assignAppearances } from '../../../lib/office/layout'
 import { furnishBuilding } from '../../../lib/office/themes'
 import { Button } from '../../ui/Button'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
-import { OfficeBubbles } from './OfficeBubbles'
+import { recentMessages } from '../../../lib/office/messageCursor'
+import { activeBubbles } from '../../../lib/office/scheduler'
+import { applyBubbleTiming, bubbleKey, bubbleTiming, exchangeParticipants, OfficeBubbles, useDeliveryBoundaries, type OfficeBubble } from './OfficeBubbles'
 import { OfficeBuilding, OfficeRoomLabels, TABLETOP_PROPS } from './OfficeBuilding'
 import { OfficeDirectory } from './OfficeDirectory'
 import { OfficeSprites, type SpriteRefs } from './OfficeSprites'
@@ -69,6 +71,10 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     describe: id => { const agent = byId.get(id); return agent ? `Showing ${agent.name}, ${rooms.get(id) ?? ''}` : null }, announce
   })
   const deliveries = useOfficeDeliveries({ messages, mode, runId, motionOff, building, blocked, agentIds: order.map(agent => agent.id) })
+  // S5b: bubbles and the exchange pair come from the same deliveries; readable time from the tokens.
+  const bubbleTimings = useMemo(bubbleTiming, [])
+  applyBubbleTiming(deliveries.deliveries, bubbleTimings)
+  useDeliveryBoundaries(deliveries.deliveries, motionOff, deliveries.now)
   const people = buildPersonViews({
     order, building, deskSets: furnished.deskSets, mugs, appearances: appearances.current, mode, walkers: deliveries.walkers, pinned: deliveries.pinned, rendered: deliveries.rendered
   })
@@ -92,6 +98,9 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const offset = mapOffset({ area, zoom, client })
   const names = new Map(agents.map(agent => [agent.id, agent.name]))
   const positionsNow = new Map(people.map(person => [person.id, { x: person.x, y: person.y }]))
+  const bubbles: OfficeBubble[] = activeBubbles({ ...deliveries.scheduler, active: [...deliveries.deliveries] }, deliveries.now)
+    .map(delivery => ({ id: bubbleKey(delivery), to: delivery.message.to!, from: delivery.message.from, sender: names.get(delivery.message.from) ?? delivery.message.from, text: delivery.message.text }))
+  const exchangeIds = exchangeParticipants(deliveries.deliveries, deliveries.now)
   return <section
     className="office-scene" onFocusCapture={deliveries.onFocusCapture}
     style={{ '--office-label-width': `${Math.max(96, 4 * OFFICE_TILE_PX * zoom - 4)}px` } as CSSProperties}
@@ -114,15 +123,15 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
           <OfficeBuilding building={building} tiles={furnished.tiles} props={staticProps} palette={palette} zoom={zoom} area={area} />
           <OfficeRoomLabels building={building} area={area} zoom={zoom} />
           <OfficeSprites
-            people={people} area={area} zoom={zoom} palette={palette} paused={paused} selectedId={selectedId} foundId={camera.foundId}
+            people={people} area={area} zoom={zoom} palette={palette} paused={paused} selectedId={selectedId} foundId={camera.foundId} exchangeIds={exchangeIds}
             spriteRefs={spriteRefs} onSelect={selectId} onRemove={onRemove ? removeId : undefined} onReveal={revealId}
           />
-          <OfficeBubbles bubbles={[]} positions={positionsNow} zoom={zoom} />
+          <OfficeBubbles bubbles={bubbles} positions={positionsNow} zoom={zoom} area={area} size={content} spriteRefs={spriteRefs} />
         </div>
       </div>
     </div>
     <OfficeStrip
-      mode={mode} motionOff={motionOff} names={names} deliveries={deliveries.deliveries}
+      mode={mode} motionOff={motionOff} names={names} messages={recentMessages(messages, 3)}
       active={deliveries.scheduler.active.length} queued={deliveries.scheduler.queued.length} onShow={showPerson}
     />
     {!agents.length && <p className="office-empty">The office is ready. People appear here when your team starts work.</p>}
