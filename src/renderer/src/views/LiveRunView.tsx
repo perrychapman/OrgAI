@@ -21,7 +21,7 @@ import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
 import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, beginCanvasGlide, breatheIndex, edgeStroke, fitMs, groupNodeSize, handlesFor, reportingLineRole, ringStepFor, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
 import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
 import { isWorkingAgent } from '../lib/agentActivity'
-import type { AgentInstance, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
+import type { AgentInstance, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind, RunSummary } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
 import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
@@ -67,6 +67,11 @@ import RunTabs from '../components/RunTabs'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
 import { LiveModelSwitch } from '../components/LiveModelSwitch'
+import { RunSettingsRow } from '../components/runSettings/RunSettingsRow'
+import { EffortReadOnly } from '../components/runSettings/EffortControl'
+import { GoalReadOnly } from '../components/runSettings/GoalControl'
+import { LivePermissionMode } from '../components/runSettings/LivePermissionMode'
+import { liveEffort, liveGoal } from '../lib/runSettings'
 import { formatUntil, layoutCanvas } from '../lib/layout'
 import { agentLabel, normalizeParents } from '../lib/agentTree'
 
@@ -688,6 +693,28 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           : 'Your reply'
       : (endedCopy?.placeholder ?? '')
 
+  // The live run settings row (docs/design/ux-review-run-start-pre.md): Model, Effort, Permission, Goal in the composer.
+  // A main-owned change (model switch, permission mode) comes back as a RunSummary and no event, so it goes into the store here.
+  const onLiveRunChanged = (summary: RunSummary): void => {
+    if (summary.id !== runId) {
+      void openRun(summary.id).then(() => focusComposer())
+      return
+    }
+    useAppStore.setState((state) => {
+      const current = state.runs[summary.id]
+      return current ? { runs: { ...state.runs, [summary.id]: { ...current, summary } } } : {}
+    })
+  }
+  const liveGoalShown = liveGoal(run.summary, project)
+  const liveRow = (modelOnly: boolean): ReactElement => (
+    <RunSettingsRow surface="live">
+      <LiveModelSwitch key={runId} inRow run={run.summary} onRunChanged={onLiveRunChanged} />
+      {!modelOnly && run.summary.kind === 'work' && <EffortReadOnly effort={liveEffort(run.summary, project)} />}
+      {!modelOnly && sendMode !== 'new' && <LivePermissionMode key={runId} run={run.summary} project={project} onRunChanged={onLiveRunChanged} />}
+      {!modelOnly && liveGoalShown && <GoalReadOnly goal={liveGoalShown} />}
+    </RunSettingsRow>
+  )
+
   // Install approval cards: open ones first (one expanded, the rest collapsed), answered ones until dismissed.
   const openInstalls = run.mcpInstalls ?? []
   const resolvedInstalls = Object.values(run.mcpResolved ?? {}).filter((r) => !dismissedInstalls[r.request.id])
@@ -1168,22 +1195,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </CanvasFrame>
 
         <div className="live-composer-region">
-        {!successor && (
-          <LiveModelSwitch
-            key={runId}
-            run={run.summary}
-            onRunChanged={(summary) => {
-              if (summary.id !== runId) {
-                void openRun(summary.id).then(() => focusComposer())
-                return
-              }
-              useAppStore.setState((state) => {
-                const current = state.runs[summary.id]
-                return current ? { runs: { ...state.runs, [summary.id]: { ...current, summary } } } : {}
-              })
-            }}
-          />
-        )}
+        {/* One stable position for every branch below: a model switch in flight ends the session, which can swap the composer
+            for the ended notice, and moving the picker would cancel the switch (e2e/model-switch.mjs). */}
+        {!successor && <div className="live-composer-bar" data-testid="live-settings-bar">{liveRow(!!virtualId && sendMode === 'new')}</div>}
         {successor && newestRun && newestRun.id !== runId ? (
           <div className="composer composer-ended" data-testid="composer-superseded">
             <div className="composer-notice info">

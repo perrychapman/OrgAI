@@ -7,6 +7,12 @@
   overflow: auto;
 }
 
+/* The live run settings row: one bar at the top of the composer region, in front of the composer in Tab order, and the same
+   bar whether the composer or an ended notice follows (the model picker must not remount mid-switch). */
+.live-composer-bar { min-width: 0; padding: var(--space-1h) var(--space-3) 0; background: var(--surface-1); border-top: 1px solid var(--border-default); }
+.live-composer-bar + .composer { border-top: 0; padding-top: var(--space-1); }
+.run-body.run-body[data-layout='conversation'] > .live-composer-region > .live-composer-bar > .run-settings-row { max-width: 90ch; margin-inline: auto; }
+
 .live-model-switch { display: flex; justify-content: flex-end; min-width: 0; padding: var(--space-1) var(--space-3); color: var(--text-secondary); background: var(--surface-1); }
 .live-model-switch > .popover-wrap { min-width: 0; max-width: 100%; }
 .live-model-switch__trigger { max-width: 30ch; }

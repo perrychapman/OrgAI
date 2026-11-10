@@ -334,6 +334,54 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
 
 - Run staffing controls (`docs/design/orchestration-efficiency.md` 4.7; not driven in the app, unit-tested only): `lib/roleStaffing.ts` (pure) is the one place for the copy and the writes; effective values come from `effectiveRoleStaffing`, `staffingModeOf`, `staffingGoalOf`, `reviewPolicyOf`, nothing is re-derived. Role editor: `components/team/RoleStaffingControls.tsx` under the Model picker in the Model fold (`role-staffing`, `data-kind` root | exact | editable, `role-staffing-line`, `-note`, `-explain`, `role-staffing-mode`, `-min-tier`, `-max-effort`); the mode select's "Follow the project" clears `Role.staffing`, "Always" keeps no bounds, a floor or cap makes the role explicitly automatic; the root and exact-model roles get a line and a sentence but no controls. Project settings: `components/settings/StaffingSettings.tsx` is a "Run staffing" group inside the Limits pane's Advanced settings (it was a section at rest until the 2026-11-10 gate: `e2e/permissions.mjs` allows the pane two tab stops at rest) (`project-staffing`, `project-staffing-goal`, `project-review-policy`, segmented controls); choosing the default writes `undefined`. Import dialog: `import-spend` hint under Model, from the previewed `preview.roles` entry. Kit preview: `kit-role-spend` appears only when a `KitPreviewRole` carries `model` (it does not yet; `KitPreviewRole` has no model, effort or staffing, and `src/shared/types.ts` plus `main/kit/format.ts` `parseTemplate` must add them).
 
-## Run goal control (New run page)
+## Run settings row: Model, Effort, Permission, Goal (2026-11-10)
 
-`NewRunPage` shows a Balanced / Speed / Cost segmented control (`data-testid="new-run-goal"`, help line `new-run-goal-help`) for team runs of automatic-staffing projects only (`lib/runGoal.ts`). It defaults to the project's goal and `startRun` sends `overrides.goal` only when the user picked a different one. Checked by unit tests only; not run in the app.
+Spec: `docs/design/ux-review-run-start-pre.md` (H1-H3, M1-M8). Contract: `StartRunInput.modelSelection` / `effort` /
+`permissionMode`, `RunSummary.rootEffort` / `permissionMode` / `permissionModeChosen` / `sessionPermissionMode`,
+`runs:setPermissionMode` and the `run.permissionMode` event (src/shared/types.ts).
+
+- Pure rules: `lib/runSettings.ts` (+ test). Defaults are what main would run anyway (`defaultRunModel`: Team = root role
+  model on the project connection, Ask = `AppSettings.quickRunModel` through the tier mapping; `defaultRunEffort`: root
+  role effort, none for Ask). `startChoicesToSend` sends only what differs, and never an effort the model's adapter does
+  not take (`fitEffort` clamps down, the UI says so in `run-effort-fallback`). Narrowing/widening mirrors main's
+  `canNarrowPermissionMode` (a parity test loads main's module by path). `permissionModeEventPatch` /
+  `applyPermissionModePatch` read the `run.permissionMode` snapshot structurally (useAppStore replaces all three fields);
+  `modeInForce` / `modeInForceLabel` show a card's accept-edits grant ("· edits accepted this session") without changing
+  the run's own mode. `livePermissionOutcome` always shows main's reason and the running-reports count, applied or not.
+- Components: `components/runSettings/` (`RunSettingsRow` group `run-settings[data-surface=start|live]`,
+  `ModelPickerList` + `useModelCatalog` shared with `LiveModelSwitch`, `StartModelControl`, `EffortControl` /
+  `EffortReadOnly`, `PermissionModeControl`, `LivePermissionMode`, `GoalControl` / `GoalReadOnly`), styles
+  `styles/run-settings.css`. Every chip is one Tab stop with a Popover; `data-default`, and `data-tone=warning` plus a
+  ShieldAlert icon for permissive modes (auto, acceptEdits, bypass).
+- Effort is a native radio `SegmentedControl` ordered least to most inside a popover (the "slider": arrow keys step,
+  every level named; a native range would hide the names). Live it is read-only: the contract has no mid-run effort.
+- Permission: the picker stages a choice and "Use this mode" applies it, because native radios fire change while arrow
+  keys pass over options (applying on change would open the bypass confirm on the way). A widening (`isWideningMode`)
+  goes through `ConfirmDialog` (`run-permission-confirm`, danger for bypass, cancel "Keep current mode"); narrowing
+  applies at once. Live outcomes: `run-permission-note` (visible, `data-tone` ok | saved | refused) plus sr-only
+  `run-permission-status`; thrown refusals in `run-permission-error`. A refusal while the run is replying offers
+  `run-permission-interrupt` ("Interrupt and change": one interrupt, bounded wait for idle, one retry; blocked by open
+  decisions or active reports like the model switch). Ended runs read "Permission: Next message: <mode>" and show the
+  mode the continuation will carry. Open permission cards are never touched. The control is hidden on setup-like and
+  assistant runs (`runPermissionModeChoices` empty); Chat shows only modes its adapter keeps.
+- Choices are per run: never written to the project, not remembered across starts; they survive a refused start
+  (Composer keeps the draft, `composer-error` shows main's text without the IPC prefix) and reset after a successful one.
+- Live row placement: a fixed bar at the top of `.live-composer-region` (`live-settings-bar`), not inside Composer's
+  `settings` slot: the slot remounts `LiveModelSwitch` when an ended assistant swaps the composer, which cancels a model
+  handoff in flight (`e2e/model-switch.mjs` caught it). Visual order is therefore chips, then "Replying to X".
+- RunMeta: `run-meta-permission[data-mode]` for every work-run mode except plain "Ask for everything risky" (auto keeps
+  `run-meta-unattended`), "(this run)" when chosen, and the session grant.
+- New run page fixes: Goal is a labelled chip ("Optimise for": Balanced / Faster / Cheaper), placeholder no longer
+  repeats the hint, Ask's duplicate line is gone, one-sentence lead, composer widened to 768 px (shared `.new-run-inner`,
+  so the Chat and instruction start pages widened too), role chips capped at 5 plus `new-run-more-roles`, label always
+  "New run" / "Ask one assistant", setup pending shows `new-run-skip-setup` "Start without setup" (secondary) and no
+  settings row, focus lands in the live composer textarea after Start.
+- `ui/Popover` places itself again when its content resizes (a ResizeObserver while open): the start model picker grew
+  past the window after its catalog loaded.
+- Checked: typecheck, renderer unit tests (runSettings 27 tests, runGoal), build, `e2e/run-start.mjs` (start page, refusal
+  with a real main refusal, widening confirm/cancel, saved-for-next-message, keyboard order and Escape, both themes and
+  sizes), model-switch, runs, layout, permissions, assistants, engagement2. Pending the merged tree with the adapter's mock:
+  run-start sections 5, 6 and 8 (applied mid-run change, `[mock:mode-refuse]`, `[mock:mode-reports-unchanged]`).
+  Unverified: real Codex effort fallback and Codex turn-boundary refusal, multi-connection pickers, screen-reader speech,
+  reduced motion and forced colours, 320 px reflow. Open: opening a chip popover with Enter leaves focus on the chip
+  (shared Popover; the model picker focuses its search itself), logged as a NOTE by run-start.

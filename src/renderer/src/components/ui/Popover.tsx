@@ -117,6 +117,16 @@ export function Popover({
     if (open) place()
   }, [open, opening, place])
 
+  // Content that grows after the first placement (a list that finishes loading) is placed again, so the panel never
+  // runs past the window edge.
+  useEffect(() => {
+    const p = panelRef.current
+    if (!open || !p || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => place())
+    ro.observe(p)
+    return () => ro.disconnect()
+  }, [open, place])
+
   // Focus moves in once the panel is placed (it is visibility:hidden, hence unfocusable, until then).
   useEffect(() => {
     const el = panelRef.current

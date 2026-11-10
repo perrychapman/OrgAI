@@ -10,6 +10,7 @@ import { IconButton } from './ui/IconButton'
 import { Banner } from './ui/Banner'
 import { Icon } from './ui/Icon'
 import { composerPlaceholder } from '../lib/assistants'
+import { cleanIpcError } from '../lib/ipcError'
 
 const HINT = 'Enter to send · Shift+Enter for a new line · paste or drop images'
 
@@ -22,6 +23,12 @@ interface Props {
   placeholder: string
   /** Segmented control or other mode switch shown beside the mode label. */
   modeSwitch?: ReactNode
+  /** The run settings row: its own row between the label row and the field. */
+  settings?: ReactNode
+  /** Look of the primary button ("secondary" for a start that skips a recommended step). Default primary. */
+  primaryVariant?: 'primary' | 'secondary'
+  /** Use `placeholder` as written, without the appended keyboard hint (the hint line already says it). */
+  plainPlaceholder?: boolean
   /** Notices above the field (continued-by link, blocked session). */
   notices?: ReactNode
   /** Take focus on mount. */
@@ -38,7 +45,8 @@ interface Props {
  * The message box shared by the run page and the New run page. Its text and images live in the store under
  * `draftKey`, so a half-typed task survives switching tabs, runs and projects and never lands in the wrong run.
  */
-export default function Composer({ draftKey, modeLabel, primaryLabel, placeholder, modeSwitch, notices, autoFocus, focusToken, onSubmit, onFail }: Props): ReactElement {
+export default function Composer({ draftKey, modeLabel, primaryLabel, placeholder, modeSwitch, settings, primaryVariant = 'primary', plainPlaceholder, notices, autoFocus, focusToken, onSubmit, onFail }: Props): ReactElement {
+  const fieldPlaceholder = plainPlaceholder ? placeholder : composerPlaceholder(placeholder)
   const draft = useAppStore((s) => s.composerDrafts[draftKey])
   const setDraft = useAppStore((s) => s.setComposerDraft)
   const text = draft?.text ?? ''
@@ -94,7 +102,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
       // Keep the draft and attachments so nothing is lost on failure.
       const now = useAppStore.getState().composerDrafts[draftKey]
       setDraft(draftKey, { text: now?.text || sentText, images: now && now.images.length > 0 ? now.images : sending })
-      if (!onFail?.(err)) setNotice({ text: err instanceof Error ? err.message : 'Could not send the message.', tone: 'danger' })
+      if (!onFail?.(err)) setNotice({ text: cleanIpcError(err, 'Could not send the message.'), tone: 'danger' })
     } finally {
       setBusy(false)
     }
@@ -131,9 +139,10 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             <span className="composer-hint-text">{HINT}</span>
           </span>
         </div>
+        {settings && <div className="composer-settings">{settings}</div>}
         {notices && <div className={`composer-notices${noticesAbsentBefore.current ? ' motion-enter' : ''}`}>{notices}</div>}
         {notice && (
-          <Banner tone={notice.tone} onDismiss={() => setNotice(null)}>
+          <Banner tone={notice.tone} testId="composer-error" onDismiss={() => setNotice(null)}>
             {notice.text}
           </Banner>
         )}
@@ -160,7 +169,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
           <textarea
             ref={ref}
             className="textarea"
-            aria-label={composerPlaceholder(placeholder)}
+            aria-label={fieldPlaceholder}
             aria-describedby={`${labelId} ${hintId}`}
             value={text}
             onChange={(e) => setDraft(draftKey, { text: e.target.value, images })}
@@ -179,11 +188,11 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
                 void submit()
               }
             }}
-            placeholder={composerPlaceholder(placeholder)}
+            placeholder={fieldPlaceholder}
             rows={2}
           />
           <span ref={sendRef}>
-            <Button variant="primary" disabled={!canSend} title={canSend ? undefined : `Type a message to enable ${primaryLabel}`} onClick={() => void submit()}>
+            <Button variant={primaryVariant} disabled={!canSend} title={canSend ? undefined : `Type a message to enable ${primaryLabel}`} onClick={() => void submit()}>
               {primaryLabel}
             </Button>
             <span id={reasonId} className="sr-only">

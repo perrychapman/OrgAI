@@ -1,27 +1,32 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import type { ConnectionId, ConnectionInfo, ProviderModel, RunSummary } from '@shared/types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
+import type { ConnectionId, RunSummary } from '@shared/types'
 import { Button } from './ui/Button'
+import { Icon } from './ui/Icon'
 import { Popover } from './ui/Popover'
 import { useConfirm } from './ui/ConfirmDialog'
+import { ModelPickerList, focusSearchWhenOpen, useModelCatalog } from './runSettings/ModelPickerList'
 import { connectionLabel } from '../lib/connectionLabel'
 import { useAppStore } from '../store/useAppStore'
-import { filterLiveModels, liveModelLabel, modelKey, modelSessionEnded, needsModelHandoff, performModelSwitch } from '../lib/liveModelSwitch'
+import { LIVE_MODEL_HELP_ASSISTANT, LIVE_MODEL_HELP_TEAM } from '../lib/runSettings'
+import { liveModelLabel, modelKey, modelSessionEnded, needsModelHandoff, performModelSwitch } from '../lib/liveModelSwitch'
 import '../styles/live-model-switch.css'
+import '../styles/run-settings.css'
 
-export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunChanged: (run: RunSummary) => void }): ReactElement {
-  const id = useId()
+/**
+ * The live run's model picker. `className` adds a class to the wrapper; `inRow` drops the standalone bar padding and
+ * background so the chip can sit inside a RunSettingsRow.
+ */
+export function LiveModelSwitch({ run, onRunChanged, className, inRow }: { run: RunSummary; onRunChanged: (run: RunSummary) => void; className?: string; inRow?: boolean }): ReactElement {
   const [open, setOpen] = useState(false)
-  const [connections, setConnections] = useState<ConnectionInfo[]>([])
-  const [models, setModels] = useState<ProviderModel[]>([])
-  const [loading, setLoading] = useState(false)
-  const [catalogError, setCatalogError] = useState('')
+  const catalog = useModelCatalog(open)
+  const { models, loading } = catalog
   const [error, setError] = useState('')
   const [announcement, setAnnouncement] = useState('')
   const [query, setQuery] = useState('')
   const [choice, setChoice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [reload, setReload] = useState(0)
   const [requiresHandoff, setRequiresHandoff] = useState(false)
   const epoch = useRef(0)
   const region = useRef<HTMLSpanElement>(null)
@@ -31,10 +36,7 @@ export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunC
     if (!node) return
     const operation = epoch.current
     // Presence mounts children after the native toggle and positioning pass.
-    const frame = requestAnimationFrame(() => {
-      if (epoch.current === operation && node.isConnected && node.closest(':popover-open')) node.focus()
-    })
-    return () => cancelAnimationFrame(frame)
+    return focusSearchWhenOpen(node, () => epoch.current === operation)
   }, [])
   useEffect(() => () => { epoch.current++ }, [])
   const { confirm, dialog } = useConfirm()
@@ -47,30 +49,10 @@ export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunC
   const currentModel = (cachedModels ?? models).find((model) => model.id === applied?.model && model.connection === applied.connection)
   const current = applied ? `${currentModel?.label || applied.model} · ${name(applied.connection)}` : 'Current model unavailable'
   const nextMessage = modelSessionEnded(run)
+  // Only a team run has other roles that could follow the lead's model.
+  const teamRun = run.kind === 'work' && !run.quick && run.team !== 'single'
   const handoff = !!selected && !nextMessage && (requiresHandoff || needsModelHandoff(run, selected))
   const unchanged = !!selected && selected.id === applied?.model && selected.connection === applied.connection
-  const available = filterLiveModels(models, query, name)
-  const groups = [...new Set(available.map((model) => model.connection))]
-
-  useEffect(() => {
-    if (!open) return
-    let active = true
-    setLoading(true)
-    setModels([])
-    setConnections([])
-    setCatalogError('')
-    void window.orgai.connections.list().then(async (list) => {
-      if (!active) return
-      setConnections(list)
-      const connected = list.filter((item) => item.status.state === 'connected')
-      const results = await Promise.allSettled(connected.map((item) => window.orgai.models.list({ connection: item.connection.id })))
-      if (!active) return
-      setModels(results.flatMap((result) => result.status === 'fulfilled' ? result.value : []))
-      const failed = results.flatMap((result, index) => result.status === 'rejected' ? [name(connected[index].connection.id)] : [])
-      if (failed.length) setCatalogError(`Could not load models from ${failed.join(', ')}. Retry loading to see those models.`)
-    }).catch((e: unknown) => { if (active) setCatalogError(`Could not load connections: ${message(e)}`) }).finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [open, reload])
 
   const apply = async (close: () => void): Promise<void> => {
     if (!selected || busy) return
@@ -124,30 +106,18 @@ export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunC
     } finally { setBusy(false) }
   }
 
-  return <span ref={region} className="live-model-switch" data-testid="live-model-switch" aria-busy={busy}>
+  return <span ref={region} className={`live-model-switch${inRow ? ' live-model-switch--in-row' : ''}${className ? ` ${className}` : ''}`} data-testid="live-model-switch" aria-busy={busy}>
     <Popover placement="top-start" label="Choose conversation model" triggerTestId="live-model-change" testId="live-model-picker" className="live-model-switch__picker"
-      triggerClassName="btn ghost sm live-model-switch__trigger" triggerTitle={applied ? liveModelLabel(applied.model, applied.connection) : current}
+      triggerClassName="run-chip live-model-switch__trigger" triggerTitle={applied ? liveModelLabel(applied.model, applied.connection) : current}
       triggerLabel={`${busy ? 'Changing model. ' : ''}Conversation model: ${nextMessage ? 'Next message: ' : ''}${current}${applied ? ` (${applied.model})` : ''}`}
-      trigger={<span data-testid="live-model-current">{busy ? 'Changing model…' : <>{nextMessage && 'Next message: '}{current}</>}</span>}
-      onOpenChange={(value) => { if (!value && !confirming.current) epoch.current++; setOpen(value); if (value) { setReload((n) => n + 1); if (reopening.current) { reopening.current = false; return }; setQuery(''); setChoice(applied ? modelKey(applied.connection, applied.model) : ''); setError(''); setRequiresHandoff(false) } }}>
+      trigger={<><span className="run-chip__label">Model:</span><span className="run-chip__value" data-testid="live-model-current">{busy ? 'Changing model…' : <>{nextMessage && 'Next message: '}{current}</>}</span><Icon icon={ChevronDown} size="xs" /></>}
+      onOpenChange={(value) => { if (!value && !confirming.current) epoch.current++; setOpen(value); if (value) { if (reopening.current) { reopening.current = false; return }; setQuery(''); setChoice(applied ? modelKey(applied.connection, applied.model) : ''); setError(''); setRequiresHandoff(false) } }}>
       {({ close }) => <>
-        <label htmlFor={`${id}-search`}>Search models</label>
-        <input ref={focusSearch} id={`${id}-search`} className="input" type="search" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() } }} data-testid="live-model-search" />
-        <p className="live-model-switch__current">Current: {current}{applied && !loading && !connections.some((item) => item.connection.id === applied.connection && item.status.state === 'connected') ? ' (connection unavailable)' : applied && !loading && !models.some((model) => model.id === applied.model && model.connection === applied.connection) ? ' (not in the available catalog)' : ''}</p>
-        <div className="live-model-switch__list" data-testid="live-model-list" aria-busy={loading}>
-          {loading ? <p>Loading models…</p> : groups.map((connection) => <fieldset key={connection}>
-            <legend>{name(connection)} <span className="live-model-switch__id">{connection}</span></legend>
-            {available.filter((model) => model.connection === connection).map((model) => <label className="live-model-switch__option" key={modelKey(connection, model.id)}>
-              <input type="radio" name={`${id}-model`} value={model.id} checked={choice === modelKey(connection, model.id)} disabled={busy} data-testid="live-model-choice" data-connection={connection} data-adapter={model.adapter} onChange={() => { setChoice(modelKey(connection, model.id)); setError(''); setRequiresHandoff(false) }} />
-              <span><span>{model.label || model.id}{applied?.model === model.id && applied.connection === connection ? ' · Current' : ''}</span>{model.label && model.label !== model.id && <span className="live-model-switch__id">{model.id}</span>}</span>
-            </label>)}
-          </fieldset>)}
-          {!loading && !available.length && <p>{query ? 'No models match your search.' : connections.some((item) => item.status.state === 'connected') ? 'No models available on connected connections.' : 'No connection is connected. Connect one in App settings, then retry loading.'}</p>}
-        </div>
-        {catalogError && <p className="live-model-switch__error">{catalogError}</p>}
-        {(catalogError || (!loading && !models.length)) && <Button size="sm" disabled={busy || loading} onClick={() => setReload((n) => n + 1)}>Retry loading</Button>}
+        <ModelPickerList testIdPrefix="live-model" catalog={catalog} query={query} onQuery={setQuery} choice={choice} disabled={busy} searchRef={focusSearch} onEscape={close}
+          current={applied ?? null} currentText={current}
+          onChoose={(model) => { setChoice(modelKey(model.connection, model.id)); setError(''); setRequiresHandoff(false) }} />
         <div className="live-model-switch__footer">
-          <p>Applies to this conversation’s lead agent.</p>
+          <p data-testid="live-model-help">{teamRun ? LIVE_MODEL_HELP_TEAM : LIVE_MODEL_HELP_ASSISTANT}</p>
           {selected && !unchanged && <p data-testid="live-model-pending">{handoff ? 'Starts a new session with a transcript handoff. Your draft stays unsent.' : run.status === 'running' ? 'Interrupts the current reply, then switches when idle.' : nextMessage ? 'Your next message uses this selection.' : 'Selection not applied yet.'}</p>}
           <p className="live-model-switch__error" role="alert" data-testid="live-model-error">{error}</p>
           <div className="live-model-switch__actions">

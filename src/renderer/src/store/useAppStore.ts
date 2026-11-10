@@ -2,6 +2,7 @@ import { normalizeView } from '../lib/teamView'
 import { applyRunDelegation } from '@shared/delegationView'
 import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
+import { applyPermissionModePatch, permissionModeEventPatch } from '../lib/runSettings'
 import { clearKnowledgePrefs } from '../lib/knowledgePrefs'
 import { create } from 'zustand'
 import { useMemo } from 'react'
@@ -10,7 +11,7 @@ import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
 import type { KnowledgeFocusRequest } from '../lib/knowledge'
 import { forgetPreviewCache, mergeOutput } from '../lib/outputs'
-import type { OutputsChangedEvent, RunOutput, StaffingGoal } from '@shared/types'
+import type { OutputsChangedEvent, RunOutput, StaffingGoal, StartRunInput } from '@shared/types'
 import { addRecalled, cleanRecalledEvent, type RecalledEvent } from '../lib/runKnowledge'
 import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
@@ -519,7 +520,7 @@ interface AppState {
   applyTemplate(projectId: string, template: Pick<OrgTemplateInfo, 'id' | 'name'>): Promise<void>
 
   /** `team: 'single'` starts an Ask run (one assistant, conversation layout). */
-  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam; goal?: StaffingGoal }): Promise<void>
+  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam; goal?: StaffingGoal } & Pick<StartRunInput, 'modelSelection' | 'effort' | 'permissionMode'>): Promise<void>
   /** Start an Architect session for the selected project. */
   startSetup(instruction?: string): Promise<void>
   /** Start the MCP assistant run (kind 'mcp-assist') for the selected project and show it. */
@@ -1776,7 +1777,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       scaffold: opts?.scaffold,
       images: opts?.images,
       ...(opts?.team === 'single' ? { team: 'single' as const } : {}),
-      ...(opts?.goal ? { overrides: { goal: opts.goal } } : {})
+      ...(opts?.goal ? { overrides: { goal: opts.goal } } : {}),
+      // Start-time choices (run settings row): main refuses a bad one before a run exists, the page keeps the draft.
+      ...(opts?.modelSelection ? { modelSelection: opts.modelSelection } : {}),
+      ...(opts?.effort ? { effort: opts.effort } : {}),
+      ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {})
     })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
@@ -1784,6 +1789,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, team: summary.team } } },
       ...showRunPatch(s, project.id, summary.id)
     }))
+    // The Start button that had focus is gone with the New run page: put the keyboard in the live composer (UX review M8).
+    // The live composer mounts with the current token, so the request goes out once it is on screen.
+    requestAnimationFrame(() => requestAnimationFrame(() => get().focusComposer()))
   },
 
   async startSetup(instruction) {
@@ -2103,6 +2111,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...(run ? { runs: { ...s.runs, [e.runId]: { ...run, summary: { ...run.summary, projectId: e.projectId } } } } : {}),
           ...(s.selectedProjectId ? { history: historyByProject[s.selectedProjectId] ?? s.history } : {})
         }
+      })
+      return
+    }
+    // A run's permission mode snapshot (RunManager only): replaces all three mode fields on a loaded run's summary.
+    const modePatch = permissionModeEventPatch(e)
+    if (modePatch) {
+      set((s) => {
+        const held = s.runs[modePatch.runId]
+        return held ? { runs: { ...s.runs, [modePatch.runId]: { ...held, summary: applyPermissionModePatch(held.summary, modePatch.fields) } } } : {}
       })
       return
     }

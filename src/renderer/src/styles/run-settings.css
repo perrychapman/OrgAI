@@ -1,0 +1,253 @@
+/* ---------- Run settings row: Model, Effort, Permission, Goal chips (New run page and live composer) ---------- */
+
+.composer-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.run-settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h) var(--space-2);
+  min-width: 0;
+}
+.run-settings-row > .run-setting,
+.run-settings-row > .live-model-switch {
+  min-width: 0;
+  max-width: 100%;
+}
+.run-setting {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+.run-setting > .popover-wrap,
+.live-model-switch--in-row > .popover-wrap {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+}
+/* The model chip carries a connection name, so it may be wider than the others (the full text stays in its title). */
+.run-setting--model { max-width: calc(var(--space-16) * 3.75); }
+.run-setting--effort,
+.run-setting--goal { max-width: calc(var(--space-16) * 2.5); }
+.run-setting--permission { max-width: calc(var(--space-16) * 3.25); }
+.run-setting--model > .popover-wrap,
+.run-setting--permission > .popover-wrap,
+.run-setting--effort > .popover-wrap,
+.run-setting--goal > .popover-wrap {
+  max-width: 100%;
+}
+
+/* A chip is a quiet bordered button: label, value, Default or Changed, chevron. Not colour alone: text and icons carry state. */
+.run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-sm);
+  padding: var(--space-0h) var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.run-chip:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+.run-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.run-chip[aria-expanded='true'] {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+.run-chip svg {
+  flex: none;
+}
+.run-chip__label {
+  flex: none;
+}
+.run-chip__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+.run-chip__prefix {
+  flex: none;
+  color: var(--text-secondary);
+}
+.run-chip__suffix {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-chip__state {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+/* A permissive mode: warning tone plus a ShieldAlert icon and the mode's name (data-tone="warning" mirrors the class). */
+.run-chip--warning {
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.run-chip--warning .run-chip__value,
+.run-chip--warning .run-chip__state {
+  color: inherit;
+}
+.run-chip--warning:hover {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+
+/* The start page's model picker is as tall as its content (the live one keeps its fixed height). */
+.popover-panel.run-model-picker {
+  height: auto;
+  max-height: min(34rem, calc(100vh - var(--space-6)));
+}
+/* Text that looks like the other chips but is not a control (the live row's effort and goal). */
+.run-chip--static {
+  cursor: default;
+  background: transparent;
+}
+.run-chip--static:hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+/* "Model: Next message: <model> · <connection>" is longer than the bar's 30ch trigger. */
+.live-model-switch--in-row .live-model-switch__trigger {
+  max-width: 46ch;
+}
+
+/* The live model switch inside the row: no bar padding, no background. */
+.live-model-switch.live-model-switch--in-row {
+  padding: 0;
+  background: transparent;
+  justify-content: flex-start;
+}
+
+.run-settings-note {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  overflow-wrap: anywhere;
+}
+/* The effort fallback and refusals sit after the chips on their own line. */
+.run-settings-note--warn {
+  flex-basis: 100%;
+  order: 10;
+  color: var(--warning-text);
+}
+
+/* The live row: "Next message: Permission: Auto-accept edits" needs more room than the start page's chip. */
+.run-settings-row[data-surface='live'] .run-setting--permission { max-width: calc(var(--space-16) * 5); }
+/* A live permission outcome: its own line after the chips, the action beside the sentence. */
+.run-permission-note {
+  flex-basis: 100%;
+  order: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h) var(--space-2);
+}
+/* The meta bar's permission item: a permissive mode is warning-toned with a ShieldAlert icon and its name. */
+.run-meta-permission[data-tone='warning'] { color: var(--warning-text); }
+
+/* Popover bodies */
+.run-popover-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.run-popover-legend {
+  color: var(--text-primary);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+}
+.run-popover-help {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.run-popover-stack .seg {
+  align-self: flex-start;
+}
+
+.run-permission-picker {
+  width: min(24rem, calc(100vw - var(--space-6)));
+}
+.run-permission-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.run-permission-list legend {
+  padding: 0 0 var(--space-1);
+  color: var(--text-primary);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+}
+.run-permission-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.run-permission-option input {
+  margin-top: var(--space-0h);
+  flex: none;
+}
+.run-permission-option:has(input:checked) {
+  background: var(--surface-3);
+}
+.run-permission-option:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.run-permission-option > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.run-permission-option__name {
+  color: var(--text-primary);
+  font-size: var(--text-small);
+  font-weight: var(--weight-medium);
+}
+.run-permission-option[data-tone='warning'] .run-permission-option__name {
+  color: var(--warning-text);
+}
+.run-permission-option__tag {
+  color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+}
+.run-permission-option__help {
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  overflow-wrap: anywhere;
+}
