@@ -3,8 +3,8 @@ import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isMo
 import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, projectKindOf, settingTier } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult, type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
-import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
-import { nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
+import { CodexAppServer, CodexRpcError, codexExitMessage, codexStartLockKey, withCodexStartLock, type CodexAppServerOptions } from './codexAppServer'
+import { catalogStartFailure, nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
 import {
   METHOD,
   SERVER_REQUEST,
@@ -256,6 +256,30 @@ function catalogPreparer(options: CodexAdapterOptions, models: () => string[], o
 }
 
 /**
+ * Start an app-server under its Codex home's start lock (codexAppServer.ts withCodexStartLock): held from before the
+ * version check and the catalog step until initialize settles, the server closes, `signal` aborts or the cap passes.
+ */
+function lockedStart(server: CodexServerLike, env: Record<string, string | undefined> | undefined, clientVersion: string | undefined, signal?: AbortSignal): Promise<unknown> {
+  return withCodexStartLock(codexStartLockKey(env), () => server.start(clientVersion), { released: server.exited, ...(signal ? { signal } : {}) })
+}
+
+/** A failed start's text for catalogStartFailure: the error message and the app-server's (redacted) stderr tail. */
+function startFailureText(e: unknown, server: CodexServerLike): string {
+  let tail = ''
+  try {
+    tail = server.stderrTail?.() ?? ''
+  } catch {
+    // a fake without a tail
+  }
+  return `${String((e as Error)?.message ?? e)}\n${tail}`
+}
+
+/** The first line of a start error for a run warning, shortened. */
+function startFailureReason(e: unknown): string {
+  return String((e as Error)?.message ?? e).split('\n')[0]!.slice(0, 200)
+}
+
+/**
  * The tier the root runs on now, the ceiling of an 'inherit' report: its chart tier, or after a model switch
  * (`override`, switchModel) the tier that model names or the connection maps it to. Undefined = unknown, so an
  * 'inherit' report runs as configured rather than on a stale ceiling. Pure.
@@ -364,6 +388,8 @@ class CodexSession implements RuntimeSession {
   private nativeCatalogWarned = false
   /** Codex did not start with the catalog override: no override for the rest of this session. */
   private nativeCatalogRejected = false
+  /** A start with the catalog override failed and was recovered: its one warning was logged (once per session). */
+  private nativeCatalogStartWarned = false
   /** The catalog file an app-server was launched with (set by its prepareConfig, before the spawn). */
   private catalogOf = new WeakMap<CodexServerLike, string>()
   /** The app-server whose first start (with the override) is in flight: its exit is retried, not a run failure. */
@@ -903,6 +929,8 @@ class CodexSession implements RuntimeSession {
       cwd: this.ctx.project.path,
       env: launch.env,
       config: launch.config,
+      // startServer holds this home's start lock around the whole start (lockedStart).
+      startLockHeld: true,
       onStderr: (line) => {
         // The CLI's tracing output is chatty; only surface real problems.
         if (/\b(error|fatal|panic)\b/i.test(line)) this.log('warn', `codex: ${line.slice(0, 300)}`)
@@ -924,34 +952,54 @@ class CodexSession implements RuntimeSession {
   }
 
   /**
-   * Create, adopt (assign and wire) and start an app-server. When it fails to start with the catalog override in effect,
-   * that catalog is rejected for the process (codexNativeCatalog.ts rejectNativeCatalog), the session drops the override
-   * (the prompt keeps the fallback sentence), one warning is logged and the app-server is started once more without it.
-   * A failure without the override, or a second failure, is thrown as before.
+   * Create, adopt (assign and wire) and start an app-server, one start at a time per Codex home (lockedStart). When a
+   * start with the catalog override in effect fails:
+   * - with a transient text (catalogStartFailure: Codex's sqlite start race) it is started once more WITH the override;
+   * - otherwise (or when that retry fails too) once more without it, and the session drops the override (the prompt
+   *   keeps the fallback sentence). The catalog is rejected for the process (rejectNativeCatalog, never deleted) only
+   *   when that start without it succeeds and the failure text names the catalog or the configuration; otherwise the
+   *   next session offers it again.
+   * One warning per session says which case happened. A failure without the override, or after the fallback, is thrown.
    */
   private async startServer(launch: LaunchConfig, adopt: (server: CodexServerLike) => void): Promise<CodexServerLike> {
-    const first = this.createServer(launch)
-    adopt(first)
-    this.retryableStart = first
-    try {
-      await first.start(this.options.clientVersion)
-      return first
-    } catch (e) {
-      const catalog = this.catalogOf.get(first)
-      if (!catalog || this.ending) throw e
-      this.unwire()
-      first.close()
-      this.nativeCatalogRejected = true
-      this.nativeAgentsOff = false
-      rejectNativeCatalog(catalog)
-      this.log('warn', `Codex did not start with the model catalog override (${String((e as Error)?.message ?? e).slice(0, 200)}); it was started again without it. Agents still see Codex's built-in multi-agent tools and are told to delegate with spawn_report.`)
-    } finally {
-      if (this.retryableStart === first) this.retryableStart = undefined
+    let failure: { path: string; text: string; reason: string } | undefined
+    let transientRetried = false
+    for (;;) {
+      const server = this.createServer(launch)
+      adopt(server)
+      this.retryableStart = server
+      try {
+        await lockedStart(server, launch.env, this.options.clientVersion)
+      } catch (e) {
+        const catalog = this.catalogOf.get(server)
+        if (!catalog || this.ending) throw e
+        this.unwire()
+        server.close()
+        failure = { path: catalog, text: startFailureText(e, server), reason: startFailureReason(e) }
+        if (!transientRetried && catalogStartFailure(failure.text) === 'transient') transientRetried = true
+        else {
+          this.nativeCatalogRejected = true
+          this.nativeAgentsOff = false
+        }
+        continue
+      } finally {
+        if (this.retryableStart === server) this.retryableStart = undefined
+      }
+      if (failure) this.noteCatalogStartRecovery(failure, this.catalogOf.has(server))
+      return server
     }
-    const second = this.createServer(launch)
-    adopt(second)
-    await second.start(this.options.clientVersion)
-    return second
+  }
+
+  /** The app-server started after a failed start with the catalog override: one warning per session naming the case. */
+  private noteCatalogStartRecovery(failure: { path: string; text: string; reason: string }, withCatalog: boolean): void {
+    const rejected = !withCatalog && catalogStartFailure(failure.text) === 'catalog'
+    if (rejected) rejectNativeCatalog(failure.path)
+    if (this.nativeCatalogStartWarned) return
+    this.nativeCatalogStartWarned = true
+    const still = "Agents still see Codex's built-in multi-agent tools and are told to delegate with spawn_report."
+    if (withCatalog) this.log('warn', `Codex did not start on the first try (${failure.reason}); it was started again with the model catalog override, which stays in effect.`)
+    else if (rejected) this.log('warn', `Codex did not start with the model catalog override (${failure.reason}); it was started again without it, and the catalog is not used again until OrgAI restarts. ${still}`)
+    else this.log('warn', `Codex did not start with the model catalog override (${failure.reason}); it was started again without it for this session (the failure does not name the catalog, so later sessions use it again). ${still}`)
   }
 
   /** Every concrete model id this run names (roles and the connection's tier mapping): the catalog override checks them. */
@@ -2231,7 +2279,8 @@ export class CodexAdapter implements RuntimeAdapter {
     const launch = buildLaunchConfig(connection, [], { noProjectDocs: true })
     const scratchCwd = tmpdir()
     // The catalog override here too: a tool-less thread would otherwise still carry Codex's multi-agent tools and rule.
-    // When Codex does not start with it, the catalog is rejected and the app-server is started once more without it.
+    // A failed start with it follows startServer's rules: a transient failure is retried once with it, anything else once
+    // without it, and the catalog is rejected for the process only when that worked and the failure names the catalog.
     let catalog: string | undefined
     const open = (withCatalog: boolean): CodexServerLike => {
       catalog = undefined
@@ -2239,6 +2288,7 @@ export class CodexAdapter implements RuntimeAdapter {
         cwd: scratchCwd,
         env: launch.env,
         config: launch.config,
+        startLockHeld: true,
         ...(withCatalog
           ? {
               prepareConfig: catalogPreparer(this.options, () => [codexModelFor(input.model)].filter((m): m is string => !!m), (r) => {
@@ -2304,14 +2354,26 @@ export class CodexAdapter implements RuntimeAdapter {
     if (input.signal?.aborted) throw new Error('Completion cancelled')
     input.signal?.addEventListener('abort', onAbort, { once: true })
     try {
+      // One start at a time per Codex home (lockedStart); an abort leaves the lock queue whether waiting or holding.
+      const startOnce = (s: CodexServerLike): Promise<unknown> => step(lockedStart(s, launch.env, this.options.clientVersion, input.signal))
       try {
-        await step(server.start(this.options.clientVersion))
-      } catch (e) {
-        if (!catalog || input.signal?.aborted) throw e
-        rejectNativeCatalog(catalog)
-        server.close()
-        server = open(false)
-        await step(server.start(this.options.clientVersion))
+        let failed: { path: string; text: string } | undefined
+        let transientRetried = false
+        for (;;) {
+          try {
+            await startOnce(server)
+          } catch (e) {
+            if (!catalog || input.signal?.aborted) throw e
+            failed = { path: catalog, text: startFailureText(e, server) }
+            server.close()
+            const transient = !transientRetried && catalogStartFailure(failed.text) === 'transient'
+            if (transient) transientRetried = true
+            server = open(transient)
+            continue
+          }
+          break
+        }
+        if (failed && !catalog && catalogStartFailure(failed.text) === 'catalog') rejectNativeCatalog(failed.path)
       } finally {
         starting = false
       }

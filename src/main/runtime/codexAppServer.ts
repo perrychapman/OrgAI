@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 import { trackChildProcess } from '../host/shutdown'
 import { scrubControlEnv } from './childEnv'
 import { checkCodexBinary, lookupCodexBinary, type CodexBinary, type CodexLookupOptions, type CodexVersionRunner } from './codexBinary'
@@ -41,6 +41,101 @@ export function resolveCodexBinary(
 
 /** start() after (or during) close(): nothing was spawned. */
 export const CODEX_CLOSED_BEFORE_START = 'codex app-server was closed before it started'
+
+// ---------- one app-server start at a time per Codex home ----------
+
+/**
+ * Upper bound on one hold of the start lock. A start normally settles well within it (the initialize request's own
+ * timeout is 30 s, the catalog dump's 4 s); a hung start is released at this point so it cannot block later starts forever.
+ */
+export const CODEX_START_LOCK_MAX_HOLD_MS = 60_000
+/** The key for a launch whose CODEX_HOME cannot be read (Codex then uses ~/.codex): all such launches share it. */
+export const CODEX_START_LOCK_SHARED_KEY = '<default codex home>'
+
+/** Per key while held: the waiters in arrival order (FIFO). No entry: free. */
+const startLocks = new Map<string, { waiters: (() => void)[] }>()
+
+/**
+ * The start lock key of a launch: the resolved CODEX_HOME the app-server will run with (`env` over the process
+ * environment, as CodexAppServer.start builds the child's env); the shared key when none is set. No file system access
+ * (the folder may not exist yet); case-insensitive on Windows.
+ */
+export function codexStartLockKey(env?: Record<string, string | undefined>): string {
+  const raw = env && Object.prototype.hasOwnProperty.call(env, 'CODEX_HOME') ? env.CODEX_HOME : process.env.CODEX_HOME
+  const home = raw?.trim()
+  if (!home) return CODEX_START_LOCK_SHARED_KEY
+  const r = resolve(home)
+  return process.platform === 'win32' ? r.toLowerCase() : r
+}
+
+/**
+ * Wait for the start lock of `key`; answers an idempotent release. Rejects (and leaves the queue) when `signal` aborts
+ * while waiting.
+ */
+export function acquireCodexStartLock(key: string, opts: { signal?: AbortSignal } = {}): Promise<() => void> {
+  const { signal } = opts
+  if (signal?.aborted) return Promise.reject(new Error('Codex start cancelled'))
+  let released = false
+  const release = (): void => {
+    if (released) return
+    released = true
+    const lock = startLocks.get(key)
+    if (!lock) return
+    const next = lock.waiters.shift()
+    if (next) next()
+    else startLocks.delete(key)
+  }
+  const lock = startLocks.get(key)
+  if (!lock) {
+    startLocks.set(key, { waiters: [] })
+    return Promise.resolve(release)
+  }
+  return new Promise((grantLock, reject) => {
+    const onAbort = (): void => {
+      const i = lock.waiters.indexOf(grant)
+      if (i >= 0) lock.waiters.splice(i, 1)
+      reject(new Error('Codex start cancelled'))
+    }
+    const grant = (): void => {
+      signal?.removeEventListener('abort', onAbort)
+      grantLock(release)
+    }
+    lock.waiters.push(grant)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * Run one app-server start under the start lock of `key` (codexStartLockKey). Two Codex app-servers starting at the same
+ * moment in one CODEX_HOME race on Codex's own sqlite state and one exits during initialize ("failed to initialize sqlite
+ * state runtime"; lab stub campaign, 2026-11-10), so OrgAI starts them one at a time per home, FIFO, process-wide. The
+ * hold ends when `start` settles, when `released` settles (the server's `exited`: closing it frees the lock at once),
+ * when `signal` aborts, or after `maxHoldMs`, whichever comes first. Starts in different homes never wait on each other.
+ */
+export async function withCodexStartLock<T>(
+  key: string,
+  start: () => Promise<T>,
+  opts: { signal?: AbortSignal; released?: Promise<unknown>; maxHoldMs?: number } = {}
+): Promise<T> {
+  const release = await acquireCodexStartLock(key, { signal: opts.signal })
+  const timer = setTimeout(release, opts.maxHoldMs ?? CODEX_START_LOCK_MAX_HOLD_MS)
+  timer.unref?.()
+  opts.signal?.addEventListener('abort', release, { once: true })
+  opts.released?.then(release, release)
+  try {
+    return await start()
+  } finally {
+    clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', release)
+    release()
+  }
+}
+
+/** Whether `key`'s start lock is held, and how many starts wait for it (tests). */
+export function codexStartLockState(key: string): { held: boolean; waiting: number } {
+  const lock = startLocks.get(key)
+  return { held: !!lock, waiting: lock?.waiters.length ?? 0 }
+}
 
 /** How many non-empty stderr lines CodexAppServer keeps for exit errors, and their total length cap. */
 export const STDERR_TAIL_LINES = 10
@@ -122,6 +217,12 @@ export interface CodexAppServerOptions {
    * a rejection adds nothing (fail open). Not called by the connection service.
    */
   prepareConfig?(input: { binary: CodexBinary; env: Record<string, string | undefined>; config: readonly string[] }): Promise<string[]>
+  /**
+   * The caller already holds this home's start lock around the whole start() (the Codex adapter, withCodexStartLock):
+   * start() does not take it again. Default false: start() holds it from the spawn until initialize settles (the
+   * connection service's login, account and model discovery starts).
+   */
+  startLockHeld?: boolean
 }
 
 type ServerRequestHandler = (method: string, params: unknown) => Promise<unknown>
@@ -180,6 +281,15 @@ export class CodexAppServer {
       }
       if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
     }
+    // One start at a time per Codex home, from the spawn until initialize settles (withCodexStartLock).
+    if (this.options.startLockHeld) return this.spawnAndInitialize(binary, env, config, clientVersion)
+    return withCodexStartLock(codexStartLockKey(env), () => {
+      if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
+      return this.spawnAndInitialize(binary, env, config, clientVersion)
+    }, { released: this.exited })
+  }
+
+  private async spawnAndInitialize(binary: CodexBinary, env: Record<string, string | undefined>, config: string[], clientVersion: string): Promise<unknown> {
     const args = ['app-server', ...config.flatMap((c) => ['-c', c])]
     const child = spawn(binary.path, args, { cwd: this.options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     // An agent CLI: ended with the host at the shutdown's hard limit, also when the process table cannot be read (4.3).

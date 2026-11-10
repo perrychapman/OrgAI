@@ -130,7 +130,22 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     Config goes in as `-c key=value` TOML overrides. An API key travels only in the environment
     (`model_providers.orgai.env_key`), never in argv. Verified by unit tests (`codexProtocol.test.ts`).
   - Concurrent Codex runs share that one `CODEX_HOME` at `<data>/codex` (`src/main/connections/service.ts`), each
-    with its own app-server. Whether they race on auth refresh or the session database is unverified.
+    with its own app-server. Two app-servers that START at the same moment in one home race on Codex's sqlite state:
+    one exits during `initialize` with "failed to initialize sqlite state runtime" (lab stub campaign, codex 0.166.0 and
+    0.167.0, 2026-11-10: app-style concurrent starts, typically the run's root and the run-title `complete()`). So every
+    app-server start goes through a process-wide start lock (`withCodexStartLock` in `codexAppServer.ts`), keyed by the
+    resolved `CODEX_HOME` the server runs with (one shared key when none is set), FIFO, starts in other homes never wait.
+    The adapter (`lockedStart` in `codex.ts`: session root, MCP restarts, bridged report sessions, `complete()`) holds it
+    around the whole `start()` (version check, catalog step, spawn, `initialize`) and passes `startLockHeld`;
+    `CodexAppServer.start` otherwise takes it itself from the spawn until `initialize` settles (the connection
+    service's login, account and model starts). A hold ends when the start settles, the server's `exited` resolves
+    (closing it frees the lock), the caller's abort signal fires (`complete()`, waiting or holding) or after
+    `CODEX_START_LOCK_MAX_HOLD_MS` (60 s; `initialize` itself times out at 30 s). A real start (version check, spawn,
+    `initialize`, one `config/read`) took about 0.2 s in the token-free live tests (`ORGAI_CODEX_INTEGRATION=1`), so
+    parallel report spawns in one home now start about 0.2 s apart. The lock is unit-tested (FIFO, other homes in
+    parallel, release after a failed and a hung start, abort while waiting and holding; adapter windows do not overlap
+    in one home). Whether runs still race on auth refresh or the session database after the start is unverified, and
+    the lock's effect on the stub campaign was not re-measured by its author.
   - `CodexAppServer.start` creates `CODEX_HOME` (mode 0o700) before spawning (issue #8). Verified token-free by
     fake-server unit tests; that codex 0.166.0 exits 1 on a missing dir was verified by the user. Exit errors
     (`codexExitMessage`) carry a redacted stderr tail (last 10 lines, 2,000 chars; exact env values redacted plus
@@ -176,11 +191,22 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     it was only run without a login, where it printed the bundled catalog, and with an API-key provider, where it made no
     request to the provider), and a model switched mid-run (`switchModel`) to an id the catalog does not know.
     Hardening (2026-11-10, second round): (1) when the app-server fails to start with the override (exits or fails the
-    handshake), the session and `complete()` relaunch once without it, drop the override for the rest of the session (the
-    prompt keeps the fallback sentence), log one warning and `rejectNativeCatalog` deletes the file and keeps it out for
-    the rest of the process; a failure without the override, or a second one, fails as before (unit-tested; live at the
-    stub with a catalog the real 0.166.0 app-server refuses: "failed to parse model_catalog_json ... missing field",
-    relaunched, request sent). (2) A cached file is reused only after it parses to the shape the transform writes (an
+    handshake), the session and `complete()` relaunch without it, drop the override for the rest of the session (the
+    prompt keeps the fallback sentence) and log one warning; a failure without the override, or after the fallback,
+    fails as before (live at the stub with a catalog the real 0.166.0 app-server refuses: "failed to parse
+    model_catalog_json ... missing field", relaunched, request sent). Third round (2026-11-10, start race): the old rule
+    rejected the catalog process-wide AND deleted the file on ANY start failure, so a sqlite start race (above) cost every
+    later run the override and broke the other app-server already launched with the file ("failed to load
+    configuration: No such file or directory" on its `thread/start`; stub: 0.167.0 lost the override in 14 of 15 runs,
+    7 failed). Now `catalogStartFailure(text)` (`codexNativeCatalog.ts`, pure, on the error message plus stderr tail)
+    decides: 'transient' (`failed to initialize sqlite state`, plus SQLite's `database is locked` / `SQLITE_BUSY`,
+    those two unverified for Codex) restarts once more WITH the override; 'catalog' (`model_catalog_json`, `failed to
+    load|parse config(uration)`) or 'other' (anything else) restarts without it. The catalog is rejected for the process
+    (`rejectNativeCatalog`) only when the start without it succeeded and the last failure with it was 'catalog';
+    otherwise the next session offers it again. `rejectNativeCatalog` never deletes the file (another app-server may read
+    it); a new process validates it again and the stale sweep removes it later. One warning per session names the case
+    (started again with it / without it for this session / not used again until OrgAI restarts). All unit-tested only
+    (`codex.test.ts`, `codexNativeCatalog.test.ts`); the matcher strings come from the stub notes above. (2) A cached file is reused only after it parses to the shape the transform writes (an
     object with a non-empty `models` array of objects, no `multi_agent_version` other than "v1"), checked once per process
     (about 1.5 ms for the 0.75 MB catalog; later launches about 0.05 ms, stats only); a truncated or edited file is
     regenerated. (3) The file is written only when `CODEX_HOME` resolves (realpath, case-insensitive on Windows) to the

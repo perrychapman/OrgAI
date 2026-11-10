@@ -6,8 +6,10 @@ import {
   CATALOG_FILE_PREFIX,
   CATALOG_MAX_AGE_MS,
   CODEX_MODELS_CACHE_FILE,
+  catalogStartFailure,
   catalogWithoutNativeAgents,
   clearNativeCatalogMemory,
+  isNativeCatalogRejected,
   rejectNativeCatalog,
   modelCatalogEntry,
   nativeAgentsCatalogConfig,
@@ -341,12 +343,14 @@ describe('nativeAgentsCatalogConfig', () => {
   })
 
   describe('a catalog Codex refused to start with', () => {
-    it('is deleted and never offered again in this process, even regenerated', async () => {
+    it('is kept on disk (another app-server may read it) but never offered again in this process, even regenerated', async () => {
       const run = runner(v2)
       const r = await nativeAgentsCatalogConfig(input(run))
       if (r.status !== 'written') throw new Error(r.status)
+      const text = readFileSync(r.path, 'utf8')
       rejectNativeCatalog(r.path)
-      expect(existsSync(r.path)).toBe(false)
+      expect(isNativeCatalogRejected(r.path)).toBe(true)
+      expect(readFileSync(r.path, 'utf8')).toBe(text)
       const again = await nativeAgentsCatalogConfig(input(run))
       expect(again).toMatchObject({ status: 'failed', config: [] })
       expect(again.status === 'failed' && again.reason).toBe('Codex did not start with this catalog earlier in this process')
@@ -354,6 +358,17 @@ describe('nativeAgentsCatalogConfig', () => {
       // A changed binary is a new catalog: offered again.
       writeFileSync(bin, 'binary after an update')
       expect((await nativeAgentsCatalogConfig(input(run))).status).toBe('written')
+    })
+
+    it('a new process (memory cleared) validates the kept file again and reuses it', async () => {
+      const run = runner(v2)
+      const r = await nativeAgentsCatalogConfig(input(run))
+      if (r.status !== 'written') throw new Error(r.status)
+      rejectNativeCatalog(r.path)
+      clearNativeCatalogMemory()
+      expect(isNativeCatalogRejected(r.path)).toBe(false)
+      expect(await nativeAgentsCatalogConfig(input(run))).toMatchObject({ status: 'cached', path: r.path })
+      expect(run).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -370,5 +385,30 @@ describe('nativeAgentsCatalogConfig', () => {
     await nativeAgentsCatalogConfig(input(run))
     expect(existsSync(old)).toBe(false)
     expect(existsSync(recent)).toBe(true)
+  })
+})
+
+describe('catalogStartFailure (why a start with the override failed)', () => {
+  it('transient: the sqlite start race (seen at the lab stub) and SQLite busy texts', () => {
+    expect(catalogStartFailure('codex app-server exited (code 1) during initialize: Error: failed to initialize sqlite state runtime')).toBe('transient')
+    expect(catalogStartFailure('error: database is locked')).toBe('transient')
+    expect(catalogStartFailure('SQLITE_BUSY')).toBe('transient')
+  })
+
+  it('catalog: the option named, or a configuration load or parse failure', () => {
+    expect(catalogStartFailure('codex app-server exited (code 1) during initialize: Error: failed to parse model_catalog_json /d/codex/orgai-model-catalog-ab.json: missing field `slug`')).toBe('catalog')
+    expect(catalogStartFailure('failed to load configuration: No such file or directory (os error 2)')).toBe('catalog')
+    expect(catalogStartFailure('Failed to parse config: invalid type')).toBe('catalog')
+  })
+
+  it('other: anything else, conservatively (unknown text is not the catalog)', () => {
+    expect(catalogStartFailure('codex app-server exited (code 1) during initialize: unknown model catalog field')).toBe('other')
+    expect(catalogStartFailure('initialize timed out after 30 s')).toBe('other')
+    expect(catalogStartFailure('The Codex CLI is not installed for this platform')).toBe('other')
+    expect(catalogStartFailure('')).toBe('other')
+  })
+
+  it('a transient match wins over a catalog match', () => {
+    expect(catalogStartFailure('failed to initialize sqlite state runtime; failed to load configuration')).toBe('transient')
   })
 })
