@@ -10,9 +10,20 @@ import {
   isNarrowingMode,
   isPermissiveMode,
   isWideningMode,
+  LIVE_MODEL_HELP_ASSISTANT,
+  LIVE_MODEL_HELP_TEAM,
+  liveEffort,
+  liveGoal,
   livePermissionChoices,
+  livePermissionOutcome,
+  livePermissionValue,
+  MODEL_HELP_TEAM,
+  metaPermissionMode,
   newRunPermissionChoices,
+  offersInterruptToChange,
   permissionOutcomeText,
+  reportsUnchangedOf,
+  reportsUnchangedText,
   runPermissionMode,
   showsModeInMeta,
   startChoicesToSend,
@@ -101,6 +112,68 @@ describe('permission modes', () => {
     expect(permissionOutcomeText({ applied: true, run: { status: 'idle', permissionMode: 'plan' } }, 'plan').tone).toBe('ok')
     expect(permissionOutcomeText({ applied: false, run: { status: 'finished', permissionMode: 'plan' } }, 'plan')).toEqual({ tone: 'saved', text: 'Plan only applies from your next message.' })
     expect(permissionOutcomeText({ applied: false, reason: 'Not now.', run: { status: 'idle', permissionMode: 'default' } }, 'plan')).toEqual({ tone: 'refused', text: 'Not now.' })
+  })
+})
+
+describe('live composer row', () => {
+  const run = (over: Record<string, unknown> = {}) => ({ status: 'idle', kind: 'work', ...over }) as never
+  it('shows the mode in force on a live run and the next-message mode on an ended one', () => {
+    expect(livePermissionValue(run({ permissionMode: 'plan' }), { permissionMode: 'auto' })).toEqual({ mode: 'plan', next: false })
+    expect(livePermissionValue(run({ status: 'finished', permissionMode: 'bypassPermissions', permissionModeChosen: true }), { permissionMode: 'default' })).toEqual({ mode: 'bypassPermissions', next: true })
+    // Not chosen: the continuation re-reads the project's mode (or the run's exec override), not what the run had.
+    expect(livePermissionValue(run({ status: 'paused', permissionMode: 'plan' }), { permissionMode: 'auto' })).toEqual({ mode: 'auto', next: true })
+    expect(livePermissionValue(run({ status: 'error', overrides: { permissionMode: 'dontAsk' } }), { permissionMode: 'auto' })).toEqual({ mode: 'dontAsk', next: true })
+  })
+  it('shows a trust-restricted Chat run as asking, not as the project\'s auto mode', () => {
+    const chat = { status: 'idle', kind: 'work', quick: { folder: 'x' } } as never
+    expect(livePermissionValue(chat, { permissionMode: 'auto' }).mode).toBe('default')
+    expect(metaPermissionMode(chat, { permissionMode: 'auto' })).toBeNull()
+    expect(livePermissionValue({ ...(chat as object), permissionMode: 'plan' } as never, { permissionMode: 'auto' }).mode).toBe('plan')
+  })
+  it('reads reportsUnchanged defensively and words it with the right number', () => {
+    expect(reportsUnchangedOf({ applied: true })).toBe(0)
+    expect(reportsUnchangedOf({ reportsUnchanged: 'x' })).toBe(0)
+    expect(reportsUnchangedOf({ reportsUnchanged: -2 })).toBe(0)
+    expect(reportsUnchangedOf({ reportsUnchanged: 2 })).toBe(2)
+    expect(reportsUnchangedText(0)).toBe('')
+    expect(reportsUnchangedText(1)).toBe('1 running report keeps the earlier mode until it finishes.')
+    expect(reportsUnchangedText(3)).toBe('3 running reports keep the earlier mode until they finish.')
+  })
+  it('adds the kept-earlier-mode line to an applied outcome only', () => {
+    const base = { applied: true, reportsUnchanged: 2, run: { status: 'running', permissionMode: 'plan' } } as const
+    expect(livePermissionOutcome(base, 'plan').message).toBe('Permission mode is now Plan only. 2 running reports keep the earlier mode until they finish.')
+    expect(livePermissionOutcome({ ...base, applied: false, reason: 'Nope.' }, 'plan')).toMatchObject({ tone: 'refused', message: 'Nope.', reports: '' })
+    expect(livePermissionOutcome({ applied: true, run: { status: 'idle', permissionMode: 'plan' } }, 'plan').message).toBe('Permission mode is now Plan only.')
+  })
+  it('offers an interrupt only for a refusal on a running run', () => {
+    expect(offersInterruptToChange({ tone: 'refused' }, 'running')).toBe(true)
+    expect(offersInterruptToChange({ tone: 'refused' }, 'idle')).toBe(false)
+    expect(offersInterruptToChange({ tone: 'saved' }, 'running')).toBe(false)
+  })
+  it('takes effort and goal from the run, else the root role, and only for team runs', () => {
+    const p = project({ roles: [role({ effort: 'medium' })] }) as Project
+    expect(liveEffort({ rootEffort: 'max', kind: 'work' }, p)).toBe('max')
+    expect(liveEffort({ kind: 'work' }, p)).toBe('medium')
+    expect(liveEffort({ kind: 'work', team: 'single' }, p)).toBeUndefined()
+    expect(liveEffort({ kind: 'work', quick: {} as never }, p)).toBeUndefined()
+    expect(liveEffort({ kind: 'setup' }, p)).toBeUndefined()
+    const auto = { staffing: 'auto', staffingGoal: 'cost' } as Project
+    expect(liveGoal({ kind: 'work', overrides: { goal: 'speed' } }, auto)).toBe('speed')
+    expect(liveGoal({ kind: 'work' }, auto)).toBe('cost')
+    expect(liveGoal({ kind: 'work', team: 'single' }, auto)).toBeNull()
+    expect(liveGoal({ kind: 'work' }, { staffing: 'fixed' } as Project)).toBeNull()
+    expect(liveGoal({ kind: 'setup' }, auto)).toBeNull()
+  })
+  it('puts a mode in the meta bar for work runs only, when it is not the plain default', () => {
+    expect(metaPermissionMode({ kind: 'work', permissionMode: 'bypassPermissions' }, { permissionMode: 'default' })).toBe('bypassPermissions')
+    expect(metaPermissionMode({ kind: 'work' }, { permissionMode: 'auto' })).toBe('auto')
+    expect(metaPermissionMode({ kind: 'work', permissionMode: 'default' }, { permissionMode: 'auto' })).toBeNull()
+    expect(metaPermissionMode({ kind: 'setup', permissionMode: 'auto' }, { permissionMode: 'auto' })).toBeNull()
+  })
+  it('says roles set to inherit follow the lead on team model help', () => {
+    expect(MODEL_HELP_TEAM).toContain('Roles set to inherit follow it')
+    expect(LIVE_MODEL_HELP_TEAM).toContain('Roles set to inherit follow it')
+    expect(LIVE_MODEL_HELP_ASSISTANT).toBe('Applies to this conversation’s lead agent.')
   })
 })
 

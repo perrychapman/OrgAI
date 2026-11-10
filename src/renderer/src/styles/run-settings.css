@@ -120,8 +120,13 @@
   color: var(--text-secondary);
 }
 
+/* "Model: Next message: <model> · <connection>" is longer than the bar's 30ch trigger. */
+.live-model-switch--in-row .live-model-switch__trigger {
+  max-width: 46ch;
+}
+
 /* The live model switch inside the row: no bar padding, no background. */
-.live-model-switch--in-row {
+.live-model-switch.live-model-switch--in-row {
   padding: 0;
   background: transparent;
   justify-content: flex-start;
@@ -140,6 +145,20 @@
   order: 10;
   color: var(--warning-text);
 }
+
+/* The live row: "Next message: Permission: Auto-accept edits" needs more room than the start page's chip. */
+.run-settings-row[data-surface='live'] .run-setting--permission { max-width: calc(var(--space-16) * 5); }
+/* A live permission outcome: its own line after the chips, the action beside the sentence. */
+.run-permission-note {
+  flex-basis: 100%;
+  order: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h) var(--space-2);
+}
+/* The meta bar's permission item: a permissive mode is warning-toned with a ShieldAlert icon and its name. */
+.run-meta-permission[data-tone='warning'] { color: var(--warning-text); }
 
 /* Popover bodies */
 .run-popover-stack {
