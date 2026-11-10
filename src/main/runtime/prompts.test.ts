@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, toolHygieneText } from './prompts'
+import { PLAN_BATCHING_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, spawnCallText, spawnLimitMark, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
-import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
+import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, type Role } from '@shared/types'
 import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText } from './prompts'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -65,7 +65,16 @@ describe('buildRolePrompt', () => {
     expect(text).toContain('You lead the following specialists.')
     expect(text).toContain('- engineer: engineer description')
     expect(text).toContain('- reviewer: reviewer description')
-    expect(text).not.toContain('Parallel work is safe')
+    expect(text).not.toContain('own git worktree')
+  })
+
+  it('the listing says how to hand work out, not that it must; required reports keep their unconditional line', () => {
+    const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: false })
+    expect(text).toContain('You lead the following specialists. To hand work out, use the Agent tool, passing subagent_type exactly as written:\n')
+    expect(text).not.toContain('Delegate to them')
+    const mandated = [{ ...lead, requiredReports: [eng.id] }, ...roles.slice(1)]
+    const root = buildRolePrompt(mandated[0]!, mandated, project({ roles: mandated }), { isSetup: false, isolation: false, strictDelegation: true })
+    expect(root).toMatch(/\nYou must delegate to engineer( and reviewer)? and wait for their reports before you finish; the harness checks the run's record and will not accept your report without them\./)
   })
 
   it('tells the root and canSpawn leads to reach for MCP servers, never reports, never setup runs', () => {
@@ -107,7 +116,7 @@ describe('buildRolePrompt', () => {
 
   it('adds the orchestrator isolation paragraph only with isolation', () => {
     const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: true })
-    expect(text).toContain('Parallel work is safe')
+    expect(text).toContain('Every report that can edit files runs in its own git worktree.')
     expect(text).toContain('call integrate_worktrees to retry')
   })
 
@@ -153,8 +162,10 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, self-knowledge (app_reference), brief
-    expect(parts).toHaveLength(16)
+    // prompt, reports, team sizing, staffing, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, self-knowledge (app_reference), brief
+    expect(parts).toHaveLength(18)
+    // Staffing 'fixed' drops only the staffing paragraph.
+    expect(buildRolePrompt(lead, roles, { ...withArch, staffing: 'fixed' }, { isSetup: false, isolation: true }).split('\n\n')).toHaveLength(17)
   })
 
   it('tells every work-run role to edit with the edit tools and avoid cd chains, never setup runs', () => {
@@ -552,6 +563,17 @@ describe('bridged reports', () => {
     expect(bridgedReportMark('Acme proxy')).toContain('Acme proxy')
   })
 
+  it('tells only the root (delegate_agent adapters) it can pass background: true, once', () => {
+    const clause = 'Pass background: true to delegate_agent to keep working while that report runs; its report arrives as a harness message.'
+    const root = buildRolePrompt(lead, roles, project(), { ...flags, bridgedRoles })
+    expect(root.split(clause).length - 1).toBe(1)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, bridgedRoles, bridgeVia: 'spawn' })).not.toContain('background: true')
+    expect(buildRolePrompt(lead, roles, project(), flags)).not.toContain('background: true')
+    // A mid-level lead's call would run in the foreground, so its prompt does not offer it.
+    const midLead = { ...lead, reportsTo: 'r-boss' }
+    expect(buildRolePrompt(midLead, roles, project(), { ...flags, bridgedRoles })).not.toContain('background: true')
+  })
+
   it('gives the root of a bridged child session a report prompt without unattended or org-change text', () => {
     const child = { ...lead, canSpawn: false, spawnable: [] as string[] }
     const text = buildRolePrompt(child, [child], project(), { ...flags, bridged: true })
@@ -564,5 +586,383 @@ describe('bridged reports', () => {
     const root = buildRolePrompt(child, [child], project(), flags)
     expect(root).toContain('Work unattended')
     expect(root).not.toContain(bridgedReportText())
+  })
+})
+
+describe('team sizing paragraph', () => {
+  const roles = orgChart()
+  const [lead, eng] = roles
+  const flags = { isSetup: false, isolation: false }
+  const opening = 'Unless your instructions, the brief or required reports say otherwise, do the work yourself'
+
+  it('goes to the root of a team work run with reports, right after the reports list', () => {
+    const text = buildRolePrompt(lead, roles, project(), flags)
+    expect(text).toContain(teamSizingText({ isolation: false }))
+    expect(text.indexOf(opening)).toBeGreaterThan(text.indexOf('You lead the following specialists.'))
+    expect(buildRolePrompt(lead, roles, project({ kind: 'engagement', setup: { kind: 'new', state: 'complete' } }), flags)).toContain(opening)
+  })
+
+  it('never goes to a report, a mid-level lead, the single assistant, a quick run, a setup run or a bridged child root', () => {
+    expect(buildRolePrompt(eng, roles, project(), flags)).not.toContain(opening)
+    const mid = { ...eng, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'] }
+    expect(buildRolePrompt(mid, [lead, mid, ...roles.slice(1)], project(), flags)).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, team: 'single' })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, isSetup: true })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, bridged: true })).not.toContain(opening)
+    const alone = { ...lead, canSpawn: false, spawnable: [] as string[] }
+    expect(buildRolePrompt(alone, [alone], project(), flags)).not.toContain(opening)
+  })
+
+  it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
+    // Review policy 'risk' (the default) carries the longest review sentence.
+    // Phase 6 decision order (kept work stays alone, side work only for handed-out work): +78, then +22 (own-work tests) on every variant.
+    // Owner decision 2026-11-10: review by risk covers any change again, not only handed-out work (-6 on the risk variants).
+    expect(teamSizingText({ isolation: false }).length).toBe(1247)
+    expect(teamSizingText({ isolation: true }).length).toBe(1209)
+    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1451)
+    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1413)
+    expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1132)
+    expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1109)
+    for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
+      const t = teamSizingText({ required, isolation, review })
+      expect(t.length).toBeLessThanOrEqual(1475)
+      expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
+    }
+  })
+
+  it('covers sizing, the one-message rule, the longest piece, fan-out, the contract, review by risk, idle waiting and evidence', () => {
+    const t = teamSizingText()
+    for (const s of [
+      'one contained piece and you hold the tools',
+      'independent pieces of more than a couple of minutes each',
+      'tools, skills or connections',
+      'one report doing it all while you wait is slower than doing it alone',
+      'Start every ready piece in one message: calls in one message run together, separate messages run in sequence',
+      'Cut the longest piece first',
+      'Run several instances of a role on disjoint scopes',
+      'start tests and checks of handed-out work beside it',
+      'Ask for review beside the next step only when',
+      'never work you handed out, or end your turn and wait',
+      'read its evidence'
+    ]) expect(t).toContain(s)
+  })
+
+  describe('decision order (Phase 6 lab: no invented side work on a task the lead keeps)', () => {
+    const kept = 'do the work yourself when it is one contained piece and you hold the tools.'
+    const splitWhat = 'Hand work out when what the brief asks for splits into independent pieces'
+    const noInvent = 'Tests and checks of your own work are part of it, never pieces to hand out.'
+    const contract = 'Once interface and acceptance criteria are set, start tests and checks of handed-out work beside it.'
+    const requiredLine = "Required reports still go out: start together those that do not need each other's result;"
+    const parallel = [
+      'Cut the longest piece first',
+      'Run several instances of a role on disjoint scopes',
+      'Start every ready piece in one message: calls in one message run together, separate messages run in sequence'
+    ]
+
+    it('every policy, with and without required reports and isolation: kept work alone first, side work only for handed-out work', () => {
+      for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
+        const t = teamSizingText({ required, isolation, review })
+        expect(t.startsWith(`Unless your instructions, the brief or required reports say otherwise, ${kept} `)).toBe(true)
+        // The kept-work rule, the split test on what the brief asks for and the own-work rule come before anything about
+        // splitting, contracts or review.
+        expect(t.indexOf(splitWhat)).toBeGreaterThan(t.indexOf(kept))
+        expect(t.indexOf(noInvent)).toBeGreaterThan(t.indexOf(splitWhat))
+        expect(t).not.toContain('Invent no extra')
+        for (const later of [contract, reviewPolicyText(review), ...parallel]) expect(t.indexOf(later)).toBeGreaterThan(t.indexOf(noInvent))
+        expect(t).toContain(contract)
+        expect(t).not.toContain('docs beside the implementation')
+        expect(t.split(reviewPolicyText(review))).toHaveLength(2)
+        // The rules that make a real split parallel are unchanged.
+        for (const s of parallel) expect(t).toContain(s)
+        expect(t.includes('Parallel writers need disjoint files.')).toBe(!isolation)
+        // Required reports still go out, and the sentence follows the new ones so they cannot talk a mandated run out of them.
+        if (required) {
+          expect(t).toContain(requiredLine)
+          expect(t).toContain('do not redo their work.')
+          expect(t.indexOf(requiredLine)).toBeGreaterThan(t.indexOf(noInvent))
+        } else expect(t).not.toContain('Required reports still go out')
+      }
+    })
+
+    it('always and never keep their meaning; risk covers any change (owner decision 2026-11-10)', () => {
+      expect(reviewPolicyText('always')).toBe('Have every change reviewed before you finish, beside the next step, not after everything.')
+      expect(reviewPolicyText('never')).toBe('Do not ask for review unless a rule demands it; verify and finish.')
+      expect(reviewPolicyText('risk')).toContain('a rule or the brief demands it, the change touches sensitive or security-relevant code')
+      expect(reviewPolicyText('risk')).not.toContain('handed-out')
+    })
+
+    it('reaches the root of a team work run, mandated or not, and none of it reaches a report, a quick, setup or single-assistant run', () => {
+      const mandated = [{ ...lead, requiredReports: [eng.id] }, ...roles.slice(1)]
+      const mandatedRoot = buildRolePrompt(mandated[0]!, mandated, project({ roles: mandated }), { ...flags, strictDelegation: true })
+      expect(mandatedRoot).toContain(teamSizingText({ required: true, isolation: false }))
+      expect(buildRolePrompt(lead, roles, project(), flags)).toContain(noInvent)
+      const others = [
+        buildRolePrompt(eng, roles, project(), flags),
+        buildRolePrompt(lead, roles, project(), { ...flags, team: 'single' }),
+        buildRolePrompt(lead, roles, project(), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } }),
+        buildRolePrompt(lead, roles, project(), { ...flags, isSetup: true })
+      ]
+      for (const text of others) for (const s of [kept, splitWhat, noInvent, contract, reviewPolicyText('risk'), 'the rule above decides if any']) expect(text).not.toContain(s)
+    })
+
+    it('tests and checks of the lead\'s own work are part of it: present for every policy on a team root, absent for reports, quick, setup and single-assistant runs', () => {
+      for (const reviewPolicy of ['risk', 'always', 'never'] as const) {
+        for (const isolation of [false, true]) {
+          const root = buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, isolation })
+          expect(root.split(noInvent)).toHaveLength(2)
+        }
+        for (const text of [
+          buildRolePrompt(eng, roles, project({ reviewPolicy }), flags),
+          buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } }),
+          buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, isSetup: true }),
+          buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, team: 'single' })
+        ]) expect(text).not.toContain(noInvent)
+      }
+    })
+  })
+
+  it('agrees with isolation: disjoint files without worktrees, and the isolation text no longer repeats the parallel advice', () => {
+    expect(buildRolePrompt(lead, roles, project(), flags)).toContain('Parallel writers need disjoint files.')
+    const iso = buildRolePrompt(lead, roles, project(), { ...flags, isolation: true })
+    expect(iso).toContain(teamSizingText({ isolation: true }))
+    expect(iso).not.toContain('disjoint files')
+    expect(iso).toContain(orchestratorIsolationText())
+    expect(orchestratorIsolationText()).not.toMatch(/several tasks at once|Parallel work is safe/)
+  })
+})
+
+describe('plan calls batched with work', () => {
+  const roles = orgChart()
+  it('unattendedText carries the batching sentence only when plan nudges apply', () => {
+    expect(unattendedText('code', true)).toContain(PLAN_BATCHING_TEXT)
+    expect(unattendedText('engagement', true)).toContain(PLAN_BATCHING_TEXT)
+    expect(unattendedText('code', false)).not.toContain(PLAN_BATCHING_TEXT)
+    expect(PLAN_BATCHING_TEXT.length).toBeLessThanOrEqual(200)
+    expect(buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false })).toContain(PLAN_BATCHING_TEXT)
+    expect(buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false, team: 'single' })).not.toContain(PLAN_BATCHING_TEXT)
+    expect(buildRolePrompt(roles[1], roles, project(), { isSetup: false, isolation: false })).not.toContain(PLAN_BATCHING_TEXT)
+  })
+})
+
+describe('staffing paragraph', () => {
+  const roles = orgChart()
+  const [lead, eng] = roles
+  const flags = { isSetup: false, isolation: false }
+  const opening = 'In the plan, give each step you hand out (the rule above decides if any) staff (role, tier, effort)'
+
+  it('goes to the root of a team work run with reports when staffing is auto, right after the team sizing paragraph', () => {
+    const text = buildRolePrompt(lead, roles, project(), flags)
+    expect(text).toContain(`${teamSizingText({ isolation: false })}\n\n${staffingText()}\n\n`)
+    const iso = buildRolePrompt(lead, roles, project(), { ...flags, isolation: true })
+    expect(iso.indexOf(staffingText())).toBeLessThan(iso.indexOf(orchestratorIsolationText()))
+    expect(buildRolePrompt(lead, roles, project({ staffing: 'auto' }), flags)).toContain(staffingText())
+    expect(buildRolePrompt(lead, roles, project({ kind: 'engagement', setup: { kind: 'new', state: 'complete' } }), flags)).toContain(opening)
+  })
+
+  it('never goes to a report, a mid-level lead, the single assistant, a quick run, a setup run, a bridged child root or a root without reports', () => {
+    expect(buildRolePrompt(eng, roles, project(), flags)).not.toContain(opening)
+    const mid = { ...eng, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'] }
+    expect(buildRolePrompt(mid, [lead, mid, ...roles.slice(1)], project(), flags)).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, team: 'single' })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, isSetup: true })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, bridged: true })).not.toContain(opening)
+    const alone = { ...lead, canSpawn: false, spawnable: [] as string[] }
+    expect(buildRolePrompt(alone, [alone], project(), flags)).not.toContain(opening)
+  })
+
+  it('with staffing fixed the paragraph is absent and nothing else changes', () => {
+    for (const isolation of [false, true]) {
+      const auto = buildRolePrompt(lead, roles, project(), { ...flags, isolation })
+      const fixed = buildRolePrompt(lead, roles, project({ staffing: 'fixed' }), { ...flags, isolation })
+      expect(fixed).not.toContain(opening)
+      expect(fixed).toBe(auto.replace(`\n\n${staffingText()}`, ''))
+    }
+    // The review policy still applies without automatic staffing.
+    expect(buildRolePrompt(lead, roles, project({ staffing: 'fixed', reviewPolicy: 'always' }), flags)).toContain(reviewPolicyText('always'))
+  })
+
+  it('reports get nothing new, whatever the staffing settings', () => {
+    const plain = buildRolePrompt(eng, roles, project(), flags)
+    for (const over of [{ staffing: 'fixed' as const }, { staffingGoal: 'speed' as const }, { staffingGoal: 'cost' as const }, { reviewPolicy: 'always' as const }, { reviewPolicy: 'never' as const }]) {
+      expect(buildRolePrompt(eng, roles, project(over), flags)).toBe(plain)
+      expect(buildRolePrompt(eng, roles, project(over), { ...flags, staffingGoal: 'speed' })).toBe(plain)
+    }
+  })
+
+  it('takes the goal from the run (flags.staffingGoal) and else from the project', () => {
+    expect(buildRolePrompt(lead, roles, project(), flags)).toContain(`${staffingText('balanced')}\n\n`)
+    expect(buildRolePrompt(lead, roles, project({ staffingGoal: 'speed' }), flags)).toContain(staffingText('speed'))
+    expect(buildRolePrompt(lead, roles, project({ staffingGoal: 'cost' }), flags)).toContain(staffingText('cost'))
+    // The per-run override wins over the project's goal, in both directions.
+    expect(buildRolePrompt(lead, roles, project({ staffingGoal: 'speed' }), { ...flags, staffingGoal: 'cost' })).toContain(staffingText('cost'))
+    const balancedRun = buildRolePrompt(lead, roles, project({ staffingGoal: 'cost' }), { ...flags, staffingGoal: 'balanced' })
+    expect(balancedRun).toContain(`${staffingText('balanced')}\n\n`)
+    expect(balancedRun).not.toContain('This run favours')
+  })
+
+  it('goal lines: balanced adds none, speed treats every step as on the longest path, cost none and allows one cheaper report', () => {
+    expect(staffingText('balanced')).toBe(staffingText())
+    expect(staffingText('balanced')).not.toContain('This run favours')
+    expect(staffingText('speed')).toBe(`${staffingText()} This run favours speed: treat every step as on the longest path.`)
+    expect(staffingText('cost')).toBe(
+      `${staffingText()} This run favours cost: treat no step as on the longest path; one well-specified piece may go to a single report on a cheaper tier.`
+    )
+  })
+
+  it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
+    expect(staffingText('balanced').length).toBe(851)
+    expect(staffingText('speed').length).toBe(916)
+    expect(staffingText('cost').length).toBe(982)
+    expect(staffingText('balanced').length).toBeLessThanOrEqual(900)
+    for (const goal of ['balanced', 'speed', 'cost'] as const) {
+      const t = staffingText(goal)
+      expect(t.length).toBeLessThanOrEqual(1000)
+      expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
+    }
+    // The default chart's root (auto, balanced, risk) grows by at most 950 characters over the text before staffing.
+    const before = 'Review risky or large changes, or when a rule says so, beside the next step, not by habit.'
+    const growth = staffingText().length + 2 + reviewPolicyText().length - before.length
+    expect(growth).toBe(967)
+    expect(growth).toBeLessThanOrEqual(980)
+  })
+
+  it('staffs only the steps the sizing rule hands out and never decides whether any are', () => {
+    for (const goal of ['balanced', 'speed', 'cost'] as const) {
+      const t = staffingText(goal)
+      expect(t.startsWith('In the plan, give each step you hand out (the rule above decides if any) staff')).toBe(true)
+      expect(t).not.toContain('every step a report will do')
+    }
+    // "The rule above" is the sizing paragraph, which always comes right before it.
+    expect(buildRolePrompt(lead, roles, project(), flags)).toContain(`${teamSizingText({ isolation: false })}\n\n${staffingText()}`)
+  })
+
+  it('covers staff, after and paths, the clamp, the rubric, the longest path and escalation', () => {
+    const t = staffingText()
+    for (const s of [
+      'staff (role, tier, effort)',
+      'after (steps it waits for; omit it if it can start now)',
+      'paths (files it will change)',
+      'the harness applies the tier and effort when you start that role, never above what the role allows',
+      'Tier fast for search, mechanical edits, running checks and summaries',
+      'everyday for well-specified implementation, tests and routine review',
+      'deep for ambiguous design, cross-module change, hard debugging and security review',
+      'Effort low for mechanical work, medium by default, high only where the reasoning is subtle',
+      'On the longest path prefer a higher tier at lower effort to a lower tier at high effort',
+      'off it prefer the cheaper tier, it has slack',
+      'If a step fails verification or comes back unresolved, retry it one step up in tier or effort, at most twice'
+    ]) expect(t).toContain(s)
+    // Only the automatic picks are named.
+    expect(t).not.toMatch(/\b(top|xhigh|max)\b/)
+  })
+})
+
+describe('review policy sentence', () => {
+  const roles = orgChart()
+  const [lead, eng] = roles
+  const flags = { isSetup: false, isolation: false }
+  const sentences = { risk: reviewPolicyText('risk'), always: reviewPolicyText('always'), never: reviewPolicyText('never') }
+
+  it('risk (the default): review on a rule or the brief, sensitive or security-relevant code, a large diff or a failed verification; else verify and finish', () => {
+    expect(reviewPolicyText()).toBe(sentences.risk)
+    expect(sentences.risk).toBe(
+      'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is large or verification failed once; else verify and finish.'
+    )
+    // The risk conditions cover any change, the lead's own included (owner decision 2026-11-10).
+    expect(sentences.risk).not.toContain('handed-out')
+  })
+
+  it('always reviews every change before finishing; never asks only when a rule demands it', () => {
+    expect(sentences.always).toContain('Have every change reviewed before you finish')
+    expect(sentences.never).toContain('Do not ask for review unless a rule demands it')
+  })
+
+  it('the root reads exactly one review rule, the one its project asks for, and reports read none', () => {
+    for (const policy of ['risk', 'always', 'never'] as const) {
+      const over = policy === 'risk' ? {} : { reviewPolicy: policy }
+      for (const staffing of ['auto', 'fixed'] as const) {
+        const root = buildRolePrompt(lead, roles, project({ ...over, staffing }), flags)
+        for (const [other, sentence] of Object.entries(sentences)) {
+          if (other === policy) expect(root.split(sentence)).toHaveLength(2)
+          else expect(root).not.toContain(sentence)
+        }
+        expect(root).not.toContain('Review risky or large changes')
+      }
+      expect(teamSizingText({ review: policy })).toContain(sentences[policy])
+      const report = buildRolePrompt(eng, roles, project(over), flags)
+      for (const sentence of Object.values(sentences)) expect(report).not.toContain(sentence)
+    }
+    // The staffing paragraph names review only as kinds of work in the rubric, never as a rule.
+    expect(staffingText()).not.toMatch(/ask for review|reviewed/i)
+  })
+})
+
+describe('Agent call fields (spawnCallFields, Claude)', () => {
+  const roles = orgChart().map((r) => (r.slug === 'engineer' ? { ...r, model: 'opus', tier: 'deep' as const, effort: 'high' as const } : r))
+  const [lead, eng, rev] = roles as [Role, Role, Role]
+  const base = { isSetup: false, isolation: false, spawnCallFields: true }
+
+  it('marks each report with its limits and adds the guidance, only with the flag and only on a role with reports', () => {
+    const text = buildRolePrompt(lead, roles, project({ roles }), base)
+    expect(text).toContain('- engineer (up to opus / high): engineer description')
+    expect(text).toContain('- reviewer (up to sonnet / high): reviewer description')
+    expect(text).toContain(spawnCallText({ auto: true }))
+    expect(buildRolePrompt(lead, roles, project({ roles }), { ...base, spawnCallFields: false })).not.toContain('On every Agent call')
+    expect(buildRolePrompt(lead, roles, project({ roles }), { isSetup: false, isolation: false })).not.toContain('(up to')
+    expect(buildRolePrompt(rev, roles, project({ roles }), base)).not.toContain('On every Agent call')
+    expect(buildRolePrompt(lead, roles, project({ roles }), { ...base, isSetup: true })).not.toContain('On every Agent call')
+  })
+
+  it('a lead gets it too; worktree only under an isolated spawner, foreground only for a receipt-bearing report', () => {
+    const mid: Role = { ...rev, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'], tools: ['Read'] }
+    const chart = [{ ...lead, spawnable: ['r-mid', 'r-rev'], requiredReports: ['r-rev'] }, mid, { ...eng, reportsTo: 'r-mid' }, rev]
+    const rootText = buildRolePrompt(chart[0]!, chart, project({ roles: chart }), { ...base, isolation: true })
+    expect(rootText).toContain('- reviewer (up to sonnet / high, foreground):')
+    expect(rootText).toContain(spawnCallText({ auto: true, foreground: true }))
+    // The mid lead does not write, so it is not isolated and its writer shares its checkout: no worktree mark.
+    const midText = buildRolePrompt(mid, chart, project({ roles: chart }), { ...base, isolation: true })
+    expect(midText).toContain('- engineer (up to opus / high):')
+    expect(midText).toContain(spawnCallText({ auto: true }))
+    const iso = buildRolePrompt(lead, roles, project({ roles }), { ...base, isolation: true })
+    expect(iso).toContain('- engineer (up to opus / high, worktree):')
+    expect(iso).toContain('isolation: "worktree" if marked worktree')
+    expect(iso).not.toContain('run_in_background')
+  })
+
+  it('a fixed role is marked fixed; a fixed project names no limits and asks for no model or effort; inherit without a tier', () => {
+    const fixed = roles.map((r) => (r.slug === 'reviewer' ? { ...r, staffing: { mode: 'fixed' as const } } : r))
+    const fr = buildRolePrompt(lead, fixed, project({ roles: fixed }), base)
+    expect(fr).toContain('- reviewer (fixed):')
+    expect(fr).toContain(spawnCallText({ auto: true, fixed: true }))
+    expect(fr).toContain('Omit model and effort for one marked fixed.')
+    expect(buildRolePrompt(lead, roles, project({ roles }), base)).not.toContain('marked fixed')
+    const fp = buildRolePrompt(lead, roles, project({ roles, staffing: 'fixed' }), base)
+    expect(fp).toContain('- reviewer: reviewer description')
+    expect(fp).toContain(spawnCallText({ auto: false }))
+    expect(spawnCallText({ auto: false })).toContain('but no model or effort')
+    expect(spawnLimitMark({ ...rev, model: 'inherit' }, {})).toBe(' (up to your tier / high)')
+    expect(spawnLimitMark({ ...rev, model: 'inherit', tier: 'fast', staffing: { mode: 'auto', maxEffort: 'low' } }, {})).toBe(' (up to haiku / low)')
+  })
+
+  it('a bridged report gets neither a mark nor (alone) the guidance', () => {
+    const bridged = [{ roleId: 'r-rev', connectionName: 'OpenAI' }, { roleId: 'r-eng', connectionName: 'OpenAI' }]
+    const text = buildRolePrompt(lead, roles, project({ roles }), { ...base, bridgedRoles: bridged })
+    expect(text).not.toContain('On every Agent call')
+    expect(text).not.toContain('(up to')
+  })
+
+  it('stays within its budget, names the aliases the Agent tool accepts and does not shout', () => {
+    const variants = [
+      spawnCallText({ auto: true }),
+      spawnCallText({ auto: true, fixed: true, worktree: true, foreground: true }),
+      spawnCallText({ auto: false, worktree: true, foreground: true })
+    ]
+    expect(variants.map((t) => t.length)).toEqual([312, 445, 288])
+    for (const t of variants) {
+      expect(t.length).toBeLessThanOrEqual(460)
+      expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
+    }
+    for (const alias of ['haiku', 'sonnet', 'opus']) expect(variants[0]).toContain(alias)
   })
 })

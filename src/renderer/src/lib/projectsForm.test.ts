@@ -41,7 +41,7 @@ describe('connectionChoices', () => {
     }) as never
   it('lists only connected ones: Anthropic, OpenAI, then proxies by name', () => {
     const list = [mk('proxy-bbbbbbbb', 'connected', false, { name: 'Zed', kind: 'litellm' }), mk('openai', 'disconnected'), mk('anthropic', 'connected', true), mk('proxy-aaaaaaaa', 'connected', false, { name: 'Alpha', kind: 'openai-compatible' })]
-    expect(connectionChoices(list).map((c) => c.label)).toEqual(['Anthropic · default', 'Alpha (OpenAI-compatible proxy)', 'Zed (LiteLLM proxy)'])
+    expect(connectionChoices(list).map((c) => c.label)).toEqual(['Anthropic · default', 'Alpha (Proxy)', 'Zed (Proxy)'])
   })
   it('keeps the pick while connected, else the default', () => {
     const choices = connectionChoices([mk('anthropic', 'connected', true), mk('proxy-aaaaaaaa', 'connected', false, { name: 'Alpha', kind: 'litellm' })])

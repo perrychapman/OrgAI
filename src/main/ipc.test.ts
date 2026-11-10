@@ -447,6 +447,8 @@ describe('connection id guards (connections:test / logout, models:list / refresh
   })
 
   it('proxyIdArg and proxyCreateArgs rebuild their input', () => {
+    for (const litellmFeatures of [true, false]) expect(proxyCreateArgs({ name: 'G', anthropicBaseUrl: 'u', litellmFeatures })).toEqual({ name: 'G', anthropicBaseUrl: 'u', litellmFeatures })
+    for (const litellmFeatures of [null, 1, 'true']) expect(() => proxyCreateArgs({ name: 'G', anthropicBaseUrl: 'u', litellmFeatures })).toThrow(/reporting/)
     expect(proxyIdArg('proxy-0a1b2c3d')).toBe('proxy-0a1b2c3d')
     for (const bad of ['anthropic', 'proxy-', '', null, 7, ['litellm'], 'constructor']) expect(() => proxyIdArg(bad), String(bad)).toThrow('Unknown connection')
     expect(

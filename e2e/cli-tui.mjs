@@ -404,8 +404,8 @@ try {
       t.key('f2')
       await sleep(250)
       t.key('enter')
-      await t.waitFor('card one ran', 20_000)
-      check(true, 'g: Enter allows card 1 (its tool result "card one ran" is shown)')
+      await t.waitFor(s => s.includes('Ran npm run card-one') && s.includes('card-two') && s.includes('Allow once'), 20_000)
+      check(true, 'g: Enter allows card 1 and the next permission card appears')
 
       // Focus the new card before acting so this exercises the arrival guard, not an unfocused composer.
       await t.waitFor(s => s.includes('card-two') && s.includes('Allow once'), 20_000)

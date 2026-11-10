@@ -8,7 +8,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - `npm run typecheck` runs both tsconfigs (node + web). Keep it clean. TypeScript 7: no `baseUrl`, paths are `./`-relative.
 - Shared types live in `src/shared/types.ts`. Anything crossing IPC must be defined there and be structured-clone safe.
 - Live root model selection uses `runs:switchModel` / `runs.switchModel`, `RunSummary.modelSelection` and main-owned `run.model`. A false `applied` with saved selection means next continuation, not active now. Live switches require an idle safe boundary; changing provider/connection requires End session then select and Send. Continuation routes selection before adapter start, uses fenced bounded transcript data across providers, and never passes the old native session id to another provider. Native successor sessions remain resumable through `modelAdapter`. Session-only grants expire; project restrictions and narrowing overrides remain; switching does not reset the conversation budget. Checked by runtime/adapter unit tests; live provider behavior remains unverified. `e2e/model-switch.mjs` covers the shared run-backed UI; one-shot recommendations/drafts are outside live session switching.
-- Renderer live model selection: `LiveModelSwitch` shares the mounted composer region across Chat/setup/MCP/Skill/work; connected catalog choices apply to the root only, ended selections say "Next message", and `run.model` updates the store. Keyboard opening/closing restores focus; busy replies offer Interrupt and cross-connection changes offer End session, Apply, then composer Send with the draft retained. Implementation notes: `docs/design/assistants-ui.md`. Checked by focused helper tests and `e2e/model-switch.mjs` at both desktop sizes/themes, including recovery and keyboard flows; live providers and screen-reader speech unverified.
+- Renderer live model selection: `LiveModelSwitch` stays mounted immediately by the composer across Chat/setup/MCP/Skill/work, with a bounded searchable picker grouped by connection. Friendly labels retain exact IDs; choices affect the root only, ended selections say "Next message", and `run.model` owns the applied selection. One state-aware action sequences interruption and switching; connection/adapter handoffs require explicit confirmation before ending the session. Open decisions and active reports block disruptive switching. Failed operations retain the selection and draft for explicit recovery; switching never sends. Implementation and verification notes: `docs/design/assistants-ui.md`. Focused helper tests and token-free `e2e/model-switch.mjs` check recovery and keyboard flows; live providers and screen-reader speech remain unverified.
 - The renderer only sees normalized `RunEvent`s. Vendor specifics stay inside `src/main/runtime/<provider>.ts`.
 - Renderer Pocket Office uses visual presentation/palette cards, an inert framed sample, scoped paper-and-ink labels/inspector headers and native person targets aligned with sprites. Graph preferences are preserved. Pure Office motion samples safe distance-based outbound/arrival/return journeys; focused targets freeze, captions keep stable stage geometry, and reduced motion/visibility changes do not replay events. The directory is optional. Source art, timing, bounds and verification live in `docs/design/pocket-office.md`. Checked by typecheck, 52 focused Office/token tests, build, updated `e2e/office.mjs`, canvas regression checks, mock walkthroughs and Reviewer approval. No provider or IPC change is needed; final merged QA is run by the orchestrator.
 - Adding a provider: the adapter is SDK event mapping plus hook mechanics only (spawn enforcement, deciding isolation
@@ -21,6 +21,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `continuation.ts` holds the pure `nextNudge` decision and the `ContinuationDriver` every adapter calls at turn end
   (`turnEnded`), on user messages, on interrupt (`hold`) and at session end; the adapter only delivers the nudge
   through its harness-message path (Claude: `notifyOrchestrator`). Never nudge setup runs.
+- Run staffing (`docs/design/orchestration-efficiency.md`): which tier and effort a report runs on is decided only in
+  `runtime/staffing.ts` (`resolveStaffing`, pure) with the shared `runtime/staffingBook.ts`; an adapter only writes the
+  result (Claude: a tier alias and an effort through the spawn hook; Codex: `spawn_report` `tier` / `effort`). A
+  `fixed` project and a fixed role run as configured. A plan step's ready / waiting state comes from
+  `src/shared/planGraph.ts`. A change that can raise spend (ceilings in team files, defaults, the staffing profile)
+  needs the Reviewer.
 - Cross-run messages (`message_run`) never override the user: RunManager gates delivery (`peerDeliveryBlocked`) while
   a run is held by an interrupt, usage-limited (`ActiveRun.limitHold`) or has pending cards, holds them in the run's
   inbox (at most `RUN_MESSAGE_QUEUE_LIMIT` 20) and flushes them oldest first, one chained flush at a time, after the
@@ -88,6 +94,14 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
 
 <!-- orgai:architecture -->
 ## Architecture and conventions
+
+- Proxy reporting uses optional `litellmFeatures` with legacy kind fallback; dotted AWS ids remain exact and unknown
+  metadata stays unknown. Connection/catalog/settings/IPC unit tests cover these contracts; live proxy behavior is
+  unverified. See `docs/agent-notes/connections-mcp.md` for installed Codex warning evidence and limitations.
+- Proxy adapters bound provider tool names to 64 characters at the HTTP boundary and restore canonical SDK names
+  for permissions and routing. Fake-provider tests and an installed Codex app-server against loopback fake MCP/
+  Responses endpoints verify original-tool dispatch and replay; live LiteLLM/Bedrock remains unverified. Details:
+  `docs/agent-notes/connections-mcp.md`.
 
 - Transcript returned media uses optional ordered `tool_result.parts` plus its existing text `content` fallback, and standalone `kind: 'media'` assistant blocks. Never fetch provider URLs or open provider paths to render media. Runtime normalization, image-store round trips, host omission and provider handoff are unit tested; adapter event mappings use fake SDK events. Live provider behavior is unverified; details and bounds are in `.orgai/ARCHITECTURE.md` Shared contracts.
 

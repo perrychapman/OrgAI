@@ -77,6 +77,11 @@ export function inspectorFacts(v: InspectorView, env: TuiEnv, width?: number): s
   if (v.turns !== undefined) stats.push(`${v.turns} turn${v.turns === 1 ? '' : 's'}`)
   if (v.toolCalls !== undefined) stats.push(`${v.toolCalls} tool call${v.toolCalls === 1 ? '' : 's'}`)
   if (stats.length > 0) out.push([stats.join(sep)])
+  if (v.staffing) {
+    const st = v.staffing
+    const model = !v.model || v.model !== st.model ? `${sep}model ${st.model}` : ''
+    out.push([`staffing ${st.label}${sep}${st.reason}${st.model ? model : ''}`])
+  }
   if (v.activity || v.waiting > 0) {
     const act = v.activity || 'Waiting for you'
     out.push([`now      ${act}`, v.waiting > 0 ? `${sr ? 'press d to decide' : `${g.arrow} d: decide`}${v.waiting > 1 ? ` (${v.waiting} cards)` : ''}` : ''])

@@ -63,20 +63,22 @@ interface Level {
   /** Longest run title in columns; 0 = no title. */
   title: number
   project: boolean
+  /** "N working" and "N ready": the first status segments to give way. */
+  flow: boolean
 }
 
 const LEVELS: readonly Level[] = [
-  { chips: 'full', cost: true, title: Infinity, project: true },
-  { chips: 'compact', cost: true, title: Infinity, project: true },
-  { chips: 'count', cost: true, title: Infinity, project: true },
-  { chips: 'count', cost: false, title: Infinity, project: true },
-  { chips: 'count', cost: false, title: 24, project: true },
-  { chips: 'count', cost: false, title: 12, project: true },
-  { chips: 'count', cost: false, title: 0, project: true }
+  { chips: 'full', cost: true, title: Infinity, project: true, flow: true },
+  { chips: 'compact', cost: true, title: Infinity, project: true, flow: false },
+  { chips: 'count', cost: true, title: Infinity, project: true, flow: false },
+  { chips: 'count', cost: false, title: Infinity, project: true, flow: false },
+  { chips: 'count', cost: false, title: 24, project: true, flow: false },
+  { chips: 'count', cost: false, title: 12, project: true, flow: false },
+  { chips: 'count', cost: false, title: 0, project: true, flow: false }
 ]
 
 /** The very last resort (issue #34): only after the hint has shrunk to one item does the project name go. */
-const NO_PROJECT: Level = { chips: 'count', cost: false, title: 0, project: false }
+const NO_PROJECT: Level = { chips: 'count', cost: false, title: 0, project: false, flow: false }
 
 /** `title` cut to `max` columns at a word boundary with an ellipsis; '' when no whole word fits. */
 function cutTitle(title: string, max: number, ellipsis: string): string {
@@ -104,6 +106,10 @@ function buildSegs(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'>, level: L
   if (s.costText && level.cost) out.push({ text: s.costText, dim: true })
   // "0 need you" means nothing before there is a project or a run (onboarding, R2-L5).
   if (!compact && (s.needsYou > 0 || s.projectName || s.runTag)) out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })
+  if (!compact && level.flow) {
+    if (s.working) out.push({ text: `${s.working} working`, tone: 'running' })
+    if (s.readySteps) out.push({ text: `${s.readySteps} ready`, dim: true })
+  }
   const chips = s.runChips
   if (chips && chips.length > 0 && (!compact || multipleRuns)) {
     const tone = chips.some((c) => c.needsYou) ? { tone: 'warn' as const } : { dim: true }

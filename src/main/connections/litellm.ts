@@ -270,11 +270,12 @@ export function parseProxyModelList(body: unknown): { id: string; ownedBy?: stri
 }
 
 export interface FetchProxyModelsOptions {
-  /** 'litellm' also reads /model/info (prices, provider, context window); 'openai-compatible' reads only the models URL. */
+  /** Legacy reporting default; litellmFeatures explicitly overrides it. */
   kind: ProxyKind
+  litellmFeatures?: boolean
   /** The proxy's connection id, stamped on every catalog entry. */
   connection: string
-  /** The Anthropic base URL (root) the LiteLLM-only /model/info route hangs off. Ignored for 'openai-compatible'. */
+  /** The Anthropic base URL (root) the optional LiteLLM /model/info route hangs off. */
   baseUrl?: string
   /** Only the models URL (no /model/info), for a status probe. */
   listOnly?: boolean
@@ -283,8 +284,9 @@ export interface FetchProxyModelsOptions {
 /**
  * Discover a proxy's models: GET <modelsUrl> with the key as Bearer (redirects refused, 10 s, 5 MB, at most
  * LITELLM_MAX_MODELS ids that pass validModelId). Each entry gets `family = proxyModelFamily(id, ownedBy)`, its
- * adapter and `ownedBy`. For kind 'litellm' /model/info adds prices, upstream and context window (best effort: any
- * failure, a 404 included, only means no prices); 'openai-compatible' never calls /model/info or /key/info. With
+ * adapter and `ownedBy`. With reporting enabled (litellmFeatures, falling back to kind === 'litellm'), /model/info
+ * adds prices, upstream and context window (best effort: any failure only means no metadata). Without opt-in,
+ * discovery calls only the models URL. With
  * ORGAI_MOCK=1 the mock proxy host answers without network (proxy.ts). Throws a short readable Error; the key is
  * never in the message.
  */
@@ -296,7 +298,7 @@ export async function fetchProxyModels(modelsUrl: string, key: string, fetchImpl
   const url = normalizeProxyUrlForFetch(modelsUrl)
   const entries = parseProxyModelList(await getJsonUrl(url, new URL(url).pathname, new URL(url).origin, key, fetchImpl))
   let info = new Map<string, ModelInfoEntry>()
-  if (opts.kind === 'litellm' && opts.baseUrl && !opts.listOnly) {
+  if ((opts.litellmFeatures ?? opts.kind === 'litellm') && opts.baseUrl && !opts.listOnly) {
     try {
       info = parseModelInfo(await getJson('/model/info', normalizeBaseUrl(opts.baseUrl), key, fetchImpl))
     } catch {

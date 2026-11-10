@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import type { McpServerSpec, Project, Role, RunEvent, RunPlan, RunSummary } from '@shared/types'
+import type { McpServerSpec, Project, Role, RunEvent, RunPlan, RunStaffing, RunSummary } from '@shared/types'
 import type { RuntimeContext } from './types'
 
 /** Test-only fixtures for the runtime modules. Not imported by app code. */
@@ -72,6 +72,7 @@ export function fakeCtx(over: Partial<RuntimeContext> = {}): RuntimeContext & { 
   const events: RunEvent[] = []
   const p = over.project ?? project()
   let plan: RunPlan | undefined
+  let staffing: RunStaffing | undefined
   return {
     run: runSummary(),
     project: p,
@@ -88,6 +89,10 @@ export function fakeCtx(over: Partial<RuntimeContext> = {}): RuntimeContext & { 
     getPlan: () => plan,
     updatePlan: vi.fn(async (next: RunPlan) => {
       plan = next
+    }),
+    getStaffing: () => staffing,
+    updateStaffing: vi.fn(async (next: RunStaffing) => {
+      staffing = next
     }),
     pendingInteractions: () => 0,
     mcpServers: () => [],

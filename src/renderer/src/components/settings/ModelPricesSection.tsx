@@ -71,8 +71,8 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
   const connections = useAppStore((s) => s.connections)
   // The connections to choose from come from the loaded list (Anthropic, OpenAI, then each proxy), never a fixed set.
   const connectionList = connections ?? []
-  // Proxies that report no prices (OpenAI-compatible, or a check that found none): their models cost "unknown" until priced.
-  const noPrices = connectionList.filter((c) => isProxyConnection(c.connection) && (c.connection.kind === 'openai-compatible' || c.status.checks?.reportsPrices === false))
+  // Only a completed check can establish that a proxy did not report prices.
+  const noPrices = connectionList.filter((c) => isProxyConnection(c.connection) && c.status.checks?.reportsPrices === false)
   // Models the user's work touches: used by loaded runs, or set on a project's roles.
   const inUse = useMemo(() => {
     const ids = new Set<string>()

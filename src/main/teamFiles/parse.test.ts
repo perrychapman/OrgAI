@@ -272,6 +272,25 @@ describe('role file validation', () => {
     expect(JSON.stringify(p.warnings)).not.toContain(key)
   })
 
+  it('drops a malformed staffing key with a note naming it, and says nothing for good or empty ones', () => {
+    const notesOf = (fm: string): string[] => {
+      const p = parse(asRole(`${base}\ntier: "everyday"\n${fm}`))
+      expect(p.problems).toEqual([])
+      return p.notes.filter((n) => /staffing/.test(n))
+    }
+    expect(notesOf('staffing: "sometimes"\nstaffing_max_effort: "low"')).toEqual([
+      'dev has staffing settings that are not valid or not used without a staffing mode (staffing, staffing_max_effort); they were ignored.'
+    ])
+    expect(notesOf('staffing: "auto"\nstaffing_min_tier: "platinum"\nstaffing_max_effort: "low"')).toEqual([
+      'dev has a staffing setting that is not valid or not used without a staffing mode (staffing_min_tier); it was ignored.'
+    ])
+    expect(notesOf('staffing_min_tier: "deep"')).toEqual(['dev has a staffing setting that is not valid or not used without a staffing mode (staffing_min_tier); it was ignored.'])
+    expect(notesOf('staffing: "fixed"\nstaffing_min_tier: "fast"\nstaffing_max_effort: "medium"')).toEqual([])
+    expect(notesOf('staffing:')).toEqual([])
+    const kept = parse(asRole(`${base}\ntier: "everyday"\nstaffing: "auto"\nstaffing_min_tier: "platinum"\nstaffing_max_effort: "low"`)).doc?.roles.find((r) => r.slug === 'dev')
+    expect(kept?.staffing).toEqual({ mode: 'auto', maxEffort: 'low' })
+  })
+
   it('picks a stable default colour from the slug', () => {
     const a = parse(asRole(base)).doc?.roles.find((r) => r.slug === 'dev')?.color
     const b = parse(asRole(base)).doc?.roles.find((r) => r.slug === 'dev')?.color

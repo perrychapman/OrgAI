@@ -1,5 +1,66 @@
 # Renderer (general)
 
+## Native popover rapid reopen (2026-11-10)
+
+Chromium can coalesce a native close/reopen into one `toggle` from open to open.
+The model-switch failure was captured with real Electron beforetoggle/toggle and
+focus tracing at the empty-catalog Escape/Enter checkpoint; React's unchanged
+open state left focus on the trigger. `Popover` now notifies closes synchronously
+from `beforetoggle` and reruns placement/focus for each delivered open event using
+an opening revision. Native listeners stay installed across consumer renders.
+`LiveModelSwitch` also reloads the fresh catalog on every open callback. Its close
+epoch still cancels ordinary dismissals and exempts deliberate confirmation.
+Motion, exit retention, CSS and native light dismiss are unchanged. The strengthened
+model-switch e2e forces coalescing in a single browser task across themes, sizes
+and reduced motion, and checks a dismissed pending read cannot switch a model.
+Typecheck, build, 48 focused picker/motion/token tests, strengthened model-switch
+e2e with normal and fresh-empty Claude configuration, and motion e2e passed.
+Reviewer approved the concrete patch after inspecting all 22 shared uses across
+18 consumers; no actionable findings or Critical/High blockers remained.
+Focused UX follow-up reran the mock model-switch matrix and inspected picker
+screenshots; it did not complete a first-time keyboard walkthrough. Canvas radio
+entry/reopen, Usage Projects-to-Kinds light dismissal and Add Service custom-dialog
+focus handoff remain root QA checks, not locally verified claims.
+Live providers, screen-reader speech, zoom and cross-platform behavior are unverified.
+
+## Unified proxy setup (2026-11-10)
+
+`AddProxyDialog` has one setup without a Kind selector. New records use
+`openai-compatible` with `litellmFeatures: false`; `proxy-litellm-features` is the
+optional native **Use LiteLLM reporting** checkbox in both Add and edit. Its hint
+explains that the key is sent to reporting endpoints and figures may be unavailable.
+`ProxyCard` derives the saved choice from `litellmFeatures ?? (kind === 'litellm')`,
+saves the flag independently, and preserves id, kind and credentials. Base and
+OpenAI endpoint defaults and origin-change key removal retain their existing
+contract. Labels distinguish Proxy base URL, OpenAI base URL and the model-list
+endpoint. Invalid submits focus the first invalid field. Proxy badges say Proxy;
+Model prices uses actual check results, and usage visibility uses the reporting
+capability with legacy fallback rather than kind alone. No motion was added.
+
+Before-walk: a live root mock build showed the forced LiteLLM default promising
+prices/spend before a test returned neither. Adding a mock proxy listed nine
+mixed-family models, focused its heading and exposed the existing encrypted key
+controls. Partial keyboard checks confirmed Name autofocus and Escape restoring
+Add proxy. Only light at approximately 1024x615 and dark at approximately 1600x960
+were viewed before implementation; those are not the full supported-size matrix.
+
+Source verification: 45 focused tests passed across proxyForm, proxyChecks,
+connectionLabel and usage; changed connections/multi-provider e2e scripts passed
+syntax checks, and diff whitespace checks passed. Reviewer-2 approved all eleven
+changed source/test files and the final label/legacy edit additions with no
+actionable findings or Critical/High blockers. The e2e additions cover generic
+default off, keyboard opt-in, and editing a legacy proxy while retaining id/kind/key.
+Combined typecheck/build passed on root `ae8cde39`. The postwalk checked 1024x640
+and 1600x1000 in dark/light: the dialog fits without overflow, the reporting
+checkbox works by keyboard, invalid submission focuses the field, an opt-in mock
+proxy adds nine models, and legacy id/kind/key/reporting survive edits.
+Connections, multi-provider, project-connection and usage e2e passed against that
+build normally and with fresh empty `CLAUDE_CONFIG_DIR`. Wrong-key handling and a
+transient dialog observation after rapid driver input still need targeted QA;
+the latter is not a confirmed defect. The final adapter integration gate remains
+the orchestrator's responsibility. No live provider, paid test, screen-reader
+speech, full keyboard-only task, zoom/reflow or measured performance claim was verified.
+
 Shell, layout, primitives, motion, canvas (fold, themes), run view and run chains, dashboard, settings pages, application menu, cost UI, proxy and multi-provider UI, proposal cards, org change sessions. Moved out of CLAUDE.md on 2026-11-07; see CLAUDE.md for the index.
 
 - Pocket Office (2026-11-08, `docs/design/pocket-office.md`): the existing Canvas style popover and Settings Canvas section select Graph/Pocket Office and Color (default)/Neutral/Green. Presentation changes keep graph pattern/layout/lines/node style/tint/minimap; graph preset picking explicitly restores Graph. `theme.ts` applies presentation/palette attributes and canvases consume `useCanvasOptions()`. Team shows real editable roles, the settings preview labels four example agents and is inert, and Live keeps decisions, inspectors, all loaded finished/prior agents, session/parent labels and a direct earlier-session loader. `lib/office/agentView.ts` reuses `nodeActivity` so a report without a result never becomes a successful “Reported back” outcome; runtime states remain internal to sprites while visible statuses use the shared words.
@@ -193,6 +254,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   under the mock adapter).
   - LiteLLM spend by period (2026-11-04, walk + notes `docs/design/ux-review-litellm-periods.md`): the account row shows one figure from `lib/usage.ts` `spendRowLabel` ("LiteLLM · $3.20 today" with `UsageSpend.periods`, else the budget text); under about 244 px of sidebar `.sidebar-footer` (an inline-size container) hides the name to sr-only (`span.account-name`) so "$142.10 today" never clips, and the 4 px bar yields first; `title` and the rail name carry `spendSentence` ("LiteLLM spend: $3.20 today, $12.40 this week, $31.00 this month. $42.10 of $50.00 budget." / "... No budget set."). Bar and dot tone stay the budget level. The popover `SpendSection` adds a `dl` `spend-periods` (`spend-period[data-period=day|week|month][data-present]`, `spend-period-value`, `dt` title "Since <date> (UTC)" from `periodSince`; rows from `spendPeriodRows`), else `spend-periods-missing` showing the fixed `periodsNote`, then `spend-lifetime` ("Lifetime $X" from `lifetimeText`, only when `totalUsd` differs from `usd`), then the Stale line (`usage-stale`); the head figure is `spend-budget`. Dashboard Usage card: `spendRowFigure`, the bar, `dash-usage-periods` ("$12.40 this week · $31.00 this month"), empty text "No spend reported yet.". Helpers `periodText`, `spendRowLabel`, `spendRowFigure`, `spendSentence`, `periodsCaption`, `periodSince`, `lifetimeText`, `SPEND_PERIOD_LABEL`, `SPEND_PERIOD_ORDER` are unit-tested; the UI was hand-checked with a fake report through a throwaway hook (not in the repo) at both sizes and themes; never driven by e2e (the mock reports no LiteLLM spend) and never seen with a real proxy.
 - Usage page (app-wide; spec `docs/design/usage-app.md`, contract ARCHITECTURE.md "App-wide usage overview"): store View 'usage' (not project-scoped), `usageFilters` / `setUsageFilters` (only period and bucket persist, localStorage `orgai.usage.v1`), `openUsage({ projectIds?, period?, day?, section? })`, `usageFocus`, `openUsageRun` (focusRun, side tab 'usage', `usageReturn`, so `SidePanel` `arrival` opens it at least 480 px wide under 1100 px for that visit, never saved). Entry points: sidebar `nav-usage` (rail too), View > Usage (`show-usage`, 'main', no accelerator, announces the scope), Dashboard `dash-strip-usage-link` (30 days; Enter on a strip day adds the Day chip), Trends `trends-see-all`, run Usage tab `run-usage-all`; atlas `usage`, `usage-efficiency`, `usage-runs` (`SURFACE_TARGETS` kind 'usage'). `lib/usageOverview.ts` (pure): periods, bucket rules, `overviewQuery` (period, kinds, projects only; limit 2000), `usageKindOf` (Chat wins over Ask), `needsClientFold` / `usageData` (server rollups unless a model, role, bucket, connection, no-price or Ask/Chat-within-work narrowing applies, then `foldRows` over the rows, `lowerBound` when truncated; a model chip shows the model's own cost and roles with unknown cost "Model cost per role is not recorded"), chips. `lib/usagePage.ts` (copy, deltas from a second query over the prior span, live refetch decisions), `lib/usageCharts.ts` (ticks, bucket fill, series, folding), `lib/usageEfficiency.ts` / `lib/usageRuns.ts`. Components `components/usage/*` on `panelProps.ts`; inline SVG only; `--chart-*` tokens in every theme block with measured ratios in tokens.css (`--chart-hatch` is `--surface-1`); every figure `Cost precision="page"` (`shared/view/cost.ts` `formatUsdPage`: 2 decimals from $1, 3 from $0.01, 4 above, "< $0.0001"; Dashboard and Trends not migrated yet). The run tab's old `.usage-panel` class is now `.run-usage-panel`. `scrollWithin` now honours the scroller's `scroll-padding-top`. Checked: unit tests for every lib above plus cost, appMenu, atlas, menuActions, scrollWithin, panelWidth; `e2e/usage-app.mjs` (in e2e:free; mock, two code projects, an engagement and a Chat with `[mock:no-price]` / `[mock:computed-cost]`, 1024x640 and 1600x1000, both themes: entry points, no $0 for unknown, coverage line, drilldowns and chips, focus never on body, keyboard on the plot / rows / efficiency grid, filtered-empty and first-launch empty, panels three across vs stacked, no page scroll, no layout shift from a live run) plus usage, dashboard, menu and self-help e2e; two screenshots looked at by eye (1600 dark, 1024 light). Reviewer: no Critical or High; M1-M7 and L2, L3, L4, L7, L8 fixed. Open: L1 (bars nest role=button segments inside a focusable group), L5 (several status regions, `aria-busy` on the root), L6 (test ids `usage-scope`, `usage-roles`, `usage-empty`, `usage-no-result-tag` exist on both the page and the run Usage tab), "Other" legend row does not open the Projects popover, the CSV ignores client-side narrowings (the status line says so), Efficiency uses the returned rows when truncated (it says so). Not driven: truncated, error / refresh-failed, legacy and all-unknown states (the mock cannot produce them), Months selects, More filters under 880 px, CSV contents, Day chip from the strip, screen readers, contrast by measurement in the app, macOS; no UX walk of the built page yet.
+- Usage, team timing and staffing (orchestration-efficiency 4.7; `lib/usageStaffing.ts`, pure, with tests): EfficiencyPanel shows Time to first spawn, Overlap (reportSumMs / reportBusyMs, "1.8x") and Tail (tailMs / wallMs) as medians over runs with `usage.efficiency.reports > 0` (`usage-timing`, `usage-timing-item`); `StaffingPanel` shows Cost by tier (`usage-staffing`, `usage-tier-row`, `usage-tier-table`) and Lead alone vs With reports (`usage-lead-row`; team work runs; lead alone = no efficiency record and one agent). `RunStaffing` and per-agent usage do NOT reach the renderer (UsageOverviewRow carries RunUsage only), so a tier is read from each model entry: the run connection's `tierModels` (store `connections`), else `tierForModel`; the remainder ("Not tied to a tier") = total - tiers, so parts add to the total (rows-only total when main truncated). Unverified in the app: no e2e run, no screenshot.
 - Settings pages (2026-11-03, `docs/design/config-review.md` + Implementation notes; ARCHITECTURE.md "Settings
   pages"): App panes General (Appearance, Notifications, New projects; Advanced: Motion and canvas, Assistant models,
   New projects (advanced)), Connections (cards; Advanced: Costs, Model prices), Connectors, Skill library, About; the
@@ -268,3 +330,10 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
 - Walkthroughs on mock data are in `docs/design/ux-review*.md`. The newest, `ux-review-runs-2.md`, predates the brief A
   run-view merge, so its N1 tray finding needs a re-walk. N2 (run windows miss pending decisions) and the focus and
   wording items are still open.
+- Run staffing display (spec `docs/design/orchestration-efficiency.md` 4.7; not driven by e2e, not looked at in a live app): `lib/runStaffing.ts` (pure: newest assignment per agent via `assignmentOf`, `tierEffortLabel` "everyday / medium" never the model id, `staffingReason` words every `source` and appends the note) and `lib/planGraph.ts` (thin over `src/shared/planGraph.ts`, the one definition also used by main `continuation.ts` `readySteps` / `pathOverlaps` and the TUI: ready = pending, every existing `after` done or skipped, plus the later of two path-sharing parallel steps waits; missing ids ignored, cycles end, never throws; `planHasGraph` = any step with `after`, `paths` or `staff`, and without it nothing new shows). Three places, all silent for the orchestrator, older runs and plans without the graph: the card-style canvas node's sub line (`agent-staffing` chip, hover = reason and model; compact styles get it in the tooltip and sr-only line), the side panel agent header (`<details>` `agent-staffing-detail`: summary `agent-staffing-summary`, body `agent-staffing-reason`, `agent-staffing-model`), and the run meta line (`run-meta-staffing` with `run-meta-working`, `run-meta-ready`, each only above zero; hidden under 420 px with the agent count). Plan tab steps get `plan-step-state` (data-state running | ready | waiting; "Waiting on A, B and 2 more", titles cut to 28 chars) and `plan-step-staff` ("reviewer, everyday / medium"). Counts: working = agents in a working state, shown once the run has assignments or the plan has the graph. Not built: the pocket-office inspector, Dashboard and finished list rows show no staffing.
+
+- Run staffing controls (`docs/design/orchestration-efficiency.md` 4.7; not driven in the app, unit-tested only): `lib/roleStaffing.ts` (pure) is the one place for the copy and the writes; effective values come from `effectiveRoleStaffing`, `staffingModeOf`, `staffingGoalOf`, `reviewPolicyOf`, nothing is re-derived. Role editor: `components/team/RoleStaffingControls.tsx` under the Model picker in the Model fold (`role-staffing`, `data-kind` root | exact | editable, `role-staffing-line`, `-note`, `-explain`, `role-staffing-mode`, `-min-tier`, `-max-effort`); the mode select's "Follow the project" clears `Role.staffing`, "Always" keeps no bounds, a floor or cap makes the role explicitly automatic; the root and exact-model roles get a line and a sentence but no controls. Project settings: `components/settings/StaffingSettings.tsx` is a "Run staffing" group inside the Limits pane's Advanced settings (it was a section at rest until the 2026-11-10 gate: `e2e/permissions.mjs` allows the pane two tab stops at rest) (`project-staffing`, `project-staffing-goal`, `project-review-policy`, segmented controls); choosing the default writes `undefined`. Import dialog: `import-spend` hint under Model, from the previewed `preview.roles` entry. Kit preview: `kit-role-spend` appears only when a `KitPreviewRole` carries `model` (it does not yet; `KitPreviewRole` has no model, effort or staffing, and `src/shared/types.ts` plus `main/kit/format.ts` `parseTemplate` must add them).
+
+## Run goal control (New run page)
+
+`NewRunPage` shows a Balanced / Speed / Cost segmented control (`data-testid="new-run-goal"`, help line `new-run-goal-help`) for team runs of automatic-staffing projects only (`lib/runGoal.ts`). It defaults to the project's goal and `startRun` sends `overrides.goal` only when the user picked a different one. Checked by unit tests only; not run in the app.

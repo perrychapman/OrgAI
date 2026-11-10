@@ -171,6 +171,29 @@ describe('applyEvent', () => {
     expect(s.project?.name).toBe('One')
   })
 
+  it('staffing.updated replaces the run\'s staffing and changes nothing else; a record carries it in', () => {
+    let s = liveState()
+    const before = s.runs.r1
+    const staffing = { goal: 'cost' as const, assignments: [{ roleId: 'r-eng', model: 'haiku', tier: 'fast' as const, source: 'role' as const, at: 1 }] }
+    s = applyEvent(s, ev({ type: 'staffing.updated', runId: 'r1', staffing }, 11))
+    expect(s.runs.r1.staffing).toBe(staffing)
+    expect({ ...s.runs.r1, staffing: undefined }).toEqual({ ...before, staffing: undefined })
+    const next = { goal: 'speed' as const, assignments: [] }
+    s = applyEvent(s, ev({ type: 'staffing.updated', runId: 'r1', staffing: next }, 12))
+    expect(s.runs.r1.staffing).toBe(next)
+    // plan.updated still lands beside it.
+    const plan = { goal: 'G', steps: [], status: 'active' as const, autoContinues: 0, updatedAt: 1 }
+    s = applyEvent(s, ev({ type: 'plan.updated', runId: 'r1', plan }, 13))
+    expect(s.runs.r1.plan).toBe(plan)
+    expect(s.runs.r1.staffing).toBe(next)
+    // A run record (runs:get / snapshot) brings its staffing; a record without one keeps what the state has.
+    const r2 = summary('r2', { status: 'finished', startedAt: 200 })
+    s = applyRecord(s, { ...record(r2), staffing })
+    expect(s.runs.r2.staffing).toBe(staffing)
+    s = applyRecord(s, record(r2))
+    expect(s.runs.r2.staffing).toBe(staffing)
+  })
+
   it('run.delegation sets the summary and the listed agents', () => {
     let s = liveState()
     const d = { verdict: 'failed' as const, missing: ['policy'], corrected: false, nativeSpawns: 1 }

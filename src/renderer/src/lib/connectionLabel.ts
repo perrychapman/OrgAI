@@ -27,10 +27,10 @@ export function connectionLabel(id: ConnectionId | null | undefined): string {
   return registry ? REMOVED_PROXY_LABEL : 'Proxy'
 }
 
-/** The kind in words, for a badge: "Anthropic", "OpenAI", "LiteLLM proxy", "OpenAI-compatible proxy". */
+/** The kind in words, for a badge: "Anthropic", "OpenAI" or "Proxy". */
 export function connectionKindLabel(c: ConnectionInfo['connection'] | undefined | null): string {
   if (!c) return 'Proxy'
-  if (isProxyConnection(c)) return c.kind === 'litellm' ? 'LiteLLM proxy' : 'OpenAI-compatible proxy'
+  if (isProxyConnection(c)) return 'Proxy'
   return BUILTIN_NAME[c.id] ?? c.id
 }
 

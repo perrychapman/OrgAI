@@ -2,11 +2,11 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { validModelId } from '../connections/codexAccount'
 import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { dirname, join } from 'node:path'
-import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
+import type { AgentInstance, ConnectionId, Effort, ModelTier, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
-import { cleanRequiredReports, mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
-import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
+import { cleanRequiredReports, effortOptionsFor, mcpServersForRole, newId, projectKindOf, settingTier } from '@shared/defaults'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
+import { datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import {
@@ -19,12 +19,13 @@ import {
   referenceRefusalEntry,
   referenceTouchOf
 } from './referenceDirectories'
-import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
+import { ContinuationDriver, PLAN_TOOLS, agentSlots, rootRoleNames, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { quickEditCard, quickEditFree } from './quickEditCard'
 import { composeFirstMessage, peerMessageText } from './prompts'
+import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
@@ -35,6 +36,9 @@ import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOS
 import { bridgedRolesOf, bridgedSpawnDenial } from './claude'
 import { BRIDGE_HARNESS_TOOLS } from '@shared/types'
 import { buildRolePrompt } from './prompts'
+import { obligationsFor } from './delegation'
+import { StaffingBook } from './staffingBook'
+import { recordStaffing } from './staffing'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -114,6 +118,11 @@ import { buildRolePrompt } from './prompts'
  * [mock:delegation-claim] (like skip, and the manager's report claims both workers ran). Each ends with the plan steps
  * when [mock:exec-plan] is also in the prompt. The mock calls ctx.delegation at each spawn, completion and delivery
  * and prefixes receiptText to the report its parent receives; it is the reference for the real adapters.
+ * Run staffing marker (work runs, default script): [mock:staffing] (staffingSteps): the root sets a two-step plan whose steps
+ * carry `staff`, spawns the first two roles it may spawn (one per step, the second step asking for a tier above the
+ * role's ceiling when the chart has one) and both report back, so RunRecord.staffing can be asserted without a model.
+ * Every scripted spawn goes through a StaffingBook (the `spawn` step may carry `tier` and `effort` as the on-call values),
+ * a report's model is the resolved one (MockSession.staffedFor) and each spawn appends a row through recordStaffing.
  * Model switching markers (all run kinds): [mock:model-switch] yields one root text then idle, without cards;
  * replies echo the active root model. [mock:model-switch-limit] ends the first session at a usage limit with
  * a reset 24 hours away (set autoResume off in the test); [mock:model-switch-error] ends it with a provider error.
@@ -164,7 +173,7 @@ export type MockStep =
       onDeny?: string
     }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
-  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
+  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Run staffing: the tier and effort stated on the spawn call itself. */ tier?: ModelTier; effort?: Effort; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
   | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
@@ -597,6 +606,40 @@ export function folderConfigSteps(loaded: boolean, covered: boolean): MockStep[]
 /** Trigger token (work runs, default script): the root changes its own project's MCP servers and skills mid-run. */
 /** Trigger token (work runs, default script): a three-level agent tree whose reports all finish (deepTreeSteps). */
 export const DEEP_TREE_TOKEN = '[mock:deep-tree]'
+
+/** Trigger token (work runs, default script): a plan whose steps carry `staff`, then one scripted spawn per step. */
+export const STAFFING_TOKEN = '[mock:staffing]'
+/** The agent ids the [mock:staffing] script spawns. */
+export const MOCK_STAFFING_REPORTS = ['mock-staffed-1', 'mock-staffed-2'] as const
+
+/**
+ * The [mock:staffing] turn: set_plan with two steps that carry `staff` (the first asks `first` for a fast / low pick, the
+ * second asks `second` for top / max, which the chart's ceiling clamps), then one spawn per step; each step is marked done when its report
+ * finishes and the plan is completed.
+ */
+export function staffingSteps(firstSlug: string, secondSlug: string): MockStep[] {
+  const [a, b] = MOCK_STAFFING_REPORTS
+  return [
+    { type: 'text', text: 'Planning the work: two steps, each staffed on purpose.' },
+    {
+      type: 'plan',
+      goal: 'Staff two steps',
+      steps: [
+        { title: 'Do the routine part', staff: { role: firstSlug, tier: 'fast', effort: 'low' } },
+        { title: 'Do the hard part', staff: { role: secondSlug, tier: 'top', effort: 'max' } }
+      ] as never
+    },
+    { type: 'spawn', id: a, name: a, role: firstSlug, description: 'Do the routine part' },
+    { type: 'spawn', id: b, name: b, role: secondSlug, description: 'Do the hard part' },
+    { type: 'finish', id: a, result: 'Routine part done.' },
+    { type: 'planUpdate', steps: [{ id: 'p1', status: 'done' }] },
+    { type: 'finish', id: b, result: 'Hard part done.' },
+    { type: 'planUpdate', steps: [{ id: 'p2', status: 'done' }] },
+    // Completed, so the run ends here instead of being nudged to finish the plan until the continue limit.
+    { type: 'planComplete', summary: 'Both steps are done.' },
+    { type: 'text', text: 'Both steps are done.' }
+  ]
+}
 
 /** Required-delegation markers (work runs, default script). See the file header. */
 export const DELEGATION_OK_TOKEN = '[mock:delegation-ok]'
@@ -1185,6 +1228,8 @@ export function knowledgeFactId(result: string, text: string): string | undefine
 }
 
 export const BRIDGED_TOKEN = '[mock:bridged]'
+/** Like [mock:bridged], with background: true: the root carries on with the default script and the report arrives as a harness message. */
+export const BRIDGED_BG_TOKEN = '[mock:bridged-bg]'
 /** The brief the [mock:bridged] root hands its first bridged report. */
 export const MOCK_BRIDGED_BRIEF = 'Mock bridged brief.'
 /** The root's sentence when [mock:bridged] is set but the run has no bridged report (no ctx.bridge or no bridged roles). */
@@ -1199,9 +1244,10 @@ export const MOCK_BRIDGED_CHILD_TEXT = 'Mock bridged report done.'
  * first bridged role), say the result's first line, then the default script. Without a bridged role: one sentence,
  * then the default script.
  */
-export function bridgedSteps(slug: string | undefined, rest: MockStep[]): MockStep[] {
+export function bridgedSteps(slug: string | undefined, rest: MockStep[], background = false): MockStep[] {
   if (!slug) return [{ type: 'text', text: MOCK_BRIDGED_NONE }, ...rest]
-  return [{ type: 'harness', name: BRIDGE_HARNESS_TOOLS.delegate, retryOnRevise: false, args: { role: slug, brief: MOCK_BRIDGED_BRIEF }, echoFirstLine: MOCK_BRIDGED_DONE }, ...rest]
+  const args = { role: slug, brief: MOCK_BRIDGED_BRIEF, ...(background ? { background: true } : {}) }
+  return [{ type: 'harness', name: BRIDGE_HARNESS_TOOLS.delegate, retryOnRevise: false, args, echoFirstLine: MOCK_BRIDGED_DONE }, ...rest]
 }
 
 export const CONFIG_CHANGE_TOKEN = '[mock:config-change]'
@@ -1291,6 +1337,14 @@ export class MockSession implements RuntimeSession {
   private stopped = false
   private ended = false
   private interrupted = false
+  /** Interrupted by the user, until their next message (Claude's `held`): background reports' results wait for that message. */
+  private held = false
+  /** Harness notices that arrived while held: they come with the user's next message (Claude's heldNotices). */
+  private heldNotices: string[] = []
+  /** Bridged reports delegate_agent started in the background and still working: agent id -> report. */
+  private bridgedLive = new Map<string, BackgroundReport>()
+  /** Epoch ms the newest background bridged report ended; bookkeeping for the continuation wait. */
+  private lastBridgedEndedAt?: number
   /** Root turn ends so far (RootTurnEnd.turnGen). */
   private rootTurnGen = 0
   /** A root turn is being played (turn()). */
@@ -1325,6 +1379,15 @@ export class MockSession implements RuntimeSession {
     this.root = root
     this.isSetup = isSetupLikeRun(ctx.run.kind)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
+    this.staffing = new StaffingBook({
+      project: ctx.project,
+      rootTier: root.tier ?? settingTier(root.model),
+      tierModels: () => ctx.connection?.tierModels ?? {},
+      adapterEfforts: effortOptionsFor('mock'),
+      plan: () => ctx.getPlan(),
+      // The project profile's default pick for an unrequested spawn (spec 4.5); none on a fixed project.
+      ...staffingProfileDep(ctx)
+    })
     const onDecided = (): void => {
       const a = this.agents.get(ROOT_AGENT_ID)
       if (a && a.state === 'waiting') this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
@@ -1334,12 +1397,30 @@ export class MockSession implements RuntimeSession {
       const activity = stepActivity(plan)
       if (a && activity && a.state !== 'done' && a.state !== 'error') this.setState(ROOT_AGENT_ID, a.state, activity)
     }
-    this.hooks = { onDecided, onPlanUpdated, addMcpServer: (spec) => this.addMcpServer(spec), configChanged: (change) => this.configChanged(change) }
+    this.hooks = {
+      onDecided,
+      onPlanUpdated,
+      addMcpServer: (spec) => this.addMcpServer(spec),
+      configChanged: (change) => this.configChanged(change),
+      backgroundDelegation: {
+        blocker: (caller, roleId) => this.backgroundBlocker(caller.agentId, roleId),
+        started: (report) => {
+          this.bridgedLive.set(report.agentId, report)
+          this.noteActivity('subagent')
+        },
+        ended: (report, result, text) => this.backgroundEnded(report, result, text)
+      }
+    }
     this.tools = harnessToolsFor(ctx, this.hooks)
     this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
     this.plugins.push(...(ctx.plugins?.() ?? []).filter((p) => p.enabled))
     if (ctx.connection) this.connection = { adapter: ctx.connection.adapter, connection: ctx.connection.connection }
     this.continueTurns = [...(script.continue ?? [])]
+    // Background bridged reports are not agents of this session but still count as working reports.
+    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size
+    // The plan tools count free agent slots from ctx.liveReports; only this adapter knows its live threads.
+    // A child or fake context without it reads as zero live reports.
+    ctx.liveReports = live
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
       projectKind: projectKindOf(ctx.project),
@@ -1353,7 +1434,14 @@ export class MockSession implements RuntimeSession {
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
-      liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length,
+      liveReports: live,
+      slots: () => agentSlots(ctx, live()),
+      ownRoles: () => rootRoleNames(ctx.roles),
+      lastReportEndedAt: () => {
+        let last = this.lastBridgedEndedAt
+        for (const a of this.agents.values()) if (a.id !== ROOT_AGENT_ID && a.endedAt !== undefined && (last === undefined || a.endedAt > last)) last = a.endedAt
+        return last
+      },
       pendingInteractions: () => ctx.pendingInteractions(),
       rateLimited: () => false,
       stopping: () => this.stopped,
@@ -1375,8 +1463,12 @@ export class MockSession implements RuntimeSession {
 
   async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
+    this.held = false
     this.transcript(ROOT_AGENT_ID, images?.length ? { kind: 'user', text, images } : { kind: 'user', text })
-    this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m))) })
+    // Notices held while the run waited for the user come first, like the Claude adapter's.
+    const notes = this.heldNotices.splice(0)
+    const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: notes.length ? `${notes.join('\n\n')}\n\n---\n${body}` : body })
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
     // An image-only message is still a turn; give the scripted reply something to echo.
     const n = images?.length ?? 0
@@ -1387,6 +1479,7 @@ export class MockSession implements RuntimeSession {
   /** Ends the current turn before its next step; a blocking request in flight still waits for its answer. */
   async interrupt(): Promise<void> {
     this.continuation.hold()
+    this.held = true
     this.interrupted = true
     this.poke()
   }
@@ -1418,6 +1511,35 @@ export class MockSession implements RuntimeSession {
     }
   }
 
+  /** delegate_agent background: true blocks for a report's call (harness messages reach only the root) and a required delegation. */
+  private backgroundBlocker(callerId: string | undefined, roleId: string): string | undefined {
+    if (callerId !== undefined && callerId !== ROOT_AGENT_ID) return 'only the orchestrator can delegate in the background'
+    if (!this.ctx.delegation) return undefined
+    const obligations = obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)
+    if (obligations[this.root.id]?.includes(roleId) || (obligations[roleId]?.length ?? 0) > 0) return 'required delegations run in the foreground'
+    return undefined
+  }
+
+  /**
+   * A background bridged report ended (the Claude adapter's backgroundEnded): no longer live; its result is a harness
+   * message, or waits for the user's next message while held or when the harness stopped it; nothing after stop.
+   */
+  private backgroundEnded(report: BackgroundReport, result: BridgeSpawnResult, text: string): void {
+    this.bridgedLive.delete(report.agentId)
+    this.lastBridgedEndedAt = Date.now()
+    this.noteActivity('report')
+    if (this.stopped || this.ended) {
+      this.log('info', `Bridged report ${report.handle} ended after the session stopped; its report was not delivered.`)
+      return
+    }
+    const message = `Harness: ${text}`
+    const summary = result.stopped ? `${report.handle} was stopped.` : result.ok ? `${report.handle} reported back.` : `${report.handle} failed.`
+    if (result.stopped || this.held) {
+      this.heldNotices.push(message)
+      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: message }, { source: 'harness' })
+    } else this.deliverHarness(message, 'Reading a report…', { summary })
+  }
+
   /** RuntimeSession.nudge: a harness message for the orchestrator (the delegation correction), not an auto-continue. */
   async nudge(text: string): Promise<void> {
     this.deliverHarness(text, 'Reading a harness reminder…')
@@ -1432,7 +1554,7 @@ export class MockSession implements RuntimeSession {
       rootIdle,
       continuationSettled: this.continuation.isSettledForTurn(this.rootTurnGen),
       nudgeTurn1Sent: this.continuation.nudgeTurn1Sent,
-      quiescent: !this.inTurn && this.inbox.length === 0
+      quiescent: !this.inTurn && this.inbox.length === 0 && this.bridgedLive.size === 0 && this.heldNotices.length === 0
     }
   }
 
@@ -1575,6 +1697,8 @@ export class MockSession implements RuntimeSession {
   private usageModel(agentId: string): string {
     if (agentId === ROOT_AGENT_ID && this.rootModelOverride) return this.rootModelOverride
     if (agentId === ROOT_AGENT_ID && this.modelSwitchMarker() && this.root.model && this.root.model !== 'inherit') return this.root.model
+    const staffed = this.staffed.get(agentId)?.model
+    if (staffed) return staffed
     const prompt = this.ctx.prompt
     if (prompt.includes(NO_PRICE_TOKEN) || (agentId === UNPRICED_REPORT_ID && !prompt.includes(COMPUTED_COST_TOKEN))) return MOCK_UNPRICED_MODEL
     if (prompt.includes(COMPUTED_COST_TOKEN)) return 'claude-sonnet-4-5'
@@ -1664,7 +1788,7 @@ export class MockSession implements RuntimeSession {
     try {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId })
       this.promptKnowledgeBriefs.push({ agentId: ROOT_AGENT_ID, brief: this.ctx.knowledgeBrief?.() })
-      const first = composeFirstMessage(this.ctx.prompt, firstMessageHiddenContext(this.ctx, (m) => this.log('warn', m)))
+      const first = composeFirstMessage(this.ctx.prompt, firstMessageHiddenContext(withRootStaffingBrief(this.ctx), (m) => this.log('warn', m)))
       this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: first })
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
       if (this.ctx.prompt.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
@@ -1785,6 +1909,11 @@ export class MockSession implements RuntimeSession {
       if (!ref) this.log('info', 'Mock [mock:reference-shell]: this run has no reference folder, so the command step is skipped.')
       return referenceShellSteps(ref)
     }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(STAFFING_TOKEN)) {
+      const spawnable = (this.root.spawnable ?? []).map((id) => this.ctx.roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
+      const first = spawnable[0] ?? this.firstSpawnableSlug(this.root)
+      return staffingSteps(first, spawnable[1] ?? first)
+    }
     const delegation = this.delegationMarkerSteps()
     if (delegation) return delegation
     const execMarker = this.execMarkerSteps()
@@ -1830,16 +1959,17 @@ export class MockSession implements RuntimeSession {
   /**
    * Bridged reports (work runs, default script), or null. A bridged child session's root (ctx.bridgedChild) says
    * MOCK_BRIDGED_CHILD_TEXT and its turn ends (idle; never nudged, autoContinue is false). [mock:bridged] on a parent
-   * run: bridgedSteps for the first bridged role, then the default script.
+   * run: bridgedSteps for the first bridged role, then the default script; [mock:bridged-bg] the same with background: true.
    */
   private bridgedTurnSteps(): MockStep[] | null {
     if (this.isSetup || this.ctx.run.kind !== 'work' || this.ctx.run.quick || this.script.work !== DEFAULT_WORK) return null
     if (this.ctx.bridgedChild) return [{ type: 'text', text: MOCK_BRIDGED_CHILD_TEXT }]
-    if (!this.ctx.prompt.includes(BRIDGED_TOKEN)) return null
+    const background = this.ctx.prompt.includes(BRIDGED_BG_TOKEN)
+    if (!background && !this.ctx.prompt.includes(BRIDGED_TOKEN)) return null
     const first = bridgedRolesOf(this.ctx)[0]
     const available = !!first && this.tools.some((t) => t.name === BRIDGE_HARNESS_TOOLS.delegate)
     if (!available) this.log('info', 'Mock [mock:bridged]: this run has no bridged report, so the delegation step is skipped.')
-    return bridgedSteps(available ? first.slug : undefined, DEFAULT_WORK)
+    return bridgedSteps(available ? first.slug : undefined, DEFAULT_WORK, background)
   }
 
   /**
@@ -1854,6 +1984,7 @@ export class MockSession implements RuntimeSession {
       ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}),
       ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}),
       ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}),
+      ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}),
       ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
       ...(this.ctx.bridgedChild ? { bridged: true } : {})
     })
@@ -1861,6 +1992,16 @@ export class MockSession implements RuntimeSession {
 
   private modelSwitchMarker(): boolean {
     return [MODEL_SWITCH_TOKEN, MODEL_SWITCH_LIMIT_TOKEN, MODEL_SWITCH_ERROR_TOKEN].some((token) => this.ctx.prompt.includes(token))
+  }
+
+  /** Run staffing: the same book the real adapters keep; scripted spawns resolve through it. */
+  private staffing: StaffingBook
+  /** agentId -> what a staffed report runs on: the resolved model and the effort every message to it would carry. */
+  private staffed = new Map<string, { model?: string; effort?: Effort }>()
+
+  /** What the staffing book gave a report that runs on a picked model / effort (undefined = as configured). For tests. */
+  staffedFor(agentId: string): { model?: string; effort?: Effort } | undefined {
+    return this.staffed.get(agentId)
   }
 
   /** Spawn step ids whose native spawn was refused (a bridged role); their later steps are skipped. */
@@ -2409,6 +2550,7 @@ export class MockSession implements RuntimeSession {
   private async finishStep(step: Extract<MockStep, { type: 'finish' }>): Promise<void> {
     const gate = this.ctx.delegation
     let text = step.result
+    let failed = false
     if (gate) {
       const ask = (): ReturnType<typeof gate.completion> => gate.completion(step.id, { canCorrect: true, canWait: true, reportText: step.result })
       let d = ask()
@@ -2428,9 +2570,11 @@ export class MockSession implements RuntimeSession {
       }
       if (d.action === 'none' || d.action === 'correct') return
       this.pendingFinish.delete(step.id)
+      failed = d.action === 'fail'
       const receipt = gate.receiptText(step.id)
       if (receipt) text = `${receipt}\n\n${step.result}`
     }
+    this.staffing.ended(step.id, { failed })
     const a = this.ensureAgent(step.id)
     a.result = step.result
     a.state = 'done'
@@ -2473,6 +2617,12 @@ export class MockSession implements RuntimeSession {
     this.spawnToolUse.set(step.id, toolUseId)
     if (!this.agents.has(step.id)) this.noteActivity('subagent')
     const role = this.rolesBySlug.get(slug)
+    // Run staffing: bind to the plan step and resolve before the report exists; apply only an override.
+    const onCall = step.tier || step.effort ? { ...(step.tier ? { tier: step.tier } : {}), ...(step.effort ? { effort: step.effort } : {}) } : undefined
+    const decision = role ? this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(onCall ? { onCall } : {}) }) : undefined
+    const staffedModel = decision?.resolved.tierChanged && decision.resolved.model && decision.resolved.model !== 'inherit' ? decision.resolved.model : undefined
+    if (decision?.resolved.overrides) this.staffed.set(step.id, { ...(staffedModel ? { model: staffedModel } : {}), ...(decision.resolved.effortChanged && decision.resolved.effort ? { effort: decision.resolved.effort } : {}) })
+    else this.staffed.delete(step.id)
     const agentParent = resolveParent(this.agents, step.id, parentId, ROOT_AGENT_ID)
     this.upsert({
       ...this.ensureAgent(step.id, { roleSlug: slug, parentId: agentParent }),
@@ -2483,8 +2633,13 @@ export class MockSession implements RuntimeSession {
       spawnToolUseId: toolUseId,
       handle,
       state: 'thinking',
-      activity: step.description.slice(0, 90) || 'Reading the brief…'
+      activity: step.description.slice(0, 90) || 'Reading the brief…',
+      ...(staffedModel ? { model: staffedModel } : {})
     })
+    if (decision) {
+      const row = this.staffing.started(step.id, step.id, Date.now())
+      if (row) recordStaffing(this.ctx, row).catch((e: Error) => this.log('warn', `Could not record the staffing of ${handle}: ${e.message}`))
+    }
     if (role) this.ctx.delegation?.noteSpawn(step.id, agentParent ?? parentId, role.id)
     this.transcript(step.id, { kind: 'user', text: brief })
     // After the upsert, so the row lands on the report (like Codex); the block stays out of its transcript entry.

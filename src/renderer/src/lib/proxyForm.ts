@@ -3,15 +3,6 @@ import { PROXY_NAME_MAX } from '@shared/types'
 
 /** Pure logic behind the Add proxy dialog and the proxy card's fields. Main re-validates everything. */
 
-export const PROXY_KIND_OPTIONS: { value: ProxyKind; label: string; hint: string }[] = [
-  { value: 'litellm', label: 'LiteLLM proxy', hint: 'Reports prices and spend as well as the model list.' },
-  { value: 'openai-compatible', label: 'OpenAI-compatible proxy', hint: 'Lists models only. Prices and spend are not reported.' }
-]
-
-export function kindHint(kind: ProxyKind): string {
-  return PROXY_KIND_OPTIONS.find((o) => o.value === kind)?.hint ?? ''
-}
-
 const trimSlashes = (s: string): string => s.trim().replace(/\/+$/, '')
 
 /** Names of every connection a new proxy must not repeat (case-insensitive): the built-ins and the other proxies. */
@@ -93,6 +84,7 @@ export function otherModelsHost(anthropicUrl: string, openaiUrl: string, modelsU
 export interface ProxyFormValues {
   name: string
   kind: ProxyKind
+  litellmFeatures?: boolean
   anthropicBaseUrl: string
   openaiBaseUrl: string
   modelsUrl: string
@@ -104,7 +96,7 @@ export function validateProxyForm(v: ProxyFormValues, taken: readonly string[]):
   const out: ProxyFormErrors = {}
   const n = nameProblem(v.name, taken)
   if (n) out.name = n
-  const a = urlProblem(v.anthropicBaseUrl, 'Anthropic URL', true)
+  const a = urlProblem(v.anthropicBaseUrl, 'Proxy base URL', true)
   if (a) out.anthropicBaseUrl = a
   const o = urlProblem(v.openaiBaseUrl, 'OpenAI URL', false)
   if (o) out.openaiBaseUrl = o

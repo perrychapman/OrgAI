@@ -266,6 +266,7 @@ describe('BridgedSessions.spawn', () => {
     s.ctx.emit({ type: 'run.cost', runId: s.ctx.run.id, totalCostUsd: 3 })
     s.ctx.emit({ type: 'run.usage', runId: s.ctx.run.id, usage: {} as never })
     s.ctx.emit({ type: 'plan.updated', runId: s.ctx.run.id, plan: {} as never })
+    s.ctx.emit({ type: 'staffing.updated', runId: s.ctx.run.id, staffing: { goal: 'cost', assignments: [] } })
     s.ctx.emit({ type: 'usage.status', runId: s.ctx.run.id, usage: {} as never })
     s.ctx.emit({ type: 'run.finalized', runId: s.ctx.run.id, outcome: 'completed', summary: {} as never })
     s.ctx.emit({ type: 'run.message', runId: s.ctx.run.id, direction: 'in', peerRunId: 'x', peerProjectId: 'x', peerProjectName: 'x', peerPrompt: '', text: '', at: 1 })
@@ -375,7 +376,7 @@ describe('BridgedSessions.spawn', () => {
     await tick()
     expect(r.b.activeCount()).toBe(2)
     await r.b.stopAll('the run was stopped')
-    expect(await a).toMatchObject({ ok: false, text: 'Stopped: the run was stopped' })
+    expect(await a).toMatchObject({ ok: false, text: 'Stopped: the run was stopped', stopped: true })
     expect(await c).toMatchObject({ ok: false, text: 'Stopped: the run was stopped' })
     expect(r.codex.sessions[0]!.stop).toHaveBeenCalledTimes(1)
     expect(r.claude.sessions[0]!.stop).toHaveBeenCalledTimes(1)
@@ -465,12 +466,32 @@ describe('BridgedSessions.spawn', () => {
     expect(ctx.getPlan()).toBeUndefined()
     await ctx.updatePlan({} as never)
     expect(r.parent.updatePlan).not.toHaveBeenCalled()
+    // Staffing mirrors the plan: the child has none and its updates never reach the parent run.
+    expect(ctx.getStaffing()).toBeUndefined()
+    await ctx.updateStaffing({ goal: 'speed', assignments: [] })
+    expect(r.parent.updateStaffing).not.toHaveBeenCalled()
+    expect(ctx.getStaffing()).toBeUndefined()
     ctx.rateLimited({ window: 'five_hour' })
     expect(r.events).toContainEqual(expect.objectContaining({ type: 'log', level: 'warn', message: expect.stringContaining('usage limit') }))
     expect(r.parent.rateLimited).not.toHaveBeenCalled()
     // Knowledge callers are remapped too.
     r.codex.sessions[0]!.status('idle')
     await done
+  })
+
+  it('gives the child the parent run\'s staffing goal, and none when the parent has none', async () => {
+    const r = rig({ parent: { staffingGoal: 'cost' } })
+    const done = r.b.spawn({ role: 'oa', brief: 'go' })
+    await tick()
+    expect(r.codex.ctx.staffingGoal).toBe('cost')
+    r.codex.sessions[0]!.status('idle')
+    await done
+    const plain = rig()
+    const d2 = plain.b.spawn({ role: 'oa', brief: 'go' })
+    await tick()
+    expect('staffingGoal' in plain.codex.ctx).toBe(false)
+    plain.codex.sessions[0]!.status('idle')
+    await d2
   })
 
   it('maps knowledge and note callers to the remapped agent id', async () => {

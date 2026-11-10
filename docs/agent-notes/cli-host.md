@@ -264,3 +264,13 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     knowledge / transcriptRows bodies in `shared/view`, reexports.test compares export names (H5, H6).
   - Unverified: Windows named pipes and their ACLs, Windows / Linux process start times, packaged builds, the startup
     dialogs by eye.
+- Run staffing in the CLI and TUI (orchestration-efficiency 4.7; checked by unit tests only, no live run):
+  - `exec` and `resume --exec` take `--goal balanced|speed|cost` (`overrides.goal`; a bad value is a usage error naming the
+    three). Text mode prints one line per staffed report from `staffing.updated`, once per assignment that has an
+    `agentId`: `engineer-1 on everyday / medium (chosen by the orchestrator)`; json and stream-json are unchanged.
+  - `src/cli/staffingText.ts` holds the pure words (label, reason from `source` and `note`, newest assignment per agent);
+    `src/cli/tui/planGraph.ts` is a thin view over `src/shared/planGraph.ts`, the one ready / waiting definition shared with the host (`readySteps`) and the desktop app: ready = pending, every existing `after` done or skipped, and of two parallel steps sharing a path the later waits for the earlier, so the TUI ready count matches the host's.
+  - TUI: agent rows end with the staffing text (dim) only when the whole row fits with it; the inspector has a
+    `staffing` fact line; the plan pane adds running / ready / waiting-on (two titles, then "and N more") and the step's
+    pick for plans where any step has `after`, `paths` or `staff`; the status bar adds "N working" and "N ready" (first
+    segments to give way) for runs with staffing data or a graph plan. All run text goes through `safeLine`.

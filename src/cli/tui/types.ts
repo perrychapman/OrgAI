@@ -55,6 +55,7 @@ import type {
   Proposal,
   RpcHelloResult,
   RunPlan,
+  RunStaffing,
   RunStatus,
   RunSummary,
   RunTeam,
@@ -212,6 +213,8 @@ export interface OrgTreeRow {
   msgIn?: PeerCount[]
   /** A message to or from this agent in the last TUI_TRAFFIC_MS. */
   traffic?: boolean
+  /** Resolved staffing from the newest assignment for this agent ("everyday / medium"), sanitized. Dropped first when narrow. */
+  staffing?: string
 }
 
 /** One peer of an agent's message traffic: its sanitized label and how many messages. */
@@ -249,6 +252,8 @@ export interface InspectorView {
   waiting: number
   msgOut: PeerCount[]
   msgIn: PeerCount[]
+  /** Staffing of this agent (newest assignment): the pick, why, and the model it resolved to; sanitized. */
+  staffing?: { label: string; reason: string; model: string }
 }
 
 /** A live run as a status-bar chip (F8). */
@@ -295,6 +300,10 @@ export interface PlanStepView {
   status: 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'
   owner?: string
   note?: string
+  /** Plans that use the graph only, open steps only: running, ready, or waiting on these step titles (sanitized, in plan order). */
+  flow?: { state: 'running' | 'ready' | 'waiting'; on?: string[] }
+  /** The orchestrator's pick for the step: "engineer (everyday / medium)", sanitized. */
+  staff?: string
 }
 
 export interface PlanView {
@@ -309,6 +318,8 @@ export interface PlanView {
   done: number
   total: number
   steps: PlanStepView[]
+  /** Some step has after, paths or staff: the steps carry `flow`. */
+  graph?: boolean
 }
 
 export interface WorktreeRow {
@@ -334,6 +345,9 @@ export interface StatusSummary {
   costText?: string
   needsYou: number
   liveRuns: number
+  /** Agents working now and steps ready to start; only set (above zero) for runs with staffing data or a graph plan. */
+  working?: number
+  readySteps?: number
   /** Live runs of the project as chips (R1* R2!), oldest first. */
   runChips?: RunChip[]
   hostKind?: HostKind
@@ -406,6 +420,8 @@ export interface TuiRun {
   agents: Record<string, AgentInstance>
   transcript: TranscriptEntry[]
   plan?: RunPlan
+  /** Latest staffing record (staffing.updated, or the run record). Shown on agent rows, the inspector and the status bar. */
+  staffing?: RunStaffing
   /** Sanitized display text per agent id (agent.partial, cumulative). */
   partials: Record<string, string>
   cards: PendingCards

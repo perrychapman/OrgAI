@@ -85,6 +85,29 @@ afterEach(() => {
 })
 
 describe('RunManager stored records', () => {
+  it('refuses a stale expected run before switching or mutating the successor, and accepts a matching id', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'new-model', label: 'New', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'older', projectId: p.id, status: 'finished', startedAt: 1, connection: 'anthropic' }))
+    const run = await m.start({ project: p, prompt: '[mock:model-switch]', resumedFrom: 'older' })
+    if (m.summary(run.id)?.status !== 'idle') await waitFor(isType('run.status', (event) => event.runId === run.id && event.status === 'idle'))
+    const active = Reflect.get(m, 'runs').get(run.id)
+    const change = vi.spyOn(active.session, 'switchModel')
+    const before = structuredClone(m.summary(run.id)?.modelSelection)
+    const eventCount = events.length
+    const stale = await m.switchModel({ runId: 'older', expectedRunId: 'older', model: 'new-model' })
+    expect(stale).toMatchObject({ run: { id: run.id }, applied: false, reason: 'The conversation has continued; select the model again.' })
+    expect(change).not.toHaveBeenCalled()
+    expect(m.summary(run.id)?.modelSelection).toEqual(before)
+    expect(events.slice(eventCount).some((event) => event.type === 'run.model')).toBe(false)
+    await expect(m.switchModel({ runId: 'older', expectedRunId: '../bad', model: 'new-model' })).rejects.toThrow('Invalid expected run id')
+    const matched = await m.switchModel({ runId: 'older', expectedRunId: run.id, model: 'new-model' })
+    expect(matched.applied).toBe(true)
+    expect(change).toHaveBeenCalledOnce()
+    expect(m.summary(run.id)?.modelSelection).toEqual({ model: 'new-model', connection: 'anthropic' })
+    await m.stopAll()
+  })
+
   it('refuses an unpriced live selection before adapter mutation and ignores forged model events', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m } = manager(p, {}, { catalog: () => [{ id: 'unpriced', label: 'Unpriced', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }] })
@@ -3116,6 +3139,33 @@ describe('MCP library, OAuth preparation and the harness project', () => {
 })
 
 describe('run titles', () => {
+  it('preserves a staged model selection when a title arrives after natural teardown', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    let release!: (title: string) => void
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: () => new Promise<string>((resolve) => { release = resolve }),
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const catalog = [{ id: 'alternate', label: 'Alternate', connection: 'openai' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'builtin' as const }]
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100, { catalog: () => catalog })
+    const run = await m.start({ project: p, prompt: 'Ship the release' })
+    await vi.waitFor(() => expect(Reflect.get(m, 'runs').has(run.id)).toBe(false))
+    expect((await m.switchModel({ runId: run.id, model: 'alternate', connection: 'openai' })).applied).toBe(false)
+    release('Ship the release notes')
+    await waitFor(isType('run.title', (event) => event.runId === run.id))
+    const expected = { title: 'Ship the release notes', modelSelection: { model: 'alternate', connection: 'openai' } }
+    expect(store.get(run.id)).toMatchObject(expected)
+    const reloaded = new RunStore(join(dir, 'data'))
+    expect(reloaded.get(run.id)).toMatchObject(expected)
+    expect(reloaded.getRecord(run.id)?.summary).toMatchObject(expected)
+    expect(JSON.parse(readFileSync(join(dir, 'data', 'runs', `${run.id}.json`), 'utf8')).summary).toMatchObject(expected)
+  })
+
   it('a work run on the mock adapter gets run.title and a persisted summary.title', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m, store } = manager(p)

@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import type { Project } from '@shared/types'
+import type { Project, StaffingGoal } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { projectConnection, projectKindOf } from '@shared/defaults'
@@ -15,6 +15,7 @@ import { Button } from './ui/Button'
 import { EmptyState } from './ui/EmptyState'
 import TeamFilesPointer from './team/TeamFilesPointer'
 import Composer from './Composer'
+import { GOAL_HELP, GOAL_OPTIONS, goalToSend, selectedGoal, showsGoalChoice } from '../lib/runGoal'
 import McpAuthNotice from './mcp/McpAuthNotice'
 import FolderTrustNotice from './FolderTrustNotice'
 
@@ -84,6 +85,10 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
       /* storage unavailable: the choice lasts for this page only */
     }
   }
+  const [pickedGoal, setPickedGoal] = useState<StaffingGoal | null>(null)
+  useEffect(() => setPickedGoal(null), [project.id])
+  const showGoal = canChooseMode && showsGoalChoice(project, ask)
+  const goal = selectedGoal(project, pickedGoal)
   const noun = projectNoun(kind)
   const hasReferences = (project.referenceDirectories?.length ?? 0) > 0
   const askLead = `One assistant answers here as a conversation. It can use this ${noun}'s folders, services and skills, with the same permissions. No team members start.${hasReferences ? ' It can read the reference folders but not change them.' : ''}`
@@ -188,11 +193,26 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               </span>
             ) : undefined
           }
-          notices={ask ? <p className="new-run-mode-desc" data-testid="new-run-mode-desc">New conversation with one assistant. No team is started.</p> : undefined}
+          notices={
+            ask ? (
+              <p className="new-run-mode-desc" data-testid="new-run-mode-desc">New conversation with one assistant. No team is started.</p>
+            ) : showGoal ? (
+              <div className="new-run-goal" data-testid="new-run-goal">
+                <span className="new-run-mode">
+                  <SegmentedControl<StaffingGoal> label="Goal for this run" value={goal} options={GOAL_OPTIONS} onChange={setPickedGoal} />
+                </span>
+                <p className="new-run-mode-desc" data-testid="new-run-goal-help">
+                  {GOAL_HELP[goal]}
+                  {pickedGoal === null ? ' (the project default)' : ''}
+                </p>
+              </div>
+            ) : undefined
+          }
           autoFocus
           focusToken={focusToken}
           onSubmit={async (text, images) => {
-            await startRun(text, { ...(images ? { images } : {}), ...(ask ? { team: 'single' as const } : {}) })
+            const sendGoal = goalToSend(project, ask, pickedGoal)
+            await startRun(text, { ...(images ? { images } : {}), ...(ask ? { team: 'single' as const } : {}), ...(sendGoal ? { goal: sendGoal } : {}) })
           }}
         />
 

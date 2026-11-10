@@ -65,6 +65,24 @@ const projectOn = (id: string, connection: string, name = id) =>
   project({ id, name, provider: { id: 'claude', label: 'x', auth: { kind: 'subscription' }, connection }, roles: [role({ id: 'r0', slug: 'r0', model: 'm', reportsTo: null })] })
 
 describe('createProxy', () => {
+  it('persists reporting opt-in and disabling legacy reporting retains identity and credentials', async () => {
+    const calls: string[] = []
+    const ctx = setup({ fetch: hostFetch({ 'gw.example.com': ['us.openai.gpt-6.1-terra'] }, calls) })
+    const created = await ctx.service.createProxy({ name: 'Gateway', kind: 'litellm', litellmFeatures: false, anthropicBaseUrl: 'https://gw.example.com', apiKey: KEY_A })
+    const c = created.connection as ProxyConnection
+    expect(new SettingsStore(ctx.dataDir).get().proxies[0].litellmFeatures).toBe(false)
+    await ctx.service.connect(c.id)
+    expect(calls.every((u) => u.endsWith('/models'))).toBe(true)
+    calls.length = 0
+    const updated = await ctx.service.update({ ...c, litellmFeatures: true })
+    expect(updated.connection).toMatchObject({ id: c.id, kind: 'litellm', litellmFeatures: true, hasApiKey: true })
+    expect(ctx.secrets.get(proxySecretKey(c.id))).toBe(KEY_A)
+    await ctx.service.connect(c.id)
+    expect(calls.some((u) => u.endsWith('/model/info'))).toBe(true)
+    expect(calls.some((u) => u.endsWith('/key/info'))).toBe(true)
+    await expect(ctx.service.update({ ...c, litellmFeatures: 'yes' } as never)).rejects.toThrow(/reporting/)
+    await expect(ctx.service.createProxy({ name: 'Bad', anthropicBaseUrl: c.anthropicBaseUrl, litellmFeatures: 1 } as never)).rejects.toThrow(/reporting/)
+  })
   it('adds a named, enabled, not-yet-connected proxy and announces it', async () => {
     const ctx = setup()
     ctx.events.length = 0
@@ -177,7 +195,7 @@ describe('openai-compatible proxies never call LiteLLM routes', () => {
     for (const u of calls) expect(new URL(u).pathname).toBe('/v1/models')
   })
 
-  it('a litellm-kind proxy gets a UsageStatus keyed by its own id', async () => {
+  it.each(['litellm', 'openai-compatible'] as const)('%s with reporting enabled gets spend keyed by its own id', async (kind) => {
     const f = (async (url: string | URL | Request) => {
       const u = String(url)
       if (u.endsWith('/key/info')) return json({ info: { spend: 3, max_budget: 10 } })
@@ -185,12 +203,15 @@ describe('openai-compatible proxies never call LiteLLM routes', () => {
       return json({ data: [{ id: 'claude-opus-5' }] })
     }) as unknown as typeof fetch
     const ctx = setup({ fetch: f, now: () => Date.UTC(2026, 10, 4, 15) })
-    const id = (await ctx.service.createProxy({ name: 'Lite', kind: 'litellm', anthropicBaseUrl: 'https://lite.example.com', apiKey: KEY_A })).connection.id
+    const id = (await ctx.service.createProxy({ name: 'Lite', kind, ...(kind === 'openai-compatible' ? { litellmFeatures: true } : {}), anthropicBaseUrl: 'https://lite.example.com', apiKey: KEY_A })).connection.id
     await ctx.service.connect(id)
     ctx.settings.set({ ...ctx.settings.get(), defaultConnection: id })
     const out: UsageStatus[] = await ctx.service.probeProxyUsages()
     expect(out).toHaveLength(1)
     expect(out[0]).toMatchObject({ connection: id, authMode: 'apiKey', spend: { usd: 3, budgetUsd: 10 } })
+    const c = ctx.settings.get().proxies.find((p) => p.id === id)!
+    await ctx.service.update({ ...c, litellmFeatures: false })
+    expect(await ctx.service.probeProxyUsages()).toEqual([])
   })
 })
 

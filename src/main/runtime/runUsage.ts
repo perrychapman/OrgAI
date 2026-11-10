@@ -9,6 +9,7 @@ import type {
   PriceSource,
   RoleUsage,
   RunKind,
+  RunEfficiency,
   RunRecord,
   RunSummary,
   RunUsage,
@@ -29,7 +30,7 @@ import type {
   UsageTrendPoint,
   UsageTrendProjectSlice
 } from '@shared/types'
-import { agentProducedNothing, emptyTokens, totalTokens } from '@shared/defaults'
+import { agentProducedNothing, cleanPlanStepGraph, cleanRunStaffing, emptyTokens, totalTokens } from '@shared/defaults'
 import { agentLabel } from '@shared/view/agentTree'
 import { isBuiltinConnectionId, RUN_KIND_LABELS, RUN_NO_RESULT_AGENTS_MAX, USAGE_CSV_COLUMNS, USAGE_OVERVIEW_CSV_COLUMNS, USAGE_OVERVIEW_MAX_PROJECT_IDS, USAGE_REMOVED_PROJECT_NAME, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 
@@ -121,6 +122,73 @@ export function cleanKnowledgeUsage(x: unknown): KnowledgeServedUsage | undefine
   }
   const u = out as KnowledgeServedUsage
   return u.recalls + u.autoContexts + u.itemsServed + u.charsServed > 0 ? u : undefined
+}
+
+/**
+ * A RunEfficiency from untrusted data (a persisted record): every required field a finite number >= 0 (reports and
+ * maxParallel whole, reports >= 1), else the whole value is absent. The optional readyIdleMs is kept only as a finite
+ * number >= 0 (else that field alone is dropped). Never throws.
+ */
+export function cleanRunEfficiency(x: unknown): RunEfficiency | undefined {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return undefined
+  const o = x as Record<string, unknown>
+  const out: Partial<RunEfficiency> = {}
+  for (const k of ['reports', 'firstSpawnMs', 'reportSumMs', 'reportBusyMs', 'maxParallel', 'tailMs'] as const) {
+    const v = o[k]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined
+    out[k] = k === 'reports' || k === 'maxParallel' ? Math.floor(v) : v
+  }
+  const idle = o.readyIdleMs
+  if (typeof idle === 'number' && Number.isFinite(idle) && idle >= 0) out.readyIdleMs = idle
+  const e = out as RunEfficiency
+  return e.reports >= 1 ? e : undefined
+}
+
+/**
+ * Timing of the root's direct reports from the agents' own timestamps (nothing is tracked for it). undefined when no
+ * direct report started. A live report (no endedAt) counts to `now`; the run ends at summary.endedAt ?? now.
+ */
+export function computeRunEfficiency(summary: RunSummary, agents: readonly AgentInstance[], now: number): RunEfficiency | undefined {
+  const root = agents.find((a) => a.parentId === null)
+  if (!root) return undefined
+  const num = (n: unknown, d: number): number => (typeof n === 'number' && Number.isFinite(n) ? n : d)
+  const iv = agents
+    .filter((a) => a.parentId === root.id && Number.isFinite(a.startedAt))
+    .map((a) => ({ s: a.startedAt, e: Math.max(a.startedAt, num(a.endedAt, now)) }))
+    .sort((a, b) => a.s - b.s || a.e - b.e)
+  if (iv.length === 0) return undefined
+  const runEnd = num(summary.endedAt, now)
+  // Union of intervals and peak concurrency (an end at the same ms as a start frees the slot first).
+  let busy = 0
+  let curEnd = -Infinity
+  let curStart = 0
+  for (const x of iv) {
+    if (x.s > curEnd) {
+      if (curEnd > -Infinity) busy += curEnd - curStart
+      curStart = x.s
+      curEnd = x.e
+    } else curEnd = Math.max(curEnd, x.e)
+  }
+  busy += curEnd - curStart
+  const ev = iv.flatMap((x) => [{ t: x.s, d: 1 }, { t: x.e, d: -1 }]).sort((a, b) => a.t - b.t || a.d - b.d)
+  let live = 0
+  let maxParallel = 0
+  for (const e of ev) {
+    live += e.d
+    maxParallel = Math.max(maxParallel, live)
+  }
+  // First wave: every report that started before any report ended (the earliest start is always in it).
+  const firstEnd = Math.min(...iv.map((x) => x.e))
+  const waveEnd = Math.max(...iv.filter((x, i) => i === 0 || x.s < firstEnd).map((x) => x.e))
+  const ms = (n: number): number => (Number.isFinite(n) && n > 0 ? n : 0)
+  return {
+    reports: iv.length,
+    firstSpawnMs: ms(iv[0]!.s - num(summary.startedAt, iv[0]!.s)),
+    reportSumMs: ms(iv.reduce((n, x) => n + (x.e - x.s), 0)),
+    reportBusyMs: ms(busy),
+    maxParallel,
+    tailMs: ms(runEnd - waveEnd)
+  }
 }
 
 /**
@@ -330,6 +398,8 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   if (skills.length) usage.skills = skills
   const knowledge = cleanKnowledgeUsage(inputs.knowledge)
   if (knowledge) usage.knowledge = knowledge
+  const efficiency = computeRunEfficiency(summary, agents, now)
+  if (efficiency) usage.efficiency = efficiency
   return usage
 }
 
@@ -407,9 +477,36 @@ export function legacySummaryUsage(summary: RunSummary, now: number): RunUsage {
   return u
 }
 
-/** Fill AgentInstance.usage and RunSummary.usage on a record saved before usage tracking (legacy: true). Idempotent. */
-export function normalizeRunRecord(record: RunRecord, now: number = Date.now()): RunRecord {
-  let changed = false
+/**
+ * The record's plan and staffing from an untrusted file (run staffing): the plan's step graph through
+ * cleanPlanStepGraph (only when `plan.steps` is an array; nothing else of the plan is touched) and `staffing` through
+ * cleanRunStaffing (a value that is not an object is removed). Returns the record itself when nothing changes. Pure.
+ */
+function cleanStoredGraph(record: RunRecord): RunRecord {
+  let out = record
+  const plan = record.plan
+  if (plan && typeof plan === 'object' && Array.isArray(plan.steps)) {
+    const steps = cleanPlanStepGraph(plan.steps)
+    if (JSON.stringify(steps) !== JSON.stringify(plan.steps)) out = { ...out, plan: { ...plan, steps } }
+  }
+  if (record.staffing !== undefined) {
+    const staffing = cleanRunStaffing(record.staffing)
+    if (JSON.stringify(staffing) !== JSON.stringify(record.staffing)) {
+      out = { ...out }
+      if (staffing) out.staffing = staffing
+      else delete out.staffing
+    }
+  }
+  return out
+}
+
+/**
+ * Fill AgentInstance.usage and RunSummary.usage on a record saved before usage tracking (legacy: true), and clean the
+ * stored plan graph and staffing (cleanStoredGraph). Idempotent; returns the record itself when nothing changes.
+ */
+export function normalizeRunRecord(input: RunRecord, now: number = Date.now()): RunRecord {
+  const record = cleanStoredGraph(input)
+  let changed = record !== input
   const agents: Record<string, AgentInstance> = {}
   for (const [id, a] of Object.entries(record.agents ?? {})) {
     // Persisted JSON: an own "__proto__" key would set the new object's prototype instead of adding an agent.
@@ -440,13 +537,23 @@ export function normalizeRunRecord(record: RunRecord, now: number = Date.now()):
     }
     summary = { ...summary, usage }
     changed = true
-  } else if (summary.usage.knowledge !== undefined) {
-    // A stored knowledge tally that is junk (old build, hand-edited file) reads as absent.
-    const clean = cleanKnowledgeUsage(summary.usage.knowledge)
-    if (JSON.stringify(clean) !== JSON.stringify(summary.usage.knowledge)) {
-      const usage = { ...summary.usage }
+  } else if (summary.usage.knowledge !== undefined || summary.usage.efficiency !== undefined) {
+    // A stored knowledge tally or efficiency summary that is junk (old build, hand-edited file) reads as absent.
+    const usage = { ...summary.usage }
+    const clean = cleanKnowledgeUsage(usage.knowledge)
+    const eff = cleanRunEfficiency(usage.efficiency)
+    let dirty = false
+    if (usage.knowledge !== undefined && JSON.stringify(clean) !== JSON.stringify(usage.knowledge)) {
       if (clean) usage.knowledge = clean
       else delete usage.knowledge
+      dirty = true
+    }
+    if (usage.efficiency !== undefined && JSON.stringify(eff) !== JSON.stringify(usage.efficiency)) {
+      if (eff) usage.efficiency = eff
+      else delete usage.efficiency
+      dirty = true
+    }
+    if (dirty) {
       summary = { ...summary, usage }
       changed = true
     }
@@ -847,6 +954,8 @@ function cleanStoredUsage(raw: unknown, fallback: () => RunUsage): RunUsage {
   }
   const k = cleanKnowledgeUsage(u.knowledge)
   if (k) out.knowledge = k
+  const eff = cleanRunEfficiency(u.efficiency)
+  if (eff) out.efficiency = eff
   if (u.connections && typeof u.connections === 'object' && !Array.isArray(u.connections)) out.connections = u.connections
   return out
 }

@@ -72,6 +72,7 @@ import type {
   RunKind,
   RunPeer,
   RunPlan,
+  RunStaffing,
   RunRecord,
   RunSummary,
   SwitchRunModelInput,
@@ -81,7 +82,7 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { BridgedSessions, bridgeKey } from './bridge'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import {
@@ -116,6 +117,7 @@ import { datum } from './harnessTools'
 import type { OutputScope, OutputWriteResult, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
+import { isValidId } from '../windowScope'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
@@ -133,6 +135,7 @@ import { DecisionIndex } from './decisionIndex'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+import { readStaffingProfile, recordRunInStaffingProfile, staffingProfileApplies } from '../store/staffingProfile'
 import { cleanFolderConfigTrust, folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
 
 /**
@@ -956,8 +959,8 @@ export interface ContinueRunOptions {
   [AUTO_RESUME]?: true
 }
 
-/** Narrowing overrides a continuation always keeps. */
-const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues', 'strictDelegation'] as const
+/** Narrowing overrides a continuation always keeps (goal never widens: picks stay inside the roles' ceilings). */
+const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues', 'strictDelegation', 'goal'] as const
 /** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
 const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
 
@@ -1710,6 +1713,17 @@ export class RunManager {
       }
     }
 
+    // Run staffing (shared/types.ts "Run staffing"): mirrors updatePlan. Cleaned here (cleanRunStaffing), stored on the
+    // record by recordEvent, persisted with the record's flush and broadcast. Nothing calls it yet.
+    const updateStaffing = async (staffing: RunStaffing): Promise<void> => {
+      const next = cleanRunStaffing(staffing)
+      if (!next) {
+        log.warn(`Run ${summary.id}: a staffing update that is not an object was ignored.`)
+        return
+      }
+      emit({ type: 'staffing.updated', runId: summary.id, staffing: next })
+    }
+
     const setupLike = isSetupLikeRun(kind)
     // Setup-like runs and the virtual projects (harness, skills, Chat) carry no project MCP servers, plugins or skills.
     const bare = setupLike || isVirtualProjectId(project.id)
@@ -2003,7 +2017,10 @@ export class RunManager {
         : undefined
       active.bridge = bridge
       const gate = kind === 'work' && !summary.quick && summary.team !== 'single' ? this.createDelegation(active, project, choice.adapter, bridging.bridged.map((b) => b.roleId)) : undefined
+      // The project's staffing profile, read once: a snapshot for the life of the run (spec 4.5).
+      const staffingProfile = this.options.dataDir && staffingProfileApplies(summary, runProject) ? readStaffingProfile(this.options.dataDir, summary.projectId) : undefined
       const ctx: RuntimeContext = {
+        ...(staffingProfile ? { staffingProfile: () => staffingProfile } : {}),
         run: summary,
         project: runProject,
         ...(gate ? { delegation: gate } : {}),
@@ -2209,6 +2226,10 @@ export class RunManager {
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
         updatePlan,
+        getStaffing: () => active.record.staffing,
+        updateStaffing,
+        // The per-run override (RunOverrides.goal) on top of the project's goal, fixed at run start.
+        staffingGoal: staffingGoalOf(runProject, summary.overrides?.goal),
         pendingInteractions: () => pendingCount(active),
         // A Chat with the single assistant is a conversation: no plan nudges (planNudgesApply).
         autoContinue: runProject.autoContinue !== false && planNudgesApply(summary),
@@ -3324,6 +3345,8 @@ export class RunManager {
       }
     }
     this.flush(active)
+    // The run's assignments go into its project's staffing profile (spec 4.5); never throws, once per run id.
+    if (active.ctx) recordRunInStaffingProfile(this.options.dataDir, active.record, active.ctx.project, (m) => log.warn(m))
     this.runs.delete(runId)
     this.store.prune(this.keepRunsFor)
   }
@@ -3349,13 +3372,18 @@ export class RunManager {
       const title = await generateRunTitle(adapter, { ...input, signal: abort.signal }, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
       if (!title || abort.signal.aborted) return
       const live = this.runs.get(runId) === active
-      if (!live && !this.store.get(runId)) return
+      if (!live) {
+        const stored = this.store.get(runId)
+        if (!stored) return
+        active.summary = stored
+        active.record.summary = stored
+      }
       active.summary.title = title
       this.store.upsert(active.summary)
       if (live) {
         active.emit({ type: 'run.title', runId, title })
       } else {
-        // The session already ended and its record was flushed; record.summary is active.summary, so save it again.
+        // The session already ended and its record was flushed; save the latest summary with the title.
         this.flush(active)
         logRunEvent(active.summary, { type: 'run.title', runId, title })
         this.broadcast({ type: 'run.title', runId, title })
@@ -3385,6 +3413,9 @@ export class RunManager {
         break
       case 'plan.updated':
         r.plan = e.plan
+        break
+      case 'staffing.updated':
+        r.staffing = e.staffing
         break
       case 'run.title':
         // record.summary is the live summary object; this only schedules the save.
@@ -4223,9 +4254,11 @@ export class RunManager {
   async switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult> {
     this.refuseWhileQuitting()
     if (!input || typeof input.runId !== 'string' || typeof input.model !== 'string' || !input.model || input.model.length > 200 || input.model.trim() !== input.model || /[\x00-\x1f\x7f]/.test(input.model)) throw new Error('Invalid model selection')
+    if (input.expectedRunId !== undefined && !isValidId(input.expectedRunId)) throw new Error('Invalid expected run id')
     let run = this.summary(input.runId)
     if (!run) throw new Error('Run not found')
     run = this.chainOf(run).reduce((latest, item) => item.startedAt > latest.startedAt || (item.startedAt === latest.startedAt && item.resumedFrom === latest.id) ? item : latest, run)
+    if (input.expectedRunId !== undefined && run.id !== input.expectedRunId) return { run, applied: false, reason: 'The conversation has continued; select the model again.' }
     const connection = input.connection ?? run.modelSelection?.connection ?? run.connection
     if (!connection) throw new Error('Connection is required')
     const model = (this.options.catalog?.() ?? []).find((m) => m.connection === connection && m.id === input.model)

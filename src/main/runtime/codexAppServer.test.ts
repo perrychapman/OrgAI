@@ -1,10 +1,25 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { trackedChildCount } from '../host/shutdown'
 import { clearCodexVersionCache } from './codexBinary'
-import { CodexAppServer, CodexRpcError, STDERR_TAIL_MAX_CHARS, codexExitMessage, codexHomeDir, maskKeyLike, redactSecrets, resolveCodexBinary } from './codexAppServer'
+import {
+  CODEX_START_LOCK_MAX_HOLD_MS,
+  CODEX_START_LOCK_SHARED_KEY,
+  CodexAppServer,
+  CodexRpcError,
+  STDERR_TAIL_MAX_CHARS,
+  acquireCodexStartLock,
+  codexExitMessage,
+  codexHomeDir,
+  codexStartLockKey,
+  codexStartLockState,
+  maskKeyLike,
+  redactSecrets,
+  resolveCodexBinary,
+  withCodexStartLock
+} from './codexAppServer'
 import { buildLaunchConfig } from './codexProtocol'
 import { fakeCtx, project } from './testHelpers'
 import { harnessToolsFor } from './harnessTools'
@@ -194,6 +209,82 @@ next()
     expect(seen.join('\n')).not.toContain('SECRET')
     expect(seen).toContain('Error: CODEX_HOME points to "/x", but that path does not exist')
   })
+
+  /** A fake that records its `-c` arguments in argv.json, then exits 1. */
+  const recorder = (): string => {
+    writeFileSync(join(dir, 'app-server'), `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'argv.json'))}, JSON.stringify(process.argv.slice(2))); process.exit(1)\n`)
+    return join(dir, 'argv.json')
+  }
+  const argsOf = (file: string): string[] => JSON.parse(readFileSync(file, 'utf8'))
+
+  it('prepareConfig: its entries follow the given config; it sees the binary, the child env and the config', async () => {
+    const file = recorder()
+    const seen: unknown[] = []
+    const s = new CodexAppServer({
+      cwd: dir,
+      env: { CODEX_HOME: join(dir, 'home'), ORGAI_CODEX_API_KEY: 'k' },
+      config: ['features.multi_agent=false', 'model_provider="orgai"'],
+      binary: { path: process.execPath },
+      prepareConfig: async (input) => {
+        seen.push(input)
+        return ['model_catalog_json="/h/c.json"']
+      }
+    })
+    await expect(s.start()).rejects.toThrow(/exited/)
+    expect(argsOf(file)).toEqual(['-c', 'features.multi_agent=false', '-c', 'model_provider="orgai"', '-c', 'model_catalog_json="/h/c.json"'])
+    expect(seen[0]).toMatchObject({ binary: { path: process.execPath }, config: ['features.multi_agent=false', 'model_provider="orgai"'], env: { CODEX_HOME: join(dir, 'home'), ORGAI_CODEX_API_KEY: 'k' } })
+  })
+
+  it('prepareConfig fails open: a rejection or nothing launches with the config as given', async () => {
+    for (const prepareConfig of [async () => Promise.reject(new Error('boom')), async () => [] as string[]]) {
+      const file = recorder()
+      const s = new CodexAppServer({ cwd: dir, config: ['a=1'], binary: { path: process.execPath }, prepareConfig })
+      await expect(s.start()).rejects.toThrow(/exited/)
+      expect(argsOf(file)).toEqual(['-c', 'a=1'])
+    }
+  })
+
+  it("takes its Codex home's start lock from the spawn until initialize settles; startLockHeld skips it", async () => {
+    const file = recorder()
+    const home = join(dir, 'home')
+    const release = await acquireCodexStartLock(codexStartLockKey({ CODEX_HOME: home }))
+    const s = new CodexAppServer({ cwd: dir, env: { CODEX_HOME: home }, binary: { path: process.execPath } })
+    const started = s.start().then(
+      () => undefined,
+      (e: Error) => e
+    )
+    await new Promise((r) => setTimeout(r, 150))
+    // Another start holds the home: nothing was spawned yet.
+    expect(existsSync(file)).toBe(false)
+    expect(codexStartLockState(codexStartLockKey({ CODEX_HOME: home })).waiting).toBe(1)
+    release()
+    expect((await started)?.message).toMatch(/exited/)
+    expect(existsSync(file)).toBe(true)
+    // Released after the failed start.
+    expect(codexStartLockState(codexStartLockKey({ CODEX_HOME: home }))).toEqual({ held: false, waiting: 0 })
+    // The caller holds the lock (the Codex adapter): start() does not wait for it again.
+    rmSync(file)
+    const held = await acquireCodexStartLock(codexStartLockKey({ CODEX_HOME: home }))
+    try {
+      const t = new CodexAppServer({ cwd: dir, env: { CODEX_HOME: home }, binary: { path: process.execPath }, startLockHeld: true })
+      await expect(t.start()).rejects.toThrow(/exited/)
+      expect(existsSync(file)).toBe(true)
+    } finally {
+      held()
+    }
+  })
+
+  it('a close() while prepareConfig runs spawns nothing', async () => {
+    const file = recorder()
+    let release!: () => void
+    const s = new CodexAppServer({ cwd: dir, binary: { path: process.execPath }, prepareConfig: () => new Promise<string[]>((r) => (release = () => r(['x=1']))) })
+    const started = s.start()
+    await new Promise((r) => setTimeout(r, 10))
+    s.close()
+    release()
+    await expect(started).rejects.toThrow(/closed before it started/)
+    expect(existsSync(file)).toBe(false)
+  })
 })
 
 describe('stderr helpers', () => {
@@ -350,4 +441,118 @@ describe.skipIf(!live)('real codex app-server (token-free)', () => {
     // A thread without a first turn has no rollout on disk yet, so it cannot be resumed (verified): resume only after a turn ran.
     await expect(server.request('thread/resume', { threadId: started.thread.id, cwd: tmpdir() })).rejects.toThrow(/no rollout/)
   }, 30_000)
+})
+
+describe('Codex start lock (one app-server start at a time per CODEX_HOME)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  const deferred = () => {
+    let resolve!: () => void
+    let reject!: (e: Error) => void
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    return { promise, resolve, reject }
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+
+  it('keys by the resolved CODEX_HOME the server runs with; none set shares one key', () => {
+    expect(codexStartLockKey({ CODEX_HOME: '/data/codex/' })).toBe(codexStartLockKey({ CODEX_HOME: '/data/x/../codex' }))
+    expect(codexStartLockKey({ CODEX_HOME: '/a' })).not.toBe(codexStartLockKey({ CODEX_HOME: '/b' }))
+    const saved = process.env.CODEX_HOME
+    try {
+      delete process.env.CODEX_HOME
+      expect(codexStartLockKey({})).toBe(CODEX_START_LOCK_SHARED_KEY)
+      expect(codexStartLockKey({ CODEX_HOME: '  ' })).toBe(CODEX_START_LOCK_SHARED_KEY)
+      process.env.CODEX_HOME = '/inherited'
+      expect(codexStartLockKey({})).toBe(codexStartLockKey({ CODEX_HOME: '/inherited' }))
+    } finally {
+      if (saved === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = saved
+    }
+  })
+
+  it('serialises starts in one home in FIFO order; another home does not wait', async () => {
+    const order: string[] = []
+    const gates = [deferred(), deferred(), deferred()]
+    const run = (name: string, i: number, key: string) =>
+      withCodexStartLock(key, async () => {
+        order.push(`${name}+`)
+        await gates[i]!.promise
+        order.push(`${name}-`)
+      })
+    const a = run('a', 0, 'lock-test-home-1')
+    const b = run('b', 1, 'lock-test-home-1')
+    const c = run('c', 2, 'lock-test-home-2')
+    await tick()
+    expect(order).toEqual(['a+', 'c+'])
+    gates[1]!.resolve()
+    await tick()
+    expect(order).toEqual(['a+', 'c+'])
+    gates[0]!.resolve()
+    await Promise.all([a, b])
+    expect(order).toEqual(['a+', 'c+', 'a-', 'b+', 'b-'])
+    gates[2]!.resolve()
+    await c
+    expect(codexStartLockState('lock-test-home-1')).toEqual({ held: false, waiting: 0 })
+  })
+
+  it('releases after a failed start', async () => {
+    await expect(withCodexStartLock('lock-test-fail', async () => Promise.reject(new Error('exited during initialize')))).rejects.toThrow('exited')
+    expect(codexStartLockState('lock-test-fail').held).toBe(false)
+    await expect(withCodexStartLock('lock-test-fail', async () => 'ok')).resolves.toBe('ok')
+  })
+
+  it('a hung start is released at the cap, and later starts keep their order', async () => {
+    vi.useFakeTimers()
+    const order: string[] = []
+    void withCodexStartLock('lock-test-hung', () => new Promise(() => {}))
+    const b = withCodexStartLock('lock-test-hung', async () => void order.push('b'))
+    const c = withCodexStartLock('lock-test-hung', async () => void order.push('c'))
+    await vi.advanceTimersByTimeAsync(CODEX_START_LOCK_MAX_HOLD_MS - 1)
+    expect(order).toEqual([])
+    expect(codexStartLockState('lock-test-hung').waiting).toBe(2)
+    await vi.advanceTimersByTimeAsync(1)
+    await Promise.all([b, c])
+    expect(order).toEqual(['b', 'c'])
+    expect(codexStartLockState('lock-test-hung')).toEqual({ held: false, waiting: 0 })
+  })
+
+  it('a closed server (released) frees the lock while its start still hangs', async () => {
+    const exited = deferred()
+    void withCodexStartLock('lock-test-closed', () => new Promise(() => {}), { released: exited.promise })
+    await tick()
+    expect(codexStartLockState('lock-test-closed').held).toBe(true)
+    exited.resolve()
+    await tick()
+    expect(codexStartLockState('lock-test-closed').held).toBe(false)
+  })
+
+  it('an abort while waiting leaves the queue; an abort while holding releases at once', async () => {
+    const first = deferred()
+    const holder = withCodexStartLock('lock-test-abort', () => first.promise)
+    const waiting = new AbortController()
+    const waiter = withCodexStartLock('lock-test-abort', async () => 'never', { signal: waiting.signal })
+    const after = withCodexStartLock('lock-test-abort', async () => 'third')
+    await tick()
+    expect(codexStartLockState('lock-test-abort').waiting).toBe(2)
+    waiting.abort()
+    await expect(waiter).rejects.toThrow('cancelled')
+    expect(codexStartLockState('lock-test-abort').waiting).toBe(1)
+    first.resolve()
+    await holder
+    await expect(after).resolves.toBe('third')
+    // Holding: the abort releases before the hung start settles.
+    const holding = new AbortController()
+    void withCodexStartLock('lock-test-abort', () => new Promise(() => {}), { signal: holding.signal })
+    const next = withCodexStartLock('lock-test-abort', async () => 'next')
+    await tick()
+    holding.abort()
+    await expect(next).resolves.toBe('next')
+    // Already aborted: rejected without queueing.
+    await expect(acquireCodexStartLock('lock-test-abort', { signal: AbortSignal.abort() })).rejects.toThrow('cancelled')
+    expect(codexStartLockState('lock-test-abort')).toEqual({ held: false, waiting: 0 })
+  })
 })

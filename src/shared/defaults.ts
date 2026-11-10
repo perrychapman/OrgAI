@@ -14,6 +14,8 @@ import type {
   ModelRef,
   ModelTier,
   PermissionMode,
+  PlanStep,
+  PlanStepStaff,
   Project,
   ProjectKind,
   ProjectRulesLocation,
@@ -25,18 +27,24 @@ import type {
   ProviderModel,
   QuickRunTeam,
   BridgedRoleChoice,
+  ReviewPolicy,
   RoleConnectionProblem,
   Role,
+  RoleStaffing,
+  RunStaffing,
   SetupKind,
   SkillEvaluationSettings,
   TeamReviewSettings,
   SkillSpec,
+  StaffingAssignment,
+  StaffingGoal,
+  StaffingMode,
   TokenUsage,
   UsageStatus,
   ToolName
 } from './types'
 import { SPAWN_TOOL } from './types'
-import { BUILTIN_CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isBuiltinConnectionId, isModelTier, isProjectKind, isProxyConnectionId } from './types'
+import { BUILTIN_CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, EFFORTS, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isBuiltinConnectionId, isEffort, isModelTier, isProjectKind, isProxyConnectionId, isReviewPolicy, isStaffingGoal, isStaffingMode, isStaffingSource } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
@@ -408,7 +416,7 @@ export function importTierForModel(model: unknown): ModelTier | undefined {
 export function modelFamily(model: ModelRef): ModelFamily {
   const id = bareModelId(model)
   if (Object.hasOwn(CLAUDE_ALIAS_TIERS, id) || id.includes('claude')) return 'claude'
-  if (/^(gpt|o\d|codex|chatgpt)/.test(id)) return 'openai'
+  if (/(^|\.)(gpt|o\d|codex|chatgpt)/.test(id)) return 'openai'
   return 'other'
 }
 
@@ -991,12 +999,12 @@ export function defaultRoles(ctx: TierContext = { connection: 'anthropic', tierM
       'Lead agent. Plans the work, delegates to specialists, integrates results and reports to the user.',
     responsibilities: [
       'Understand the request and break it into well-scoped tasks',
-      'Delegate each task to the most suitable specialist',
+      'Delegate work that splits or needs a specialist to the most suitable report',
       'Review returned work for correctness and integration',
       'Keep the user informed with concise status and a final summary'
     ],
     prompt: `You are the lead engineer and orchestrator for this project.
-Plan before acting. Delegate implementation, review and testing to your specialist reports instead of doing everything yourself. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
+Plan before acting. Do contained work yourself; hand work that splits or needs a specialist to your reports, and start independent pieces together. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
     tools: FULL,
     ...modelOf('deep'),
     canSpawn: true,
@@ -1355,4 +1363,273 @@ export function skillDescriptionProblem(description: unknown): string | null {
 export function skillsForRole(project: Pick<Project, 'skills'>, role: Pick<Role, 'skills'>): SkillSpec[] {
   const ids = new Set(role.skills ?? [])
   return (project.skills ?? []).filter((s) => ids.has(s.id))
+}
+
+// ---------- Run staffing (types.ts "Run staffing") ----------
+
+/** Most StaffingAssignment rows kept per run (RunStaffing.assignments); the newest (last) are kept. */
+export const RUN_STAFFING_ASSIGNMENTS_MAX = 200
+/** Most ids kept in one PlanStep.after (the first valid ones). */
+export const PLAN_STEP_AFTER_MAX = 16
+/** Most entries kept in one PlanStep.paths (the first valid ones). */
+export const PLAN_STEP_PATHS_MAX = 24
+/** Longest PlanStep.paths entry kept; a longer one is dropped, never cut (a cut path names another file). */
+export const PLAN_STEP_PATH_MAX_CHARS = 300
+/** Longest StaffingAssignment.note kept; a longer one is cut at a character boundary. */
+export const STAFFING_NOTE_MAX_CHARS = 300
+
+const isRecordLike = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+const nonEmptyString = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined)
+
+/** True when `text` holds a C0 control character or DEL (a path or name with one is refused). */
+function hasControlChar(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x20 || c === 0x7f) return true
+  }
+  return false
+}
+
+/** `text` cut to `max` UTF-16 units without splitting a surrogate pair. */
+function cutAtBoundary(text: string, max: number): string {
+  if (text.length <= max) return text
+  let t = text.slice(0, max)
+  const last = t.charCodeAt(t.length - 1)
+  if (last >= 0xd800 && last <= 0xdbff) t = t.slice(0, -1)
+  return t
+}
+
+/** Tier order: > 0 when `a` is more capable than `b`, 0 when equal, < 0 when less (fast < everyday < deep < top). */
+export function compareTier(a: ModelTier, b: ModelTier): number {
+  return MODEL_TIERS.indexOf(b) - MODEL_TIERS.indexOf(a)
+}
+
+/** Effort order: > 0 when `a` is more than `b`, 0 when equal, < 0 when less (low < medium < high < xhigh < max). */
+export function compareEffort(a: Effort, b: Effort): number {
+  return EFFORTS.indexOf(a) - EFFORTS.indexOf(b)
+}
+
+/** The less capable of two tiers. */
+export function lowerTier(a: ModelTier, b: ModelTier): ModelTier {
+  return compareTier(a, b) <= 0 ? a : b
+}
+
+/** The lower of two efforts. */
+export function lowerEffort(a: Effort, b: Effort): Effort {
+  return compareEffort(a, b) <= 0 ? a : b
+}
+
+/**
+ * Role.staffing from untrusted data (a stored or imported role): undefined unless it is an object with a valid `mode`
+ * (a malformed value is dropped whole); an unknown `minTier` or `maxEffort` is dropped alone; other keys are dropped.
+ * Pure.
+ */
+export function cleanRoleStaffing(x: unknown): RoleStaffing | undefined {
+  if (!isRecordLike(x) || !isStaffingMode(x.mode)) return undefined
+  const out: RoleStaffing = { mode: x.mode }
+  if (isModelTier(x.minTier)) out.minTier = x.minTier
+  if (isEffort(x.maxEffort)) out.maxEffort = x.maxEffort
+  return out
+}
+
+/** Project.staffing with its default: 'fixed' only when the project says so, else 'auto'. */
+export function staffingModeOf(project: Pick<Project, 'staffing'> | null | undefined): StaffingMode {
+  return project?.staffing === 'fixed' ? 'fixed' : 'auto'
+}
+
+/** The goal a run staffs for: a valid per-run `override` (RunOverrides.goal), else Project.staffingGoal, else 'balanced'. */
+export function staffingGoalOf(project: Pick<Project, 'staffingGoal'> | null | undefined, override?: unknown): StaffingGoal {
+  if (isStaffingGoal(override)) return override
+  return isStaffingGoal(project?.staffingGoal) ? project.staffingGoal : 'balanced'
+}
+
+/** Project.reviewPolicy with its default ('risk'); an unknown value reads as the default. */
+export function reviewPolicyOf(project: Pick<Project, 'reviewPolicy'> | null | undefined): ReviewPolicy {
+  return isReviewPolicy(project?.reviewPolicy) ? project.reviewPolicy : 'risk'
+}
+
+/** A role's effective staffing (effectiveRoleStaffing): its mode and the bounds automatic staffing stays inside. */
+export interface EffectiveRoleStaffing {
+  mode: StaffingMode
+  /** The tier ceiling: the role's own tier. Absent when the role has none (an inherit role, an explicit model pick). */
+  maxTier?: ModelTier
+  /** The effort ceiling: Role.staffing.maxEffort, else the role's own effort. Absent = no ceiling from the chart. */
+  maxEffort?: Effort
+  /** The tier floor (Role.staffing.minTier). Never above maxTier: a floor above the ceiling is dropped. */
+  minTier?: ModelTier
+}
+
+/**
+ * The mode and bounds automatic staffing uses for `role` in `project`. Pure. Rules:
+ * - a project with `staffing: 'fixed'` makes every role 'fixed';
+ * - else the role's explicit `staffing.mode` wins;
+ * - else a role on a concrete model (not 'inherit', not a tier name or legacy Claude alias) with no `tier` is 'fixed'
+ *   (an explicit user pick); every other role is 'auto';
+ * - `maxTier` is the role's own tier when it has one; `maxEffort` is `staffing.maxEffort ?? role.effort`; `minTier` is
+ *   dropped when it is above `maxTier`.
+ * An 'inherit' role has no tier here: the resolver resolves it from the parent's resolved tier (spec 4.3), so its
+ * `maxTier` is absent and `minTier` is kept as given. Bounds are reported for 'fixed' roles too; a fixed role is never
+ * resized. `role.staffing` is read through cleanRoleStaffing, so a malformed value counts as absent.
+ */
+export function effectiveRoleStaffing(
+  role: Pick<Role, 'model' | 'tier' | 'effort' | 'staffing'>,
+  project: Pick<Project, 'staffing'> | null | undefined
+): EffectiveRoleStaffing {
+  const own = cleanRoleStaffing(role.staffing)
+  const tier = isModelTier(role.tier) ? role.tier : undefined
+  const model = typeof role.model === 'string' ? role.model.trim() : ''
+  const concrete = model !== '' && model !== 'inherit' && settingTier(model) === undefined
+  const mode: StaffingMode = staffingModeOf(project) === 'fixed' ? 'fixed' : (own?.mode ?? (concrete && !tier ? 'fixed' : 'auto'))
+  const out: EffectiveRoleStaffing = { mode }
+  if (tier) out.maxTier = tier
+  const maxEffort = own?.maxEffort ?? (isEffort(role.effort) ? role.effort : undefined)
+  if (maxEffort) out.maxEffort = maxEffort
+  if (own?.minTier && (!tier || compareTier(own.minTier, tier) <= 0)) out.minTier = own.minTier
+  return out
+}
+
+/** PlanStep.staff from untrusted data: kept only with a non-empty `role` (trimmed); an unknown tier or effort is dropped. */
+export function cleanPlanStepStaff(x: unknown): PlanStepStaff | undefined {
+  if (!isRecordLike(x) || typeof x.role !== 'string') return undefined
+  const role = x.role.trim()
+  if (!role) return undefined
+  const out: PlanStepStaff = { role }
+  if (isModelTier(x.tier)) out.tier = x.tier
+  if (isEffort(x.effort)) out.effort = x.effort
+  return out
+}
+
+/**
+ * PlanStep.paths from untrusted data: strings only, trimmed; empty, over PLAN_STEP_PATH_MAX_CHARS or holding a control
+ * character dropped; duplicates collapse (first kept); at most PLAN_STEP_PATHS_MAX. undefined when none remain.
+ */
+function cleanPlanStepPaths(x: unknown): string[] | undefined {
+  if (!Array.isArray(x)) return undefined
+  const out: string[] = []
+  for (const p of x) {
+    if (out.length >= PLAN_STEP_PATHS_MAX) break
+    if (typeof p !== 'string') continue
+    const t = p.trim()
+    if (!t || t.length > PLAN_STEP_PATH_MAX_CHARS || hasControlChar(t) || out.includes(t)) continue
+    out.push(t)
+  }
+  return out.length ? out : undefined
+}
+
+/**
+ * The plan's steps with their graph fields cleaned (pure; other fields are kept as they are, the input is not
+ * changed, a non-object step is passed through). Never throws.
+ * - `after`: only string ids of OTHER steps of this plan (a step's own id never counts; with duplicate ids the first
+ *   step holding an id is the one it names), deduplicated, at most PLAN_STEP_AFTER_MAX (the first valid ones); then a
+ *   dependency cycle is broken deterministically: a depth-first walk starts at each unvisited step in plan order and
+ *   follows "unblocks" edges (from a step to the steps waiting for it, in plan order); an edge that reaches a step still
+ *   on the walk closes a cycle, and that step's wait is dropped. So for `p1 after p2` and `p2 after p1`, p1 loses its
+ *   wait on p2: the earlier step stops waiting for a later one. The result has no cycle.
+ * - `paths`: see cleanPlanStepPaths. `staff`: see cleanPlanStepStaff.
+ * An empty or invalid `after`, `paths` or `staff` is removed from the step.
+ */
+export function cleanPlanStepGraph(steps: readonly PlanStep[]): PlanStep[] {
+  if (!Array.isArray(steps)) return []
+  const list = steps as readonly unknown[]
+  const firstIndex = new Map<string, number>()
+  list.forEach((s, i) => {
+    if (isRecordLike(s) && typeof s.id === 'string' && !firstIndex.has(s.id)) firstIndex.set(s.id, i)
+  })
+  // Each step's waits, as step indexes.
+  const waits: number[][] = list.map((s, i) => {
+    if (!isRecordLike(s) || !Array.isArray(s.after)) return []
+    const out: number[] = []
+    for (const id of s.after as unknown[]) {
+      if (out.length >= PLAN_STEP_AFTER_MAX) break
+      if (typeof id !== 'string' || id === s.id) continue
+      const j = firstIndex.get(id)
+      if (j === undefined || j === i || out.includes(j)) continue
+      out.push(j)
+    }
+    return out
+  })
+  // "Unblocks" edges: for each step, the steps that wait for it, in plan order.
+  const unblocks: number[][] = list.map(() => [])
+  waits.forEach((w, i) => {
+    for (const j of w) unblocks[j].push(i)
+  })
+  const dropped = new Set<string>()
+  const state = new Uint8Array(list.length)
+  for (let start = 0; start < list.length; start++) {
+    if (state[start] !== 0) continue
+    state[start] = 1
+    const stack: [number, number][] = [[start, 0]]
+    while (stack.length) {
+      const top = stack[stack.length - 1]
+      const [v, k] = top
+      if (k >= unblocks[v].length) {
+        stack.pop()
+        state[v] = 2
+        continue
+      }
+      top[1] = k + 1
+      const w = unblocks[v][k]
+      if (state[w] === 1) dropped.add(`${w}>${v}`)
+      else if (state[w] === 0) {
+        state[w] = 1
+        stack.push([w, 0])
+      }
+    }
+  }
+  return list.map((s, i) => {
+    if (!isRecordLike(s)) return s as PlanStep
+    const out = { ...s } as unknown as PlanStep
+    const after = waits[i].filter((j) => !dropped.has(`${i}>${j}`)).map((j) => (list[j] as PlanStep).id)
+    if (after.length) out.after = after
+    else delete out.after
+    const paths = cleanPlanStepPaths(s.paths)
+    if (paths) out.paths = paths
+    else delete out.paths
+    const staff = cleanPlanStepStaff(s.staff)
+    if (staff) out.staff = staff
+    else delete out.staff
+    return out
+  })
+}
+
+/**
+ * One StaffingAssignment from untrusted data. A row without a non-empty string `roleId` and `model`, a valid `source`
+ * or a finite `at` >= 0 is malformed: undefined. Optional members are kept only when valid (non-empty string agentId /
+ * stepId, a known tier and effort, a note trimmed, non-empty and cut to STAFFING_NOTE_MAX_CHARS); other keys are dropped.
+ */
+export function cleanStaffingAssignment(x: unknown): StaffingAssignment | undefined {
+  if (!isRecordLike(x)) return undefined
+  const roleId = nonEmptyString(x.roleId)
+  const model = nonEmptyString(x.model)
+  if (!roleId || !model || !isStaffingSource(x.source)) return undefined
+  if (typeof x.at !== 'number' || !Number.isFinite(x.at) || x.at < 0) return undefined
+  const out: StaffingAssignment = { roleId, model, source: x.source, at: x.at }
+  const agentId = nonEmptyString(x.agentId)
+  if (agentId) out.agentId = agentId
+  const stepId = nonEmptyString(x.stepId)
+  if (stepId) out.stepId = stepId
+  if (isModelTier(x.tier)) out.tier = x.tier
+  if (isEffort(x.effort)) out.effort = x.effort
+  if (typeof x.note === 'string') {
+    const note = cutAtBoundary(x.note.trim(), STAFFING_NOTE_MAX_CHARS).trim()
+    if (note) out.note = note
+  }
+  return out
+}
+
+/**
+ * RunStaffing from untrusted data (a stored record, or an adapter's updateStaffing argument): undefined unless it is an
+ * object; an unknown goal reads 'balanced'; malformed assignment rows are dropped (cleanStaffingAssignment), a missing
+ * or non-array list reads as empty, and only the newest (last) RUN_STAFFING_ASSIGNMENTS_MAX rows are kept. Pure.
+ */
+export function cleanRunStaffing(x: unknown): RunStaffing | undefined {
+  if (!isRecordLike(x)) return undefined
+  const goal: StaffingGoal = isStaffingGoal(x.goal) ? x.goal : 'balanced'
+  const assignments: StaffingAssignment[] = []
+  for (const row of Array.isArray(x.assignments) ? (x.assignments as unknown[]) : []) {
+    const a = cleanStaffingAssignment(row)
+    if (a) assignments.push(a)
+  }
+  return { goal, assignments: assignments.length > RUN_STAFFING_ASSIGNMENTS_MAX ? assignments.slice(-RUN_STAFFING_ASSIGNMENTS_MAX) : assignments }
 }

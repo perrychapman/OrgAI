@@ -79,7 +79,7 @@ import type { ConfigChange, ConfigChangeResult } from './harnessTools'
 import { harnessToolsFor } from './harnessTools'
 import { buildRolePrompt } from './prompts'
 import { fakeCtx, mcpSpec, project, role } from './testHelpers'
-import { ROOT_AGENT_ID, type BridgeSpawnInput, type BridgedRole, type RuntimeContext } from './types'
+import { ROOT_AGENT_ID, type BridgeSpawnInput, type BridgeSpawnResult, type BridgedRole, type RuntimeContext } from './types'
 
 type Fake = InstanceType<typeof sdk.FakeQuery>
 type HookOut = { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }
@@ -247,6 +247,61 @@ describe('Claude bridged reports: delegate_agent through the harness server', ()
     await preToolUse(q)(hookCall('mcp__orgai__delegate_agent', { role: 'analyst', brief: 'Check.' }, 'tu-d2', { id: 'a1', type: 'engineer' }), 'x', {})
     await delegate(q)({ role: 'analyst', brief: 'Check.' }, 'tu-d2')
     expect(bridge.spawn.mock.calls[0]![0]).toMatchObject({ role: 'r-ext', brief: 'Check.', parentAgentId: 'a1', parentRoleId: 'r-eng' })
+  })
+})
+
+describe('Claude bridged reports: delegate_agent background: true', () => {
+  function deferredBridge() {
+    let finish!: (r: BridgeSpawnResult) => void
+    const spawn = vi.fn((input: BridgeSpawnInput) => {
+      input.onStarted?.({ agentId: 'b1', handle: 'analyst-1' })
+      return new Promise<BridgeSpawnResult>((resolve) => (finish = resolve))
+    })
+    return { roles: () => [BRIDGED], spawn, finish: (r: Partial<BridgeSpawnResult> = {}) => finish({ agentId: 'b1', handle: 'analyst-1', text: 'Analysis done.', ok: true, ...r }) }
+  }
+  const inputTexts = (q: Fake) => q.inputs.map((m) => (m as { message: { content: unknown } }).message.content).filter((c): c is string => typeof c === 'string')
+
+  it('the root gets the handle at once; the report is live until it ends, then reaches the root as a harness message', async () => {
+    const bridge = deferredBridge()
+    const { ctx, session } = start({ bridge })
+    const q = await firstQuery()
+    q.emit(init)
+    await preToolUse(q)(hookCall('mcp__orgai__delegate_agent', { role: 'analyst', brief: 'Look.', background: true }, 'tu-b1'), 'x', {})
+    const res = await delegate(q)({ role: 'analyst', brief: 'Look.', background: true }, 'tu-b1')
+    expect(res.content[0]!.text).toMatch(/^Started analyst-1 \(Analyst\) in the background\./)
+    expect(ctx.liveReports?.()).toBe(1)
+    expect(session.settlement().quiescent).toBe(false)
+    bridge.finish()
+    await vi.waitFor(() => expect(inputTexts(q).some((t) => t.startsWith('Harness: Bridged report analyst-1 (Analyst) finished.'))).toBe(true))
+    expect(inputTexts(q).find((t) => t.startsWith('Harness:'))).toContain('Analysis done.')
+    expect(ctx.liveReports?.()).toBe(0)
+  })
+
+  it('a report lead\'s call runs in the foreground and says so', async () => {
+    const bridge = fakeBridge()
+    const { ctx } = start({ bridge })
+    const q = await firstQuery()
+    q.emit({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent', subagent_type: 'engineer', tool_use_id: 'tu-spawn', description: 'work', session_id: 's', uuid: 'u1' })
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'agent.upsert' && e.agent.id === 'a1' && e.agent.roleId === 'r-eng')).toBe(true))
+    await preToolUse(q)(hookCall('mcp__orgai__delegate_agent', { role: 'analyst', brief: 'Check.', background: true }, 'tu-b2', { id: 'a1', type: 'engineer' }), 'x', {})
+    const res = await delegate(q)({ role: 'analyst', brief: 'Check.', background: true }, 'tu-b2')
+    expect(res.content[0]!.text.split('\n')[0]).toBe('Ran in the foreground (only the orchestrator can delegate in the background).')
+    expect(res.content[0]!.text).toContain('Analysis done.')
+  })
+
+  it('a child stopped by an interrupt starts no turn; its result comes with the user\'s next message', async () => {
+    const bridge = deferredBridge()
+    const { session } = start({ bridge })
+    const q = await firstQuery()
+    q.emit(init)
+    await preToolUse(q)(hookCall('mcp__orgai__delegate_agent', { role: 'analyst', brief: 'Look.', background: true }, 'tu-b3'), 'x', {})
+    await delegate(q)({ role: 'analyst', brief: 'Look.', background: true }, 'tu-b3')
+    bridge.finish({ ok: false, text: 'Stopped: the user interrupted the run', stopped: true })
+    await session.interrupt()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(inputTexts(q).some((t) => t.startsWith('Harness:'))).toBe(false)
+    await session.send('Go on.')
+    await vi.waitFor(() => expect(inputTexts(q).some((t) => t.includes('Stopped: the user interrupted the run') && t.endsWith('---\nGo on.'))).toBe(true))
   })
 })
 

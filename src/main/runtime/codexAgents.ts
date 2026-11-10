@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { z } from 'zod'
-import type { AgentInstance, AgentMessage, Role } from '@shared/types'
-import { BRIDGE_BRIEF_MAX_CHARS } from '@shared/types'
+import type { AgentInstance, AgentMessage, Effort, ModelTier, Role } from '@shared/types'
+import { BRIDGE_BRIEF_MAX_CHARS, EFFORTS, MODEL_TIERS } from '@shared/types'
 import { newId } from '@shared/defaults'
-import { dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
+import { codexToolName, dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
+import type { HarnessTool } from './harnessTools'
 import { NETWORK_TOOLS, canonicalNetworkTool } from './codexEvents'
 import { HandleNamer, mapSendMessage, messageTranscriptText, resolveRecipient, spawnHandle } from './network'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL } from './prompts'
@@ -30,21 +31,23 @@ import { scrubControlEnv } from './childEnv'
 export { canonicalNetworkTool }
 
 export const spawnArgs = z.object({
-  role: z.string().min(1).describe('The slug of the role to delegate to, exactly as listed in your instructions'),
-  brief: z.string().min(1).describe('A complete, self-contained brief for the report: goal, context, constraints, what to report back'),
-  name: z.string().optional().describe('Optional handle for the report (letters, digits, - _ .); default role-1, role-2, ...'),
-  description: z.string().optional().describe('Three to six words naming the task, shown on the org chart')
+  role: z.string().min(1).describe("The report's role slug"),
+  brief: z.string().min(1).describe('Self-contained: goal, context, constraints, what to report back'),
+  name: z.string().optional().describe('Handle; default role-1, role-2, ...'),
+  description: z.string().optional().describe('Three to six words for the org chart'),
+  tier: z.enum(MODEL_TIERS as [ModelTier, ...ModelTier[]]).optional().describe('Model tier; wins over the plan step'),
+  effort: z.enum(EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort; wins over the plan step')
 })
 export const messageArgs = z.object({
-  to: z.string().min(1).describe('Handle of a running agent (such as implementer-2), or "main" for the orchestrator'),
-  message: z.string().min(1).describe('The message. Brief and specific.'),
-  summary: z.string().optional().describe('Optional five word preview')
+  to: z.string().min(1).describe('A running agent\'s handle (e.g. implementer-2) or "main"'),
+  message: z.string().min(1),
+  summary: z.string().optional().describe('Five-word preview')
 })
 export const listArgs = z.object({})
 
 export const SPAWN_TOOL_DESCRIPTION =
-  'Delegate work to a report in your org chart. Returns at once with the report\'s handle; the report works in the background and its final report arrives later as a message from the harness. Use message_agent to follow up with a running report.'
-export const MESSAGE_TOOL_DESCRIPTION = 'Send a message to another running agent by handle, or to the orchestrator as "main". It reads the message at its next step.'
+  "Delegate work to a report. Returns at once with its handle; the report's final answer arrives later as a harness message. Follow up with message_agent."
+export const MESSAGE_TOOL_DESCRIPTION = 'Send a brief message to a running agent by handle, or to the orchestrator as "main"; it reads it at its next step.'
 export const LIST_TOOL_DESCRIPTION = 'List the agents in this run with their handles, roles and states.'
 
 /** The network tools an agent of this role gets (root = the root role). */
@@ -66,11 +69,36 @@ export function networkToolSpecs(names: string[]): DynamicToolSpec[] {
   return names.filter((n) => defs[n]).map((name) => dynamicToolSpec({ name, ...defs[name] }))
 }
 
+/**
+ * The dynamic tools a Codex thread of this role gets: the harness tools its audience allows (the root gets every one)
+ * and its network tools. CodexAdapter sends these on thread/start; the tool-size budget test measures the same list.
+ */
+export function codexToolsFor(harness: readonly HarnessTool[], role: Role, isRoot: boolean, opts: { setupLike: boolean }): { specs: DynamicToolSpec[]; names: string[] } {
+  const given = harness.filter((t) => isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners'))
+  const network = networkToolNames(role, opts)
+  return {
+    specs: [...given.map(dynamicToolSpec), ...networkToolSpecs(network)],
+    names: [...given.map((t) => codexToolName(t.name)), ...network]
+  }
+}
+
 /** Extra developer instructions that map the shared prompts' Claude tool names onto the Codex tool names. */
-export function codexToolNotes(toolNames: string[], opts: { renamedPlanTool: boolean }): string {
+/**
+ * For a run where Codex still offers its built-in multi-agent tools (the model catalog override in codexNativeCatalog.ts
+ * is not in effect): Codex then also adds a developer rule "Do not spawn sub-agents unless the user or applicable
+ * AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work", which leads applied
+ * to spawn_report. One sentence answering it.
+ */
+export const NATIVE_RULE_NOTE = `This project's instructions explicitly ask you to delegate through ${NETWORK_TOOLS.spawn}; Codex's rule about not spawning sub-agents concerns its built-in tools, not ${NETWORK_TOOLS.spawn}.`
+
+/**
+ * The Codex-only lines appended to a role prompt. `nativeRule`: Codex still offers its built-in multi-agent tools and
+ * their rule (the catalog override failed or was not run), so the spawn line also carries NATIVE_RULE_NOTE.
+ */
+export function codexToolNotes(toolNames: string[], opts: { renamedPlanTool: boolean; nativeRule?: boolean }): string {
   const lines: string[] = []
   if (toolNames.includes(NETWORK_TOOLS.spawn)) {
-    lines.push(`To delegate (the "Agent tool" in the instructions above), call ${NETWORK_TOOLS.spawn} with role set to the report's slug (the instructions call it subagent_type), a complete brief, and optionally name. It returns at once; the report's final answer reaches you later as a message beginning "Harness:". Codex's own built-in multi-agent tools (spawn_agent, send_message, wait_agent and similar) are unavailable here and their agents do not count; never use them.`)
+    lines.push(`To delegate (the "Agent tool" in the instructions above), call ${NETWORK_TOOLS.spawn} with role set to the report's slug (the instructions call it subagent_type), a complete brief, and optionally name. It returns at once; the report's final answer reaches you later as a message beginning "Harness:". Codex's own built-in multi-agent tools (spawn_agent, send_message, wait_agent and similar) are unavailable here and their agents do not count; never use them.${opts.nativeRule ? ` ${NATIVE_RULE_NOTE}` : ''}`)
   }
   if (toolNames.includes(NETWORK_TOOLS.message)) lines.push(`${MESSAGE_TOOL} in the instructions above is ${NETWORK_TOOLS.message} here.`)
   if (toolNames.includes(NETWORK_TOOLS.list)) lines.push(`${LIST_AGENTS_TOOL} in the instructions above is ${NETWORK_TOOLS.list} here.`)
@@ -250,13 +278,15 @@ export interface SpawnRequest extends SpawnPlan {
   description?: string
   /** The dynamic tool call id that spawned it (AgentInstance.spawnToolUseId). */
   callId: string
+  /** The tier and / or effort stated on the spawn_report call (run staffing); the host resolves them, bridged hosts ignore them. */
+  onCall?: { tier?: ModelTier; effort?: Effort }
 }
 
 /** What the session provides to the network's tool handlers. */
 export interface NetworkHost {
   agents(): Iterable<AgentInstance>
   /** Create the thread (and worktree), register the agent and start its first turn. Throws an Error with a model-readable message. */
-  spawn(req: SpawnRequest): Promise<void>
+  spawn(req: SpawnRequest): Promise<{ staffing?: string; note?: string } | void>
   /** Hand `text` to the agent: steer its running turn, or start one. */
   deliver(toAgentId: string, text: string): Promise<void>
   /** Draw the message on the canvas and keep a copy in the sender's transcript. */
@@ -351,18 +381,25 @@ export async function callNetworkTool(
         }
         // The host already moved the reservation to the harness's agent id (CodexAgentNetwork.adopt) when the child started.
         return {
-          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.`,
+          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.${parsed.data.tier || parsed.data.effort ? ' It keeps its chart tier and effort; the tier and effort you gave were ignored.' : ''}`,
           success: true
         }
       }
+      const onCall: { tier?: ModelTier; effort?: Effort } = {}
+      if (parsed.data.tier) onCall.tier = parsed.data.tier
+      if (parsed.data.effort) onCall.effort = parsed.data.effort
+      let staffing: string | undefined
+      let note: string | undefined
       try {
-        await host.spawn({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId })
+        const started = await host.spawn({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId, ...(onCall.tier || onCall.effort ? { onCall } : {}) })
+        staffing = started?.staffing
+        note = started?.note
       } catch (e) {
         net.abort(check.id)
         return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
       }
       return {
-        text: `Spawned ${check.handle} (${check.role.slug}). It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.`,
+        text: `Spawned ${check.handle} (${check.role.slug})${staffing ? ` on ${staffing}` : ''}. It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.${note ? ` ${note}` : ''}`,
         success: true
       }
     }

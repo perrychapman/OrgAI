@@ -21,7 +21,9 @@ import {
   roleConnection,
   proxyModelsUrl,
   proxyOf,
-  proxyOpenAIBase
+  proxyOpenAIBase,
+  settingTier,
+  staffingModeOf
 } from '@shared/defaults'
 import { MODEL_TIERS, PROXIES_MAX, PROXY_KINDS, isBuiltinConnectionId, isProxyConnection } from '@shared/types'
 import type {
@@ -334,7 +336,7 @@ export class ConnectionService {
     if (proxy) {
       if (!proxy.anthropicBaseUrl) throw new Error(`${proxy.name} has no base URL`)
       const key = this.proxyKey(proxy, `${proxy.name} has no API key`)
-      const models = await fetchProxyModels(proxyModelsUrl(proxy), key, this.deps.fetch ?? fetch, { kind: proxy.kind, connection: proxy.id, baseUrl: proxy.anthropicBaseUrl })
+      const models = await fetchProxyModels(proxyModelsUrl(proxy), key, this.deps.fetch ?? fetch, { kind: proxy.kind, litellmFeatures: proxy.litellmFeatures, connection: proxy.id, baseUrl: proxy.anthropicBaseUrl })
       return models.map((m) => ({ ...m, ...withBaseUrl(proxy, m) }))
     }
     if (id === 'openai') {
@@ -662,7 +664,7 @@ export class ConnectionService {
     const reportsPrices = mock ? false : known?.length ? known.some((m) => m.price !== undefined) : null
     let reportsSpend: boolean | null = false
     if (mock) reportsSpend = false
-    else if (conn.kind === 'litellm') {
+    else if (conn.litellmFeatures ?? conn.kind === 'litellm') {
       try {
         reportsSpend = (await fetchLiteLLMKeyInfo(conn.anthropicBaseUrl, key, this.deps.fetch ?? fetch)) !== null
       } catch {
@@ -702,6 +704,7 @@ export class ConnectionService {
   /** A proxy record from the renderer, validated over the stored one: id, kind and hasApiKey cannot change. */
   private editedProxy(old: ProxyConnection, c: unknown): ProxyConnection {
     const i = (c && typeof c === 'object' ? c : {}) as Partial<ProxyConnection>
+    if (i.litellmFeatures !== undefined && typeof i.litellmFeatures !== 'boolean') throw new Error('LiteLLM reporting must be enabled or disabled')
     const others = this.settingsNow().proxies.filter((p) => p.id !== old.id).map((p) => p.name)
     const optional = (v: unknown, label: string): string | undefined => {
       if (v === undefined || v === null) return undefined
@@ -715,6 +718,7 @@ export class ConnectionService {
     const { openaiBaseUrl: _o, modelsUrl: _m, ...rest } = old
     return {
       ...rest,
+      ...(i.litellmFeatures !== undefined ? { litellmFeatures: i.litellmFeatures } : {}),
       name: cleanProxyName(i.name ?? old.name, others),
       anthropicBaseUrl,
       ...(openaiBaseUrl ? { openaiBaseUrl } : {}),
@@ -808,6 +812,7 @@ export class ConnectionService {
     const name = cleanProxyName(input.name, s.proxies.map((p) => p.name))
     const kind = input.kind === undefined ? 'openai-compatible' : PROXY_KINDS.find((k) => k === input.kind)
     if (!kind) throw new Error('Unknown proxy kind')
+    if (input.litellmFeatures !== undefined && typeof input.litellmFeatures !== 'boolean') throw new Error('LiteLLM reporting must be enabled or disabled')
     const anthropicBaseUrl = normalizeProxyUrl(input.anthropicBaseUrl, 'Base URL')
     const openaiBaseUrl = input.openaiBaseUrl?.trim() ? normalizeProxyUrl(input.openaiBaseUrl, 'OpenAI base URL') : undefined
     const modelsUrl = input.modelsUrl?.trim() ? normalizeProxyUrl(input.modelsUrl, 'Models URL') : undefined
@@ -818,7 +823,7 @@ export class ConnectionService {
     try {
       this.deps.settings.setProxies([
         ...s.proxies,
-        { id, name, kind, anthropicBaseUrl, ...(openaiBaseUrl ? { openaiBaseUrl } : {}), ...(modelsUrl ? { modelsUrl } : {}), enabled: true, hasApiKey: !!key, tierModels: {} }
+        { id, name, kind, ...(input.litellmFeatures !== undefined ? { litellmFeatures: input.litellmFeatures } : {}), anthropicBaseUrl, ...(openaiBaseUrl ? { openaiBaseUrl } : {}), ...(modelsUrl ? { modelsUrl } : {}), enabled: true, hasApiKey: !!key, tierModels: {} }
       ])
     } catch (e) {
       this.deps.secrets.delete(proxySecretKey(id))
@@ -1182,7 +1187,34 @@ export class ConnectionService {
   runConnectionFor(project: Project, target: { connection: ConnectionId; adapter: ProviderId }): RunConnection {
     const own = projectConnection(project) === target.connection
     const choice: AdapterChoice = { adapter: target.adapter, connection: target.connection, mismatched: [] }
-    return this.runConnection(own ? project : undefined, choice)
+    const built = this.runConnection(own ? project : undefined, choice)
+    // Another connection's run gets no project (its auth must not apply), so the staffing variables are added here.
+    if (!own && target.connection === 'anthropic' && target.adapter === 'claude' && staffingModeOf(project) === 'auto') {
+      return { ...built, env: { ...(built.env ?? {}), ...this.anthropicTierEnv() } }
+    }
+    return built
+  }
+
+  /**
+   * Run staffing on the Anthropic connection (orchestration-efficiency 4.3): the ANTHROPIC_DEFAULT_*_MODEL variables a
+   * proxy sets, for each tier the connection maps to a concrete model id, so that an alias written at spawn (the only
+   * model a spawn may carry) means the connection's model for that tier. A value that is itself an alias or tier name
+   * is skipped (the alias already resolves natively). Only `sonnet` on a subscription login is live-checked (smoke
+   * check 10); the other three variables and an API-key login are unverified.
+   */
+  private anthropicTierEnv(): Record<string, string> {
+    const t = this.record('anthropic')?.tierModels ?? {}
+    const env: Record<string, string> = {}
+    const set = (name: string, value: string | undefined): void => {
+      const v = value?.trim()
+      // Also an alias with a context suffix ("sonnet[1m]"): mapping an alias to itself would not resolve.
+      if (v && settingTier(v.replace(/\[[^\]]*\]$/, '')) === undefined) env[name] = v
+    }
+    set('ANTHROPIC_DEFAULT_FABLE_MODEL', t.top)
+    set('ANTHROPIC_DEFAULT_OPUS_MODEL', t.deep)
+    set('ANTHROPIC_DEFAULT_SONNET_MODEL', t.everyday)
+    set('ANTHROPIC_DEFAULT_HAIKU_MODEL', t.fast)
+    return env
   }
 
   private buildRunConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
@@ -1195,7 +1227,9 @@ export class ConnectionService {
       // Lets one-shot completions get the key even when the env var is not literally ANTHROPIC_API_KEY.
       const auth = project?.provider.auth ?? settings.connections.anthropic.auth
       const key = auth.kind === 'apiKey' ? this.env(auth.envVar) : undefined
-      return { ...base, env: key ? { ANTHROPIC_API_KEY: key } : {} }
+      // Run staffing: only for a project the harness staffs ('fixed' keeps today's environment exactly).
+      const tiers = choice.adapter === 'claude' && project && staffingModeOf(project) === 'auto' ? this.anthropicTierEnv() : {}
+      return { ...base, env: { ...tiers, ...(key ? { ANTHROPIC_API_KEY: key } : {}) } }
     }
     if (id === 'openai') {
       const auth = settings.connections.openai.auth
@@ -1321,10 +1355,10 @@ export class ConnectionService {
   }
 
   /**
-   * One UsageStatus per enabled, configured, in-use proxy of kind 'litellm': the virtual key's spend and budget (GET
+   * One UsageStatus per enabled, configured, in-use proxy with LiteLLM reporting enabled: its spend and budget (GET
    * /key/info) plus its spend by UTC calendar period (the daily activity routes, keyed by the key's hash; a failure
    * there only sets `spend.periodsNote`). `connection` is that proxy's id. A proxy that is off, has no base URL or key,
-   * is not in use (neither the default connection nor any project's, `connectionInUse`), is 'openai-compatible', is the
+   * is not in use (neither the default connection nor any project's, `connectionInUse`), has reporting disabled, is the
    * ORGAI_MOCK=1 mock host, or whose /key/info gave no spend (no DB, refused, timeout, junk) yields nothing. Never
    * throws; no key is logged. `updatedAt` is the instant the periods were computed from.
    */
@@ -1332,7 +1366,7 @@ export class ConnectionService {
     const settings = this.effectiveSettings()
     const out: UsageStatus[] = []
     for (const conn of settings.proxies) {
-      if (conn.kind !== 'litellm' || !conn.enabled || !conn.anthropicBaseUrl) continue
+      if (!(conn.litellmFeatures ?? conn.kind === 'litellm') || !conn.enabled || !conn.anthropicBaseUrl) continue
       if (isMockProxyUrl(conn.anthropicBaseUrl) || isMockProxyUrl(proxyModelsUrl(conn))) continue
       if (!connectionInUse(conn.id, settings, this.deps.projects.list())) continue
       const key = this.deps.secrets.get(proxySecretKey(conn.id))
