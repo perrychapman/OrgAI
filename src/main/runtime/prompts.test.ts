@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, toolHygieneText } from './prompts'
+import { PLAN_BATCHING_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
 import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText } from './prompts'
@@ -65,7 +65,7 @@ describe('buildRolePrompt', () => {
     expect(text).toContain('You lead the following specialists.')
     expect(text).toContain('- engineer: engineer description')
     expect(text).toContain('- reviewer: reviewer description')
-    expect(text).not.toContain('Parallel work is safe')
+    expect(text).not.toContain('own git worktree')
   })
 
   it('tells the root and canSpawn leads to reach for MCP servers, never reports, never setup runs', () => {
@@ -107,7 +107,7 @@ describe('buildRolePrompt', () => {
 
   it('adds the orchestrator isolation paragraph only with isolation', () => {
     const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: true })
-    expect(text).toContain('Parallel work is safe')
+    expect(text).toContain('Every report that can edit files runs in its own git worktree.')
     expect(text).toContain('call integrate_worktrees to retry')
   })
 
@@ -153,8 +153,8 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, self-knowledge (app_reference), brief
-    expect(parts).toHaveLength(16)
+    // prompt, reports, team sizing, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, self-knowledge (app_reference), brief
+    expect(parts).toHaveLength(17)
   })
 
   it('tells every work-run role to edit with the edit tools and avoid cd chains, never setup runs', () => {
@@ -564,5 +564,82 @@ describe('bridged reports', () => {
     const root = buildRolePrompt(child, [child], project(), flags)
     expect(root).toContain('Work unattended')
     expect(root).not.toContain(bridgedReportText())
+  })
+})
+
+describe('team sizing paragraph', () => {
+  const roles = orgChart()
+  const [lead, eng] = roles
+  const flags = { isSetup: false, isolation: false }
+  const opening = 'Unless your instructions, the brief or required reports say otherwise, do the work yourself'
+
+  it('goes to the root of a team work run with reports, right after the reports list', () => {
+    const text = buildRolePrompt(lead, roles, project(), flags)
+    expect(text).toContain(teamSizingText({ isolation: false }))
+    expect(text.indexOf(opening)).toBeGreaterThan(text.indexOf('You lead the following specialists.'))
+    expect(buildRolePrompt(lead, roles, project({ kind: 'engagement', setup: { kind: 'new', state: 'complete' } }), flags)).toContain(opening)
+  })
+
+  it('never goes to a report, a mid-level lead, the single assistant, a quick run, a setup run or a bridged child root', () => {
+    expect(buildRolePrompt(eng, roles, project(), flags)).not.toContain(opening)
+    const mid = { ...eng, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'] }
+    expect(buildRolePrompt(mid, [lead, mid, ...roles.slice(1)], project(), flags)).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, team: 'single' })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, isSetup: true })).not.toContain(opening)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, bridged: true })).not.toContain(opening)
+    const alone = { ...lead, canSpawn: false, spawnable: [] as string[] }
+    expect(buildRolePrompt(alone, [alone], project(), flags)).not.toContain(opening)
+  })
+
+  it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
+    expect(teamSizingText({ isolation: false }).length).toBe(1039)
+    expect(teamSizingText({ isolation: true }).length).toBe(1001)
+    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1243)
+    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1205)
+    for (const required of [false, true]) for (const isolation of [false, true]) {
+      const t = teamSizingText({ required, isolation })
+      expect(t.length).toBeLessThanOrEqual(1300)
+      expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
+    }
+  })
+
+  it('covers sizing, the one-message rule, the longest piece, fan-out, the contract, review by risk, idle waiting and evidence', () => {
+    const t = teamSizingText()
+    for (const s of [
+      'one contained piece and you hold the tools',
+      'independent pieces of more than a couple of minutes each',
+      'tools, skills or connections',
+      'one report doing it all while you wait is slower than doing it alone',
+      'Start every ready piece in one message: calls in one message run together, separate messages run in sequence',
+      'Cut the longest piece first',
+      'Run several instances of a role on disjoint scopes',
+      'tests, checks and docs beside the implementation',
+      'Review risky or large changes, or when a rule says so, beside the next step, not by habit',
+      'never work you handed out, or end your turn and wait',
+      'read its evidence'
+    ]) expect(t).toContain(s)
+  })
+
+  it('agrees with isolation: disjoint files without worktrees, and the isolation text no longer repeats the parallel advice', () => {
+    expect(buildRolePrompt(lead, roles, project(), flags)).toContain('Parallel writers need disjoint files.')
+    const iso = buildRolePrompt(lead, roles, project(), { ...flags, isolation: true })
+    expect(iso).toContain(teamSizingText({ isolation: true }))
+    expect(iso).not.toContain('disjoint files')
+    expect(iso).toContain(orchestratorIsolationText())
+    expect(orchestratorIsolationText()).not.toMatch(/several tasks at once|Parallel work is safe/)
+  })
+})
+
+describe('plan calls batched with work', () => {
+  const roles = orgChart()
+  it('unattendedText carries the batching sentence only when plan nudges apply', () => {
+    expect(unattendedText('code', true)).toContain(PLAN_BATCHING_TEXT)
+    expect(unattendedText('engagement', true)).toContain(PLAN_BATCHING_TEXT)
+    expect(unattendedText('code', false)).not.toContain(PLAN_BATCHING_TEXT)
+    expect(PLAN_BATCHING_TEXT.length).toBeLessThanOrEqual(200)
+    expect(buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false })).toContain(PLAN_BATCHING_TEXT)
+    expect(buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false, team: 'single' })).not.toContain(PLAN_BATCHING_TEXT)
+    expect(buildRolePrompt(roles[1], roles, project(), { isSetup: false, isolation: false })).not.toContain(PLAN_BATCHING_TEXT)
   })
 })

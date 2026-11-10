@@ -349,7 +349,7 @@ describe('CodexAdapter session', () => {
     session = await adapter.start(ctx)
     await vi.waitFor(() => expect(servers[0]?.turnStarts('th-1')).toHaveLength(1), { timeout: 5000 })
     const s = servers[0]
-    expect(s.of('thread/start')[0].params.developerInstructions).toContain('Parallel work is safe')
+    expect(s.of('thread/start')[0].params.developerInstructions).toContain('runs in its own git worktree')
     const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Edit a.txt' } })
     expect(out.success).toBe(true)
     const child = s.of('thread/start')[1].params

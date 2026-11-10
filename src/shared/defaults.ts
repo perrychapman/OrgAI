@@ -991,12 +991,12 @@ export function defaultRoles(ctx: TierContext = { connection: 'anthropic', tierM
       'Lead agent. Plans the work, delegates to specialists, integrates results and reports to the user.',
     responsibilities: [
       'Understand the request and break it into well-scoped tasks',
-      'Delegate each task to the most suitable specialist',
+      'Delegate work that splits or needs a specialist to the most suitable report',
       'Review returned work for correctness and integration',
       'Keep the user informed with concise status and a final summary'
     ],
     prompt: `You are the lead engineer and orchestrator for this project.
-Plan before acting. Delegate implementation, review and testing to your specialist reports instead of doing everything yourself. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
+Plan before acting. Do contained work yourself; hand work that splits or needs a specialist to your reports, and start independent pieces together. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
     tools: FULL,
     ...modelOf('deep'),
     canSpawn: true,

@@ -138,10 +138,34 @@ export function reportsText(
   )
 }
 
+/**
+ * For the root of a team work run that has reports (not setup-like, quick, single or bridged-child runs): when to do the
+ * work itself, when to hand it out, and how to run what it hands out together (docs/design/orchestration-efficiency.md
+ * 4.1, 4.2). It yields to the role prompt, the brief and required delegation: with required reports it governs only how
+ * they run. `required`: the role has required reports (obligationsFor). `isolation`: writers get worktrees; without
+ * it, writers that run together are told to keep to disjoint files (with it, orchestratorIsolationText says why it is safe).
+ */
+export function teamSizingText(opts: { required?: boolean; isolation?: boolean } = {}): string {
+  return (
+    'Unless your instructions, the brief or required reports say otherwise, do the work yourself when it is one contained piece and you hold the tools. ' +
+    "Hand work out when it splits into independent pieces of more than a couple of minutes each, needs a report's tools, skills or connections, or a rule demands it; " +
+    'one report doing it all while you wait is slower than doing it alone. ' +
+    (opts.required ? "Required reports still go out: start together those that do not need each other's result; start one that needs another's result as soon as that result lands, only handing it over; do not redo their work. " : '') +
+    'Cut the longest piece first; a split leaving one piece nearly as long as the whole saves nothing. ' +
+    'Run several instances of a role on disjoint scopes. ' +
+    'Start every ready piece in one message: calls in one message run together, separate messages run in sequence. ' +
+    (opts.isolation ? '' : 'Parallel writers need disjoint files. ') +
+    'Once interface and acceptance criteria are set, start tests, checks and docs beside the implementation. ' +
+    'Review risky or large changes, or when a rule says so, beside the next step, not by habit. ' +
+    'While reports run, do only work you kept, never work you handed out, or end your turn and wait. ' +
+    'Do not re-run checks a report ran on the same result; read its evidence.'
+  )
+}
+
 /** For the root orchestrator when isolation is on: how merges and conflicts work. */
 export function orchestratorIsolationText(): string {
   return (
-    `Parallel work is safe: every report that can edit files runs in its own git worktree, so you may delegate several tasks at once. ` +
+    `Every report that can edit files runs in its own git worktree. ` +
     `When a report finishes, the harness commits its branch and merges it into the main checkout, then tells you the result in a message. ` +
     `If a merge conflicts, the branch is kept and you integrate it yourself: in the main checkout run git merge <branch>, resolve the conflicts, ` +
     `then git worktree remove --force <path> and git branch -d <branch>; or commit your own changes and call ${INTEGRATE_TOOL} to retry. ` +
@@ -221,6 +245,10 @@ export function orgChangeText(): string {
   )
 }
 
+/** unattendedText (plan nudges on): plan calls ride along with work, never a turn of their own (design 4.6). */
+export const PLAN_BATCHING_TEXT =
+  'Send set_plan with your first working tool calls and complete_plan with your last calls or final answer, never in a turn of their own.'
+
 /** Work-run orchestrators work unattended: plan first, keep going, stop only for genuine decisions. */
 export function unattendedText(kind: ProjectKind = 'code', nudges = true): string {
   const last =
@@ -237,6 +265,7 @@ export function unattendedText(kind: ProjectKind = 'code', nudges = true): strin
   return (
     `Work unattended. Start every task by calling set_plan with the goal and the concrete steps (${last}). ` +
     'Mark steps with update_plan as you go. Do not stop to ask whether to continue; continue until every step is done, then call complete_plan with a summary. ' +
+    `${PLAN_BATCHING_TEXT} ` +
     'Stop only for a genuine decision the user must make: ask_user (waits for the answer) or mark_blocked (ends the run\'s automatic continuation with the reason). ' +
     'The harness will remind you of remaining steps whenever a turn ends with work left.'
   )
@@ -472,6 +501,8 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     const requiredIds = obligationsFor(roles, flags.strictDelegation === true)[role.id] ?? []
     const requiredSlugs = requiredIds.map((id) => roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
     parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs))
+    // Team work-run roots only: not setup-like runs, the Chat, the single assistant or a report (a mid-level lead included).
+    if (isRoot && !isSetup && !flags.quick && flags.team !== 'single') parts.push(teamSizingText({ required: requiredSlugs.length > 0, isolation }))
     if (isolation && isRoot) parts.push(orchestratorIsolationText())
     if (!isSetup) parts.push(networkLeadText(reports))
   } else if (!isSetup) {

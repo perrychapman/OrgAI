@@ -49,6 +49,8 @@ function candidates(role, roles, project, flags, extra = []) {
   if (reports.length) {
     const req = (obligationsFor(roles, flags.strictDelegation === true)[role.id] ?? []).map((id) => roles.find((r) => r.id === id)?.slug).filter(Boolean)
     add('reports list (delegation)', P.reportsText(reports, flags.bridgedRoles, flags.bridgeVia, req))
+    // Whichever variant the builder used is found in the prompt; overlapping misses are skipped by segment().
+    for (const isolation of [true, false]) add('teamSizingText', P.teamSizingText({ required: req.length > 0, isolation }))
     add('orchestratorIsolationText', P.orchestratorIsolationText())
     add('networkLeadText', P.networkLeadText(reports))
   } else add('"no reports" line', 'You have no reports. Do the assigned work yourself and report back concisely when finished.')
