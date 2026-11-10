@@ -231,7 +231,7 @@ function mapped(tierModels: Partial<Record<ModelTier, string>> | undefined, tier
 }
 
 /** `text` cut to STAFFING_NOTE_MAX_CHARS without splitting a surrogate pair. */
-function capNote(text: string): string {
+export function capNote(text: string): string {
   if (text.length <= STAFFING_NOTE_MAX_CHARS) return text
   let t = text.slice(0, STAFFING_NOTE_MAX_CHARS)
   const last = t.charCodeAt(t.length - 1)

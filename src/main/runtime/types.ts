@@ -509,7 +509,7 @@ export interface RuntimeContext {
   /**
    * The goal this run staffs for: defaults.ts staffingGoalOf(project, RunOverrides.goal), the per-run override on top
    * of Project.staffingGoal, fixed at run start. RunManager sets it on every run; missing (fakes, older callers) =
-   * staffingGoalOf(ctx.project, ctx.run.overrides?.goal). Nothing reads it yet.
+   * staffingGoalOf(ctx.project, ctx.run.overrides?.goal). staffing.ts recordStaffing reads it for a run's first record.
    */
   staffingGoal?: StaffingGoal
   /** Cards waiting for the user: pending permissions, proposals, questions and merge reviews. */
