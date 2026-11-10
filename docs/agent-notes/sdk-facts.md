@@ -134,10 +134,15 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   with the fake `query`, live facts from checks 1 to 4 and 10): each `ClaudeSession` holds one `StaffingBook`. For a
   native spawn that passed every denial the hook calls `decide` under the Agent call's `tool_use_id` (the parent is the
   hook's `agent_id`; a tier from an alias or tier name on the call and a valid effort are the `onCall` request; the plan
-  guard is its `planGuard` input). The call's final `model` is `CLAUDE_TIER_ALIAS[tier]` only when the resolved tier
-  differs from the tier the role's definition runs on (an `inherit` role: the root's), else no key; `effort` only when
-  it differs from the definition's (`reportEffort`), else no key, except that an auto role whose `staffing.maxEffort`
-  is below the level it would run at gets that ceiling. Whatever else the model wrote in `model` or `effort` is
+  guard is its `planGuard` input). The call's final `model` is `CLAUDE_TIER_ALIAS[tier]` when the resolved tier
+  differs from the tier the role's definition runs on, and always for an automatic (or plan-guard steered) `inherit`
+  role whose tier is known; else no key. A role's tier is read one way in the resolver and the adapter
+  (`staffing.ts` `roleModelTier`): the definition sends `role.model`, so an alias or tier name in it decides before
+  `role.tier`. The root's tier is read live (`switchModel` changes it). An automatic role always gets an explicit
+  effort, the resolved one or `medium` (`CLAUDE_SDK_DEFAULT_EFFORT`, never above its ceiling), written unless the
+  definition already carries it, so neither the CLI's per-model default nor a project `effortLevel` decides; a fixed
+  role keeps its definition's effort. The row records what was written, else what the definition carries. Whatever
+  else the model wrote in `model` or `effort` is
   removed; a full id is never passed (it used to pass and fail the spawn), and the plan guard now writes `sonnet`
   instead of the everyday model id. When the spawn runs on other values than were asked (a clamp or the plan guard),
   the caller gets one line, "[OrgAI harness] <Role> was spawned on <label>.", through `PostToolUse`
@@ -145,13 +150,16 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   spawns (delegation gate facts above), for a background spawn's `async_launched` result it is unverified. The row is
   recorded at `task_started` (`recordStaffing`), an Agent `tool_result` with `is_error` before the agent started
   cancels the decision, and `SubagentStop` or a finishing `task_notification` calls `ended`. `Project.staffing:
-  'fixed'` keeps the call as before: an alias and an effort on it stay, only a non-alias model is dropped and the plan
-  guard writes the everyday alias (also for a deep alias on the call). The book survives query restarts; a resume in a
-  new process starts with an empty book, so an `inherit` child of a report spawned before the resume runs as
-  configured (the root's model), and a step attempted before it counts as never attempted. A report resumed by
-  `SendMessage` stays ended in the book. Not live-checked end to end in a run; whether `inherit` in a nested spawn
-  follows the main thread or the spawning subagent is unverified (OrgAI writes the alias whenever the resolved tier
-  differs from the root's, which is correct either way and never above the parent's tier).
+  'fixed'` works like a fixed role in an automatic project: the alias and effort on the call are dropped, the report
+  runs on its definition's model and effort, only the plan guard writes `sonnet`, and the caller is told in one
+  sentence when something it asked for was dropped. The plan guard judges an `inherit` report by the model `inherit`
+  resolves to (the root's live tier, a concrete id by its family), also when its parent is unknown to the book. The
+  book survives query restarts; a resume in a new process starts with an empty book, so an `inherit` child of a report
+  spawned before the resume runs as configured (the root's model, steered by the plan guard), and a step attempted
+  before it counts as never attempted. A report resumed by `SendMessage` stays ended in the book. Not live-checked end
+  to end in a run; whether `inherit` in a nested spawn follows the main thread or the spawning subagent is unverified,
+  and the typings disagree, so OrgAI writes the resolved tier's alias on every automatic `inherit` spawn instead of
+  relying on either reading.
 - Parallel foreground spawns: works. Two Agent calls in ONE assistant message (same `message.id`), both forced to
   `run_in_background = false` by the hook, each child running `sleep 5` (about 7.5 s per child including model
   turns): SubagentStart at 1.3 s and 1.6 s, SubagentStop at 8.9 s and 9.2 s, so they overlapped almost completely.

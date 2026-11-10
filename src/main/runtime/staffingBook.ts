@@ -30,10 +30,12 @@ export interface StaffingBookDeps {
   /** The run's project; only `staffing` is read (Project.staffing 'fixed' makes every role fixed). */
   project: Pick<Project, 'staffing'>
   /**
-   * The root's resolved tier (its chart tier): the parentTier for spawns that carry no `parentAgentId`. Absent = an
-   * 'inherit' report of the root cannot be sized and runs as configured.
+   * The root's tier now (the model it runs on; read live at each decision, since the user may switch the root's model
+   * mid-run): the parentTier for spawns that carry no `parentAgentId`, and the tier 'inherit' resolves to for the plan
+   * guard (resolveStaffing inheritTier). Absent or undefined = an 'inherit' report of the root cannot be sized and runs
+   * as configured. A plain value is read as a root that never changes (Codex and mock pass one today).
    */
-  rootTier?: ModelTier
+  rootTier?: ModelTier | (() => ModelTier | undefined)
   /** The connection's tier -> model id map (RunConnection.tierModels). Read live at each decision. */
   tierModels(): Partial<Record<ModelTier, string>>
   /** Efforts the adapter can send (defaults.ts effortOptionsFor(adapter)). Empty = the adapter never sends an effort. */
@@ -146,7 +148,7 @@ export class StaffingBook {
    * 3. Fan-out: the first open step naming the role with a decided or live attempt; the spawn shares it, `requested` =
    *    onCall over the step's staff, not a retry.
    * 4. No step: `requested` = onCall.
-   * parentTier = tierOf(parentAgentId), or deps.rootTier when no parentAgentId is given.
+   * parentTier = tierOf(parentAgentId), or deps.rootTier() when no parentAgentId is given.
    */
   decide(input: StaffingDecideInput): SpawnDecision {
     if (this.pending.has(input.key)) this.cancel(input.key)
@@ -155,7 +157,8 @@ export class StaffingBook {
     const planSteps = plan && Array.isArray(plan.steps) ? plan.steps : []
     this.forgetStale(planSteps)
     const slug = typeof role.slug === 'string' ? role.slug.trim() : ''
-    const parentTier = input.parentAgentId !== undefined ? this.tierOf(input.parentAgentId) : this.deps.rootTier
+    const rootTier = typeof this.deps.rootTier === 'function' ? this.deps.rootTier() : this.deps.rootTier
+    const parentTier = input.parentAgentId !== undefined ? this.tierOf(input.parentAgentId) : rootTier
 
     let stepId: string | undefined
     let step: PlanStep | undefined
@@ -222,6 +225,7 @@ export class StaffingBook {
       tierModels: this.deps.tierModels(),
       adapterEfforts: this.deps.adapterEfforts,
       planGuard,
+      ...(rootTier ? { inheritTier: rootTier } : {}),
       escalatedFrom
     })
     // At the limit the last attempt's values are passed as a request, which the resolver reports as the orchestrator's
