@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import type { TeamFileChange } from '@shared/types'
+import { EFFORTS, MODEL_TIERS, type Effort, type ModelTier, type TeamFileChange } from '@shared/types'
 import type { TeamDoc } from './doc'
 import { normalizeDoc } from './digest'
 import { CHART_REASON, FIRST_SEEN_REASON, describeChanges, gateTeam, isElevatedTool, permissionRank, type LinkResolver } from './gate'
 import { role, sampleDoc } from './doc.fixture'
+import { resolveStaffing } from '../runtime/staffing'
+import { canonicalJson } from './digest'
+
+const same = (a: unknown, b: unknown): boolean => canonicalJson(a) === canonicalJson(b)
 
 const clone = <T>(v: T): T => structuredClone(v)
 const dev = (d: TeamDoc) => d.roles.find((r) => r.slug === 'dev')!
@@ -575,38 +579,43 @@ describe('gateTeam staffing', () => {
     setup(approved)
     return gate(mutate, { approved })
   }
+  /** arch: a deep role on high effort under the lead (the root itself runs as fixed, whatever its staffing says). */
+  const arch = (d: TeamDoc) => d.roles.find((r) => r.slug === 'arch')!
+  const withArch = (d: TeamDoc): void => void d.roles.push(role('arch', { tier: 'deep', effort: 'high', tools: ['Read'] }))
+  const staffedA = (setup: (d: TeamDoc) => void, mutate: (d: TeamDoc) => void) => staffed((d) => (withArch(d), setup(d)), mutate)
+  const gateA = (mutate: (d: TeamDoc) => void) => staffedA(() => {}, mutate)
   const held = (r: ReturnType<typeof gate>, id: string): void => {
     expect(r.ids.pending).toEqual([id])
     expect(r.pending[0]).toMatchObject({ needsApproval: true, reason: 'May spend more' })
   }
 
   it('holds a raised maxEffort and applies a lowered one', () => {
-    const setup = (d: TeamDoc): void => void (lead(d).staffing = { mode: 'auto', maxEffort: 'medium' })
-    const up = staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'xhigh' }))
-    held(up, 'role:lead:staffing')
-    expect(lead(up.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'medium' })
-    const down = staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'low' }))
+    const setup = (d: TeamDoc): void => void (arch(d).staffing = { mode: 'auto', maxEffort: 'medium' })
+    const up = staffedA(setup, (d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'xhigh' }))
+    held(up, 'role:arch:staffing')
+    expect(arch(up.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'medium' })
+    const down = staffedA(setup, (d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'low' }))
     expect(down.pending).toEqual([])
-    expect(down.ids.applied).toContain('role:lead:details')
-    expect(lead(down.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'low' })
+    expect(down.ids.applied).toContain('role:arch:details')
+    expect(arch(down.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'low' })
   })
 
   it('judges a first maxEffort against the effective ceiling (the role effort, else high)', () => {
-    // lead: effort high, no staffing: ceiling high.
-    held(gate((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'max' })), 'role:lead:staffing')
-    expect(gate((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'high' })).pending).toEqual([])
-    expect(gate((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'low' })).pending).toEqual([])
+    // arch: effort high, no staffing: ceiling high.
+    held(gateA((d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'max' })), 'role:arch:staffing')
+    expect(gateA((d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'high' })).pending).toEqual([])
+    expect(gateA((d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'low' })).pending).toEqual([])
     // dev: no effort and no staffing: ceiling high.
-    held(gate((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'xhigh' })), 'role:dev:staffing')
-    expect(gate((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'medium' })).pending).toEqual([])
+    held(gateA((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'xhigh' })), 'role:dev:staffing')
+    expect(gateA((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'medium' })).pending).toEqual([])
   })
 
   it('holds a removed maxEffort only when that raises the ceiling', () => {
-    // lead (effort high): maxEffort low removed -> ceiling high: raised.
-    const raised = staffed((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'low' }), (d) => (lead(d).staffing = { mode: 'auto' }))
-    held(raised, 'role:lead:staffing')
-    // lead: maxEffort max removed -> ceiling high: lowered.
-    const lowered = staffed((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'max' }), (d) => (lead(d).staffing = { mode: 'auto' }))
+    // arch (effort high): maxEffort low removed -> ceiling high: raised.
+    const raised = staffedA((d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'low' }), (d) => (arch(d).staffing = { mode: 'auto' }))
+    held(raised, 'role:arch:staffing')
+    // arch: maxEffort max removed -> ceiling high: lowered.
+    const lowered = staffedA((d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'max' }), (d) => (arch(d).staffing = { mode: 'auto' }))
     expect(lowered.pending).toEqual([])
     // dev (no effort): maxEffort medium removed -> high: raised; xhigh removed -> high: lowered; high removed -> high: same.
     held(staffed((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'medium' }), (d) => (dev(d).staffing = { mode: 'auto' })), 'role:dev:staffing')
@@ -625,7 +634,7 @@ describe('gateTeam staffing', () => {
     const r = staffed((d) => (dev(d).effort = 'low'), (d) => delete dev(d).effort)
     held(r, 'role:dev:effort')
     expect(dev(r.effective).effort).toBe('low')
-    expect(summary(r, 'role:dev:effort')).toBe("Dev's reasoning effort is removed, so it may be picked up to high effort instead of low. This may spend more.")
+    expect(summary(r, 'role:dev:effort')).toBe("Dev's reasoning effort is removed, so it may be picked up to high effort instead of low and it runs at medium effort when nothing is picked (low before). This may spend more.")
     // Rewritten ('ok', from the review): automatic with a cap of low. The cap still bounds it (the resolver sends the cap
     // when no effort is given, runtime/staffing.ts rule 3), so the most a run may send stays low and it applies.
     const ok = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => delete dev(d).effort)
@@ -686,28 +695,31 @@ describe('gateTeam staffing', () => {
   })
 
   it('holds a tier floor that is added or raised and applies one that is lowered or removed', () => {
-    const setup = (d: TeamDoc): void => void (lead(d).staffing = { mode: 'auto', minTier: 'everyday' })
-    const added = gate((d) => (lead(d).staffing = { mode: 'auto', minTier: 'fast' }))
-    held(added, 'role:lead:staffing')
-    expect(summary(added, 'role:lead:staffing')).toBe('Lead gets a lowest tier of fast. This may spend more.')
-    const raised = staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', minTier: 'deep' }))
-    held(raised, 'role:lead:staffing')
-    expect(summary(raised, 'role:lead:staffing')).toBe("Lead's lowest tier is raised from everyday to deep. This may spend more.")
-    expect(staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', minTier: 'fast' })).pending).toEqual([])
-    expect(staffed(setup, (d) => (lead(d).staffing = { mode: 'auto' })).pending).toEqual([])
-    expect(staffed(setup, (d) => delete lead(d).staffing).pending).toEqual([])
+    const setup = (d: TeamDoc): void => void (arch(d).staffing = { mode: 'auto', minTier: 'everyday' })
+    const added = gateA((d) => (arch(d).staffing = { mode: 'auto', minTier: 'fast' }))
+    held(added, 'role:arch:staffing')
+    expect(summary(added, 'role:arch:staffing')).toBe('Arch gets a lowest tier of fast. This may spend more.')
+    const raised = staffedA(setup, (d) => (arch(d).staffing = { mode: 'auto', minTier: 'deep' }))
+    held(raised, 'role:arch:staffing')
+    expect(summary(raised, 'role:arch:staffing')).toBe("Arch's lowest tier is raised from everyday to deep. This may spend more.")
+    expect(staffedA(setup, (d) => (arch(d).staffing = { mode: 'auto', minTier: 'fast' })).pending).toEqual([])
+    expect(staffedA(setup, (d) => (arch(d).staffing = { mode: 'auto' })).pending).toEqual([])
+    expect(staffedA(setup, (d) => delete arch(d).staffing).pending).toEqual([])
   })
 
   it('judges the effective floor: one above the role tier does nothing and applies; on a role with no tier it counts', () => {
-    // lead is deep, dev everyday: a floor above them is dropped at run time (effectiveRoleStaffing).
-    expect(gate((d) => (lead(d).staffing = { mode: 'auto', minTier: 'top' })).pending).toEqual([])
-    const above = gate((d) => (dev(d).staffing = { mode: 'auto', minTier: 'deep' }))
+    // arch is deep, dev everyday: a floor above them is dropped at run time (effectiveRoleStaffing).
+    expect(gateA((d) => (arch(d).staffing = { mode: 'auto', minTier: 'top' })).pending).toEqual([])
+    const above = gateA((d) => (dev(d).staffing = { mode: 'auto', minTier: 'deep' }))
     expect(above.pending).toEqual([])
     expect(dev(above.effective).staffing).toEqual({ mode: 'auto', minTier: 'deep' })
     // reviewer inherits (no tier): any floor works.
     held(gate((d) => (reviewer(d).staffing = { mode: 'auto', minTier: 'deep' })), 'role:reviewer:staffing')
-    // A floor on a fixed role is counted too: it starts to work when the role becomes automatic.
-    held(staffed((d) => (dev(d).staffing = { mode: 'fixed' }), (d) => (dev(d).staffing = { mode: 'fixed', minTier: 'fast' })), 'role:dev:staffing')
+    // A floor on a fixed role does nothing and applies; it is counted when the role becomes automatic.
+    expect(staffed((d) => (dev(d).staffing = { mode: 'fixed' }), (d) => (dev(d).staffing = { mode: 'fixed', minTier: 'fast' })).pending).toEqual([])
+    const toAuto = staffed((d) => (dev(d).staffing = { mode: 'fixed', minTier: 'fast' }), (d) => (dev(d).staffing = { mode: 'auto', minTier: 'fast' }))
+    held(toAuto, 'role:dev:staffing')
+    expect(summary(toAuto, 'role:dev:staffing')).toBe('Dev becomes automatic and may be picked up to high effort (it ran at medium); Dev gets a lowest tier of fast. This may spend more.')
   })
 
   it('holds a role going from automatic to fixed, and fixed to automatic only when its maximum rises', () => {
@@ -733,13 +745,13 @@ describe('gateTeam staffing', () => {
   })
 
   it('names a raised or removed effort ceiling in the summary', () => {
-    const raised = staffed((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'medium' }), (d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'xhigh' }))
-    expect(summary(raised, 'role:lead:staffing')).toBe("Lead's effort ceiling is raised from medium to xhigh. This may spend more.")
-    const removed = staffed((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'low' }), (d) => (dev(d).staffing = { mode: 'auto' }))
-    expect(summary(removed, 'role:dev:staffing')).toBe("Dev's effort ceiling is removed, so it may be picked up to high effort (up to low before). This may spend more.")
+    const raised = staffedA((d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'medium' }), (d) => (arch(d).staffing = { mode: 'auto', maxEffort: 'xhigh' }))
+    expect(summary(raised, 'role:arch:staffing')).toBe("Arch's effort ceiling is raised from medium to xhigh; Arch runs at high effort when nothing is picked (medium before). This may spend more.")
+    const removed = staffedA((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'low' }), (d) => (dev(d).staffing = { mode: 'auto' }))
+    expect(summary(removed, 'role:dev:staffing')).toBe("Dev's effort ceiling is removed, so it may be picked up to high effort (up to low before); Dev runs at medium effort when nothing is picked (low before). This may spend more.")
     // Two things at once are both named.
-    const twice = gate((d) => (reviewer(d).staffing = { mode: 'fixed', minTier: 'everyday' }))
-    expect(summary(twice, 'role:reviewer:staffing')).toBe('Reviewer becomes fixed: it always runs at its configured model and effort; Reviewer gets a lowest tier of everyday. This may spend more.')
+    const twice = gate((d) => (reviewer(d).staffing = { mode: 'auto', maxEffort: 'max', minTier: 'everyday' }))
+    expect(summary(twice, 'role:reviewer:staffing')).toBe("Reviewer's effort ceiling is raised from high to max; Reviewer gets a lowest tier of everyday. This may spend more.")
   })
 
   it('holds the project going from auto to fixed, and fixed to auto only when some role may then spend more', () => {
@@ -747,7 +759,7 @@ describe('gateTeam staffing', () => {
     held(toFixed, 'settings:staffing')
     expect(toFixed.effective.settings.staffing).toBeUndefined()
     expect(summary(toFixed, 'settings:staffing')).toBe(
-      'Automatic staffing changes from automatic to off (every role runs as configured). Dev, Lead and Reviewer would then always run at their configured model and effort, which may spend more.'
+      'Automatic staffing changes from automatic to off (every role runs as configured). Dev and Reviewer would then always run at their configured model and effort, which may spend more.'
     )
     // Every role already fixed on its own: nothing becomes fixed, so it applies.
     const allFixed = (d: TeamDoc): void => void d.roles.forEach((r) => (r.staffing = { mode: 'fixed' }))
@@ -757,7 +769,7 @@ describe('gateTeam staffing', () => {
     held(toAuto, 'settings:staffing')
     expect(toAuto.effective.settings.staffing).toBe('fixed')
     expect(summary(toAuto, 'settings:staffing')).toBe(
-      'Automatic staffing changes from off (every role runs as configured) to automatic. Dev and Reviewer may then be picked up to a higher effort than they run at now.'
+      'Automatic staffing changes from off (every role runs as configured) to automatic. Dev and Reviewer may then run at a higher effort or tier than they do now.'
     )
     // With every role on high, or capped at what fixed ran at, it applies.
     const even = staffed((d) => ((d.settings.staffing = 'fixed'), allHigh(d)), (d) => delete d.settings.staffing)
@@ -774,7 +786,7 @@ describe('gateTeam staffing', () => {
     // Only reviewer would rise; its file is untouched.
     const r = staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'high')), (d) => delete d.settings.staffing)
     held(r, 'settings:staffing')
-    expect(summary(r, 'settings:staffing')).toContain('Reviewer may then be picked up to a higher effort than it runs at now.')
+    expect(summary(r, 'settings:staffing')).toContain('Reviewer may then run at a higher effort or tier than it does now.')
     // A role edit that lowers its reach in the same save is taken into account: a cap on reviewer makes the switch safe.
     const withCap = staffed((d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'high')), (d) => (delete d.settings.staffing, (reviewer(d).staffing = { mode: 'auto', maxEffort: 'medium' })))
     expect(withCap.pending).toEqual([])
@@ -840,3 +852,172 @@ describe('gateTeam staffing', () => {
   })
 })
 
+
+describe('gateTeam staffing, second review', () => {
+  function staffed(setup: (d: TeamDoc) => void, mutate: (d: TeamDoc) => void) {
+    const approved = sampleDoc()
+    setup(approved)
+    return gate(mutate, { approved })
+  }
+  const summary = (r: ReturnType<typeof gate>, id: string): string | undefined => r.pending.find((c) => c.id === id)?.summary
+
+  it('item 1: the root runs as fixed, so removing its effort under a low cap is held and a switch to fixed does not name it', () => {
+    const r = staffed((d) => ((lead(d).effort = 'low'), (lead(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => delete lead(d).effort)
+    expect(r.ids.pending).toEqual(['role:lead:effort'])
+    expect(lead(r.effective).effort).toBe('low')
+    expect(summary(r, 'role:lead:effort')).toBe("Lead's reasoning effort is removed, so it runs at the default effort (medium) instead of low. This may spend more.")
+    const toFixed = gate((d) => (d.settings.staffing = 'fixed'))
+    expect(summary(toFixed, 'settings:staffing')).toBe(
+      'Automatic staffing changes from automatic to off (every role runs as configured). Dev and Reviewer would then always run at their configured model and effort, which may spend more.'
+    )
+    // The root's staffing settings do nothing: a floor or a raised cap on it applies.
+    expect(gate((d) => (lead(d).staffing = { mode: 'auto', minTier: 'deep', maxEffort: 'max' })).pending).toEqual([])
+  })
+
+  it('item 2: a role the resolver cannot size runs as fixed: a concrete model, and an inherit role read both ways', () => {
+    const concrete = staffed(
+      (d) => (delete dev(d).tier, (dev(d).model = 'gpt-5-mini'), (dev(d).effort = 'low')),
+      (d) => (delete dev(d).effort, (dev(d).staffing = { mode: 'auto', maxEffort: 'low' }))
+    )
+    expect(concrete.ids.pending).toEqual(['role:dev:effort'])
+    expect(dev(concrete.effective)).toMatchObject({ effort: 'low', staffing: { mode: 'auto', maxEffort: 'low' } })
+    const inherit = staffed((d) => ((reviewer(d).effort = 'low'), (reviewer(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => delete reviewer(d).effort)
+    expect(inherit.ids.pending).toEqual(['role:reviewer:effort'])
+    expect(summary(inherit, 'role:reviewer:effort')).toBe("Reviewer's reasoning effort is removed, so it runs at the default effort (medium) instead of low. This may spend more.")
+    // Read as automatic (the parent's tier is known), a floor on an inherit role still counts.
+    expect(gate((d) => (reviewer(d).staffing = { mode: 'auto', minTier: 'everyday' })).ids.pending).toEqual(['role:reviewer:staffing'])
+  })
+
+  it('item 3: held rows state the whole move to the role on disk', () => {
+    const r = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => (delete dev(d).effort, (dev(d).staffing = { mode: 'auto', minTier: 'fast' })))
+    expect(r.ids.pending).toEqual(['role:dev:staffing'])
+    expect(summary(r, 'role:dev:staffing')).toBe(
+      "Dev's effort ceiling is removed, so it may be picked up to high effort (up to low before); Dev runs at medium effort when nothing is picked (low before); Dev gets a lowest tier of fast. This may spend more."
+    )
+    // The effort removal that spends no more under the approved cap applies.
+    expect(dev(r.effective)).toMatchObject({ staffing: { mode: 'auto', maxEffort: 'low' } })
+    expect(dev(r.effective).effort).toBeUndefined()
+    // Two held rows, each judged alone, that together leave a rise unsaid: the first held row says it.
+    const two = staffed((d) => (dev(d).effort = 'low'), (d) => ((dev(d).effort = 'high'), (dev(d).staffing = { mode: 'auto', maxEffort: 'medium' })))
+    expect(two.ids.pending.sort()).toEqual(['role:dev:effort', 'role:dev:staffing'])
+    expect(summary(two, 'role:dev:effort')).toBe("Dev's reasoning effort is raised and may spend more.")
+    expect(summary(two, 'role:dev:staffing')).toBe(
+      "Dev's effort ceiling is raised from low to medium. This may spend more. With the rest of this change, Dev runs at medium effort when nothing is picked (low before)."
+    )
+  })
+
+  it('item 4: settles to a fixpoint in one call, so a second call applies nothing and keeps every summary', () => {
+    // Pass 1 would hold the staffing row (effort medium still on the approved role) and apply the lowered effort; on that
+    // result the staffing change spends no more, so it applies in the same call.
+    const r = staffed((d) => ((dev(d).effort = 'medium'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => ((dev(d).effort = 'low'), delete dev(d).staffing))
+    expect(r.pending).toEqual([])
+    expect(dev(r.effective).effort).toBe('low')
+    expect(dev(r.effective).staffing).toBeUndefined()
+    // The same beside a held project switch.
+    const beside = staffed(
+      (d) => ((d.settings.staffing = 'fixed'), (dev(d).effort = 'medium'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })),
+      (d) => (delete d.settings.staffing, (dev(d).effort = 'low'), delete dev(d).staffing)
+    )
+    expect(beside.ids.pending).toEqual(['settings:staffing'])
+    expect(dev(beside.effective).staffing).toBeUndefined()
+  })
+
+  it('item 5: a rise in what a role runs at when nothing is picked is held', () => {
+    for (const maxEffort of ['medium', 'high', 'max'] as const) {
+      const r = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'auto', maxEffort })), (d) => delete dev(d).effort)
+      expect(r.ids.pending, maxEffort).toEqual(['role:dev:effort'])
+      expect(summary(r, 'role:dev:effort')).toBe("Dev's reasoning effort is removed, so it runs at medium effort when nothing is picked (low before). This may spend more.")
+    }
+    // Removing an effort at or above the default under a cap that keeps it applies.
+    expect(staffed((d) => ((dev(d).effort = 'medium'), (dev(d).staffing = { mode: 'auto', maxEffort: 'medium' })), (d) => delete dev(d).effort).pending).toEqual([])
+  })
+})
+
+describe('gateTeam staffing grid (sampled; the run-time spend comes from resolveStaffing)', () => {
+  const TR: Record<string, number> = { fast: 0, everyday: 1, deep: 2, top: 3 }
+  const ER: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
+  type Kind = 'tier' | 'inherit' | 'concrete'
+  interface W {
+    kind: Kind
+    tier?: ModelTier
+    effort?: Effort
+    mode?: 'auto' | 'fixed'
+    maxEffort?: Effort
+    minTier?: ModelTier
+  }
+  const docOf = (w: W, project: 'fixed' | undefined): TeamDoc => {
+    const r = role('w', { tools: ['Read'] })
+    delete r.tier
+    if (w.kind === 'tier') r.tier = w.tier
+    else r.model = w.kind === 'inherit' ? 'inherit' : 'gpt-5-mini'
+    if (w.effort) r.effort = w.effort
+    if (w.mode) r.staffing = { mode: w.mode, ...(w.minTier ? { minTier: w.minTier } : {}), ...(w.maxEffort ? { maxEffort: w.maxEffort } : {}) }
+    return {
+      settings: { brief: '', permissionMode: 'default', ...(project ? { staffing: project } : {}) },
+      roles: [role('lead', { reportsTo: null, canSpawn: true, spawnable: ['w'], tier: 'deep' }), r],
+      skills: [],
+      mcp: []
+    }
+  }
+  const REQS: ({ tier?: ModelTier; effort?: Effort } | undefined)[] = [undefined]
+  for (const t of [undefined, ...MODEL_TIERS]) for (const e of [undefined, ...EFFORTS]) if (t || e) REQS.push({ ...(t ? { tier: t } : {}), ...(e ? { effort: e } : {}) })
+  /** Highest, lowest and no-pick effort and the lowest and highest tier role w can run at (an unknown tier counts as a constant). */
+  const spend = (d: TeamDoc, noParent: boolean) => {
+    const r = d.roles.find((x) => x.slug === 'w')!
+    const rt = { model: r.tier ? `m-${r.tier}` : r.model!, tier: r.tier, effort: r.effort, staffing: r.staffing }
+    const out = { maxE: -1, minE: 9, defE: 0, minT: 9, maxT: -1 }
+    REQS.forEach((req, i) => {
+      const s = resolveStaffing({ role: rt, project: { staffing: d.settings.staffing }, parentTier: noParent ? undefined : 'deep', requested: req, tierModels: { fast: 'm-fast', everyday: 'm-everyday', deep: 'm-deep', top: 'm-top' }, adapterEfforts: [...EFFORTS] })
+      const e = ER[s.effort ?? 'medium']
+      const t = s.tier ? TR[s.tier] : 1.5
+      out.maxE = Math.max(out.maxE, e)
+      out.minE = Math.min(out.minE, e)
+      out.minT = Math.min(out.minT, t)
+      out.maxT = Math.max(out.maxT, t)
+      if (i === 0) out.defE = e
+    })
+    return out
+  }
+  const rises = (a: ReturnType<typeof spend>, b: ReturnType<typeof spend>): string[] => (['maxE', 'minE', 'defE', 'minT', 'maxT'] as const).filter((k) => b[k] > a[k])
+  const states = (kinds: Kind[]): W[] => {
+    const out: W[] = []
+    for (const kind of kinds)
+      for (const tier of kind === 'tier' ? (['everyday', 'deep'] as ModelTier[]) : [undefined])
+        for (const effort of [undefined, 'low', 'medium', 'high', 'max'] as (Effort | undefined)[])
+          for (const mode of [undefined, 'auto', 'fixed'] as const)
+            for (const maxEffort of mode ? ([undefined, 'low', 'medium', 'max'] as (Effort | undefined)[]) : [undefined])
+              for (const minTier of mode ? ([undefined, 'fast', 'deep'] as (ModelTier | undefined)[]) : [undefined]) out.push({ kind, tier, effort, mode, maxEffort, minTier })
+    return out
+  }
+
+  it.each([
+    ['tier roles', ['tier'], false],
+    ['inherit and concrete roles, parent tier known', ['inherit', 'concrete'], false],
+    ['inherit and concrete roles, parent tier unknown', ['inherit', 'concrete'], true]
+  ] as const)('%s: no unheld rise and idempotent, summaries included', (_label, kinds, noParent) => {
+    const S = states([...kinds])
+    const P = [undefined, 'fixed'] as const
+    let seed = 20261110
+    const rnd = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed % n
+    }
+    const problems: string[] = []
+    for (let i = 0; i < 1500; i++) {
+      const [wa, pa, wd, pd] = [S[rnd(S.length)], P[rnd(2)], S[rnd(S.length)], P[rnd(2)]]
+      const A = docOf(wa, pa)
+      const D = docOf(wd, pd)
+      const g = gateTeam(A, D)
+      const what = `${JSON.stringify({ ...wa, p: pa })} -> ${JSON.stringify({ ...wd, p: pd })}`
+      const sa = spend(A, noParent)
+      const applied = rises(sa, spend(g.effective, noParent))
+      if (applied.length) problems.push(`applied rise ${applied}: ${what}`)
+      const onDisk = rises(sa, spend(D, noParent))
+      if (onDisk.length && !g.pending.some((c) => c.id.startsWith('role:w:') || c.id === 'settings:staffing')) problems.push(`no held row for ${onDisk}: ${what}`)
+      const again = gateTeam(g.effective, D)
+      if (again.applied.length || !same(again.effective, g.effective) || !same(again.pending.map((c) => [c.id, c.summary]), g.pending.map((c) => [c.id, c.summary])))
+        problems.push(`not idempotent: ${what}`)
+    }
+    expect(problems.slice(0, 5)).toEqual([])
+  })
+})
