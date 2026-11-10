@@ -134,14 +134,22 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   with the fake `query`, live facts from checks 1 to 4 and 10): each `ClaudeSession` holds one `StaffingBook`. For a
   native spawn that passed every denial the hook calls `decide` under the Agent call's `tool_use_id` (the parent is the
   hook's `agent_id`; a tier from an alias or tier name on the call and a valid effort are the `onCall` request; the plan
-  guard is its `planGuard` input). The call's final `model` is `CLAUDE_TIER_ALIAS[tier]` when the resolved tier
-  differs from the tier the role's definition runs on, and always for an automatic (or plan-guard steered) `inherit`
-  role whose tier is known; else no key. A role's tier is read one way in the resolver and the adapter
+  guard is its `planGuard` input). The call's final `model` is `CLAUDE_TIER_ALIAS[tier]`, and only when the
+  connection resolves that alias (`aliasTarget`: its `ANTHROPIC_DEFAULT_<ALIAS>_MODEL` variable; on a proxy only a
+  tier its map names, since the variables come only from that map and the CLI would otherwise send its own native id;
+  on the Anthropic connection always, natively), in these cases: the plan guard steered the spawn, or an automatic
+  role is moved off the tier its definition runs on, or an automatic (or steered) `inherit` role has a known tier the
+  resolver did not reach through its `unmapped` fallback. A report the root spawns on the root's own live tier gets no
+  key: for a spawn by the root `inherit` is the main model under either reading, so it keeps the root's exact model (a
+  pinned id such as `claude-opus-4-1` included). Otherwise no key. A role's tier is read one way in the resolver and the adapter
   (`staffing.ts` `roleModelTier`): the definition sends `role.model`, so an alias or tier name in it decides before
   `role.tier`. The root's tier is read live (`switchModel` changes it). An automatic role always gets an explicit
   effort, the resolved one or `medium` (`CLAUDE_SDK_DEFAULT_EFFORT`, never above its ceiling), written unless the
   definition already carries it, so neither the CLI's per-model default nor a project `effortLevel` decides; a fixed
-  role keeps its definition's effort. The row records what was written, else what the definition carries. Whatever
+  role keeps its definition's effort. The row records what was sent: for a written alias the model it resolves to on
+  the connection (the mapped concrete id, else the alias itself, e.g. `sonnet` when `everyday` maps to `sonnet[1m]`,
+  for which no variable is set); with nothing written the definition's model (an `inherit` report of the root: the
+  root's live model; a nested one: `inherit`). Whatever
   else the model wrote in `model` or `effort` is
   removed; a full id is never passed (it used to pass and fail the spawn), and the plan guard now writes `sonnet`
   instead of the everyday model id. When the spawn runs on other values than were asked (a clamp or the plan guard),
@@ -158,8 +166,9 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   spawned before the resume runs as configured (the root's model, steered by the plan guard), and a step attempted
   before it counts as never attempted. A report resumed by `SendMessage` stays ended in the book. Not live-checked end
   to end in a run; whether `inherit` in a nested spawn follows the main thread or the spawning subagent is unverified,
-  and the typings disagree, so OrgAI writes the resolved tier's alias on every automatic `inherit` spawn instead of
-  relying on either reading.
+  and the typings disagree, so OrgAI writes the resolved tier's alias on every automatic nested `inherit` spawn the
+  connection can resolve instead of relying on either reading. On a proxy whose map lacks that tier nothing is written
+  and the open question remains.
 - Parallel foreground spawns: works. Two Agent calls in ONE assistant message (same `message.id`), both forced to
   `run_in_background = false` by the hook, each child running `sleep 5` (about 7.5 s per child including model
   turns): SubagentStart at 1.3 s and 1.6 s, SubagentStop at 8.9 s and 9.2 s, so they overlapped almost completely.
