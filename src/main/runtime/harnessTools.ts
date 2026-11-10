@@ -943,6 +943,11 @@ function progressLine(plan: RunPlan): string {
   )
 }
 
+/** Plan step ids that a staffing row (a report working on the step) is bound to. */
+function boundStepIds(ctx: RuntimeContext): Set<string> {
+  return new Set((ctx.getStaffing()?.assignments ?? []).flatMap((a) => (a.stepId ? [a.stepId] : [])))
+}
+
 const stepInput = z.object({
   title: z.string().min(1),
   owner: z.string().optional(),
@@ -970,6 +975,12 @@ export const setPlan = defineTool({
       // Re-planning keeps the run's automatic-continue count, so the limit still holds.
       autoContinues: previous?.autoContinues ?? 0,
       updatedAt: Date.now()
+    }
+    // A step with a report bound to it stays in_progress when the new plan keeps its id and title.
+    const bound = boundStepIds(ctx)
+    for (const s of plan.steps) {
+      const old = previous?.steps.find((o) => o.id === s.id)
+      if (old && old.status === 'in_progress' && bound.has(s.id) && old.title.trim() === s.title) s.status = 'in_progress'
     }
     await ctx.updatePlan(plan)
     hooks.onPlanUpdated?.(plan)
@@ -1002,7 +1013,9 @@ export const updatePlan = defineTool({
         unknown.push(u.id)
         continue
       }
-      if (u.status) step.status = u.status
+      // A pending step with a report bound to it stays in_progress; done, blocked and skipped always win.
+      const keep = u.status === 'pending' && step.status === 'in_progress' && boundStepIds(ctx).has(step.id)
+      if (u.status && !keep) step.status = u.status
       if (u.note?.trim()) step.note = u.note.trim()
       const g = graphOf(ctx, u, step.id, notes)
       for (const k of ['after', 'paths', 'staff'] as const) {
@@ -1010,7 +1023,7 @@ export const updatePlan = defineTool({
         if (g[k] === undefined) delete step[k]
         else (step as unknown as Record<string, unknown>)[k] = g[k]
       }
-      changed.push(`${step.id} ${u.status ?? 'updated'}`)
+      changed.push(`${step.id} ${keep ? 'kept in_progress (a report is working on it)' : (u.status ?? 'updated')}`)
     }
     const next: PlanStep[] = current.steps.map((s) => byId.get(s.id) ?? s)
     let n = current.steps.reduce((max, s) => Math.max(max, Number(/^p(\d+)$/.exec(s.id)?.[1] ?? 0)), 0)

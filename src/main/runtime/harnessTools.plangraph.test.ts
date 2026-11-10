@@ -140,4 +140,35 @@ describe('plan graph tools', () => {
       expect(text).toContain('8 of 8 agent slots are free.')
     })
   })
+
+  describe('a step with a report bound to it', () => {
+    const bind = (ctx: ReturnType<typeof setup>['ctx'], ...stepIds: string[]) => ctx.updateStaffing({ goal: 'balanced', assignments: stepIds.map((stepId) => ({ roleId: 'r', model: 'sonnet', source: 'role' as const, at: 1, stepId })) })
+    const statuses = (ctx: ReturnType<typeof setup>['ctx']) => ctx.getPlan()!.steps.map((s) => s.status)
+
+    it('update_plan pending keeps a bound in_progress step; done, blocked and skipped win; an unbound one goes back to pending', async () => {
+      const { ctx, set, update } = setup()
+      await set({ goal: 'G', steps: [{ title: 'A', staff: impl }, { title: 'B', staff: impl }, { title: 'C', staff: impl }] })
+      await update({ steps: [{ id: 'p1', status: 'in_progress' }, { id: 'p2', status: 'in_progress' }, { id: 'p3', status: 'in_progress' }] })
+      expect(statuses(ctx)).toEqual(['in_progress', 'in_progress', 'in_progress'])
+      await bind(ctx, 'p1', 'p2')
+      const text = await update({ steps: [{ id: 'p1', status: 'pending' }, { id: 'p3', status: 'pending' }] })
+      expect(statuses(ctx)).toEqual(['in_progress', 'in_progress', 'pending'])
+      expect(text).toContain('p1 kept in_progress')
+      expect(text).toContain('Ready now: p3')
+      expect(text).not.toMatch(/Ready now:[^.]*p1/)
+      await update({ steps: [{ id: 'p1', status: 'done' }, { id: 'p2', status: 'blocked' }] })
+      expect(statuses(ctx)).toEqual(['done', 'blocked', 'pending'])
+    })
+
+    it('set_plan keeps a bound in_progress step with the same id and title, not a changed one', async () => {
+      const { ctx, set, update } = setup()
+      await set({ goal: 'G', steps: [{ title: 'A', staff: impl }, { title: 'B', staff: impl }] })
+      await update({ steps: [{ id: 'p1', status: 'in_progress' }, { id: 'p2', status: 'in_progress' }] })
+      await bind(ctx, 'p1', 'p2')
+      const text = await set({ goal: 'G2', steps: [{ title: 'A', staff: impl }, { title: 'Other', staff: impl }] })
+      expect(statuses(ctx)).toEqual(['in_progress', 'pending'])
+      expect(text).toContain('Ready now: p2')
+      expect(text).not.toMatch(/Ready now:[^.]*p1/)
+    })
+  })
 })

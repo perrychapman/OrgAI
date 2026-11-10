@@ -657,13 +657,38 @@ export function appendStaffing(current: RunStaffing | undefined, goal: StaffingG
  * Append `row` to the run's staffing record through the context. Reads (getStaffing) and writes (updateStaffing) with
  * no await in between, so two spawns recorded in the same tick both land: RunManager stores the record synchronously
  * inside updateStaffing before anything awaits. The goal for a first record is ctx.staffingGoal, else 'balanced'.
+ *
+ * A row bound to a plan step also marks that step in_progress when it is still pending (markStepRunning), so a step with
+ * a report working on it is never shown or nudged as ready. The row is stored first and the plan write is independent:
+ * a failure of either rejects only after both were tried.
  */
 export function recordStaffing(
-  ctx: Pick<RuntimeContext, 'getStaffing' | 'updateStaffing' | 'staffingGoal'>,
+  ctx: Pick<RuntimeContext, 'getStaffing' | 'updateStaffing' | 'staffingGoal'> & Partial<Pick<RuntimeContext, 'getPlan' | 'updatePlan'>>,
   row: StaffingAssignment
 ): Promise<void> {
   const next = appendStaffing(ctx.getStaffing(), staffingGoalOf(undefined, ctx.staffingGoal), row)
-  return ctx.updateStaffing(next)
+  const staffed = ctx.updateStaffing(next)
+  // Fresh read and write in the same tick as the row, so two reports starting together both get marked.
+  let marked: Promise<void> | undefined
+  try {
+    marked = markStepRunning(ctx, row.stepId)
+  } catch (e) {
+    marked = Promise.reject(e)
+  }
+  if (!marked) return staffed
+  return Promise.allSettled([staffed, marked]).then(([a, b]) => {
+    if (a.status === 'rejected') throw a.reason
+    if (b.status === 'rejected') throw b.reason
+  })
+}
+
+/** Write the plan back with `stepId` in_progress when it exists and is pending; undefined when there is nothing to write. */
+function markStepRunning(ctx: Partial<Pick<RuntimeContext, 'getPlan' | 'updatePlan'>>, stepId: string | undefined): Promise<void> | undefined {
+  if (!stepId || !ctx.getPlan || !ctx.updatePlan) return undefined
+  const plan = ctx.getPlan()
+  if (!plan?.steps.some((s) => s.id === stepId && s.status === 'pending')) return undefined
+  const steps = plan.steps.map((s) => (s.id === stepId && s.status === 'pending' ? { ...s, status: 'in_progress' as const } : s))
+  return ctx.updatePlan({ ...plan, steps, updatedAt: Date.now() })
 }
 
 // ---------- Label ----------

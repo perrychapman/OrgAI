@@ -804,6 +804,22 @@ describe('readyReports and readyLine', () => {
   })
 })
 
+describe('a staffed step is not ready', () => {
+  const staffedPlan = mk([step('p1', 'a', 'in_progress', { staff: { role: 'implementer' } }), step('p2', 'b', 'pending', { staff: { role: 'implementer' } })])
+  it('readyReports and readyLine skip the in_progress step and keep the unbound one', () => {
+    expect(ids(readyReports(staffedPlan))).toEqual(['p2'])
+    expect(readyLine(readyReports(staffedPlan), { free: 3, limit: 8 })).toContain('p2')
+    expect(readyLine(readyReports(staffedPlan), { free: 3, limit: 8 })).not.toContain('p1')
+  })
+  it('the ready nudge is silent when only the staffed step is left, and names only the unbound one otherwise', () => {
+    const only = mk([step('p1', 'a', 'in_progress', { staff: { role: 'implementer' } })])
+    expect(nextNudge(input({ plan: only, liveReports: 1, slots: { free: 6, limit: 8 }, ownRoles: ['lead'] })).kind).toBe('none')
+    const d = nextNudge(input({ plan: staffedPlan, liveReports: 1, slots: { free: 6, limit: 8 }, ownRoles: ['lead'] }))
+    expect(d.kind).toBe('ready')
+    expect(d.readySignature).toBe('p2')
+  })
+})
+
 describe('nextNudge: ready', () => {
   const rp = (over: Partial<RunPlan> = {}): RunPlan =>
     mk([step('p1', 'Design', 'done'), step('p2', 'Build API', 'pending', { staff: { role: 'implementer' } }), step('p3', 'Build UI', 'pending', { staff: { role: 'implementer' } }), step('p4', 'Own work', 'pending')], over)
