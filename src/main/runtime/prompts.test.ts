@@ -617,10 +617,11 @@ describe('team sizing paragraph', () => {
   it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
     // Review policy 'risk' (the default) carries the longest review sentence.
     // Phase 6 decision order (kept work stays alone, side work only for handed-out work): +78, then +22 (own-work tests) on every variant.
-    expect(teamSizingText({ isolation: false }).length).toBe(1253)
-    expect(teamSizingText({ isolation: true }).length).toBe(1215)
-    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1457)
-    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1419)
+    // Owner decision 2026-11-10: review by risk covers any change again, not only handed-out work (-6 on the risk variants).
+    expect(teamSizingText({ isolation: false }).length).toBe(1247)
+    expect(teamSizingText({ isolation: true }).length).toBe(1209)
+    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1451)
+    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1413)
     expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1132)
     expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1109)
     for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
@@ -684,10 +685,11 @@ describe('team sizing paragraph', () => {
       }
     })
 
-    it('always and never keep their meaning; only risk ties its conditions to handed-out work', () => {
+    it('always and never keep their meaning; risk covers any change (owner decision 2026-11-10)', () => {
       expect(reviewPolicyText('always')).toBe('Have every change reviewed before you finish, beside the next step, not after everything.')
       expect(reviewPolicyText('never')).toBe('Do not ask for review unless a rule demands it; verify and finish.')
-      expect(reviewPolicyText('risk')).toContain('a rule or the brief demands it or handed-out work touches sensitive or security-relevant code')
+      expect(reviewPolicyText('risk')).toContain('a rule or the brief demands it, the change touches sensitive or security-relevant code')
+      expect(reviewPolicyText('risk')).not.toContain('handed-out')
     })
 
     it('reaches the root of a team work run, mandated or not, and none of it reaches a report, a quick, setup or single-assistant run', () => {
@@ -822,7 +824,7 @@ describe('staffing paragraph', () => {
     // The default chart's root (auto, balanced, risk) grows by at most 950 characters over the text before staffing.
     const before = 'Review risky or large changes, or when a rule says so, beside the next step, not by habit.'
     const growth = staffingText().length + 2 + reviewPolicyText().length - before.length
-    expect(growth).toBe(973)
+    expect(growth).toBe(967)
     expect(growth).toBeLessThanOrEqual(980)
   })
 
@@ -862,13 +864,13 @@ describe('review policy sentence', () => {
   const flags = { isSetup: false, isolation: false }
   const sentences = { risk: reviewPolicyText('risk'), always: reviewPolicyText('always'), never: reviewPolicyText('never') }
 
-  it('risk (the default): review on a rule or the brief; for handed-out work also on sensitive or security-relevant code, a large diff or a failed verification; else verify and finish', () => {
+  it('risk (the default): review on a rule or the brief, sensitive or security-relevant code, a large diff or a failed verification; else verify and finish', () => {
     expect(reviewPolicyText()).toBe(sentences.risk)
     expect(sentences.risk).toBe(
-      'Ask for review beside the next step only when a rule or the brief demands it or handed-out work touches sensitive or security-relevant code, has a large diff or failed verification once; else verify and finish.'
+      'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is large or verification failed once; else verify and finish.'
     )
-    // The risk conditions are tied to handed-out work: a contained task the lead did alone is not reviewed for its subject or size.
-    expect(sentences.risk).not.toMatch(/the change touches|the diff is large/)
+    // The risk conditions cover any change, the lead's own included (owner decision 2026-11-10).
+    expect(sentences.risk).not.toContain('handed-out')
   })
 
   it('always reviews every change before finishing; never asks only when a rule demands it', () => {

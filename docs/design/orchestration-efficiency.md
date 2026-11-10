@@ -11,7 +11,7 @@ Claude (a report's text lost on SDK 0.3.318; a second permission check on every 
 are fixed. The phase 6 comparison (1.1c, standing in section 7): a mandated team now completes in every run on
 both adapters, at a fifth of its earlier cost on Claude; a lead that keeps the work is at or near native on Codex
 and ahead of native on Claude from medium tasks up; not reached are a split that beats native, the mandated
-targets on a one-minute task, and the tail target. D5 (review by risk) shipped narrower than decided (section 6).
+targets on a one-minute task, and the tail target. D5 (review by risk) was narrowed at the gate and widened back by the owner afterwards, without a lab rerun (section 6).
 
 Base: `origin/dev` at `aad24c38` (PR #41, required delegation). Every code fact below was read from that commit with
 `git show`, not from the local `dev` checkout, which is 310 commits behind it and lacks the delegation runtime.
@@ -591,10 +591,9 @@ slot and nobody on it), the critical path's length against the run's, time to fi
 - A reviewer's findings go back to the agent that wrote the code (a message to a live report, or one new spawn),
   not to the lead to repair by hand.
 
-After phase 6: under `risk` the conditions about the change (sensitive code, a large diff, a failed verification)
-apply to handed-out work, and the lead's own work is reviewed only when a rule or the brief demands it; the
-sentence ends "else verify and finish". `always` is unchanged and still covers the lead's own work. The last two
-bullets above are not built (section 8, phase 3).
+After phase 6 the lab builds applied the conditions about the change (sensitive code, a large diff, a failed
+verification) to handed-out work only. The owner reversed that on 2026-11-10 (section 6): they apply to any
+change. The sentence ends "else verify and finish". The last two bullets above are not built (section 8, phase 3).
 
 ### 4.5 Project profile
 
@@ -729,6 +728,13 @@ brief asks for it (4.4, 1.1c). The reason is measured: a lead that had done the 
 for it, and on Codex that review round was most of a 2x. A project that wants every change reviewed sets
 `reviewPolicy: 'always'`; restoring the wider default is a one-sentence change in `reviewPolicyText`. This is the
 owner's to reverse.
+
+**Reversed by the owner, 2026-11-10 ("widened back").** `risk` again covers any change, the lead's own included:
+"only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is
+large or verification failed once; else verify and finish". No lab run was made on this wording. The lab builds
+(P2d, P2e) carried the narrow one, and the P2c runs, which carried the wide one, are the runs where the Codex lead
+called a reviewer for its own work; P2c did not yet have the rule that the lead's own tests are never handed out,
+so the two effects are not separated.
 
 ## 7. Acceptance
 

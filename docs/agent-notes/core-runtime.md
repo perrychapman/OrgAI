@@ -76,8 +76,8 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   `reportsText`): the root's sizing paragraph is in decision order and its wording was changed twice on lab evidence,
   so read 1.1c before touching it. The sizing sentence decides first; the split test applies to "what the brief asks
   for"; "Tests and checks of your own work are part of it, never pieces to hand out"; the parallel, contract and
-  review sentences speak only of handed-out work; review by risk covers the lead's own work only when a rule or the
-  brief demands it. The team listing says how ("To hand work out, use the Agent tool"), not that the lead must;
+  review sentences speak only of handed-out work, except review by risk, which covers any change again (owner
+  decision 2026-11-10, no lab run on that wording). The team listing says how ("To hand work out, use the Agent tool"), not that the lead must;
   required reports keep "You must delegate to ...". Sizes are pinned in `prompts.test.ts`. Lab-checked on the root of
   the default chart only; a mid-level lead and a setup root get the new listing line with no live run behind it.
 - Staffing profile wiring (2026-11-10, spec 4.5, D8): `store/staffingProfile.ts` holds the lifecycle helpers.

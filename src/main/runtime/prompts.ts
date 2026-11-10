@@ -269,13 +269,13 @@ export function teamSizingText(opts: { required?: boolean; isolation?: boolean; 
 /**
  * The review rule of a team root (docs/design/orchestration-efficiency.md 4.4), one sentence inside teamSizingText.
  * Required reports win over every policy: teamSizingText opens with "unless ... required reports say otherwise".
- * Under 'risk' the lead's own work is reviewed only when a rule or the brief demands it; the risk conditions (sensitive
- * code, a large diff, a failed verification) apply to handed-out work.
+ * Under 'risk' the conditions (sensitive code, a large diff, a failed verification) apply to any change, the lead's own
+ * included (owner decision 2026-11-10; the lab build tied them to handed-out work, spec 1.1c and section 6).
  */
 export function reviewPolicyText(policy: ReviewPolicy = 'risk'): string {
   if (policy === 'always') return 'Have every change reviewed before you finish, beside the next step, not after everything.'
   if (policy === 'never') return 'Do not ask for review unless a rule demands it; verify and finish.'
-  return 'Ask for review beside the next step only when a rule or the brief demands it or handed-out work touches sensitive or security-relevant code, has a large diff or failed verification once; else verify and finish.'
+  return 'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is large or verification failed once; else verify and finish.'
 }
 
 /**
