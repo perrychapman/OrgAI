@@ -312,21 +312,42 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   summary exists, so a refusal leaves no run. The model must be in the catalog on exactly that connection; an explicit
   model wins over the single assistant's quick-run model; it then takes the existing `modelSelection` path (root role only).
   Effort must be in `effortOptionsFor(adapter)`; it is set on the root of `ctx.roles` (claude.ts `sessionEffort`, codex.ts
-  `this.root.effort` read it), never on reports, so `staffing.ts` is untouched (checked by reading staffing.ts, claude.ts
-  `reportEffort` and codex.ts, not by a live run). An explicit model under a project cap needs a known price (same
+  `this.root.effort` read it), never on reports (checked by reading staffing.ts, claude.ts `reportEffort` and codex.ts,
+  not by a live run). The chosen model is not root-only in effect: roles whose model is 'inherit' follow the root's
+  model, and `staffing.ts` uses the root's live tier (`parentTier`) as the tier ceiling of an 'inherit' role with no tier
+  of its own (checked by reading staffing.ts). An explicit model under a project cap needs a known price (same
   resolution as the exec budget's `modelPriced`). The mode must be in `runPermissionModeChoices` (setup-like runs: none;
-  Chat / build sessions: default, dontAsk, plan; exec runs refused); it is laid over `effectiveRunProject` by
-  `runProjectFor`, which `setLive` also uses, so an approved project change cannot undo it. Every run records the mode in
-  force on `RunSummary.permissionMode` (setLive keeps it current). bypassPermissions stays gated where it was: the adapters
+  Chat runs: default, dontAsk, plan; exec runs refused; its build-session branch is defensive only, since a build
+  session is an mcp-assist run and `start` refuses a build workspace on any other kind); it is laid over
+  `effectiveRunProject` by `runProjectFor`, which `setLive` also uses, so an approved project change cannot undo it.
+  `RunSummary.permissionMode` (`recordedRunPermissionMode`, review L1) is recorded only on runs that take a per-run mode:
+  absent on setup-like runs (they pin their own), 'default' on a Chat run whose project mode its adapter downgrades to
+  asking, otherwise the mode in force (setLive keeps it current). bypassPermissions stays gated where it was: the adapters
   honour it only off setup-like and trust-restricted runs (`claudeAllowsBypass`, codex mapping); proposals and agents
   still cannot set it.
 - Continuations: `rootEffort` carries (dropped with a warn line where the new adapter does not take it). A chosen mode
   carries when it narrows the project's current mode, or the continuation is desktop, the resume timer or a 'configure'
-  caller; otherwise an info line says the project's mode applies.
+  caller; otherwise an info line says the project's mode applies. Exception (review L5): an output revision
+  (`outputs/revise.ts`, `outputs:revise`) continues without the desktop flag because that channel is in the 'operate'
+  scope and socket clients reach it too, so a chosen mode that widens the project is not carried there (fail-safe).
 - Mid-run (`RunManager.setPermissionMode`): ended / paused runs save the mode for the continuation (`applied: false`).
-  A live run needs the optional `RuntimeSession.setPermissionMode` (runtime/types.ts); RunManager sets `ctx.project` first,
-  restores it if the session answers false or throws, and changes nothing when the method is missing. Open cards stay
-  open; session-only grants and staffing are untouched. Only the desktop IPC reaches it (no RuntimeContext hook or tool).
-- Checked by unit tests only: `runtime/runManager.startChoice.test.ts` (fake recording adapter), `host/argsRunChoice.test.ts`,
-  `host/dispatcherRunChoice.test.ts`, `store/runs.test.ts`. No adapter implements `setPermissionMode` yet; whether the
-  Claude SDK or Codex app-server can change a live session's mode is unverified (sdk-facts.md does not record it).
+  A live run needs the optional `RuntimeSession.setPermissionMode` (runtime/types.ts), which derives its mapping from the
+  `mode` argument. Calls are serialized per run (`ActiveRun.permissionModeChanging`; a second call is refused with a plain
+  reason). A narrowing is put on `ctx.project` before the session call, a widening only after it applied (review L3). The
+  session answers true, `{ applied: true, reportsUnchanged: n }` (n live reports keep their earlier mode until they finish;
+  the result carries `reportsUnchanged` and the info line and `reason` say so; it must not answer plain true then), or
+  false / throw. On a refusal chosenMode goes back and `ctx.project` is re-derived from the live project
+  (`ActiveRun.liveProject`, so an approval that landed during the await is kept) and the summary follows; a thrown message
+  is only logged (`reason` is fixed). Nothing changes when the method is missing. Open cards stay open; session-only
+  grants and staffing are untouched. Only the desktop IPC reaches it (no RuntimeContext hook or tool).
+- "Accept edits" allows (review M1): a session or project allow of a setMode acceptEdits suggestion makes every adapter
+  move the provider session to acceptEdits. `RunManager.decide` (`followAcceptEditsGrant`) follows on a non-restricted
+  run whose mode in force is narrower (default, dontAsk, plan): chosenMode becomes acceptEdits, `ctx.project` is
+  re-derived, `RunSummary.permissionMode` becomes acceptEdits with `permissionModeChosen` (not on exec runs), and an info
+  line is logged. A desktop continuation therefore carries acceptEdits, as with a mid-run mode choice. No summary event
+  reaches the renderer for this: `run.model` carries only the model and there is no generic summary-update event, so the
+  renderer sees the new mode on its next summary fetch.
+- Checked by unit tests only: `runtime/runManager.startChoice.test.ts` (fake recording adapter: the M1, M2, M3, L1, L2
+  and L3 cases are named by finding), `host/argsRunChoice.test.ts`, `host/dispatcherRunChoice.test.ts`,
+  `store/runs.test.ts`. Whether the Claude SDK or Codex app-server can change a live session's mode is unverified
+  (sdk-facts.md does not record it).
