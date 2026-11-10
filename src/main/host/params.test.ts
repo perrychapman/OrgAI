@@ -59,6 +59,7 @@ const PAYLOADS: Record<string, unknown[]> = {
   'runs:start': [{ projectId: 'p_abc123', prompt: 'Build it', images: [IMAGE], team: 'single' }],
   'runs:send': [{ runId: 'run_1', text: '', images: [IMAGE] }],
   'runs:switchModel': [{ runId: 'run_1', model: 'sonnet', connection: 'anthropic' }],
+  'runs:setPermissionMode': [{ runId: 'run_1', mode: 'plan' }],
   'runs:interrupt': ['run_1'],
   'runs:stop': ['run_1'],
   'runs:list': ['p_abc123'],

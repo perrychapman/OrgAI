@@ -176,11 +176,12 @@ describe('runs:continue overrides and exec', () => {
     expect(runs.continueRun).not.toHaveBeenCalled()
   })
 
-  it('the desktop drops overrides and exec; a plain continue keeps four arguments', async () => {
+  it('the desktop drops overrides and exec and passes only { desktop: true }; a plain RPC continue keeps four arguments', async () => {
     const { d, runs } = setup()
     await d.invoke(IPC.runsContinue, [{ runId: 'run_1', text: 'more', exec: true, overrides: { permissionMode: 'bypassPermissions' } }], DESKTOP)
     await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more' }], OPERATE)
-    expect(runs.continueRun.mock.calls[0]).toHaveLength(4)
+    expect(runs.continueRun.mock.calls[0]).toHaveLength(5)
+    expect(runs.continueRun.mock.calls[0][4]).toEqual({ desktop: true })
     expect(runs.continueRun.mock.calls[1]).toHaveLength(4)
   })
 

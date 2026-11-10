@@ -77,12 +77,16 @@ import type {
   RunSummary,
   SwitchRunModelInput,
   SwitchRunModelResult,
+  SetRunPermissionModeInput,
+  SetRunPermissionModeResult,
+  Effort,
+  PermissionMode,
   RunSurface,
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
 import { BridgedSessions, bridgeKey } from './bridge'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import {
@@ -103,7 +107,7 @@ import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, isBuiltinConnectionId, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, PERMISSION_MODE_OPTIONS, isBuiltinConnectionId, isEffort, isPermissionMode, runPermissionModeChoices, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
@@ -124,7 +128,7 @@ import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { effectiveRunProject, execBudgetUsd, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
+import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
 import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
 import { delegationPreflight, obligationsFor, subtreeFailed } from './delegation'
@@ -539,6 +543,11 @@ interface ActiveRun {
   bridgedConnections?: RunConnection[]
   /** Whether a model setting or id has a known price on this run's connection (exec budget). Set in start(). */
   modelPriced?: (model: string) => boolean
+  /**
+   * The permission mode the user chose for this run (start-time choice, a carried one, or runs:setPermissionMode). It is
+   * laid over ctx.project every time the project is re-derived (runProjectFor), so a live install or proposal cannot undo it.
+   */
+  chosenMode?: PermissionMode
   /** teardown ran (it may be reached from both the finalizer and session.finished). */
   tornDown?: boolean
 }
@@ -942,6 +951,85 @@ export interface StartInput {
   overrides?: RunOverrides
   /** The caller holds the 'configure' scope: widening overrides apply (runOverrides.ts effectiveRunProject). */
   allowWidening?: boolean
+  /**
+   * The desktop user's start-time choices (StartRunInput.modelSelection / effort / permissionMode). Only the desktop
+   * runs:start handler sets it; RunManager validates each against the catalog, effortOptionsFor and
+   * runPermissionModeChoices and refuses (throws) before a run exists.
+   */
+  userChoice?: StartUserChoice
+  /** Set by continueRun only (a symbol key, so no caller input can carry it): the per-run choices of the continued run. */
+  [CARRIED_CHOICES]?: CarriedChoices
+}
+
+/** StartInput.userChoice. */
+export interface StartUserChoice {
+  modelSelection?: { model: string; connection: ConnectionId }
+  effort?: Effort
+  permissionMode?: PermissionMode
+}
+
+/** Internal StartInput key: what continueRun carries from the run it continues (already vetted for the permission mode). */
+const CARRIED_CHOICES = Symbol('carriedChoices')
+
+interface CarriedChoices {
+  /** The continued run's root effort; start() drops it (with a warning) on an adapter that does not take it. */
+  rootEffort?: Effort
+  /** A chosen permission mode that continueRun decided to carry. */
+  permissionMode?: PermissionMode
+  /** Lines logged on the new run right after it starts. */
+  logs?: { level: 'info' | 'warn'; message: string }[]
+}
+
+/** What a run of this kind is, for the checks on a desktop user's per-run choices. */
+export interface StartChoiceRun {
+  kind: RunKind
+  quick?: QuickRunInfo
+  buildWorkspace?: string
+  /** An exec run (overrides.execMode): it keeps the mode it started with. */
+  exec: boolean
+}
+
+/** The same text rule as switchModel's: non-empty, short, trimmed, no control characters. */
+const isChoiceText = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200 && v.trim() === v && !/[\x00-\x1f\x7f]/.test(v)
+
+/**
+ * Start-time choices of the desktop user (StartInput.userChoice), checked BEFORE a run exists, so a refusal leaves no
+ * run and no stored record. Pure; throws a plain-words Error on the first problem and returns only the known, clean
+ * fields. The effort is checked against the adapter once choose() has picked it (checkStartEffort).
+ *
+ * - modelSelection: valid text for both fields, and the catalog holds exactly that id on exactly that connection
+ *   (stricter than a continuation, which may keep a selection whose model has left the catalog).
+ * - permissionMode: a real mode that runPermissionModeChoices lists for this run (setup-like runs and Chat / build
+ *   sessions are narrowed there); an exec run keeps the mode it started with.
+ */
+export function checkStartChoice(choice: StartUserChoice, run: StartChoiceRun, catalog: readonly ProviderModel[]): StartUserChoice {
+  const out: StartUserChoice = {}
+  if (choice.modelSelection !== undefined) {
+    const sel: unknown = choice.modelSelection
+    const model = sel && typeof sel === 'object' ? (sel as { model?: unknown }).model : undefined
+    const connection = sel && typeof sel === 'object' ? (sel as { connection?: unknown }).connection : undefined
+    if (!isChoiceText(model) || !isChoiceText(connection)) throw new Error('Invalid model selection')
+    if (!catalog.some((m) => m.id === model && m.connection === connection)) throw new Error('This model is not available on that connection. Choose another model.')
+    out.modelSelection = { model, connection }
+  }
+  if (choice.effort !== undefined) {
+    if (!isEffort(choice.effort)) throw new Error('Invalid effort level')
+    out.effort = choice.effort
+  }
+  if (choice.permissionMode !== undefined) {
+    if (!isPermissionMode(choice.permissionMode)) throw new Error('Invalid permission mode')
+    if (run.exec) throw new Error('Exec runs keep the mode they started with.')
+    if (!runPermissionModeChoices({ kind: run.kind, quick: run.quick, buildWorkspace: run.buildWorkspace }).includes(choice.permissionMode)) {
+      throw new Error('This run cannot use that permission mode.')
+    }
+    out.permissionMode = choice.permissionMode
+  }
+  return out
+}
+
+/** The effort a run's adapter takes (effortOptionsFor); throws a plain-words Error otherwise. Pure. */
+export function checkStartEffort(effort: Effort, adapter: ProviderId): void {
+  if (!effortOptionsFor(adapter).includes(effort)) throw new Error(`This model does not take the ${effort} effort level.`)
 }
 
 /** Internal ContinueRunOptions key: the automatic rate-limit resume (keeps the exec fields like `exec`). */
@@ -955,6 +1043,8 @@ export interface ContinueRunOptions {
   exec?: boolean
   /** The caller holds the 'configure' scope. */
   allowWidening?: boolean
+  /** The desktop surface (or RunManager's own resume timer): a widening per-run permission mode the user chose carries. */
+  desktop?: true
   /** Set only by RunManager's own auto-resume. */
   [AUTO_RESUME]?: true
 }
@@ -1251,6 +1341,46 @@ export class RunManager {
     return { adapter, choice }
   }
 
+  /** The pricing context for a connection (`rc`: its RunConnection, when the run has one). Settings are read at each call. */
+  private pricingContext(on: ConnectionId, rc: RunConnection | undefined): PricingContext {
+    const s = this.options.appSettings?.()
+    const community = s?.communityPrices === false ? undefined : this.options.communityPrices?.()
+    return {
+      connection: on,
+      overrides: s?.modelPrices ?? [],
+      ...(rc?.pricing ? { pricing: rc.pricing } : {}),
+      catalog: this.options.catalog?.() ?? [],
+      aliases: aliasesFor(rc, connectionRecord(s ?? {}, on)?.tierModels),
+      ...(community ? { community } : {})
+    }
+  }
+
+  /**
+   * Whether a model setting or id has a known price on `on` (exec budget, and the start-time check of an explicitly
+   * chosen model under a project cap). A tier name or alias is read through the connection's tier mapping first.
+   */
+  private modelIsPriced(setting: string, on: ConnectionId, rc: RunConnection | undefined): boolean {
+    const tierModels = connectionRecord(this.options.appSettings?.() ?? {}, on)?.tierModels ?? {}
+    // An empty catalog means "not discovered yet": the connection's builtin list answers then (modelForTier).
+    const catalog = this.options.catalog?.() ?? []
+    const resolved = resolveModelSetting(setting, { connection: on, tierModels, ...(catalog.length ? { catalog } : {}) })
+    if (!resolved || resolved.model === 'inherit') return true
+    const ctx = this.pricingContext(on, rc)
+    if (resolvePrice(resolved.model, ctx) !== null) return true
+    // A bare tier name or Claude alias the connection does not map is resolved by the CLI itself (latest model of the
+    // family): its real id is only known from usage reports, which checkExecBudget prices live.
+    return !!settingTier(resolved.model) && !Object.hasOwn(ctx.aliases ?? {}, resolved.model)
+  }
+
+  /**
+   * The project a run's adapter sees: the live project with the run's overrides applied, then the user's per-run
+   * permission mode (chosenMode) on top. The one place both start() and setLive() derive ctx.project from.
+   */
+  private runProjectFor(active: ActiveRun, project: Project): Project {
+    const effective = effectiveRunProject(project, active.summary.overrides, { allowWidening: active.allowWidening })
+    return active.chosenMode ? { ...effective, permissionMode: active.chosenMode } : effective
+  }
+
   /**
    * Bridged reports (multi-provider org charts): roles of a work run whose (connection, adapter) differs from the
    * root's run in child sessions. Only team work runs of a stored project bridge; quick, single, setup-like,
@@ -1387,7 +1517,9 @@ export class RunManager {
     buildWorkspace,
     team,
     overrides: rawOverrides,
-    allowWidening
+    allowWidening,
+    userChoice,
+    [CARRIED_CHOICES]: carried
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
@@ -1439,6 +1571,13 @@ export class RunManager {
       project = resolved.project
       quickWarning = resolved.warning
     }
+    // ---- The desktop user's start-time choices (userChoice). Every check below runs before `summary` is created, so a
+    // refusal leaves no run: nothing is stored and nothing is in this.runs. Model first (it settles the adapter), then
+    // the effort against that adapter, the permission mode, and the price of an explicitly chosen model under a cap.
+    const choiceRun: StartChoiceRun = { kind, ...(quick ? { quick } : {}), ...(buildWorkspace ? { buildWorkspace } : {}), exec: !!overrides?.execMode }
+    const chosen = userChoice ? checkStartChoice(userChoice, choiceRun, this.options.catalog?.() ?? []) : undefined
+    // An explicit choice wins over the single assistant's quick-run model settled above.
+    if (chosen?.modelSelection) modelSelection = chosen.modelSelection
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
     if (modelSelection) {
       const selected = this.options.catalog?.().find((m) => m.id === modelSelection.model && m.connection === modelSelection.connection)
@@ -1447,9 +1586,30 @@ export class RunManager {
       project = { ...project, provider: { ...project.provider, connection: modelSelection.connection, id: project.provider.id === 'mock' ? 'mock' : selected?.adapter ?? project.provider.id }, roles: project.roles.map((r) => r.reportsTo === null ? { ...r, model: modelSelection.model, connection: modelSelection.connection } : { ...r, connection: r.connection ?? originalConnection }) }
     }
     const { adapter, choice } = this.choose(project, kind)
-    if (modelSelection && modelSelection.connection !== choice.connection) throw new Error('The original connection is no longer available for this session')
+    if (modelSelection && modelSelection.connection !== choice.connection) {
+      throw new Error(chosen?.modelSelection ? 'That connection is not available. Choose another model.' : 'The original connection is no longer available for this session')
+    }
+    // The root's effort: a chosen one must suit the adapter that will run (refused); a carried one that does not is
+    // dropped with a warning on the new run (a continuation never refuses over it).
+    let rootEffort: Effort | undefined
+    let droppedEffort: Effort | undefined
+    if (chosen?.effort) {
+      checkStartEffort(chosen.effort, choice.adapter)
+      rootEffort = chosen.effort
+    } else if (carried?.rootEffort) {
+      if (effortOptionsFor(choice.adapter).includes(carried.rootEffort)) rootEffort = carried.rootEffort
+      else droppedEffort = carried.rootEffort
+    }
+    // The user's permission mode for this run (a validated choice, or one continueRun decided to carry). An exec run
+    // keeps the mode of its overrides. ctx.project gets it through runProjectFor.
+    const chosenMode: PermissionMode | undefined = chosen?.permissionMode ?? (carried?.permissionMode && !overrides?.execMode ? carried.permissionMode : undefined)
     const bridging = this.resolveBridged(project, choice, kind, { quick, team, buildWorkspace })
     const connection = this.options.resolveConnection?.(project, choice)
+    // An explicit model under a project cap needs a known price, or the cap could not be enforced. Checked here, with
+    // the same pricing as active.modelPriced, so the refusal still leaves no run.
+    if (chosen?.modelSelection && projectBudgetUsd(project) !== undefined && !overrides?.allowUnpricedBudget && !this.modelIsPriced(chosen.modelSelection.model, choice.connection, connection)) {
+      throw new Error('This model has no known price, so the project budget cannot be enforced.')
+    }
     const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
     if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project, libraryEntries(), buildWorkspace ? { allowBuild: true } : {})
     // Library scope (the virtual skills project) has no stored project: the catalog and reads take null.
@@ -1487,6 +1647,10 @@ export class RunManager {
       if (overrides.execMode && !overrides.execChainId) overrides.execChainId = summary.id
       summary.overrides = overrides
     }
+    // Display facts, set before the first save: the mode in force (every run) and the user's per-run choices.
+    summary.permissionMode = chosenMode ?? effectiveRunProject(project, overrides, { allowWidening }).permissionMode
+    if (chosenMode) summary.permissionModeChosen = true
+    if (rootEffort) summary.rootEffort = rootEffort
     const exec = !!overrides?.execMode
     const active: ActiveRun = {
       summary,
@@ -1526,6 +1690,7 @@ export class RunManager {
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {}),
       ...(allowWidening ? { allowWidening: true } : {}),
+      ...(chosenMode ? { chosenMode } : {}),
       rootTurnGen: 0,
       activityGen: 0,
       autoDenials: 0,
@@ -1544,34 +1709,13 @@ export class RunManager {
 
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
     const pricingFor = (on: ConnectionId): PricingContext => {
-      const s = this.options.appSettings?.()
-      const community = s?.communityPrices === false ? undefined : this.options.communityPrices?.()
       // A bridged agent is priced by ITS connection: that RunConnection's pricing record and tier aliases.
       const rc = on === choice.connection ? connection : active.bridgedConnections?.find((c) => c.connection === on)
-      return {
-        connection: on,
-        overrides: s?.modelPrices ?? [],
-        ...(rc?.pricing ? { pricing: rc.pricing } : {}),
-        catalog: this.options.catalog?.() ?? [],
-        aliases: aliasesFor(rc, connectionRecord(s ?? {}, on)?.tierModels),
-        ...(community ? { community } : {})
-      }
+      return this.pricingContext(on, rc)
     }
-    const pricing = (): PricingContext => pricingFor(choice.connection)
     // Exec budgets (cli-spec 6.2(3)): a role's model setting is read like the pricing aliases (tier name -> the
     // connection's tier model) before its price is looked up. 'inherit' has no model of its own and is not checked.
-    active.modelPriced = (setting: string): boolean => {
-      const tierModels = connectionRecord(this.options.appSettings?.() ?? {}, choice.connection)?.tierModels ?? {}
-      // An empty catalog means "not discovered yet": the connection's builtin list answers then (modelForTier).
-      const catalog = this.options.catalog?.() ?? []
-      const resolved = resolveModelSetting(setting, { connection: choice.connection, tierModels, ...(catalog.length ? { catalog } : {}) })
-      if (!resolved || resolved.model === 'inherit') return true
-      const ctx = pricing()
-      if (resolvePrice(resolved.model, ctx) !== null) return true
-      // A bare tier name or Claude alias the connection does not map is resolved by the CLI itself (latest model of the
-      // family): its real id is only known from usage reports, which checkExecBudget prices live.
-      return !!settingTier(resolved.model) && !Object.hasOwn(ctx.aliases ?? {}, resolved.model)
-    }
+    active.modelPriced = (setting: string): boolean => this.modelIsPriced(setting, choice.connection, connection)
 
     const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
@@ -1688,6 +1832,8 @@ export class RunManager {
     active.emit = emit
     emit({ type: 'run.status', runId: summary.id, status: 'starting', ...(summary.surface ? { surface: summary.surface } : {}) })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
+    for (const line of carried?.logs ?? []) emit({ type: 'log', runId: summary.id, level: line.level, message: line.message })
+    if (droppedEffort) emit({ type: 'log', runId: summary.id, level: 'warn', message: `This model does not take the ${droppedEffort} effort level, so the run uses its default effort.` })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
     // Advisory title from the fast model; never awaited, never fails the run.
     // The harness's own resume message is never titled (the continued run's title is carried instead).
@@ -1880,7 +2026,12 @@ export class RunManager {
         else overlay('permissionMode')
         live = noFolderWrites({ ...next, path: live.path })
         // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
-        ctx.project = effectiveRunProject(live, summary.overrides, { allowWidening: active.allowWidening })
+        ctx.project = this.runProjectFor(active, live)
+        // RunSummary.permissionMode shows the mode in force: an approved project change (acceptEdits for project) moves it.
+        if (summary.permissionMode !== ctx.project.permissionMode) {
+          summary.permissionMode = ctx.project.permissionMode
+          this.store.upsert(summary)
+        }
         ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
         ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
         this.applyExecBudget(active, ctx)
@@ -2001,7 +2152,7 @@ export class RunManager {
       }
       // What the run sees (cli-spec 6.2(1)): the project with its overrides applied, before ctx exists, so the adapter's
       // permission mode and continuation host read the effective values from turn 1.
-      const runProject = effectiveRunProject(project, summary.overrides, { allowWidening: active.allowWidening })
+      const runProject = this.runProjectFor(active, project)
       const bridge = bridging.bridged.length
         ? new BridgedSessions({
             adapters: this.adapters,
@@ -2244,6 +2395,8 @@ export class RunManager {
       }
       const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
       if (root && modelSelection) root.model = modelSelection.model
+      // The root's effort choice (ctx.roles holds this run's own copies); reports keep their own role effort and staffing.
+      if (root && rootEffort) root.effort = rootEffort
       if (root && root.model !== 'inherit' && summary.connection) {
         summary.modelSelection = { model: root.model, connection: summary.connection }
         this.store.upsert(summary)
@@ -4549,6 +4702,19 @@ export class RunManager {
     // --exec) is finalized as 'interrupted' by the user, so its `orgai exec` follower ends instead of adopting the
     // desktop continuation (which never sends run.finalized) and waiting forever.
     const handedToExec = !!overrides?.execMode
+    // The per-run choices of the run being continued (docs: StartRunInput.effort / permissionMode). The effort goes on
+    // as is (start() drops it with a warning where the adapter cannot take it). A chosen permission mode is carried
+    // when it narrows the project's current mode, or the desktop user / the resume timer / a 'configure' caller is
+    // continuing; otherwise the project's mode applies and the new run says so.
+    const carried: CarriedChoices = {}
+    if (target.rootEffort && isEffort(target.rootEffort)) carried.rootEffort = target.rootEffort
+    if (target.permissionModeChosen && target.permissionMode && isPermissionMode(target.permissionMode) && !handedToExec) {
+      const chosenMode = target.permissionMode
+      const allowed = runPermissionModeChoices(target).includes(chosenMode)
+      const trusted = opts.desktop === true || opts[AUTO_RESUME] === true || opts.allowWidening === true
+      if (allowed && (trusted || canNarrowPermissionMode(project.permissionMode, chosenMode))) carried.permissionMode = chosenMode
+      else carried.logs = [{ level: 'info', message: "The per-run permission mode was not carried; the project's mode applies." }]
+    }
     for (const r of target.id === from.id ? [from] : [target, from]) {
       if (r.status !== 'paused') continue
       this.clearResume(r.id)
@@ -4565,6 +4731,7 @@ export class RunManager {
       kind: target.kind,
       ...(overrides ? { overrides } : {}),
       ...(opts.allowWidening ? { allowWidening: true } : {}),
+      ...(carried.rootEffort || carried.permissionMode || carried.logs ? { [CARRIED_CHOICES]: carried } : {}),
       // The harness's own resume message is not a new task: keep the title of the run it continues.
       // A follow-up is titled with the task it continues as context, so it stays recognisable.
       ...(prompt === RESUME_TEXT.trim() && target.title
@@ -4694,15 +4861,70 @@ export class RunManager {
    * Continue a paused run now, with the harness's resume message. A manual resume (Desktop or RPC) holds its own
    * resume lease across the async setup.prepare gap; the timer path takes the lease itself and calls resumeUnleased.
    */
-  resumeNow(runId: string): Promise<RunSummary> {
-    return this.withResumeLease(() => this.resumeUnleased(runId))
+  resumeNow(runId: string, opts: { desktop?: true } = {}): Promise<RunSummary> {
+    return this.withResumeLease(() => this.resumeUnleased(runId, opts.desktop ? { desktop: true } : {}))
+  }
+
+  /**
+   * runs:setPermissionMode (desktop only; the desktop handler is the only caller, so no peer, harness tool or agent can
+   * reach it). Contract: SetRunPermissionModeInput / SetRunPermissionModeResult. The desktop user owns the run, so
+   * narrowing and widening are treated alike; everything else is checked here. Nothing changes on a refusal.
+   */
+  async setPermissionMode(input: SetRunPermissionModeInput): Promise<SetRunPermissionModeResult> {
+    this.refuseWhileQuitting()
+    if (!input || typeof input !== 'object' || typeof input.runId !== 'string' || !isPermissionMode(input.mode)) throw new Error('Invalid permission mode')
+    const mode = input.mode
+    let run = this.summary(input.runId)
+    if (!run) throw new Error('Run not found')
+    // The conversation's newest run, like switchModel: a stale id of an older run in the chain lands on the live one.
+    run = this.chainOf(run).reduce((latest, item) => item.startedAt > latest.startedAt || (item.startedAt === latest.startedAt && item.resumedFrom === latest.id) ? item : latest, run)
+    if (run.overrides?.execMode) throw new Error('Exec runs keep the mode they started with.')
+    const choices = runPermissionModeChoices(run)
+    if (!choices.length) throw new Error('This run keeps its own permission mode.')
+    if (!choices.includes(mode)) throw new Error('This run cannot use that permission mode.')
+    const active = this.runs.get(run.id)
+    // Ended or paused: saved for the continuation (continueRun reads permissionMode / permissionModeChosen).
+    if (!active || run.status === 'finished' || run.status === 'error' || run.status === 'paused') {
+      const saved = this.patchSummary(run.id, { permissionMode: mode, permissionModeChosen: true }) ?? run
+      return { run: saved, applied: false, reason: 'The mode will be used when the run continues.' }
+    }
+    const session = active.session
+    const ctx = active.ctx
+    if (!session?.setPermissionMode || !ctx) {
+      return { run, applied: false, reason: 'This session cannot change its permission mode while it runs. End the session, then choose the mode before you continue.' }
+    }
+    // The adapter reads ctx.project, so it is set first; chosenMode keeps setLive from undoing it. Both come back if the session refuses.
+    const previousMode = ctx.project.permissionMode
+    const previousChosen = active.chosenMode
+    ctx.project = { ...ctx.project, permissionMode: mode }
+    active.chosenMode = mode
+    let reason = 'The session could not change its permission mode now.'
+    let applied = false
+    try {
+      applied = (await session.setPermissionMode(mode)) === true
+    } catch (e) {
+      const message = (e as Error)?.message
+      if (message) reason = message
+    }
+    if (!applied) {
+      // Only the mode goes back: setLive may have re-derived ctx.project while the session was deciding.
+      ctx.project = { ...ctx.project, permissionMode: previousMode }
+      if (previousChosen) active.chosenMode = previousChosen
+      else delete active.chosenMode
+      return { run: this.summary(run.id) ?? run, applied: false, reason }
+    }
+    const updated = this.patchSummary(run.id, { permissionMode: mode, permissionModeChosen: true }) ?? run
+    const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === mode)?.label ?? mode
+    active.emit({ type: 'log', runId: run.id, level: 'info', message: `Permission mode set to ${label} for this run.` })
+    return { run: updated, applied: true }
   }
 
   /**
    * resumeNow's body, without the activity lease (the caller holds it). `auto` is the timer path only: a manual
-   * Resume now (Desktop or RPC) never re-applies a 'configure' caller's widening.
+   * Resume now (Desktop or RPC) never re-applies a 'configure' caller's widening. `desktop` (the desktop's Resume now,
+   * and the timer, which acts for the desktop user) lets a per-run permission mode the user chose carry over.
    */
-  private async resumeUnleased(runId: string, opts: { auto?: boolean } = {}): Promise<RunSummary> {
+  private async resumeUnleased(runId: string, opts: { auto?: boolean; desktop?: true } = {}): Promise<RunSummary> {
     const widened = opts.auto === true && this.widenedRuns.has(runId)
     this.clearResume(runId)
     this.refuseWhileQuitting()
@@ -4722,7 +4944,9 @@ export class RunManager {
       const keepExec = !!o?.execMode && !!o.waitForReset && !from.execOutcome
       return await (keepExec
         ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}) })
-        : this.continueRun(project, runId, RESUME_TEXT))
+        : opts.desktop || opts.auto
+          ? this.continueRun(project, runId, RESUME_TEXT, undefined, { desktop: true })
+          : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
       // The timer is gone; a run still paused must not claim it will resume by itself.
       const s = this.summary(runId)

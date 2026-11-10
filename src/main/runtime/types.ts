@@ -60,7 +60,7 @@ import type {
 } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
 import type { StaffingProfile } from '../store/staffingProfile'
-import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId } from '@shared/types'
+import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId, PermissionMode } from '@shared/types'
 
 /**
  * RunManagerOptions.selfKnowledge (types.ts "Self-knowledge and self-configuration"), wired in host/bootstrap.ts.
@@ -760,6 +760,18 @@ export interface SkillAssistCatalog {
 export interface RuntimeSession {
   /** Change only the root model at a safe boundary; refuse without changing state when unsafe. */
   switchModel?(input: { model: string; connection?: RunConnection }): Promise<void>
+  /**
+   * Change the live session's permission mode (RunManager.setPermissionMode, desktop runs:setPermissionMode only).
+   * `mode` is already validated by RunManager (runPermissionModeChoices, never on setup-like or exec runs). Before it
+   * calls it, RunManager has already set ctx.project to a copy with `permissionMode: mode`, so the adapter's existing
+   * mode mapping (Claude: claudePermissionMode / claudeAllowsBypass; Codex: its sandbox / approval mapping) reads the
+   * new value; on false or a throw RunManager restores the previous ctx.project. The adapter applies the mapped mode to
+   * the root session and to agents it spawns from now on (live reports keep theirs where the provider cannot change
+   * them). Open permission cards stay open for the user; session-only grants are untouched. Resolve true when applied;
+   * false (or throw) to refuse, e.g. when the provider cannot switch now. Missing = this session cannot switch live
+   * (RunManager answers applied: false and changes nothing).
+   */
+  setPermissionMode?(mode: PermissionMode): Promise<boolean>
   /**
    * Send a follow-up user message to the orchestrator. `images` are already validated; `text` may be
    * empty when images are present. The user transcript block records both.
