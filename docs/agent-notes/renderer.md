@@ -27,10 +27,16 @@ syntax checks, and diff whitespace checks passed. Reviewer-2 approved all eleven
 changed source/test files and the final label/legacy edit additions with no
 actionable findings or Critical/High blockers. The e2e additions cover generic
 default off, keyboard opt-in, and editing a legacy proxy while retaining id/kind/key.
-At UI-lane handoff, execution of those e2e checks, combined typecheck/build and the
-after-walk (all exact size/theme combinations, keyboard, logged-out state) await
-integration with the runtime contract in the root tree. No live provider, paid
-test, screen-reader speech, zoom/reflow or measured performance claim was verified.
+Combined typecheck/build passed on root `ae8cde39`. The postwalk checked 1024x640
+and 1600x1000 in dark/light: the dialog fits without overflow, the reporting
+checkbox works by keyboard, invalid submission focuses the field, an opt-in mock
+proxy adds nine models, and legacy id/kind/key/reporting survive edits.
+Connections, multi-provider, project-connection and usage e2e passed against that
+build normally and with fresh empty `CLAUDE_CONFIG_DIR`. Wrong-key handling and a
+transient dialog observation after rapid driver input still need targeted QA;
+the latter is not a confirmed defect. The final adapter integration gate remains
+the orchestrator's responsibility. No live provider, paid test, screen-reader
+speech, full keyboard-only task, zoom/reflow or measured performance claim was verified.
 
 Shell, layout, primitives, motion, canvas (fold, themes), run view and run chains, dashboard, settings pages, application menu, cost UI, proxy and multi-provider UI, proposal cards, org change sessions. Moved out of CLAUDE.md on 2026-11-07; see CLAUDE.md for the index.
 

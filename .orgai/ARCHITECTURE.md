@@ -162,6 +162,17 @@ query(), a fake Codex server and the mock only.
 
 ### Provider adapters
 
+- Proxy tool-name compatibility stays inside the adapters. Claude proxy sessions use `claudeToolGateway.ts` to
+  alias overlong provider tool names while restoring canonical names before the SDK sees responses. Codex proxy
+  sessions use `codexToolGateway.ts` to flatten namespace/function pairs to collision-checked aliases of at most
+  64 characters, including history and tool choice, and restore namespace/name on returned calls. Short native
+  tools retain their names; permissions, MCP server identity and SDK routing use canonical identities. Session
+  registries survive idle query/app-server restarts and close on teardown. The loopback transport uses a random
+  session credential, fixed configured upstream/auth destinations, header allowlists, no redirects and bounded
+  request/SSE payloads. Fake-upstream tests cover round trips, collision handling, canonical denial and lifecycle.
+  An offline installed Codex app-server test proves aliased Responses calls dispatch the original MCP tool and
+  replay the same alias, preserving exact AWS model ids. Live LiteLLM/Bedrock behavior remains unverified.
+
 SDK event mapping and hook mechanics only. Only the Adapter Engineer edits claude.ts and mock.ts.
 
 - Claude: the files below. Harness tools run in an in-process MCP server named "orgai". PreToolUse records which agent called them.

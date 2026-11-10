@@ -4,6 +4,28 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
 
 ## Main
 
+- Proxy adapter boundaries: `claudeToolGateway.ts` maps overlong Anthropic tool names to collision-checked aliases
+  of at most 64 characters, restoring canonical SDK names on JSON/SSE responses. `codexToolGateway.ts` flattens
+  Responses namespace/function pairs into unique bounded aliases, maps historical calls and tool choice, and
+  restores returned function calls before the app-server dispatches them. Canonical permissions and server grants
+  remain in force, including calls denied by the Claude hook. Top-level short native functions retain their names.
+  The per-session registry survives idle restarts/MCP changes; gateway shutdown aborts pending requests. Upstream
+  URL/model ids/auth destinations remain configured values, with no redirects and bounded bodies/SSE frames.
+  Fake-provider unit tests cover collisions, round trips, response-event paths and teardown. An offline installed
+  Codex 0.166.0 app-server fixture using fake loopback Responses and MCP endpoints proves alias-to-original-tool
+  dispatch with original arguments and replay of the same alias, exact AWS request ids and the real metadata
+  fallback warning. No paid traffic was used; the deployed LiteLLM/Bedrock route remains unverified.
+
+- Responses namespace compatibility evidence: installed Codex 0.166.0 sends MCP tools as a namespace plus nested
+  function names. An offline app-server capture observed namespace length 52 and nested names 60/61/5; the combined
+  name is not one Codex function name. LiteLLM commit `7bcc46246bb977aa206f23860b6aefc0d0101e23`
+  [Responses transformation](https://github.com/BerriAI/litellm/blob/7bcc46246bb977aa206f23860b6aefc0d0101e23/litellm/responses/litellm_completion_transformation/transformation.py)
+  lines 2889-2892 joins namespace + `__` + function (52 + 2 + 60 = 114), and history replay repeats that join
+  (2694-2699). Its Bedrock `make_valid_bedrock_tool_name` sanitizes characters without imposing a 64-character cap
+  (`factory.py` 5768-5790, 5927-5939). This proves the upstream compatibility path; attribution of the user's
+  incident remains unverified because the deployed LiteLLM version and complete serialized failing request are
+  unavailable. The pasted 60-character name alone is within the provider limit.
+
 - Generic proxy reporting (2026-11-10): `ProxyConnection.litellmFeatures` and create input's optional boolean
   override the legacy immutable `kind` reporting default. Missing keeps `kind === 'litellm'`; explicit false
   disables LiteLLM metadata and spend requests, explicit true enables those existing endpoints. Creation defaults
@@ -16,6 +38,10 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   prices/context is not a verified full Codex metadata catalog. The warning is an upstream fallback rather than
   proof of request failure; an authoritative Codex catalog or upstream recognition is needed to remove it safely.
   No model-id normalization or fabricated catalog is used. Live AWS requests remain unverified.
+  The Codex adapter retains the first native fallback warning and adds one bounded session diagnostic explaining
+  that the warning alone is not a failed request and asking for authoritative `model_catalog_json` metadata.
+  Both installed warning spellings are recognized; repeated warnings do not repeat the guidance (fake app-server
+  regressions). Unknown-model metadata warnings are not eliminated for models absent from Codex's catalog.
 
 - Model-agnostic defaults: every default is a tier ('top' | 'deep' | 'everyday' | 'fast', `ModelSetting`) resolved
   through the connection's `tierModels` (`defaults.ts` `modelForTier` / `resolveModelSetting`), never a vendor alias.
