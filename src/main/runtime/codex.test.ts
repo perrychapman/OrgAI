@@ -1944,17 +1944,25 @@ describe('CodexAdapter session', () => {
 
     describe('model catalog override (codexNativeCatalog.ts)', () => {
       /** Like the real CodexAppServer: start() runs prepareConfig with the binary, env and config, and launches with the result. */
-      function catalogSetup(result: NativeCatalogResult | (() => Promise<NativeCatalogResult>)) {
+      /** `failStart(args, n)`: the n-th launch (0-based) with these `-c` args fails its start (the process exits first). */
+      function catalogSetup(result: NativeCatalogResult | (() => Promise<NativeCatalogResult>), failStart: (args: string[], n: number) => boolean = () => false, extra: { codexHome?: string } = {}) {
         const servers: FakeServer[] = []
         const launched: string[][] = []
         const nativeCatalog = vi.fn(async (_input: NativeCatalogInput) => (typeof result === 'function' ? result() : result))
         const adapter = new CodexAdapter({
           nativeCatalog,
+          ...extra,
           createServer: (options) => {
             const s = new FakeServer(options)
             s.start = async () => {
-              const extra = (await options.prepareConfig?.({ binary: { path: '/bin/codex' }, env: options.env ?? {}, config: options.config ?? [] })) ?? []
-              launched.push([...(options.config ?? []), ...extra])
+              const more = (await options.prepareConfig?.({ binary: { path: '/bin/codex' }, env: options.env ?? {}, config: options.config ?? [] })) ?? []
+              const args = [...(options.config ?? []), ...more]
+              launched.push(args)
+              if (failStart(args, launched.length - 1)) {
+                // Like CodexAppServer: the exit handlers fire, then start() rejects.
+                s.die(1)
+                throw new Error('codex app-server exited (code 1) during initialize: unknown model catalog field')
+              }
               return {}
             }
             servers.push(s)
@@ -2029,6 +2037,65 @@ describe('CodexAdapter session', () => {
         expect(warnings(ctx).filter((w) => w.includes('multi-agent'))).toEqual([])
         expect(ctx.events.some((e) => e.type === 'log' && e.level === 'info' && e.message.includes('override skipped'))).toBe(true)
         expect(s.of('thread/start')[0].params.developerInstructions).toContain(NATIVE_RULE_NOTE)
+      })
+
+      describe('Codex refuses to start with the catalog (one retry without it)', () => {
+        const written: NativeCatalogResult = { status: 'written', config: ['model_catalog_json="/nonexistent/orgai-model-catalog-zz.json"'], path: '/nonexistent/orgai-model-catalog-zz.json', ms: 5 }
+        const withCatalog = (args: string[]) => args.some((a) => a.startsWith('model_catalog_json='))
+
+        it('a start that fails only with the override: relaunched once without it, override off, one warning, the run goes on', async () => {
+          const { adapter, servers, launched, nativeCatalog } = catalogSetup(written, withCatalog)
+          const ctx = ctxFor()
+          session = await adapter.start(ctx)
+          await vi.waitFor(() => expect(servers[1]?.turnStarts('th-1')).toHaveLength(1))
+          expect(launched).toHaveLength(2)
+          expect(withCatalog(launched[0]!)).toBe(true)
+          expect(withCatalog(launched[1]!)).toBe(false)
+          // The relaunch does not ask for the catalog again.
+          expect(nativeCatalog).toHaveBeenCalledTimes(1)
+          expect(servers[0]!.closed).toBe(true)
+          expect(servers[0]!.of('thread/start')).toHaveLength(0)
+          expect(servers[1]!.of('thread/start')[0].params.developerInstructions).toContain(NATIVE_RULE_NOTE)
+          const w = warnings(ctx).filter((m) => m.includes('model catalog override'))
+          expect(w).toHaveLength(1)
+          expect(w[0]).toContain('started again without it')
+          expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(false)
+        })
+
+        it('a second failure is not retried: the run fails as before', async () => {
+          const { adapter, launched } = catalogSetup(written, () => true)
+          const ctx = ctxFor()
+          session = await adapter.start(ctx)
+          await session.finished
+          expect(launched).toHaveLength(2)
+          expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(true)
+        })
+
+        it('a failure without the override is not retried', async () => {
+          const { adapter, launched } = catalogSetup({ status: 'failed', config: [], reason: 'x', ms: 0 }, () => true)
+          const ctx = ctxFor()
+          session = await adapter.start(ctx)
+          await session.finished
+          expect(launched).toHaveLength(1)
+          expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(true)
+        })
+
+        it('the one-shot completion retries once without it too', async () => {
+          const { adapter, servers, launched } = catalogSetup(written, withCatalog)
+          const promise = adapter.complete({ system: 's', prompt: 'p' })
+          await vi.waitFor(() => expect(servers[1]?.of('turn/start')).toHaveLength(1))
+          expect(launched.map(withCatalog)).toEqual([true, false])
+          servers[1]!.push('item/completed', agentMessage('th-1', 'm', 'Blue'))
+          servers[1]!.push('turn/completed', turnDone('th-1', 'tu-1'))
+          await expect(promise).resolves.toBe('Blue')
+        })
+      })
+
+      it("passes OrgAI's own Codex home (CodexAdapterOptions.codexHome) as the expected home", async () => {
+        const { adapter, servers, nativeCatalog } = catalogSetup({ status: 'failed', config: [], reason: "CODEX_HOME is not OrgAI's own Codex home", ms: 0 }, () => false, { codexHome: '/data/codex' })
+        session = await adapter.start(ctxFor())
+        await vi.waitFor(() => expect(servers[0]!.turnStarts('th-1')).toHaveLength(1))
+        expect(nativeCatalog.mock.calls[0]![0].expectedHome).toBe('/data/codex')
       })
 
       it('the one-shot completion launches with the override too', async () => {

@@ -31,6 +31,7 @@ import { sweepScratchDirs } from '../quick/scratch'
 import { ClaudeAdapter } from '../runtime/claude'
 import { sweepStaleSkillDirs } from '../runtime/claudeSkills'
 import { CodexAdapter } from '../runtime/codex'
+import { codexHomeDir } from '../runtime/codexAppServer'
 import { MockAdapter } from '../runtime/mock'
 import { repoLockActivity } from '../runtime/repoLock'
 import { RunManager, outputScopeOf } from '../runtime/runManager'
@@ -365,7 +366,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   // The scripted mock adapter (no tokens) is opt-in; a project uses it only when its provider.id is "mock".
   adapters = {
     claude: new ClaudeAdapter(),
-    codex: new CodexAdapter({ completionConnection: codexCompletion }),
+    // codexHome: the catalog override (codexNativeCatalog.ts) writes only into the Codex home the connection service assigns.
+    codex: new CodexAdapter({ completionConnection: codexCompletion, codexHome: codexHomeDir(dataDir) }),
     ...(mockAdapter ? { mock: new MockAdapter() } : {})
   }
   // A proxy run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend

@@ -175,6 +175,17 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     run, a ChatGPT login (whether `debug models` without `--bundled` returns the same refreshed catalog the app-server uses;
     it was only run without a login, where it printed the bundled catalog, and with an API-key provider, where it made no
     request to the provider), and a model switched mid-run (`switchModel`) to an id the catalog does not know.
+    Hardening (2026-11-10, second round): (1) when the app-server fails to start with the override (exits or fails the
+    handshake), the session and `complete()` relaunch once without it, drop the override for the rest of the session (the
+    prompt keeps the fallback sentence), log one warning and `rejectNativeCatalog` deletes the file and keeps it out for
+    the rest of the process; a failure without the override, or a second one, fails as before (unit-tested; live at the
+    stub with a catalog the real 0.166.0 app-server refuses: "failed to parse model_catalog_json ... missing field",
+    relaunched, request sent). (2) A cached file is reused only after it parses to the shape the transform writes (an
+    object with a non-empty `models` array of objects, no `multi_agent_version` other than "v1"), checked once per process
+    (about 1.5 ms for the 0.75 MB catalog; later launches about 0.05 ms, stats only); a truncated or edited file is
+    regenerated. (3) The file is written only when `CODEX_HOME` resolves (realpath, case-insensitive on Windows) to the
+    home OrgAI assigns, `codexHomeDir(dataDir)`, passed as `CodexAdapterOptions.codexHome` from `host/bootstrap.ts`; an
+    inherited or foreign `CODEX_HOME`, or an adapter built without `codexHome`, gets no override (one warning).
   - A bridged report's result never restarts a held run (2026-11-10): a child the harness stopped (`BridgeSpawnResult.stopped`,
     RunManager stops bridged reports before the session's own interrupt) and any bridged result that lands while the
     continuation is held are shown as a harness row at once and delivered with the user's next message (the orchestrator's

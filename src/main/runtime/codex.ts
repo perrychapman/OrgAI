@@ -4,7 +4,7 @@ import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, pro
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult, type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
-import { nativeAgentsCatalogConfig, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
+import { nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
 import {
   METHOD,
   SERVER_REQUEST,
@@ -230,6 +230,11 @@ export interface CodexAdapterOptions {
    * app-server start once the binary is known. Tests inject it; default nativeAgentsCatalogConfig.
    */
   nativeCatalog?: (input: NativeCatalogInput) => Promise<NativeCatalogResult>
+  /**
+   * The Codex home OrgAI assigns its connections (codexHomeDir(dataDir), as the connection service builds it). The catalog
+   * override is written only when the run's CODEX_HOME resolves to it; missing = no override.
+   */
+  codexHome?: string
 }
 
 /** CodexAppServerOptions.prepareConfig for the catalog override: never throws, reports the result. */
@@ -237,7 +242,7 @@ function catalogPreparer(options: CodexAdapterOptions, models: () => string[], o
   return async (input) => {
     let r: NativeCatalogResult
     try {
-      r = await (options.nativeCatalog ?? nativeAgentsCatalogConfig)({ ...input, models: models() })
+      r = await (options.nativeCatalog ?? nativeAgentsCatalogConfig)({ ...input, models: models(), ...(options.codexHome ? { expectedHome: options.codexHome } : {}) })
     } catch (e) {
       r = { status: 'failed', config: [], reason: String((e as Error)?.message ?? e).slice(0, 120), ms: 0 }
     }
@@ -357,6 +362,12 @@ class CodexSession implements RuntimeSession {
   private nativeAgentsOff = false
   /** The catalog override's failure was logged (once per run). */
   private nativeCatalogWarned = false
+  /** Codex did not start with the catalog override: no override for the rest of this session. */
+  private nativeCatalogRejected = false
+  /** The catalog file an app-server was launched with (set by its prepareConfig, before the spawn). */
+  private catalogOf = new WeakMap<CodexServerLike, string>()
+  /** The app-server whose first start (with the override) is in flight: its exit is retried, not a run failure. */
+  private retryableStart?: CodexServerLike
   /** Bridged results that landed while the run was held for the user (interrupt) or for a stopped child, delivered after the user's next message. */
   private heldBridged: { parentId: string; text: string }[] = []
   private mcpRestartPending = false
@@ -887,6 +898,7 @@ class CodexSession implements RuntimeSession {
   }
 
   private createServer(launch: LaunchConfig): CodexServerLike {
+    let created: CodexServerLike | undefined
     const options: CodexAppServerOptions = {
       cwd: this.ctx.project.path,
       env: launch.env,
@@ -904,9 +916,42 @@ class CodexSession implements RuntimeSession {
       },
       // Codex's built-in multi-agent tools off through the model catalog (fails open: one warning, the prompt keeps its
       // fallback sentence and the native-item strikes stay in force).
-      prepareConfig: catalogPreparer(this.options, () => this.namedModels(), (r) => this.onNativeCatalog(r))
+      // After Codex refused to start with it, never again in this session.
+      ...(this.nativeCatalogRejected ? {} : { prepareConfig: catalogPreparer(this.options, () => this.namedModels(), (r) => this.onNativeCatalog(r, created)) })
     }
-    return this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    created = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    return created
+  }
+
+  /**
+   * Create, adopt (assign and wire) and start an app-server. When it fails to start with the catalog override in effect,
+   * that catalog is rejected for the process (codexNativeCatalog.ts rejectNativeCatalog), the session drops the override
+   * (the prompt keeps the fallback sentence), one warning is logged and the app-server is started once more without it.
+   * A failure without the override, or a second failure, is thrown as before.
+   */
+  private async startServer(launch: LaunchConfig, adopt: (server: CodexServerLike) => void): Promise<CodexServerLike> {
+    const first = this.createServer(launch)
+    adopt(first)
+    this.retryableStart = first
+    try {
+      await first.start(this.options.clientVersion)
+      return first
+    } catch (e) {
+      const catalog = this.catalogOf.get(first)
+      if (!catalog || this.ending) throw e
+      this.unwire()
+      first.close()
+      this.nativeCatalogRejected = true
+      this.nativeAgentsOff = false
+      rejectNativeCatalog(catalog)
+      this.log('warn', `Codex did not start with the model catalog override (${String((e as Error)?.message ?? e).slice(0, 200)}); it was started again without it. Agents still see Codex's built-in multi-agent tools and are told to delegate with spawn_report.`)
+    } finally {
+      if (this.retryableStart === first) this.retryableStart = undefined
+    }
+    const second = this.createServer(launch)
+    adopt(second)
+    await second.start(this.options.clientVersion)
+    return second
   }
 
   /** Every concrete model id this run names (roles and the connection's tier mapping): the catalog override checks them. */
@@ -915,8 +960,9 @@ class CodexSession implements RuntimeSession {
     return [...new Set(ids.filter((m): m is string => !!m))]
   }
 
-  private onNativeCatalog(r: NativeCatalogResult): void {
+  private onNativeCatalog(r: NativeCatalogResult, server: CodexServerLike | undefined): void {
     this.nativeAgentsOff = r.status === 'written' || r.status === 'cached'
+    if (server && (r.status === 'written' || r.status === 'cached')) this.catalogOf.set(server, r.path)
     if (this.nativeAgentsOff) this.log('info', `Codex: built-in multi-agent tools off (model catalog ${r.status === 'cached' ? 'reused' : 'written'}, ${r.ms} ms)`)
     else if (r.status === 'skipped') this.log('info', `Codex: model catalog override skipped (${r.reason}); agents are told to delegate with spawn_report.`)
     else if (r.status === 'failed' && !this.nativeCatalogWarned) {
@@ -930,7 +976,8 @@ class CodexSession implements RuntimeSession {
     server.onServerRequest((method, params) => this.onServerRequest(method, params))
     this.unsubscribers.push(
       server.onExit((code, error) => {
-        if (this.restarting || this.ending) return
+        // A first start with the catalog override that dies is retried without it (startServer).
+        if (this.restarting || this.ending || (server === this.retryableStart && this.catalogOf.has(server))) return
         const message = error?.message ?? codexExitMessage(code, server.stderrTail?.())
         this.fail(message)
       })
@@ -984,9 +1031,10 @@ class CodexSession implements RuntimeSession {
       this.launch = buildLaunchConfig(ctx.connection, servers, { ...trustLaunchOpts(ctx), writableRoots: codexWritableRoots(ctx) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
-      this.server = this.createServer(this.launch)
-      this.wire(this.server)
-      await this.server.start(this.options.clientVersion)
+      await this.startServer(this.launch, (server) => {
+        this.server = server
+        this.wire(server)
+      })
       // End session during the start (the version check, the handshake): no thread, no prompt to the model.
       if (this.ending) return
 
@@ -2120,10 +2168,11 @@ class CodexSession implements RuntimeSession {
       await Promise.race([old.exited, new Promise((r) => setTimeout(r, EXIT_WAIT_MS))])
       if (this.ending) return abandon()
       this.launch = launch
-      created = this.createServer(launch)
-      this.server = created
-      this.wire(created)
-      await created.start(this.options.clientVersion)
+      await this.startServer(launch, (server) => {
+        created = server
+        this.server = server
+        this.wire(server)
+      })
       if (this.ending) return abandon()
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
@@ -2182,8 +2231,28 @@ export class CodexAdapter implements RuntimeAdapter {
     const launch = buildLaunchConfig(connection, [], { noProjectDocs: true })
     const scratchCwd = tmpdir()
     // The catalog override here too: a tool-less thread would otherwise still carry Codex's multi-agent tools and rule.
-    const options: CodexAppServerOptions = { cwd: scratchCwd, env: launch.env, config: launch.config, prepareConfig: catalogPreparer(this.options, () => [codexModelFor(input.model)].filter((m): m is string => !!m), () => {}) }
-    const server: CodexServerLike = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    // When Codex does not start with it, the catalog is rejected and the app-server is started once more without it.
+    let catalog: string | undefined
+    const open = (withCatalog: boolean): CodexServerLike => {
+      catalog = undefined
+      const options: CodexAppServerOptions = {
+        cwd: scratchCwd,
+        env: launch.env,
+        config: launch.config,
+        ...(withCatalog
+          ? {
+              prepareConfig: catalogPreparer(this.options, () => [codexModelFor(input.model)].filter((m): m is string => !!m), (r) => {
+                if (r.status === 'written' || r.status === 'cached') catalog = r.path
+              })
+            }
+          : {})
+      }
+      const s = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+      listen(s)
+      return s
+    }
+    let server!: CodexServerLike
+    let starting = true
     let text = ''
     let final = ''
     let failure: string | undefined
@@ -2191,28 +2260,34 @@ export class CodexAdapter implements RuntimeAdapter {
     let done!: () => void
     const completed = new Promise<void>((resolve) => (done = resolve))
     const mapper = new CodexEventMapper()
-    server.onNotification((method, params) => {
-      for (const u of mapper.handle(method, params)) {
-        // thread/tokenUsage/updated carries the thread's running total; the last one is the completion's spend.
-        if (u.type === 'tokens') tokens = { input: u.input, output: u.output, cachedInput: u.cachedInput }
-        if (u.type === 'text') text += (text ? '\n\n' : '') + u.text
-        if (u.type === 'turnCompleted') {
-          final = u.result ?? ''
-          if (u.status === 'failed') failure = u.error?.message ?? 'the turn failed'
-          done()
+    const listen = (s: CodexServerLike): void => {
+      s.onNotification((method, params) => {
+        if (s !== server) return
+        for (const u of mapper.handle(method, params)) {
+          // thread/tokenUsage/updated carries the thread's running total; the last one is the completion's spend.
+          if (u.type === 'tokens') tokens = { input: u.input, output: u.output, cachedInput: u.cachedInput }
+          if (u.type === 'text') text += (text ? '\n\n' : '') + u.text
+          if (u.type === 'turnCompleted') {
+            final = u.result ?? ''
+            if (u.status === 'failed') failure = u.error?.message ?? 'the turn failed'
+            done()
+          }
         }
-      }
-    })
-    server.onServerRequest(async (method) => {
-      // Nothing may run: decline every approval and tool call.
-      if (method === SERVER_REQUEST.toolCall) return toolResponse('No tools are available.', false)
-      if (method === SERVER_REQUEST.mcpElicitation) return { action: 'decline', content: null, _meta: null }
-      return { decision: 'decline' }
-    })
-    server.onExit((code, error) => {
-      failure ??= error?.message ?? codexExitMessage(code, server.stderrTail?.())
-      done()
-    })
+      })
+      s.onServerRequest(async (method) => {
+        // Nothing may run: decline every approval and tool call.
+        if (method === SERVER_REQUEST.toolCall) return toolResponse('No tools are available.', false)
+        if (method === SERVER_REQUEST.mcpElicitation) return { action: 'decline', content: null, _meta: null }
+        return { decision: 'decline' }
+      })
+      s.onExit((code, error) => {
+        // An abandoned app-server, or a first start with the catalog override (retried below), is not the completion's failure.
+        if (s !== server || (starting && catalog)) return
+        failure ??= error?.message ?? codexExitMessage(code, s.stderrTail?.())
+        done()
+      })
+    }
+    server = open(true)
     let timer: ReturnType<typeof setTimeout> | undefined
     // The caller gave up (run-title timeout, run stopped): end the turn wait, kill the app-server at once so pending
     // requests reject, and settle whichever step is awaited (start, thread/start, turn/start) even if one hangs.
@@ -2229,7 +2304,17 @@ export class CodexAdapter implements RuntimeAdapter {
     if (input.signal?.aborted) throw new Error('Completion cancelled')
     input.signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      await step(server.start(this.options.clientVersion))
+      try {
+        await step(server.start(this.options.clientVersion))
+      } catch (e) {
+        if (!catalog || input.signal?.aborted) throw e
+        rejectNativeCatalog(catalog)
+        server.close()
+        server = open(false)
+        await step(server.start(this.options.clientVersion))
+      } finally {
+        starting = false
+      }
       if (input.signal?.aborted) throw new Error('Completion cancelled')
       const model = codexModelFor(input.model)
       const res = await step(server.request(METHOD.threadStart, {

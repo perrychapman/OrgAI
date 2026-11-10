@@ -8,6 +8,7 @@ import {
   CODEX_MODELS_CACHE_FILE,
   catalogWithoutNativeAgents,
   clearNativeCatalogMemory,
+  rejectNativeCatalog,
   modelCatalogEntry,
   nativeAgentsCatalogConfig,
   nodeCatalogFs,
@@ -107,6 +108,7 @@ describe('nativeAgentsCatalogConfig', () => {
     binary: { path: bin },
     env: { CODEX_HOME: home, ORGAI_CODEX_API_KEY: 'sk-test' },
     config: ['features.multi_agent=false', 'model_provider="orgai"'],
+    expectedHome: home,
     run,
     ...over
   })
@@ -274,6 +276,84 @@ describe('nativeAgentsCatalogConfig', () => {
       const r = await nativeAgentsCatalogConfig(input(run, { binary: { path: join(dir, 'missing') } }))
       expect(r.status).toBe('failed')
       expect(run).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('a cached file is checked once per process before reuse', () => {
+    const cachedPath = async (run: CatalogDumpRunner): Promise<string> => {
+      const r = await nativeAgentsCatalogConfig(input(run))
+      if (r.status !== 'written') throw new Error(r.status)
+      clearNativeCatalogMemory()
+      return r.path
+    }
+
+    it('a truncated file is regenerated, not handed to Codex', async () => {
+      const run = runner(v2)
+      const path = await cachedPath(run)
+      writeFileSync(path, readFileSync(path, 'utf8').slice(0, 40))
+      const r = await nativeAgentsCatalogConfig(input(run))
+      expect(r.status).toBe('written')
+      expect(run).toHaveBeenCalledTimes(2)
+      expect(JSON.parse(readFileSync(path, 'utf8')).models).toHaveLength(2)
+    })
+
+    it('a tampered file (a v2 model back, models not a list, a model not an object, empty) is regenerated', async () => {
+      for (const tampered of [catalog([model('gpt-a', { multi_agent_version: 'v2' })]), '{"models":{}}', '{"models":[1]}', '{"models":[]}', '[]']) {
+        const run = runner(v2)
+        const path = await cachedPath(run)
+        writeFileSync(path, tampered)
+        expect((await nativeAgentsCatalogConfig(input(run))).status).toBe('written')
+        expect(run).toHaveBeenCalledTimes(2)
+        expect(JSON.parse(readFileSync(path, 'utf8')).models.map((m: { multi_agent_version: string }) => m.multi_agent_version)).toEqual(['v1', 'v1'])
+        writeFileSync(bin, `binary ${Math.random()}`)
+      }
+    })
+
+    it('a valid file is parsed once, then reused on stats alone', async () => {
+      const run = runner(v2)
+      const path = await cachedPath(run)
+      const fs = { ...nodeCatalogFs, read: vi.fn(nodeCatalogFs.read) }
+      expect((await nativeAgentsCatalogConfig(input(run, { fs }))).status).toBe('cached')
+      expect((await nativeAgentsCatalogConfig(input(run, { fs }))).status).toBe('cached')
+      expect(fs.read).toHaveBeenCalledTimes(1)
+      expect(fs.read).toHaveBeenCalledWith(path)
+      expect(run).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe("only OrgAI's own Codex home", () => {
+    it('a foreign CODEX_HOME (an inherited ~/.codex) gets no file and no override', async () => {
+      const run = runner(v2)
+      const foreign = join(dir, 'user-home', '.codex')
+      const r = await nativeAgentsCatalogConfig(input(run, { env: { CODEX_HOME: foreign } }))
+      expect(r).toMatchObject({ status: 'failed', config: [] })
+      expect(r.status === 'failed' && r.reason).toBe("CODEX_HOME is not OrgAI's own Codex home")
+      expect(existsSync(foreign)).toBe(false)
+      expect(run).not.toHaveBeenCalled()
+    })
+
+    it('an unknown expected home gets no override; the same folder written differently passes', async () => {
+      const run = runner(v2)
+      const r = await nativeAgentsCatalogConfig(input(run, { expectedHome: undefined }))
+      expect(r.status === 'failed' && r.reason).toBe("OrgAI's Codex home is not known to the adapter")
+      expect((await nativeAgentsCatalogConfig(input(run, { expectedHome: join(home, '..', 'codex', '.') }))).status).toBe('written')
+    })
+  })
+
+  describe('a catalog Codex refused to start with', () => {
+    it('is deleted and never offered again in this process, even regenerated', async () => {
+      const run = runner(v2)
+      const r = await nativeAgentsCatalogConfig(input(run))
+      if (r.status !== 'written') throw new Error(r.status)
+      rejectNativeCatalog(r.path)
+      expect(existsSync(r.path)).toBe(false)
+      const again = await nativeAgentsCatalogConfig(input(run))
+      expect(again).toMatchObject({ status: 'failed', config: [] })
+      expect(again.status === 'failed' && again.reason).toBe('Codex did not start with this catalog earlier in this process')
+      expect(run).toHaveBeenCalledTimes(1)
+      // A changed binary is a new catalog: offered again.
+      writeFileSync(bin, 'binary after an update')
+      expect((await nativeAgentsCatalogConfig(input(run))).status).toBe('written')
     })
   })
 
