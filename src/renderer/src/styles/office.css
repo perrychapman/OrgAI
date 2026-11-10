@@ -6,6 +6,24 @@
 .office-scene[data-mode='live'] .office-message-strip { flex: 0 0 48px; height: 48px; overflow: auto; border-top: 1px solid var(--office-border); }
 .office-message-strip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .office-delivery-empty { margin: var(--space-2); color: var(--text-secondary); font-size: var(--text-caption); }
+
+/* S5b bubbles and strip */
+.office-scene[data-mode='live'] .office-message-strip { overflow-x: hidden; }
+.office-strip-row { position: relative; display: flex; align-items: center; gap: var(--space-2); box-sizing: border-box; height: 24px; padding: 0 var(--space-2); color: var(--office-ink); background: var(--office-surface); box-shadow: inset 0 -1px 0 var(--office-border); font-size: var(--text-caption); line-height: 1.2; }
+.office-strip-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-strip-row .btn { flex: none; box-sizing: border-box; min-height: 24px; padding: 0 var(--space-2); color: var(--office-ink); background: var(--office-surface); border: 2px solid var(--office-border); border-radius: 0; font-size: var(--text-caption); line-height: 1.2; }
+.office-strip-row .btn:hover { color: var(--office-surface); background: var(--office-ink); }
+.office-strip-row .btn:focus-visible { outline-offset: -4px; }
+
+/* Bubbles sit above the recipient's head in the world's pixel space (not scaled by zoom); OfficeBubbles.tsx places each one. */
+.office-bubbles { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.office-bubble { position: absolute; box-sizing: border-box; width: max-content; max-width: 200px; padding: 2px var(--space-1); color: var(--office-ink); background: var(--office-surface); border: 2px solid var(--office-border); border-radius: 0; font-family: var(--font-sans); font-size: var(--text-caption); line-height: 1.25; overflow-wrap: anywhere; pointer-events: none; --office-bubble-tail: 50%; }
+.office-bubble-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.office-bubble::before, .office-bubble::after { content: ''; position: absolute; left: var(--office-bubble-tail); width: 0; height: 0; border-style: solid; border-color: transparent; transform: translateX(-50%); }
+.office-bubble[data-placement='above']::before { top: calc(100% + 2px); border-width: 8px 7px 0; border-top-color: var(--office-border); }
+.office-bubble[data-placement='above']::after { top: 100%; border-width: 7px 5px 0; border-top-color: var(--office-surface); }
+.office-bubble[data-placement='below']::before { bottom: calc(100% + 2px); border-width: 0 7px 8px; border-bottom-color: var(--office-border); }
+.office-bubble[data-placement='below']::after { bottom: 100%; border-width: 0 5px 7px; border-bottom-color: var(--office-surface); }
 .office-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
 
 /* The stage is a native scroller over a plain surface; the building is centred in it when smaller. */
@@ -51,7 +69,6 @@
 .office-person[data-office-exchange='true'] .office-person-label { color: var(--office-surface); background: var(--office-ink); border-color: var(--office-surface); }
 
 .office-empty { align-self: center; max-width: 30em; padding: var(--space-3); background: var(--surface-1); }
-.office-scene [data-testid='office-caption'] { width: fit-content; max-width: min(100%, 40em); margin: var(--space-1) var(--space-2); padding: var(--space-1) var(--space-2); overflow-wrap: anywhere; color: var(--office-ink); background: var(--office-surface); border: 2px solid var(--office-border); border-radius: 0; }
 .office-inspector { border-inline-start: 2px solid var(--office-border); }
 .office-inspector-action { padding: var(--space-2); color: var(--office-ink); background: var(--office-surface); border-block: 2px solid var(--office-border); }
 .office-inspector-action .btn { color: var(--office-ink); background: var(--office-surface); border-color: var(--office-border); border-radius: 0; }
