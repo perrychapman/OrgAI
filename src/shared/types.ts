@@ -3451,8 +3451,8 @@ export function isStaffingGoal(v: unknown): v is StaffingGoal {
 
 /**
  * When the orchestrator asks for review. 'always': after every change; 'risk' (the default): when a role prompt or the
- * brief demands it, the change touches sensitive paths, the diff is large or verification failed once; 'never': only
- * when required reports demand it (they always win).
+ * brief demands it, or work it handed out touches sensitive paths, has a large diff or failed verification once (work
+ * the lead did alone is covered by its own verification); 'never': only when required reports demand it (they always win).
  */
 export type ReviewPolicy = 'always' | 'risk' | 'never'
 export const REVIEW_POLICIES: readonly ReviewPolicy[] = ['always', 'risk', 'never']
