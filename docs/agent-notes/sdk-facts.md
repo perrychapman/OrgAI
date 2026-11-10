@@ -299,3 +299,34 @@ and run on every captured `tool_response`. Inputs to "Context pack on spawn" (co
   "File does not exist. Note: your current working directory is ...", `is_interrupt` false, no `tool_response`) and
   no `PostToolUse`. So `completeReadText` never sees either, and a denied or failed Read cannot enter the store. The
   following allowed Read (`notes.md`) had the normal shape and was accepted.
+
+## Compaction, verified 2026-11-10 (SDK 0.3.318, CLI 2.1.318)
+
+`scripts/smoke-compaction.mjs` (haiku, `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`, API key through the lab endpoint; root
+run about $0.12, subagent runs about $0.03 each), `Query.getContextUsage()` and `Query.supportedModels()` probes
+(token-free), and the CLI bundle read with `strings` (marked).
+
+- Thresholds: `getContextUsage().autoCompactThreshold` is 967,000 for claude-opus-5-5, claude-sonnet-5-5,
+  claude-haiku-5-5 and claude-fable-5-1 (also as `fable`, `fable[1m]`, `claude-fable-5-1[1m]`, `sonnet[1m]`), 167,000 for
+  claude-opus-4-5, claude-sonnet-4-5, claude-sonnet-4-6 and claude-fable-5-2. `claude-opus-4-1` reports claude-opus-5-5.
+  Read from the bundle: threshold = window - min(max output, 20k) - 13k; `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (env twin of
+  the documented `autoCompactWindow` setting, 100k to 1M) lowers the window; `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is a
+  test override. Idle compaction needs a 1h prompt cache and at least 200k tokens (bundle; not seen).
+- Root compaction order (four compactions in one turn of the smoke): `PreCompact` (no agent_id, trigger 'auto') ->
+  system `status` 'compacting' -> `SubagentStop` of a nameless fork (agent_type '', the summarizer; no task_started) ->
+  `SessionStart` (source 'compact') -> `PostCompact` (compact_summary) -> `status` null with `compact_result: 'success'`
+  -> `compact_boundary` (`compact_metadata.pre_tokens`, `post_tokens`). The turn goes on; no `result` in between.
+- After it: a `SessionStart` hook's `additionalContext` reaches the model ("SessionStart hook additional context:
+  MARKER-C1 ..." was quoted). The first user message is not kept verbatim: the model knew its secret word only from
+  the summary's recap. Read from the bundle: up to 5 recently read files (5k tokens each, 50k in all) are re-attached,
+  plus the status of each background agent and the SessionStart hook results; subagents get none of these.
+- A subagent's compaction runs `PreCompact`, the summarizer's `SubagentStop`, `SessionStart` ('compact') and
+  `PostCompact` with NO agent_id and the same transcript_path as the root, and emits no system message: a hook cannot
+  tell it from the root's except that no `status` 'compacting' arrived on the stream.
+- `supportedModels()` on this machine's subscription login and on an API key: `default` and `opus` -> claude-opus-5-5,
+  `claude-fable-5-1[1m]` ("Fable"), `sonnet` -> claude-sonnet-5-5, `haiku` -> claude-haiku-5-5. With
+  `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-5` and `..._SONNET_MODEL=claude-sonnet-4-5` it reports `default` and `opus`
+  as claude-opus-4-5 ("Custom Opus model") and `sonnet` as claude-sonnet-4-5; a session with model `opus` then
+  initialised on claude-opus-4-5 and sent every request there (lab relay).
+- A subagent definition with model `sonnet` under root `opus`, no variables: requests went to claude-opus-5-5 and
+  claude-sonnet-5-5 (lab relay, one run).

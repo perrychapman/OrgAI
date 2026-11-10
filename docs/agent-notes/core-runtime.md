@@ -435,3 +435,46 @@ Application menu, run end and decision cards, settings, run titles, projects, us
 ## Desktop per-run goal
 
 `HostDispatcher.checkRunOverrides` (`src/main/host/dispatcher.ts`) used to drop every override on the desktop surface. It now keeps only a valid `overrides.goal` for `runs:start` (a bad value is refused as bad_request by `startRunArgs`) and passes it with `allowWidening: false`; permission mode, budget, strict delegation and the rest are still dropped. `runs:continue` and `runs:startQuick` still drop all overrides from the desktop (a continuation keeps the run's goal through `continuedOverrides`). Checked by unit tests only (`dispatcherExec.test.ts`).
+
+## Compaction and the models a run lands on (2026-11-10)
+
+Investigation of "auto compaction is going nuts" (owner report, Anthropic connection, agents seen on old Opus/Sonnet).
+Lab material: `orgai-performance-lab/.tmp/phase7/` (relays that classify every request by source, the campaign,
+summaries) and `scripts/smoke-compaction.mjs` here.
+
+- Context windows decide when compaction starts. Read from the CLI (`Query.getContextUsage()`, token-free, SDK 0.3.318,
+  API-key login through the lab endpoint): `opus`, `sonnet`, `haiku`, `fable` and `claude-fable-5-1[1m]` resolve to
+  claude-opus-5-5 / claude-sonnet-5-5 / claude-haiku-5-5 / claude-fable-5-1 with an auto-compact threshold of 967,000
+  tokens (1M window); `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6` (and `claude-fable-5-2`) have 167,000
+  (200k window). `claude-opus-4-1` is remapped by the CLI to claude-opus-5-5. So an older id compacts after a sixth of
+  the context.
+- The regression path: run staffing sets `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` from the Anthropic
+  connection's `tierModels` for every tier that holds a concrete id (`ConnectionService.anthropicTierEnv`). Before
+  staffing the Anthropic connection set none, so the aliases always resolved natively. With
+  `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-5` the CLI moves the `opus` alias AND the session's default model there
+  (supportedModels then reports "Opus 4.5 ... Custom Opus model", `default` -> claude-opus-4-5), and a live session
+  with root `opus` and a `sonnet` report sent every request as claude-opus-4-5 (lab relay; the lab endpoint does not
+  serve it, so they failed there). A default install or a discovery leaves `tierModels` on aliases (suggestTierModels
+  prefers the alias), which sets no variable; only a concrete id stored in a tier (a user pick, an earlier install) does.
+  The owner's own `tierModels` were not available, so that this is what happened on their machine is UNVERIFIED.
+- Fix (unit tests: `serviceDiscovery.test.ts`, `catalog.test.ts`, `claudeCompaction.test.ts`; live: the same
+  stored mapping gives `{ ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-4-5, ..._SONNET_MODEL: claude-sonnet-4-5 }` on the
+  previous build and `{}` on this one after a live discovery, and the session then ran claude-opus-5-5 and its report
+  claude-sonnet-5-5): discovery keeps the model each alias resolves to (`ProviderModel.upstream`, from
+  supportedModels' `resolvedModel`); `anthropicTierEnv` skips a tier id that is an older model of its family than
+  anything the catalog knows (`newerClaudeModel`, `claudeModelVersion` in catalog.ts; a `[1m]` suffix and dates are
+  ignored for the comparison and kept in the value) and logs it once. Without a discovery nothing is known to be newer
+  and the id is passed as before. At its first init the Claude session logs one line naming the concrete model of
+  each alias (`Query.supportedModels()`, token-free, `modelTierReport`) and warns for an alias a variable moved onto an
+  older model and for a role pinned to one.
+- Compaction itself on Claude (`scripts/smoke-compaction.mjs`, haiku, lowered window, two runs): see sdk-facts
+  "Compaction". The adapter now logs each compaction of the orchestrator ("Compaction N of the orchestrator's
+  conversation (auto): 168k to 12k tokens.") with a harness transcript row, shows "Compacting the conversation…" while
+  it runs, and no longer puts the CLI's summarizer fork on the chart as a nameless report (its SubagentStop has
+  agent_type '' and no task_started). Unit tests only for the adapter side.
+- Lab, same task (OrgAI's own source, add `toolErrors` beside `retries` end to end; `phase7-20261110T201740Z`):
+  Claude adapter, lead on claude-opus-5-5, lead alone, 79 requests, 722 s, $4.23, 7/7 checks, peak 186k input tokens,
+  no compaction (threshold 967k). At the peak the lead's own Bash output was 90k tokens, its own edits 35k, tool
+  definitions 20k; harness text (plan tool results) under 1k, no nudges, no hook context. A run on the same build with
+  a 200k model would therefore have compacted at about request 70. The Fable and Codex runs were stopped early when the
+  investigation was redirected.
