@@ -1,6 +1,6 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
-import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
+import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, projectKindOf, settingTier } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult, type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
@@ -52,6 +52,8 @@ import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArch
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
+import { StaffingBook } from './staffingBook'
+import { recordStaffing } from './staffing'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
 import { dirname, isAbsolute, join } from 'node:path'
@@ -279,6 +281,12 @@ class CodexSession implements RuntimeSession {
   private integrator: WorktreeIntegrator
   private continuation: ContinuationDriver
   private root: Role
+  /** Run staffing: binds each spawn_report to its plan step and resolves what it may run on (never above the role's ceiling). */
+  private staffing: StaffingBook
+  /** threadId -> the effort every message to that thread carries (only reports whose staffing overrides the chart). */
+  private threadEffort = new Map<string, string>()
+  /** agentId -> the model a staffed report's thread runs on, kept for thread/resume after an MCP restart. */
+  private staffedModel = new Map<string, string>()
   private setupLike: boolean
   private isolation: boolean
   private harness: HarnessTool[] = []
@@ -342,6 +350,13 @@ class CodexSession implements RuntimeSession {
     this.isolation = !this.setupLike && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     // Explicit project limits win; otherwise derived from the roles this run actually has (effectiveSubagentLimits).
     const limits = effectiveSubagentLimits({ ...ctx.project, roles: ctx.roles })
+    this.staffing = new StaffingBook({
+      project: ctx.project,
+      rootTier: root.tier ?? settingTier(root.model),
+      tierModels: () => ctx.connection?.tierModels ?? {},
+      adapterEfforts: effortOptionsFor('codex'),
+      plan: () => ctx.getPlan()
+    })
     this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency })
     this.closed = new Promise((resolve) => (this.closeSignal = resolve))
     this.partial = new ThrottledPartial((agentId, text) => this.emit({ type: 'agent.partial', runId: ctx.run.id, agentId, text }))
@@ -652,7 +667,8 @@ class CodexSession implements RuntimeSession {
           this.log('info', `Could not steer the running turn (${(e as Error).message}); starting a new one.`)
         }
       }
-      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...extra, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
+      const staffedEffort = this.threadEffort.get(threadId)
+      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...(staffedEffort ? { effort: staffedEffort } : {}), ...extra, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
       const id = parseTurnId(res)
       if (id && !this.completedTurns.has(id)) this.activeTurn.set(threadId, id)
     })
@@ -740,7 +756,7 @@ class CodexSession implements RuntimeSession {
     const engagementDocument = this.ctx.engagementDocument?.()
     // Constant for the run (RunManager computes it once), so every thread's instructions carry the same index.
     const knowledgeBrief = this.ctx.knowledgeBrief?.()
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}), ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags() })
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}), ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}), ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags() })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -749,13 +765,13 @@ class CodexSession implements RuntimeSession {
     return parts.join('\n\n')
   }
 
-  private threadParams(role: Role, isRoot: boolean, cwd: string, parentModel?: string): Record<string, unknown> {
+  private threadParams(role: Role, isRoot: boolean, cwd: string, parentModel?: string, modelOverride?: string): Record<string, unknown> {
     const policy = this.policyFor(role)
     const own = codexModelFor(role.model)
     if (!own && typeof role.model === 'string' && role.model.trim() && !validModelId(role.model.trim())) {
       this.log('warn', `Ignoring the invalid model of ${String(role.name).replace(/[^ -~]/g, "?").slice(0, 80)}; it uses the ${parentModel ? "parent's" : 'default'} model.`)
     }
-    const model = own ?? (validModelId(parentModel) ? parentModel : undefined)
+    const model = modelOverride ?? own ?? (validModelId(parentModel) ? parentModel : undefined)
     return {
       cwd,
       ...(model ? { model } : {}),
@@ -1129,7 +1145,7 @@ class CodexSession implements RuntimeSession {
     }
     this.ctx.delegation?.ended(agent.id)
     this.heldReports.delete(agent.id)
-    this.net.finish(agent.id)
+    this.finishAgent(agent.id)
     if (result) agent.result = result
     agent.state = 'error'
     agent.activity = NATIVE_FAIL_ACTIVITY
@@ -1200,7 +1216,7 @@ class CodexSession implements RuntimeSession {
     // Interrupted or failed: no accepted completion.
     if (u.status !== 'completed') this.ctx.delegation?.ended(agentId)
     this.heldReports.delete(agentId)
-    this.net.finish(agentId)
+    this.finishAgent(agentId)
     if (u.result) child.result = u.result
     if (u.status === 'interrupted') {
       child.state = 'done'
@@ -1247,7 +1263,7 @@ class CodexSession implements RuntimeSession {
       return
     }
     this.heldReports.delete(child.id)
-    this.net.finish(child.id)
+    this.finishAgent(child.id)
     if (result) child.result = result
     child.state = 'done'
     child.endedAt = Date.now()
@@ -1842,9 +1858,50 @@ class CodexSession implements RuntimeSession {
     if (parent && this.heldReports.get(parentId)?.waiting) this.recheckParent({ ...parent, id: r.agentId, parentId } as AgentInstance)
   }
 
-  private async spawnChild(req: SpawnRequest): Promise<void> {
+  /** A report's turn ended with any outcome: free its network slot and tell the staffing book. */
+  private finishAgent(agentId: string): void {
+    this.net.finish(agentId)
+    this.staffing.ended(agentId)
+  }
+
+  private async spawnChild(req: SpawnRequest): Promise<{ staffing?: string }> {
     const parent = this.agents.get(req.parentId)
     const parentRole = this.net.roleOf(req.parentId) ?? this.root
+    // Run staffing: bind to the plan step and resolve tier / effort before anything is created (cancelled below on failure).
+    const decision = this.staffing.decide({
+      key: req.id,
+      role: req.role,
+      ...(req.parentId !== ROOT_AGENT_ID ? { parentAgentId: req.parentId } : {}),
+      ...(req.onCall ? { onCall: req.onCall } : {})
+    })
+    const staffed = decision.resolved.overrides
+    const chartTier = req.role.tier ?? settingTier(req.role.model)
+    const staffedModel = staffed && decision.resolved.tier !== chartTier && validModelId(decision.resolved.model) ? decision.resolved.model : undefined
+    const staffedEffort = staffed ? decision.resolved.effort : undefined
+    let staffingStarted = false
+    try {
+      await this.spawnChildNow(req, parent, parentRole, { model: staffedModel, effort: staffedEffort }, () => {
+        staffingStarted = true
+        const row = this.staffing.started(req.id, req.id, Date.now())
+        if (row) recordStaffing(this.ctx, row).catch((e: Error) => this.log('warn', `Could not record the staffing of ${req.handle}: ${e.message}`))
+      })
+    } catch (e) {
+      if (staffingStarted) this.staffing.ended(req.id)
+      else this.staffing.cancel(req.id)
+      this.threadEffort.delete(this.agentThread.get(req.id) ?? '')
+      this.staffedModel.delete(req.id)
+      throw e
+    }
+    return decision.resolved.mode === 'auto' ? { staffing: decision.label } : {}
+  }
+
+  private async spawnChildNow(
+    req: SpawnRequest,
+    parent: AgentInstance | undefined,
+    parentRole: Role,
+    staffed: { model?: string; effort?: string },
+    onStarted: () => void
+  ): Promise<void> {
     // Writing reports get their own worktree when their parent is the orchestrator or is itself isolated.
     const parentWt = req.parentId === ROOT_AGENT_ID ? undefined : this.integrator.worktreeOf(req.parentId)
     const parentIsolated = req.parentId === ROOT_AGENT_ID || !!parentWt
@@ -1867,9 +1924,11 @@ class CodexSession implements RuntimeSession {
     const policy = this.policyFor(req.role)
     let registered = false
     try {
-      const params = this.threadParams(req.role, false, cwd, parent?.model)
+      const params = this.threadParams(req.role, false, cwd, parent?.model, staffed.model)
       const started = await this.startThread(params)
       this.bindThread(started.threadId, req.id, policy)
+      if (staffed.model) this.staffedModel.set(req.id, staffed.model)
+      if (staffed.effort) this.threadEffort.set(started.threadId, staffed.effort)
       this.noteActivity('subagent')
       this.newAgent(req.id, req.role, {
         parentId: req.parentId,
@@ -1881,9 +1940,10 @@ class CodexSession implements RuntimeSession {
         ...(worktree ? { worktree } : {})
       })
       registered = true
+      onStarted()
       this.ctx.delegation?.noteSpawn(req.id, req.parentId, req.role.id)
       this.transcript(req.id, { kind: 'user', text: req.brief })
-      const effort = req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
+      const effort = staffed.effort ? { effort: staffed.effort } : req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
       // After newAgent, so the "Added N known items" row lands on the report; the block stays out of its transcript entry.
       const knownItems = spawnKnowledge(this.ctx, req.brief, req.id, (m) => this.log('warn', m))
       await this.sendToThread(started.threadId, childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), undefined, effort)
@@ -1976,7 +2036,7 @@ class CodexSession implements RuntimeSession {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)
         // threadParams re-derives the policy (mode and reference folders read now); the thread keeps the new one.
-        const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path)
+        const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path, undefined, this.staffedModel.get(info.agentId))
         void _t
         void _s
         info.policy = this.policyFor(role)

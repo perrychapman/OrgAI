@@ -2,9 +2,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { validModelId } from '../connections/codexAccount'
 import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { dirname, join } from 'node:path'
-import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
+import type { AgentInstance, ConnectionId, Effort, ModelTier, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
-import { cleanRequiredReports, mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
+import { cleanRequiredReports, effortOptionsFor, mcpServersForRole, newId, projectKindOf, settingTier } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
@@ -36,6 +36,8 @@ import { bridgedRolesOf, bridgedSpawnDenial } from './claude'
 import { BRIDGE_HARNESS_TOOLS } from '@shared/types'
 import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
+import { StaffingBook } from './staffingBook'
+import { recordStaffing } from './staffing'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -115,6 +117,11 @@ import { obligationsFor } from './delegation'
  * [mock:delegation-claim] (like skip, and the manager's report claims both workers ran). Each ends with the plan steps
  * when [mock:exec-plan] is also in the prompt. The mock calls ctx.delegation at each spawn, completion and delivery
  * and prefixes receiptText to the report its parent receives; it is the reference for the real adapters.
+ * Run staffing marker (work runs, default script): [mock:staffing] (staffingSteps): the root sets a two-step plan whose steps
+ * carry `staff`, spawns the first two roles it may spawn (one per step, the second step asking for a tier above the
+ * role's ceiling when the chart has one) and both report back, so RunRecord.staffing can be asserted without a model.
+ * Every scripted spawn goes through a StaffingBook (the `spawn` step may carry `tier` and `effort` as the on-call values),
+ * a report's model is the resolved one (MockSession.staffedFor) and each spawn appends a row through recordStaffing.
  * Model switching markers (all run kinds): [mock:model-switch] yields one root text then idle, without cards;
  * replies echo the active root model. [mock:model-switch-limit] ends the first session at a usage limit with
  * a reset 24 hours away (set autoResume off in the test); [mock:model-switch-error] ends it with a provider error.
@@ -165,7 +172,7 @@ export type MockStep =
       onDeny?: string
     }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
-  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
+  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Run staffing: the tier and effort stated on the spawn call itself. */ tier?: ModelTier; effort?: Effort; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
   | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
@@ -598,6 +605,35 @@ export function folderConfigSteps(loaded: boolean, covered: boolean): MockStep[]
 /** Trigger token (work runs, default script): the root changes its own project's MCP servers and skills mid-run. */
 /** Trigger token (work runs, default script): a three-level agent tree whose reports all finish (deepTreeSteps). */
 export const DEEP_TREE_TOKEN = '[mock:deep-tree]'
+
+/** Trigger token (work runs, default script): a plan whose steps carry `staff`, then one scripted spawn per step. */
+export const STAFFING_TOKEN = '[mock:staffing]'
+/** The agent ids the [mock:staffing] script spawns. */
+export const MOCK_STAFFING_REPORTS = ['mock-staffed-1', 'mock-staffed-2'] as const
+
+/**
+ * The [mock:staffing] turn: set_plan with two steps that carry `staff` (the first asks `first` for a fast / low pick, the
+ * second asks `second` for top / max, which the chart's ceiling clamps), then one spawn per step and both reports finish.
+ */
+export function staffingSteps(firstSlug: string, secondSlug: string): MockStep[] {
+  const [a, b] = MOCK_STAFFING_REPORTS
+  return [
+    { type: 'text', text: 'Planning the work: two steps, each staffed on purpose.' },
+    {
+      type: 'plan',
+      goal: 'Staff two steps',
+      steps: [
+        { title: 'Do the routine part', staff: { role: firstSlug, tier: 'fast', effort: 'low' } },
+        { title: 'Do the hard part', staff: { role: secondSlug, tier: 'top', effort: 'max' } }
+      ] as never
+    },
+    { type: 'spawn', id: a, name: a, role: firstSlug, description: 'Do the routine part' },
+    { type: 'spawn', id: b, name: b, role: secondSlug, description: 'Do the hard part' },
+    { type: 'finish', id: a, result: 'Routine part done.' },
+    { type: 'finish', id: b, result: 'Hard part done.' },
+    { type: 'text', text: 'Both steps are done.' }
+  ]
+}
 
 /** Required-delegation markers (work runs, default script). See the file header. */
 export const DELEGATION_OK_TOKEN = '[mock:delegation-ok]'
@@ -1337,6 +1373,13 @@ export class MockSession implements RuntimeSession {
     this.root = root
     this.isSetup = isSetupLikeRun(ctx.run.kind)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
+    this.staffing = new StaffingBook({
+      project: ctx.project,
+      rootTier: root.tier ?? settingTier(root.model),
+      tierModels: () => ctx.connection?.tierModels ?? {},
+      adapterEfforts: effortOptionsFor('mock'),
+      plan: () => ctx.getPlan()
+    })
     const onDecided = (): void => {
       const a = this.agents.get(ROOT_AGENT_ID)
       if (a && a.state === 'waiting') this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
@@ -1646,6 +1689,8 @@ export class MockSession implements RuntimeSession {
   private usageModel(agentId: string): string {
     if (agentId === ROOT_AGENT_ID && this.rootModelOverride) return this.rootModelOverride
     if (agentId === ROOT_AGENT_ID && this.modelSwitchMarker() && this.root.model && this.root.model !== 'inherit') return this.root.model
+    const staffed = this.staffed.get(agentId)?.model
+    if (staffed) return staffed
     const prompt = this.ctx.prompt
     if (prompt.includes(NO_PRICE_TOKEN) || (agentId === UNPRICED_REPORT_ID && !prompt.includes(COMPUTED_COST_TOKEN))) return MOCK_UNPRICED_MODEL
     if (prompt.includes(COMPUTED_COST_TOKEN)) return 'claude-sonnet-4-5'
@@ -1856,6 +1901,11 @@ export class MockSession implements RuntimeSession {
       if (!ref) this.log('info', 'Mock [mock:reference-shell]: this run has no reference folder, so the command step is skipped.')
       return referenceShellSteps(ref)
     }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(STAFFING_TOKEN)) {
+      const spawnable = (this.root.spawnable ?? []).map((id) => this.ctx.roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
+      const first = spawnable[0] ?? this.firstSpawnableSlug(this.root)
+      return staffingSteps(first, spawnable[1] ?? first)
+    }
     const delegation = this.delegationMarkerSteps()
     if (delegation) return delegation
     const execMarker = this.execMarkerSteps()
@@ -1926,6 +1976,7 @@ export class MockSession implements RuntimeSession {
       ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}),
       ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}),
       ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}),
+      ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}),
       ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
       ...(this.ctx.bridgedChild ? { bridged: true } : {})
     })
@@ -1933,6 +1984,16 @@ export class MockSession implements RuntimeSession {
 
   private modelSwitchMarker(): boolean {
     return [MODEL_SWITCH_TOKEN, MODEL_SWITCH_LIMIT_TOKEN, MODEL_SWITCH_ERROR_TOKEN].some((token) => this.ctx.prompt.includes(token))
+  }
+
+  /** Run staffing: the same book the real adapters keep; scripted spawns resolve through it. */
+  private staffing: StaffingBook
+  /** agentId -> what a staffed report runs on: the resolved model and the effort every message to it would carry. */
+  private staffed = new Map<string, { model?: string; effort?: Effort }>()
+
+  /** What the staffing book gave a report that runs on a picked model / effort (undefined = as configured). For tests. */
+  staffedFor(agentId: string): { model?: string; effort?: Effort } | undefined {
+    return this.staffed.get(agentId)
   }
 
   /** Spawn step ids whose native spawn was refused (a bridged role); their later steps are skipped. */
@@ -2503,6 +2564,7 @@ export class MockSession implements RuntimeSession {
       const receipt = gate.receiptText(step.id)
       if (receipt) text = `${receipt}\n\n${step.result}`
     }
+    this.staffing.ended(step.id)
     const a = this.ensureAgent(step.id)
     a.result = step.result
     a.state = 'done'
@@ -2545,6 +2607,12 @@ export class MockSession implements RuntimeSession {
     this.spawnToolUse.set(step.id, toolUseId)
     if (!this.agents.has(step.id)) this.noteActivity('subagent')
     const role = this.rolesBySlug.get(slug)
+    // Run staffing: bind to the plan step and resolve before the report exists; apply only an override.
+    const onCall = step.tier || step.effort ? { ...(step.tier ? { tier: step.tier } : {}), ...(step.effort ? { effort: step.effort } : {}) } : undefined
+    const decision = role ? this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(onCall ? { onCall } : {}) }) : undefined
+    const staffedModel = decision?.resolved.overrides && decision.resolved.model && decision.resolved.model !== 'inherit' ? decision.resolved.model : undefined
+    if (decision?.resolved.overrides) this.staffed.set(step.id, { ...(staffedModel ? { model: staffedModel } : {}), ...(decision.resolved.effort ? { effort: decision.resolved.effort } : {}) })
+    else this.staffed.delete(step.id)
     const agentParent = resolveParent(this.agents, step.id, parentId, ROOT_AGENT_ID)
     this.upsert({
       ...this.ensureAgent(step.id, { roleSlug: slug, parentId: agentParent }),
@@ -2555,8 +2623,13 @@ export class MockSession implements RuntimeSession {
       spawnToolUseId: toolUseId,
       handle,
       state: 'thinking',
-      activity: step.description.slice(0, 90) || 'Reading the brief…'
+      activity: step.description.slice(0, 90) || 'Reading the brief…',
+      ...(staffedModel ? { model: staffedModel } : {})
     })
+    if (decision) {
+      const row = this.staffing.started(step.id, step.id, Date.now())
+      if (row) recordStaffing(this.ctx, row).catch((e: Error) => this.log('warn', `Could not record the staffing of ${handle}: ${e.message}`))
+    }
     if (role) this.ctx.delegation?.noteSpawn(step.id, agentParent ?? parentId, role.id)
     this.transcript(step.id, { kind: 'user', text: brief })
     // After the upsert, so the row lands on the report (like Codex); the block stays out of its transcript entry.

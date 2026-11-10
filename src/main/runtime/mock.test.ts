@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { EngagementNote, ImageAttachment, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
 import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
 import { RESUME_TEXT } from './runManager'
-import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
+import { STAFFING_TOKEN, DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -1536,5 +1536,46 @@ describe('mock text step partials', () => {
     await session.stop()
     await session.finished
     expect(textEvents(ctx.events)).toEqual(['partial:a', 'partial:'])
+  })
+})
+
+describe('mock [mock:staffing]', () => {
+  const run = async (over: { project?: ReturnType<typeof project>; prompt?: string } = {}) => {
+    const ctx = fakeCtx({
+      autoContinue: false,
+      prompt: over.prompt ?? `Staff the work ${STAFFING_TOKEN}`,
+      project: over.project ?? project({ roles: defaultRoles() }),
+      connection: { connection: 'anthropic', adapter: 'mock', tierModels: { top: 'm-top', deep: 'm-deep', everyday: 'm-everyday', fast: 'm-fast' } }
+    })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    for (let i = 0; i < 300 && !statuses().includes('idle') && !statuses().includes('finished'); i++) await new Promise((r) => setTimeout(r, 10))
+    return { ctx, session }
+  }
+
+  it('records the plan steps\' picks per spawned report, clamped to each role\'s ceiling', async () => {
+    const { ctx, session } = await run()
+    const rows = ctx.getStaffing()!.assignments
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ agentId: 'mock-staffed-1', stepId: 'p1', tier: 'fast', effort: 'low', source: 'orchestrator' })
+    // The second step asks for top / max; the role's own tier and effort are the ceiling.
+    expect(rows[1]).toMatchObject({ agentId: 'mock-staffed-2', stepId: 'p2', source: 'clamped' })
+    expect(rows[1]!.tier).not.toBe('top')
+    expect(rows[1]!.effort).not.toBe('max')
+    // The report runs on the resolved model.
+    expect(session.staffedFor('mock-staffed-1')).toEqual({ model: 'm-fast', effort: 'low' })
+    const agent = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === 'mock-staffed-1').at(-1)
+    expect(agent).toMatchObject({ agent: { model: 'm-fast' } })
+    await session.stop()
+  })
+
+  it('Project.staffing fixed changes nothing: no override, the report keeps the model it always had', async () => {
+    const { ctx, session } = await run({ project: project({ roles: defaultRoles(), staffing: 'fixed' }) })
+    expect(session.staffedFor('mock-staffed-1')).toBeUndefined()
+    expect(session.staffedFor('mock-staffed-2')).toBeUndefined()
+    const agent = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === 'mock-staffed-1').at(-1)
+    expect(agent).toMatchObject({ agent: { model: 'claude-sonnet-4-5' } })
+    for (const row of ctx.getStaffing()?.assignments ?? []) expect(row.source).toBe('role')
+    await session.stop()
   })
 })
