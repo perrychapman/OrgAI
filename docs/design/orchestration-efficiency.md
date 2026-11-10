@@ -112,15 +112,22 @@ forced. Phase 0 measures all three.
 ## 2. Current behaviour (origin/dev, read 2026-11-09)
 
 - **Model and effort are per role and fixed.** `Role.tier`, `Role.model`, `Role.effort` (`src/shared/types.ts`).
-  Claude: `claude.ts` `buildAgents` writes one `AgentDefinition` per role with `model` and `effort`; the root runs as
-  `agent: root.slug`, so its effort is its definition's. Codex: `threadParams` takes `role.model`; effort is sent per
-  message and only for low / medium / high (`effortOptionsFor`), so a Codex role set to xhigh sends none.
+  Claude: `claude.ts` `buildAgents` writes one `AgentDefinition` per role with `model` and `effort`, and that is the
+  only place the adapter sets effort. Codex: `threadParams` takes `role.model`; effort is sent per message and only
+  for low / medium / high (`effortOptionsFor`), so a Codex role set to xhigh sends none.
+- **The root's effort is not applied on Claude today.** The root runs as `agent: root.slug`, and the SDK does not
+  apply an `AgentDefinition.effort` to the agent chosen by `Options.agent`: a root defined with `low` ran at the
+  default, `medium` (smoke check 5). The orchestrator's effort setting in the chart therefore does nothing on this
+  adapter. `Options.effort` does set it (check 8), and a report with no effort of its own then inherits it.
 - **One per-spawn override exists**: the plan guard. `claude.ts` `steerToEveryday` rewrites a spawn's `model` through
-  the PreToolUse `updatedInput`. A valid model id the orchestrator puts on a spawn is already kept.
-- **The SDK accepts both per spawn.** `@anthropic-ai/claude-agent-sdk` 0.3.318 (`sdk-tools.d.ts` `AgentInput`):
-  `model?: 'sonnet' | 'opus' | 'haiku' | 'fable'` and `effort?: 'low' | ... | 'max'`. Typings only; no smoke script
-  has exercised either, and the tool's own description tells the model to set effort only when instructed.
-  `docs/agent-notes/sdk-facts.md` still records 0.3.312.
+  the PreToolUse `updatedInput` with the connection's everyday model id. The SDK accepts only the four aliases
+  there (below), so the steer works while that id is `sonnet`, the Anthropic default, and fails the spawn with a
+  schema error when the tier is mapped to a full model id.
+- **The SDK accepts both per spawn** (`scripts/smoke-staffing.mjs`, 0.3.318, recorded in
+  `docs/agent-notes/sdk-facts.md`). Through `updatedInput`: `model` as one of `sonnet | opus | haiku | fable` works
+  and a full id such as `claude-sonnet-5-5` is rejected by schema validation, no subagent starts and the model
+  retries into the same error; `effort` works and overrides the definition's. Both also work when the model sets
+  them on the call itself, which the tool's description tells it to do only when instructed.
 - **Delegation is mandatory or adaptive** (`delegation.ts`, `docs/design/delegation-enforcement.md`):
   `Role.requiredReports` and `--strict-delegation` are enforced with receipts; everything else is adaptive, and the
   ledger records what adaptive agents used and skipped. Nothing guides the adaptive choice.
@@ -138,7 +145,8 @@ forced. Phase 0 measures all three.
 - **Two paths are serial by construction.** A required report on Claude is forced to the foreground
   (`run_in_background = false`, so the receipt arrives in the same tool result), and `delegate_agent` for a bridged
   role "returns its final report when it is done". Each blocks its caller unless several calls go out in one
-  message; that this runs them together is unverified here.
+  message. Two foreground spawns in one assistant message do run together (smoke check 6: starts at 1.3 and 1.6 s,
+  stops at 8.9 and 9.2 s), but the model put both calls in one message only when told to emphatically.
 - **Plans are required.** `unattendedText` tells every team root to start with `set_plan`; `continuation.ts` nudges
   a root that ends its first turn without one.
 - **The root prompt is long whatever the task** (`buildRolePrompt`: org change, cross-run, MCP install, skills
@@ -181,8 +189,12 @@ without an explicit choice.
 - Way back up: `escalate_to_team({ reason, notes })`. RunManager ends the turn and continues the same session chain
   as a team run with the notes as hidden context, marked as data. Once per chain.
 - Never for setup, quick, trust-restricted or assistant runs.
-- The one-shot's latency is unknown. Phase 3 measures it first: if the median is above 1.5 s, triage ships with
-  rules only and the in-team sizing below carries small tasks.
+- **Measured, and over the line: triage ships with rules only** (D3). Five haiku one-shots with the options
+  `RuntimeAdapter.complete` uses took 2.1 / 2.5 / 3.3 s (min / median / max), 1.2 s of it starting the process and
+  the handshake (smoke check 7). The one-shot is not built. `triage.ts` keeps the order above without it: with no
+  rule forcing `team` and no explicit choice the shape is `team`, and the in-team sizing below carries small
+  tasks. `solo` is reached by the user's choice and, from Phase 4, by a rule over the project profile. Not
+  measured: the same call on the Codex adapter, where the app-server may already be running.
 
 **Inside a team run: three sizes.** A harness paragraph for the root, additive to its role prompt and yielding to
 it: "unless your instructions, the brief or required reports say otherwise" a contained change is done by the lead
@@ -225,9 +237,10 @@ all done or skipped.
 - Bridged roles on Claude: `delegate_agent` gains `background: true`, returning a handle at once with the report
   delivered later as a harness message, as Codex `spawn_report` already does. Required bridged reports keep the
   blocking form.
-- Required reports on Claude stay in the foreground (the receipt needs the tool result). A smoke script confirms
-  that several foreground spawns in one message run together; if they do not, required reports move to a
-  background spawn with the receipt attached to the delivery message.
+- Required reports on Claude stay in the foreground (the receipt needs the tool result). Several foreground spawns
+  in one message run together (smoke check 6), so nothing moves to the background. The SDK emits one `assistant`
+  message per content block; calls that went out together share a `message.id`, which is how the harness counts
+  them.
 - Width: the ready line states free slots from `effectiveSubagentLimits`. After a rate-limit or overload event the
   harness reports one free slot until the window clears, so a fan-out does not turn into retries.
 - Merges stay serialized per working directory; nothing changes in `integration.ts`.
@@ -249,10 +262,19 @@ slot and nobody on it), the critical path's length against the run's, time to fi
   else the rubric's default for the role; clamp to the role's bounds; plan guard; the nearest effort the adapter
   supports; the nearest lower tier the connection has a model for. `source` is 'orchestrator', 'profile', 'role',
   'clamped', 'plan-guard' or 'escalated'. The spawn's result states the tier and effort actually used.
-- Mechanics. Claude: the gate sets `model` and `effort` on the spawn through `updatedInput`; the root's effort is
-  set on its `AgentDefinition` when the session is built. Codex: `spawn_report` gains optional `tier` and `effort`;
-  the thread starts on the resolved model and each message carries the resolved effort. Bridged roles resolve
-  against their own connection. Mock implements the whole path first.
+- Mechanics. Claude: the gate sets `model` and `effort` on the spawn through `updatedInput`. The model it writes is
+  the resolved tier's alias (top `fable`, deep `opus`, everyday `sonnet`, fast `haiku`), never a model id: the SDK
+  rejects ids there. On a proxy connection the alias already resolves to the connection's model for that tier
+  through `ANTHROPIC_DEFAULT_*_MODEL` (`connections/service.ts` `buildRunConnection`). The Anthropic connection
+  sets no such variable, so there the alias means the SDK's current model of that family, which is what the default
+  `tierModels` name; when a tier is mapped to another id the session gets the same variables, and a Phase 2 smoke
+  check confirms they apply on a subscription login before that case is switched on (until then such a role keeps
+  its definition's model). The plan guard's steer moves to the same path, which fixes its failure on a tier mapped
+  to a full id. A `fixed` role on a concrete model keeps its definition's model and gets no `model` at spawn. The root's effort goes on `Options.effort` when the session is
+  built; because a report without an effort inherits that value, the gate writes an effort on every spawn. Codex:
+  `spawn_report` gains optional `tier` and `effort`; the thread starts on the resolved model and each message
+  carries the resolved effort. Bridged roles resolve against their own connection. Mock implements the whole path
+  first.
 - The rubric (about eight lines in the root prompt, and an explicit instruction to set model and effort on every
   spawn, which the SDK tool otherwise discourages):
   - fast: search, mechanical edits, running checks, summaries;
@@ -294,13 +316,29 @@ projects. An empty profile means the rubric alone decides.
 
 ### 4.6 Fixed overhead
 
-Each item ships only if Phase 0 shows it matters.
+Measured in Phase 0 (`scripts/measure-prompt-size.mjs`, token-free; the baseline campaign's run logs).
 
-- Prompt diet: move the org-change, cross-run, MCP install and skills config paragraphs out of the root prompt and
-  into the descriptions of the tools they describe; a report gets only what a report can act on.
-- Run end: about 4 s pass between the last model response and run end in the lab's solo trials. Find what it is
-  (`REPORT_HANDBACK_GRACE_MS`, the continuation delay, teardown) before changing anything; exec settlement depends
-  on those waits.
+- **Tool definitions first, prompt text second.** On the default chart OrgAI adds about 9.3k tokens (Claude) or
+  10.1k (Codex) to every request of a team root, 3.1k to 3.5k to a report's and 4.7k to 5.0k to the single
+  assistant's. Harness tool definitions are 77% of the root's share and 80% of a report's; the prompt paragraphs
+  the first draft aimed at are the small part. The largest definitions: `produce_output` (6,058 characters, sent to
+  every agent, read-only reviewers included) and the root's four configuration tools `propose_mcp_servers`,
+  `propose_org_change`, `propose_skills` and `request_mcp_install` (11.6k characters together). The diet:
+  - a description says what the tool does and when to call it; the format rules and examples move into the tool's
+    validation errors and into the result of a call with no arguments, which the description names;
+  - a unit test pins a budget on the summed harness tool definitions for the default chart's root, a report and
+    the single assistant, so the size does not grow back unnoticed;
+  - then the paragraphs: `mcpInstallText` (1,102 characters on the root), `outputsText` (1,002),
+    `orchestratorIsolationText` (720), and a report gets only what a report can act on.
+- **Run end.** The 4 s of the earlier pilots does not reproduce. From the last model response to `finished` the
+  single assistant takes 66 ms and a team run 1,579 ms, of which 1,500 is `DEFAULT_CONTINUATION_DELAY_MS`
+  (`continuation.ts`: "so a report that just landed can wake the orchestrator first"), paid at the end of every
+  team root turn that reaches the nudge decision, in a run that had spawned no report. Change: the wait applies
+  only when a report is running or ended inside the window; otherwise the decision is taken at once. Exec
+  settlement keeps its semantics (`continuation.test.ts`, the settle tests). The Claude adapter's
+  `REPORT_HANDBACK_GRACE_MS` (1.5 s after a report finishes) stays; no lab run has measured it.
+- **Run start.** OrgAI's own share is about 0.2 s (version probe, app-server start and handshake, thread start).
+  The other 1.5 s of the earlier figure was the lab driver loading. Nothing to cut.
 - Plan: a team root may skip `set_plan` when it does the work itself or hands out one step; `nextNudge` stops
   sending `SET_PLAN_NUDGE` when the first turn ended with the work delivered and nobody running.
 - Worktrees and the continuation delay were off in the lab. They are measured in Phase 0 and left alone here.
@@ -441,9 +479,10 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
   run are measured.
 - Parallel fan-out against a subscription or a rate-limited key can stall. The width rule in 4.2 is the mitigation;
   it is untested against a real limit.
-- Unverified until the Phase 2 smoke scripts: a full model id through `updatedInput.model` (typed as four aliases;
-  the plan guard already relies on it), per-spawn effort through `updatedInput`, several foreground spawns in one
-  message running together.
+- Verified by `scripts/smoke-staffing.mjs` (one run each, haiku and sonnet, Max login): aliases and effort through
+  `updatedInput`, foreground spawns in one message running together, root effort through `Options.effort`. Still
+  unverified: whether the root batches its spawns into one message without being told to in capitals (the parallel
+  rules of 4.2 depend on it; the Phase 1 lab rerun shows it), and all of it on the Codex adapter.
 - Codex effort stops at high in OrgAI. The lab drivers sent xhigh at the protocol level and it was applied, so the
   limit is OrgAI's; lifting it is a small follow-up and automatic staffing does not need it.
 - The solo assistant holds the union of every role's tools and grants, as the single assistant does today. A
