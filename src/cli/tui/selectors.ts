@@ -18,7 +18,7 @@ import { commandSummary, isCompoundCommand } from './streamRows'
 import { roleRepresentatives, withTeamRows } from './teamRows'
 import { agentIdentityTone } from './identity'
 import { safe, safeLine } from '../output'
-import { latestByAgent, staffingLabel, staffingReason, stepStaffText } from '../staffingText'
+import { latestByAgent, latestForStep, staffingLabel, staffingReason, stepRanText } from '../staffingText'
 import { readyCount, stepFlows, usesGraph } from './planGraph'
 import { isWorkingAgentState } from './activity'
 import { agentLabel, imageLabel, mediaLabel, pendingItems, resultPartsLabel, statusViewOf, toolNamesOf } from '../render'
@@ -659,7 +659,7 @@ export function planView(s: TuiState): PlanView | undefined {
       ...(st.owner ? { owner: safeLine(st.owner) } : {}),
       ...(st.note ? { note: safeLine(st.note) } : {}),
       ...(f ? { flow: f.state === 'waiting' ? { state: f.state, on: f.on.map((id) => titleOf.get(id) ?? safeLine(id)) } : { state: f.state } } : {}),
-      ...(graph && st.staff ? { staff: stepStaffText(st.staff) } : {})
+      ...(graph && st.staff ? { staff: stepRanText(st.staff, latestForStep(run.staffing, st.id)) } : {})
     }
   })
   return {

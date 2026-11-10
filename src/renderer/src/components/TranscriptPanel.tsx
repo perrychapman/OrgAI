@@ -25,7 +25,7 @@ import {
   XCircle,
   type LucideIcon
 } from 'lucide-react'
-import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry, TranscriptMedia, TranscriptContentPart } from '@shared/types'
+import type { AgentInstance, PlanStep, RunPlan, RunStaffing, TranscriptEntry, TranscriptMedia, TranscriptContentPart } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import RunKnowledge from './knowledge/RunKnowledge'
@@ -38,7 +38,7 @@ import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
 import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
 import { planHasGraph, stepViews, waitingOnText } from '../lib/planGraph'
-import { agentStaffingView, assignmentOf, stepStaffLabel } from '../lib/runStaffing'
+import { agentStaffingView, assignmentOf, stepRanLabel } from '../lib/runStaffing'
 import { Cost } from './ui/Cost'
 import { agentCostInput } from '../lib/cost'
 import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
@@ -117,7 +117,7 @@ const STEP_LABELS: Record<PlanStep['status'], string> = {
 }
 
 /** The orchestrator's plan: goal, steps with status, and how the automatic continuation stands. */
-function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
+function PlanView({ plan, staffing }: { plan: RunPlan | undefined; staffing?: RunStaffing }): ReactElement {
   const project = useAppStore(selectedProject)
   if (!plan) {
     return (
@@ -170,7 +170,7 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
               )}
               {s.staff && (
                 <div className="plan-staff" data-testid="plan-step-staff">
-                  {stepStaffLabel(s.staff)}
+                  {stepRanLabel(s.staff, staffing, s.id)}
                 </div>
               )}
             </div>
@@ -427,6 +427,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const bottom = useRef<HTMLDivElement>(null)
   const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
   const plan = useAppStore((s) => s.runs[runId]?.plan)
+  const runStaffing = useAppStore((s) => s.runs[runId]?.staffing)
   const agentAssignment = useAppStore((s) => (agent ? assignmentOf(s.runs[runId]?.staffing, agent.id) : undefined))
   const agentStaffing = agentStaffingView(agentAssignment)
   const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
@@ -714,7 +715,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
       </div>
       {tab === 'plan' && (
         <TabPanel idPrefix={idPrefix} id="plan" value={tab}>
-          <PlanView plan={plan} />
+          <PlanView plan={plan} staffing={runStaffing} />
         </TabPanel>
       )}
       {tab === 'usage' && (

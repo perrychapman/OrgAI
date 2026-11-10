@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RunStaffing, StaffingAssignment, StaffingSource } from '@shared/types'
 import { STAFFING_SOURCES } from '@shared/types'
-import { agentStaffingView, assignmentOf, latestAssignments, stepStaffLabel, staffingReason, tierEffortLabel } from './runStaffing'
+import { agentStaffingView, assignmentOf, latestAssignments, stepRanLabel, stepStaffLabel, staffingReason, tierEffortLabel } from './runStaffing'
 
 const a = (over: Partial<StaffingAssignment>): StaffingAssignment => ({ roleId: 'r', model: 'claude-sonnet', source: 'role', at: 1, ...over })
 
@@ -72,5 +72,25 @@ describe('stepStaffLabel', () => {
   it('names the role and the pick', () => {
     expect(stepStaffLabel({ role: 'reviewer', tier: 'everyday', effort: 'medium' })).toBe('reviewer, everyday / medium')
     expect(stepStaffLabel({ role: 'reviewer' })).toBe('reviewer')
+  })
+})
+
+describe('stepRanLabel', () => {
+  // roleId is a Role.id (opaque): the line keeps the step's own role name.
+  const row = (o: object) => ({ roleId: 'r_8f2c', model: 'm', source: 'orchestrator' as const, at: 1, ...o })
+  const ask = { role: 'reviewer', tier: 'top' as const, effort: 'max' as const }
+  it('keeps the request with no assignment', () => {
+    expect(stepRanLabel(ask, undefined, 's1')).toBe('reviewer, top / max')
+    expect(stepRanLabel(ask, { goal: '', assignments: [row({ stepId: 's2', tier: 'fast' })] } as never, 's1')).toBe('reviewer, top / max')
+  })
+  it('says what ran when it matches', () => {
+    const st = { goal: '', assignments: [row({ stepId: 's1', tier: 'top', effort: 'max' })] } as never
+    expect(stepRanLabel(ask, st, 's1')).toBe('reviewer, top / max')
+  })
+  it('adds what was asked when it differs, and uses the newest row', () => {
+    const one = row({ stepId: 's1', tier: 'everyday', effort: 'high', at: 1 })
+    expect(stepRanLabel(ask, { goal: '', assignments: [one] } as never, 's1')).toBe('reviewer, everyday / high (asked for top / max)')
+    const two = row({ stepId: 's1', tier: 'top', effort: 'high', at: 2, source: 'escalated' })
+    expect(stepRanLabel(ask, { goal: '', assignments: [two, one] } as never, 's1')).toBe('reviewer, top / high (asked for top / max)')
   })
 })

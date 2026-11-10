@@ -69,3 +69,25 @@ export function stepStaffLabel(staff: PlanStepStaff): string {
   const pick = tierEffortLabel(staff)
   return pick ? `${staff.role}, ${pick}` : staff.role
 }
+
+/** The newest assignment bound to a plan step (a retry or escalation adds rows; the last one is what ran). */
+export function assignmentOfStep(staffing: RunStaffing | undefined, stepId: string): StaffingAssignment | undefined {
+  let best: StaffingAssignment | undefined
+  for (const a of staffing?.assignments ?? []) if (a.stepId === stepId && (!best || a.at >= best.at)) best = a
+  return best
+}
+
+/**
+ * The plan step's staffing line. No assignment yet: the request ("reviewer, top / max"). Once a report started for the
+ * step: what ran ("reviewer, everyday / high"), plus "(asked for top / max)" when the tier or effort differs from the request.
+ */
+export function stepRanLabel(staff: PlanStepStaff, staffing: RunStaffing | undefined, stepId: string): string {
+  const ran = assignmentOfStep(staffing, stepId)
+  if (!ran) return stepStaffLabel(staff)
+  // The row's roleId is a Role.id, not a name a reader knows: keep the name the orchestrator wrote on the step.
+  const pick = tierEffortLabel(ran)
+  const head = pick ? `${staff.role}, ${pick}` : staff.role
+  const differs = (!!staff.tier && staff.tier !== ran.tier) || (!!staff.effort && staff.effort !== ran.effort)
+  const asked = tierEffortLabel(staff)
+  return differs && asked ? `${head} (asked for ${asked})` : head
+}

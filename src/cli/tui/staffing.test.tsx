@@ -53,6 +53,12 @@ describe('selectors', () => {
     expect(g.steps[0]!.staff).toBe('writer (fast / low)')
   })
 
+  it('a step with an assignment shows what ran, and what was asked when it differs', () => {
+    const steps = [{ id: 'p1', title: 'Write', status: 'in_progress' as const, staff: { role: 'writer', tier: 'top' as const, effort: 'max' as const } }]
+    const staffing: RunStaffing = { goal: 'balanced', assignments: [asg({ stepId: 'p1', roleId: 'writer', tier: 'everyday', effort: 'high' })] }
+    expect(planView(state({ plan: plan(steps), staffing }))!.steps[0]!.staff).toBe('writer (everyday / high, asked top / max)')
+  })
+
   it('status counts: working and ready only above zero and only with staffing data or a graph plan', () => {
     const graph = plan([{ id: 'p1', title: 'A', status: 'pending' }, { id: 'p2', title: 'B', status: 'pending', after: ['p1'] }, { id: 'p3', title: 'C', status: 'pending', after: ['gone'] }])
     expect(statusSummary(state({ plan: graph }))).toMatchObject({ working: 2, readySteps: 2 })

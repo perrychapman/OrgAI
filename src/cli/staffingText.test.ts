@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { STAFFING_SOURCES, type StaffingAssignment } from '../shared/types'
-import { latestByAgent, staffingLabel, staffingLine, staffingReason, stepStaffText } from './staffingText'
+import { latestByAgent, staffingLabel, staffingLine, staffingReason, stepStaffText, stepRanText, latestForStep } from './staffingText'
 
 const a = (over: Partial<StaffingAssignment> = {}): StaffingAssignment => ({ agentId: 'a1', roleId: 'engineer', tier: 'everyday', model: 'sonnet', effort: 'medium', source: 'orchestrator', at: 1, ...over })
 
@@ -59,5 +59,22 @@ describe('staffingLine and stepStaffText', () => {
     expect(stepStaffText({ role: 'engineer', tier: 'fast', effort: 'low' })).toBe('engineer (fast / low)')
     expect(stepStaffText({ role: 'engineer' })).toBe('engineer')
     expect(stepStaffText({ role: 'e\u001b[31mng' })).toBe('eng')
+  })
+})
+
+describe('stepRanText', () => {
+  const ask = { role: 'reviewer', tier: 'top' as const, effort: 'max' as const }
+  // roleId is a Role.id (opaque): the text keeps the step's own role name.
+  const row = (o: object) => ({ roleId: 'r_8f2c', model: 'm', source: 'orchestrator' as const, at: 1, ...o }) as never
+  it('falls back to the request, shows what ran, and what was asked when different', () => {
+    expect(stepRanText(ask, undefined)).toBe('reviewer (top / max)')
+    expect(stepRanText(ask, row({ tier: 'top', effort: 'max' }))).toBe('reviewer (top / max)')
+    expect(stepRanText(ask, row({ tier: 'everyday', effort: 'high' }))).toBe('reviewer (everyday / high, asked top / max)')
+  })
+  it('picks the newest row for a step', () => {
+    const a = row({ stepId: 's1', at: 1 })
+    const b = row({ stepId: 's1', at: 2 })
+    expect(latestForStep({ assignments: [a, b] }, 's1')).toBe(b)
+    expect(latestForStep({ assignments: [a] }, 's2')).toBeUndefined()
   })
 })
