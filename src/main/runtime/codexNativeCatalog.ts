@@ -209,7 +209,7 @@ const slugsByFile = new Map<string, Set<string>>()
 const SLUGS_BY_FILE_MAX = 16
 /** Keys whose catalog had nothing to change (no file is written for them): not dumped again in this process. */
 const unchangedKeys = new Set<string>()
-/** Catalog files Codex refused to start with (rejectNativeCatalog): never offered again in this process. */
+/** Catalog files Codex refused (rejectNativeCatalog): never offered again in this process. */
 const rejectedFiles = new Set<string>()
 
 /** Forget the in-process memory (tests: a new process validates files again and has rejected none). */
@@ -220,16 +220,36 @@ export function clearNativeCatalogMemory(): void {
 }
 
 /**
- * Codex did not start with this catalog (the app-server exited or failed its handshake with model_catalog_json set):
- * the file is deleted (best effort) and never offered again in this process.
+ * Codex refused this catalog (a start with model_catalog_json failed with a configuration or catalog error and the
+ * same start without it succeeded, see catalogStartFailure): never offered again in this process. The file is NOT
+ * deleted: another app-server of this process may have been launched with it and reads it again on thread/start
+ * ("failed to load configuration: No such file or directory" otherwise). A later process validates it again
+ * (validCatalogSlugs) and the sweep removes it once it is stale.
  */
-export function rejectNativeCatalog(path: string, fs: CatalogFs = nodeCatalogFs): void {
+export function rejectNativeCatalog(path: string): void {
   rejectedFiles.add(path)
-  try {
-    fs.remove(path)
-  } catch {
-    // best effort: the rejected set keeps it out either way
-  }
+}
+
+/** Whether rejectNativeCatalog rejected this file in this process. */
+export function isNativeCatalogRejected(path: string): boolean {
+  return rejectedFiles.has(path)
+}
+
+/**
+ * Why an app-server start with the catalog override in effect failed, judged from its error text (message plus the
+ * stderr tail). Conservative: unknown text is 'other' (not the catalog's, not known to be transient).
+ * - 'transient': Codex's own state raced another app-server starting in the same CODEX_HOME. "failed to initialize
+ *   sqlite state runtime" was seen at the lab stub (codex 0.166.0 and 0.167.0, exit 1 during initialize, 2026-11-10);
+ *   "database is locked" / SQLITE_BUSY are SQLite's own busy texts (not seen from Codex: unverified).
+ * - 'catalog': the text names the catalog option ("failed to parse model_catalog_json ... missing field", the real
+ *   0.166.0 app-server with a broken catalog at the stub) or a configuration load or parse failure ("failed to load
+ *   configuration: No such file or directory", 0.166.0/0.167.0 at the stub once the file was gone).
+ * A transient match wins over a catalog match.
+ */
+export function catalogStartFailure(text: string): 'transient' | 'catalog' | 'other' {
+  if (/failed to initialize sqlite state|database is locked|SQLITE_BUSY/i.test(text)) return 'transient'
+  if (/model_catalog_json|failed to (?:load|parse) (?:the )?config(?:uration)?\b/i.test(text)) return 'catalog'
+  return 'other'
 }
 
 /**

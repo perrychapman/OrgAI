@@ -7,8 +7,8 @@ import type { AgentInstance, RunEvent } from '@shared/types'
 import { CodexAdapter, codexFolderTrust, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
 import { folderTrustEntry } from './codexProtocol'
 import { NATIVE_RULE_NOTE } from './codexAgents'
-import type { NativeCatalogInput, NativeCatalogResult } from './codexNativeCatalog'
-import type { CodexAppServerOptions } from './codexAppServer'
+import { clearNativeCatalogMemory, isNativeCatalogRejected, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
+import { acquireCodexStartLock, codexStartLockKey, codexStartLockState, type CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import { ROOT_AGENT_ID, type RuntimeContext, type RuntimeSession } from './types'
 import { buildRolePrompt } from './prompts'
@@ -1944,8 +1944,11 @@ describe('CodexAdapter session', () => {
 
     describe('model catalog override (codexNativeCatalog.ts)', () => {
       /** Like the real CodexAppServer: start() runs prepareConfig with the binary, env and config, and launches with the result. */
-      /** `failStart(args, n)`: the n-th launch (0-based) with these `-c` args fails its start (the process exits first). */
-      function catalogSetup(result: NativeCatalogResult | (() => Promise<NativeCatalogResult>), failStart: (args: string[], n: number) => boolean = () => false, extra: { codexHome?: string } = {}) {
+      /**
+       * `failStart(args, n)`: the n-th launch (0-based) with these `-c` args fails its start (the process exits first);
+       * a string is the start error's text.
+       */
+      function catalogSetup(result: NativeCatalogResult | (() => Promise<NativeCatalogResult>), failStart: (args: string[], n: number) => boolean | string = () => false, extra: { codexHome?: string } = {}) {
         const servers: FakeServer[] = []
         const launched: string[][] = []
         const nativeCatalog = vi.fn(async (_input: NativeCatalogInput) => (typeof result === 'function' ? result() : result))
@@ -1958,10 +1961,11 @@ describe('CodexAdapter session', () => {
               const more = (await options.prepareConfig?.({ binary: { path: '/bin/codex' }, env: options.env ?? {}, config: options.config ?? [] })) ?? []
               const args = [...(options.config ?? []), ...more]
               launched.push(args)
-              if (failStart(args, launched.length - 1)) {
+              const fails = failStart(args, launched.length - 1)
+              if (fails) {
                 // Like CodexAppServer: the exit handlers fire, then start() rejects.
                 s.die(1)
-                throw new Error('codex app-server exited (code 1) during initialize: unknown model catalog field')
+                throw new Error(typeof fails === 'string' ? fails : 'codex app-server exited (code 1) during initialize: unknown model catalog field')
               }
               return {}
             }
@@ -2043,6 +2047,102 @@ describe('CodexAdapter session', () => {
         const written: NativeCatalogResult = { status: 'written', config: ['model_catalog_json="/nonexistent/orgai-model-catalog-zz.json"'], path: '/nonexistent/orgai-model-catalog-zz.json', ms: 5 }
         const withCatalog = (args: string[]) => args.some((a) => a.startsWith('model_catalog_json='))
 
+        beforeEach(() => clearNativeCatalogMemory())
+        afterEach(() => clearNativeCatalogMemory())
+        const SQLITE = 'codex app-server exited (code 1) during initialize: Error: failed to initialize sqlite state runtime'
+        const CONFIG = 'codex app-server exited (code 1) during initialize: Error: failed to parse model_catalog_json: missing field `slug`'
+        /** A catalog file on disk; the fake catalog step answers it unless the process rejected it (as nativeAgentsCatalogConfig does). */
+        const realCatalog = () => {
+          const path = join(dir, 'orgai-model-catalog-zz.json')
+          writeFileSync(path, '{"models":[]}')
+          const result = async (): Promise<NativeCatalogResult> =>
+            isNativeCatalogRejected(path) ? { status: 'failed', config: [], reason: 'Codex did not start with this catalog earlier in this process', ms: 0 } : { status: 'written', config: [`model_catalog_json=${JSON.stringify(path)}`], path, ms: 5 }
+          return { path, result }
+        }
+        const catalogWarnings = (ctx: ReturnType<typeof fakeCtx>) => warnings(ctx).filter((m) => m.includes('model catalog override'))
+
+        it('a transient (sqlite start race) failure is retried WITH the override: still in effect, not rejected, file kept', async () => {
+          const { path, result } = realCatalog()
+          const { adapter, servers, launched, nativeCatalog } = catalogSetup(result, (args, n) => n === 0 && SQLITE)
+          const ctx = ctxFor()
+          session = await adapter.start(ctx)
+          await vi.waitFor(() => expect(servers[1]?.turnStarts('th-1')).toHaveLength(1))
+          expect(launched.map(withCatalog)).toEqual([true, true])
+          expect(nativeCatalog).toHaveBeenCalledTimes(2)
+          expect(servers[1]!.of('thread/start')[0].params.developerInstructions).not.toContain(NATIVE_RULE_NOTE)
+          expect(isNativeCatalogRejected(path)).toBe(false)
+          expect(existsSync(path)).toBe(true)
+          const w = catalogWarnings(ctx)
+          expect(w).toHaveLength(1)
+          expect(w[0]).toContain('started again with the model catalog override, which stays in effect')
+          expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(false)
+        })
+
+        it('a non-catalog failure that repeats with the override: this session runs without it, the next one offers it again, file kept', async () => {
+          const { path, result } = realCatalog()
+          const { adapter, servers, launched } = catalogSetup(result, (args) => withCatalog(args) && 'codex app-server exited (code 1) during initialize: something else')
+          const ctx = ctxFor()
+          session = await adapter.start(ctx)
+          await vi.waitFor(() => expect(servers[1]?.turnStarts('th-1')).toHaveLength(1))
+          expect(launched.map(withCatalog)).toEqual([true, false])
+          expect(servers[1]!.of('thread/start')[0].params.developerInstructions).toContain(NATIVE_RULE_NOTE)
+          expect(isNativeCatalogRejected(path)).toBe(false)
+          expect(existsSync(path)).toBe(true)
+          const w = catalogWarnings(ctx)
+          expect(w).toHaveLength(1)
+          expect(w[0]).toContain('started again without it for this session')
+          await session.stop()
+          // The next session in this process offers it again.
+          session = await adapter.start(ctxFor())
+          await vi.waitFor(() => expect(launched.length).toBeGreaterThanOrEqual(3))
+          expect(withCatalog(launched[2]!)).toBe(true)
+        })
+
+        it('a sqlite failure twice: one retry with it, then without it (not rejected)', async () => {
+          const { path, result } = realCatalog()
+          const { adapter, servers, launched } = catalogSetup(result, (args) => withCatalog(args) && SQLITE)
+          const ctx = ctxFor()
+          session = await adapter.start(ctx)
+          await vi.waitFor(() => expect(servers[2]?.turnStarts('th-1')).toHaveLength(1))
+          expect(launched.map(withCatalog)).toEqual([true, true, false])
+          expect(isNativeCatalogRejected(path)).toBe(false)
+          expect(catalogWarnings(ctx)).toHaveLength(1)
+        })
+
+        it('a catalog/config failure: rejected for the process, later sessions skip it, a live server launched with the file is unaffected', async () => {
+          const { path, result } = realCatalog()
+          // The first session starts fine with the catalog; the second one's start with it fails with a catalog error.
+          const { adapter, servers, launched } = catalogSetup(result, (args, n) => n === 1 && withCatalog(args) && CONFIG)
+          const live = ctxFor()
+          const first = await adapter.start(live)
+          try {
+            await vi.waitFor(() => expect(servers[0]?.turnStarts('th-1')).toHaveLength(1))
+            const ctx = ctxFor()
+            session = await adapter.start(ctx)
+            await vi.waitFor(() => expect(servers[2]?.turnStarts('th-1')).toHaveLength(1))
+            expect(launched.map(withCatalog)).toEqual([true, true, false])
+            expect(isNativeCatalogRejected(path)).toBe(true)
+            const w = catalogWarnings(ctx)
+            expect(w).toHaveLength(1)
+            expect(w[0]).toContain('not used again until OrgAI restarts')
+            // The file is not removed: the live server launched with it still works.
+            expect(existsSync(path)).toBe(true)
+            expect(servers[0]!.closed).toBe(false)
+            await first.send('carry on')
+            await vi.waitFor(() => expect(servers[0]!.of('turn/start').length + servers[0]!.of('turn/steer').length).toBeGreaterThanOrEqual(2))
+            expect(live.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(false)
+            await session.stop()
+            // A later session skips it (one failed-open warning), the prompt keeps the fallback sentence.
+            const later = ctxFor()
+            session = await adapter.start(later)
+            await vi.waitFor(() => expect(servers[3]?.turnStarts('th-1')).toHaveLength(1))
+            expect(withCatalog(launched[3]!)).toBe(false)
+            expect(servers[3]!.of('thread/start')[0].params.developerInstructions).toContain(NATIVE_RULE_NOTE)
+          } finally {
+            await first.stop()
+          }
+        })
+
         it('a start that fails only with the override: relaunched once without it, override off, one warning, the run goes on', async () => {
           const { adapter, servers, launched, nativeCatalog } = catalogSetup(written, withCatalog)
           const ctx = ctxFor()
@@ -2078,6 +2178,40 @@ describe('CodexAdapter session', () => {
           await session.finished
           expect(launched).toHaveLength(1)
           expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(true)
+        })
+
+        it('the one-shot completion follows the same rules (sqlite: with it again; catalog text: without it and rejected; other: without it, kept)', async () => {
+          const { path, result } = realCatalog()
+          const finish = async (servers: FakeServer[], i: number, promise: Promise<string>) => {
+            await vi.waitFor(() => expect(servers[i]?.of('turn/start')).toHaveLength(1))
+            servers[i]!.push('turn/completed', turnDone('th-1', 'tu-1'))
+            await promise
+          }
+          {
+            const { adapter, servers, launched } = catalogSetup(result, (args, n) => n === 0 && SQLITE)
+            await finish(servers, 1, adapter.complete({ system: 's', prompt: 'p' }))
+            expect(launched.map(withCatalog)).toEqual([true, true])
+            expect(isNativeCatalogRejected(path)).toBe(false)
+          }
+          {
+            const { adapter, servers, launched } = catalogSetup(result, (args) => withCatalog(args) && 'exited: something else')
+            await finish(servers, 1, adapter.complete({ system: 's', prompt: 'p' }))
+            expect(launched.map(withCatalog)).toEqual([true, false])
+            expect(isNativeCatalogRejected(path)).toBe(false)
+          }
+          {
+            const { adapter, servers, launched } = catalogSetup(result, (args) => withCatalog(args) && CONFIG)
+            await finish(servers, 1, adapter.complete({ system: 's', prompt: 'p' }))
+            expect(launched.map(withCatalog)).toEqual([true, false])
+            expect(isNativeCatalogRejected(path)).toBe(true)
+            expect(existsSync(path)).toBe(true)
+          }
+          {
+            // A failure without it after the fallback still throws.
+            const { adapter, launched } = catalogSetup(written, () => true)
+            await expect(adapter.complete({ system: 's', prompt: 'p' })).rejects.toThrow('unknown model catalog field')
+            expect(launched.map(withCatalog)).toEqual([true, false])
+          }
         })
 
         it('the one-shot completion retries once without it too', async () => {
@@ -2429,6 +2563,114 @@ describe('CodexAdapter.complete', () => {
     expect(server.closed).toBe(true)
     expect((await caught).message).toContain('cancelled')
     expect(server.of('turn/start')).toHaveLength(0)
+  })
+})
+
+describe('Codex app-server start lock (one start at a time per CODEX_HOME)', () => {
+  let dir = ''
+  beforeEach(() => {
+    dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-lock-')))
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+  const conn = (home: string) => ({ connection: 'openai' as const, adapter: 'codex' as const, env: { CODEX_HOME: home } })
+
+  /** Fake servers whose start takes a few ms and records its window and the CODEX_HOME it ran with. */
+  function timedSetup() {
+    const windows: { home: string; from: number; to: number }[] = []
+    let clock = 0
+    const servers: FakeServer[] = []
+    const adapter = new CodexAdapter({
+      createServer: (options) => {
+        const s = new FakeServer(options)
+        s.start = async () => {
+          const from = ++clock
+          await new Promise((r) => setTimeout(r, 15))
+          windows.push({ home: options.env?.CODEX_HOME ?? '', from, to: ++clock })
+          return {}
+        }
+        servers.push(s)
+        return s
+      }
+    })
+    const overlaps = (a: { from: number; to: number }, b: { from: number; to: number }) => a.from < b.to && b.from < a.to
+    return { adapter, servers, windows, overlaps }
+  }
+  const ctxIn = (home: string) => fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, connection: conn(home) })
+
+  it('two sessions and a completion in one home start one after another; another home starts alongside', async () => {
+    const { adapter, servers, windows, overlaps } = timedSetup()
+    const home = join(dir, 'codex')
+    const sessions = await Promise.all([adapter.start(ctxIn(home)), adapter.start(ctxIn(home)), adapter.start(ctxIn(join(dir, 'other')))])
+    const done = adapter.complete({ system: 's', prompt: 'p', connection: conn(home) })
+    try {
+      await vi.waitFor(() => expect(windows).toHaveLength(4))
+      const same = windows.filter((w) => w.home === home)
+      expect(same).toHaveLength(3)
+      for (let i = 0; i < same.length; i++) for (let j = i + 1; j < same.length; j++) expect(overlaps(same[i]!, same[j]!)).toBe(false)
+      const other = windows.find((w) => w.home !== home)!
+      expect(same.some((w) => overlaps(w, other))).toBe(true)
+      await vi.waitFor(() => expect(servers.find((s) => s.of('turn/start').length && !s.of('thread/start')[0]?.params.dynamicTools)).toBeDefined())
+      for (const s of servers) s.push('turn/completed', turnDone('th-1', 'tu-1'))
+      await done.catch(() => undefined)
+      expect(codexStartLockState(codexStartLockKey({ CODEX_HOME: home }))).toEqual({ held: false, waiting: 0 })
+    } finally {
+      for (const s of sessions) await s.stop()
+    }
+  })
+
+  it('a completion aborted while waiting for the lock leaves the queue and starts nothing', async () => {
+    const home = join(dir, 'codex')
+    const key = codexStartLockKey({ CODEX_HOME: home })
+    const release = await acquireCodexStartLock(key)
+    let started = 0
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        const s = new FakeServer(o)
+        s.start = async () => void started++
+        return s
+      }
+    })
+    const abort = new AbortController()
+    const caught = adapter.complete({ system: 's', prompt: 'p', connection: conn(home), signal: abort.signal }).then(() => new Error('resolved'), (e: Error) => e)
+    await vi.waitFor(() => expect(codexStartLockState(key).waiting).toBe(1))
+    abort.abort()
+    expect((await caught).message).toBe('Completion cancelled')
+    expect(codexStartLockState(key)).toEqual({ held: true, waiting: 0 })
+    release()
+    expect(started).toBe(0)
+    expect(codexStartLockState(key)).toEqual({ held: false, waiting: 0 })
+  })
+
+  it('a completion aborted while its start holds the lock releases it at once; a waiting session then starts', async () => {
+    const home = join(dir, 'codex')
+    const key = codexStartLockKey({ CODEX_HOME: home })
+    const hung: FakeServer[] = []
+    const { adapter, servers } = setup()
+    const blocking = new CodexAdapter({
+      createServer: (o) => {
+        const s = new FakeServer(o)
+        // Never settles, even once closed: only the abort frees the lock.
+        s.start = () => new Promise<unknown>(() => {})
+        Object.defineProperty(s, 'exited', { value: new Promise(() => {}) })
+        hung.push(s)
+        return s
+      }
+    })
+    const abort = new AbortController()
+    const caught = blocking.complete({ system: 's', prompt: 'p', connection: conn(home), signal: abort.signal }).then(() => new Error('resolved'), (e: Error) => e)
+    await vi.waitFor(() => expect(hung).toHaveLength(1))
+    await vi.waitFor(() => expect(codexStartLockState(key).held).toBe(true))
+    const session = await adapter.start(ctxIn(home))
+    try {
+      await vi.waitFor(() => expect(codexStartLockState(key).waiting).toBe(1))
+      expect(servers[0]!.started).toBe(false)
+      abort.abort()
+      expect((await caught).message).toBe('Completion cancelled')
+      await vi.waitFor(() => expect(servers[0]!.turnStarts('th-1')).toHaveLength(1))
+      expect(codexStartLockState(key)).toEqual({ held: false, waiting: 0 })
+    } finally {
+      await session.stop()
+    }
   })
 })
 
