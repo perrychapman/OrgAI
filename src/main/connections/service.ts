@@ -1204,7 +1204,8 @@ export class ConnectionService {
     const env: Record<string, string> = {}
     const set = (name: string, value: string | undefined): void => {
       const v = value?.trim()
-      if (v && settingTier(v) === undefined) env[name] = v
+      // Also an alias with a context suffix ("sonnet[1m]"): mapping an alias to itself would not resolve.
+      if (v && settingTier(v.replace(/\[[^\]]*\]$/, '')) === undefined) env[name] = v
     }
     set('ANTHROPIC_DEFAULT_FABLE_MODEL', t.top)
     set('ANTHROPIC_DEFAULT_OPUS_MODEL', t.deep)
