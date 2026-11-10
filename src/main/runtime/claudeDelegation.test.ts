@@ -65,6 +65,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   }
 })
 import { ClaudeSession } from './claude'
+import { DelegationLedger } from './delegationLedger'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { DelegationCompletion, DelegationGate, RuntimeContext } from './types'
 import type { AgentInstance, Role } from '@shared/types'
@@ -297,6 +298,212 @@ describe('Claude delegation: task_started and task_notification', () => {
     expect(lastAgent(ctx, 'a1')).toMatchObject({ state: 'done', activity: 'Reported back' })
     expect(lastAgent(ctx, 'a2')).toMatchObject({ state: 'error', activity: 'Task failed' })
     expect(gate.ended).toHaveBeenCalledExactlyOnceWith('a2')
+  })
+})
+
+// SDK 0.3.318 in permission mode 'auto': a subagent reports through the built-in SubagentHandback tool and its turn ends
+// on that call, so SubagentStop carries no last_assistant_message (scripts/smoke-delegation.mjs handback).
+const HANDBACK_OK = { success: true, message: 'Report delivered to your caller.' }
+const handbackPre = (q: Fake, agent: { id?: string; type: string }, message: string, tu = `hb-${agent.id}`): Promise<HookOut> =>
+  hooksOf(q, 'PreToolUse')(
+    { ...base, hook_event_name: 'PreToolUse', tool_name: 'SubagentHandback', tool_input: { message }, tool_use_id: tu, agent_type: agent.type, ...(agent.id ? { agent_id: agent.id } : {}) },
+    'x',
+    {}
+  )
+const handbackPost = (q: Fake, agent: { id?: string; type: string }, message: string, response: unknown = HANDBACK_OK, tu = `hb-${agent.id}`): Promise<HookOut> =>
+  hooksOf(q, 'PostToolUse')(
+    { ...base, hook_event_name: 'PostToolUse', tool_name: 'SubagentHandback', tool_input: { message }, tool_response: response, tool_use_id: tu, agent_type: agent.type, ...(agent.id ? { agent_id: agent.id } : {}) },
+    'x',
+    {}
+  )
+const handBack = async (q: Fake, agent: { id: string; type: string }, message: string): Promise<void> => {
+  await handbackPre(q, agent, message)
+  await handbackPost(q, agent, message)
+}
+const stopNoText = (q: Fake, id: string, type: string): Promise<HookOut> =>
+  hooksOf(q, 'SubagentStop')({ ...base, hook_event_name: 'SubagentStop', agent_id: id, agent_type: type, stop_hook_active: false }, 'x', {})
+
+describe('Claude delegation: SubagentHandback reports', () => {
+  it('a report that hands back and stops with no last message gets the handback as its report text and result', async () => {
+    const gate = gateMock()
+    const { ctx, onFinished } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'w1', 'tu1', 'adapt')
+    await handBack(q, { id: 'w1', type: 'adapt' }, 'Handback report text')
+    expect(await stopNoText(q, 'w1', 'adapt')).toEqual({})
+    expect(gate.completion).toHaveBeenLastCalledWith('w1', { canCorrect: false, canWait: false, reportText: 'Handback report text' })
+    expect(lastAgent(ctx, 'w1')).toMatchObject({ state: 'done', result: 'Handback report text' })
+    expect(onFinished).toHaveBeenCalledWith('w1')
+  })
+
+  it('a handback followed by a short closing text uses the handback message', async () => {
+    const gate = gateMock()
+    const { ctx } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'w1', 'tu1', 'adapt')
+    await handBack(q, { id: 'w1', type: 'adapt' }, 'The full report')
+    await stop(q, 'w1', 'adapt', 'Done.')
+    expect(gate.completion).toHaveBeenLastCalledWith('w1', expect.objectContaining({ reportText: 'The full report' }))
+    expect(lastAgent(ctx, 'w1')?.result).toBe('The full report')
+  })
+
+  it('a report that ends with plain text still uses last_assistant_message', async () => {
+    const gate = gateMock()
+    const { ctx } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'w1', 'tu1', 'adapt')
+    await stop(q, 'w1', 'adapt', 'Plain report')
+    expect(gate.completion).toHaveBeenLastCalledWith('w1', { canCorrect: true, canWait: true, reportText: 'Plain report' })
+    expect(lastAgent(ctx, 'w1')?.result).toBe('Plain report')
+  })
+
+  it('a handback the CLI refused (success false) is not captured; neither is one from the root', async () => {
+    const gate = gateMock()
+    const { ctx } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'w1', 'tu1', 'adapt')
+    await handbackPre(q, { id: 'w1', type: 'adapt' }, 'refused text')
+    await handbackPost(q, { id: 'w1', type: 'adapt' }, 'refused text', { success: false, message: 'Nothing was sent: your report was already delivered.' })
+    // The root has no handback contract: its call is left to the CLI (which refuses it) and never captured or gated.
+    expect(await handbackPre(q, { type: 'lead' }, 'root text', 'hb-root')).toEqual({})
+    await handbackPost(q, { type: 'lead' }, 'root text', HANDBACK_OK, 'hb-root')
+    expect(gate.completion.mock.calls.map((c: unknown[]) => c[0])).toEqual(['w1'])
+    await stop(q, 'w1', 'adapt', 'closing text')
+    expect(lastAgent(ctx, 'w1')?.result).toBe('closing text')
+    expect(lastAgent(ctx, 'root')?.result).toBeUndefined()
+  })
+
+  it("a resumed agent's second handback replaces the first", async () => {
+    const gate = gateMock()
+    const { ctx } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'w1', 'tu1', 'adapt')
+    await handBack(q, { id: 'w1', type: 'adapt' }, 'First report')
+    await stopNoText(q, 'w1', 'adapt')
+    expect(lastAgent(ctx, 'w1')?.result).toBe('First report')
+    taskStarted(q, 'w1', 'tu9', 'adapt')
+    await vi.waitFor(() => expect(lastAgent(ctx, 'w1')?.state).toBe('thinking'))
+    await handBack(q, { id: 'w1', type: 'adapt' }, 'Second report')
+    await stopNoText(q, 'w1', 'adapt')
+    expect(gate.completion).toHaveBeenLastCalledWith('w1', expect.objectContaining({ reportText: 'Second report' }))
+    expect(lastAgent(ctx, 'w1')?.result).toBe('Second report')
+  })
+
+  it('a resumed activation that does not hand back does not reuse the earlier handback', async () => {
+    const gate = gateMock()
+    const { ctx } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'w1', 'tu1', 'adapt')
+    await handBack(q, { id: 'w1', type: 'adapt' }, 'First report')
+    await stopNoText(q, 'w1', 'adapt')
+    taskStarted(q, 'w1', 'tu9', 'adapt')
+    await vi.waitFor(() => expect(lastAgent(ctx, 'w1')?.state).toBe('thinking'))
+    await stop(q, 'w1', 'adapt', 'Second, plain')
+    expect(gate.completion).toHaveBeenLastCalledWith('w1', expect.objectContaining({ reportText: 'Second, plain' }))
+  })
+
+  it('a notification for an agent that never stopped takes the handback report, not the harness summary', async () => {
+    const { ctx } = start({ delegation: gateMock() })
+    const q = await firstQuery()
+    await started(ctx, q, 'a1', 'tu1', 'adapt')
+    q.emit({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', output_file: '', summary: "This agent's report was delivered to you as a message", handback: 'send', handback_report: { text: 'Background report' }, session_id: 's', uuid: 'n-a1' })
+    await vi.waitFor(() => expect(lastAgent(ctx, 'a1')?.state).toBe('done'))
+    expect(lastAgent(ctx, 'a1')?.result).toBe('Background report')
+  })
+
+  it("a withheld handback (the child never reported) does not confirm delivery to the parent's ledger", async () => {
+    const gate = gateMock()
+    const { ctx } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'm1', 'tu1', 'mgr')
+    await vi.waitFor(() => expect(gate.noteSpawn).toHaveBeenCalled())
+    await post(q, 'tu1', { status: 'completed', handback: 'withheld', content: [{ type: 'text', text: 'The subagent ended without delivering a report' }] })
+    expect(gate.delivered).not.toHaveBeenCalled()
+  })
+
+  it('a repeated stop of a finished activation (the CLI asking it to hand back) does not finish it twice', async () => {
+    const gate = gateMock()
+    const { ctx, onFinished } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'w1', 'tu1', 'adapt')
+    await stop(q, 'w1', 'adapt', 'first text')
+    await stop(q, 'w1', 'adapt', 'again', true)
+    expect(onFinished).toHaveBeenCalledTimes(1)
+    expect(gate.completion).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Claude delegation: SubagentHandback gate (PreToolUse)', () => {
+  it('denies a handback while required reports are missing, with the correction text, and does not capture it', async () => {
+    const gate = gateMock([{ action: 'correct', text: 'Harness: spawn wrk.' }, { action: 'allow' }])
+    const { ctx, onFinished } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'm1', 'tu1', 'mgr')
+    const out = await handbackPre(q, { id: 'm1', type: 'mgr' }, 'premature report')
+    expect(out.hookSpecificOutput).toEqual({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Harness: spawn wrk.' })
+    expect(gate.completion).toHaveBeenCalledWith('m1', { canCorrect: true, canWait: true, reportText: 'premature report', provisional: true })
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.agentId === 'm1' && e.entry.block.kind === 'system' && e.entry.block.text === 'Harness: spawn wrk.')).toBe(true)
+    expect(lastAgent(ctx, 'm1')?.state).not.toBe('done')
+    expect(onFinished).not.toHaveBeenCalled()
+  })
+
+  it('denies on wait too', async () => {
+    const { ctx } = start({ delegation: gateMock([{ action: 'wait', text: 'Harness: wait for wrk.' }]) })
+    const q = await firstQuery()
+    await started(ctx, q, 'm1', 'tu1', 'mgr')
+    expect((await handbackPre(q, { id: 'm1', type: 'mgr' }, 'r')).hookSpecificOutput).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: 'Harness: wait for wrk.' })
+  })
+
+  it.each([['allow'], ['fail'], ['none']] as const)('a provisional %s leaves the handback to the normal flow; SubagentStop records the verdict', async (action) => {
+    const gate = gateMock([{ action }])
+    const { ctx } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'm1', 'tu1', 'mgr')
+    expect((await handbackPre(q, { id: 'm1', type: 'mgr' }, 'report')).hookSpecificOutput?.permissionDecision).toBeUndefined()
+    await handbackPost(q, { id: 'm1', type: 'mgr' }, 'report')
+    expect(await stopNoText(q, 'm1', 'mgr')).toEqual({})
+    expect(gate.completion).toHaveBeenLastCalledWith('m1', { canCorrect: false, canWait: false, reportText: 'report' })
+    expect(lastAgent(ctx, 'm1')?.state).toBe('done')
+  })
+
+  it('SubagentStop never blocks an agent whose report was already handed back', async () => {
+    const gate = gateMock([{ action: 'allow' }, { action: 'correct', text: 'too late' }])
+    const { ctx } = start({ delegation: gate })
+    const q = await firstQuery()
+    await started(ctx, q, 'm1', 'tu1', 'mgr')
+    await handBack(q, { id: 'm1', type: 'mgr' }, 'report')
+    expect(await stopNoText(q, 'm1', 'mgr')).toEqual({})
+    expect(gate.completion).toHaveBeenLastCalledWith('m1', expect.objectContaining({ canCorrect: false, canWait: false }))
+  })
+})
+
+describe('Claude delegation: SubagentHandback with the real ledger', () => {
+  it('required implementer and reviewer reports that hand back give valid receipts; the root completes without a correction', async () => {
+    const rs: Role[] = [
+      role({ id: 'r-orch', slug: 'orchestrator', name: 'Orchestrator', canSpawn: true, spawnable: ['r-impl', 'r-rev'], requiredReports: ['r-impl', 'r-rev'] }),
+      role({ id: 'r-impl', slug: 'implementer', name: 'Implementer', reportsTo: 'r-orch' }),
+      role({ id: 'r-rev', slug: 'reviewer', name: 'Reviewer', reportsTo: 'r-orch' })
+    ]
+    const ledger = new DelegationLedger({ obligations: { 'r-orch': ['r-impl', 'r-rev'] }, strict: false })
+    ledger.noteRoot('root', 'r-orch')
+    const { ctx } = start({ delegation: ledger, roles: rs, project: project({ roles: rs, isolateWriters: false }) })
+    const q = await firstQuery()
+    for (const [id, tu, type] of [['i1', 'tu1', 'implementer'], ['v1', 'tu2', 'reviewer']] as const) {
+      await started(ctx, q, id, tu, type)
+      await handBack(q, { id, type }, `${type} report`)
+      expect(await stopNoText(q, id, type)).toEqual({})
+      await post(q, tu, { status: 'completed', handback: 'send', content: [{ type: 'text', text: 'delivered as a message' }] })
+      expect(lastAgent(ctx, id)?.result).toBe(`${type} report`)
+    }
+    const receipts = ledger.snapshot().receipts
+    expect(receipts.map((r) => [r.childId, r.delivered, r.reportChars > 0])).toEqual([
+      ['i1', true, true],
+      ['v1', true, true]
+    ])
+    expect(ledger.completion('root', { canCorrect: true, canWait: true, reportText: 'done', provisional: true })).toMatchObject({ action: 'allow' })
+    expect(ledger.completion('root', { canCorrect: false, canWait: false, reportText: '' })).toMatchObject({ action: 'allow' })
+    expect(ledger.rootVerdict()).not.toBe('failed')
+    expect(ledger.summary().agents.root?.missing ?? []).toEqual([])
   })
 })
 

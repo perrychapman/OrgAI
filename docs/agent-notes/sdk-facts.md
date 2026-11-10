@@ -73,6 +73,24 @@ What was verified against SDK v0.3.312 by smoke scripts: task events, hooks, per
     `SubagentStop` -> `task_updated` -> `task_notification` -> parent `PostToolUse` -> `tool_result`; without it the call
     returns `async_launched` at once. Main-thread hooks carry `agent_type` = the root agent's name when `agent` is set, so
     use `agent_id` (absent on the main thread) to tell a subagent.
+  - `SubagentHandback` (SDK 0.3.318, haiku, 2026-11-10; `scripts/smoke-delegation.mjs handback`, one run, plus the lab
+    run `phase1-20261110T073250Z/03-ledger-orgai-claude-required-p1-r1` events): in permission mode `auto` a subagent
+    reports by calling the built-in tool `SubagentHandback({ message })`; in `default` mode it is not offered and
+    subagents end with plain text (`smoke-delegation-gate.mjs A`, same day). The call delivers the report to the caller
+    when it runs and ends the subagent's turn. Hook order: `PreToolUse` (with the subagent's `agent_id`) -> `PostToolUse`
+    (`tool_response` `{ success: true, message: 'Report delivered to your caller.' }`) -> `SubagentStop` with no
+    `last_assistant_message` -> `task_notification` (`handback: 'send'`, `handback_report: { text }`, and a `summary`
+    that is a harness note, not the report). The parent's `Agent` result says the report "was delivered to you as a
+    message" and carries `handback`. A `PreToolUse` deny of the call reaches the subagent as a tool error; it acted on
+    the reason (spawned the worker) and handed back again successfully. A `SubagentStop` block after a successful
+    handback is ignored: the subagent did not continue and the parent acted on the first report. A subagent that ends
+    with plain text in auto mode gets repeated `SubagentStop`s (`stop_hook_active: true`, the CLI asks it to hand back);
+    if it never does, its `Agent` result has `handback: 'withheld'` and says no report was delivered. OrgAI therefore
+    takes a report from the subagent's successful `SubagentHandback` (`PostToolUse`), gates required reports at its
+    `PreToolUse` (provisional), and never blocks at `SubagentStop` once a report was handed back.
+    Unverified (read from the bundled CLI, not run): the root's call (no handback contract) answers `success: false`
+    ("not active for this agent"); a second handback to the same caller answers `success: false` ("already
+    delivered"); whether a resumed agent may hand back again; `CLAUDE_CODE_DISABLE_SUBAGENT_HANDBACK` turns the tool off.
   - Not checked: `reloadSkills()`, `Options.skills` blocking, resume honouring new `agents`, and whether a resumed
     session keeps its session id or `total_cost_usd`.
 
