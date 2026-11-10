@@ -310,13 +310,11 @@ function spawnFilesClause(spawnFiles: boolean | 'brief' | undefined): string {
  * Required reports win over every policy: teamSizingText opens with "unless ... required reports say otherwise".
  * Under 'risk' the conditions (sensitive code, a large diff, a failed verification) apply to any change, the lead's own
  * included (owner decision 2026-11-10; the lab build tied them to handed-out work, spec 1.1c and section 6).
- * A large diff counts only when no report checked it (owner decision 2026-11-10, split-execution.md section 8: on Codex a
- * reviewer and a fix round after a split whose reports had run their own checks cost about 130 s of a 335 s run).
  */
 export function reviewPolicyText(policy: ReviewPolicy = 'risk'): string {
   if (policy === 'always') return 'Have every change reviewed before you finish, beside the next step, not after everything.'
   if (policy === 'never') return 'Do not ask for review unless a rule demands it; verify and finish.'
-  return 'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, a large diff was checked by no report or verification failed once; else verify and finish.'
+  return 'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is large or verification failed once; else verify and finish.'
 }
 
 /**

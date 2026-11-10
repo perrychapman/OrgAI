@@ -622,29 +622,28 @@ describe('team sizing paragraph', () => {
     // Split execution 3.2 to 3.4 (2026-11-10): +27 (interface and criteria in each brief) and +31 (checks of a piece not
     // repeated, the integrated result checked once) everywhere; +118 (keep a piece when fanning out) where the lead can
     // work beside its reports (the default; Codex, mock); +35 with spawnFiles. Claude today: beside false, +58.
-    // Owner decision 2026-11-10: a large diff its reports already checked needs no reviewer (+20 on the risk variants).
-    expect(teamSizingText({ isolation: false }).length).toBe(1443)
-    expect(teamSizingText({ isolation: true }).length).toBe(1405)
-    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1647)
-    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1609)
+    expect(teamSizingText({ isolation: false }).length).toBe(1423)
+    expect(teamSizingText({ isolation: true }).length).toBe(1385)
+    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1627)
+    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1589)
     expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1308)
     expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1285)
-    expect(teamSizingText({ isolation: false, beside: false }).length).toBe(1325)
-    expect(teamSizingText({ isolation: true, beside: false }).length).toBe(1287)
-    expect(teamSizingText({ isolation: false, spawnFiles: true }).length).toBe(1478)
-    expect(teamSizingText({ isolation: true, spawnFiles: true }).length).toBe(1440)
+    expect(teamSizingText({ isolation: false, beside: false }).length).toBe(1305)
+    expect(teamSizingText({ isolation: true, beside: false }).length).toBe(1267)
+    expect(teamSizingText({ isolation: false, spawnFiles: true }).length).toBe(1458)
+    expect(teamSizingText({ isolation: true, spawnFiles: true }).length).toBe(1420)
     // Claude names the files on the brief's last line (spawnFiles 'brief', 2026-11-10): +67, 32 more than Codex's clause.
-    expect(teamSizingText({ isolation: false, spawnFiles: 'brief' }).length).toBe(1510)
-    expect(teamSizingText({ isolation: true, spawnFiles: 'brief' }).length).toBe(1472)
+    expect(teamSizingText({ isolation: false, spawnFiles: 'brief' }).length).toBe(1490)
+    expect(teamSizingText({ isolation: true, spawnFiles: 'brief' }).length).toBe(1452)
     for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
       for (const beside of [true, false]) for (const spawnFiles of [false, true, 'brief'] as const) {
         const t = teamSizingText({ required, isolation, review, beside, spawnFiles })
-        expect(t.length).toBeLessThanOrEqual(spawnFiles === 'brief' ? 1720 : 1690)
+        expect(t.length).toBeLessThanOrEqual(spawnFiles === 'brief' ? 1700 : 1670)
         expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
       }
     }
     // The growth on the default chart's root (risk, no required reports) against the text before split execution.
-    const before = { iso: 1229, noIso: 1267 }
+    const before = { iso: 1209, noIso: 1247 }
     expect(teamSizingText({ isolation: false, beside: false }).length - before.noIso).toBeLessThanOrEqual(120)
     expect(teamSizingText({ isolation: false, spawnFiles: true }).length - before.noIso).toBeLessThanOrEqual(220)
     expect(teamSizingText({ isolation: true, spawnFiles: true }).length - before.iso).toBeLessThanOrEqual(220)
@@ -987,8 +986,8 @@ describe('staffing paragraph', () => {
     // The default chart's root (auto, balanced, risk) grows by at most 950 characters over the text before staffing.
     const before = 'Review risky or large changes, or when a rule says so, beside the next step, not by habit.'
     const growth = staffingText().length + 2 + reviewPolicyText().length - before.length
-    expect(growth).toBe(987)
-    expect(growth).toBeLessThanOrEqual(1000)
+    expect(growth).toBe(967)
+    expect(growth).toBeLessThanOrEqual(980)
   })
 
   it('staffs only the steps the sizing rule hands out and never decides whether any are', () => {
@@ -1030,7 +1029,7 @@ describe('review policy sentence', () => {
   it('risk (the default): review on a rule or the brief, sensitive or security-relevant code, a large diff or a failed verification; else verify and finish', () => {
     expect(reviewPolicyText()).toBe(sentences.risk)
     expect(sentences.risk).toBe(
-      'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, a large diff was checked by no report or verification failed once; else verify and finish.'
+      'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is large or verification failed once; else verify and finish.'
     )
     // The risk conditions cover any change, the lead's own included (owner decision 2026-11-10).
     expect(sentences.risk).not.toContain('handed-out')
