@@ -1,13 +1,16 @@
 import type { Building } from '../../../lib/office/building'
-import { cueFrame, officeState, type CueFrame, type OfficeState } from '../../../lib/office/cues'
+import { cueFrame, officeState, type CueFrame, type CuePerson, type OfficeCue, type OfficeState } from '../../../lib/office/cues'
 import type { Direction } from '../../../lib/office/motion'
 import type { DeskSet } from '../../../lib/office/themes'
 import { OFFICE_TILE } from '../../../lib/office/layout'
-import { WORKER_FEET, silhouettes, type OfficeAgent } from './officeArt'
+import { silhouettes, spriteTop, type OfficeAgent } from './officeArt'
 
-/** Where a walking person is this render, in anchor pixels (the same units as a desk anchor times 16). */
-export interface Walker { x: number; y: number; direction: Direction; pose: string; phase: string }
+/** Where a walking person is this render, in anchor pixels (the same units as a desk anchor times 16). `cue` defaults to `walking`; arrivals say `arriving`. */
+export interface Walker { x: number; y: number; direction: Direction; pose: string; phase: string; cue?: OfficeCue }
 export interface Pin { x: number; y: number; direction: Direction }
+
+/** What the clock (`useOfficeClock`) tells a render so React and the imperative frames agree: the clock's tick and each person's cue inputs. */
+export interface PersonCues { tick: number; person(id: string, state: OfficeState): CuePerson }
 
 /** Everything `OfficeSprites` needs to draw one person: pure data, no DOM. */
 export interface PersonView {
@@ -21,7 +24,15 @@ export interface PersonView {
   depth: number
   /** The anchor the sprite stands on, building pixels. */
   anchor: { x: number; y: number }
+  /** The desk anchor (where the person sits), building pixels. */
+  home: { x: number; y: number }
   phase: string
+  /** At the desk this render (rest, or focus-pinned at the desk): the clock may change this person's frames. */
+  seated: boolean
+  /** Built from an arrival walk: the clock owns the position until the walk ends. */
+  arrival: boolean
+  /** Waiting for a walk slot outside the building: not drawn yet. */
+  queued: boolean
   frame: CueFrame
   /** Desk furniture top-left in building pixels, with the art names. */
   desk: { x: number; y: number; desk: string; chair: string } | null
@@ -46,6 +57,10 @@ export interface PeopleInput {
   pinned: ReadonlyMap<string, Pin>
   /** Written for every person: where the sprite stands this render (focus pins it there). */
   rendered: Map<string, Pin>
+  /** Clock inputs for this render; without them every person is drawn in the static frame (Team, Sample, tests). */
+  cues?: PersonCues
+  /** Arrivals waiting for a walk slot: no person is drawn for them yet. */
+  queued?: ReadonlySet<string>
 }
 
 /** Agents whose desk carries a `mug` prop from the room look (drawn in `OfficeSprites`, above the desk). */
@@ -78,27 +93,40 @@ export function buildPersonViews(input: PeopleInput): PersonView[] {
     const desk = building.desks.get(agent.id)
     if (!desk) continue
     const state = officeState(agent.status)
-    const frame = cueFrame({ id: agent.id, state, stateTick: null, animated: false, talking: false }, 0, mode)
-    let x = desk.anchor.x * OFFICE_TILE
-    let y = desk.anchor.y * OFFICE_TILE
+    const person = input.cues?.person(agent.id, state) ?? { id: agent.id, state, stateTick: null, animated: false, talking: false }
+    const frame = cueFrame(person, input.cues?.tick ?? 0, mode)
+    const homeX = desk.anchor.x * OFFICE_TILE
+    const homeY = desk.anchor.y * OFFICE_TILE
+    let x = homeX
+    let y = homeY
     let direction: Direction = frame.direction
     let pose: string = frame.pose
     let phase = 'rest'
     let cue = frame.cue
+    let seated = true
+    let arrival = false
     const walker = input.walkers.get(agent.id)
     if (walker && walker.phase !== 'done') {
-      x = walker.x; y = walker.y; direction = walker.direction; pose = walker.pose; phase = walker.phase; cue = 'walking'
+      x = walker.x; y = walker.y; direction = walker.direction; pose = walker.pose; phase = walker.phase; cue = walker.cue ?? 'walking'
+      seated = false
+      arrival = walker.cue === 'arriving' || walker.phase === 'arrive' || walker.phase === 'sit'
     }
     const pin = input.pinned.get(agent.id)
-    if (pin) { x = pin.x; y = pin.y; direction = pin.direction; phase = 'pinned'; cue = frame.cue }
-    input.rendered.set(agent.id, { x, y, direction })
+    let rendered: Pin = { x, y, direction }
+    if (pin) {
+      const atDesk = pin.x === homeX && pin.y === homeY
+      x = pin.x; y = pin.y; direction = atDesk ? frame.direction : pin.direction; phase = 'pinned'; cue = frame.cue; seated = atDesk; arrival = false
+      rendered = { x, y, direction }
+    } else if (arrival) rendered = { x: homeX, y: homeY, direction: 'up' } // focus during an arrival seats the person at the desk
+    input.rendered.set(agent.id, rendered)
     const room = building.rooms.find(candidate => candidate.id === desk.roomId)
     const set = deskSets.get(agent.id)
     const text = personText(agent, mode)
     views.push({
       id: agent.id, name: agent.name, state,
       silhouette: silhouettes[(input.appearances.get(agent.id) ?? 0) % silhouettes.length],
-      x, y: y + 8 - WORKER_FEET[1] + (phase === 'rest' ? frame.offsetY : 0), depth: y + 8, anchor: { x, y }, phase,
+      x, y: spriteTop(y) + (seated ? frame.offsetY : 0), depth: y + 8, anchor: { x, y }, home: { x: homeX, y: homeY }, phase, seated, arrival,
+      queued: input.queued?.has(agent.id) ?? false,
       frame: { ...frame, pose: pose as CueFrame['pose'], direction, cue },
       desk: set ? { x: desk.furniture.x * OFFICE_TILE, y: desk.furniture.y * OFFICE_TILE, desk: set.desk, chair: set.chair } : null,
       mug: input.mugs.has(agent.id),

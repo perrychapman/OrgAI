@@ -7,8 +7,9 @@ import type { PersonView } from './officePeople'
 /**
  * Desks, people art, state marks and the native person buttons (rework spec sections 2, 7 and 8).
  *
- * Imperative seam for the clock (slice S4): every person registers its elements in `spriteRefs`, so frames can change
- * without a React render:
+ * Imperative seam for the clock (`useOfficeClock`): every person registers its elements in `spriteRefs`, so frames can change
+ * without a React render. The clock also writes `style.left/top/zIndex` of art and mark, `style.left/top` of the button,
+ * `data-office-cue`, `data-office-motion-phase`, `data-office-x/y`, `data-office-screen`:
  *   art    the 16 x 24 worker sprite; write `style.backgroundPosition` (a frame's `-x px -y px`) and `style.top`
  *   screen the desk's `crt` frame (`prop.crt`, `crt-b`, `crt-off`, `crt-error`); write `style.backgroundPosition`
  *   mark   a 16 x 16 element above the head, always rendered; hidden and without `data-testid` when no mark shows.
@@ -71,7 +72,8 @@ interface ArtProps {
 }
 const Art = memo(function Art({ id, silhouette, direction, pose, x, y, depth, state, phase, cue, mark, workerSheet, propSheet, registry }: ArtProps): ReactElement {
   const frame = workerFrames[workerFrameName(silhouette, direction, pose)] ?? workerFrames[workerFrameName(silhouette, 'down', 'idle')]
-  const markFrame = mark ? propFrames[`prop.mark-${mark}`] : null
+  // The mark element always carries its sheet and size, so the clock only has to flip `hidden` and the frame.
+  const markFrame = propFrames[`prop.mark-${mark ?? 'wait'}`]
   return <>
     <i
       className="office-sprite office-person-art" data-office-sprite-id={id} data-office-motion-phase={phase} data-office-x={x} data-office-y={y}
@@ -81,7 +83,7 @@ const Art = memo(function Art({ id, silhouette, direction, pose, x, y, depth, st
     <i
       className="office-sprite office-mark" aria-hidden="true" hidden={!mark} data-agent-id={id} data-mark={mark ?? undefined}
       data-testid={mark ? 'office-mark' : undefined} ref={element => register(registry, id, 'mark', element)}
-      style={{ left: x, top: y - 13, zIndex: depth + 1000, ...(markFrame ? frameBackground(markFrame, propSheet) : { width: 16, height: 16 }) }}
+      style={{ left: x, top: y - 13, zIndex: depth + 1000, ...frameBackground(markFrame, propSheet) }}
     />
   </>
 })
@@ -121,20 +123,22 @@ export function targetBox(x: number, y: number, area: Rect, zoom: number): { lef
 
 export function OfficeSprites({ people, area, zoom, palette, paused, selectedId, foundId, exchangeIds, spriteRefs, onSelect, onRemove, onReveal }: OfficeSpritesProps): ReactElement {
   const sheets = sheetsFor(palette)
+  /** An arrival waiting outside for a walk slot has its desk but is not drawn (and is not tabbable) until it walks in. */
+  const drawn = people.filter(person => !person.queued)
   return <>
     <div
       className="office-pixels" aria-hidden="true" data-office-paused={paused ? 'true' : undefined}
       style={{ width: area.width * OFFICE_TILE_PX, height: area.height * OFFICE_TILE_PX, transform: `scale(${zoom}) translate(${-area.x * OFFICE_TILE_PX}px, ${-area.y * OFFICE_TILE_PX}px)` }}
     >
       {people.map(person => person.desk && <Desk key={`desk-${person.id}`} id={person.id} x={person.desk.x} y={person.desk.y} desk={person.desk.desk} chair={person.desk.chair} screen={`${person.frame.screen}`} mug={person.mug} propSheet={sheets.props} registry={spriteRefs} />)}
-      {people.map(person => <Art
+      {drawn.map(person => <Art
         key={`art-${person.id}`} id={person.id} silhouette={person.silhouette} direction={person.frame.direction} pose={person.frame.pose}
         x={person.x} y={person.y} depth={person.depth} state={person.state} phase={person.phase} cue={person.frame.cue} mark={person.frame.mark}
         workerSheet={sheets.workers} propSheet={sheets.props} registry={spriteRefs}
       />)}
     </div>
     <div className="office-people">
-      {people.map(person => <Target
+      {drawn.map(person => <Target
         key={`target-${person.id}`} id={person.id} name={person.name} line={person.line} ariaLabel={person.ariaLabel} title={person.title}
         {...targetBox(person.x, person.y, area, zoom)} selected={person.id === selectedId} found={person.id === foundId} exchange={exchangeIds?.has(person.id) ?? false}
         registry={spriteRefs} onSelect={onSelect} onRemove={onRemove} onReveal={onReveal}

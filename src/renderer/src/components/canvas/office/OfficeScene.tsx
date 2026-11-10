@@ -4,6 +4,7 @@ import { useReducedMotion } from '../../../lib/canvas'
 import { buildingBlocked, buildingLayout, EMPTY_BUILDING_MEMORY, rememberTeam, type BuildingMemory } from '../../../lib/office/building'
 import { cameraArea, contentSize, mapOffset, zoomLabel, OFFICE_TILE_PX, type Point } from '../../../lib/office/camera'
 import { assignAppearances } from '../../../lib/office/layout'
+import type { Point as WalkPoint } from '../../../lib/office/motion'
 import { furnishBuilding } from '../../../lib/office/themes'
 import { Button } from '../../ui/Button'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
@@ -17,6 +18,7 @@ import { OfficeStrip } from './OfficeStrip'
 import { silhouettes, WORKER_FEET, type OfficeAgent, type OfficePalette } from './officeArt'
 import { buildPersonViews, mugOwners } from './officePeople'
 import { useOfficeCamera } from './useOfficeCamera'
+import { useOfficeClock } from './useOfficeClock'
 import { useOfficeDeliveries } from './useOfficeDeliveries'
 import '../../../styles/office.css'
 
@@ -37,6 +39,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const motionOff = reduced || paused
   const stage = useRef<HTMLDivElement>(null)
   const spriteRefs = useRef(new Map<string, SpriteRefs>())
+  const arriving = useRef(new Map<string, readonly WalkPoint[]>()) // arrival walks in progress (clock-owned, read by deliveries)
 
   // Memory: slots and first-seen order survive for a live run (nobody moves when someone leaves); Team uses input order.
   const memory = useRef<BuildingMemory>(EMPTY_BUILDING_MEMORY)
@@ -70,14 +73,17 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     stage, area, lobby: lobby ? { x: lobby.x, y: lobby.y, width: lobby.width, height: lobby.height } : null, resetKey: runId, motionOff, selectedId, positions,
     describe: id => { const agent = byId.get(id); return agent ? `Showing ${agent.name}, ${rooms.get(id) ?? ''}` : null }, announce
   })
-  const deliveries = useOfficeDeliveries({ messages, mode, runId, motionOff, building, blocked, agentIds: order.map(agent => agent.id) })
+  const deliveries = useOfficeDeliveries({ messages, mode, runId, motionOff, building, blocked, agentIds: order.map(agent => agent.id), arriving })
   // S5b: bubbles and the exchange pair come from the same deliveries; readable time from the tokens.
   const bubbleTimings = useMemo(bubbleTiming, [])
   applyBubbleTiming(deliveries.deliveries, bubbleTimings)
   useDeliveryBoundaries(deliveries.deliveries, motionOff, deliveries.now)
+  const clock = useOfficeClock({ mode, runId, motionOff, building, blocked, area, zoom: camera.zoom, order, selectedId, deliveries, spriteRefs, arriving })
   const people = buildPersonViews({
-    order, building, deskSets: furnished.deskSets, mugs, appearances: appearances.current, mode, walkers: deliveries.walkers, pinned: deliveries.pinned, rendered: deliveries.rendered
+    order, building, deskSets: furnished.deskSets, mugs, appearances: appearances.current, mode, walkers: clock.withArrivals(deliveries.walkers), pinned: deliveries.pinned, rendered: deliveries.rendered,
+    cues: clock.cues, queued: clock.queued
   })
+  clock.bind(people)
 
   const latest = useRef({ byId, onSelect, onRemove, announce, show: camera.show, reveal: camera.reveal })
   latest.current = { byId, onSelect, onRemove, announce, show: camera.show, reveal: camera.reveal }
@@ -105,6 +111,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     className="office-scene" onFocusCapture={deliveries.onFocusCapture}
     style={{ '--office-label-width': `${Math.max(96, 4 * OFFICE_TILE_PX * zoom - 4)}px` } as CSSProperties}
     data-testid="office-scene" data-mode={mode} data-palette={palette} data-plates={zoom >= 2 ? 'always' : 'hover'} data-paused={paused ? 'true' : undefined}
+    data-office-clock={clock.running ? 'running' : 'stopped'} data-office-animated={clock.animated}
   >
     {mode === 'team' && <p>Team layout · roles, not live activity</p>}{mode === 'sample' && <p>Sample office · example agents</p>}
     <div className="office-controls">
