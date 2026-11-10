@@ -49,3 +49,22 @@ export function stepStaffText(staff: PlanStepStaff): string {
   const pick = staffingLabel({ tier: staff.tier, model: '', effort: staff.effort })
   return pick ? `${safeLine(staff.role)} (${pick})` : safeLine(staff.role)
 }
+
+/** The newest assignment bound to a plan step (a retry or escalation adds rows; the last one is what ran). */
+export function latestForStep(staffing: Pick<RunStaffing, 'assignments'> | undefined, stepId: string): StaffingAssignment | undefined {
+  let best: StaffingAssignment | undefined
+  for (const a of staffing?.assignments ?? []) if (a.stepId === stepId && (!best || a.at >= best.at)) best = a
+  return best
+}
+
+/** A plan step's pick once a report ran for it: "reviewer (everyday / high, asked top / max)"; the plain request without a row. */
+export function stepRanText(staff: PlanStepStaff, ran: StaffingAssignment | undefined): string {
+  if (!ran) return stepStaffText(staff)
+  const pick = staffingLabel({ tier: ran.tier, model: '', effort: ran.effort })
+  const differs = (!!staff.tier && staff.tier !== ran.tier) || (!!staff.effort && staff.effort !== ran.effort)
+  const asked = staffingLabel({ tier: staff.tier, model: '', effort: staff.effort })
+  const inner = pick ? (differs && asked ? `${pick}, asked ${asked}` : pick) : ''
+  // The row's roleId is a Role.id, not a name a reader knows: keep the name the orchestrator wrote on the step.
+  const role = safeLine(staff.role)
+  return inner ? `${role} (${inner})` : role
+}
