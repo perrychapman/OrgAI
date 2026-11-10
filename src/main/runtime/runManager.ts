@@ -2830,7 +2830,8 @@ export class RunManager {
       idleMs: a.idleTimer.elapsed(now),
       now,
       skills: [...a.skillCounts.values()],
-      knowledge: a.knowledgeUsage
+      knowledge: a.knowledgeUsage,
+      transcript: a.record.transcript
     })
   }
 
