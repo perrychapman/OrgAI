@@ -3131,7 +3131,7 @@ describe('ClaudeSession live permission mode (fake query)', () => {
     expect(bypass.q.setPermissionMode).toHaveBeenLastCalledWith('bypassPermissions')
   })
 
-  it('counts live reports that started under a wider mode, never a plain true while one stays wider', async () => {
+  it('counts reports that may run wider, the build-time mode and finished reports included; never a plain true while one may', async () => {
     const { ctx, session } = await live({}, { permissionMode: 'acceptEdits' })
     // What RunManager does around the call: ctx.project holds the new mode once the session applied it.
     const apply = async (mode: 'default' | 'acceptEdits' | 'plan' | 'dontAsk') => {
@@ -3142,18 +3142,194 @@ describe('ClaudeSession live permission mode (fake query)', () => {
     spawnReport(session, 'agent-a')
     // Narrowing: the report started in acceptEdits may keep it.
     await expect(apply('default')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
-    // Widening back: nothing running is wider than acceptEdits.
+    // Widening back: nothing is wider than acceptEdits.
     await expect(apply('acceptEdits')).resolves.toBe(true)
-    // A report spawned under plan is within dontAsk (plan is no wider than any mode); agent-a (acceptEdits) is not.
+    // A report spawned after a narrowing to plan still counts the query's build-time mode (acceptEdits, review M1a):
+    // whether a new Task report inherits a session mode changed live is not documented.
     await apply('plan')
     const report = spawnReport(session, 'agent-b')
-    expect(await apply('dontAsk')).toEqual({ applied: true, reportsUnchanged: 1 })
-    const a = (session as unknown as { agents: Map<string, { state: string }> }).agents.get('agent-a')!
-    a.state = 'done'
-    await expect(apply('plan')).resolves.toBe(true)
-    // Finished reports do not count either way.
-    ;(report as { state: string }).state = 'done'
-    await expect(apply('plan')).resolves.toBe(true)
+    expect(await apply('dontAsk')).toEqual({ applied: true, reportsUnchanged: 2 })
+    // Finished reports still count (review M1c): SendMessage can resume one.
+    ;(session as unknown as { agents: Map<string, { state: string }> }).agents.get('agent-a')!.state = 'done'
+    ;(report as { state: string }).state = 'error'
+    await expect(apply('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 2 })
+  })
+
+  it('a report that started only under narrower modes is within: plain true', async () => {
+    const { session } = await live({}, { permissionMode: 'plan' })
+    spawnReport(session, 'agent-n')
+    await expect(session.setPermissionMode('default')).resolves.toBe(true)
+    await expect(session.setPermissionMode('plan')).resolves.toBe(true)
+  })
+
+  type Held = { release(): void }
+  /** Hold the fake query's next setPermissionMode open until release(). */
+  const holdNextModeChange = (q: (typeof sdk.queries)[number]): Held => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    q.setPermissionMode.mockImplementationOnce(async () => gate)
+    return { release: () => release() }
+  }
+  type Wired = { handle(msg: Record<string, unknown>): void; spawnModes: Map<string, unknown>; acceptEditsGranted: boolean }
+  const preToolUse = (q: (typeof sdk.queries)[number]) =>
+    q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>
+  const approveSpawn = (q: (typeof sdk.queries)[number], toolUseId: string, slug: string) =>
+    preToolUse(q)({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: toolUseId, tool_input: { prompt: 'x', subagent_type: slug }, cwd: '/repo' }, 't', { signal: new AbortController().signal })
+  const taskStarted = (s: ClaudeSession, toolUseId: string | undefined, taskId: string, slug: string, parent?: string) =>
+    (s as unknown as Wired).handle({
+      type: 'system', subtype: 'task_started', task_id: taskId, task_type: 'local_agent', subagent_type: slug, description: 'work', session_id: 'sess-pm', uuid: `u-${taskId}-${Math.random()}`,
+      ...(toolUseId ? { tool_use_id: toolUseId } : {}), ...(parent ? { parent_task_id: parent } : {})
+    })
+
+  it('a report registered while the CLI applies a change counts both modes; a second change waits (review M1a)', async () => {
+    const { ctx, session, q } = await live({}, { permissionMode: 'plan' })
+    const held = holdNextModeChange(q)
+    const widening = session.setPermissionMode('acceptEdits')
+    await vi.waitFor(() => expect(q.setPermissionMode).toHaveBeenCalledWith('acceptEdits'))
+    await expect(session.setPermissionMode('default')).rejects.toThrow('already in progress')
+    // ctx.project still says plan here: the pending mode is what makes the report count.
+    expect(ctx.project.permissionMode).toBe('plan')
+    spawnReport(session, 'agent-p')
+    held.release()
+    await expect(widening).resolves.toBe(true)
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+  })
+
+  it('a spawn approved under a wider mode counts before task_started and keeps that mode after; a refused one is dropped (review M1a)', async () => {
+    const { session, q } = await live({}, { permissionMode: 'plan' })
+    await expect(session.setPermissionMode('acceptEdits')).resolves.toBe(true)
+    expect((await approveSpawn(q, 'tu-1', 'engineer')).hookSpecificOutput?.permissionDecision).not.toBe('deny')
+    await approveSpawn(q, 'tu-2', 'reviewer')
+    // tu-2 comes back as an error before its agent started: no longer counted.
+    ;(session as unknown as Wired).handle({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-2', content: 'refused', is_error: true }] }, parent_tool_use_id: null, session_id: 'sess-pm', uuid: 'r-tu-2' })
+    // Narrowed before task_started: the approved, unstarted spawn tu-1 counts.
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+    // task_started arrives under plan; the report keeps the mode its spawn was approved under.
+    taskStarted(session, 'tu-1', 'a1', 'engineer')
+    expect((session as unknown as Wired).spawnModes.size).toBe(0)
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+  })
+
+  it("a nested report inherits its parent's modes (review M1b)", async () => {
+    const { session } = await live({}, { permissionMode: 'plan' })
+    await expect(session.setPermissionMode('acceptEdits')).resolves.toBe(true)
+    taskStarted(session, undefined, 'p1', 'engineer')
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+    // Started under plan, but its parent may run in acceptEdits and the child inherits the parent's mode.
+    taskStarted(session, undefined, 'c1', 'reviewer', 'p1')
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 2 })
+  })
+
+  it('a finished report resumed by SendMessage keeps counting and the run log says it may use the wider mode (review M1c)', async () => {
+    const { ctx, session } = await live({}, { permissionMode: 'acceptEdits' })
+    taskStarted(session, 'tu-r', 'r1', 'engineer')
+    ;(session as unknown as { agents: Map<string, { state: string }> }).agents.get('r1')!.state = 'done'
+    await expect(session.setPermissionMode('default')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+    taskStarted(session, undefined, 'r1', 'engineer')
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('resumed') && e.message.includes('wider permission mode'))).toBe(true)
+    await expect(session.setPermissionMode('default')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+  })
+
+  describe('permission card grants around a change (review M2)', () => {
+    const editCall = async (q: (typeof sdk.queries)[number], dir: string) =>
+      (q.options.canUseTool as (t: string, i: Record<string, unknown>, o: Record<string, unknown>) => Promise<Record<string, unknown>>)('Edit', { file_path: join(dir, 'a.txt') }, {
+        signal: new AbortController().signal,
+        suggestions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }]
+      })
+    const sessionGrant = (ctx: RuntimeContext) => vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+
+    it('drops the setMode of a grant answered after a narrowing to plan or dontAsk; the flag stays unset', async () => {
+      for (const narrow of ['plan', 'dontAsk'] as const) {
+        sdk.queries.length = 0
+        const acceptEditsGranted = vi.fn()
+        const { ctx, session, q } = await live({ acceptEditsGranted })
+        sessionGrant(ctx)
+        await expect(session.setPermissionMode(narrow)).resolves.toBe(true)
+        const out = await editCall(q, ctx.project.path)
+        expect(acceptEditsGranted).not.toHaveBeenCalled()
+        expect(out.behavior).toBe('allow')
+        expect((out.updatedPermissions as { type: string }[] | undefined)?.some((u) => u.type === 'setMode') ?? false).toBe(false)
+        expect((session as unknown as Wired).acceptEditsGranted).toBe(false)
+        await session.stop()
+      }
+    })
+
+    it("keeps the grant's setMode on a 'default' run and tells RunManager once; allow-once tells it nothing", async () => {
+      const acceptEditsGranted = vi.fn()
+      const { ctx, session, q } = await live({ acceptEditsGranted })
+      vi.mocked(ctx.requestPermission).mockResolvedValueOnce({ behavior: 'allow', scope: 'once' })
+      expect((await editCall(q, ctx.project.path)).updatedPermissions).toBeUndefined()
+      expect(acceptEditsGranted).not.toHaveBeenCalled()
+      sessionGrant(ctx)
+      const out = await editCall(q, ctx.project.path)
+      expect(out.updatedPermissions).toEqual([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }])
+      expect(acceptEditsGranted).toHaveBeenCalledTimes(1)
+      expect((session as unknown as Wired).acceptEditsGranted).toBe(true)
+      spawnReport(session, 'agent-g')
+      await expect(session.setPermissionMode('default')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+      expect((session as unknown as Wired).acceptEditsGranted).toBe(false)
+    })
+
+    it('a narrowing to plan in flight drops the setMode even while ctx.project still says default', async () => {
+      const { ctx, session, q } = await live()
+      sessionGrant(ctx)
+      const held = holdNextModeChange(q)
+      const narrowing = session.setPermissionMode('plan')
+      await vi.waitFor(() => expect(q.setPermissionMode).toHaveBeenCalledWith('plan'))
+      const out = await editCall(q, ctx.project.path)
+      expect(out.updatedPermissions).toBeUndefined()
+      held.release()
+      await expect(narrowing).resolves.toBe(true)
+      expect(q.setPermissionMode).toHaveBeenCalledTimes(1)
+    })
+
+    it('a grant that lands while a change is in flight re-issues the mode once and the flag clears only then', async () => {
+      const { ctx, session, q } = await live({}, { permissionMode: 'acceptEdits' })
+      sessionGrant(ctx)
+      // RunManager moved ctx.project to default before the call; the CLI is still in acceptEdits.
+      ctx.project = { ...ctx.project, permissionMode: 'default' }
+      const held = holdNextModeChange(q)
+      const narrowing = session.setPermissionMode('default')
+      await vi.waitFor(() => expect(q.setPermissionMode).toHaveBeenCalledWith('default'))
+      const out = await editCall(q, ctx.project.path)
+      expect(out.updatedPermissions).toEqual([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }])
+      held.release()
+      await expect(narrowing).resolves.toBe(true)
+      expect(q.setPermissionMode).toHaveBeenCalledTimes(2)
+      expect(q.setPermissionMode).toHaveBeenLastCalledWith('default')
+      expect((session as unknown as Wired).acceptEditsGranted).toBe(false)
+      // If the re-issue fails, the flag stays set so reports started now count accept-edits.
+      const again = holdNextModeChange(q)
+      const second = session.setPermissionMode('default')
+      await vi.waitFor(() => expect(q.setPermissionMode).toHaveBeenCalledTimes(3))
+      await editCall(q, ctx.project.path)
+      q.setPermissionMode.mockRejectedValueOnce(new Error('refused'))
+      again.release()
+      await expect(second).resolves.toBe(true)
+      expect((session as unknown as Wired).acceptEditsGranted).toBe(true)
+      spawnReport(session, 'agent-h')
+      await expect(session.setPermissionMode('default')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+    })
+  })
+
+  it('refuses when the query changed during the change, and an MCP restart check waits for the change (review L2)', async () => {
+    const { session, q } = await live()
+    type Restart = { q: unknown; restartDue(): boolean; maybeRestartForMcp(): Promise<boolean>; scheduleMcpRestart(): void }
+    const r = session as unknown as Restart
+    r.restartDue = () => true
+    const schedule = vi.spyOn(r, 'scheduleMcpRestart').mockImplementation(() => {})
+    const held = holdNextModeChange(q)
+    const change = session.setPermissionMode('plan')
+    await vi.waitFor(() => expect(q.setPermissionMode).toHaveBeenCalledWith('plan'))
+    await expect(r.maybeRestartForMcp()).resolves.toBe(false)
+    expect(schedule).not.toHaveBeenCalled()
+    // The query is replaced while the change is in flight (a restart path).
+    r.q = new sdk.FakeQuery((async function* () {})(), {})
+    held.release()
+    await expect(change).rejects.toThrow('starting or restarting')
+    // The held restart check runs again once the change is done.
+    expect(schedule).toHaveBeenCalledTimes(1)
+    r.q = q
   })
 
   it('a card that granted accept-edits for the session counts for reports started under it', async () => {

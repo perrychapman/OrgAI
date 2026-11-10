@@ -2430,13 +2430,28 @@ export class MockSession implements RuntimeSession {
         for (const r of allowRuleStrings(granted ?? [])) this.sessionRules.add(r)
         for (const s of granted ?? []) {
           // A trust-restricted run stays ask-only: a session acceptEdits is never honoured there.
-          if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
+          if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.grantAcceptEdits()
           // Only folders the card may offer (never the data folder, home, a credential folder or a root).
           if (s.type === 'addDirectories') for (const d of s.directories) if (isOfferableDirectory(d, opts)) this.sessionDirs.add(d)
         }
       }
     }
     return this.toolRan(agentId, id, step, input)
+  }
+
+  /**
+   * A session / project allow's setMode acceptEdits (reference for claude.ts allowWithScope and codex.ts): edits need no
+   * card from now on and RunManager is told once (RuntimeContext.acceptEditsGranted). A card answered after the run moved
+   * to plan or dontAsk does not take the run out of it.
+   */
+  private grantAcceptEdits(): void {
+    const now = this.ctx.project.permissionMode
+    if (now === 'plan' || now === 'dontAsk') {
+      this.log('info', `Kept the run in ${now === 'plan' ? 'Plan' : "Don't ask"} mode: the permission card's mode change was not applied.`)
+      return
+    }
+    this.sessionAcceptEdits = true
+    this.ctx.acceptEditsGranted?.()
   }
 
   /** A tool call that ran: its result, then the step's `writeContent` (written for real) and `onAllow` text. */

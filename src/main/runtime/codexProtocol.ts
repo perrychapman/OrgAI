@@ -25,6 +25,7 @@ export const METHOD = {
   mcpReload: 'config/mcpServer/reload',
   mcpStatusList: 'mcpServerStatus/list',
   configValueWrite: 'config/value/write',
+  configRead: 'config/read',
   skillsList: 'skills/list',
   skillsConfigWrite: 'skills/config/write',
   rateLimitsRead: 'account/rateLimits/read'
@@ -373,28 +374,60 @@ export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLi
   return choice
 }
 
+/** The temp-folder switches of a workspace-write SandboxPolicy (v2/SandboxPolicy.ts; both fields are required there). */
+export type WorkspaceWriteTemp = { excludeTmpdirEnvVar: boolean; excludeSlashTmp: boolean }
+
+/** Temp-folder switches when the effective settings are unknown: both temp folders excluded (the narrowest). */
+export const TEMP_EXCLUDED: WorkspaceWriteTemp = { excludeTmpdirEnvVar: true, excludeSlashTmp: true }
+
+/**
+ * The temp-folder switches of the effective config from a `config/read` answer (v2/ConfigReadResponse.ts:
+ * `config.sandbox_workspace_write: SandboxWorkspaceWrite | null`, snake_case fields; generate-ts of @openai/codex
+ * 0.166.0). A null / missing section means Codex's defaults (temp folders writable: both false). Anything else that is
+ * not a boolean, or an answer without a config, is unknown and excludes the folder (never wider than the user's setting).
+ */
+export function parseWorkspaceWriteTemp(res: unknown): WorkspaceWriteTemp {
+  const config = isRec(res) && isRec(res.config) ? res.config : undefined
+  if (!config) return TEMP_EXCLUDED
+  const ww = config.sandbox_workspace_write
+  if (ww === null || ww === undefined) return { excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+  if (!isRec(ww)) return TEMP_EXCLUDED
+  return {
+    excludeTmpdirEnvVar: typeof ww.exclude_tmpdir_env_var === 'boolean' ? ww.exclude_tmpdir_env_var : true,
+    excludeSlashTmp: typeof ww.exclude_slash_tmp === 'boolean' ? ww.exclude_slash_tmp : true
+  }
+}
+
 /**
  * turn/start's SandboxPolicy object for a sandbox mode (TurnStartParams.sandboxPolicy, "for this turn and subsequent
  * turns"; generate-ts of @openai/codex 0.166.0, v2/SandboxPolicy.ts). thread/start takes the mode string, turn/start
- * only the object. workspace-write carries OrgAI's writable roots (what the launch config's
- * sandbox_workspace_write.writable_roots holds) and Codex's documented defaults otherwise: no network, temp folders
- * writable. A user's own CODEX_HOME setting that allows network is therefore narrowed, never widened. Live: unverified.
+ * only the object, whose workspace-write fields are all required, so each is chosen so it is never wider than what the
+ * thread was launched with: `writableRoots` is the caller's (codex.ts passes the launch config's
+ * sandbox_workspace_write.writable_roots that are still allowed now), `networkAccess` is always false (a user's own
+ * network_access = true is narrowed), and the temp-folder switches are the effective config's (`temp`, from
+ * config/read; TEMP_EXCLUDED when unknown). Live: unverified.
  */
-export function sandboxPolicyFor(sandbox: SandboxMode, writableRoots: string[]): Record<string, unknown> {
+export function sandboxPolicyFor(sandbox: SandboxMode, writableRoots: string[], temp: WorkspaceWriteTemp = TEMP_EXCLUDED): Record<string, unknown> {
   if (sandbox === 'read-only') return { type: 'readOnly', networkAccess: false }
   if (sandbox === 'danger-full-access') return { type: 'dangerFullAccess' }
-  return { type: 'workspaceWrite', writableRoots: writableRoots.filter((r) => typeof r === 'string' && r.length > 0), networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+  return {
+    type: 'workspaceWrite',
+    writableRoots: writableRoots.filter((r) => typeof r === 'string' && r.length > 0),
+    networkAccess: false,
+    excludeTmpdirEnvVar: temp.excludeTmpdirEnvVar,
+    excludeSlashTmp: temp.excludeSlashTmp
+  }
 }
 
 /**
  * The turn/start fields that move a thread from the policy it was started with (`from`) to `to`: approvalPolicy,
  * approvalsReviewer ('user' clears auto_review) and sandboxPolicy, each only when it differs. Empty = nothing to send.
  */
-export function policyOverride(from: PolicyChoice, to: PolicyChoice, writableRoots: string[]): Record<string, unknown> {
+export function policyOverride(from: PolicyChoice, to: PolicyChoice, writableRoots: string[], temp: WorkspaceWriteTemp = TEMP_EXCLUDED): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (from.approvalPolicy !== to.approvalPolicy) out.approvalPolicy = to.approvalPolicy
   if ((from.approvalsReviewer ?? 'user') !== (to.approvalsReviewer ?? 'user')) out.approvalsReviewer = to.approvalsReviewer ?? 'user'
-  if (from.sandbox !== to.sandbox) out.sandboxPolicy = sandboxPolicyFor(to.sandbox, writableRoots)
+  if (from.sandbox !== to.sandbox) out.sandboxPolicy = sandboxPolicyFor(to.sandbox, writableRoots, temp)
   return out
 }
 
