@@ -7,6 +7,7 @@ import { PERMISSION_MODES, PERMISSION_MODE_OPTIONS, QUICK_PROJECT_ID } from '@sh
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import { RunManager, checkStartChoice, checkStartEffort, type RunManagerOptions } from './runManager'
 import { canNarrowPermissionMode } from './runOverrides'
+import { PermissionModeRefusal } from './permissionModeRefusal'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
@@ -503,6 +504,46 @@ describe('setPermissionMode', () => {
     expect(r.ctx().project.permissionMode).toBe('plan')
     expect(r.m.summary(run.id)?.permissionMode).toBe('plan')
     expect(events.some((e) => JSON.stringify(e).includes('SDK internal'))).toBe(false)
+    await r.m.stopAll()
+  })
+
+  it('a PermissionModeRefusal message becomes the reason and the mode is restored', async () => {
+    const r = rig()
+    r.control.setMode = vi.fn(async () => {
+      throw new PermissionModeRefusal('Codex applies a new permission mode when a turn starts. Interrupt the run or wait until the orchestrator is idle, then change it.')
+    })
+    const run = await r.m.start({ project: team(), prompt: 'go', userChoice: { permissionMode: 'plan' } })
+    const result = await r.m.setPermissionMode({ runId: run.id, mode: 'dontAsk' })
+    expect(result).toMatchObject({ applied: false, reason: 'Codex applies a new permission mode when a turn starts. Interrupt the run or wait until the orchestrator is idle, then change it.' })
+    expect(r.ctx().project.permissionMode).toBe('plan')
+    expect(r.m.summary(run.id)?.permissionMode).toBe('plan')
+    await r.m.stopAll()
+  })
+
+  it('a PermissionModeRefusal reason is cleaned and bounded to 300 characters', async () => {
+    const r = rig()
+    r.control.setMode = vi.fn(async () => {
+      throw new PermissionModeRefusal(`Bad\u0000\u001b[31m\nline ${'x'.repeat(500)}`)
+    })
+    const run = await r.m.start({ project: team(), prompt: 'go' })
+    const result = await r.m.setPermissionMode({ runId: run.id, mode: 'dontAsk' })
+    const reason = result.reason ?? ''
+    expect(reason.length).toBeLessThanOrEqual(300)
+    expect(reason.startsWith('Bad')).toBe(true)
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u0000-\u001f\u007f-\u009f]/.test(reason)).toBe(false)
+    await r.m.stopAll()
+  })
+
+  it('a plain Error that looks like a refusal still gets the fixed text, its message absent', async () => {
+    const r = rig()
+    r.control.setMode = vi.fn(async () => {
+      throw Object.assign(new Error('raw /home/u/secret'), { userSafe: true })
+    })
+    const run = await r.m.start({ project: team(), prompt: 'go' })
+    const result = await r.m.setPermissionMode({ runId: run.id, mode: 'dontAsk' })
+    expect(result.reason).toBe('The session could not change its permission mode now.')
+    expect(JSON.stringify(result)).not.toContain('secret')
     await r.m.stopAll()
   })
 

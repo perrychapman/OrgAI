@@ -127,6 +127,7 @@ import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
+import { PermissionModeRefusal } from './permissionModeRefusal'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overlaidByAcceptEdits, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
 import { modelHandoff } from './modelHandoff'
@@ -5042,6 +5043,7 @@ export class RunManager {
       }
       let applied = false
       let reportsUnchanged = 0
+      let refusalReason: string | undefined
       // Review L-a: a grant followed while the change awaited may reach the provider after it. That matters for every
       // mode below acceptEdits (the adapter drops its grant there, re-check Low 1b), so such a change is sent once more
       // to be the last word. Applied twice yet raced twice: refused (Low 1c, below).
@@ -5059,7 +5061,14 @@ export class RunManager {
           } else break
         } catch (e) {
           // Review L2: a provider / SDK message is logged, never shown; the user gets a fixed plain sentence.
-          log.warn(`Run ${run.id}: the session refused a permission mode change (${(e as Error)?.message ?? String(e)})`)
+          if (e instanceof PermissionModeRefusal) {
+            // A typed, opt-in refusal: OrgAI-written plain text, bounded and cleaned, is the reason.
+            // eslint-disable-next-line no-control-regex
+            const clean = e.message.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+            if (clean) refusalReason = clean
+          } else {
+            log.warn(`Run ${run.id}: the session refused a permission mode change (${(e as Error)?.message ?? String(e)})`)
+          }
           break
         }
       }
@@ -5091,7 +5100,7 @@ export class RunManager {
         }
         if (previousGrant) active.acceptEditsGrant = true
         this.rederiveRunMode(active)
-        return { run: this.summary(run.id) ?? run, applied: false, reason: 'The session could not change its permission mode now.' }
+        return { run: this.summary(run.id) ?? run, applied: false, reason: refusalReason ?? 'The session could not change its permission mode now.' }
       }
       active.chosenMode = mode
       delete active.acceptEditsGrant

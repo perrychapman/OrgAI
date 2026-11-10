@@ -791,7 +791,9 @@ export interface RuntimeSession {
    * answer plain true then). What counts differs: Claude counts every report, finished (resumable) ones and approved spawns
    * not yet started included, unless all modes it may run under are no wider; a Codex thread counts only until its turn
    * ends (its next turn/start carries the new policy). false (or throw) = refused, e.g. the
-   * provider cannot switch now; a thrown message is only logged, never shown. Missing = this session cannot switch live
+   * provider cannot switch now. A thrown message is only logged, never shown, except a thrown
+   * PermissionModeRefusal (permissionModeRefusal.ts, plain path-free OrgAI-written text only, never provider / SDK / CLI
+   * text): RunManager shows its message (control characters stripped, at most 300 characters) as the reason. Missing = this session cannot switch live
    * (RunManager answers applied: false and changes nothing).
    */
   setPermissionMode?(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }>
