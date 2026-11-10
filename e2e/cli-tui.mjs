@@ -235,6 +235,9 @@ try {
   const status = json((await cli(['status', '--output-format', 'json'], { cwd: repo })).out)
   const projectName = status?.project?.name
   check(typeof projectName === 'string' && projectName.length > 0, 'status names the project', JSON.stringify(status)?.slice(0, 300))
+  const teamRoles = json((await cli(['team', 'roles', '--output-format', 'json'], { cwd: repo })).out)
+  const knownRole = teamRoles?.roles?.find((r) => r.reportsTo === null)?.name ?? teamRoles?.roles?.[0]?.name
+  check(typeof knownRole === 'string' && knownRole.length > 0, 'team roles names the top role', JSON.stringify(teamRoles)?.slice(0, 300))
 
   // ---------- a, b, d: full screen ----------
   {
@@ -260,6 +263,22 @@ try {
       // The overlay is the system pager: q leaves it (escape does not).
       await type(t, 'q')
       await sleep(500)
+
+      // /team and /settings (cli-parity 3.7): views over the run view (the status bar stays); Esc returns to it.
+      await type(t, '/team')
+      t.key('enter')
+      await t.waitFor((s) => s.includes('Team of ') && s.includes(knownRole), 10_000)
+      check(true, 'a: /team shows a known role of the project')
+      t.key('escape')
+      await t.waitFor((s) => !s.includes('Team of '), 10_000)
+      check(true, 'a: Esc leaves /team for the run view')
+      await type(t, '/settings')
+      t.key('enter')
+      await t.waitFor((s) => s.includes('Settings of ') && /Staffing mode\s+(auto|fixed)/.test(s), 10_000)
+      check(true, 'a: /settings shows a known project setting with its value')
+      t.key('escape')
+      await t.waitFor((s) => !s.includes('Settings of '), 10_000)
+      check(true, 'a: Esc leaves /settings for the run view')
 
       // b. Resize.
       const splitAt = locate(t, /E2E-MARK-(ALPHA|OMEGA)/)

@@ -73,6 +73,7 @@ import type {
 import type { HostClient, InprocHostHandle } from '../types'
 import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
 import type { ApprovalsApi } from './approvals'
+import type { TuiConfigApi } from './configApi'
 
 // Re-exported for the onboarding props (Onboarding.tsx).
 export type { AgentImportSource }
@@ -112,7 +113,8 @@ export const TUI_TRAFFIC_MS = 10_000
 export type BufferMode = 'fullscreen' | 'inline'
 export type LayoutMode = 'split' | 'stacked'
 export type PaneId = 'tree' | 'transcript' | 'plan' | 'worktrees'
-export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector'
+/** 'config': the /team or /settings view (its own keys while it is open). */
+export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector' | 'config'
 export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running' | 'identity' | 'identityCyan' | 'identityGreen' | 'identityAmber' | 'identityPink' | 'identityBlue' | 'message' | 'code' | 'muted'
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'gone'
 
@@ -512,6 +514,8 @@ export interface TuiHostConnection {
   startSetup(projectId: string): Promise<RunSummary>
   /** One call on a separate 'configure' connection (run options that widen the project's settings, as exec asks). */
   callConfigured?<T>(method: string, params: unknown[]): Promise<T>
+  /** The CLI's user-data folder (the one-time /team and /settings hint keeps its record there). */
+  readonly userDataDir?: string
   close(opts?: { stopInproc?: boolean }): Promise<void>
 }
 
@@ -525,6 +529,8 @@ export interface OpenTuiSessionOptions {
 export interface TuiSessionApi {
   /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
   approvals?: ApprovalsApi
+  /** The host calls of /team and /settings (cli-parity 3.7): the channels the commands use. */
+  config?: TuiConfigApi
   getState(): TuiState
   subscribe(listener: () => void): () => void
   readonly hostKind: HostKind
@@ -730,6 +736,8 @@ export interface SlashContext {
   startRetro?(): Promise<void>
   /** /agent <name>: open that agent's inspector. */
   openAgent?(arg: string): void
+  /** /team and /settings: open that view over the run view (cli-parity 3.7). */
+  openConfig?(view: 'team' | 'settings'): void
   /** Hide finished agents on / off (optional: older test contexts lack it). */
   toggleFold?(): void
   newRun(opts: { prompt?: string; team?: RunTeam; overrides?: RunOverrides }): Promise<void>

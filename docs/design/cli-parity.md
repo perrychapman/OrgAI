@@ -163,6 +163,11 @@ self-help entry point; clearing the knowledge graph; run rename, dismiss and pro
 
 A Team pane that shows the saved roles (not the run's agents) with the edit actions of 3.3, and a Settings pane over
 3.2. Both call the same host methods as the commands. Built last; nothing depends on them.
+- As built (cp/tuiPanes; `docs/agent-notes/cli-host.md` "TUI Team and Settings views"): `/team` and `/settings` are
+  views over the run view (the status bar stays), keyboard only, Esc backs out. Edits use the commands' own functions
+  (the role planners of `teamRoleEdit.ts`, `setPatch`, `permissionModeArg`, `planTierChange`, `parseSettingValue`) and
+  channels. The host allows saving during a live run; the live run keeps its start-time team, so the view says the change
+  applies from the next run. The project's connection is shown read-only (`orgai projects set --connection`).
 
 ## 4. Phases
 
