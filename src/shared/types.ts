@@ -2450,6 +2450,8 @@ export interface RunUsage {
   skills?: SkillUseCount[]
   /** Knowledge graph reads served to agents (knowledge_recall and auto context). Missing = none (or an older run). */
   knowledge?: KnowledgeServedUsage
+  /** Timing of the root's direct reports (computeRunEfficiency). Missing = no report started (or a run saved before it existed). */
+  efficiency?: RunEfficiency
   /**
    * Multi-provider runs only (at least one agent with AgentInstance.connection other than the run's): cost and agent
    * count per connection, each agent priced with its own connection's pricing. costUsd null = unknown (never $0).
@@ -2458,6 +2460,30 @@ export interface RunUsage {
    */
   connections?: Partial<Record<ConnectionId, { costUsd: number | null; agents: number; costPartial?: true }>>
   updatedAt: number
+}
+
+/**
+ * Timing shape of a run that used reports (docs/design/orchestration-efficiency.md 4.2 and 7). Computed by runUsage.ts
+ * from the agents' startedAt / endedAt. "Reports" here are the root's DIRECT reports only (agents whose parentId is the
+ * root agent's id), so a lead's own subtree is never double counted. Absent on a run where no direct report started
+ * and on runs saved before it existed. The lead's active time needs no field: it is wallMs - idleMs.
+ */
+export interface RunEfficiency {
+  /** Direct reports that started. */
+  reports: number
+  /** Run start to the first direct report's start, ms. */
+  firstSpawnMs: number
+  /** Sum of the direct reports' wall time (a live report counts to now), ms. */
+  reportSumMs: number
+  /** Time with at least one direct report running (union of their intervals), ms. reportSumMs / reportBusyMs is the overlap ratio. */
+  reportBusyMs: number
+  /** Most direct reports running at once. */
+  maxParallel: number
+  /**
+   * From the end of the first wave to the run's end (or now while live), ms. The first wave is every direct report
+   * that started before any direct report ended; it ends when its last member ends.
+   */
+  tailMs: number
 }
 
 /** RunUsage.noResultAgents cap per run. */

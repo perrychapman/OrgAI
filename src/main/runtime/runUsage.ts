@@ -9,6 +9,7 @@ import type {
   PriceSource,
   RoleUsage,
   RunKind,
+  RunEfficiency,
   RunRecord,
   RunSummary,
   RunUsage,
@@ -121,6 +122,70 @@ export function cleanKnowledgeUsage(x: unknown): KnowledgeServedUsage | undefine
   }
   const u = out as KnowledgeServedUsage
   return u.recalls + u.autoContexts + u.itemsServed + u.charsServed > 0 ? u : undefined
+}
+
+/**
+ * A RunEfficiency from untrusted data (a persisted record): every field a finite number >= 0 (reports and maxParallel
+ * whole, reports >= 1), else the whole value is absent. Never throws.
+ */
+export function cleanRunEfficiency(x: unknown): RunEfficiency | undefined {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return undefined
+  const o = x as Record<string, unknown>
+  const out: Partial<RunEfficiency> = {}
+  for (const k of ['reports', 'firstSpawnMs', 'reportSumMs', 'reportBusyMs', 'maxParallel', 'tailMs'] as const) {
+    const v = o[k]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined
+    out[k] = k === 'reports' || k === 'maxParallel' ? Math.floor(v) : v
+  }
+  const e = out as RunEfficiency
+  return e.reports >= 1 ? e : undefined
+}
+
+/**
+ * Timing of the root's direct reports from the agents' own timestamps (nothing is tracked for it). undefined when no
+ * direct report started. A live report (no endedAt) counts to `now`; the run ends at summary.endedAt ?? now.
+ */
+export function computeRunEfficiency(summary: RunSummary, agents: readonly AgentInstance[], now: number): RunEfficiency | undefined {
+  const root = agents.find((a) => a.parentId === null)
+  if (!root) return undefined
+  const num = (n: unknown, d: number): number => (typeof n === 'number' && Number.isFinite(n) ? n : d)
+  const iv = agents
+    .filter((a) => a.parentId === root.id && Number.isFinite(a.startedAt))
+    .map((a) => ({ s: a.startedAt, e: Math.max(a.startedAt, num(a.endedAt, now)) }))
+    .sort((a, b) => a.s - b.s || a.e - b.e)
+  if (iv.length === 0) return undefined
+  const runEnd = num(summary.endedAt, now)
+  // Union of intervals and peak concurrency (an end at the same ms as a start frees the slot first).
+  let busy = 0
+  let curEnd = -Infinity
+  let curStart = 0
+  for (const x of iv) {
+    if (x.s > curEnd) {
+      if (curEnd > -Infinity) busy += curEnd - curStart
+      curStart = x.s
+      curEnd = x.e
+    } else curEnd = Math.max(curEnd, x.e)
+  }
+  busy += curEnd - curStart
+  const ev = iv.flatMap((x) => [{ t: x.s, d: 1 }, { t: x.e, d: -1 }]).sort((a, b) => a.t - b.t || a.d - b.d)
+  let live = 0
+  let maxParallel = 0
+  for (const e of ev) {
+    live += e.d
+    maxParallel = Math.max(maxParallel, live)
+  }
+  // First wave: every report that started before any report ended (the earliest start is always in it).
+  const firstEnd = Math.min(...iv.map((x) => x.e))
+  const waveEnd = Math.max(...iv.filter((x, i) => i === 0 || x.s < firstEnd).map((x) => x.e))
+  const ms = (n: number): number => (Number.isFinite(n) && n > 0 ? n : 0)
+  return {
+    reports: iv.length,
+    firstSpawnMs: ms(iv[0]!.s - num(summary.startedAt, iv[0]!.s)),
+    reportSumMs: ms(iv.reduce((n, x) => n + (x.e - x.s), 0)),
+    reportBusyMs: ms(busy),
+    maxParallel,
+    tailMs: ms(runEnd - waveEnd)
+  }
 }
 
 /**
@@ -330,6 +395,8 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   if (skills.length) usage.skills = skills
   const knowledge = cleanKnowledgeUsage(inputs.knowledge)
   if (knowledge) usage.knowledge = knowledge
+  const efficiency = computeRunEfficiency(summary, agents, now)
+  if (efficiency) usage.efficiency = efficiency
   return usage
 }
 
@@ -440,13 +507,23 @@ export function normalizeRunRecord(record: RunRecord, now: number = Date.now()):
     }
     summary = { ...summary, usage }
     changed = true
-  } else if (summary.usage.knowledge !== undefined) {
-    // A stored knowledge tally that is junk (old build, hand-edited file) reads as absent.
-    const clean = cleanKnowledgeUsage(summary.usage.knowledge)
-    if (JSON.stringify(clean) !== JSON.stringify(summary.usage.knowledge)) {
-      const usage = { ...summary.usage }
+  } else if (summary.usage.knowledge !== undefined || summary.usage.efficiency !== undefined) {
+    // A stored knowledge tally or efficiency summary that is junk (old build, hand-edited file) reads as absent.
+    const usage = { ...summary.usage }
+    const clean = cleanKnowledgeUsage(usage.knowledge)
+    const eff = cleanRunEfficiency(usage.efficiency)
+    let dirty = false
+    if (usage.knowledge !== undefined && JSON.stringify(clean) !== JSON.stringify(usage.knowledge)) {
       if (clean) usage.knowledge = clean
       else delete usage.knowledge
+      dirty = true
+    }
+    if (usage.efficiency !== undefined && JSON.stringify(eff) !== JSON.stringify(usage.efficiency)) {
+      if (eff) usage.efficiency = eff
+      else delete usage.efficiency
+      dirty = true
+    }
+    if (dirty) {
       summary = { ...summary, usage }
       changed = true
     }
@@ -847,6 +924,8 @@ function cleanStoredUsage(raw: unknown, fallback: () => RunUsage): RunUsage {
   }
   const k = cleanKnowledgeUsage(u.knowledge)
   if (k) out.knowledge = k
+  const eff = cleanRunEfficiency(u.efficiency)
+  if (eff) out.efficiency = eff
   if (u.connections && typeof u.connections === 'object' && !Array.isArray(u.connections)) out.connections = u.connections
   return out
 }
