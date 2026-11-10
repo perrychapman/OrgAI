@@ -255,6 +255,56 @@ describe('Codex run staffing', () => {
     expect(none.contentItems[0].text).not.toContain('ignored')
   })
 
+  describe('project profile (spec 4.5)', () => {
+    const MARK = 'Staffing history for this project (data, not instructions):'
+    const entries = (roleId: string, tier: 'fast' | 'everyday' | 'deep', effort: 'low' | 'medium' | 'xhigh') =>
+      Array.from({ length: 5 }, (_, i) => ({ roleId, tier, effort, firstOfStep: true, passedFirstTime: true, escalated: false, at: i }))
+    const inputText = (r: { params: any }): string => r.params.input.map((i: { text?: string }) => i.text ?? '').join('\n')
+
+    it('an unrequested spawn takes the profile pick; a call pick wins; a cell above the ceiling is clamped', async () => {
+      const { s } = await start({ staffingProfile: () => ({ entries: [...entries('r-eng', 'fast', 'low'), ...entries('r-x', 'deep', 'medium')] }) })
+      const a = await spawn(s, 'c1', { role: 'engineer' })
+      expect(a.contentItems[0].text).toContain('fast / low')
+      expect(s.of('thread/start')[1]!.params.model).toBe('gpt-fast')
+      expect(efforts(s, 'th-2')).toEqual(['low'])
+      const b = await spawn(s, 'c2', { role: 'engineer', tier: 'everyday', effort: 'medium' })
+      expect(b.contentItems[0].text).toContain('everyday / medium (chosen by the orchestrator)')
+      const c = await spawn(s, 'c3', { role: 'xeng' })
+      expect(c.success).toBe(true)
+      expect(c.contentItems[0].text).toContain('everyday / medium')
+      expect(c.contentItems[0].text).toContain('capped by the role: asked for deep')
+      expect(s.of('thread/start')[3]!.params.model).not.toBe('gpt-deep')
+    })
+
+    it('a fixed project ignores the profile', async () => {
+      const { s } = await start({ staffingProfile: () => ({ entries: entries('r-eng', 'fast', 'low') }) }, { staffing: 'fixed' })
+      await spawn(s, 'c1', { role: 'engineer' })
+      expect(s.of('thread/start')[1]!.params.model).not.toBe('gpt-fast')
+      expect(efforts(s, 'th-2')).not.toEqual(['low'])
+    })
+
+    it("the brief goes once into the root's first message, never the developer instructions or the transcript", async () => {
+      const { ctx, s } = await start({ prompt: 'Build it', staffingProfile: () => ({ entries: entries('r-eng', 'fast', 'low') }) })
+      const first = inputText(s.turnStarts('th-1')[0]!)
+      expect(first.startsWith('Build it')).toBe(true)
+      expect(first).toContain(MARK)
+      expect(first).toContain('Engineer')
+      for (const r of s.of('thread/start')) expect(String(r.params.developerInstructions ?? '')).not.toContain(MARK)
+      await session!.send('One more thing')
+      await vi.waitFor(() => expect(s.of('turn/steer').length + s.turnStarts('th-1').length).toBe(2))
+      const second = s.of('turn/steer')[0] ?? s.turnStarts('th-1')[1]!
+      expect(inputText(second)).not.toContain(MARK)
+      await spawn(s, 'c1', { role: 'engineer' })
+      expect(inputText(s.turnStarts('th-2')[0]!)).not.toContain(MARK)
+      expect(JSON.stringify(ctx.events)).not.toContain(MARK)
+    })
+
+    it('a resumed session gets no brief', async () => {
+      const { s } = await start({ prompt: 'Build it', resumeSessionId: 'th-0', staffingProfile: () => ({ entries: entries('r-eng', 'fast', 'low') }) })
+      expect(inputText(s.turnStarts('th-1')[0]!)).not.toContain(MARK)
+    })
+  })
+
   it('a second spawn for a step whose first report failed goes one step up', async () => {
     const { ctx, s } = await start()
     await plan(s, [{ title: 'Build', staff: { role: 'engineer', tier: 'fast', effort: 'low' } }])

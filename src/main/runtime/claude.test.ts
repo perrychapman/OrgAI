@@ -2425,6 +2425,30 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
     expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ roleId: 'r-eng', agentId: 'a1', stepId: 'p1', tier: 'everyday', effort: 'low', model: 'sonnet', source: 'orchestrator' })
   })
 
+  it("an unrequested spawn takes the project profile's pick; the orchestrator's pick wins and a fixed project ignores it (spec 4.5)", async () => {
+    const entries = Array.from({ length: 5 }, (_, i) => ({ roleId: 'r-eng', tier: 'everyday' as const, effort: 'low' as const, firstOfStep: true, passedFirstTime: true, escalated: false, at: i }))
+    const profiled = { staffingProfile: () => ({ entries }) }
+    const a = session({ ctx: profiled })
+    expect(await a.spawn('t1', { subagent_type: 'engineer', name: 'eng-1' })).toMatchObject({ model: 'sonnet', effort: 'low' })
+    a.started('t1', 'a1', 'engineer')
+    await vi.waitFor(() => expect(a.ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(a.ctx.getStaffing()!.assignments[0]).toMatchObject({ tier: 'everyday', effort: 'low', source: 'profile' })
+    const b = session({ ctx: profiled })
+    const picked = await b.spawn('t1', { subagent_type: 'engineer', name: 'eng-1', model: 'haiku', effort: 'medium' })
+    // The call already carries the pick, so nothing is rewritten; the row says who chose it.
+    expect(picked?.model ?? 'haiku').toBe('haiku')
+    b.started('t1', 'a1', 'engineer')
+    await vi.waitFor(() => expect(b.ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(b.ctx.getStaffing()!.assignments[0]).toMatchObject({ tier: 'fast', effort: 'medium', source: 'orchestrator' })
+    const c = session({ ctx: profiled, project: { staffing: 'fixed' } })
+    const fixed = await c.spawn('t1', { subagent_type: 'engineer', name: 'eng-1' })
+    expect(fixed?.model).not.toBe('sonnet')
+    expect(fixed?.effort).not.toBe('low')
+    c.started('t1', 'a1', 'engineer')
+    await vi.waitFor(() => expect(c.ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(c.ctx.getStaffing()!.assignments[0]!.source).not.toBe('profile')
+  })
+
   it('clamps an alias on the call above the role ceiling, and tells the caller after the spawn', async () => {
     const { spawn, post } = session()
     const input = await spawn('t1', { subagent_type: 'reviewer', name: 'rev-1', model: 'opus' })

@@ -1,10 +1,11 @@
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Effort, ModelTier, RunRecord, StaffingGoal } from '@shared/types'
-import { EFFORTS, isModelTier } from '@shared/types'
-import { compareEffort, compareTier, isSafeId } from '@shared/defaults'
+import type { Effort, ModelTier, Project, RunRecord, RunSummary, StaffingGoal } from '@shared/types'
+import { EFFORTS, isModelTier, isVirtualProjectId } from '@shared/types'
+import { compareEffort, compareTier, isSafeId, staffingGoalOf, staffingModeOf } from '@shared/defaults'
 import type { StaffingRequest } from '../runtime/staffing'
-import { writeFileDurable } from './durableFs'
+import type { RuntimeContext } from '../runtime/types'
+import { DurableFsError, errorCode, writeFileDurable } from './durableFs'
 
 /**
  * The per-project staffing profile (docs/design/orchestration-efficiency.md 4.5): the last assignments of a project's
@@ -26,6 +27,8 @@ export const STAFFING_BRIEF_NAME_MAX_CHARS = 40
 /** One assignment of a finished run. */
 export interface StaffingProfileEntry {
   roleId: string
+  /** The run the assignment belongs to (RunSummary.id): merging a run again replaces its entries instead of adding them. */
+  runId?: string
   tier?: ModelTier
   effort?: Effort
   /** It was the earliest assignment bound to its plan step (false when it had no step). */
@@ -84,12 +87,14 @@ export function profileEntriesFromRun(run: RunRecord): StaffingProfileEntry[] {
   }
   const steps = new Map((run.plan?.steps ?? []).map((s) => [s.id, s]))
   const receipts = run.delegation?.receipts ?? []
+  const runId = run.summary?.id
   const out: StaffingProfileEntry[] = []
   for (const a of assignments) {
     if (!a.agentId) continue
     const agent = run.agents?.[a.agentId]
     const entry: StaffingProfileEntry = {
       roleId: a.roleId,
+      ...(runId ? { runId } : {}),
       firstOfStep: !!a.stepId && firstOfStep.get(a.stepId) === a.agentId,
       passedFirstTime: false,
       escalated: a.source === 'escalated',
@@ -112,9 +117,15 @@ export function profileEntriesFromRun(run: RunRecord): StaffingProfileEntry[] {
   return out
 }
 
-/** Append `entries` (oldest first) and keep the newest STAFFING_PROFILE_MAX_ENTRIES. Pure; the input is not changed. */
+/**
+ * Append `entries` (oldest first) and keep the newest STAFFING_PROFILE_MAX_ENTRIES. Entries already in the profile with
+ * the runId of an incoming entry are dropped first, so merging the same run twice replaces it instead of counting it
+ * twice. Pure; the input is not changed.
+ */
 export function mergeProfile(profile: StaffingProfile, entries: StaffingProfileEntry[]): StaffingProfile {
-  return { entries: [...profile.entries, ...entries].slice(-STAFFING_PROFILE_MAX_ENTRIES) }
+  const runs = new Set(entries.flatMap((e) => (e.runId ? [e.runId] : [])))
+  const kept = runs.size ? profile.entries.filter((e) => !e.runId || !runs.has(e.runId)) : profile.entries
+  return { entries: [...kept, ...entries].slice(-STAFFING_PROFILE_MAX_ENTRIES) }
 }
 
 function median(values: number[]): number | undefined {
@@ -275,6 +286,10 @@ function cleanEntry(x: unknown): StaffingProfileEntry | undefined {
     escalated: r.escalated,
     at: r.at
   }
+  if (r.runId !== undefined) {
+    if (typeof r.runId !== 'string' || !isSafeId(r.runId)) return undefined
+    e.runId = r.runId
+  }
   if (r.tier !== undefined) {
     if (!isModelTier(r.tier)) return undefined
     e.tier = r.tier
@@ -318,15 +333,113 @@ export function readStaffingProfile(dataDir: string, projectId: string): Staffin
   }
 }
 
-/** Write the profile atomically (durable temp file and rename). False, never a throw, when the id is unsafe or the write fails. */
-export function writeStaffingProfile(dataDir: string, projectId: string, profile: StaffingProfile): boolean {
+/**
+ * Write the profile atomically (durable temp file and rename). False, never a throw, when the id is unsafe or the write
+ * fails; `onError` then gets a short reason without paths or values (the failed step and errno code).
+ */
+export function writeStaffingProfile(dataDir: string, projectId: string, profile: StaffingProfile, onError?: (reason: string) => void): boolean {
   try {
     const file = staffingProfilePath(dataDir, projectId)
-    if (!file) return false
+    if (!file) {
+      onError?.('the project id is not a plain id')
+      return false
+    }
     const body = { version: 1, projectId, entries: profile.entries.slice(-STAFFING_PROFILE_MAX_ENTRIES) }
     writeFileDurable(file, JSON.stringify(body))
     return true
-  } catch {
+  } catch (e) {
+    onError?.(e instanceof DurableFsError ? e.message : (errorCode(e) ?? 'error'))
     return false
   }
+}
+
+// ---------- run lifecycle (RunManager at run end and context build, adapters at the first message and spawn) ----------
+
+/**
+ * The profile applies to this run: a work run of a stored project (not quick, Ask, setup-like, build-workspace or
+ * virtual-project runs) whose project staffs automatically (staffingModeOf). Bridged child sessions have no run of their
+ * own and never get here. Pure.
+ */
+export function staffingProfileApplies(
+  summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick' | 'team' | 'buildWorkspace'>,
+  project: Pick<Project, 'staffing'>
+): boolean {
+  if (summary.kind !== 'work') return false
+  if (summary.quick || summary.team === 'single' || summary.buildWorkspace) return false
+  if (isVirtualProjectId(summary.projectId)) return false
+  return staffingModeOf(project) === 'auto'
+}
+
+/**
+ * Run end: merge the run's assignments into its project's profile and write it. Nothing happens when the run does not
+ * qualify (staffingProfileApplies against the project the run started with) or has no entries. Entries carry the run id,
+ * so a second call for the same run replaces its entries (mergeProfile). Never throws: a failed write is reported once
+ * through `warn`, without paths. Returns whether a profile was written.
+ */
+export function recordRunInStaffingProfile(
+  dataDir: string | undefined,
+  record: RunRecord,
+  project: Pick<Project, 'staffing'>,
+  warn: (message: string) => void
+): boolean {
+  try {
+    if (!dataDir || !staffingProfileApplies(record.summary, project)) return false
+    const entries = profileEntriesFromRun(record)
+    if (entries.length === 0) return false
+    const projectId = record.summary.projectId
+    const next = mergeProfile(readStaffingProfile(dataDir, projectId), entries)
+    return writeStaffingProfile(dataDir, projectId, next, (reason) => warn(`Run ${record.summary.id}: the project's staffing profile was not saved (${reason}).`))
+  } catch (e) {
+    warn(`Run ${record.summary?.id}: the project's staffing profile was not saved (${errorCode(e) ?? 'error'}).`)
+    return false
+  }
+}
+
+/**
+ * StaffingBookDeps.profile for a run: the profile's default pick per role under the run's goal, or undefined when the
+ * run has no profile (RuntimeContext.staffingProfile absent or empty) or the project staffs as configured ('fixed').
+ */
+export function profileDefaultsFor(
+  ctx: Pick<RuntimeContext, 'staffingProfile' | 'staffingGoal' | 'project' | 'run'>
+): ((roleId: string) => StaffingRequest | undefined) | undefined {
+  if (staffingModeOf(ctx.project) !== 'auto') return undefined
+  const profile = ctx.staffingProfile?.()
+  if (!profile || profile.entries.length === 0) return undefined
+  const goal = ctx.staffingGoal ?? staffingGoalOf(ctx.project, ctx.run.overrides?.goal)
+  return (roleId) => profileDefault(profile, roleId, goal)
+}
+
+/** The `profile` dependency of a run's StaffingBook (profileDefaultsFor), or nothing. Spread into StaffingBookDeps. */
+export function staffingProfileDep(
+  ctx: Pick<RuntimeContext, 'staffingProfile' | 'staffingGoal' | 'project' | 'run'>
+): { profile?: (roleId: string) => StaffingRequest | undefined } {
+  const profile = profileDefaultsFor(ctx)
+  return profile ? { profile } : {}
+}
+
+/**
+ * The staffing brief for the root's first message, or '': only on a team work run of an automatic-staffing project
+ * with a profile, and not when the run resumes a provider session that already had it. One line, marked as data.
+ */
+export function rootStaffingBrief(ctx: Pick<RuntimeContext, 'staffingProfile' | 'project' | 'run' | 'roles' | 'resumeSessionId'>): string {
+  if (ctx.resumeSessionId || !staffingProfileApplies(ctx.run, ctx.project)) return ''
+  const profile = ctx.staffingProfile?.()
+  if (!profile || profile.entries.length === 0) return ''
+  return staffingBrief(profile, ctx.roles)
+}
+
+/**
+ * The first-message context with the staffing brief appended to the harness's hidden context (never the transcript, never
+ * the system prompt). Pass the result to knowledgeDelivery.firstMessageHiddenContext in place of the context.
+ */
+export function withRootStaffingBrief<C extends Pick<RuntimeContext, 'staffingProfile' | 'project' | 'run' | 'roles' | 'resumeSessionId' | 'hiddenContext' | 'prompt' | 'knowledgeContext'>>(
+  ctx: C
+): Pick<RuntimeContext, 'hiddenContext' | 'prompt' | 'knowledgeContext'> {
+  const brief = rootStaffingBrief(ctx)
+  const knowledge = ctx.knowledgeContext
+  const out: Pick<RuntimeContext, 'hiddenContext' | 'prompt' | 'knowledgeContext'> = { prompt: ctx.prompt }
+  if (knowledge) out.knowledgeContext = (text, opts) => knowledge.call(ctx, text, opts)
+  const hidden = brief ? [ctx.hiddenContext, brief].filter(Boolean).join('\n\n') : ctx.hiddenContext
+  if (hidden !== undefined) out.hiddenContext = hidden
+  return out
 }

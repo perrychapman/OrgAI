@@ -69,6 +69,18 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   logs and notifications ignore the event. Checked by unit tests only (`src/shared/staffing.test.ts`,
   `runManagerStaffing.test.ts`, `staffingGoalOverride.test.ts`, projects, runUsage, bridge, TUI state and renderer
   store tests); no live run.
+- Staffing profile wiring (2026-11-10, spec 4.5, D8): `store/staffingProfile.ts` holds the lifecycle helpers.
+  `staffingProfileApplies(summary, project)` = kind 'work', not quick, not Ask (`team: 'single'`), no buildWorkspace,
+  not a virtual project, `staffingModeOf` 'auto'. Read: RunManager reads `<data>/staffing/<projectId>.json` once at
+  context build (only with `dataDir` and when it applies) and sets `RuntimeContext.staffingProfile()` (a snapshot);
+  the bridge does not pass it on, so bridged children never see it. Each adapter spreads `staffingProfileDep(ctx)` into
+  its StaffingBook (none on a fixed project) and wraps the first message's context in `withRootStaffingBrief(ctx)`
+  before `firstMessageHiddenContext`: the brief joins the hidden harness context, not the transcript entry, the system /
+  developer prompt, later messages or spawn briefs, and is skipped when `resumeSessionId` is set. Write: `teardown`
+  (once per ActiveRun via `tornDown`) calls `recordRunInStaffingProfile` after the flush with the live `ctx.project`;
+  entries carry `runId` and `mergeProfile` replaces a run's earlier entries, so a second merge cannot double count.
+  A failed write logs one warning (step and errno code, no path) and never fails the end. Unit tests only
+  (staffingProfile, runManagerStaffing, mock, claude, claudeKnowledge, codexStaffing); no live run.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls

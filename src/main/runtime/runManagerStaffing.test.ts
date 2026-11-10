@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import { RunManager } from './runManager'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { project as makeProject, runSummary } from './testHelpers'
+import { readStaffingProfile, writeStaffingProfile } from '../store/staffingProfile'
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
@@ -27,7 +28,7 @@ const setupService = (p: Project): SetupService =>
   ({ hiddenContext: vi.fn(() => ''), markArchitectureUpdated: vi.fn(() => p), complete: vi.fn(() => p), applyProposal: vi.fn(() => p), markScaffolded: vi.fn(() => p) }) as unknown as SetupService
 
 /** A RunManager on a fake adapter whose sessions stay open until `end(i)`; every RuntimeContext lands in `ctxs`. */
-function harness(over: Partial<Project> = {}) {
+function harness(over: Partial<Project> = {}, withData = false) {
   const ctxs: RuntimeContext[] = []
   const ends: (() => void)[] = []
   const events: RunEvent[] = []
@@ -42,7 +43,7 @@ function harness(over: Partial<Project> = {}) {
   }
   const p = makeProject({ path: join(dir, 'repo'), ...over })
   const store = new RunStore(join(dir, 'data'))
-  const m = new RunManager({ mock: adapter }, (e) => void events.push(e), store, setupService(p), () => 100)
+  const m = new RunManager({ mock: adapter }, (e) => void events.push(e), store, setupService(p), () => 100, withData ? { dataDir: join(dir, 'data') } : {})
   const end = async (i: number): Promise<void> => {
     ctxs[i]!.emit({ type: 'run.status', runId: ctxs[i]!.run.id, status: 'finished' })
     ends[i]!()
@@ -158,5 +159,77 @@ describe('RunManager run staffing', () => {
       { id: 'p1', title: 'One', status: 'pending', paths: ['src/a.ts'] },
       { id: 'p2', title: 'Two', status: 'pending', after: ['p1'], staff: { role: 'implementer' } }
     ])
+  })
+})
+
+describe('RunManager staffing profile (spec 4.5)', () => {
+  const data = (): string => join(dir, 'data')
+  const finishedRun = async (h: ReturnType<typeof harness>, i: number, over: Parameters<RunManager['start']>[0] | null = null) => {
+    const run = await h.m.start(over ?? { project: h.p, prompt: 'go' })
+    await h.ctxs[i]!.updateStaffing({ goal: 'balanced', assignments: [row({ agentId: `a${i}`, at: 10 + i })] })
+    await h.end(i)
+    return run
+  }
+
+  it('a finished work run writes its assignments to the project profile, and the next run reads them', async () => {
+    const h = harness({}, true)
+    const run = await finishedRun(h, 0)
+    const entries = readStaffingProfile(data(), h.p.id).entries
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ roleId: 'r-eng', tier: 'everyday', effort: 'medium', runId: run.id })
+    await h.m.start({ project: h.p, prompt: 'again' })
+    expect(h.ctxs[1]!.staffingProfile!()!.entries).toEqual(entries)
+  })
+
+  it('ending twice, and a continuation that ends again, do not count a run twice', async () => {
+    const h = harness({}, true)
+    const run = await finishedRun(h, 0)
+    // The end path runs again (a late finished status and a second resolve).
+    await h.end(0)
+    expect(readStaffingProfile(data(), h.p.id).entries).toHaveLength(1)
+    await h.m.continueRun(h.p, run.id, 'more')
+    await h.ctxs[1]!.updateStaffing({ goal: 'balanced', assignments: [row({ agentId: 'b1', at: 20 })] })
+    await h.end(1)
+    const entries = readStaffingProfile(data(), h.p.id).entries
+    expect(entries).toHaveLength(2)
+    expect(new Set(entries.map((e) => e.runId)).size).toBe(2)
+  })
+
+  it('writes nothing for a setup run, an Ask run, a fixed project or a run without assignments', async () => {
+    const setup = harness({}, true)
+    await finishedRun(setup, 0, { project: setup.p, prompt: 'set up', kind: 'setup' })
+    expect(setup.ctxs[0]!.staffingProfile).toBeUndefined()
+    const ask = harness({ id: 'p-ask' }, true)
+    await finishedRun(ask, 0, { project: ask.p, prompt: 'ask', team: 'single' })
+    expect(ask.ctxs[0]!.staffingProfile).toBeUndefined()
+    const fixed = harness({ id: 'p-fixed', staffing: 'fixed' }, true)
+    await finishedRun(fixed, 0)
+    expect(fixed.ctxs[0]!.staffingProfile).toBeUndefined()
+    const empty = harness({ id: 'p-empty' }, true)
+    await empty.m.start({ project: empty.p, prompt: 'go' })
+    await empty.end(0)
+    for (const id of [setup.p.id, 'p-ask', 'p-fixed', 'p-empty']) expect(readStaffingProfile(data(), id).entries).toEqual([])
+  })
+
+  it('a failing write does not fail the run end', async () => {
+    const h = harness({}, true)
+    mkdirSync(data(), { recursive: true })
+    writeFileSync(join(data(), 'staffing'), 'a file where the folder should be')
+    const run = await finishedRun(h, 0)
+    expect(h.m.get(run.id)!.summary.status).toBe('finished')
+    expect(h.store.getRecord(run.id)!.staffing!.assignments).toHaveLength(1)
+    expect(h.m.liveRunCount()).toBe(0)
+  })
+
+  it('the profile is per project: a run of another project never reads the first project\'s file', async () => {
+    writeStaffingProfile(data(), 'p-one', { entries: [{ roleId: 'r-eng', firstOfStep: true, passedFirstTime: true, escalated: false, at: 1 }] })
+    const one = harness({ id: 'p-one' }, true)
+    await one.m.start({ project: one.p, prompt: 'go' })
+    expect(one.ctxs[0]!.staffingProfile!()!.entries).toHaveLength(1)
+    const two = harness({ id: 'p-two' }, true)
+    await finishedRun(two, 0)
+    expect(two.ctxs[0]!.staffingProfile!()!.entries).toEqual([])
+    expect(readStaffingProfile(data(), 'p-one').entries).toHaveLength(1)
+    expect(readStaffingProfile(data(), 'p-two').entries).toHaveLength(1)
   })
 })

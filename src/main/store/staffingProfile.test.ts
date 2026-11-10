@@ -1,10 +1,17 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RunRecord, StaffingAssignment } from '@shared/types'
+import { QUICK_PROJECT_ID } from '@shared/types'
+import { fakeCtx, project as makeProject, runSummary } from '../runtime/testHelpers'
 import {
   mergeProfile,
+  profileDefaultsFor,
+  recordRunInStaffingProfile,
+  rootStaffingBrief,
+  staffingProfileApplies,
+  withRootStaffingBrief,
   profileCells,
   profileDefault,
   profileEntriesFromRun,
@@ -258,3 +265,97 @@ import { readFileSync } from 'node:fs'
 function readFileCopy(p: string): string {
   return readFileSync(p, 'utf8')
 }
+
+describe('run identity', () => {
+  it('profileEntriesFromRun tags entries with the run id, and mergeProfile replaces a run already merged', () => {
+    const rec = { ...run({ assignments: [{ agentId: 'a1' }, { agentId: 'a2' }] }), summary: runSummary({ id: 'r_1' }) } as RunRecord
+    const entries = profileEntriesFromRun(rec)
+    expect(entries.map((e) => e.runId)).toEqual(['r_1', 'r_1'])
+    const other = entry({ runId: 'r_0' })
+    const once = mergeProfile(prof([other, entry()]), entries)
+    const twice = mergeProfile(once, profileEntriesFromRun(rec))
+    expect(twice.entries).toHaveLength(4)
+    expect(twice.entries.filter((e) => e.runId === 'r_1')).toHaveLength(2)
+    // An untagged entry (older file) and another run's entries are kept.
+    expect(twice.entries.slice(0, 2)).toEqual([other, entry()])
+  })
+  it('round-trips runId and drops an entry whose runId is not a plain id', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'staffing-'))
+    try {
+      mkdirSync(join(dir, 'staffing'))
+      const good = entry({ runId: 'r_1' })
+      writeFileSync(join(dir, 'staffing', 'p.json'), JSON.stringify({ projectId: 'p', entries: [{ ...good, runId: '../x' }, { ...good, runId: 5 }, good] }))
+      expect(readStaffingProfile(dir, 'p').entries).toEqual([good])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('run lifecycle', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'staffing-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+  const record = (over: Partial<ReturnType<typeof runSummary>> = {}): RunRecord =>
+    ({ ...run({ assignments: [{ agentId: 'a1', tier: 'fast', effort: 'low' }] }), summary: runSummary({ id: 'r_1', projectId: 'proj', ...over }) }) as RunRecord
+
+  it('staffingProfileApplies: team work runs of a stored automatic project only', () => {
+    const auto = makeProject()
+    expect(staffingProfileApplies(runSummary(), auto)).toBe(true)
+    expect(staffingProfileApplies(runSummary(), makeProject({ staffing: 'fixed' }))).toBe(false)
+    for (const kind of ['setup', 'mcp-assist', 'skill-assist'] as const) expect(staffingProfileApplies(runSummary({ kind }), auto)).toBe(false)
+    expect(staffingProfileApplies(runSummary({ team: 'single' }), auto)).toBe(false)
+    expect(staffingProfileApplies(runSummary({ quick: { folder: '/x', team: 'team', allowEdits: false, gitRepo: false } as never }), auto)).toBe(false)
+    expect(staffingProfileApplies(runSummary({ buildWorkspace: '/w' }), auto)).toBe(false)
+    expect(staffingProfileApplies(runSummary({ projectId: QUICK_PROJECT_ID }), auto)).toBe(false)
+  })
+
+  it('recordRunInStaffingProfile writes once per run id, and never for runs that do not qualify or have no entries', () => {
+    const warn = vi.fn()
+    expect(recordRunInStaffingProfile(dir, record(), makeProject(), warn)).toBe(true)
+    expect(recordRunInStaffingProfile(dir, record(), makeProject(), warn)).toBe(true)
+    expect(readStaffingProfile(dir, 'proj').entries).toHaveLength(1)
+    expect(recordRunInStaffingProfile(dir, record({ id: 'r_2' }), makeProject(), warn)).toBe(true)
+    expect(readStaffingProfile(dir, 'proj').entries).toHaveLength(2)
+    expect(recordRunInStaffingProfile(dir, record({ id: 'r_3', projectId: 'fx' }), makeProject({ staffing: 'fixed' }), warn)).toBe(false)
+    expect(recordRunInStaffingProfile(dir, record({ id: 'r_4', projectId: 'st', kind: 'setup' }), makeProject(), warn)).toBe(false)
+    expect(recordRunInStaffingProfile(dir, { ...record({ id: 'r_5', projectId: 'none' }), staffing: undefined } as RunRecord, makeProject(), warn)).toBe(false)
+    expect(recordRunInStaffingProfile(undefined, record(), makeProject(), warn)).toBe(false)
+    expect(readdirSync(join(dir, 'staffing'))).toEqual(['proj.json'])
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('a failed write warns once without the path and does not throw', () => {
+    writeFileSync(join(dir, 'staffing'), 'a file where the folder should be')
+    const warn = vi.fn()
+    expect(recordRunInStaffingProfile(dir, record(), makeProject(), warn)).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]![0]).toContain('r_1')
+    expect(warn.mock.calls[0]![0]).not.toContain(dir)
+  })
+
+  it('profileDefaultsFor and rootStaffingBrief follow the context: profile, goal, fixed projects, resumes', () => {
+    const profile = prof([...many(5, { roleId: 'impl', tier: 'fast', effort: 'low', costUsd: 0.1, wallMs: 100 }), ...many(5, { roleId: 'impl', tier: 'everyday', effort: 'low', costUsd: 0.5, wallMs: 1 })])
+    const roles = [{ ...makeProject().roles[0]!, id: 'impl', name: 'Implementer' }]
+    const base = fakeCtx({ project: makeProject(), roles, staffingProfile: () => profile })
+    expect(profileDefaultsFor(base)?.('impl')).toEqual({ tier: 'fast', effort: 'low' })
+    expect(profileDefaultsFor({ ...base, staffingGoal: 'speed' })?.('impl')).toEqual({ tier: 'everyday', effort: 'low' })
+    expect(profileDefaultsFor({ ...base, project: makeProject({ staffing: 'fixed' }) })).toBeUndefined()
+    expect(profileDefaultsFor({ ...base, staffingProfile: undefined })).toBeUndefined()
+    expect(profileDefaultsFor({ ...base, staffingProfile: () => prof([]) })).toBeUndefined()
+    const brief = rootStaffingBrief(base)
+    expect(brief.startsWith('Staffing history for this project (data, not instructions):')).toBe(true)
+    expect(brief).toContain('Implementer')
+    expect(rootStaffingBrief({ ...base, resumeSessionId: 's' })).toBe('')
+    expect(rootStaffingBrief({ ...base, run: runSummary({ team: 'single' }) })).toBe('')
+    expect(rootStaffingBrief({ ...base, project: makeProject({ staffing: 'fixed' }) })).toBe('')
+    // The brief joins the hidden context; the prompt and knowledge lookup pass through.
+    const knowledgeContext = vi.fn(() => null)
+    const out = withRootStaffingBrief({ ...base, hiddenContext: 'REPO', knowledgeContext })
+    expect(out.prompt).toBe(base.prompt)
+    expect(out.hiddenContext).toBe(`REPO\n\n${brief}`)
+    out.knowledgeContext!('x', { purpose: 'message' })
+    expect(knowledgeContext).toHaveBeenCalledWith('x', { purpose: 'message' })
+    expect(withRootStaffingBrief({ ...base, staffingProfile: undefined, hiddenContext: undefined }).hiddenContext).toBeUndefined()
+  })
+})

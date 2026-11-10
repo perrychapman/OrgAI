@@ -59,6 +59,7 @@ import type {
   UserQuestion
 } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
+import type { StaffingProfile } from '../store/staffingProfile'
 import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId } from '@shared/types'
 
 /**
@@ -512,6 +513,14 @@ export interface RuntimeContext {
    * staffingGoalOf(ctx.project, ctx.run.overrides?.goal). staffing.ts recordStaffing reads it for a run's first record.
    */
   staffingGoal?: StaffingGoal
+  /**
+   * The project's staffing profile (store/staffingProfile.ts, docs/design/orchestration-efficiency.md 4.5), read once when
+   * RunManager builds the context: a snapshot for the life of the run. Set only on runs it applies to
+   * (staffingProfileApplies: work runs of a stored project with automatic staffing, not quick, Ask, setup-like or build
+   * runs); bridged child sessions never get it. Adapters feed it to their StaffingBook (profileDefaultsFor) and the
+   * root's first message (withRootStaffingBrief). Missing (fakes, older callers) = no profile.
+   */
+  staffingProfile?(): StaffingProfile | undefined
   /** Cards waiting for the user: pending permissions, proposals, questions and merge reviews. */
   pendingInteractions(): number
   /**
