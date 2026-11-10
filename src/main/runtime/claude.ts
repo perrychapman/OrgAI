@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { startClaudeToolGateway, type ClaudeToolGateway } from './claudeToolGateway'
 import { obligationsFor } from './delegation'
 import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
@@ -1092,6 +1093,7 @@ function permissionKey(toolName: string, input: unknown): string {
 }
 
 export class ClaudeSession implements RuntimeSession {
+  private toolGateway?: Promise<ClaudeToolGateway>
   readonly finished: Promise<void>
   private input = new PushStream<SDKUserMessage>()
   private abort = new AbortController()
@@ -1425,6 +1427,7 @@ export class ClaudeSession implements RuntimeSession {
     this.input.end()
     this.abort.abort()
     this.cleanupPlugins()
+    if (this.toolGateway) await this.toolGateway.then(gateway => gateway.close(), () => {})
   }
 
   // ---------- internals ----------
@@ -3027,6 +3030,16 @@ export class ClaudeSession implements RuntimeSession {
     // Resolved first and per build (cli-standalone 6.1): no runtime fails the run before anything else is set up.
     const executable = requireClaudeExecutable(process.env)
     const env = buildEnv(this.ctx)
+    if (usesProxy(this.ctx) && env.ANTHROPIC_BASE_URL) {
+      this.toolGateway ??= startClaudeToolGateway(env.ANTHROPIC_BASE_URL, {
+        token: env.ANTHROPIC_AUTH_TOKEN, apiKey: env.ANTHROPIC_API_KEY
+      })
+      const gateway = await this.toolGateway
+      this.secrets.add(gateway.baseUrl)
+      this.secrets.add(new URL(gateway.baseUrl).pathname.slice(1))
+      if (this.abort.signal.aborted || this.ending) { gateway.close(); throw new Error('Session ended.') }
+      env.ANTHROPIC_BASE_URL = gateway.baseUrl
+    }
     const plugin = opts.plugin === undefined ? this.skillPlugin : (opts.plugin ?? undefined)
     const skillMap = this.skillNamesFor(plugin)
     const skillNames = [...skillMap.keys()]
@@ -3272,6 +3285,7 @@ export class ClaudeSession implements RuntimeSession {
       this.continuation.dispose()
       this.stopUsagePolling()
       this.cleanupPlugins()
+      if (this.toolGateway) await this.toolGateway.then(gateway => gateway.close(), () => {})
       this.partial.clearAll()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {

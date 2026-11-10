@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServerSpec, Project, RunPlan } from '@shared/types'
+import { canonicalToolResponse, ProviderToolNames } from './claudeToolGateway'
 
 // Only `query` is faked (a scripted stand-in for the CLI); everything else is the real SDK module. The pure tests in
 // this file never call query; the ClaudeSession tests at the end drive the fake.
@@ -823,6 +824,26 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
   })
   const decision = async (q: Fake, tool: string, agent?: { id: string; type: string }) => (await preToolUse(q)(call(tool, agent), 'x', {})).hookSpecificOutput
   const texts = (q: Fake) => q.inputs.map((m) => String((m.message as { content: unknown }).content)).join('\n')
+  it('decodes long provider names before canonical MCP denial even with a broad allow rule', async () => {
+    const name = 'service_' + 's'.repeat(35)
+    const canonical = `mcp__${name}__mcp__iga_lumos_write_entitlement_deprovisioning_workflow_set`
+    const servers = [mcpSpec({ id: 'long', name, roles: ['lead'] })]
+    const { session } = start(servers, {
+      connection: { connection: 'litellm', adapter: 'claude', env: { ANTHROPIC_BASE_URL: 'http://proxy' } },
+      allowedRules: () => [`mcp__${name}`]
+    })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    const registry = new ProviderToolNames()
+    const mapped = registry.request({ tools: [{ name: canonical }] })
+    const decoded = canonicalToolResponse({ type: 'tool_use', name: (mapped.body.tools as { name: string }[])[0]!.name }, mapped.names) as { name: string }
+    expect(decoded.name).toBe(canonical)
+    expect((await decision(q, decoded.name, { id: 'report', type: 'engineer' }))?.permissionDecision).toBe('deny')
+    const firstUrl = q.options.env.ANTHROPIC_BASE_URL
+    expect(firstUrl).toMatch(/^http:\/\/127\.0\.0\.1:/)
+    await session.stop()
+    await expect(fetch(firstUrl + '/v1/messages', { method: 'POST', body: '{}' })).rejects.toThrow()
+  })
 
   it('PreToolUse denies an MCP call the role is not granted, from the live list, and passes granted ones on', async () => {
     const servers = [mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })]
@@ -900,7 +921,7 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     expect(q.options.agents.reviewer.model).toBe('gemini-2.5-pro')
     // The tier mapping for tier-valued roles still reaches the CLI through the connection env.
     expect(q.options.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('claude-sonnet-4-5')
-    expect(q.options.env.ANTHROPIC_BASE_URL).toBe('http://proxy')
+    expect(q.options.env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{64}$/)
     // The spawn hook neither rewrites nor drops a cross-family model.
     const spawn = async (input: Record<string, unknown>) =>
       (await preToolUse(q)({ ...call('Agent'), tool_input: input }, 'x', {})).hookSpecificOutput as { updatedInput?: Record<string, unknown> } | undefined
