@@ -6,7 +6,7 @@ import { Popover } from './ui/Popover'
 import { useConfirm } from './ui/ConfirmDialog'
 import { connectionLabel } from '../lib/connectionLabel'
 import { useAppStore } from '../store/useAppStore'
-import { filterLiveModels, liveModelLabel, modelKey, modelSessionEnded, needsModelHandoff, performModelSwitch } from '../lib/liveModelSwitch'
+import { filterLiveModels, liveModelLabel, MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE, modelKey, modelSessionEnded, needsModelHandoff, performModelSwitch } from '../lib/liveModelSwitch'
 import '../styles/live-model-switch.css'
 
 export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunChanged: (run: RunSummary) => void }): ReactElement {
@@ -92,7 +92,7 @@ export function LiveModelSwitch({ run, onRunChanged }: { run: RunSummary; onRunC
           // A native modal dismisses sibling auto popovers. This deliberate transition
           // keeps the captured operation; ordinary Escape/light dismiss still cancels it.
           confirming.current = true
-          const accepted = await confirm({ title: 'End this session and switch model?', body: 'Your conversation stays here. The new session receives a transcript handoff that may omit older or oversized text. Provider session memory and session-only permissions do not transfer. Your draft stays unsent. Send when you are ready to continue.', confirmLabel: 'End session and select model', confirmTestId: 'live-model-confirm' })
+          const accepted = await confirm({ title: MODEL_HANDOFF_TITLE, body: MODEL_HANDOFF_BODY, confirmLabel: 'End session and select model', confirmTestId: 'live-model-confirm' })
           confirming.current = false
           if (!accepted) reopen()
           return accepted

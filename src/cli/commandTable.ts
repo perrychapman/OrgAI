@@ -67,12 +67,6 @@ export const TUI_FLAGS: readonly CommandFlag[] = [
   { name: 'ax-screen-reader', takesValue: false, summary: 'Screen reader mode: inline, plain text, no animation' }
 ]
 
-/** Flags of bare `orgai [options] [--] <prompt>` (index.ts routes them to the terminal UI; shown in --help). */
-export const DEFAULT_TUI_FLAGS: readonly CommandFlag[] = [
-  ...TUI_FLAGS,
-  { name: 'team', takesValue: true, values: ['default', 'single'], summary: 'With a prompt: the org chart (default) or one assistant (single)' }
-]
-
 /** Exec flags shared by `orgai exec` and `orgai resume --exec` (cli-spec 6.2). */
 const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
   { name: 'image', takesValue: true, repeatable: true, summary: 'Attach an image (PNG, JPEG, GIF or WebP, up to 5 MB, at most 10); repeatable' },
@@ -95,6 +89,16 @@ const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
   { name: 'on-proposal', takesValue: true, values: ['decline', 'fail'], summary: 'Proposals: decline (default), fail' },
   { name: 'on-merge', takesValue: true, values: ['hold', 'fail'], summary: 'Merge reviews: hold (default), fail' },
   { name: 'max-auto-denials', takesValue: true, summary: 'Automatic denials before the run ends as needs-decision (default 5)' }
+]
+
+/** Exec's run flags the terminal UI's first run takes (runStartFlags.ts TUI_RUN_FLAG_NAMES; the rest are headless-only). */
+export const TUI_RUN_FLAG_NAMES: readonly string[] = ['permission-mode', 'no-auto-continue', 'max-auto-continues', 'max-budget', 'max-cost', 'allow-unpriced-budget', 'strict-delegation', 'goal']
+
+/** Flags of bare `orgai [options] [--] <prompt>` (index.ts routes them to the terminal UI; shown in --help). */
+export const DEFAULT_TUI_FLAGS: readonly CommandFlag[] = [
+  ...TUI_FLAGS,
+  { name: 'team', takesValue: true, values: ['default', 'single'], summary: 'With a prompt: the org chart (default) or one assistant (single)' },
+  ...EXEC_RUN_FLAGS.filter((f) => TUI_RUN_FLAG_NAMES.includes(f.name)).map((f) => ({ ...f, summary: `${f.summary} (the first run started)` }))
 ]
 
 /**
@@ -127,8 +131,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'runs',
     summary: 'List or show saved runs (open one with `orgai tui <run>`)',
-    usage: 'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>] [--logs [--level warn|info|all]]',
-    subcommands: ['list', 'show'],
+    usage: 'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>] [--logs [--level warn|info|all]] | runs model <runId-or-R#> [<tier|model id>] [--connection <id>] [--yes]',
+    subcommands: ['list', 'show', 'model'],
     flags: [
       { name: 'all-projects', takesValue: false, summary: 'Runs of every project' },
       { name: 'status', takesValue: true, values: ['running', 'needs you', 'idle', 'paused', 'finished', 'stopped', 'ended when orgai closed', 'failed'], summary: 'Only runs with this status' },
@@ -136,7 +140,9 @@ export const COMMANDS: readonly CommandEntry[] = [
       { name: 'transcript', takesValue: false, summary: 'runs show: the whole transcript' },
       { name: 'tail', takesValue: true, summary: 'runs show: the last N transcript rows' },
       { name: 'logs', takesValue: false, summary: 'runs show: the run\'s harness log (warnings and errors by default)' },
-      { name: 'level', takesValue: true, values: ['warn', 'info', 'all'], summary: 'runs show --logs: warn (warnings and errors, default), info or all' }
+      { name: 'level', takesValue: true, values: ['warn', 'info', 'all'], summary: 'runs show --logs: warn (warnings and errors, default), info or all' },
+      { name: 'connection', takesValue: true, summary: 'runs model: the connection the model id is on' },
+      { name: 'yes', short: 'y', takesValue: false, summary: 'runs model: confirm a switch that ends the session (transcript handoff)' }
     ],
     available: true
   },
@@ -173,11 +179,13 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'resume',
     summary: 'Continue a session chain in the terminal UI, or headless with --exec',
-    usage: 'resume [runId-or-R#] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]]',
+    usage: 'resume [runId-or-R#] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]] | resume <runId-or-R#> --now | --cancel-auto-resume',
     flags: [
       { name: 'prompt', takesValue: true, summary: 'The message to continue with ("-" reads stdin, --exec only)' },
       { ...PROMPT_FILE_FLAG, summary: 'Read the message from this file ("-" reads stdin, --exec only); use it for text you did not write' },
       { name: 'exec', takesValue: false, summary: 'Continue headless, keeping the chain\'s exec settings' },
+      { name: 'now', takesValue: false, summary: 'Resume a run paused for a usage limit now (runs:resumeNow)' },
+      { name: 'cancel-auto-resume', takesValue: false, summary: 'Keep a paused run paused: it will not resume by itself' },
       ...TUI_FLAGS,
       ...EXEC_RUN_FLAGS
     ],

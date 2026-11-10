@@ -286,3 +286,19 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   the run spans several connections) and `fitModelText` cuts the id first, then drops it, then the text. The
   inspector lists every `usage.models` entry; the status bar and `runs show` (`Model:`) show the root's live model
   (`run.model` now sets `summary.modelSelection` in `state.ts`).
+- Run control (cli-parity 3.5, branch cp/runControl, 2026-11-10; unit and ink tests only, nothing live, e2e rows added
+  but not run). The live model switch's guard (`performModelSwitch`, `modelSwitchBlock`, `needsModelHandoff`, the
+  handoff wording) moved to `src/shared/liveModelSwitch.ts`; the renderer's `lib/liveModelSwitch.ts` re-exports it.
+  `src/cli/modelSwitch.ts` loads the connected connections' catalog, resolves a tier (the run connection's
+  `tierModels` via `modelForTier`) or id, and switches through the shared guard (a host request for a transcript
+  handoff is retried once after confirming). `orgai runs model <run> [<tier|id>] [--connection] [--yes]`
+  (`commands/runsModel.ts`; `runs list|show` stay hostless, `runs model` starts a host) and TUI `/model` (a pick
+  overlay without an argument). `orgai resume <run> --now` (`commands/resumeActions.ts`: runs:resumeNow in the TUI's
+  prepare, then the TUI follows the resumed run) and `--cancel-auto-resume` (one-shot). A pause exists only inside the
+  orgai that ran the run (a new host's boot normalization ends it), so from another terminal both answer "Run is not
+  paused" plus a hint to `orgai resume <run>`; inside the TUI `/resume-now` and `/cancel-resume` act on the followed
+  paused run, whose completion block (now also shown for paused runs) names them. Run flags: `/new` and `/ask` take
+  `--goal`, `--permission-mode`, `--strict-delegation`; bare `orgai` takes exec's run-shaping flags for the first run
+  (`runStartFlags.ts`, validated by exec's `overridesFromFlags`, `execMode` dropped; headless-only flags are refused).
+  `session.ts` sends `overrides` on start, continue and quick; widening ones go through a one-call 'configure'
+  connection (`callConfigured`), as exec asks for 'configure'.

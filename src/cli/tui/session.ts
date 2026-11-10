@@ -19,6 +19,8 @@ import {
   type Project,
   type ProjectCreateInput,
   type ProjectPathCheck,
+  type ProviderModel,
+  type RunOverrides,
   type RunRecord,
   type RunSummary,
   type RunTeam,
@@ -30,6 +32,8 @@ import { RunStream, type RunStreamTimers } from '../client/runStream'
 import { safeLine } from '../output'
 import { recordWithoutImages } from '../render'
 import { CliError, EXIT, type CliContext, type ConnectResult, type HostCallError, type HostClient, type InprocHostHandle } from '../types'
+import { overridesNeedConfigure } from '../commands/exec'
+import { loadModelCatalog, switchRunModel } from '../modelSwitch'
 import { composerMode, offersRetro } from './selectors'
 import {
   addNotice,
@@ -166,6 +170,15 @@ class TuiConnection implements TuiHostConnection {
   async createProject(input: ProjectCreateInput): Promise<Project> {
     return this.withConfigure((client) =>
       client.call<Project>('projects:create', [input]).catch((e: unknown) => {
+        throw hostError(e)
+      })
+    )
+  }
+
+  /** One call with 'configure' (run options that widen the project's settings; exec's Session.needConfigure). */
+  async callConfigured<T>(method: string, params: unknown[]): Promise<T> {
+    return this.withConfigure((client) =>
+      client.call<T>(method, params).catch((e: unknown) => {
         throw hostError(e)
       })
     )
@@ -439,6 +452,14 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return pid
   }
 
+  /**
+   * A call that starts or continues a run: with run options that widen the project's settings it goes through a
+   * separate 'configure' connection (as exec asks for it), else the shared one.
+   */
+  const startCall = <T>(method: string, params: unknown[], overrides: RunOverrides | undefined, project: Project | undefined): Promise<T> =>
+    overrides && conn.callConfigured && overridesNeedConfigure(project, overrides) ? conn.callConfigured<T>(method, params) : call<T>(method, params)
+  const withOverrides = (o: RunOverrides | undefined): { overrides?: RunOverrides } => (o && Object.keys(o).length ? { overrides: o } : {})
+
   /** Focus a run the host just started or continued (its summary first, so following and tags know it). */
   const adopt = async (summary: RunSummary, chain?: string[]): Promise<RunSummary> => {
     if (!summary || typeof summary.id !== 'string') throw new Error('The OrgAI host did not return the run.')
@@ -481,25 +502,45 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
         case 'continue': {
           const from = activeId()
           const chain = [...state.activeChain]
-          const next = await call<RunSummary>('runs:continue', [{ runId: from, text }])
+          const next = await startCall<RunSummary>('runs:continue', [{ runId: from, text, ...withOverrides(o.overrides) }], o.overrides, state.project)
           return adopt(next, chain)
         }
         case 'start': {
           const projectId = state.project?.id
           if (!projectId) throw new Error('No project is open.')
-          const next = await call<RunSummary>('runs:start', [{ projectId, prompt: text, ...(o.team ? { team: o.team } : {}) }])
+          const next = await startCall<RunSummary>('runs:start', [{ projectId, prompt: text, ...(o.team ? { team: o.team } : {}), ...withOverrides(o.overrides) }], o.overrides, state.project)
           return adopt(next)
         }
         case 'quick':
-          return api.startQuick({ prompt: text, allowEdits: false, ...(o.team ? { team: o.team } : {}) })
+          return api.startQuick({ prompt: text, allowEdits: false, ...(o.team ? { team: o.team } : {}), ...withOverrides(o.overrides) })
       }
     },
-    async startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam }) {
+    async startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam; overrides?: RunOverrides }) {
       if (typeof input.prompt !== 'string' || input.prompt.trim() === '') throw new Error('Type a message first.')
-      const next = await call<RunSummary>('runs:startQuick', [
-        { prompt: input.prompt, folder: state.folder, team: input.team ?? 'single', allowEdits: input.allowEdits === true }
-      ])
+      const next = await startCall<RunSummary>(
+        'runs:startQuick',
+        [{ prompt: input.prompt, folder: state.folder, team: input.team ?? 'single', allowEdits: input.allowEdits === true, ...withOverrides(input.overrides) }],
+        input.overrides,
+        undefined
+      )
       return adopt(next)
+    },
+    modelCatalog: () => loadModelCatalog(call),
+    async switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }) {
+      const runId = activeId()
+      const out = await switchRunModel(call, runId, selected, opts)
+      // The run.model event updates the status bar; the summary also carries the selection kept for the next message.
+      if (out.run?.id === runId) set(upsertRunSummary(state, out.run))
+      return out
+    },
+    async resumeNow() {
+      const from = activeId()
+      const chain = [...state.activeChain]
+      const next = await call<RunSummary>('runs:resumeNow', [from])
+      return next && next.id !== from ? adopt(next, chain) : adopt(next)
+    },
+    async cancelAutoResume() {
+      await call('runs:cancelAutoResume', [activeId()])
     },
     async interrupt() {
       await call('runs:interrupt', [activeId()])
