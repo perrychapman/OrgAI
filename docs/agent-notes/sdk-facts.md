@@ -257,6 +257,16 @@ not be in it, and none was logged). Inputs to split-execution.md 3.2, 3.3 and 3.
   `PostToolUse` fired at launch with the `async_launched` response; returning `additionalContext: 'MARKER-14
   teal-kite-3'` (tool input untouched) made the root quote that line in the turn that followed the launch result, before
   its resume with the report ("done"). Zero `classifier_request_started`, zero `canUseTool`.
+- Hook context size (2026-11-10, read from the SDK 0.3.318 CLI bundle, `strings` on the darwin-arm64 binary; not
+  checked live): every hook's `additionalContext` goes through `bve` with threshold `kHe=1e4`. Up to 10,000 characters
+  it is passed as is; above, it is written to a file and the model gets "Output too large ... Full output saved to:
+  <path>" plus a 2,000-character preview. So a context pack sent as `SubagentStart` additional context stays within
+  10,000 characters (`contextPack.ts` `CLAUDE_HOOK_CONTEXT_INLINE_MAX`).
+- Interrupt and background tasks (2026-11-10, SDK 0.3.318 `sdk.d.ts` only, not checked live): the initialize field
+  `perTaskStopAffordance` says that a consumer declaring it keeps running background agents on an interrupt; its
+  absence "fails closed: the interrupt kills background tasks". OrgAI does not declare it. `Query.stopTask(taskId)`
+  stops one task and is documented to emit a `task_notification` with status `stopped`. The Agent input's
+  `run_in_background` is documented as "Agents run in the background by default".
 - Not observed: whether the server-side judgment of a model-written `run_in_background: true` differs from a
   foreground one (only the absence of a local request is visible); the classifier's own usage; a background report
   that ends with plain text instead of `SubagentHandback`, or in permission mode `default` (no handback tool there).

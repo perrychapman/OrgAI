@@ -4,7 +4,8 @@ import { readySteps } from '@shared/planGraph'
 /**
  * One report and a waiting lead (docs/design/split-execution.md 3.6). Pure: the adapter gathers the facts at the end of
  * a successful spawn and appends the line to the spawn tool's result (Codex spawn_report, the mock). Never a refusal.
- * Claude would need the hook's additional context, which is unverified on SubagentStart, so it does not get the line.
+ * Claude delivers it as the Agent call's PostToolUse additional context, only on a background spawn's launch result
+ * (a foreground spawn's PostToolUse fires when the report is back, when waiting is over; claude.ts waitingNoteFor).
  */
 
 export const WAITING_NOTE = 'You are waiting on one report. Take a ready step yourself, or hand out the rest; waiting is slower than doing this alone.'

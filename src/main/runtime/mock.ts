@@ -1988,7 +1988,9 @@ export class MockSession implements RuntimeSession {
       ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}),
       ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}),
       ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
-      ...(this.ctx.bridgedChild ? { bridged: true } : {})
+      ...(this.ctx.bridgedChild ? { bridged: true } : {}),
+      // The mock's spawn step takes `files` like Codex spawn_report; only where a pack can be inlined.
+      ...(contextPackRefusal(this.ctx.run, this.isSetup) ? {} : { spawnFiles: true })
     })
   }
 

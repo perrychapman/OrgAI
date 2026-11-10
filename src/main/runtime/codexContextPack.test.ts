@@ -6,7 +6,7 @@ import type { BridgeSpawnInput, BridgeSpawnResult, BridgedRole, RuntimeContext, 
 import type { Role } from '@shared/types'
 import { CodexAdapter, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
-import { fakeCtx, project, role } from './testHelpers'
+import { fakeCtx, project, role, runSummary } from './testHelpers'
 import { CONTEXT_PACK_HEADING } from './contextPack'
 import { WAITING_NOTE } from './waitingNote'
 
@@ -134,6 +134,16 @@ describe('Codex spawn_report: context pack and waiting note', () => {
     const userRows = ctx.events.filter((e) => e.type === 'transcript' && e.entry.block.kind === 'user').map((e) => (e as { entry: { block: { text: string } } }).entry.block.text)
     expect(userRows).toContain('Do it')
     expect(userRows.some((t) => t.includes(CONTEXT_PACK_HEADING))).toBe(false)
+  })
+
+  it("the root's prompt asks for files only where a pack can be inlined (contextPackRefusal)", async () => {
+    const clause = 'pass the files you read as files'
+    const { s } = await start()
+    expect(s.of('thread/start')[0].params.developerInstructions).toContain(clause)
+    await session?.stop()
+    session = undefined
+    const restricted = await start({ run: runSummary({ buildWorkspace: dir }) })
+    expect(restricted.s.of('thread/start')[0].params.developerInstructions).not.toContain(clause)
   })
 
   it('without files the first message and the result are as before', async () => {

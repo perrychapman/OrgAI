@@ -49,14 +49,23 @@ function candidates(role, roles, project, flags, extra = []) {
     // Claude's Agent call fields (spawnCallFields): the marks on the report lines and their paragraph.
     const spawnCall = P.spawnCallParts(role, roles, project, flags)
     add('reports list (delegation)', P.reportsText(reports, flags.bridgedRoles, flags.bridgeVia, req, false, spawnCall.limits))
-    add('spawnCallText', spawnCall.text)
-    // Whichever variant the builder used is found in the prompt; overlapping misses are skipped by segment().
-    for (const isolation of [true, false]) add('teamSizingText', P.teamSizingText({ required: req.length > 0, isolation, review: reviewPolicyOf(project) }))
+    // With and without the background clause (workBesideReports); the longer one first, so it wins when both match.
+    add('spawnCallText', P.spawnCallParts(role, roles, project, { ...flags, workBesideReports: true }).text)
+    add('spawnCallText', P.spawnCallParts(role, roles, project, { ...flags, workBesideReports: false }).text)
+    // Whichever variant the builder used is found in the prompt; overlapping misses are skipped by segment(). The files
+    // clause: Claude's brief line, Codex and mock's files parameter, none.
+    for (const spawnFiles of ['brief', true, false]) for (const beside of [true, false]) for (const isolation of [true, false]) {
+      add('teamSizingText', P.teamSizingText({ required: req.length > 0, isolation, review: reviewPolicyOf(project), beside, spawnFiles }))
+    }
     // Staffing 'auto' only; the goal variants extend the balanced text, so the longer ones are looked for first.
     if (staffingModeOf(project) === 'auto') for (const goal of ['cost', 'speed', 'balanced']) add('staffingText', P.staffingText(goal))
     add('orchestratorIsolationText', P.orchestratorIsolationText())
     add('networkLeadText', P.networkLeadText(reports))
-  } else add('"no reports" line', 'You have no reports. Do the assigned work yourself and report back concisely when finished.')
+  } else {
+    // A writing report of a team work run checks its own piece (REPORT_CHECKS_TEXT); the longer variant first.
+    add('"no reports" line', `You have no reports. Do the assigned work yourself and report back concisely when finished. ${P.REPORT_CHECKS_TEXT}`)
+    add('"no reports" line', 'You have no reports. Do the assigned work yourself and report back concisely when finished.')
+  }
   add('networkPeerText', P.networkPeerText())
   add('reportIsolationText', P.reportIsolationText(reports.some(P.canWrite)))
   if (project.setup?.architecturePath) {
@@ -138,7 +147,8 @@ function claudeCase(c) {
   const role = ctx.roles.find((r) => r.slug === roleSlug)
   const def = agents[roleSlug]
   const isRoot = role.reportsTo === null
-  const flags = { isSetup: false, isolation, spawnCallFields: true, ...(team ? { team } : {}) }
+  // buildAgents' flags: the Agent call fields, a root that works beside its reports, files on the brief line.
+  const flags = { isSetup: false, isolation, spawnCallFields: true, workBesideReports: true, spawnFiles: 'brief', ...(team ? { team } : {}) }
   const parts = segment(def.prompt, candidates(role, ctx.roles, project, flags))
   const given = S.harnessToolsForRole(harness, role, isRoot)
   const tools = given.map((t) => ({ name: `mcp__orgai__${t.name}`, chars: S.claudeToolDefinitionChars(t), descriptionChars: t.description.length }))

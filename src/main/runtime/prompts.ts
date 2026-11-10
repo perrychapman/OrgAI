@@ -109,18 +109,19 @@ export interface PromptFlags {
   spawnCallFields?: boolean
   /**
    * The root keeps working while its reports run (docs/design/split-execution.md 3.3): teamSizingText tells a lead that
-   * fans out to keep a piece itself. Missing = `spawnCallFields !== true`: Codex spawn_report and mock return at once,
-   * while Claude's native Agent spawns run in the foreground and block the lead today. Claude passes true here once
-   * reports that are not required run in the background (claude.ts buildAgents).
+   * fans out to keep a piece itself. Missing = `spawnCallFields !== true`: Codex spawn_report and mock return at once.
+   * Claude passes true (claude.ts buildAgents): a report that is not required may run in the background
+   * (`run_in_background: true`, never rewritten by the spawn hook), and with spawnCallFields the root's spawnCallText
+   * says so.
    */
   workBesideReports?: boolean
   /**
-   * The adapter's spawn tool takes `files` (paths whose content the harness puts into the report's first message,
-   * split-execution 3.2): teamSizingText asks the lead to pass the files it already read. Not wired yet: Codex passes
-   * `spawnFiles: true` in codex.ts (the buildRolePrompt call of its role prompt) and mock in rolePromptFor once their
-   * spawn_report takes `files`. Claude's Agent tool has no such field. Missing = false.
+   * The lead can hand its report the files it already read (split-execution 3.2, contextPack.ts): teamSizingText asks
+   * it to. `true`: the spawn tool takes `files` (Codex spawn_report, the mock). `'brief'`: Claude, whose Agent tool has
+   * no such field and is never rewritten, so the lead ends the brief with a `Files: a, b` line (contextPack.ts
+   * briefFiles). Adapters set it only on runs that inline files (contextPackRefusal undefined). Missing = false.
    */
-  spawnFiles?: boolean
+  spawnFiles?: boolean | 'brief'
 }
 
 /**
@@ -151,13 +152,17 @@ export function spawnLimitMark(report: Role, project: Pick<Project, 'staffing'>,
  * Claude, every role with reports (PromptFlags.spawnCallFields): the Agent call fields the spawn hook would otherwise
  * write. Each value written here and kept by the hook leaves the call unchanged, so auto mode's own verdict on it
  * stands. `auto`: the project staffs automatically (a fixed project's reports run as configured, so the call names no
- * model or effort); `fixed`, `worktree`, `foreground`: some listed report carries that mark.
+ * model or effort); `fixed`, `worktree`, `foreground`: some listed report carries that mark. `background`: the run's
+ * root works beside its reports (PromptFlags.workBesideReports) and some listed report is not marked foreground, so it
+ * may run one in the background while it keeps a piece (split-execution 3.3; the hook never rewrites that value).
  */
-export function spawnCallText(opts: { auto: boolean; fixed?: boolean; worktree?: boolean; foreground?: boolean }): string {
+export function spawnCallText(opts: { auto: boolean; fixed?: boolean; worktree?: boolean; foreground?: boolean; background?: boolean }): string {
   const fields = ['name (a short handle unique in this run, such as tester-2)']
   if (opts.auto) fields.push('model (haiku fast, sonnet everyday, opus deep) and effort (low, medium or high) within the limits in parentheses after each specialist')
   if (opts.worktree) fields.push('isolation: "worktree" if marked worktree')
-  if (opts.foreground) fields.push('run_in_background: false if marked foreground')
+  if (opts.foreground && opts.background) fields.push('run_in_background: false if marked foreground, else true while you keep a piece')
+  else if (opts.foreground) fields.push('run_in_background: false if marked foreground')
+  else if (opts.background) fields.push('run_in_background: true while you keep a piece')
   return (
     `On every Agent call pass ${joinAnd(fields)}${opts.auto ? '' : ' but no model or effort'}.` +
     (opts.auto && opts.fixed ? ' Omit model and effort for one marked fixed.' : '') +
@@ -174,7 +179,7 @@ export function spawnCallParts(
   role: Role,
   roles: Role[],
   project: Project,
-  flags: Pick<PromptFlags, 'isSetup' | 'isolation' | 'spawnCallFields' | 'strictDelegation' | 'bridgedRoles' | 'bridged'>
+  flags: Pick<PromptFlags, 'isSetup' | 'isolation' | 'spawnCallFields' | 'strictDelegation' | 'bridgedRoles' | 'bridged' | 'workBesideReports' | 'quick' | 'team'>
 ): { limits: Record<string, string>; text?: string } {
   const limits: Record<string, string> = {}
   if (flags.spawnCallFields !== true || flags.isSetup) return { limits }
@@ -185,6 +190,7 @@ export function spawnCallParts(
   const isolated = flags.isolation && (isRoot || canWrite(role))
   let worktree = false
   let foreground = false
+  let unmarked = false
   let fixed = false
   for (const r of reportsOf(role, roles)) {
     if (flags.bridgedRoles?.some((b) => b.roleId === r.id)) continue
@@ -193,11 +199,15 @@ export function spawnCallParts(
     const f = required.includes(r.id) || (obligations[r.id]?.length ?? 0) > 0
     worktree ||= w
     foreground ||= f
+    unmarked ||= !f
     fixed ||= effectiveRoleStaffing(r, project).mode === 'fixed'
     limits[r.slug] = spawnLimitMark(r, project, { worktree: w, foreground: f })
   }
   if (!Object.keys(limits).length) return { limits }
-  return { limits, text: spawnCallText({ auto: staffingModeOf(project) === 'auto', fixed, worktree, foreground }) }
+  // Background reports only for the team root that works beside them (teamSizingText's "keep a piece"); a report of
+  // a mid-level lead hands back to that lead, which is not verified to resume on its own.
+  const background = flags.workBesideReports === true && isRoot && !flags.quick && flags.team !== 'single' && unmarked
+  return { limits, text: spawnCallText({ auto: staffingModeOf(project) === 'auto', fixed, worktree, foreground, background }) }
 }
 
 /** One line for the root of a bridged child session: its final message is what the delegating agent receives. */
@@ -262,11 +272,12 @@ export function reportsText(
  * `review`: the project's review policy (reviewPolicyOf, default 'risk'); its sentence (reviewPolicyText) is the
  * paragraph's only review rule, shown whatever the staffing mode.
  * Split execution (docs/design/split-execution.md 3.2 to 3.4), all about handed-out work: the interface and acceptance
- * criteria go into each brief (`spawnFiles`: with the files the lead already read); `beside` (default true, as
- * buildRolePrompt's default for an adapter whose spawns return at once; false on Claude today): a lead that fans out
- * keeps a piece itself; the lead does not repeat a piece's checks and checks the integrated result once.
+ * criteria go into each brief (`spawnFiles`: with the files the lead already read, as `files` or, 'brief', on the
+ * brief's last line); `beside` (default true; buildRolePrompt passes PromptFlags.workBesideReports, which Claude sets
+ * since its reports that are not required may run in the background): a lead that fans out keeps a piece itself; the
+ * lead does not repeat a piece's checks and checks the integrated result once.
  */
-export function teamSizingText(opts: { required?: boolean; isolation?: boolean; review?: ReviewPolicy; beside?: boolean; spawnFiles?: boolean } = {}): string {
+export function teamSizingText(opts: { required?: boolean; isolation?: boolean; review?: ReviewPolicy; beside?: boolean; spawnFiles?: boolean | 'brief' } = {}): string {
   return (
     'Unless your instructions, the brief or required reports say otherwise, do the work yourself when it is one contained piece and you hold the tools. ' +
     "Hand work out when what the brief asks for splits into independent pieces of more than a couple of minutes each, needs a report's tools, skills or connections, or a rule demands it; " +
@@ -277,12 +288,21 @@ export function teamSizingText(opts: { required?: boolean; isolation?: boolean; 
     'Run several instances of a role on disjoint scopes. ' +
     'Start every ready piece in one message: calls in one message run together, separate messages run in sequence. ' +
     (opts.isolation ? '' : 'Parallel writers need disjoint files. ') +
-    `Once interface and acceptance criteria are set, put them in each brief${opts.spawnFiles ? ', pass the files you read as files,' : ''} and start tests and checks of handed-out work beside it. ` +
+    `Once interface and acceptance criteria are set, put them in each brief${spawnFilesClause(opts.spawnFiles)} and start tests and checks of handed-out work beside it. ` +
     `${reviewPolicyText(opts.review)} ` +
     (opts.beside !== false ? "When you fan out, keep a piece yourself (the integration or the hardest to explain) unless all need a report's tools. " : '') +
     'While reports run, do only work you kept, never work you handed out, or end your turn and wait. ' +
     'Do not re-run checks a report ran on its piece; read its evidence and check the integrated result once.'
   )
+}
+
+/**
+ * teamSizingText's files clause (PromptFlags.spawnFiles): with `files` on the spawn tool, or (Claude, 'brief') on the
+ * brief's last line in the form contextPack.ts briefFiles parses. '' without it.
+ */
+function spawnFilesClause(spawnFiles: boolean | 'brief' | undefined): string {
+  if (spawnFiles === 'brief') return ', end it with a line "Files: <path>, <path>" naming files you read,'
+  return spawnFiles ? ', pass the files you read as files,' : ''
 }
 
 /**
@@ -678,7 +698,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
           isolation,
           review: reviewPolicyOf(project),
           beside: flags.workBesideReports ?? flags.spawnCallFields !== true,
-          spawnFiles: flags.spawnFiles === true
+          spawnFiles: flags.spawnFiles === 'brief' ? 'brief' : flags.spawnFiles === true
         })
       )
       // Run staffing: only when the project lets the harness staff each assignment ('fixed' = roles' own model and effort).

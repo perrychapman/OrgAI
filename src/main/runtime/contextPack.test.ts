@@ -3,10 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  CLAUDE_HOOK_CONTEXT_INLINE_MAX,
   CONTEXT_PACK_FILE_MAX_CHARS,
   CONTEXT_PACK_HEADING,
   CONTEXT_PACK_MAX_FILES,
   CONTEXT_PACK_TOTAL_MAX_CHARS,
+  briefFiles,
   buildContextPack,
   contextPackBlock,
   contextPackRefusal,
@@ -125,5 +127,39 @@ describe('context pack', () => {
     const pack = buildContextPack(['src/a.ts'], opts({ refuseAll: contextPackRefusal({ buildWorkspace: '/x' }, false) }))
     expect(pack.files).toEqual([])
     expect(contextPackResultLine(pack)).toContain('src/a.ts (this run\'s folder is not trusted')
+  })
+
+  it('blockMaxChars (Claude: the CLI keeps hook context inline only up to 10,000 characters) bounds the whole block', () => {
+    for (let i = 0; i < 3; i++) writeFileSync(join(proj, `m${i}.txt`), 'z'.repeat(4000))
+    const pack = buildContextPack(['m0.txt', 'm1.txt', 'm2.txt', 'src/a.ts'], opts({ blockMaxChars: CLAUDE_HOOK_CONTEXT_INLINE_MAX }))
+    expect(pack.files.map((f) => f.path)).toEqual(['m0.txt', 'm1.txt', 'src/a.ts'])
+    expect(pack.skipped).toEqual([{ path: 'm2.txt', reason: 'over the 10,000-character total' }])
+    expect(contextPackBlock(pack).length).toBeLessThanOrEqual(CLAUDE_HOOK_CONTEXT_INLINE_MAX)
+    // Exactly at the limit is inline: the cap counts the heading, paths, fences and separators.
+    const exact = buildContextPack(['src/a.ts'], opts({ blockMaxChars: contextPackBlock(buildContextPack(['src/a.ts'], opts())).length }))
+    expect(exact.files).toHaveLength(1)
+    const under = buildContextPack(['src/a.ts'], opts({ blockMaxChars: contextPackBlock(exact).length - 1 }))
+    expect(under.files).toHaveLength(0)
+    // Without the option only the file text total applies (Codex, mock).
+    expect(buildContextPack(['m0.txt', 'm1.txt', 'm2.txt'], opts()).files).toHaveLength(3)
+  })
+})
+
+describe('briefFiles (a Claude brief names its files on the last line)', () => {
+  it('reads the last non-empty line "Files: a, b", any case, trimmed, quotes and backticks dropped', () => {
+    expect(briefFiles('Build the parser.\nFiles: src/a.ts, docs/spec.md')).toEqual(['src/a.ts', 'docs/spec.md'])
+    expect(briefFiles('Do it.\n\nfiles:  `src/a.ts` , "b c.md",\'d.ts\'  \n\n  ')).toEqual(['src/a.ts', 'b c.md', 'd.ts'])
+    expect(briefFiles('Do it.\r\nFILES: /abs/x.ts')).toEqual(['/abs/x.ts'])
+    expect(briefFiles('Files: only.ts')).toEqual(['only.ts'])
+  })
+
+  it('nothing unless the last line is such a line', () => {
+    expect(briefFiles('Files: a.ts\nThen write tests.')).toEqual([])
+    expect(briefFiles('Read these files: a.ts')).toEqual([])
+    expect(briefFiles('Files:')).toEqual([])
+    expect(briefFiles('Files: , ,')).toEqual([])
+    expect(briefFiles('')).toEqual([])
+    expect(briefFiles(undefined)).toEqual([])
+    expect(briefFiles(42)).toEqual([])
   })
 })
