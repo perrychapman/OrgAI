@@ -5,7 +5,8 @@
 // Fixture: a git repo with a Claude Code agent definition (.claude/agents/backend-dev.md) and two leftover report
 // worktrees planted the way e2e/maintenance.mjs plants them (one clean, one that conflicts with main).
 // Checks: org show (text, JSON), permissions add / list / remove / mode, team templates save / list, team roles /
-// role, worktrees list / diff / merge (clean ok, conflict exit 1) / discard (exit 2 without --yes, then --yes),
+// role, team role add / set / move / rm (spend gate, --yes, previousRoles), mcp update --role / --no-roles,
+// worktrees list / diff / merge (clean ok, conflict exit 1) / discard (exit 2 without --yes, then --yes),
 // org import --yes (the agent lands in the chart), org recommend (keyword fallback under mock).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -88,6 +89,36 @@ try {
   check(r.code === 0 && r.out.includes(`${roleCount} role`), 'team roles', show(r))
   r = await at(['team', 'role', project.roles[0].slug])
   check(r.code === 0 && r.out.includes('prompt:'), 'team role shows the prompt', show(r))
+  check(r.out.includes('  effort: ') && r.out.includes('  staffing: ') && r.out.includes('  runs on: '), 'team role text names effort, staffing and the connection', show(r))
+
+  // ---------- team role editing (cli-parity 3.3) ----------
+  const rootSlug = project.roles.find((x) => x.reportsTo === null).slug
+  r = await at(['team', 'role', 'add', 'E2E Writer', '--reports-to', rootSlug, '--model', 'top'])
+  check(r.code === 2 && r.err.includes('May spend more') && r.err.includes('--yes'), 'team role add that may spend more asks for --yes without a terminal', show(r))
+  j = await jsonOf(['team', 'role', 'add', 'E2E Writer', '--reports-to', rootSlug, '--yes'])
+  check(j.r.code === 0 && j.v?.role?.before === null && j.v.role.after?.slug === 'e2e-writer', 'team role add --yes (JSON before null, after the role)', show(j.r))
+  j = await jsonOf(['team', 'role', 'set', 'e2e-writer', '--effort', 'high', '--staffing', 'auto', '--max-effort', 'high', '--add-tool', 'Write', '--yes'])
+  check(j.r.code === 0 && j.v?.role?.after?.effort === 'high' && j.v.role.after.tools.includes('Write') && j.v.role.after.staffing?.maxEffort === 'high', 'team role set saves effort, staffing and tools', show(j.r))
+  r = await at(['team', 'role', 'set', 'e2e-writer', '--tools', 'Teleport'])
+  check(r.code === 2 && r.err.includes('--tools'), 'team role set refuses an unknown tool naming the flag', show(r))
+  r = await at(['team', 'role', 'move', rootSlug, '--reports-to', 'e2e-writer'])
+  check(r.code === 2 && r.err.includes('top of the chart'), 'team role move refuses the root', show(r))
+  r = await at(['team', 'role', 'rm', 'e2e-writer'])
+  check(r.code === 2 && r.err.includes('--yes'), 'team role rm without --yes and without a terminal is exit 2', show(r))
+  j = await jsonOf(['team', 'role', 'rm', 'e2e-writer', '--yes'])
+  check(j.r.code === 0 && j.v?.previousRoles?.some((x) => x.slug === 'e2e-writer'), 'team role rm --yes (JSON previousRoles)', show(j.r))
+  j = await jsonOf(['team', 'roles'])
+  check(j.r.code === 0 && !j.v?.roles?.some((x) => x.slug === 'e2e-writer'), 'the removed role is gone', show(j.r))
+
+  // ---------- mcp update --role ----------
+  r = await at(['mcp', 'add', 'e2e-notes', '--command', 'node', '--arg', 'server.js'])
+  check(r.code === 0, 'mcp add for the role-access rows', show(r))
+  j = await jsonOf(['mcp', 'update', 'e2e-notes', '--role', rootSlug])
+  check(j.r.code === 0 && JSON.stringify(j.v?.roles) === JSON.stringify([rootSlug]), 'mcp update --role limits the server to that role', show(j.r))
+  j = await jsonOf(['mcp', 'update', 'e2e-notes', '--no-roles'])
+  check(j.r.code === 0 && Array.isArray(j.v?.roles) && j.v.roles.length === 0, 'mcp update --no-roles leaves it to no role', show(j.r))
+  r = await at(['mcp', 'remove', 'e2e-notes', '--yes'])
+  check(r.code === 0, 'mcp remove after the role-access rows', show(r))
 
   // ---------- worktrees ----------
   j = await jsonOf(['worktrees', 'list'])
