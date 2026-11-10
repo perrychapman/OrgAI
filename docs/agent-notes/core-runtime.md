@@ -338,7 +338,9 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   the result carries `reportsUnchanged` and the info line and `reason` say so; it must not answer plain true then), or
   false / throw. On a refusal chosenMode goes back and `ctx.project` is re-derived from the live project
   (`ActiveRun.liveProject`, so an approval that landed during the await is kept) and the summary follows; a thrown message
-  is only logged (`reason` is fixed). Nothing changes when the method is missing. Open cards stay open; session rules,
+  is only logged (`reason` is fixed), except a thrown `PermissionModeRefusal` (`runtime/permissionModeRefusal.ts`,
+  `instanceof` only; plain OrgAI-written text, never provider text): its message becomes `reason`, control characters
+  stripped, at most 300 characters. Nothing changes when the method is missing. Open cards stay open; session rules,
   session folders and staffing are untouched; a session acceptEdits grant is dropped (below). Only the desktop IPC reaches it (no RuntimeContext hook or tool).
 - "Accept edits" grants (review M1, re-check M-a / M-b / M-c / H1): RunManager follows what the adapter applied, not
   the card. The adapter calls `RuntimeContext.acceptEditsGranted()` where it applies a session / project allow's setMode
