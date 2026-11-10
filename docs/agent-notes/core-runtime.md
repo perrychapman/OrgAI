@@ -340,14 +340,24 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   (`ActiveRun.liveProject`, so an approval that landed during the await is kept) and the summary follows; a thrown message
   is only logged (`reason` is fixed). Nothing changes when the method is missing. Open cards stay open; session-only
   grants and staffing are untouched. Only the desktop IPC reaches it (no RuntimeContext hook or tool).
-- "Accept edits" allows (review M1): a session or project allow of a setMode acceptEdits suggestion makes every adapter
-  move the provider session to acceptEdits. `RunManager.decide` (`followAcceptEditsGrant`) follows on a non-restricted
-  run whose mode in force is narrower (default, dontAsk, plan): chosenMode becomes acceptEdits, `ctx.project` is
-  re-derived, `RunSummary.permissionMode` becomes acceptEdits with `permissionModeChosen` (not on exec runs), and an info
-  line is logged. A desktop continuation therefore carries acceptEdits, as with a mid-run mode choice. No summary event
-  reaches the renderer for this: `run.model` carries only the model and there is no generic summary-update event, so the
-  renderer sees the new mode on its next summary fetch.
-- Checked by unit tests only: `runtime/runManager.startChoice.test.ts` (fake recording adapter: the M1, M2, M3, L1, L2
-  and L3 cases are named by finding), `host/argsRunChoice.test.ts`, `host/dispatcherRunChoice.test.ts`,
-  `store/runs.test.ts`. Whether the Claude SDK or Codex app-server can change a live session's mode is unverified
+- "Accept edits" grants (review M1, re-check M-a / M-b / M-c / H1): RunManager follows what the adapter applied, not
+  the card. The adapter calls `RuntimeContext.acceptEditsGranted()` where it applies a session / project allow's setMode
+  acceptEdits to its own session (bound only on non-restricted work runs; bridge.ts never passes it to a bridged child,
+  whose grant moves only the child). `followAcceptEditsGrant` sets `ActiveRun.acceptEditsGrant`, an overlay that
+  `runProjectFor` lays over default / dontAsk / plan, so `ctx.project` reads acceptEdits and setLive cannot undo it.
+  `RunSummary.sessionPermissionMode` says 'acceptEdits' meanwhile; `permissionMode` / `permissionModeChosen` keep the
+  run's own mode, so a continuation never carries a session grant. The overlay ends at a finished / error / paused
+  status and at teardown, and is dropped from stored runs on load. An applied `setPermissionMode` clears it, and the
+  contract makes the adapter drop its own session acceptEdits grant whenever `mode` is not acceptEdits, auto or
+  bypassPermissions (H1). A grant that lands while a narrowing awaits makes RunManager send the narrowing once more
+  (`ActiveRun.modeGen`; a second race counts as a refusal). Every change to the three fields on a live run is broadcast
+  as `run.permissionMode` (a RunManager-only snapshot event; an adapter's is dropped). The renderer does not consume it
+  yet.
+- Bridged children keep the mode they started in (their project is a snapshot; they never take a live change). On an
+  applied narrowing, RunManager adds `BridgedSessions.liveWiderThan(mode)` (live children whose start mode is wider;
+  unknown counts) to `reportsUnchanged`, so a narrowing never answers a plain applied while a wider bridged child runs.
+- Checked by unit tests only: `runtime/runManager.startChoice.test.ts` (fake recording adapter: cases are named by
+  finding), `runtime/bridge.test.ts` (liveWiderThan, no hook on children), `host/argsRunChoice.test.ts`,
+  `host/dispatcherRunChoice.test.ts`, `store/runs.test.ts`. Adapters calling `acceptEditsGranted` and dropping their
+  session grant on a narrowing are contract only until the Adapter Engineer lands them. Whether the Claude SDK or Codex app-server can change a live session's mode is unverified
   (sdk-facts.md does not record it).

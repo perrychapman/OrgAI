@@ -366,6 +366,11 @@ export function recordedRunPermissionMode(run: Pick<RunSummary, 'kind' | 'quick'
   return choices.includes(mode) ? mode : 'default'
 }
 
+/** Modes an "accept edits" grant widens to acceptEdits: default, dontAsk and plan (auto and bypass are wider already). */
+export function overlaidByAcceptEdits(mode: PermissionMode): boolean {
+  return mode !== 'acceptEdits' && canNarrowPermissionMode('acceptEdits', mode)
+}
+
 /** The plain sentence for running reports that keep their earlier mode after a live permission mode change. */
 export function reportsUnchangedText(n: number): string {
   return n === 1 ? '1 running report keeps the earlier mode until it finishes.' : `${n} running reports keep the earlier mode until they finish.`
@@ -562,10 +567,17 @@ interface ActiveRun {
   /**
    * The permission mode the user chose for this run (start-time choice, a carried one, or runs:setPermissionMode). It is
    * laid over ctx.project every time the project is re-derived (runProjectFor), so a live install or proposal cannot undo it.
-   * decide() also sets it to 'acceptEdits' when a session / project allow of a setMode acceptEdits suggestion moves the
-   * provider session past a narrower mode (followAcceptEditsGrant).
+   * An "accept edits" grant never changes it (see acceptEditsGrant).
    */
   chosenMode?: PermissionMode
+  /**
+   * The adapter applied a session / project "accept edits" grant to this session (RuntimeContext.acceptEditsGranted):
+   * runProjectFor lays acceptEdits over a narrower mode for the rest of the session. Cleared by an applied
+   * runs:setPermissionMode (the adapter drops its grant on a narrowing). Never persisted or carried.
+   */
+  acceptEditsGrant?: true
+  /** Bumped by each followed "accept edits" grant, so setPermissionMode can tell one landed while it awaited. */
+  modeGen?: number
   /** The run's live project (start()'s `live`, as setLive keeps it), so mode changes re-derive ctx.project from it. */
   liveProject?: () => Project
   /** A runs:setPermissionMode call is waiting on the session: a second one is refused (serialized per run). */
@@ -1399,53 +1411,81 @@ export class RunManager {
    * permission mode (chosenMode) on top. The one place both start() and setLive() derive ctx.project from.
    */
   private runProjectFor(active: ActiveRun, project: Project): Project {
+    const own = this.runOwnProject(active, project)
+    return active.acceptEditsGrant && overlaidByAcceptEdits(own.permissionMode) ? { ...own, permissionMode: 'acceptEdits' } : own
+  }
+
+  /** runProjectFor without the "accept edits" grant overlay: the run's own mode, which RunSummary.permissionMode records. */
+  private runOwnProject(active: ActiveRun, project: Project): Project {
     const effective = effectiveRunProject(project, active.summary.overrides, { allowWidening: active.allowWidening })
     return active.chosenMode ? { ...effective, permissionMode: active.chosenMode } : effective
   }
 
-  /** Keep RunSummary.permissionMode in step with `mode` (recordedRunPermissionMode), saving the summary when it moves. */
-  private recordRunMode(active: ActiveRun, mode: PermissionMode): void {
-    const recorded = recordedRunPermissionMode(active.summary, mode)
-    if (active.summary.permissionMode === recorded) return
-    if (recorded) active.summary.permissionMode = recorded
-    else delete active.summary.permissionMode
-    this.store.upsert(active.summary)
-  }
-
-  /** Re-derive ctx.project from the run's live project (and chosenMode), and record the mode now in force. */
-  private rederiveRunMode(active: ActiveRun): void {
-    const ctx = active.ctx
+  /**
+   * Re-derive ctx.project from the run's live project (chosenMode and the grant overlay included), record the run's own
+   * mode (recordedRunPermissionMode) and the overlay (sessionPermissionMode) on the summary, and when any of the three
+   * mode fields moved, save the summary and broadcast run.permissionMode. `ctx` defaults to active.ctx (setLive passes
+   * its own, the same object once the run started).
+   */
+  private rederiveRunMode(active: ActiveRun, ctx: RuntimeContext | undefined = active.ctx): void {
     if (!ctx) return
-    if (active.liveProject) ctx.project = this.runProjectFor(active, active.liveProject())
-    this.recordRunMode(active, ctx.project.permissionMode)
+    const live = active.liveProject?.()
+    const own = live ? this.runOwnProject(active, live).permissionMode : (active.chosenMode ?? ctx.project.permissionMode)
+    if (live) ctx.project = this.runProjectFor(active, live)
+    const s = active.summary
+    const before = `${s.permissionMode}|${s.permissionModeChosen}|${s.sessionPermissionMode}`
+    const recorded = recordedRunPermissionMode(s, own)
+    if (recorded) s.permissionMode = recorded
+    else delete s.permissionMode
+    if (ctx.project.permissionMode === 'acceptEdits' && own !== 'acceptEdits' && recorded !== undefined) s.sessionPermissionMode = 'acceptEdits'
+    else delete s.sessionPermissionMode
+    if (`${s.permissionMode}|${s.permissionModeChosen}|${s.sessionPermissionMode}` === before) return
+    this.store.upsert(s)
+    this.broadcastRunMode(active)
   }
 
   /**
-   * Review M1: a session or project allow of a setMode acceptEdits suggestion makes the adapter move the provider
-   * session to acceptEdits (Claude: the SDK's session mode; Codex / mock: their session flag), whatever the mode was.
-   * On a run whose mode in force is narrower (default, dontAsk, plan), RunManager follows: chosenMode becomes
-   * acceptEdits (so setLive cannot lay a narrower choice back), ctx.project is re-derived and RunSummary records it.
-   * Only runs that take a per-run mode and are not trust-restricted (their adapters never get the suggestion).
+   * A session's "accept edits" grant ends with the session (never carried): at a finished / error / paused status and
+   * at teardown. The ended run shows its own mode again. Idempotent.
    */
-  private followAcceptEditsGrant(active: ActiveRun, request: PermissionRequest, decision: PermissionDecision): void {
-    if (decision?.behavior !== 'allow' || (decision.scope !== 'session' && decision.scope !== 'project')) return
-    if (!request.suggestions?.some((s) => s.type === 'setMode' && s.mode === 'acceptEdits')) return
-    if (this.isRestricted(active.summary) || !runPermissionModeChoices(active.summary).includes('acceptEdits')) return
+  private endAcceptEditsGrant(active: ActiveRun): void {
+    delete active.acceptEditsGrant
+    if (!active.summary.sessionPermissionMode) return
+    delete active.summary.sessionPermissionMode
+    this.store.upsert(active.summary)
+    this.broadcastRunMode(active)
+  }
+
+  /** run.permissionMode: a snapshot of the summary's three mode fields (the renderer replaces all three). */
+  private broadcastRunMode(active: ActiveRun): void {
+    const s = active.summary
+    this.broadcast({
+      type: 'run.permissionMode',
+      runId: s.id,
+      ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}),
+      ...(s.permissionModeChosen ? { permissionModeChosen: true as const } : {}),
+      ...(s.sessionPermissionMode ? { sessionPermissionMode: s.sessionPermissionMode } : {})
+    })
+  }
+
+  /**
+   * RuntimeContext.acceptEditsGranted (reviews M1, M-a, M-b): the adapter applied a session / project "accept edits"
+   * grant to its own session. RunManager lays acceptEdits over a narrower mode in force for the rest of this session
+   * (ctx.project, RunSummary.sessionPermissionMode, run.permissionMode). The run's own mode, permissionModeChosen and
+   * what a continuation carries are untouched: a session grant ends with its session. Only bound on work runs that are
+   * not trust-restricted; bridged children never get the hook.
+   */
+  private followAcceptEditsGrant(active: ActiveRun): void {
     const ctx = active.ctx
-    if (!ctx) return
-    const current = ctx.project.permissionMode
-    if (current === 'acceptEdits' || !canNarrowPermissionMode('acceptEdits', current)) return
-    active.chosenMode = 'acceptEdits'
+    if (!ctx || active.acceptEditsGrant) return
+    active.modeGen = (active.modeGen ?? 0) + 1
+    active.acceptEditsGrant = true
+    const before = ctx.project.permissionMode
     this.rederiveRunMode(active)
-    if (ctx.project.permissionMode !== 'acceptEdits') ctx.project = { ...ctx.project, permissionMode: 'acceptEdits' }
-    this.recordRunMode(active, 'acceptEdits')
-    // An exec run keeps its own mode across continuations (continueRun never carries a choice into exec).
-    if (!active.summary.overrides?.execMode && !active.summary.permissionModeChosen) {
-      active.summary.permissionModeChosen = true
-      this.store.upsert(active.summary)
+    if (before !== ctx.project.permissionMode) {
+      const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === 'acceptEdits')?.label ?? 'acceptEdits'
+      active.emit({ type: 'log', runId: active.summary.id, level: 'info', message: `${label} is on for the rest of this session.` })
     }
-    const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === 'acceptEdits')?.label ?? 'acceptEdits'
-    active.emit({ type: 'log', runId: active.summary.id, level: 'info', message: `Permission mode set to ${label} for this run.` })
   }
 
   /**
@@ -1788,7 +1828,7 @@ export class RunManager {
 
     const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
-      if (raw.type === 'run.usage' || raw.type === 'run.model') return
+      if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       let e = raw
       // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
@@ -1846,7 +1886,10 @@ export class RunManager {
         if (e.sessionId) summary.sessionId = e.sessionId
         if (e.error) summary.error = e.error
         active.idleTimer.set(e.status === 'idle', now)
-        if (closing) summary.endedAt = now
+        if (closing) {
+          summary.endedAt = now
+          this.endAcceptEditsGrant(active)
+        }
         // A session cut by End session or by the app quitting records who cut it, so the status word needs no agents.
         if ((e.status === 'finished' || e.status === 'error') && active.endedBy) {
           summary.endedBy = active.endedBy
@@ -2096,9 +2139,8 @@ export class RunManager {
         else overlay('permissionMode')
         live = noFolderWrites({ ...next, path: live.path })
         // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
-        ctx.project = this.runProjectFor(active, live)
-        // RunSummary.permissionMode shows the mode in force: an approved project change (acceptEdits for project) moves it.
-        this.recordRunMode(active, ctx.project.permissionMode)
+        // RunSummary.permissionMode follows: an approved project change (acceptEdits for project) moves it.
+        this.rederiveRunMode(active, ctx)
         ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
         ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
         this.applyExecBudget(active, ctx)
@@ -2425,6 +2467,8 @@ export class RunManager {
             }
           : {}),
         ...(isQuick ? { quickSessionEdits: () => active.quickSessionEdits === true } : {}),
+        // The adapter applied an "accept edits" grant to its session: ctx.project follows (never on restricted runs).
+        ...(!restricted && runPermissionModeChoices(summary).includes('acceptEdits') ? { acceptEditsGranted: () => this.followAcceptEditsGrant(active) } : {}),
         ...(kind === 'skill-assist' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(skillScope()),
@@ -3537,6 +3581,7 @@ export class RunManager {
     }
     active.tornDown = true
     const runId = active.summary.id
+    this.endAcceptEditsGrant(active)
     // Bridged children never outlive their run.
     if (active.bridge?.hasActive()) void active.bridge.stopAll('the run ended').catch(() => {})
     // A widened chain's grant lives only until its own automatic resume (an armed timer); any other end drops it.
@@ -4072,8 +4117,7 @@ export class RunManager {
     const effective = narrowed?.behavior === 'allow' ? 'allow' : 'deny'
     this.cardResolved(active, 'permission', requestId, 'applied', effective, opts.decidedBy)
     pending.resolve(narrowed)
-    this.followAcceptEditsGrant(active, pending.request, narrowed)
-    const savedToProject =narrowed?.behavior === 'allow' && narrowed.scope === 'project'
+    const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
     this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(narrowed?.behavior === 'allow' && narrowed.scope ? { scope: narrowed.scope } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     if (active.summary.quick && narrowed?.behavior === 'allow' && narrowed.scope === 'session') {
       // Adapter labels are built from the agent's own command text: strip hidden characters before they reach a row.
@@ -4954,6 +4998,7 @@ export class RunManager {
     // Ended or paused: saved for the continuation (continueRun reads permissionMode / permissionModeChosen).
     if (!active || run.status === 'finished' || run.status === 'error' || run.status === 'paused') {
       const saved = this.patchSummary(run.id, { permissionMode: mode, permissionModeChosen: true }) ?? run
+      this.broadcast({ type: 'run.permissionMode', runId: run.id, permissionMode: mode, permissionModeChosen: true })
       return { run: saved, applied: false, reason: 'The mode will be used when the run continues.' }
     }
     const session = active.session
@@ -4967,40 +5012,59 @@ export class RunManager {
     try {
       // Review L3: a narrowing is in force on ctx.project before the session answers (no call slips through under the
       // old, wider mode); a widening only after the session applied it (no call is allowed under a mode that never
-      // took effect). The adapter derives its mapping from `mode` itself. chosenMode keeps setLive from undoing it.
+      // took effect). The adapter derives its mapping from `mode` itself. chosenMode keeps setLive from undoing it. The
+      // adapter drops its own "accept edits" grant on any applied change below acceptEdits (contract), so the overlay
+      // goes with a narrowing too, and comes back if the session refuses.
       const previousChosen = active.chosenMode
+      const previousGrant = active.acceptEditsGrant
       const narrows = canNarrowPermissionMode(ctx.project.permissionMode, mode)
       if (narrows) {
         active.chosenMode = mode
+        delete active.acceptEditsGrant
         this.rederiveRunMode(active)
       }
       let applied = false
       let reportsUnchanged = 0
-      try {
-        const answer = await session.setPermissionMode(mode)
-        if (answer === true) applied = true
-        else if (answer && typeof answer === 'object' && answer.applied === true) {
-          applied = true
-          const n = answer.reportsUnchanged
-          if (typeof n === 'number' && Number.isInteger(n) && n > 0) reportsUnchanged = n
+      // Review L-a: a grant followed while a narrowing awaited may reach the provider after it; the narrowing is sent once
+      // more so it is the last word. A second race is treated as a refusal.
+      for (let attempt = 0; attempt < (narrows ? 2 : 1) && !applied; attempt++) {
+        const gen = active.modeGen ?? 0
+        try {
+          const answer = await session.setPermissionMode(mode)
+          if (answer === true || (answer && typeof answer === 'object' && answer.applied === true)) {
+            const n = typeof answer === 'object' ? answer.reportsUnchanged : 0
+            reportsUnchanged = typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
+            applied = !narrows || (active.modeGen ?? 0) === gen
+          } else break
+        } catch (e) {
+          // Review L2: a provider / SDK message is logged, never shown; the user gets a fixed plain sentence.
+          log.warn(`Run ${run.id}: the session refused a permission mode change (${(e as Error)?.message ?? String(e)})`)
+          break
         }
-      } catch (e) {
-        // Review L2: a provider / SDK message is logged, never shown; the user gets a fixed plain sentence.
-        log.warn(`Run ${run.id}: the session refused a permission mode change (${(e as Error)?.message ?? String(e)})`)
       }
       if (!applied) {
-        // Back to the earlier choice (unless a granted "accept edits" replaced ours meanwhile), then re-derived from the
-        // live project as it is now (an approval may have landed during the await), and the summary follows.
-        if (active.chosenMode === mode) {
+        // Back to the earlier choice (unless something else replaced ours meanwhile) and the earlier grant (a grant that
+        // landed during the await set it itself), then re-derived from the live project as it is now (an approval may
+        // have landed during the await); the summary follows.
+        if (narrows && active.chosenMode === mode) {
           if (previousChosen) active.chosenMode = previousChosen
           else delete active.chosenMode
         }
+        if (previousGrant) active.acceptEditsGrant = true
         this.rederiveRunMode(active)
         return { run: this.summary(run.id) ?? run, applied: false, reason: 'The session could not change its permission mode now.' }
       }
       active.chosenMode = mode
+      delete active.acceptEditsGrant
+      if (!active.summary.permissionModeChosen) {
+        active.summary.permissionModeChosen = true
+        this.store.upsert(active.summary)
+        this.broadcastRunMode(active)
+      }
       this.rederiveRunMode(active)
-      const updated = this.patchSummary(run.id, { permissionModeChosen: true }) ?? run
+      // Bridged children are separate sessions that keep the mode they started in (they never take this change).
+      if (narrows) reportsUnchanged += active.bridge?.liveWiderThan(mode) ?? 0
+      const updated = this.summary(run.id) ?? run
       const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === mode)?.label ?? mode
       const note = reportsUnchanged ? reportsUnchangedText(reportsUnchanged) : ''
       active.emit({ type: 'log', runId: run.id, level: 'info', message: `Permission mode set to ${label} for this run.${note ? ` ${note}` : ''}` })

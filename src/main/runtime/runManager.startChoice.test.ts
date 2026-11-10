@@ -648,45 +648,140 @@ describe('M1: an "accept edits" allow follows the run past a narrower mode', () 
     return decision
   }
 
-  it('session scope: a chosen plan run moves to acceptEdits on ctx.project and the summary, chosen', async () => {
+  const modeEvents = (runId: string) => events.filter((e) => e.type === 'run.permissionMode' && e.runId === runId)
+
+  it('M-b: a card decision alone changes nothing; only the adapter hook does', async () => {
     const r = rig()
     const run = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'plan' } })
     expect(await askAndAllow(r, run.id, 'session')).toMatchObject({ behavior: 'allow', scope: 'session' })
-    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
-    expect(r.m.summary(run.id)).toMatchObject({ permissionMode: 'acceptEdits', permissionModeChosen: true })
-    expect(r.store.get(run.id)).toMatchObject({ permissionMode: 'acceptEdits', permissionModeChosen: true })
-    expect(logsOf(run.id, 'info')).toContain(`Permission mode set to ${labelOf('acceptEdits')} for this run.`)
+    expect(r.ctx().project.permissionMode).toBe('plan')
+    expect(r.m.summary(run.id)?.sessionPermissionMode).toBeUndefined()
     await r.m.stopAll()
   })
 
-  it('project scope: the saved project change no longer lays the narrower choice back (setLive)', async () => {
+  it('session grant: ctx.project and sessionPermissionMode follow, the run\'s own chosen mode and the carry stay', async () => {
+    const r = rig()
+    const project = team({ permissionMode: 'default' })
+    const run = await r.m.start({ project, prompt: 'go', userChoice: { permissionMode: 'plan' } })
+    r.ctx().acceptEditsGranted!()
+    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(r.m.summary(run.id)).toMatchObject({ permissionMode: 'plan', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' })
+    // M-c: the renderer hears it.
+    expect(modeEvents(run.id).at(-1)).toEqual({ type: 'run.permissionMode', runId: run.id, permissionMode: 'plan', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' })
+    expect(logsOf(run.id, 'info')).toContain(`${labelOf('acceptEdits')} is on for the rest of this session.`)
+    // M-a: the session ends; the grant goes with it and a desktop continuation carries plan, not acceptEdits.
+    finish(r.ctx())
+    await vi.waitFor(() => expect(r.m.summary(run.id)?.sessionPermissionMode).toBeUndefined())
+    expect(modeEvents(run.id).at(-1)).toEqual({ type: 'run.permissionMode', runId: run.id, permissionMode: 'plan', permissionModeChosen: true })
+    const next = await r.m.continueRun(project, run.id, 'more', undefined, { desktop: true })
+    expect(r.ctx(1).project.permissionMode).toBe('plan')
+    expect(next).toMatchObject({ permissionMode: 'plan', permissionModeChosen: true })
+    await r.m.stopAll()
+  })
+
+  it('project grant: the saved project change does not lay the narrower choice back over the grant (setLive)', async () => {
     const project: Project = { ...team(), permissionMode: 'default' }
     const saveProjectPermissions = vi.fn((): Project => ({ ...project, permissionMode: 'acceptEdits' }))
     const r = rig({ saveProjectPermissions } as Partial<RunManagerOptions>)
     const run = await r.m.start({ project, prompt: 'go', userChoice: { permissionMode: 'dontAsk' } })
-    await askAndAllow(r, run.id, 'project')
-    // What the adapter does next for a project grant (permissionRules applyAllowScope): save the project's mode.
+    // What an adapter does for a project grant: applies it (hook) and saves the project's mode (applyAllowScope).
+    r.ctx().acceptEditsGranted!()
     expect(r.ctx().acceptEditsForProject!()).toBe(true)
     expect(r.ctx().project.permissionMode).toBe('acceptEdits')
-    expect(r.m.summary(run.id)).toMatchObject({ permissionMode: 'acceptEdits', permissionModeChosen: true })
-    expect(r.store.get(run.id)?.permissionMode).toBe('acceptEdits')
+    expect(r.m.summary(run.id)).toMatchObject({ permissionMode: 'dontAsk', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' })
     await r.m.stopAll()
   })
 
-  it('leaves once answers, wider modes and Chat runs alone', async () => {
+  it('H1: an applied narrowing after a grant drops the overlay; a refused one keeps it', async () => {
     const r = rig()
-    const run = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'plan' } })
-    await askAndAllow(r, run.id, 'once')
+    let answer = false
+    r.control.setMode = vi.fn(async () => answer)
+    const run = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go' })
+    r.ctx().acceptEditsGranted!()
+    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect((await r.m.setPermissionMode({ runId: run.id, mode: 'default' })).applied).toBe(false)
+    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(r.m.summary(run.id)?.sessionPermissionMode).toBe('acceptEdits')
+    answer = true
+    expect((await r.m.setPermissionMode({ runId: run.id, mode: 'default' })).applied).toBe(true)
+    expect(r.ctx().project.permissionMode).toBe('default')
+    expect(r.m.summary(run.id)).toMatchObject({ permissionMode: 'default', permissionModeChosen: true })
+    expect(r.m.summary(run.id)?.sessionPermissionMode).toBeUndefined()
+    await r.m.stopAll()
+  })
+
+  it('L-a: a grant landing while a narrowing awaits sends the narrowing once more', async () => {
+    const r = rig()
+    const calls: PermissionMode[] = []
+    r.control.setMode = vi.fn(async (mode: PermissionMode) => {
+      calls.push(mode)
+      if (calls.length === 1) r.ctx().acceptEditsGranted!()
+      return true
+    })
+    const run = await r.m.start({ project: team({ permissionMode: 'acceptEdits' }), prompt: 'go' })
+    const result = await r.m.setPermissionMode({ runId: run.id, mode: 'plan' })
+    expect(calls).toEqual(['plan', 'plan'])
+    expect(result.applied).toBe(true)
     expect(r.ctx().project.permissionMode).toBe('plan')
-    expect(r.m.summary(run.id)?.permissionMode).toBe('plan')
-    const wide = await r.m.start({ project: team({ id: 'p2', path: folder('two'), permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'bypassPermissions' } })
-    await askAndAllow(r, wide.id, 'session', 1)
-    expect(r.ctx(1).project.permissionMode).toBe('bypassPermissions')
+    expect(r.m.summary(run.id)?.sessionPermissionMode).toBeUndefined()
+    await r.m.stopAll()
+  })
+
+  it('L-a: a refused widening keeps a grant that landed during the await', async () => {
+    const r = rig()
+    r.control.setMode = vi.fn(async () => {
+      r.ctx().acceptEditsGranted!()
+      return false
+    })
+    const run = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'plan' } })
+    expect((await r.m.setPermissionMode({ runId: run.id, mode: 'acceptEdits' })).applied).toBe(false)
+    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(r.m.summary(run.id)).toMatchObject({ permissionMode: 'plan', sessionPermissionMode: 'acceptEdits' })
+    await r.m.stopAll()
+  })
+
+  it('no hook on Chat runs or setup-like runs; a grant over a wider mode changes nothing', async () => {
+    const r = rig()
+    const wide = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'bypassPermissions' } })
+    const before = modeEvents(wide.id).length
+    r.ctx(0).acceptEditsGranted!()
+    expect(r.ctx(0).project.permissionMode).toBe('bypassPermissions')
+    expect(r.m.summary(wide.id)?.sessionPermissionMode).toBeUndefined()
+    expect(modeEvents(wide.id).length).toBe(before)
     const quickProject = makeProject({ id: QUICK_PROJECT_ID, path: folder('chat') })
-    const chat = await r.m.start({ project: quickProject, prompt: 'go', quick: { folder: folder('chat'), team: 'default', allowEdits: true, gitRepo: false } })
-    await askAndAllow(r, chat.id, 'session', 2)
-    expect(r.ctx(2).project.permissionMode).toBe('default')
-    expect(r.m.summary(chat.id)?.permissionMode).toBe('default')
+    await r.m.start({ project: quickProject, prompt: 'go', quick: { folder: folder('chat'), team: 'default', allowEdits: true, gitRepo: false } })
+    expect(r.ctx(1).acceptEditsGranted).toBeUndefined()
+    await r.m.start({ project: team({ id: 'p2', path: folder('two') }), prompt: 'go', kind: 'setup' })
+    expect(r.ctx(2).acceptEditsGranted).toBeUndefined()
+    await r.m.stopAll()
+  })
+
+  it('an adapter-emitted run.permissionMode is dropped', async () => {
+    const r = rig()
+    const run = await r.m.start({ project: team(), prompt: 'go' })
+    r.ctx().emit({ type: 'run.permissionMode', runId: run.id, permissionMode: 'bypassPermissions' })
+    expect(modeEvents(run.id).some((e) => e.type === 'run.permissionMode' && e.permissionMode === 'bypassPermissions')).toBe(false)
+    await r.m.stopAll()
+  })
+})
+
+describe('bridged children on a narrowing (coordinator High)', () => {
+  it('adds live bridged children wider than the new mode to reportsUnchanged, never a plain applied', async () => {
+    const r = rig()
+    r.control.setMode = vi.fn(async () => true)
+    const run = await r.m.start({ project: team({ permissionMode: 'acceptEdits' }), prompt: 'go' })
+    const active = r.runsMap().get(run.id) as { bridge?: unknown }
+    const liveWiderThan = vi.fn((mode: PermissionMode) => (mode === 'plan' ? 2 : 0))
+    active.bridge = { liveWiderThan, hasActive: () => false }
+    const narrowed = await r.m.setPermissionMode({ runId: run.id, mode: 'plan' })
+    expect(narrowed).toMatchObject({ applied: true, reportsUnchanged: 2, reason: '2 running reports keep the earlier mode until they finish.' })
+    expect(liveWiderThan).toHaveBeenCalledWith('plan')
+    // A widening never asks (children narrower than the new mode are not a safety gap).
+    liveWiderThan.mockClear()
+    const widened = await r.m.setPermissionMode({ runId: run.id, mode: 'bypassPermissions' })
+    expect(widened.applied).toBe(true)
+    expect(liveWiderThan).not.toHaveBeenCalled()
+    delete active.bridge
     await r.m.stopAll()
   })
 })

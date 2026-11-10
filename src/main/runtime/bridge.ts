@@ -15,7 +15,8 @@
  * option descriptions and reasons). Card fields decisions depend on (tool input, rules, option labels, MCP specs) are
  * forwarded exactly.
  */
-import type { AgentInstance, BridgedRoleChoice, ConnectionId, ProviderId, Project, Role, RunEvent, RunSummary, TranscriptEntry } from '@shared/types'
+import type { AgentInstance, BridgedRoleChoice, ConnectionId, PermissionMode, ProviderId, Project, Role, RunEvent, RunSummary, TranscriptEntry } from '@shared/types'
+import { canNarrowPermissionMode } from './runOverrides'
 import { BRIDGE_RESULT_MAX_CHARS } from '@shared/types'
 import { effectiveSubagentLimits, newId } from '@shared/defaults'
 import { HandleNamer, spawnHandle } from './network'
@@ -75,6 +76,8 @@ interface Child {
   stopped?: Promise<void>
   /** The adapter.start call while it is pending (never rejects). */
   opening?: Promise<void>
+  /** The permission mode the child session started in (its ctx.project snapshot). Unknown = counted as wider. */
+  startMode?: PermissionMode
 }
 
 /** Env names whose values are always secrets, whatever characters they have. */
@@ -181,6 +184,20 @@ export class BridgedSessions {
   activeCount(): number {
     let n = 0
     for (const c of this.children.values()) if (!c.done) n++
+    return n
+  }
+
+  /**
+   * Live children whose session runs wider than `mode` (a bridged child keeps the mode it started in; it never takes a
+   * runs:setPermissionMode change). A child whose start mode is unknown counts. RunManager.setPermissionMode adds this
+   * to reportsUnchanged on a narrowing.
+   */
+  liveWiderThan(mode: PermissionMode): number {
+    let n = 0
+    for (const c of this.children.values()) {
+      if (c.done) continue
+      if (c.startMode === undefined || (c.startMode !== mode && canNarrowPermissionMode(c.startMode, mode))) n++
+    }
     return n
   }
 
@@ -359,6 +376,8 @@ export class BridgedSessions {
       maxConcurrentSubagents: limits.concurrency,
       provider: { ...p0.project.provider, id: child.choice.adapter }
     }
+    // The child session keeps this mode for its life (its project is a snapshot): see liveWiderThan.
+    child.startMode = project.permissionMode
     const run: RunSummary = { ...p0.run, connection: child.choice.connection }
     const ctx: RuntimeContext = {
       run,

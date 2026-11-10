@@ -3295,8 +3295,8 @@ export interface RunSummary {
   /** Root reasoning effort chosen at start (StartRunInput.effort); continuations keep it. Absent = the root role's own. Main-owned. */
   rootEffort?: Effort
   /**
-   * The permission mode in force for this run's session (project mode, exec override, the user's per-run choice, or
-   * acceptEdits after a session / project allow of an "accept edits" suggestion); on an ended / paused run with
+   * The run's own permission mode (project mode, exec override or the user's per-run choice; while
+   * sessionPermissionMode is set, the session runs wider than this); on an ended / paused run with
    * permissionModeChosen, the mode its next continuation uses. Recorded only for runs that take a per-run mode
    * (runPermissionModeChoices non-empty): absent on setup-like runs (Architect, MCP / Skill assistants, build sessions),
    * which pin their own mode. On a Chat (quick) run a project mode its adapter downgrades to asking is recorded as
@@ -3305,6 +3305,13 @@ export interface RunSummary {
   permissionMode?: PermissionMode
   /** True when permissionMode is the user's per-run choice (runs:start / runs:setPermissionMode), which continuations carry. */
   permissionModeChosen?: true
+  /**
+   * Live runs only: 'acceptEdits' while a session or project allow of an "accept edits" suggestion has the provider
+   * session accepting edits past a narrower permissionMode. Show this as the mode in force while it is set. Never
+   * carried by a continuation (a session grant ends with its session), cleared at session end and by an applied
+   * runs:setPermissionMode, dropped when a stored run is loaded. Main-owned; run.permissionMode events carry it.
+   */
+  sessionPermissionMode?: 'acceptEdits'
   id: string
   projectId: string
   kind: RunKind
@@ -3829,6 +3836,12 @@ export interface UsageStatus {
 
 export type RunEvent =
   | { type: 'run.model'; runId: string; selection: { model: string; connection: ConnectionId } }
+  /**
+   * RunManager only (an adapter's is dropped): the run's permission mode fields after any change on a live run
+   * (runs:setPermissionMode, an approved project change, an "accept edits" grant, session end). A snapshot: an absent
+   * field is absent on RunSummary too. The renderer replaces all three on the run's summary.
+   */
+  | { type: 'run.permissionMode'; runId: string; permissionMode?: PermissionMode; permissionModeChosen?: true; sessionPermissionMode?: 'acceptEdits' }
   | {
       type: 'run.status'
       runId: string
