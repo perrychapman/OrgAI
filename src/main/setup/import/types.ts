@@ -1,4 +1,4 @@
-import type { AgentImportScan, AgentImportSource, Effort, ModelTier } from '@shared/types'
+import type { AgentImportScan, AgentImportSource, Effort, ModelTier, RoleStaffing } from '@shared/types'
 
 /**
  * Internal (main-process only) types of the agent importer. Parsers turn untrusted repo files into
@@ -32,6 +32,8 @@ export interface ImportedAgent {
   /** The model as written ('sonnet', 'anthropic/claude-sonnet-4-5', 'gpt-5-mini', 'inherit'...). Missing = not given. */
   model?: string
   effort?: Effort
+  /** OrgAI exports only: Role.staffing, cleaned. */
+  staffing?: RoleStaffing
   /**
    * Tool names as written (foreign names, lowercase or not). undefined = the file gave no tool list
    * (meaning "all tools" for Claude Code; the converter picks a sensible default).

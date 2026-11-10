@@ -15,6 +15,8 @@ import {
   TEAM_FILES_MCP_JSON,
   TEAM_FILES_SKILLS_DIR,
   isModelTier,
+  isReviewPolicy,
+  isStaffingGoal,
   isPermissionMode,
   type Effort,
   type McpRegistryRef,
@@ -22,7 +24,7 @@ import {
   type TeamFileProblem,
   type TeamFileWarning
 } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, isValidMcpServerName, skillDescriptionProblem, skillNameProblem, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
+import { cleanRoleStaffing, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, isValidMcpServerName, skillDescriptionProblem, skillNameProblem, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
 import { hiddenCharIn, hiddenCharProblem, isKeyLikeValue, reviewTarget } from '../capabilities/sanitize'
 import { validModelId } from '../connections/codexAccount'
 import { serverRiskRefusal, serverValueRefusal, slotRefusal, safeText } from '../kit/format'
@@ -287,6 +289,9 @@ function readRole(slug: string, bytes: Buffer): RoleRead {
       if (typeof effort !== 'string' || !(EFFORT_VALUES as readonly string[]).includes(effort)) return { problem: 'The effort is not one of low, medium, high, xhigh or max.' }
       role.effort = effort as Effort
     }
+    // Staffing is advisory spend policy: anything malformed is dropped (cleanRoleStaffing), never a file problem.
+    const staffing = cleanRoleStaffing({ mode: d.staffing, minTier: d.staffing_min_tier, maxEffort: d.staffing_max_effort })
+    if (staffing) role.staffing = staffing
     const canSpawn = Object.hasOwn(d, 'canSpawn') ? d.canSpawn : false
     if (canSpawn !== null && typeof canSpawn !== 'boolean') return { problem: 'canSpawn must be true or false.' }
     role.canSpawn = canSpawn === true
@@ -320,6 +325,9 @@ const SETTING_KEYS = [
   'autoContinue',
   'maxAutoContinues',
   'runMessaging',
+  'staffing',
+  'staffingGoal',
+  'reviewPolicy',
   'teamReview',
   'skillEvaluation'
 ]
@@ -385,6 +393,12 @@ function readSettings(o: Record<string, unknown>, base: TeamSettingsDoc | null, 
   set('autoContinue', boolField(o, 'autoContinue'))
   set('maxAutoContinues', numField(o, 'maxAutoContinues', 0, 1000, true))
   set('runMessaging', boolField(o, 'runMessaging'))
+  // Malformed values are dropped, defaults are not held (normal form).
+  if (own(o, 'staffing') === 'fixed') settings.staffing = 'fixed'
+  const goal = own(o, 'staffingGoal')
+  if (isStaffingGoal(goal) && goal !== 'balanced') settings.staffingGoal = goal
+  const policy = own(o, 'reviewPolicy')
+  if (isReviewPolicy(policy) && policy !== 'risk') settings.reviewPolicy = policy
   const tr = own(o, 'teamReview')
   if (tr !== undefined && tr !== null) {
     if (!isObj(tr)) bad('teamReview is not valid.')

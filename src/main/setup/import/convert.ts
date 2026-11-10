@@ -173,6 +173,7 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
       model: mapped.model,
       ...(mapped.tier ? { tier: mapped.tier } : {}),
       ...(agent.effort ? { effort: agent.effort } : {}),
+      ...(agent.staffing ? { staffing: { ...agent.staffing } } : {}),
       canSpawn: agent.canSpawn ?? mappedTools.canSpawn,
       spawnable: [],
       reportsTo: null,
@@ -398,7 +399,7 @@ export function importDigest(agents: readonly ImportedAgent[]): string {
   const h = createHash('sha256')
   for (const a of agents) {
     h.update(
-      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.requiredReports, a.tier, a.primary, a.responsibilities, a.color])
+      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.requiredReports, a.tier, a.primary, a.responsibilities, a.color, ...(a.staffing ? [a.staffing] : [])])
     )
     h.update('\n')
   }

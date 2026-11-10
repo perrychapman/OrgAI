@@ -567,3 +567,132 @@ describe('security review fixes', () => {
     expect(r.ids.pending).toEqual(['settings:permissionMode', 'role:boss', 'mcp:zzz', 'skill:aaa', 'role:mere'])
   })
 })
+
+describe('gateTeam staffing', () => {
+  /** An approved team with `setup` applied, then the same change made on disk. */
+  function staffed(setup: (d: TeamDoc) => void, mutate: (d: TeamDoc) => void) {
+    const approved = sampleDoc()
+    setup(approved)
+    return gate(mutate, { approved })
+  }
+  const held = (r: ReturnType<typeof gate>, id: string): void => {
+    expect(r.ids.pending).toEqual([id])
+    expect(r.pending[0]).toMatchObject({ needsApproval: true, reason: 'May spend more' })
+  }
+
+  it('holds a raised maxEffort and applies a lowered one', () => {
+    const setup = (d: TeamDoc): void => void (lead(d).staffing = { mode: 'auto', maxEffort: 'medium' })
+    const up = staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'xhigh' }))
+    held(up, 'role:lead:staffing')
+    expect(lead(up.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'medium' })
+    const down = staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'low' }))
+    expect(down.pending).toEqual([])
+    expect(down.ids.applied).toContain('role:lead:details')
+    expect(lead(down.effective).staffing).toEqual({ mode: 'auto', maxEffort: 'low' })
+  })
+
+  it('judges a first maxEffort against the effective ceiling (the role effort, else high)', () => {
+    // lead: effort high, no staffing: ceiling high.
+    held(gate((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'max' })), 'role:lead:staffing')
+    expect(gate((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'high' })).pending).toEqual([])
+    expect(gate((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'low' })).pending).toEqual([])
+    // dev: no effort and no staffing: ceiling high.
+    held(gate((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'xhigh' })), 'role:dev:staffing')
+    expect(gate((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'medium' })).pending).toEqual([])
+  })
+
+  it('holds a removed maxEffort only when that raises the ceiling', () => {
+    // lead (effort high): maxEffort low removed -> ceiling high: raised.
+    const raised = staffed((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'low' }), (d) => (lead(d).staffing = { mode: 'auto' }))
+    held(raised, 'role:lead:staffing')
+    // lead: maxEffort max removed -> ceiling high: lowered.
+    const lowered = staffed((d) => (lead(d).staffing = { mode: 'auto', maxEffort: 'max' }), (d) => (lead(d).staffing = { mode: 'auto' }))
+    expect(lowered.pending).toEqual([])
+    // dev (no effort): maxEffort medium removed -> high: raised; xhigh removed -> high: lowered; high removed -> high: same.
+    held(staffed((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'medium' }), (d) => (dev(d).staffing = { mode: 'auto' })), 'role:dev:staffing')
+    expect(staffed((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'xhigh' }), (d) => (dev(d).staffing = { mode: 'auto' })).pending).toEqual([])
+    expect(staffed((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'high' }), (d) => (dev(d).staffing = { mode: 'auto' })).pending).toEqual([])
+    // The whole staffing block removed is the same thing.
+    held(staffed((d) => (dev(d).staffing = { mode: 'auto', maxEffort: 'low' }), (d) => delete dev(d).staffing), 'role:dev:staffing')
+  })
+
+  it('holds a removed role effort that lifts the ceiling, and keeps the approved effort', () => {
+    const r = staffed((d) => (dev(d).effort = 'low'), (d) => delete dev(d).effort)
+    held(r, 'role:dev:effort')
+    expect(dev(r.effective).effort).toBe('low')
+    // With a maxEffort that keeps the ceiling where it was, removing the effort applies.
+    const ok = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => delete dev(d).effort)
+    expect(ok.pending).toEqual([])
+    expect(dev(ok.effective).effort).toBeUndefined()
+    // Removing the effort and adding the cap in one change applies too.
+    const both = staffed((d) => (dev(d).effort = 'low'), (d) => (delete dev(d).effort, (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })))
+    expect(both.pending).toEqual([])
+  })
+
+  it('keeps a raised effort held and judges staffing against the approved effort', () => {
+    // effort low -> high is held by the effort rule; maxEffort high added in the same change lifts nothing the effort rule did not.
+    const r = staffed((d) => (dev(d).effort = 'low'), (d) => ((dev(d).effort = 'high'), (dev(d).staffing = { mode: 'auto', maxEffort: 'high' })))
+    expect(r.ids.pending.sort()).toEqual(['role:dev:effort', 'role:dev:staffing'])
+    expect(dev(r.effective).effort).toBe('low')
+    expect(dev(r.effective).staffing).toBeUndefined()
+  })
+
+  it('holds a tier floor that is added or raised and applies one that is lowered or removed', () => {
+    const setup = (d: TeamDoc): void => void (lead(d).staffing = { mode: 'auto', minTier: 'everyday' })
+    held(gate((d) => (lead(d).staffing = { mode: 'auto', minTier: 'fast' })), 'role:lead:staffing')
+    held(staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', minTier: 'deep' })), 'role:lead:staffing')
+    expect(staffed(setup, (d) => (lead(d).staffing = { mode: 'auto', minTier: 'fast' })).pending).toEqual([])
+    expect(staffed(setup, (d) => (lead(d).staffing = { mode: 'auto' })).pending).toEqual([])
+    expect(staffed(setup, (d) => delete lead(d).staffing).pending).toEqual([])
+  })
+
+  it('holds a role going from automatic to fixed and applies fixed to automatic', () => {
+    const toFixed = gate((d) => (dev(d).staffing = { mode: 'fixed' }))
+    held(toFixed, 'role:dev:staffing')
+    expect(dev(toFixed.effective).staffing).toBeUndefined()
+    held(staffed((d) => (dev(d).staffing = { mode: 'auto' }), (d) => (dev(d).staffing = { mode: 'fixed' })), 'role:dev:staffing')
+    const toAuto = staffed((d) => (dev(d).staffing = { mode: 'fixed' }), (d) => (dev(d).staffing = { mode: 'auto' }))
+    expect(toAuto.pending).toEqual([])
+    expect(dev(toAuto.effective).staffing).toEqual({ mode: 'auto' })
+    // A role that is automatic only because the project is not fixed: fixed on the role is still a raise.
+    held(staffed((d) => (d.settings.staffing = undefined), (d) => (dev(d).staffing = { mode: 'fixed' })), 'role:dev:staffing')
+  })
+
+  it('holds the project going from auto to fixed and applies fixed to auto', () => {
+    const toFixed = gate((d) => (d.settings.staffing = 'fixed'))
+    held(toFixed, 'settings:staffing')
+    expect(toFixed.effective.settings.staffing).toBeUndefined()
+    const toAuto = staffed((d) => (d.settings.staffing = 'fixed'), (d) => delete d.settings.staffing)
+    expect(toAuto.pending).toEqual([])
+    expect(toAuto.effective.settings.staffing).toBeUndefined()
+    expect(toAuto.ids.applied).toEqual(['settings:staffing'])
+  })
+
+  it('does not hold the goal or the review policy, and still lists them', () => {
+    for (const [k, v] of [['staffingGoal', 'speed'], ['staffingGoal', 'cost'], ['reviewPolicy', 'always'], ['reviewPolicy', 'never']] as const) {
+      const r = gate((d) => ((d.settings as unknown as Record<string, unknown>)[k] = v))
+      expect(r.pending, `${k}=${v}`).toEqual([])
+      expect(r.ids.applied).toEqual([`settings:${k}`])
+      expect((r.effective.settings as unknown as Record<string, unknown>)[k]).toBe(v)
+    }
+  })
+
+  it('a project that is fixed does not hide a raised role ceiling', () => {
+    const r = staffed(
+      (d) => ((d.settings.staffing = 'fixed'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })),
+      (d) => ((delete d.settings.staffing), (dev(d).staffing = { mode: 'auto', maxEffort: 'max' }))
+    )
+    expect(r.ids.applied).toContain('settings:staffing')
+    held(r, 'role:dev:staffing')
+  })
+
+  it('with everything forced pending nothing staffing-related applies', () => {
+    const approved = sampleDoc()
+    const disk = clone(approved)
+    dev(disk).staffing = { mode: 'auto', maxEffort: 'low' }
+    const r = gateTeam(approved, disk, { firstSeen: true })
+    expect(r.applied).toEqual([])
+    expect(dev(r.effective).staffing).toBeUndefined()
+  })
+})
+

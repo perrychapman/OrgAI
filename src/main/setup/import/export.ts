@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Effort, ModelRef, ModelTier, Project, Role, ToolName } from '@shared/types'
-import { cleanRequiredReports } from '@shared/defaults'
+import type { Effort, ModelRef, ModelTier, Project, Role, RoleStaffing, ToolName } from '@shared/types'
+import { cleanRequiredReports, cleanRoleStaffing } from '@shared/defaults'
 
 export const ORG_EXPORT_FORMAT = 'orgai.org/1'
 export const ORG_EXPORT_PATH = '.orgai/org.json'
@@ -18,6 +18,8 @@ export interface OrgExportRole {
   model: ModelRef
   tier?: ModelTier
   effort?: Effort
+  /** Role.staffing; absent when the role has none. */
+  staffing?: RoleStaffing
   canSpawn: boolean
   spawnable: string[]
   /** Slugs, a subset of `spawnable`; absent when none. */
@@ -56,6 +58,7 @@ export function buildOrgExport(project: Pick<Project, 'name' | 'roles'>, now = n
       model: r.model,
       ...(r.tier ? { tier: r.tier } : {}),
       ...(r.effort ? { effort: r.effort } : {}),
+      ...(cleanRoleStaffing(r.staffing) ? { staffing: cleanRoleStaffing(r.staffing) } : {}),
       canSpawn: r.canSpawn,
       spawnable: r.spawnable.map((id) => slugOf.get(id)).filter((s): s is string => !!s),
       ...requiredSlugs(r, slugOf),

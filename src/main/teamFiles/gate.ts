@@ -1,5 +1,5 @@
 import { AGENT_IMPORT_ELEVATED_TOOLS, TEAM_FILES_AGENTS_DIR, TEAM_FILES_JSON, TEAM_FILES_MCP_JSON, TEAM_FILES_SKILLS_DIR, DEFAULT_MAX_AUTO_CONTINUES, type ModelTier, type PermissionMode, type TeamFileChange, type TeamFileChangeKind } from '@shared/types'
-import { effectiveSubagentLimits, skillEvaluationOf, teamReviewOf } from '@shared/defaults'
+import { cleanRoleStaffing, compareEffort, compareTier, effectiveRoleStaffing, effectiveSubagentLimits, skillEvaluationOf, staffingModeOf, teamReviewOf } from '@shared/defaults'
 import { fullTarget, safeText } from '../kit/format'
 import type { TeamDoc, TeamMcpDoc, TeamRoleDoc, TeamSettingsDoc, TeamSkillDoc } from './doc'
 import { canonicalJson, normalizeDoc } from './digest'
@@ -46,6 +46,28 @@ function modelMayCostMore(a: TeamRoleDoc, d: TeamRoleDoc): boolean {
   return true
 }
 const effortRaised = (a: TeamRoleDoc, d: TeamRoleDoc): boolean => (d.effort === undefined ? false : (EFFORT_RANK[d.effort] ?? 99) > (a.effort === undefined ? -1 : (EFFORT_RANK[a.effort] ?? 99)))
+
+/** The effort ceiling the staffing resolver enforces when none is set (runtime/staffing.ts rule 2). */
+const UNSET_EFFORT_CEILING = 'high' as const
+
+/** What a role's staffing lets a run spend: its effective mode, effort ceiling (high when none) and the raw tier floor. */
+function staffingSpend(r: TeamRoleDoc, projectStaffing: TeamSettingsDoc['staffing']): { fixed: boolean; ceiling: NonNullable<TeamRoleDoc['effort']>; floor: ModelTier | undefined } {
+  const e = effectiveRoleStaffing({ model: r.model ?? '', tier: r.tier, effort: r.effort, staffing: r.staffing }, { staffing: projectStaffing })
+  return { fixed: e.mode === 'fixed', ceiling: e.maxEffort ?? UNSET_EFFORT_CEILING, floor: cleanRoleStaffing(r.staffing)?.minTier }
+}
+
+/**
+ * Whether moving a role from `a` to `d` (its tier, model and effort already as the gate settled them) can make a run
+ * spend more: a raised effort ceiling (a removed one counts when it raises the effective one), a raised or added tier
+ * floor, or automatic becoming fixed. `pa` and `pd` are the project staffing before and after the gate settled it.
+ */
+function staffingMayCostMore(a: TeamRoleDoc, d: TeamRoleDoc, pa: TeamSettingsDoc['staffing'], pd: TeamSettingsDoc['staffing']): boolean {
+  const x = staffingSpend(a, pa)
+  const y = staffingSpend(d, pd)
+  if (!x.fixed && y.fixed) return true
+  if (compareEffort(y.ceiling, x.ceiling) > 0) return true
+  return y.floor !== undefined && (x.floor === undefined || compareTier(y.floor, x.floor) > 0)
+}
 
 const MODE_RANK: Record<PermissionMode, number> = { plan: 0, dontAsk: 1, default: 2, acceptEdits: 3, auto: 4, bypassPermissions: 5 }
 /** plan < dontAsk < default < acceptEdits < auto < bypassPermissions. Unknown values rank highest. */
@@ -117,12 +139,19 @@ const SETTING_LABELS: Record<keyof TeamSettingsDoc, string> = {
   autoContinue: 'Auto-continue',
   maxAutoContinues: 'Auto-continue limit',
   runMessaging: 'Runs messaging each other',
+  staffing: 'Automatic staffing',
+  staffingGoal: 'Staffing goal',
+  reviewPolicy: 'Review policy',
   teamReview: 'Team assistant review',
   skillEvaluation: 'Skill evaluation'
 }
 const SETTING_ORDER = Object.keys(SETTING_LABELS) as (keyof TeamSettingsDoc)[]
 
 function showSetting(k: keyof TeamSettingsDoc, v: unknown): string {
+  if (v === undefined && k === 'staffing') return 'automatic'
+  if (v === undefined && k === 'staffingGoal') return 'balanced'
+  if (v === undefined && k === 'reviewPolicy') return 'by risk'
+  if (k === 'staffing' && v === 'fixed') return 'off (every role runs as configured)'
   if (v === undefined) return 'not set'
   if (typeof v === 'boolean') return v ? 'on' : 'off'
   if (typeof v === 'number') return String(v)
@@ -181,6 +210,13 @@ function loosens(k: keyof TeamSettingsDoc, a: TeamDoc, d: TeamDoc): boolean {
       const eff = (v: unknown): number => (typeof v === 'number' ? v : DEFAULT_MAX_AUTO_CONTINUES)
       return eff(dv) > eff(av)
     }
+    // Fixed means every role always runs at its ceiling; unset and 'auto' are the same.
+    case 'staffing':
+      return staffingModeOf({ staffing: av as TeamSettingsDoc['staffing'] }) === 'auto' && staffingModeOf({ staffing: dv as TeamSettingsDoc['staffing'] }) === 'fixed'
+    // The goal and the review policy move spend only inside ceilings the user already approved.
+    case 'staffingGoal':
+    case 'reviewPolicy':
+      return false
     case 'teamReview': {
       const x = teamReviewOf({ teamReview: av as TeamSettingsDoc['teamReview'] })
       const y = teamReviewOf({ teamReview: dv as TeamSettingsDoc['teamReview'] })
@@ -225,7 +261,7 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
       draft.before = longText(String(av ?? ''))
       draft.after = longText(String(dv ?? ''))
     }
-    const takes = record(draft, needs, 'Loosens a limit or the permission mode')
+    const takes = record(draft, needs, k === 'staffing' ? 'May spend more' : 'Loosens a limit or the permission mode')
     // Remember which settings really loosen (also in the all-pending previews), for the power-first order.
     if (needs) LOOSENING.add((takes ? applied : pending)[(takes ? applied : pending).length - 1])
     if (takes) {
@@ -365,17 +401,36 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
       record({ ...base, id: `role:${slug}:root`, action: 'changed', summary: dr.reportsTo === null ? `${who} would become the top of the chart.` : `${who} would stop being the top of the chart.` }, true, 'Changes who is at the top of the chart')
     } else detailKeys.push('reportsTo')
     // A model that may spend more waits: a higher tier, any pinned model, or leaving a tier for anything but a lower one.
+    let modelOk = true
+    let effortOk = true
     if (!same([ar.tier, ar.model], [dr.tier, dr.model])) {
+      if (modelMayCostMore(ar, dr)) modelOk = false
       if (modelMayCostMore(ar, dr)) record({ ...base, id: `role:${slug}:model`, action: 'changed', summary: `${who}'s model changes and may spend more.` }, true, 'May spend more')
       else detailKeys.push('tier', 'model')
     }
     if (!same(ar.effort, dr.effort)) {
+      if (effortRaised(ar, dr)) effortOk = false
       if (effortRaised(ar, dr)) record({ ...base, id: `role:${slug}:effort`, action: 'changed', summary: `${who}'s reasoning effort is raised and may spend more.` }, true, 'May spend more')
       else detailKeys.push('effort')
     }
+    // Staffing: held when it can make a run spend more. Judged on the role as it will stand after the rows above (a held
+    // model or effort stays at the approved value) and on the project's staffing as settled above.
+    const settled: TeamRoleDoc = { ...dr, tier: modelOk ? dr.tier : ar.tier, model: modelOk ? dr.model : ar.model, effort: effortOk ? dr.effort : ar.effort }
+    let staffingOk = true
+    if (!same(ar.staffing, dr.staffing)) {
+      if (staffingMayCostMore(ar, settled, a.settings.staffing, eff.settings.staffing)) {
+        staffingOk = false
+        record({ ...base, id: `role:${slug}:staffing`, action: 'changed', summary: `${who}'s staffing limits are raised and may spend more.` }, true, 'May spend more')
+      } else detailKeys.push('staffing')
+    }
+    // Removing the effort (which the rule above lets through) lifts the effective ceiling to high when no maxEffort holds it.
+    if (effortOk && !same(ar.effort, dr.effort) && staffingMayCostMore(ar, { ...settled, staffing: staffingOk ? dr.staffing : ar.staffing }, a.settings.staffing, eff.settings.staffing)) {
+      detailKeys.splice(detailKeys.indexOf('effort'), 1)
+      record({ ...base, id: `role:${slug}:effort`, action: 'changed', summary: `${who}'s reasoning effort is removed, which raises its effort ceiling and may spend more.` }, true, 'May spend more')
+    }
     const changedDetails = detailKeys.filter((k) => !same(ar[k], dr[k]))
     if (changedDetails.length) {
-      const labels = changedDetails.map((k) => (k === 'reportsTo' ? 'reporting line' : k === 'tier' || k === 'model' ? 'model' : k))
+      const labels = changedDetails.map((k) => (k === 'reportsTo' ? 'reporting line' : k === 'staffing' ? 'staffing limits' : k === 'tier' || k === 'model' ? 'model' : k))
       if (record({ ...base, id: `role:${slug}:details`, action: 'changed', summary: `${who}'s ${joinAnd([...new Set(labels)])} changed.` }, false, '')) {
         for (const k of changedDetails) {
           const nr = next as unknown as Record<string, unknown>

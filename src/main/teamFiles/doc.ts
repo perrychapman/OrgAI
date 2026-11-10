@@ -1,4 +1,4 @@
-import type { Effort, McpRegistryRef, McpTransport, ModelTier, PermissionMode, SkillEvaluationSettings, TeamReviewSettings } from '@shared/types'
+import type { Effort, McpRegistryRef, McpTransport, ModelTier, PermissionMode, ReviewPolicy, RoleStaffing, SkillEvaluationSettings, StaffingGoal, StaffingMode, TeamReviewSettings } from '@shared/types'
 
 /**
  * The team as files hold it: the one document every step of team files works on (parse, serialize, digest, gate,
@@ -22,6 +22,12 @@ export interface TeamSettingsDoc {
   runMessaging?: boolean
   teamReview?: TeamReviewSettings
   skillEvaluation?: SkillEvaluationSettings
+  /** Project.staffing; held only when 'fixed' (the default 'auto' is never in a document). */
+  staffing?: StaffingMode
+  /** Project.staffingGoal; held only when 'speed' or 'cost' (the default 'balanced' is never in a document). */
+  staffingGoal?: StaffingGoal
+  /** Project.reviewPolicy; held only when 'always' or 'never' (the default 'risk' is never in a document). */
+  reviewPolicy?: ReviewPolicy
 }
 
 /** One role: `.orgai/agents/<slug>.md`. References are slugs and names. */
@@ -39,6 +45,8 @@ export interface TeamRoleDoc {
   /** A really pinned model id, or 'inherit'. */
   model?: string
   effort?: Effort
+  /** Role.staffing (cleanRoleStaffing form). Absent = the default. Front matter keys `staffing`, `staffing_min_tier`, `staffing_max_effort`. */
+  staffing?: RoleStaffing
   canSpawn: boolean
   /** Sorted slugs. */
   spawnable: string[]

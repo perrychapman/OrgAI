@@ -707,6 +707,7 @@ export function orgRolesFromAgents(agents: ImportedAgent[]): Record<string, unkn
     ...(a.model ? { model: a.model } : {}),
     ...(a.tier ? { tier: a.tier } : {}),
     ...(a.effort ? { effort: a.effort } : {}),
+    ...(a.staffing ? { staffing: { ...a.staffing } } : {}),
     ...(a.canSpawn !== undefined ? { canSpawn: a.canSpawn } : {}),
     spawnable: [...(a.spawnable ?? [])],
     ...(a.reportsTo !== undefined ? { reportsTo: a.reportsTo } : {}),
