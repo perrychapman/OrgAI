@@ -2581,11 +2581,11 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
       await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(1))
       expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ tier: 'everyday', model: 'sonnet', source: 'plan-guard' })
     }
-    // A proxy connection never arms the guard: the auto helper runs on the root's tier, written as its alias.
+    // A proxy connection never arms the guard: the auto helper of the root runs on the root's own model, nothing written.
     const proxy = { connection: 'litellm' as never, adapter: 'claude' as const, tierModels: { deep: 'claude-opus-5-1', everyday: 'claude-sonnet-5-5' } }
     const viaProxy = session({ roles, ctx: { connection: proxy } })
     viaProxy.s.applyUsage(weekly(95))
-    expect((await viaProxy.spawn('t1', { subagent_type: 'helper', name: 'help-1' }))?.model).toBe('opus')
+    expect((await viaProxy.spawn('t1', { subagent_type: 'helper', name: 'help-1' }))?.model).toBeUndefined()
   })
 
   it("the plan guard steers an 'inherit' report whose parent the book does not know, under a deep root (review P3)", async () => {
@@ -2597,7 +2597,7 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
     expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ tier: 'everyday', model: 'sonnet', source: 'plan-guard' })
   })
 
-  it("reads the root's tier live: after switchModel to sonnet an 'inherit' report runs on sonnet, not opus (review P4)", async () => {
+  it("reads the root's tier live: after switchModel to sonnet an 'inherit' report is sized by sonnet, not opus (review P4)", async () => {
     const roles = [
       role({ id: 'r-lead', slug: 'lead', name: 'Lead', model: 'opus', tier: 'deep', canSpawn: true, spawnable: ['r-help'] }),
       role({ id: 'r-help', slug: 'helper', name: 'Helper', model: 'inherit', reportsTo: 'r-lead' })
@@ -2613,15 +2613,26 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
       await vi.waitFor(() => expect(sess.settlement()).toMatchObject({ rootIdle: true, quiescent: true }))
       return { ...made, sess }
     }
+    const rowOf = async (made: Awaited<ReturnType<typeof live>>, key: string) => {
+      made.started(key, `a-${key}`, 'helper')
+      await vi.waitFor(() => expect(made.ctx.getStaffing()?.assignments).toHaveLength(1))
+      return made.ctx.getStaffing()!.assignments[0]
+    }
+    // Before a switch: on the root's tier, nothing written, the row names the root's model.
     const before = await live()
-    expect((await before.spawn('t1', { subagent_type: 'helper', name: 'help-1' }))?.model).toBe('opus')
+    expect((await before.spawn('t1', { subagent_type: 'helper', name: 'help-1' }))?.model).toBeUndefined()
+    expect(await rowOf(before, 't1')).toMatchObject({ tier: 'deep', model: 'opus' })
+    // After switching to sonnet the ceiling is everyday: a request for opus is capped (the stale root wrote 'opus').
     const switched = await live()
     await switched.sess.switchModel({ model: 'sonnet' })
-    expect((await switched.spawn('t2', { subagent_type: 'helper', name: 'help-2' }))?.model).toBe('sonnet')
+    const out = await switched.spawn('t2', { subagent_type: 'helper', name: 'help-2', model: 'opus' })
+    expect(out && 'model' in out).toBe(false)
+    expect(await rowOf(switched, 't2')).toMatchObject({ tier: 'everyday', model: 'sonnet' })
     // A concrete id: the chart's deep tier no longer describes the root, the id's family does.
     const concrete = await live()
     await concrete.sess.switchModel({ model: 'claude-haiku-4-5' })
-    expect((await concrete.spawn('t3', { subagent_type: 'helper', name: 'help-3' }))?.model).toBe('haiku')
+    expect(await concrete.spawn('t3', { subagent_type: 'helper', name: 'help-3', model: 'sonnet' })).toMatchObject({ subagent_type: 'helper' })
+    expect(await rowOf(concrete, 't3')).toMatchObject({ tier: 'fast', model: 'claude-haiku-4-5' })
   })
 
   it('a role whose model alias names a higher tier than role.tier is sized and guarded by the alias it runs on (review P5)', async () => {
@@ -2642,7 +2653,7 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
     expect((await spawn('t3', { subagent_type: 'engineer', name: 'e-3', model: 'haiku' }))?.model).toBe('haiku')
   })
 
-  it("an automatic 'inherit' role always gets its resolved tier's alias, also the root's tier (review P6)", async () => {
+  it("an automatic nested 'inherit' role always gets its resolved tier's alias, also the root's tier (review P6)", async () => {
     const roles = [
       role({ id: 'r-lead', slug: 'lead', name: 'Lead', model: 'sonnet', tier: 'everyday', canSpawn: true, spawnable: ['r-eng'] }),
       role({ id: 'r-eng', slug: 'engineer', name: 'Engineer', model: 'opus', tier: 'deep', reportsTo: 'r-lead', canSpawn: true, spawnable: ['r-help'] }),
@@ -2656,12 +2667,72 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
     started('t2', 'a2', 'helper')
     // No pick: the parent's tier, written too.
     expect((await spawn('t3', { subagent_type: 'helper', name: 'h-2' }, { id: 'a1', type: 'engineer' }))?.model).toBe('opus')
-    // A report of the root with nothing to change still gets the root's alias.
+    // A report of the root on the root's own tier gets none: 'inherit' is the root's exact model there.
     const flat = [roles[0], { ...roles[2], reportsTo: 'r-lead' }]
     flat[0] = { ...flat[0], spawnable: ['r-help'] }
-    expect((await session({ roles: flat }).spawn('t4', { subagent_type: 'helper', name: 'h-3' }))?.model).toBe('sonnet')
+    expect((await session({ roles: flat }).spawn('t4', { subagent_type: 'helper', name: 'h-3' }))?.model).toBeUndefined()
     await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(2))
     expect(ctx.getStaffing()!.assignments[1]).toMatchObject({ agentId: 'a2', tier: 'everyday', model: 'sonnet' })
+  })
+
+  it("an 'inherit' report gets no alias the connection cannot resolve: a proxy with no tier map (review A1)", async () => {
+    const roles = [
+      role({ id: 'r-lead', slug: 'lead', name: 'Lead', model: 'claude-opus-4-5', canSpawn: true, spawnable: ['r-eng', 'r-help'] }),
+      role({ id: 'r-eng', slug: 'engineer', name: 'Engineer', model: 'claude-opus-4-5', tier: 'deep', reportsTo: 'r-lead', canSpawn: true, spawnable: ['r-help'] }),
+      role({ id: 'r-help', slug: 'helper', name: 'Helper', model: 'inherit', reportsTo: 'r-lead' })
+    ]
+    const connection = { connection: 'litellm' as never, adapter: 'claude' as const, tierModels: {} }
+    const { ctx, spawn, started } = session({ roles, ctx: { connection } })
+    expect((await spawn('t1', { subagent_type: 'helper', name: 'h-1' }))?.model).toBeUndefined()
+    started('t1', 'a1', 'helper')
+    await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ model: 'claude-opus-4-5', tier: 'deep' })
+    // Nested, and asking for a tier: still nothing the proxy cannot serve.
+    expect((await spawn('t2', { subagent_type: 'engineer', name: 'e-1' }))?.model).toBeUndefined()
+    started('t2', 'a2', 'engineer')
+    const nested = await spawn('t3', { subagent_type: 'helper', name: 'h-2', model: 'haiku' }, { id: 'a2', type: 'engineer' })
+    expect(nested && 'model' in nested).toBe(false)
+    // A partial map: only the mapped tier's alias is written, and the row names the proxy's model.
+    const partial = session({ roles, ctx: { connection: { ...connection, tierModels: { fast: 'proxy-small' } } } })
+    expect((await partial.spawn('t4', { subagent_type: 'helper', name: 'h-3', model: 'haiku' }))?.model).toBe('haiku')
+    partial.started('t4', 'a4', 'helper')
+    await vi.waitFor(() => expect(partial.ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(partial.ctx.getStaffing()!.assignments[0]).toMatchObject({ model: 'proxy-small', tier: 'fast' })
+  })
+
+  it("a report of the root keeps a pinned root id: 'inherit' on the root's tier writes no alias (review A5)", async () => {
+    const roles = [
+      role({ id: 'r-lead', slug: 'lead', name: 'Lead', model: 'claude-opus-4-1', canSpawn: true, spawnable: ['r-help'] }),
+      role({ id: 'r-help', slug: 'helper', name: 'Helper', model: 'inherit', reportsTo: 'r-lead' })
+    ]
+    const { ctx, spawn, started } = session({ roles })
+    expect((await spawn('t1', { subagent_type: 'helper', name: 'h-1' }))?.model).toBeUndefined()
+    // Asking for the root's tier changes nothing either; a lower tier is written.
+    const same = await spawn('t2', { subagent_type: 'helper', name: 'h-2', model: 'opus' })
+    expect(same && 'model' in same).toBe(false)
+    expect((await spawn('t3', { subagent_type: 'helper', name: 'h-3', model: 'sonnet' }))?.model).toBe('sonnet')
+    started('t1', 'a1', 'helper')
+    await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ model: 'claude-opus-4-1', tier: 'deep' })
+  })
+
+  it('the row names the alias that was sent when the tier maps to an alias with a suffix (review A6)', async () => {
+    const roles = [
+      role({ id: 'r-lead', slug: 'lead', name: 'Lead', model: 'opus', tier: 'deep', canSpawn: true, spawnable: ['r-eng'] }),
+      role({ id: 'r-eng', slug: 'engineer', name: 'Engineer', model: 'opus', tier: 'deep', reportsTo: 'r-lead', canSpawn: true, spawnable: ['r-help'] }),
+      role({ id: 'r-help', slug: 'helper', name: 'Helper', model: 'inherit', reportsTo: 'r-eng' })
+    ]
+    const connection = { connection: 'anthropic' as const, adapter: 'claude' as const, tierModels: { everyday: 'sonnet[1m]', fast: 'claude-haiku-4-5' } }
+    const { ctx, spawn, started } = session({ roles, ctx: { connection } })
+    expect((await spawn('t1', { subagent_type: 'engineer', name: 'e-1', model: 'sonnet' }))?.model).toBe('sonnet')
+    started('t1', 'a1', 'engineer')
+    await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(1))
+    expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ model: 'sonnet', tier: 'everyday' })
+    // A concrete mapped id is what the alias resolves to (ANTHROPIC_DEFAULT_HAIKU_MODEL), so the row names it.
+    expect((await spawn('t2', { subagent_type: 'helper', name: 'h-1', model: 'haiku' }, { id: 'a1', type: 'engineer' }))?.model).toBe('haiku')
+    started('t2', 'a2', 'helper')
+    await vi.waitFor(() => expect(ctx.getStaffing()?.assignments).toHaveLength(2))
+    expect(ctx.getStaffing()!.assignments[1]).toMatchObject({ model: 'claude-haiku-4-5', tier: 'fast' })
   })
 
   it('an automatic role always sends an explicit effort; a fixed role keeps the definition and the row records it', async () => {
@@ -2689,9 +2760,10 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
     expect(f).toBeUndefined()
   })
 
-  it('invariant grid: nothing passed is above the chart, top / xhigh / max only when the chart allows, the row equals what runs', async () => {
+  it('invariant grid: nothing passed is above the chart, top / xhigh / max only when the chart allows, the row equals what was sent', async () => {
     const ceilingEffort = (r: Role): Effort => r.staffing?.maxEffort ?? r.effort ?? 'high'
-    // Each kind: the role's model fields and its tier ceiling (= the tier its definition runs on; inherit: the root's).
+    // Each kind: the role's model fields and its tier ceiling (= the tier its definition runs on; inherit: the parent's,
+    // everyday for both spawners below).
     const models: Record<string, { fields: Partial<Role>; ceiling: ModelTier }> = {
       tiered: { fields: { model: 'sonnet', tier: 'everyday', effort: 'medium' }, ceiling: 'everyday' },
       inherit: { fields: { model: 'inherit' }, ceiling: 'everyday' },
@@ -2704,43 +2776,79 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
       higher: { model: 'opus', effort: 'high' },
       fable: { model: 'fable', effort: 'max' }
     }
+    type Conn = { proxy: boolean; tierModels: Partial<Record<ModelTier, string>>; connection?: RuntimeContext['connection'] }
+    const conns: Record<string, Conn> = {
+      anthropic: { proxy: false, tierModels: {} },
+      suffixed: { proxy: false, tierModels: { everyday: 'sonnet[1m]' }, connection: { connection: 'anthropic', adapter: 'claude', tierModels: { everyday: 'sonnet[1m]' } } },
+      proxyEmpty: { proxy: true, tierModels: {}, connection: { connection: 'litellm' as never, adapter: 'claude', tierModels: {} } },
+      proxyPartial: { proxy: true, tierModels: { everyday: 'proxy-mid' }, connection: { connection: 'litellm' as never, adapter: 'claude', tierModels: { everyday: 'proxy-mid' } } }
+    }
+    const roots: Record<string, Partial<Role>> = { alias: { model: 'sonnet', tier: 'everyday' }, pinned: { model: 'claude-sonnet-4-5' } }
+    /** What the CLI runs for a written alias on this connection (connections/service.ts tier variables). */
+    const aliasRuns = (c: Conn, alias: string): string | undefined => {
+      const mapped = c.tierModels[settingTier(alias)!]
+      if (c.proxy) return mapped
+      return mapped && settingTier(mapped.replace(/\[[^\]]*\]$/, '')) === undefined ? mapped : alias
+    }
     let n = 0
     for (const projectMode of ['auto', 'fixed'] as const) {
       for (const roleMode of ['auto', 'fixed'] as const) {
-        for (const [modelKind, { fields, ceiling }] of Object.entries(models)) {
-          for (const [callKind, call] of Object.entries(calls)) {
-            const label = `${projectMode}/${roleMode}/${modelKind}/${callKind}`
-            const worker = role({ id: 'r-w', slug: 'worker', name: 'Worker', reportsTo: 'r-lead', ...fields, staffing: { mode: roleMode } })
-            // Root on everyday with an effort, so Options.effort is set and the definition carries reportEffort.
-            const lead = role({ id: 'r-lead', slug: 'lead', name: 'Lead', model: 'sonnet', tier: 'everyday', effort: 'medium', canSpawn: true, spawnable: ['r-w'] })
-            const { ctx, spawn, started } = session({ roles: [lead, worker], project: { staffing: projectMode } })
-            const key = `g${++n}`
-            const asked = { subagent_type: 'worker', name: `w-${n}`, prompt: 'x', ...call }
-            const out = await spawn(key, asked)
-            // No updatedInput: the call goes to the SDK as written.
-            const sent: Record<string, unknown> = out ?? asked
-            const sentModel = typeof sent.model === 'string' ? sent.model : undefined
-            const sentEffort = isEffort(sent.effort) ? sent.effort : undefined
-            const passedTier = sentModel ? settingTier(sentModel) : ceiling
-            const passedEffort = sentEffort ?? reportEffort(worker, 'medium')
-            // (a) never above the role's tier ceiling or effort ceiling
-            expect(compareTier(passedTier!, ceiling), label).toBeLessThanOrEqual(0)
-            if (passedEffort) expect(compareEffort(passedEffort, ceilingEffort(worker)), label).toBeLessThanOrEqual(0)
-            // (b) top, xhigh and max only when the chart itself allows them
-            if (passedTier === 'top') expect(ceiling, label).toBe('top')
-            if (passedEffort === 'xhigh' || passedEffort === 'max') expect(compareEffort(ceilingEffort(worker), passedEffort), label).toBeGreaterThanOrEqual(0)
-            // (c) the row equals what was passed, or what the definition carries
-            started(key, `a-${n}`, 'worker')
-            await vi.waitFor(() => expect(ctx.getStaffing()?.assignments, label).toHaveLength(1))
-            const row = ctx.getStaffing()!.assignments[0]
-            expect(row.model, label).toBe(sentModel ?? fields.model)
-            expect(row.tier, label).toBe(passedTier)
-            expect(row.effort, label).toBe(passedEffort)
+        for (const [connKind, conn] of Object.entries(conns)) {
+          for (const [rootKind, rootFields] of Object.entries(roots)) {
+            for (const spawner of ['root', 'nested'] as const) {
+              for (const [modelKind, { fields, ceiling }] of Object.entries(models)) {
+                for (const [callKind, call] of Object.entries(calls)) {
+                  const label = `${projectMode}/${roleMode}/${connKind}/${rootKind}/${spawner}/${modelKind}/${callKind}`
+                  const parentId = spawner === 'root' ? 'r-lead' : 'r-mid'
+                  const worker = role({ id: 'r-w', slug: 'worker', name: 'Worker', reportsTo: parentId, ...fields, staffing: { mode: roleMode } })
+                  // Root with an effort, so Options.effort is set and the definition carries reportEffort.
+                  const lead = role({ id: 'r-lead', slug: 'lead', name: 'Lead', ...rootFields, effort: 'medium', canSpawn: true, spawnable: ['r-mid', 'r-w'] })
+                  const mid = role({ id: 'r-mid', slug: 'mid', name: 'Mid', model: 'sonnet', tier: 'everyday', reportsTo: 'r-lead', canSpawn: true, spawnable: ['r-w'] })
+                  const { ctx, spawn, started } = session({
+                    roles: [lead, mid, worker],
+                    project: { staffing: projectMode },
+                    ...(conn.connection ? { ctx: { connection: conn.connection } } : {})
+                  })
+                  let rows = 0
+                  if (spawner === 'nested') {
+                    await spawn(`m${++n}`, { subagent_type: 'mid', name: `m-${n}` })
+                    started(`m${n}`, `mid-${n}`, 'mid')
+                    rows = 1
+                  }
+                  const key = `g${++n}`
+                  const asked = { subagent_type: 'worker', name: `w-${n}`, prompt: 'x', ...call }
+                  const out = await spawn(key, asked, spawner === 'nested' ? { id: `mid-${n - 1}`, type: 'mid' } : undefined)
+                  // No updatedInput: the call goes to the SDK as written.
+                  const sent: Record<string, unknown> = out ?? asked
+                  const sentModel = typeof sent.model === 'string' ? sent.model : undefined
+                  const sentEffort = isEffort(sent.effort) ? sent.effort : undefined
+                  const passedTier = sentModel ? settingTier(sentModel) : ceiling
+                  const passedEffort = sentEffort ?? reportEffort(worker, 'medium')
+                  // (a) never above the role's tier ceiling or effort ceiling
+                  expect(compareTier(passedTier!, ceiling), label).toBeLessThanOrEqual(0)
+                  if (passedEffort) expect(compareEffort(passedEffort, ceilingEffort(worker)), label).toBeLessThanOrEqual(0)
+                  // (b) top, xhigh and max only when the chart itself allows them
+                  if (passedTier === 'top') expect(ceiling, label).toBe('top')
+                  if (passedEffort === 'xhigh' || passedEffort === 'max') expect(compareEffort(ceilingEffort(worker), passedEffort), label).toBeGreaterThanOrEqual(0)
+                  // An alias is sent only when the connection resolves it; a report of the root keeps the root's tier unwritten.
+                  if (sentModel) expect(aliasRuns(conn, sentModel), label).toBeDefined()
+                  if (sentModel && modelKind === 'inherit' && spawner === 'root') expect(settingTier(sentModel), label).not.toBe('everyday')
+                  // (c) the row equals what was sent: the alias as the connection resolves it, else the definition's model
+                  started(key, `a-${n}`, 'worker')
+                  await vi.waitFor(() => expect(ctx.getStaffing()?.assignments, label).toHaveLength(rows + 1))
+                  const row = ctx.getStaffing()!.assignments[rows]
+                  const unsent = modelKind !== 'inherit' ? fields.model : spawner === 'root' ? rootFields.model : 'inherit'
+                  expect(row.model, label).toBe(sentModel ? aliasRuns(conn, sentModel) : unsent)
+                  expect(row.tier, label).toBe(passedTier)
+                  expect(row.effort, label).toBe(passedEffort)
+                }
+              }
+            }
           }
         }
       }
     }
-  })
+  }, 60_000)
 
   it('passes the run staffing goal to the role prompts', () => {
     vi.mocked(buildRolePrompt).mockClear()

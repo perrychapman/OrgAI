@@ -1932,21 +1932,49 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /**
+   * The model a spawn's `model: CLAUDE_TIER_ALIAS[tier]` makes the CLI run on this connection, or undefined when the
+   * alias would not resolve to a model the connection serves. The connection's ANTHROPIC_DEFAULT_<ALIAS>_MODEL variable
+   * when set; else on a proxy the tier's mapped model (the variables come only from that map: without it the CLI would
+   * send its own native id to the proxy); else on the Anthropic connection the mapped concrete id, or the alias itself
+   * when the tier maps to nothing, an alias or a suffixed alias such as "sonnet[1m]" (connections/service.ts
+   * anthropicTierEnv sets no variable for those, so the alias resolves natively).
+   */
+  private aliasTarget(tier: ModelTier): string | undefined {
+    const alias = CLAUDE_TIER_ALIAS[tier]
+    const fromEnv = this.ctx.connection?.env?.[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`]?.trim()
+    if (fromEnv) return fromEnv
+    const mapped = this.ctx.connection?.tierModels?.[tier]?.trim()
+    if (usesProxy(this.ctx)) return mapped || undefined
+    return mapped && settingTier(mapped.replace(/\[[^\]]*\]$/, '')) === undefined ? mapped : alias
+  }
+
+  /** The model the root runs on now: its own (switchModel included), else what the session reported at init, else 'inherit'. */
+  private liveRootModel(): string {
+    const own = this.root.model?.trim()
+    if (own && own !== 'inherit' && validModelId(own)) return own
+    return this.agents.get(ROOT_ID)?.model?.trim() || 'inherit'
+  }
+
+  /**
    * Run staffing for a native spawn that is going to be allowed (orchestration-efficiency 4.3): StaffingBook.decide under
    * the Agent call's tool_use_id, then the call's final `model` and `effort`. Returns what to set and which keys the
    * model wrote that must go.
-   * - `model`: CLAUDE_TIER_ALIAS[resolved tier] when the plan guard steered the spawn or an automatic role is moved off
-   *   the tier its definition runs on (definitionTier), and always for an automatic or steered 'inherit' role whose
-   *   tier is known: whether 'inherit' means the main thread's model or the spawning agent's is unverified, so the
-   *   alias settles it. Otherwise none, so the definition's model applies. Any other `model` the call carried is
-   *   dropped (the SDK rejects a full id; an alias is only a request).
+   * - `model`: CLAUDE_TIER_ALIAS[resolved tier], only when the connection resolves that alias (aliasTarget), when:
+   *   the plan guard steered the spawn or an automatic role is moved off the tier its definition runs on
+   *   (definitionTier); or an automatic or steered 'inherit' role has a known tier the resolver did not fall back from
+   *   (adjustment 'unmapped'), except that a report the root spawns on the root's own live tier gets none. For a spawn
+   *   by the root, 'inherit' is the main model under either reading of the SDK typings, so it keeps the root's exact
+   *   model (a pinned id included); for a nested spawn it is unverified whether 'inherit' follows the main thread or
+   *   the spawning agent, so the alias settles it. Otherwise none, so the definition's model applies. Any other `model`
+   *   the call carried is dropped (the SDK rejects a full id; an alias is only a request).
    * - `effort`: an automatic role always runs at an explicit effort, never one the CLI chose (its per-model default or a
    *   project `effortLevel`): the resolved effort, else CLAUDE_SDK_DEFAULT_EFFORT (resolveStaffing already returns the
    *   cap when the role's effort ceiling is below it), written unless the definition carries it (reportEffort). A fixed
    *   role writes none: the definition's effort applies.
    * A fixed role, and every role of a project whose staffing is fixed, runs exactly as configured: an alias and an
    * effort on the call are dropped (the caller is told in one sentence), only the plan guard may write `sonnet`.
-   * What runs (the written values, else the definition's) is kept under `key` for the row (staffingStarted).
+   * What was sent is kept under `key` for the row (staffingStarted): a written alias as aliasTarget, else the
+   * definition's model (an 'inherit' report of the root: the root's live model; a nested one: 'inherit').
    */
   private staffSpawn(
     key: string,
@@ -1974,10 +2002,19 @@ export class ClaudeSession implements RuntimeSession {
     const resolved = decision.resolved
     const auto = resolved.mode === 'auto'
     const inherit = !(target.model && validModelId(target.model)) || target.model === 'inherit'
-    const defTier = definitionTier(target, this.liveRootTier())
+    const rootTier = this.liveRootTier()
+    const defTier = definitionTier(target, rootTier)
     const steered = resolved.source === 'plan-guard'
+    const byRoot = !parentAgentId
     let model: string | undefined
-    if (resolved.tier && (steered || auto) && (inherit || resolved.tier !== defTier)) model = CLAUDE_TIER_ALIAS[resolved.tier]
+    let sentModel: string | undefined
+    if (resolved.tier && (steered || auto)) {
+      const write = inherit
+        ? resolved.adjustment !== 'unmapped' && !(byRoot && resolved.tier === rootTier)
+        : resolved.tier !== defTier
+      sentModel = write ? this.aliasTarget(resolved.tier) : undefined
+      if (sentModel) model = CLAUDE_TIER_ALIAS[resolved.tier]
+    }
 
     const defEffort = reportEffort(target, sessionEffort(this.root))
     let effort: Effort | undefined
@@ -1987,11 +2024,15 @@ export class ClaudeSession implements RuntimeSession {
       if (runEffort !== defEffort) effort = runEffort
     }
 
-    // The row records what runs: the written values, else the definition's.
+    // The row records what was sent: the written alias as the connection resolves it, else the definition's model.
     const ran: StaffingRan =
-      model || inherit
-        ? { model: resolved.model, ...(resolved.tier ? { tier: resolved.tier } : {}) }
-        : { model: target.model, ...(defTier ? { tier: defTier } : {}) }
+      model && sentModel
+        ? { model: sentModel, ...(resolved.tier ? { tier: resolved.tier } : {}) }
+        : !inherit
+          ? { model: target.model, ...(defTier ? { tier: defTier } : {}) }
+          : byRoot
+            ? { model: this.liveRootModel(), ...(rootTier ? { tier: rootTier } : {}) }
+            : { model: 'inherit', ...(resolved.tier ? { tier: resolved.tier } : {}) }
     if (runEffort) ran.effort = runEffort
     if (this.staffingRan.size >= 100) this.staffingRan.delete(this.staffingRan.keys().next().value!)
     this.staffingRan.set(key, ran)
