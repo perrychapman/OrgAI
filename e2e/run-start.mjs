@@ -128,8 +128,8 @@ const activeTestId = (p) =>
 const text = async (p, sel) => ((await p.locator(sel).first().innerText({ timeout: 5000 }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
 
 /**
- * Move keyboard focus to `selector` inside an open popover. A freshly opened panel does not take focus for a moment (the
- * shared Popover's own focus-in does not land either, see the NOTE in section 9), so retry until it sticks.
+ * Move keyboard focus to `selector` inside an open popover (a radio other than the one the Popover focused first),
+ * retrying briefly while the panel finishes opening.
  */
 async function focusInside(selector, p = page) {
   for (let i = 0; i < 40; i++) {
@@ -238,7 +238,7 @@ try {
     await page.waitForFunction(() => document.querySelector('[data-testid=run-permission-current]')?.textContent === 'Bypass all prompts', null, { timeout: 5000 }).catch(() => {})
     check((await text(page, T('run-permission-current'))) === MODE_NAME.bypassPermissions, '4 confirming sets Bypass', await text(page, T('run-permission-current')))
     const chip = page.locator(T('run-permission-change'))
-    check((await chip.getAttribute('data-tone')) === 'warning' && (await chip.getAttribute('data-default')) === 'false', '4 Bypass shows data-tone=warning and data-default=false')
+    check((await chip.getAttribute('data-tone')) === 'danger' && (await chip.getAttribute('data-default')) === 'false', '4 Bypass shows data-tone=danger (not the warning amber) and data-default=false')
     await shot('widen-bypass')
     // Back to the project's mode: that is the default again and is not a widening.
     await chooseMode(page, 'default')
@@ -406,11 +406,19 @@ try {
       await page.locator(T(trigger)).focus()
       await page.keyboard.press('Enter')
       await page.locator(T(picker)).waitFor({ state: 'visible' })
-      // Not a pass/fail check: the shared Popover is meant to move focus in once placed, but today focus stays on the chip
-      // (a keyboard user Tabs into the panel). Reported, not asserted, so this script does not fail on a shared component.
-      await sleep(400)
-      const focusIn = await page.evaluate((p) => !!document.querySelector(`[data-testid=${p}]`)?.contains(document.activeElement), picker)
-      if (!focusIn) log(`NOTE ${trigger}: opening with Enter leaves focus on the chip, not inside ${picker}`)
+      // The shared Popover moves focus into the panel on the very first open too: to the checked radio when there is one
+      // (permission: the project's mode), else the first control (effort / goal with nothing checked: the first radio;
+      // the model picker keeps focusing its search box).
+      await page.waitForFunction((p) => !!document.querySelector(`[data-testid=${p}]`)?.contains(document.activeElement), picker, { timeout: 3000 }).catch(() => {})
+      const where = await page.evaluate((p) => {
+        const panel = document.querySelector(`[data-testid=${p}]`)
+        const el = document.activeElement
+        return { inside: !!panel?.contains(el), id: el?.getAttribute('data-testid') ?? el?.tagName, checked: el?.matches?.('input[type=radio]') ? el.checked : null, type: el?.getAttribute?.('type') ?? '' }
+      }, picker)
+      check(where.inside, `9 opening ${picker} with Enter moves focus inside it`, JSON.stringify(where))
+      if (picker === 'run-model-picker') check(where.id === 'run-model-search', '9 the model picker focuses its search box', where.id)
+      else if (picker === 'run-permission-picker') check(where.checked === true, '9 the permission picker focuses the checked radio (the current mode)', JSON.stringify(where))
+      else check(where.type === 'radio', `9 ${picker} focuses a radio`, JSON.stringify(where))
       await page.keyboard.press('Escape')
       await page.locator(T(picker)).waitFor({ state: 'hidden' })
       check((await activeTestId(page)) === trigger, `9 Escape in ${picker} returns focus to ${trigger}`, await activeTestId(page))
@@ -489,11 +497,11 @@ try {
     await waitStatus(run.id, ['finished'])
     const v = await openRunWindow(run)
     await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
-    check(/^Permission:\s*Next message:/.test(await text(v, T('run-permission-change'))), '7 (live row) an ended run labels the chip "Permission: Next message: ..."',await text(v, T('run-permission-change')))
+    check(!/Next message:/.test(await text(v, T('run-permission-change'))), '7 (live row) an ended run with no pending choice shows its mode without a "Next message:" prefix', await text(v, T('run-permission-change')))
     await chooseMode(v, 'plan')
     await v.waitForFunction(() => /applies from your next message/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
     check((await text(v, T('run-permission-note'))).includes('Plan only applies from your next message.'), '7 (live row) run-permission-note says "Plan only applies from your next message."', await text(v, T('run-permission-note')))
-    check(/^Permission:\s*Next message:/.test(await text(v, T('run-permission-change'))) &&(await text(v, T('run-permission-current'))) === MODE_NAME.plan, '7 (live row) the chip keeps the Next message prefix and shows the saved mode')
+    check(/^Permission:\s*Next message:/.test(await text(v, T('run-permission-change'))) &&(await text(v, T('run-permission-current'))) === MODE_NAME.plan, '7 (live row) a saved choice reads "Permission: Next message: Plan only"', await text(v, T('run-permission-change')))
     const rec = await getRun(run.id)
     check(rec.summary.permissionMode === 'plan' && rec.summary.permissionModeChosen === true, '7 runs.get permissionMode is plan and permissionModeChosen is true', `${rec.summary.permissionMode} ${rec.summary.permissionModeChosen}`)
     // The next message carries it.
@@ -511,8 +519,11 @@ try {
     let v = await openRunWindow(refuse)
     await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
     await chooseMode(v, 'plan')
-    await v.locator(T('run-permission-error')).waitFor({ state: 'visible', timeout: 8000 }).catch(() => {})
-    check((await text(v, T('run-permission-error'))).includes('This provider applies a new permission mode from the next session.'), '8 (merged mock) [mock:mode-refuse] shows its message in run-permission-error', await text(v, T('run-permission-error')))
+    // A provider refusal arrives either thrown (run-permission-error) or as a refused result (run-permission-note).
+    const refusalSel = `${T('run-permission-error')}, ${T('run-permission-note')}`
+    await v.locator(refusalSel).first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {})
+    const refusal = await text(v, refusalSel)
+    check(refusal.includes('This provider applies a new permission mode from the next session.') || refusal.includes('The session could not change its permission mode now.'), "8 (merged mock) [mock:mode-refuse] shows main's refusal (the mock's sentence or the fixed one) in run-permission-error", refusal)
     check((await text(v, T('run-permission-current'))) === MODE_NAME.default && (await getRun(refuse.id)).summary.permissionMode === 'default', '8 (merged mock) a refused change keeps the old mode on the chip and in runs.get')
     await v.screenshot({ path: 'e2e/shots/run-start-mode-refused.png' })
     await page.evaluate((id) => window.orgai.runs.stop(id), refuse.id)
@@ -521,9 +532,41 @@ try {
     v = await openRunWindow(unchanged)
     await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
     await chooseMode(v, 'plan')
-    await v.waitForFunction(() => /keep the earlier mode until they finish/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
-    check((await text(v, T('run-permission-note'))).includes('keep the earlier mode until they finish'), '8 (merged mock) [mock:mode-reports-unchanged] says running reports keep the earlier mode', await text(v, T('run-permission-note')))
+    await v.waitForFunction(() => /keeps? the earlier mode until (they|it) finish/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+    check(/keeps? the earlier mode until (they|it) finish/.test(await text(v, T('run-permission-note'))),'8 (merged mock) [mock:mode-reports-unchanged] says running reports keep the earlier mode', await text(v, T('run-permission-note')))
     await page.evaluate((id) => window.orgai.runs.stop(id), unchanged.id)
+  })
+
+  // 10. review fixes: option icons, one confirmation per double click, RunMeta on an ended run ("Interrupt and change" going stale is unit-tested: a staged refusal cannot be driven on the idle mock)
+  await section('review-fixes', async () => {
+    await reopen()
+    await page.locator(T('run-permission-change')).click()
+    await page.locator(T('run-permission-picker')).waitFor({ state: 'visible' })
+    const permissive = await page.locator(`${T('run-permission-picker')} .run-permission-option[data-tone]`).count()
+    const icons = await page.locator(`${T('run-permission-picker')} .run-permission-option[data-tone] ${T('run-permission-option-icon')} svg[aria-hidden=true]`).count()
+    const danger = await page.locator(`${T('run-permission-picker')} .run-permission-option[data-tone=danger]`).count()
+    check(permissive === 3 && icons === permissive && danger === 1, '10 every permissive mode in the list carries a hidden icon (not colour alone) and only Bypass is danger', `${icons}/${permissive}, danger ${danger}`)
+    await page.locator(`${T('run-permission-choice')}[value="bypassPermissions"]`).check()
+    // Two activations in one task (a double click, Enter twice): a real second click would land on the opened dialog.
+    await page.locator(T('run-permission-apply')).evaluate((b) => {
+      b.click()
+      b.click()
+    })
+    await page.locator(T('run-permission-confirm')).waitFor({ state: 'visible', timeout: 5000 })
+    await sleep(300)
+    check((await page.locator(T('run-permission-confirm')).count()) === 1 && (await page.locator('dialog[open], [role=dialog][aria-modal=true]').count()) <= 1, '10 a double click on "Use this mode" opens one confirmation', String(await page.locator(T('run-permission-confirm')).count()))
+    await page.getByRole('button', { name: 'Keep current mode', exact: true }).click()
+    await page.locator(T('run-permission-confirm')).waitFor({ state: 'hidden' })
+
+    // An ended run's RunMeta says what the chip says: "Next message: <mode>".
+    const ended = await startViaApi(`${IDLE_MARK} meta`, { permissionMode: 'plan' })
+    await page.evaluate((id) => window.orgai.runs.stop(id), ended.id)
+    await waitStatus(ended.id, ['finished'])
+    const ev = await openRunWindow(ended)
+    await ev.locator(T('run-meta-permission')).waitFor({ timeout: 10_000 })
+    check(/^Next message:\s*Plan only/.test(await text(ev, T('run-meta-permission'))) && (await ev.locator(T('run-meta-permission')).getAttribute('data-next')) === 'true', '10 an ended run\'s RunMeta reads "Next message: Plan only", like the chip', await text(ev, T('run-meta-permission')))
+
+    await page.evaluate((id) => window.orgai.runs.stop(id), ended.id).catch(() => {})
   })
 } catch (error) {
   check(false, 'run-start script completes', error.stack || String(error))

@@ -884,6 +884,8 @@ async function showStartedAssistant(summary: RunSummary, home: string): Promise<
   if (getState().selectedProjectId !== home) getState().selectProject(home)
   setState((s) => showRunPatch(s, summary.projectId || home, summary.id))
   void getState().loadHistory()
+  // The start page's Start button had focus and is gone: put the keyboard in the live reply box, as a project start does.
+  requestAnimationFrame(() => requestAnimationFrame(() => getState().focusComposer()))
 }
 
 /** Store a usage report under its connection, so one provider's probe never replaces another's. */

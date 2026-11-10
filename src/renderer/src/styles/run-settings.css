@@ -113,6 +113,20 @@
   background: var(--warning-soft);
   color: var(--warning-text);
 }
+/* Bypass skips every prompt: the danger tone, with its own ShieldOff icon (not colour alone). */
+.run-chip--danger {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.run-chip--danger .run-chip__value,
+.run-chip--danger .run-chip__state {
+  color: inherit;
+}
+.run-chip--danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
 
 /* The start page's model picker is as tall as its content (the live one keeps its fixed height). */
 .popover-panel.run-model-picker {
@@ -168,6 +182,7 @@
 }
 /* The meta bar's permission item: a permissive mode is warning-toned with a ShieldAlert icon and its name. */
 .run-meta-permission[data-tone='warning'] { color: var(--warning-text); }
+.run-meta-permission[data-tone='danger'] { color: var(--danger-text); }
 
 /* Popover bodies */
 .run-popover-stack {
@@ -240,6 +255,14 @@
 }
 .run-permission-option[data-tone='warning'] .run-permission-option__name {
   color: var(--warning-text);
+}
+.run-permission-option[data-tone='danger'] .run-permission-option__name {
+  color: var(--danger-text);
+}
+.run-permission-option__icon {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: var(--space-1);
 }
 .run-permission-option__tag {
   color: var(--text-tertiary);

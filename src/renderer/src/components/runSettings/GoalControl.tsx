@@ -41,7 +41,7 @@ export function GoalControl({ goal, isDefault, onChange }: { goal: StaffingGoal;
             <span className="run-chip__value" data-testid="run-goal-current">
               {GOAL_LABEL[goal]}
             </span>
-            <span className="run-chip__state">{isDefault ? 'Default' : 'Changed'}</span>
+            {!isDefault && <span className="run-chip__state">Changed</span>}
             <Icon icon={ChevronDown} size="xs" />
           </>
         }

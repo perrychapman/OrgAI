@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { Bot, ClipboardList, Clock, Database, Files, Folder, Shield, ShieldAlert } from 'lucide-react'
-import { isPermissiveMode, metaPermissionMode, modeInForce, modeInForceLabel, permissionModeHelp } from '../lib/runSettings'
+import { Bot, ClipboardList, Clock, Database, Files, Folder, Shield, ShieldAlert, ShieldOff } from 'lucide-react'
+import { metaPermission, modeInForce, modeInForceLabel, permissionModeHelp, permissionModeName, permissionSessionEnded, permissionTone } from '../lib/runSettings'
 import '../styles/run-settings.css'
 import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
 import { useOutputAnnouncements } from './outputs/useOutputAnnouncements'
@@ -121,7 +121,15 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     maxAutoContinues: project.maxAutoContinues,
     kind: summary.kind
   })
-  const metaMode = metaPermissionMode(summary, project)
+  // An ended run shows what its next message uses, as the composer's chip does ("Next message: Plan only").
+  const metaPerm = metaPermission(summary, project)
+  const metaMode = metaPerm?.mode ?? null
+  const metaNext = metaPerm?.next ?? false
+  const metaPrefix = metaNext ? 'Next message: ' : ''
+  // A session grant only exists while the session is live; an ended run shows the chip's value as it is.
+  const metaEnded = permissionSessionEnded(summary.status)
+  const metaTone = metaMode ? permissionTone(metaEnded ? metaMode : modeInForce(summary, metaMode)) : null
+  const metaLabel = metaMode ? (metaEnded ? permissionModeName(metaMode) : modeInForceLabel(summary, metaMode)) : ''
   const next = useAppStore((s) => s.proposalNextByRun[summary.id])
   const nextCopy = next ? PROPOSAL_NEXT_COPY[next.kind] : null
   const goNext = (): void => {
@@ -189,15 +197,17 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           className={`run-meta-item run-meta-permission${metaMode === 'auto' ? ' run-meta-unattended' : ''}`}
           data-testid="run-meta-permission"
           data-mode={metaMode}
-          data-tone={isPermissiveMode(modeInForce(summary, metaMode)) ? 'warning' : undefined}
-          title={`${modeInForceLabel(summary, metaMode)}${summary.permissionModeChosen ? ' (this run)' : ''}: ${
+          data-next={metaNext ? 'true' : undefined}
+          data-tone={metaTone ?? undefined}
+          title={`${metaPrefix}${metaLabel}${summary.permissionModeChosen ? ' (this run)' : ''}: ${
             metaMode === 'auto'
               ? "the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."
               : permissionModeHelp(metaMode)
           }`}
         >
-          <Icon icon={isPermissiveMode(modeInForce(summary, metaMode)) ? ShieldAlert : Shield} size="xs" />
-          {modeInForceLabel(summary, metaMode)}
+          <Icon icon={metaTone === 'danger' ? ShieldOff : metaTone ? ShieldAlert : Shield} size="xs" />
+          {metaPrefix}
+          {metaLabel}
           <span className="sr-only">
             {' '}
             (permission mode{summary.permissionModeChosen ? ', this run' : ''})

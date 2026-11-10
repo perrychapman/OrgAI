@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { ConnectionId, RunSummary } from '@shared/types'
+import { resolveModelSetting } from '@shared/defaults'
 import { Button } from './ui/Button'
 import { Icon } from './ui/Icon'
 import { Popover } from './ui/Popover'
@@ -46,8 +47,17 @@ export function LiveModelSwitch({ run, onRunChanged, className, inRow }: { run: 
   useEffect(() => { if (applied && !cachedModels) void refreshModels(applied.connection) }, [applied?.connection, cachedModels, refreshModels])
   const name = (connection: ConnectionId): string => connectionLabel(connection)
   const selected = models.find((model) => modelKey(model.connection, model.id) === choice)
-  const currentModel = (cachedModels ?? models).find((model) => model.id === applied?.model && model.connection === applied.connection)
+  const connections = useAppStore((state) => state.connections)
+  const knownModels = cachedModels ?? models
+  // A run can hold a tier alias ("everyday", "deep") as its model: show the model that alias maps to, with the catalog's
+  // friendly label, and keep the exact setting in the title (aria-label) so nothing is hidden.
+  const resolvedId = applied
+    ? (resolveModelSetting(applied.model, { connection: applied.connection, tierModels: connections?.find((c) => c.connection.id === applied.connection)?.connection.tierModels ?? {}, catalog: knownModels })?.model ?? applied.model)
+    : ''
+  const currentModel = knownModels.find((model) => applied && model.id === applied.model && model.connection === applied.connection)
+    ?? knownModels.find((model) => applied && model.id === resolvedId && model.connection === applied.connection)
   const current = applied ? `${currentModel?.label || applied.model} · ${name(applied.connection)}` : 'Current model unavailable'
+  const exactTitle = applied ? `${liveModelLabel(applied.model, applied.connection)}${resolvedId && resolvedId !== applied.model && resolvedId !== 'inherit' ? ` (${resolvedId})` : ''}` : current
   const nextMessage = modelSessionEnded(run)
   // Only a team run has other roles that could follow the lead's model.
   const teamRun = run.kind === 'work' && !run.quick && run.team !== 'single'
@@ -108,7 +118,7 @@ export function LiveModelSwitch({ run, onRunChanged, className, inRow }: { run: 
 
   return <span ref={region} className={`live-model-switch${inRow ? ' live-model-switch--in-row' : ''}${className ? ` ${className}` : ''}`} data-testid="live-model-switch" aria-busy={busy}>
     <Popover placement="top-start" label="Choose conversation model" triggerTestId="live-model-change" testId="live-model-picker" className="live-model-switch__picker"
-      triggerClassName="run-chip live-model-switch__trigger" triggerTitle={applied ? liveModelLabel(applied.model, applied.connection) : current}
+      triggerClassName="run-chip live-model-switch__trigger" triggerTitle={exactTitle}
       triggerLabel={`${busy ? 'Changing model. ' : ''}Conversation model: ${nextMessage ? 'Next message: ' : ''}${current}${applied ? ` (${applied.model})` : ''}`}
       trigger={<><span className="run-chip__label">Model:</span><span className="run-chip__value" data-testid="live-model-current">{busy ? 'Changing model…' : <>{nextMessage && 'Next message: '}{current}</>}</span><Icon icon={ChevronDown} size="xs" /></>}
       onOpenChange={(value) => { if (!value && !confirming.current) epoch.current++; setOpen(value); if (value) { if (reopening.current) { reopening.current = false; return }; setQuery(''); setChoice(applied ? modelKey(applied.connection, applied.model) : ''); setError(''); setRequiresHandoff(false) } }}>

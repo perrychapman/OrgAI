@@ -2,10 +2,24 @@ import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { PermissionMode, Project, RunSummary } from '@shared/types'
 import { Button } from '../ui/Button'
+import { pendingDecisionCount, useAppStore } from '../../store/useAppStore'
 import { PermissionModeControl } from './PermissionModeControl'
 import { modelSessionEnded, modelSwitchBlock, waitForModelBoundary } from '../../lib/liveModelSwitch'
 import { cleanIpcError } from '../../lib/ipcError'
-import { SESSION_EDITS_SUFFIX, livePermissionChoices, livePermissionOutcome, livePermissionValue, modeInForce, offersInterruptToChange, sessionEditsAccepted } from '../../lib/runSettings'
+import { useConfirm } from '../ui/ConfirmDialog'
+import {
+  PERMISSION_CONTINUED_ELSEWHERE,
+  SESSION_EDITS_SUFFIX,
+  livePermissionChoices,
+  livePermissionOutcome,
+  livePermissionValue,
+  modeInForce,
+  offersInterruptToChange,
+  permissionBaseline,
+  retryNeedsConfirm,
+  sessionEditsAccepted,
+  wideningConfirmOptions
+} from '../../lib/runSettings'
 import '../../styles/run-settings.css'
 
 interface Note {
@@ -15,6 +29,10 @@ interface Note {
   status: RunSummary['status']
   /** The mode that was asked for (retried by "Interrupt and change"). */
   mode: PermissionMode
+  /** The baseline the choice (and any confirmation of it) was measured against; a retry asks again when it moved. */
+  covered: PermissionMode
+  /** The mode in force when the note was written; the note goes away when the mode in force changes (an event). */
+  seen: PermissionMode
   /** Offer "Interrupt and change": a refusal while the run is replying, and no interrupt sent yet. */
   canInterrupt: boolean
 }
@@ -55,6 +73,24 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
   useEffect(() => {
     if (!note) setAnnouncement('')
   }, [note])
+  // A retry offer also belongs to the mode in force when it was written: a run.permissionMode event that moves it (a
+  // project change narrowed the run, a card granted edits) makes the offer stale.
+  const inForce = permissionBaseline(run, project)
+  useEffect(() => {
+    // Only a note that offers a retry goes: an outcome sentence ("now Plan only") stays true when a later event restates it,
+    // and the store can show a brief intermediate mode while main broadcasts a change.
+    setNote((current) => (current && current.canInterrupt && current.seen !== inForce ? null : current))
+  }, [inForce])
+  const { confirm, dialog } = useConfirm()
+  // "Interrupt and change" cannot work while a decision is open or reports are running (the same guards as the model
+  // switch), and it comes back by itself when they are gone: read from the store, not from a snapshot.
+  const interruptBlock = useAppStore((s) => {
+    const state = s.runs[run.id]
+    if (!state) return null
+    if (pendingDecisionCount(state) > 0) return 'Answer the open decisions to interrupt and change.'
+    if (!modelSessionEnded(state.summary) && Object.values(state.agents).some((a) => a.parentId !== null && !['done', 'error'].includes(a.state))) return 'Wait for the active reports to finish to interrupt and change.'
+    return null
+  })
 
   if (choices.length === 0) return null
 
@@ -62,11 +98,25 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(`[data-testid="run-settings"][data-surface="live"] [data-testid="run-permission-change"]`)?.focus())
   }
 
-  const record = (target: PermissionMode, result: Awaited<ReturnType<typeof window.orgai.runs.setPermissionMode>>, tried: boolean): void => {
+  const record = (target: PermissionMode, result: Awaited<ReturnType<typeof window.orgai.runs.setPermissionMode>>, tried: boolean, covered: PermissionMode): void => {
     if (!alive.current) return
-    if (result.run.id === run.id) onRunChanged(result.run)
+    if (result.run.id !== run.id) {
+      // Main answered for the newest run of the chain: this view is of an older one, so it must not say the mode changed.
+      setNote({ tone: 'refused', message: PERMISSION_CONTINUED_ELSEWHERE, status: run.status, mode: target, covered, seen: inForce, canInterrupt: false })
+      setAnnouncement(PERMISSION_CONTINUED_ELSEWHERE)
+      return
+    }
+    onRunChanged(result.run)
     const outcome = livePermissionOutcome(result, target)
-    setNote({ tone: outcome.tone, message: outcome.message, status: result.run.status, mode: target, canInterrupt: !tried && offersInterruptToChange(outcome, result.run.status) })
+    setNote({
+      tone: outcome.tone,
+      message: outcome.message,
+      status: result.run.status,
+      mode: target,
+      covered,
+      seen: permissionBaseline(result.run, project),
+      canInterrupt: !tried && offersInterruptToChange(outcome, result.run.status)
+    })
     setAnnouncement(outcome.message)
   }
 
@@ -76,7 +126,8 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
     setNote(null)
     try {
       // A thrown refusal propagates to PermissionModeControl, which shows it and keeps the popover open.
-      record(target, await window.orgai.runs.setPermissionMode({ runId: run.id, mode: target }), false)
+      // PermissionModeControl already confirmed a widening against `inForce` before calling this.
+      record(target, await window.orgai.runs.setPermissionMode({ runId: run.id, mode: target }), false, inForce)
     } finally {
       if (alive.current) setPending(false)
     }
@@ -85,6 +136,15 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
   const interruptAndChange = async (): Promise<void> => {
     if (!note || pending) return
     const target = note.mode
+    // The baseline the choice was confirmed (or needed no confirmation) against; asked again when the run's mode moved.
+    let covered = note.covered
+    const confirmedAgainst = async (summary: RunSummary): Promise<boolean> => {
+      const now = permissionBaseline(summary, project)
+      if (!retryNeedsConfirm(covered, now, target)) return true
+      const accepted = await confirm(wideningConfirmOptions(now, target))
+      if (accepted) covered = now
+      return accepted
+    }
     setPending(true)
     let interrupted = false
     try {
@@ -97,6 +157,12 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
         setAnnouncement(message)
         return
       }
+      // Before anything is interrupted: the run's mode may have moved since the choice was made (a project change
+      // narrowed it), which can turn the retry into a widening nobody confirmed.
+      if (current && !(await confirmedAgainst(current.summary))) {
+        if (alive.current) setNote(null)
+        return
+      }
       interrupted = true
       await window.orgai.runs.interrupt(run.id)
       try {
@@ -106,11 +172,17 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
         const after = await window.orgai.runs.get(run.id).catch(() => null)
         if (!after || !modelSessionEnded(after.summary)) throw e
       }
-      record(target, await window.orgai.runs.setPermissionMode({ runId: run.id, mode: target }), true)
+      // The mode can also move while waiting for the boundary: check once more against what is in force now.
+      const settled = await window.orgai.runs.get(run.id).catch(() => null)
+      if (settled && !(await confirmedAgainst(settled.summary))) {
+        if (alive.current) setNote(null)
+        return
+      }
+      record(target, await window.orgai.runs.setPermissionMode({ runId: run.id, mode: target }), true, covered)
     } catch (e) {
       if (!alive.current) return
       const message = cleanIpcError(e, 'The permission mode was not changed.')
-      setNote({ tone: 'refused', message, status: run.status, mode: target, canInterrupt: !interrupted })
+      setNote({ tone: 'refused', message, status: run.status, mode: target, covered, seen: inForce, canInterrupt: !interrupted })
       setAnnouncement(message)
     } finally {
       if (alive.current) setPending(false)
@@ -122,13 +194,14 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
     <>
       <PermissionModeControl
         value={mode}
-        baseline={live ? modeInForce(run, mode) : mode}
+        baseline={inForce}
         inForce={live && sessionEdits ? modeInForce(run, mode) : undefined}
         valueSuffix={live && sessionEdits && mode !== 'acceptEdits' ? SESSION_EDITS_SUFFIX : undefined}
         choices={choices}
         isDefault={!run.permissionModeChosen}
         defaultMode={project.permissionMode}
-        prefix={next ? 'Next message: ' : ''}
+        // "Next message:" marks a pending choice of the user; an untouched chip on an ended run just shows its mode.
+        prefix={next && run.permissionModeChosen ? 'Next message: ' : ''}
         showState={false}
         disabled={pending}
         busy={pending}
@@ -142,7 +215,8 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
       {note && (
         <div className={`run-settings-note run-permission-note${note.tone === 'refused' ? ' run-settings-note--warn' : ''}`} data-testid="run-permission-note" data-tone={note.tone}>
           <span>{note.message}</span>
-          {note.canInterrupt && (
+          {note.canInterrupt && interruptBlock && <span data-testid="run-permission-interrupt-blocked">{interruptBlock}</span>}
+          {note.canInterrupt && !interruptBlock && (
             <Button
               size="sm"
               testId="run-permission-interrupt"
@@ -158,6 +232,7 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
       <span className="sr-only" role="status" data-testid="run-permission-status">
         {announcement}
       </span>
+      {dialog}
     </>
   )
 }

@@ -6,7 +6,7 @@ import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import { connectionLabel } from '../../lib/connectionLabel'
 import { modelKey } from '../../lib/liveModelSwitch'
-import { MODEL_HELP_ASK, MODEL_HELP_TEAM, type RunModel } from '../../lib/runSettings'
+import { MODEL_HELP_ASK, MODEL_HELP_TEAM, RESET_TO_DEFAULT_LABEL, type RunModel } from '../../lib/runSettings'
 import { useTriggerAttrs } from './triggerAttrs'
 import { ModelPickerList, focusSearchWhenOpen, useModelCatalog } from './ModelPickerList'
 import '../../styles/run-settings.css'
@@ -38,7 +38,6 @@ export function StartModelControl({
   const shownText = shown ? `${shown.label} · ${connectionLabel(shown.connection)}` : 'Project default'
   const selected = catalog.models.find((m) => modelKey(m.connection, m.id) === choice)
   const unchanged = !selected || (!!shown && selected.id === shown.model && selected.connection === shown.connection)
-  const defaultWord = ask ? 'Use default' : 'Use project default'
   const focusSearch = useCallback((node: HTMLInputElement | null) => (node ? focusSearchWhenOpen(node) : undefined), [])
 
   return (
@@ -57,7 +56,7 @@ export function StartModelControl({
             <span className="run-chip__value" data-testid="run-model-current">
               {shownText}
             </span>
-            <span className="run-chip__state">{picked ? 'Changed' : 'Default'}</span>
+            {picked && <span className="run-chip__state">Changed</span>}
             <Icon icon={ChevronDown} size="xs" />
           </>
         }
@@ -114,7 +113,7 @@ export function StartModelControl({
                       close()
                     }}
                   >
-                    {defaultWord}
+                    {RESET_TO_DEFAULT_LABEL}
                   </button>
                 )}
               </div>

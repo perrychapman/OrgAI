@@ -5,7 +5,7 @@ import { useTriggerAttrs } from './triggerAttrs'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import { SegmentedControl } from '../ui/SegmentedControl'
-import { EFFORT_HELP, EFFORT_LABEL, EFFORT_UNSET_LABEL, effortChoices, effortFallbackNote, fitEffort } from '../../lib/runSettings'
+import { EFFORT_HELP, EFFORT_LABEL, EFFORT_UNSET_LABEL, RESET_TO_DEFAULT_LABEL, effortChoices, effortFallbackNote, fitEffort } from '../../lib/runSettings'
 import '../../styles/run-settings.css'
 
 /** Live run: the effort the run started with. It cannot change during a run, so this is text, not a control. */
@@ -72,7 +72,7 @@ function EffortEditable({
               <span className="run-chip__value" data-testid="run-effort-current">
                 {text}
               </span>
-              <span className="run-chip__state">{changed ? 'Changed' : 'Default'}</span>
+              {changed && <span className="run-chip__state">Changed</span>}
               <Icon icon={ChevronDown} size="xs" />
             </>
           }
@@ -97,7 +97,7 @@ function EffortEditable({
                     close()
                   }}
                 >
-                  Use project default
+                  {RESET_TO_DEFAULT_LABEL}
                 </button>
               )}
             </div>

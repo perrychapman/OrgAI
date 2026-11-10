@@ -376,12 +376,52 @@ Spec: `docs/design/ux-review-run-start-pre.md` (H1-H3, M1-M8). Contract: `StartR
   so the Chat and instruction start pages widened too), role chips capped at 5 plus `new-run-more-roles`, label always
   "New run" / "Ask one assistant", setup pending shows `new-run-skip-setup` "Start without setup" (secondary) and no
   settings row, focus lands in the live composer textarea after Start.
-- `ui/Popover` places itself again when its content resizes (a ResizeObserver while open): the start model picker grew
-  past the window after its catalog loaded.
+- `ui/Popover` places itself again when its content resizes (a ResizeObserver while open, only when the panel's
+  offsetWidth / offsetHeight differ from the last placement, so it cannot loop): the start model picker grew past the
+  window after its catalog loaded. Focus moves into the panel in a requestAnimationFrame after placement, to the checked
+  radio (`input[type=radio]:checked`) else the first control, retried for a few frames, and a control the content already
+  focused (the model picker's search box) is kept. Cause of the old "Enter leaves focus on the chip": on a popover's
+  very first open the focus call ran inside the `toggle` event task, before the panel was rendered as an open popover, and
+  was silently dropped (later opens worked, keys did not matter). This applies to every Popover user; no other screen's
+  e2e changed.
+- Interrupt and change (`LivePermissionMode`): the note stores `covered` (the baseline the choice or its confirmation
+  was measured against) and `seen` (the mode in force when it was written). A `run.permissionMode` event that moves the
+  mode in force clears the note; if a retry would now widen (`retryNeedsConfirm`, checked before the interrupt and again
+  after the wait for the boundary) the same `ConfirmDialog` (`wideningConfirmOptions`) is shown, declining clears the
+  note. A result for another run of the chain (`result.run.id !== run.id`) says "This conversation continued
+  elsewhere..." and never claims the mode changed. Start page: a staged mode resets when the project's own mode changes,
+  and Start confirms a staged widening that was not confirmed against the project's current mode (declining restores
+  the draft with no error banner). Permissive options in the list carry the hidden ShieldAlert icon (`run-permission-option-icon`);
+  "Use this mode" is guarded so a double click opens one dialog.
+- The start model default always uses the project's connection: `Role.connection` is ignored on the root
+  (`defaults.ts` `roleConnection`, `Role.connection` doc, main `runManager` / `claude.ts`), so a stale value on the root
+  role does not move the chip or the "same as default" test (unit-pinned in `runSettings.test.ts`).
+- RunMeta on an ended or paused run shows the chip's value (`metaPermission`: `livePermissionValue`, not what the finished
+  session ran with), prefixed `Next message:` (`data-next=true`) only when it is a pending user choice
+  (`permissionModeChosen`); the chip's prefix follows the same rule. The plain default stays hidden.
+- Tones: `permissionTone` (Bypass = danger with a ShieldOff icon on the chip, the list and RunMeta; Unattended and
+  Auto-accept edits = warning with ShieldAlert). The "Default" tag is gone from every chip (an untouched default keeps
+  its tone, only a picked change says "Changed"), which also lets the row fit on one line at 1024 and 1600. The reset link
+  is one string (`RESET_TO_DEFAULT_LABEL`, "Use default") for model and effort.
+- "Interrupt and change" is replaced by a hint while a decision is open or reports run (read from the store, so it comes
+  back when they close) and is withdrawn when the mode in force moves (retry offers only; outcome sentences stay).
+- Chat / assistants: no settings row on the Chat start page because `QuickRunInput` carries no model, effort or mode (the
+  page keeps its summary line and "Change in App settings"); the live Chat chip resolves a tier alias ("everyday") to the
+  catalog's friendly label through the connection's tier mapping and keeps the exact setting in the title; every assistant
+  start (`showStartedAssistant`) puts focus in the live reply box like a project start.
+- Popover first-open focus: reproduced with the e2e driver on the first open of every popover (Enter or Space alike); a
+  hand walk that opens one before, or waits, sees it work. Whatever the cause of the walker's difference, the new
+  rAF focus step is covered by run-start section 9 on first open.
+- Not done (L3): when a project change narrows a run to Plan / Don't ask main drops the accept-edits grant, but the native
+  session may keep accepting edits until it restarts. The `run.permissionMode` snapshot cannot say why a grant went away
+  (a user change, a project change or a session end look alike), so the renderer shows no "may still accept edits until
+  restart" suffix; it needs a contract field.
 - Checked: typecheck, renderer unit tests (runSettings 27 tests, runGoal), build, `e2e/run-start.mjs` (start page, refusal
   with a real main refusal, widening confirm/cancel, saved-for-next-message, keyboard order and Escape, both themes and
-  sizes), model-switch, runs, layout, permissions, assistants, engagement2. Pending the merged tree with the adapter's mock:
-  run-start sections 5, 6 and 8 (applied mid-run change, `[mock:mode-refuse]`, `[mock:mode-reports-unchanged]`).
+  sizes), model-switch, runs, layout, permissions, assistants, engagement2. Run-start sections 5, 6 and 8 (applied
+  mid-run change, `[mock:mode-refuse]`, `[mock:mode-reports-unchanged]`) needed the merged tree with the adapter's mock:
+  the orchestrator ran `e2e/run-start.mjs` on merged dev d4258a4a and all checks passed.
   Unverified: real Codex effort fallback and Codex turn-boundary refusal, multi-connection pickers, screen-reader speech,
-  reduced motion and forced colours, 320 px reflow. Open: opening a chip popover with Enter leaves focus on the chip
-  (shared Popover; the model picker focuses its search itself), logged as a NOTE by run-start.
+  reduced motion and forced colours, 320 px reflow, the stale "Interrupt and change" path in the app (the idle mock cannot
+  stage a mid-reply refusal; the decision is unit-tested). Popover focus-in on first open is now asserted by run-start
+  section 9 (it was a NOTE).
