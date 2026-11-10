@@ -668,21 +668,21 @@
 /* Finished list (side panel): the agent a folded member ran under, when it is not a direct report. */
 /* Provider tag on a live agent that runs on another connection than its run (multi-provider). Quiet: a hairline chip. */
 /* With a tag the handle and model give way first (ellipsis), so the tag is never cut to one letter at the card edge. */
-.agent-node .sub:has(.agent-connection) {
+.agent-node .sub:has(.agent-connection, .agent-staffing-chip) {
   min-width: 0;
   overflow: hidden;
 }
-.agent-node .sub:has(.agent-connection) > span {
+.agent-node .sub:has(.agent-connection, .agent-staffing-chip) > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 /* Shrink order: the model first (it can vanish), the handle next (it is how other agents address this one, never under 10ch), the tag last. */
-.agent-node .sub:has(.agent-connection) > span:first-child {
+.agent-node .sub:has(.agent-connection, .agent-staffing-chip) > span:first-child {
   flex: 0 1 auto;
   min-width: 10ch;
 }
-.agent-node .sub:has(.agent-connection) > span:not(:first-child):not(.agent-connection) {
+.agent-node .sub:has(.agent-connection, .agent-staffing-chip) > span:not(:first-child):not(.agent-connection):not(.agent-staffing-chip) {
   flex: 0 100 auto;
   min-width: 0;
 }
@@ -694,6 +694,17 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+/* Resolved tier and effort ("everyday / medium") in the card's sub line: it shrinks after the model, before the tag. */
+.agent-node .sub > .agent-staffing-chip {
+  flex: 0 10 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--canvas-node-text-muted);
   font-family: var(--font-sans);
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
