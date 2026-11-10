@@ -62,7 +62,7 @@ function input(over: Partial<RunModelsInput> = {}): RunModelsInput {
       { id: 'eng2', model: 'claude-sonnet-5-5', tier: 'everyday' }
     ],
     connectionOf: () => 'anthropic',
-    catalog: () => [model('anthropic', 'claude-opus-5-5'), model('anthropic', 'claude-sonnet-5-5'), model('anthropic', 'opus', 'builtin'), model('openai', 'gpt-6.1-sol')],
+    catalog: () => [model('anthropic', 'claude-opus-5-5'), model('anthropic', 'claude-sonnet-5-5'), model('anthropic', 'claude-old-builtin-1', 'builtin'), model('openai', 'gpt-6.1-sol')],
     connectionName: (id) => names[id] ?? id,
     ...over
   }
@@ -94,20 +94,20 @@ describe('runModelLogs', () => {
       input({
         roles: [
           { id: 'lead', model: 'claude-opus-4-1-20250805', tier: 'deep' },
-          { id: 'eng', model: 'opus', tier: 'everyday' },
+          { id: 'eng', model: 'claude-old-builtin-1', tier: 'everyday' },
           { id: 'cx', model: 'gpt-6.1-sol', tier: 'fast' }
         ],
         connectionOf: (id) => (id === 'cx' ? 'openai' : 'anthropic'),
-        catalog: () => [model('anthropic', 'claude-opus-4-1-20250805'), model('anthropic', 'claude-opus-5-5'), model('anthropic', 'opus', 'builtin'), model('openai', 'gpt-6.1-sol')],
+        catalog: () => [model('anthropic', 'claude-opus-4-1-20250805'), model('anthropic', 'claude-opus-5-5'), model('anthropic', 'claude-old-builtin-1', 'builtin'), model('openai', 'gpt-6.1-sol')],
         modelsError: (id) => (id === 'openai' ? 'Request timed out' : undefined)
       })
     )
     expect(logs).toHaveLength(2)
-    expect(logs[0]).toEqual({ level: 'info', message: 'Models: deep = claude-opus-4-1-20250805, everyday = opus (Anthropic); fast = gpt-6.1-sol (OpenAI)' })
+    expect(logs[0]).toEqual({ level: 'info', message: 'Models: deep = claude-opus-4-1-20250805, everyday = claude-old-builtin-1 (Anthropic); fast = gpt-6.1-sol (OpenAI)' })
     expect(logs[1]).toEqual({
       level: 'warn',
       message:
-        'Model check: deep = claude-opus-4-1-20250805 is not the newest of its family on Anthropic (claude-opus-5-5 is listed); everyday = opus is a built-in fallback, not a model discovered on Anthropic; model discovery last failed on OpenAI (Request timed out), so fast may be out of date. Run orgai models refresh, or map the tier with orgai connections tier anthropic or orgai connections tier openai.'
+        'Model check: deep = claude-opus-4-1-20250805 is not the newest of its family on Anthropic (claude-opus-5-5 is listed); everyday = claude-old-builtin-1 is a built-in fallback, not a model discovered on Anthropic; model discovery last failed on OpenAI (Request timed out), so fast may be out of date. Run orgai models refresh, or map the tier with orgai connections tier anthropic or orgai connections tier openai.'
     })
   })
 

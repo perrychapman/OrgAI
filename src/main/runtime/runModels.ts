@@ -5,6 +5,7 @@
  * emits what it returns as run `log` events. Never throws.
  */
 import { MODEL_TIERS, type ConnectionId, type ModelTier, type ProviderModel, type Role } from '@shared/types'
+import { settingTier } from '@shared/defaults'
 
 /** A model id read as family + version: `claude-opus-4-1-20250805` = claude-opus, [4, 1], date 20250805. */
 export interface ModelVersion {
@@ -67,16 +68,9 @@ export function compareModelIds(a: string, b: string): number | undefined {
   return 0
 }
 
-/** The newest id in `candidates` that is newer than `model` in its family, or undefined (it is the newest, or cannot tell). */
-export function newerInFamily(model: string, candidates: readonly string[]): string | undefined {
-  let best: string | undefined
-  for (const c of candidates) {
-    const d = compareModelIds(c, model)
-    if (d === undefined || d <= 0) continue
-    if (!best || (compareModelIds(c, best) ?? 0) > 0) best = c
-  }
-  return best
-}
+/** The newest-of-family comparison lives in shared code (the CLI's doctor uses the same one). */
+export { newerInFamily } from '@shared/modelFamily'
+import { newerInFamily } from '@shared/modelFamily'
 
 export interface RunModelsInput {
   /** The roles the run uses (after single-assistant and quick-run settling). */
@@ -141,7 +135,9 @@ export function runModelLogs(input: RunModelsInput): RunModelLog[] {
         if (!u.tier) continue
         const entry = catalog.find((m) => m.id === u.model)
         const label = `${u.tier} = ${cut(u.model, ID_MAX)}`
-        if (entry && entry.source !== 'discovered') {
+        // An alias (opus, sonnet, ...) is the normal state of a tier: the CLI resolves it to its current model, so it is
+        // not a fallback worth a warning even though the catalog lists it as built in.
+        if (entry && entry.source !== 'discovered' && settingTier(u.model.replace(/\[[^\]]*\]$/, '')) === undefined) {
           problems.push(`${label} is a built-in fallback, not a model discovered on ${name}`)
           fix.add(on)
           continue

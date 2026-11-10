@@ -6,7 +6,7 @@
  * client. Read only. Never throws; when it cannot tell (an id that does not read as family + version) it does not warn.
  */
 import { MODEL_TIERS, type ConnectionInfo, type ModelTier, type Project, type ProviderModel } from '../../shared/types'
-import { roleConnection } from '../../shared/defaults'
+import { roleConnection, settingTier } from '../../shared/defaults'
 import { newerInFamily } from '../../shared/modelFamily'
 import { safeLine } from '../output'
 import { labelOfId } from '../commands/connections'
@@ -49,7 +49,8 @@ export function connectionFindings(infos: readonly ConnectionInfo[], catalog: re
     for (const t of tiersInUse(id, projects)) {
       const r = resolveTier(t, id, tierModels, catalog)
       if (r.model === null) continue
-      if (r.source === 'builtin') problems.push(`${t} runs on built-in ${safeLine(r.model)}; fix: orgai models refresh --connection ${id}, then orgai connections tier ${id} ${t}=<model>`)
+      // An alias (opus, sonnet, ...) resolves to the CLI's current model: the normal state, not a fallback.
+      if (r.source === 'builtin' && settingTier(r.model.replace(/\[[^\]]*\]$/, '')) === undefined) problems.push(`${t} runs on built-in ${safeLine(r.model)}; fix: orgai models refresh --connection ${id}, then orgai connections tier ${id} ${t}=<model>`)
       const newer = newerInFamily(r.model, ids)
       if (newer) problems.push(`${t} runs on ${safeLine(r.model)}, older than ${safeLine(newer)} in the catalog; fix: orgai connections tier ${id} ${t}=${safeLine(newer)}`)
     }
