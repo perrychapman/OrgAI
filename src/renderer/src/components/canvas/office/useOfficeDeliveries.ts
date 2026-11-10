@@ -8,7 +8,7 @@ import {
   DEFAULT_JOURNEY_TIMING, journeyDuration, MAX_WALKS, outboundDuration, planMessageWalk, routesConflict, sampleJourney,
   type Direction, type Point
 } from '../../../lib/office/motion'
-import { attachWalk, baseline, finish, ingest, type Delivery, type Scheduler } from '../../../lib/office/scheduler'
+import { attachWalk, baseline, deliveryEnd, finish, ingest, MAX_AGE, type Delivery, type Scheduler } from '../../../lib/office/scheduler'
 import type { Pin, Walker } from './officePeople'
 
 /** Visual deliveries over the message log: who walks where and which deliveries are live. Visuals never gate the runtime. */
@@ -30,11 +30,14 @@ export interface OfficeDeliveriesOptions {
   arriving?: { readonly current: ReadonlyMap<string, readonly Point[]> }
 }
 
+/** An admitted message walk: anchor-cell path, start time and when the round trip ends (ms, Date.now clock). */
+export interface Journey { path: Point[]; started: number; ends: number }
+
 export interface OfficeDeliveries {
   /** The scheduler as of this render (S5b reads active bubbles and talkers from it). */
   scheduler: Scheduler
   /** Message -> admitted walk path (anchor cells) and start time. */
-  journeys: ReadonlyMap<AgentMessage, { path: Point[]; started: number }>
+  journeys: ReadonlyMap<AgentMessage, Journey>
   /** Sender id -> sampled position this render, anchor pixels. */
   walkers: ReadonlyMap<string, Walker>
   /** Ids that are away from their desk right now. */
@@ -58,7 +61,7 @@ export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDel
   void tick
   const [, redraw] = useState(0)
   const scheduler = useRef(baseline(messages))
-  const journeys = useRef(new Map<AgentMessage, { path: Point[]; started: number }>())
+  const journeys = useRef(new Map<AgentMessage, Journey>())
   const attempted = useRef(new WeakSet<AgentMessage>())
   const pinned = useRef(new Map<string, Pin>())
   const rendered = useRef(new Map<string, Pin>())
@@ -117,9 +120,9 @@ export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDel
       if (!plan) continue
       const duration = journeyDuration(plan.path, live.current.timing)
       const pinCells = [...pinned.current.values()].map(cell)
-      if (duration === null || now - delivery.received >= 8000 || [...journeys.current.values()].some(journey => routesConflict(plan.path, journey.path)) || [...arrivals.values()].some(path => routesConflict(plan.path, path)) || routesConflict(plan.path, pinCells)) continue
+      if (duration === null || now - delivery.received >= MAX_AGE || [...journeys.current.values()].some(journey => routesConflict(plan.path, journey.path)) || [...arrivals.values()].some(path => routesConflict(plan.path, path)) || routesConflict(plan.path, pinCells)) continue
       attachWalk(delivery, now, duration, outboundDuration(plan.path, live.current.timing))
-      journeys.current.set(message, { path: plan.path, started: now })
+      journeys.current.set(message, { path: plan.path, started: now, ends: now + duration })
     }
   }
 
@@ -155,26 +158,30 @@ export function useOfficeDeliveries(options: OfficeDeliveriesOptions): OfficeDel
     return () => document.removeEventListener('visibilitychange', change)
   }, [messages, runId])
 
-  // One animation-frame loop only while a live delivery is active.
+  // While someone is walking, one animation-frame loop renders each frame. Otherwise (bubble-only phases, reduced motion,
+  // Pause) nothing renders per frame: a timer wakes the scheduler at the next delivery end so deliveries expire and queued
+  // ones start on time. Bubble and talk-mark boundaries wake the scene through `useDeliveryBoundaries`.
   useEffect(() => {
-    if (mode !== 'live' || motionOff || document.hidden || !scheduler.current.active.length) return
+    if (mode !== 'live' || document.hidden || !scheduler.current.active.length) return
     let handle = 0
+    let timer = 0
     const frame = (): void => {
       if (document.hidden) { scheduler.current = baseline(messages); return }
       const now = Date.now()
-      scheduler.current = finish(scheduler.current, now); admitJourneys(now); setTick(now)
-      if (scheduler.current.active.length) handle = requestAnimationFrame(frame)
+      const before = { active: scheduler.current.active.length, queued: scheduler.current.queued.length, walks: journeys.current.size }
+      scheduler.current = finish(scheduler.current, now)
+      if (!live.current.motionOff) admitJourneys(now)
+      const moving = !live.current.motionOff && [...journeys.current.values()].some(journey => now < journey.ends)
+      const changed = before.active !== scheduler.current.active.length || before.queued !== scheduler.current.queued.length || before.walks !== journeys.current.size
+      if (moving || changed) setTick(now)
+      if (moving) { handle = requestAnimationFrame(frame); return }
+      if (!scheduler.current.active.length) return
+      const next = Math.min(...scheduler.current.active.map(deliveryEnd))
+      timer = window.setTimeout(() => { handle = requestAnimationFrame(frame) }, Math.max(0, next - now) + 1)
     }
     handle = requestAnimationFrame(frame)
-    return () => cancelAnimationFrame(handle)
+    return () => { cancelAnimationFrame(handle); window.clearTimeout(timer) }
   }, [messages, mode, motionOff, ids, geometry.current.stamp])
-
-  // Without the loop (reduced motion, Pause) deliveries still expire on time.
-  useEffect(() => {
-    if (!motionOff || !scheduler.current.active.length) return
-    const timer = window.setTimeout(() => { scheduler.current = finish(scheduler.current, Date.now()); redraw(n => n + 1) }, 8000)
-    return () => window.clearTimeout(timer)
-  }, [messages, motionOff, ids])
 
   const now = Date.now()
   const walkers = new Map<string, Walker>()

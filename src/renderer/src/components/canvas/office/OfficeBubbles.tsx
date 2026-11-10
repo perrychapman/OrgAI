@@ -67,8 +67,8 @@ export function bubbleKey(delivery: Delivery): string {
 }
 
 /**
- * Without the per-frame loop (reduced motion, Pause) nothing re-renders when a bubble or talk mark ends, so wake the
- * scene at the next boundary of any delivery. With motion on the loop already renders every frame.
+ * Nothing renders per frame outside walks (bubble-only phases, reduced motion, Pause), so wake the scene at the next
+ * boundary of any delivery: talk mark end, bubble start and end, delivery end.
  */
 export function useDeliveryBoundaries(deliveries: readonly Delivery[], motionOff: boolean, now: number): void {
   const [, wake] = useState(0)
@@ -79,7 +79,8 @@ export function useDeliveryBoundaries(deliveries: readonly Delivery[], motionOff
     for (const time of [delivery.started, delivery.started + TALK_MARK_TICKS * stepMs, window.start, window.end, deliveryEnd(delivery)]) if (time > now && time < next) next = time
   }
   useEffect(() => {
-    if (!motionOff || !Number.isFinite(next)) return
+    // Also with motion on: the delivery loop only renders per frame while someone walks, not during bubble-only phases.
+    if (!Number.isFinite(next)) return
     const timer = window.setTimeout(() => wake(count => count + 1), Math.max(0, next - Date.now()) + 1)
     return () => window.clearTimeout(timer)
   }, [motionOff, next])
@@ -91,11 +92,15 @@ const TAIL = 8
 const EDGE = 2
 const FALLBACK_PLATE = 40
 
-interface BubbleViewProps { bubble: OfficeBubble; x: number; y: number; zoom: number; area: Rect; size: Size; spriteRefs?: SpriteRegistry }
+/** When a bubble opens sideways below the plate, its tail sits this far in from the bubble's edge. */
+const BELOW_TAIL_INSET = 14
 
-function BubbleView({ bubble, x, y, zoom, area, size, spriteRefs }: BubbleViewProps): ReactElement {
+interface BubbleViewProps { bubble: OfficeBubble; x: number; y: number; senderX: number | null; zoom: number; area: Rect; size: Size; spriteRefs?: SpriteRegistry }
+
+function BubbleView({ bubble, x, y, senderX, zoom, area, size, spriteRefs }: BubbleViewProps): ReactElement {
   const ref = useRef<HTMLDivElement>(null)
   const shown = bubbleText(bubble.text)
+  const senderCentre = senderX === null ? null : Math.round((senderX + WORKER_SIZE.width / 2 - area.x * OFFICE_TILE_PX) * zoom)
   // Screen pixels inside the world: head centre, the top of the 16 x 16 mark above the head, and the target's bottom edge.
   const centre = Math.round((x + WORKER_SIZE.width / 2 - area.x * OFFICE_TILE_PX) * zoom)
   const markTop = Math.round((y - 13 - area.y * OFFICE_TILE_PX) * zoom)
@@ -105,19 +110,26 @@ function BubbleView({ bubble, x, y, zoom, area, size, spriteRefs }: BubbleViewPr
     if (!element) return
     const width = element.offsetWidth
     const height = element.offsetHeight
-    const left = size.width >= width + 2 * EDGE ? Math.min(Math.max(centre - width / 2, EDGE), size.width - width - EDGE) : (size.width - width) / 2
+    const fits = size.width >= width + 2 * EDGE
+    const clampLeft = (value: number): number => fits ? Math.min(Math.max(value, EDGE), size.width - width - EDGE) : (size.width - width) / 2
+    let left = clampLeft(centre - width / 2)
     let top = markTop - GAP - TAIL - height
     let placement = 'above'
     if (top < 0) {
       const plate = spriteRefs?.current.get(bubble.to)?.plate
       const below = boxBottom + 2 + (plate && plate.offsetHeight ? plate.offsetHeight : FALLBACK_PLATE) + GAP + TAIL
-      if (below + height <= size.height) { top = below; placement = 'below' } else top = Math.max(0, top)
+      if (below + height <= size.height) {
+        top = below; placement = 'below'
+        // Below the recipient's plate the bubble shares a row with the neighbours' plates: open it away from the sender,
+        // whose plate shows for the exchange, so it does not cover their name.
+        if (senderCentre !== null && senderCentre !== centre) left = clampLeft(senderCentre < centre ? centre - BELOW_TAIL_INSET : centre - width + BELOW_TAIL_INSET)
+      } else top = Math.max(0, top)
     }
     element.style.left = `${Math.round(left)}px`
     element.style.top = `${Math.round(top)}px`
     element.style.setProperty('--office-bubble-tail', `${Math.round(Math.min(Math.max(centre - left, 10), Math.max(10, width - 10)))}px`)
     element.dataset.placement = placement
-  }, [centre, markTop, boxBottom, size.width, size.height, shown, spriteRefs, bubble.to])
+  }, [centre, markTop, boxBottom, size.width, size.height, shown, spriteRefs, bubble.to, senderCentre])
   return <div
     ref={ref} className="office-bubble" aria-hidden="true" data-testid="office-bubble" data-office-bubble-for={bubble.to} data-office-bubble-from={bubble.from}
     data-placement="above" style={{ left: centre, top: markTop } as CSSProperties}
@@ -131,7 +143,7 @@ export function OfficeBubbles({ bubbles, positions, zoom, area, size, spriteRefs
   return <div className="office-bubbles" aria-hidden="true">
     {bubbles.map(bubble => {
       const at = positions.get(bubble.to)
-      return at ? <BubbleView key={bubble.id} bubble={bubble} x={at.x} y={at.y} zoom={zoom} area={area} size={size} spriteRefs={spriteRefs} /> : null
+      return at ? <BubbleView key={bubble.id} bubble={bubble} x={at.x} y={at.y} senderX={positions.get(bubble.from)?.x ?? null} zoom={zoom} area={area} size={size} spriteRefs={spriteRefs} /> : null
     })}
   </div>
 }

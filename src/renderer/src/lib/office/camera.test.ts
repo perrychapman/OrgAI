@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { buildingLayout, EMPTY_BUILDING_MEMORY, rememberTeam, type BuildingAgent } from './building'
 import {
-  cameraArea, clampScroll, defaultView, fitsAt, fitView, fitZoom, mapOffset, panBy, pinScroll, revealScroll, stepZoom, toScreen, toWorld, zoomLabel, ZOOMS, type View
+  cameraArea, clampScroll, defaultView, fitsAt, fitView, fitZoom, mapOffset, panBy, pinScroll, revealScroll, stepZoom, toScreen, toWorld, zoomLabel, zoomName, ZOOMS, type View
 } from './camera'
+
+describe('zoomName', () => {
+  it('speaks the readout as a percentage', () => {
+    expect(ZOOMS.map(zoomName)).toEqual(['Zoom 50%', 'Zoom 100%', 'Zoom 200%', 'Zoom 300%', 'Zoom 400%'])
+  })
+})
 
 function team(departments: number, perDepartment: number): BuildingAgent[] {
   const agents: BuildingAgent[] = [{ id: 'lead', departmentId: 'central', departmentName: 'Orchestrators', central: true }]

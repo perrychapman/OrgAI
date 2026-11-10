@@ -34,6 +34,12 @@ export function stepZoom(zoom: number, direction: 1 | -1): Zoom {
 export function zoomLabel(zoom: number): string {
   return zoom === 0.5 ? '½×' : `${zoom}×`
 }
+/** Spoken form of the zoom readout: "Zoom 50%", "Zoom 200%". */
+export function zoomName(zoom: number): string {
+  return `Zoom ${Math.round(zoom * 100)}%`
+}
+/** Fallback for `--office-find-duration` when the token cannot be read (tests, no stylesheet). */
+export const FIND_RING_MS = 3000
 
 /** The drawn rectangle: building bounds, plus one tile on the west for the cell outside the front door. */
 export function cameraArea(bounds: Rect, hasFrontDoor: boolean): Rect {

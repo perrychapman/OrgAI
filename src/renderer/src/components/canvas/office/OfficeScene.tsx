@@ -2,7 +2,7 @@ import { useCallback, useImperativeHandle, useMemo, useRef, useState, type CSSPr
 import type { AgentMessage } from '@shared/types'
 import { useReducedMotion } from '../../../lib/canvas'
 import { buildingBlocked, buildingLayout, EMPTY_BUILDING_MEMORY, rememberTeam, type BuildingMemory } from '../../../lib/office/building'
-import { cameraArea, contentSize, mapOffset, zoomLabel, OFFICE_TILE_PX, type Point } from '../../../lib/office/camera'
+import { cameraArea, contentSize, mapOffset, zoomLabel, zoomName, OFFICE_TILE_PX, type Point } from '../../../lib/office/camera'
 import { assignAppearances } from '../../../lib/office/layout'
 import type { Point as WalkPoint } from '../../../lib/office/motion'
 import { furnishBuilding } from '../../../lib/office/themes'
@@ -71,7 +71,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
 
   const camera = useOfficeCamera({
     stage, area, lobby: lobby ? { x: lobby.x, y: lobby.y, width: lobby.width, height: lobby.height } : null, resetKey: runId, motionOff, selectedId, positions,
-    describe: id => { const agent = byId.get(id); return agent ? `Showing ${agent.name}, ${rooms.get(id) ?? ''}` : null }, announce
+    describe: id => { const agent = byId.get(id); const room = rooms.get(id); return agent ? `Showing ${agent.name}${room ? `, ${room}` : ''}` : null }, announce
   })
   const deliveries = useOfficeDeliveries({ messages, mode, runId, motionOff, building, blocked, agentIds: order.map(agent => agent.id), arriving })
   // S5b: bubbles and the exchange pair come from the same deliveries; readable time from the tokens.
@@ -85,8 +85,8 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   })
   clock.bind(people)
 
-  const latest = useRef({ byId, onSelect, onRemove, announce, show: camera.show, reveal: camera.reveal })
-  latest.current = { byId, onSelect, onRemove, announce, show: camera.show, reveal: camera.reveal }
+  const latest = useRef({ byId, onSelect, onRemove, announce, show: camera.show, reveal: camera.reveal, queued: clock.queued })
+  latest.current = { byId, onSelect, onRemove, announce, show: camera.show, reveal: camera.reveal, queued: clock.queued }
   const selectId = useCallback((id: string) => {
     const agent = latest.current.byId.get(id)
     latest.current.onSelect(id)
@@ -95,7 +95,8 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const removeId = useCallback((id: string) => latest.current.onRemove?.(id), [])
   const revealId = useCallback((id: string) => latest.current.reveal(id), [])
   /** Select, then pan to and ring the person (Find a person; the strip's Show buttons use this too). One announcement: "Showing ...". */
-  const showPerson = useCallback((id: string) => { latest.current.onSelect(id); latest.current.show(id) }, [])
+  // Someone still waiting outside to walk in is not drawn yet: select them (the inspector opens) but do not pan, ring or announce a spot they are not at.
+  const showPerson = useCallback((id: string) => { latest.current.onSelect(id); if (!latest.current.queued.has(id)) latest.current.show(id) }, [])
 
   useImperativeHandle(controlRef, () => ({ zoomIn: camera.zoomIn, zoomOut: camera.zoomOut, fit: camera.fit }), [camera.zoomIn, camera.zoomOut, camera.fit])
 
@@ -116,14 +117,14 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     {mode === 'team' && <p>Team layout · roles, not live activity</p>}{mode === 'sample' && <p>Sample office · example agents</p>}
     <div className="office-controls">
       <Button size="sm" onClick={camera.zoomOut}>Zoom out</Button>
-      <span data-testid="office-zoom" data-zoom={zoom}>{zoomLabel(zoom)}</span>
+      <span data-testid="office-zoom" data-zoom={zoom} role="img" aria-label={zoomName(zoom)}>{zoomLabel(zoom)}</span>
       <Button size="sm" onClick={camera.zoomIn}>Zoom in</Button>
       <Button size="sm" onClick={camera.fit}>Fit</Button>
       {mode === 'live' && <Button size="sm" testId="office-pause" pressed={paused} onClick={() => setPaused(value => !value)}>Pause motion</Button>}
     </div>
     <div
       className="office-stage" data-testid="office-stage" data-width={building.bounds.width} data-height={building.bounds.height}
-      ref={stage} tabIndex={0} aria-label="Office scene. Arrow keys pan, plus and minus zoom, 0 fits the building." {...camera.stageProps}
+      ref={stage} tabIndex={0} role="group" aria-label="Office scene. Arrow keys pan, plus and minus zoom, 0 fits the building." {...camera.stageProps}
     >
       <div className="office-map" data-testid="office-floor" style={{ width: Math.max(content.width, client.width), height: Math.max(content.height, client.height) }}>
         <div className="office-world" style={{ left: offset.x, top: offset.y, width: content.width, height: content.height }}>

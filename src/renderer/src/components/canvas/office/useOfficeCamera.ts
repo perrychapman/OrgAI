@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react'
 import {
-  clampScroll, defaultView, fitView, panBy, pinScroll, revealScroll, stageCentre, stepZoom, toContent, toScreen, toWorld, zoomLabel,
+  clampScroll, defaultView, fitView, panBy, pinScroll, revealScroll, stageCentre, stepZoom, toContent, toScreen, toWorld, zoomLabel, zoomName, FIND_RING_MS,
   OFFICE_TILE_PX, type Point, type Rect, type Size, type View, type Zoom
 } from '../../../lib/office/camera'
 import { tokenMs } from '../../../lib/useExitPresence'
@@ -150,11 +150,17 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
     touched.current = true
     const view = viewNow()
     let anchor: { world: Point; screen: Point } | null = null
-    const selected = selectedId ? positions.get(selectedId) : undefined
-    if (selected) {
-      const world = personWorldCentre(selected)
+    // Keep the keyboard-focused person under the same screen point first (they must not leave the view), then the selection.
+    const focusedId = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-office-worker-id]')?.dataset.officeWorkerId
+    for (const id of [focusedId, selectedId]) {
+      const position = id ? positions.get(id) : undefined
+      if (!position) continue
+      const world = personWorldCentre(position)
       const screen = toScreen(view, world)
-      if (screen.x >= 0 && screen.y >= 0 && screen.x <= client.width && screen.y <= client.height) anchor = { world, screen }
+      if (id === focusedId || (screen.x >= 0 && screen.y >= 0 && screen.x <= client.width && screen.y <= client.height)) {
+        anchor = { world, screen: { x: Math.min(Math.max(screen.x, 0), client.width), y: Math.min(Math.max(screen.y, 0), client.height) } }
+        break
+      }
     }
     if (!anchor) { const screen = stageCentre(client); anchor = { world: toWorld(view, screen), screen } }
     requestPin(next, anchor.world, anchor.screen)
@@ -190,7 +196,7 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
     scrollTo(revealScroll(viewNow(), rect), instant ? 'auto' : 'smooth')
     window.clearTimeout(findTimer.current)
     setFoundId(id)
-    findTimer.current = window.setTimeout(() => setFoundId(null), tokenMs('--office-find-duration') || 3000)
+    findTimer.current = window.setTimeout(() => setFoundId(null), tokenMs('--office-find-duration') || FIND_RING_MS)
     const text = describe(id)
     if (text) announce?.(text)
   }
@@ -209,9 +215,11 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
         return
       }
     }
-    if (event.key === '+' || event.key === '=') { event.preventDefault(); changeZoom(stepZoom(zoom, 1)) }
-    else if (event.key === '-' || event.key === '_') { event.preventDefault(); changeZoom(stepZoom(zoom, -1)) }
-    else if (event.key === '0') { event.preventDefault(); fit() }
+    // Keyboard zoom is announced once per change (the buttons' readout carries it for pointer users).
+    const keyZoom = (next: Zoom): void => { if (next !== zoom) announce?.(zoomName(next)); changeZoom(next) }
+    if (event.key === '+' || event.key === '=') { event.preventDefault(); keyZoom(stepZoom(zoom, 1)) }
+    else if (event.key === '-' || event.key === '_') { event.preventDefault(); keyZoom(stepZoom(zoom, -1)) }
+    else if (event.key === '0') { event.preventDefault(); const next = fitView(area, client).zoom; fit(); announce?.(`Fit, ${zoomName(next)}`) }
     else if (event.key === 'Home' && target === event.currentTarget) { event.preventDefault(); home() }
   }
 

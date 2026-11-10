@@ -70,6 +70,11 @@ describe('bubble text and timing', () => {
   it('counts the trimmed display text, so long messages top out at 81 characters', () => {
     expect(bubbleText('x'.repeat(80))).toBe('x'.repeat(80))
     expect(bubbleText('x'.repeat(81))).toBe(`${'x'.repeat(80)}…`)
+    // Long texts are sliced before splitting: same result, astral characters are never cut in half.
+    expect(bubbleText('y'.repeat(200_000))).toBe(`${'y'.repeat(80)}…`)
+    expect(bubbleText('😀'.repeat(81))).toBe(`${'😀'.repeat(80)}…`)
+    expect(bubbleText('😀'.repeat(80))).toBe('😀'.repeat(80))
+    expect(bubbleText(`${'a'.repeat(79)}😀😀`)).toBe(`${'a'.repeat(79)}😀…`)
     expect(bubbleDurationMs('x'.repeat(5000))).toBe(1500 + 45 * 81)
   })
   it('clamps to the maximum', () => {

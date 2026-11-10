@@ -118,12 +118,13 @@ function personAt(d: ClockData, id: string, state: OfficeState, tick: number): C
 }
 
 function candidates(d: ClockData, io: ClockIO, tick: number): LoopCandidate[] {
-  const pinned = io.deliveries.pinned
+  // Loop priority follows the person keyboard focus is on right now; a walk pin can outlive focus.
+  const focusedId = typeof document === 'undefined' ? undefined : (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-office-worker-id]')?.dataset.officeWorkerId
   return io.order.map((agent, order) => {
     const rec = d.records.get(agent.id)
     const state = rec?.state ?? officeState(agent.status)
     return {
-      id: agent.id, state, selected: agent.id === io.selectedId, focused: pinned.has(agent.id), inExchange: d.exchange.has(agent.id), order,
+      id: agent.id, state, selected: agent.id === io.selectedId, focused: agent.id === focusedId, inExchange: d.exchange.has(agent.id), order,
       oneShot: oneShotInProgress(state, rec?.tick ?? null, tick)
     }
   })

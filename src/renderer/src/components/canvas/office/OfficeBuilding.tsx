@@ -7,8 +7,8 @@ import { depthOffset, propFrames, sheetsFor, tileFrames, type OfficePalette } fr
 
 /**
  * The static layer: floors, rugs, door mats, walls and every prop that is not a tabletop item, drawn once into one
- * canvas per layout, palette or zoom change (rework spec section 5). The canvas backing store matches the zoom and the
- * device pixel ratio, with smoothing off, so pixels stay hard-edged at 0.5x, 1x and every step up. People, desks,
+ * canvas per layout or palette change, and when crossing below 1x (rework spec section 5). See `backingScale`: smoothing
+ * is off and CSS upscaling is pixelated, so pixels stay hard-edged at 0.5x, 1x and every step up. People, desks,
  * screens, marks and bubbles are DOM and sit above this layer.
  */
 export interface OfficeBuildingProps {
@@ -24,8 +24,8 @@ export interface OfficeBuildingProps {
 
 /** Props on a desk are DOM so they sit above it. */
 export const TABLETOP_PROPS: ReadonlySet<string> = new Set(['mug'])
-/** Largest backing store we ask for; beyond this the canvas is drawn at a lower density and scaled up (still pixelated). */
-const MAX_BACKING_PIXELS = 36_000_000
+/** Largest backing store we ask for (about 48 MB of RGBA); beyond this the canvas is drawn at a lower density and scaled up (still pixelated). */
+const MAX_BACKING_PIXELS = 12_000_000
 
 const images = new Map<string, HTMLImageElement>()
 const pending = new Map<string, Promise<HTMLImageElement>>()
@@ -45,9 +45,14 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   return promise
 }
 
-/** Backing-store pixels per building pixel: the zoom times the device ratio, capped so a huge building at 4x stays drawable. */
+/**
+ * Backing-store pixels per building pixel. Below 1x the canvas is drawn at the zoom (a nearest-neighbour reduction);
+ * from 1x up it stays at the device ratio (rounded up) and CSS scales it with `image-rendering: pixelated`, so zoom
+ * steps above 1x neither grow the backing store nor repaint. A hard pixel cap keeps a huge building drawable.
+ */
 export function backingScale(area: Rect, zoom: number, ratio: number): number {
-  const wanted = zoom * Math.max(1, ratio)
+  const device = Math.ceil(Math.max(1, ratio))
+  const wanted = Math.min(zoom * Math.max(1, ratio), device)
   const world = area.width * OFFICE_TILE * area.height * OFFICE_TILE
   return Math.min(wanted, Math.sqrt(MAX_BACKING_PIXELS / Math.max(1, world)))
 }

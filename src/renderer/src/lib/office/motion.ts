@@ -63,7 +63,10 @@ export const BUBBLE_MAX_CHARS = 80
 
 /** Text as shown in a bubble: trimmed, at most 80 characters (by code point) plus an ellipsis. */
 export function bubbleText(text: string): string {
-  const chars = Array.from(text.trim())
+  const trimmed = text.trim()
+  // Slice before splitting so a very long message costs O(80), not O(length): 2 x (80 + 1) UTF-16 units always hold
+  // at least 81 code points when the text is longer than that, which is enough to know it must be cut.
+  const chars = Array.from(trimmed.length > 2 * (BUBBLE_MAX_CHARS + 1) ? trimmed.slice(0, 2 * (BUBBLE_MAX_CHARS + 1)) : trimmed)
   return chars.length > BUBBLE_MAX_CHARS ? `${chars.slice(0, BUBBLE_MAX_CHARS).join('').trimEnd()}…` : chars.join('')
 }
 

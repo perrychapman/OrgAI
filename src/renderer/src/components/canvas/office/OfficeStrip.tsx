@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { useState, type ReactElement } from 'react'
 import type { AgentMessage } from '@shared/types'
 import { bubbleText } from '../../../lib/office/motion'
 import { Button } from '../../ui/Button'
@@ -31,8 +31,17 @@ function rowKey(message: AgentMessage): number {
 }
 
 export function OfficeStrip({ mode, motionOff, names, messages, active, queued, onShow }: OfficeStripProps): ReactElement {
-  const rows = mode === 'live' ? messages : []
-  return <div className="office-message-strip" role="region" aria-label="Office message deliveries" tabIndex={rows.length ? 0 : undefined}>
+  // While keyboard focus is inside the strip the rows hold still, so the rolling log never removes the focused Show
+  // button (focus would drop to the page). Newer messages appear as soon as focus leaves the strip.
+  const [held, setHeld] = useState<readonly AgentMessage[] | null>(null)
+  const latest = mode === 'live' ? messages : []
+  const rows = held ?? latest
+  return <div
+    className="office-message-strip" role="region" aria-label="Office message deliveries" tabIndex={rows.length ? 0 : undefined}
+    data-office-strip-held={held ? 'true' : undefined}
+    onFocus={() => { if (!held) setHeld(latest) }}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHeld(null) }}
+  >
     {mode === 'live' && !rows.length && <p className="office-delivery-empty">Messages appear here as agents communicate.</p>}
     <div data-testid="office-deliveries" data-active={mode === 'live' && !motionOff ? active : 0} data-queued={mode === 'live' && !motionOff ? queued : 0}>
       {rows.map(message => {
