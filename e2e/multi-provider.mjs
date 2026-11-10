@@ -93,6 +93,8 @@ try {
   await sleep(800)
   const listed = await page.evaluate(() => window.orgai.connections.list())
   check(listed.filter((c) => c.status.state === 'connected').some((c) => c.connection.id === proxyId), 'the pinned proxy is connected')
+  const legacy = listed.find((c) => c.connection.id === proxyId).connection
+  check(legacy.kind === 'litellm' && (legacy.litellmFeatures ?? true), 'legacy LiteLLM proxy retains reporting')
 
   check(![proxyId, otherId].includes(projM.provider.connection) && ![proxyId, otherId].includes(projR.provider.connection), 'neither project is on a test proxy')
   // The proxies appear in the open views once the store reloads its connection list.

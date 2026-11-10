@@ -3,6 +3,14 @@ import type { ProviderModel } from '@shared/types'
 import { autoFillTierModels, classifyFamily, inferTier, makeDiscoveredModel } from './catalog'
 
 describe('classifyFamily', () => {
+  it('recognizes dotted AWS ids without changing the request id or inventing metadata', () => {
+    const id = 'us.openai.gpt-6.1-terra'
+    expect(classifyFamily(id)).toBe('openai')
+    expect(inferTier(id, 'openai')).toBe('deep')
+    expect(makeDiscoveredModel('litellm', { id })).toMatchObject({ id, family: 'openai', adapter: 'codex' })
+    expect(makeDiscoveredModel('litellm', { id })).not.toHaveProperty('contextWindow')
+    expect(makeDiscoveredModel('litellm', { id })).not.toHaveProperty('price')
+  })
   it('uses litellm_provider first', () => {
     expect(classifyFamily('x', 'anthropic')).toBe('claude')
     expect(classifyFamily('anthropic.claude-3', 'bedrock')).toBe('claude')

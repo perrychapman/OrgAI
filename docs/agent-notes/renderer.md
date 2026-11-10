@@ -1,5 +1,66 @@
 # Renderer (general)
 
+## Native popover rapid reopen (2026-11-10)
+
+Chromium can coalesce a native close/reopen into one `toggle` from open to open.
+The model-switch failure was captured with real Electron beforetoggle/toggle and
+focus tracing at the empty-catalog Escape/Enter checkpoint; React's unchanged
+open state left focus on the trigger. `Popover` now notifies closes synchronously
+from `beforetoggle` and reruns placement/focus for each delivered open event using
+an opening revision. Native listeners stay installed across consumer renders.
+`LiveModelSwitch` also reloads the fresh catalog on every open callback. Its close
+epoch still cancels ordinary dismissals and exempts deliberate confirmation.
+Motion, exit retention, CSS and native light dismiss are unchanged. The strengthened
+model-switch e2e forces coalescing in a single browser task across themes, sizes
+and reduced motion, and checks a dismissed pending read cannot switch a model.
+Typecheck, build, 48 focused picker/motion/token tests, strengthened model-switch
+e2e with normal and fresh-empty Claude configuration, and motion e2e passed.
+Reviewer approved the concrete patch after inspecting all 22 shared uses across
+18 consumers; no actionable findings or Critical/High blockers remained.
+Focused UX follow-up reran the mock model-switch matrix and inspected picker
+screenshots; it did not complete a first-time keyboard walkthrough. Canvas radio
+entry/reopen, Usage Projects-to-Kinds light dismissal and Add Service custom-dialog
+focus handoff remain root QA checks, not locally verified claims.
+Live providers, screen-reader speech, zoom and cross-platform behavior are unverified.
+
+## Unified proxy setup (2026-11-10)
+
+`AddProxyDialog` has one setup without a Kind selector. New records use
+`openai-compatible` with `litellmFeatures: false`; `proxy-litellm-features` is the
+optional native **Use LiteLLM reporting** checkbox in both Add and edit. Its hint
+explains that the key is sent to reporting endpoints and figures may be unavailable.
+`ProxyCard` derives the saved choice from `litellmFeatures ?? (kind === 'litellm')`,
+saves the flag independently, and preserves id, kind and credentials. Base and
+OpenAI endpoint defaults and origin-change key removal retain their existing
+contract. Labels distinguish Proxy base URL, OpenAI base URL and the model-list
+endpoint. Invalid submits focus the first invalid field. Proxy badges say Proxy;
+Model prices uses actual check results, and usage visibility uses the reporting
+capability with legacy fallback rather than kind alone. No motion was added.
+
+Before-walk: a live root mock build showed the forced LiteLLM default promising
+prices/spend before a test returned neither. Adding a mock proxy listed nine
+mixed-family models, focused its heading and exposed the existing encrypted key
+controls. Partial keyboard checks confirmed Name autofocus and Escape restoring
+Add proxy. Only light at approximately 1024x615 and dark at approximately 1600x960
+were viewed before implementation; those are not the full supported-size matrix.
+
+Source verification: 45 focused tests passed across proxyForm, proxyChecks,
+connectionLabel and usage; changed connections/multi-provider e2e scripts passed
+syntax checks, and diff whitespace checks passed. Reviewer-2 approved all eleven
+changed source/test files and the final label/legacy edit additions with no
+actionable findings or Critical/High blockers. The e2e additions cover generic
+default off, keyboard opt-in, and editing a legacy proxy while retaining id/kind/key.
+Combined typecheck/build passed on root `ae8cde39`. The postwalk checked 1024x640
+and 1600x1000 in dark/light: the dialog fits without overflow, the reporting
+checkbox works by keyboard, invalid submission focuses the field, an opt-in mock
+proxy adds nine models, and legacy id/kind/key/reporting survive edits.
+Connections, multi-provider, project-connection and usage e2e passed against that
+build normally and with fresh empty `CLAUDE_CONFIG_DIR`. Wrong-key handling and a
+transient dialog observation after rapid driver input still need targeted QA;
+the latter is not a confirmed defect. The final adapter integration gate remains
+the orchestrator's responsibility. No live provider, paid test, screen-reader
+speech, full keyboard-only task, zoom/reflow or measured performance claim was verified.
+
 Shell, layout, primitives, motion, canvas (fold, themes), run view and run chains, dashboard, settings pages, application menu, cost UI, proxy and multi-provider UI, proposal cards, org change sessions. Moved out of CLAUDE.md on 2026-11-07; see CLAUDE.md for the index.
 
 - Pocket Office (2026-11-08, `docs/design/pocket-office.md`): the existing Canvas style popover and Settings Canvas section select Graph/Pocket Office and Color (default)/Neutral/Green. Presentation changes keep graph pattern/layout/lines/node style/tint/minimap; graph preset picking explicitly restores Graph. `theme.ts` applies presentation/palette attributes and canvases consume `useCanvasOptions()`. Team shows real editable roles, the settings preview labels four example agents and is inert, and Live keeps decisions, inspectors, all loaded finished/prior agents, session/parent labels and a direct earlier-session loader. `lib/office/agentView.ts` reuses `nodeActivity` so a report without a result never becomes a successful “Reported back” outcome; runtime states remain internal to sprites while visible statuses use the shared words.

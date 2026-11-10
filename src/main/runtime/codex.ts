@@ -5,6 +5,8 @@ import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult, type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, codexStartLockKey, withCodexStartLock, type CodexAppServerOptions } from './codexAppServer'
 import { catalogStartFailure, nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
+import { startCodexToolGateway } from './codexToolGateway'
+import type { ClaudeToolGateway } from './claudeToolGateway'
 import {
   METHOD,
   SERVER_REQUEST,
@@ -336,6 +338,9 @@ class CodexSession implements RuntimeSession {
   private unsubscribers: (() => void)[] = []
   /** The Codex version warning (ORGAI_CODEX_PATH outside the tested range) was shown for this session. */
   private versionWarned = false
+  private metadataWarned = false
+  private toolGateway?: Promise<ClaudeToolGateway>
+  private gatewaySecrets: string[] = []
   private agents = new Map<string, AgentInstance>()
   private threads = new Map<string, ThreadInfo>()
   private agentThread = new Map<string, string>()
@@ -596,6 +601,7 @@ class CodexSession implements RuntimeSession {
     this.nativeTag.clear()
     await this.interruptAll()
     this.server?.close()
+    if (this.toolGateway) await this.toolGateway.then(gateway => gateway.close(), () => {})
     this.closeSignal()
   }
 
@@ -608,8 +614,22 @@ class CodexSession implements RuntimeSession {
 
   // ---------- plumbing ----------
 
+  private scrubGateway(value: unknown): unknown {
+    // Native JSON-RPC errors can contain reqwest URLs, including the loopback authentication path.
+    const scrub = (value: unknown): unknown => {
+      if (typeof value === 'string') {
+        for (const secret of this.gatewaySecrets) value = (value as string).split(secret).join('[redacted]')
+        return value
+      }
+      if (Array.isArray(value)) return value.map(scrub)
+      if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrub(item)]))
+      return value
+    }
+    return this.gatewaySecrets.length ? scrub(value) : value
+  }
+
   private emit(e: RunEvent): void {
-    this.ctx.emit(e)
+    this.ctx.emit(this.scrubGateway(e) as RunEvent)
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {
@@ -931,8 +951,17 @@ class CodexSession implements RuntimeSession {
       config: launch.config,
       // startServer holds this home's start lock around the whole start (lockedStart).
       startLockHeld: true,
+      redact: this.gatewaySecrets,
       onStderr: (line) => {
         // The CLI's tracing output is chatty; only surface real problems.
+        if ((line.includes('Model metadata for `') && line.includes('not found. Defaulting to fallback metadata;')) ||
+          (line.includes('Unknown model ') && line.includes(' is used. This will use fallback model metadata.'))) {
+          if (this.metadataWarned) return
+          this.metadataWarned = true
+          this.log('warn', `codex: ${line.slice(0, 300)}`)
+          this.log('warn', 'Codex is using fallback model metadata. The exact configured model ID is unchanged; this warning alone does not mean the model is unavailable. Ask the proxy administrator for authoritative Codex model catalog metadata (model_catalog_json); OrgAI does not invent model capabilities or context limits.')
+          return
+        }
         if (/\b(error|fatal|panic)\b/i.test(line)) this.log('warn', `codex: ${line.slice(0, 300)}`)
       },
       // Codex chosen through ORGAI_CODEX_PATH outside the tested version (cli-standalone 6.2): one run warning, not one
@@ -947,8 +976,22 @@ class CodexSession implements RuntimeSession {
       // After Codex refused to start with it, never again in this session.
       ...(this.nativeCatalogRejected ? {} : { prepareConfig: catalogPreparer(this.options, () => this.namedModels(), (r) => this.onNativeCatalog(r, created)) })
     }
-    created = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
-    return created
+    const server = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    created = server
+    if (!this.gatewaySecrets.length) return server
+    const request = server.request.bind(server)
+    server.request = async <T>(...args: Parameters<CodexServerLike['request']>): Promise<T> => {
+      try { return await request(...args) as T }
+      catch (error) {
+        if (error instanceof CodexRpcError) throw new CodexRpcError(error.method, this.scrubGateway(error.error) as typeof error.error)
+        if (error instanceof Error) {
+          error.message = this.scrubGateway(error.message) as string
+          if (error.stack) error.stack = this.scrubGateway(error.stack) as string
+        }
+        throw error instanceof Error ? error : this.scrubGateway(error)
+      }
+    }
+    return server
   }
 
   /**
@@ -1019,6 +1062,21 @@ class CodexSession implements RuntimeSession {
     }
   }
 
+  private buildLaunch(servers: Parameters<typeof buildLaunchConfig>[1], opts: Parameters<typeof buildLaunchConfig>[2]): LaunchConfig | Promise<LaunchConfig> {
+    const connection = this.ctx.connection
+    if (connection && !isBuiltinConnectionId(connection.connection) && connection.codexAuth === 'apiKey' && connection.apiKey && connection.openaiBaseUrl) {
+      this.toolGateway ??= startCodexToolGateway(connection.openaiBaseUrl, connection.apiKey)
+      return this.toolGateway.then(gateway => {
+        this.gatewaySecrets = [gateway.baseUrl, new URL(gateway.baseUrl).pathname.slice(1)]
+        if (this.ending) { gateway.close(); throw new Error('Session ended.') }
+        const launch = buildLaunchConfig({ ...connection, openaiBaseUrl: gateway.baseUrl }, servers, opts)
+        launch.summary = launch.summary.map(line => line.startsWith('provider orgai ->') ? 'provider orgai through the tool-name gateway (API key from the environment)' : line)
+        return launch
+      })
+    }
+    return buildLaunchConfig(connection, servers, opts)
+  }
+
   private wire(server: CodexServerLike): void {
     this.unsubscribers.push(server.onNotification((method, params) => this.onNotification(method, params)))
     server.onServerRequest((method, params) => this.onServerRequest(method, params))
@@ -1059,6 +1117,7 @@ class CodexSession implements RuntimeSession {
     }
     this.emit(error ? { type: 'run.status', runId: this.ctx.run.id, status: 'error', error } : { type: 'run.status', runId: this.ctx.run.id, status: 'finished' })
     this.server?.close()
+    if (this.toolGateway) void this.toolGateway.then(gateway => gateway.close(), () => {})
     this.closeSignal()
   }
 
@@ -1076,7 +1135,8 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = withoutControlEnv(ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : [])
-      this.launch = buildLaunchConfig(ctx.connection, servers, { ...trustLaunchOpts(ctx), writableRoots: codexWritableRoots(ctx) })
+      const launch = this.buildLaunch(servers, { ...trustLaunchOpts(ctx), writableRoots: codexWritableRoots(ctx) })
+      this.launch = launch instanceof Promise ? await launch : launch
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       await this.startServer(this.launch, (server) => {
@@ -2206,7 +2266,7 @@ class CodexSession implements RuntimeSession {
     try {
       const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
       if (this.ending) return abandon()
-      const launch = buildLaunchConfig(this.ctx.connection, servers, {
+      const launch = await this.buildLaunch(servers, {
         ...trustLaunchOpts(this.ctx),
         writableRoots: codexWritableRoots(this.ctx)
       })

@@ -9,12 +9,11 @@ export function spendRowPrefix(id: ConnectionId): string {
 }
 
 /**
- * True when a connection can report spend: a LiteLLM-kind proxy whose last check did not say otherwise. Built-ins report
- * plan windows, not spend; an OpenAI-compatible proxy reports neither prices nor spend (its models cost "unknown").
+ * True when reporting is enabled for a proxy and its last check did not rule out spend. Legacy LiteLLM records default on.
  */
 export function reportsSpend(info: Pick<ConnectionInfo, 'connection'> & { status?: { checks?: { reportsSpend: boolean | null } } }): boolean {
   const c = info.connection
-  if (!isProxyConnection(c) || c.kind !== 'litellm') return false
+  if (!isProxyConnection(c) || !(c.litellmFeatures ?? c.kind === 'litellm')) return false
   return info.status?.checks?.reportsSpend !== false
 }
 

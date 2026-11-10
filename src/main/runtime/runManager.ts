@@ -117,6 +117,7 @@ import { datum } from './harnessTools'
 import type { OutputScope, OutputWriteResult, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
+import { isValidId } from '../windowScope'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
@@ -3371,13 +3372,18 @@ export class RunManager {
       const title = await generateRunTitle(adapter, { ...input, signal: abort.signal }, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
       if (!title || abort.signal.aborted) return
       const live = this.runs.get(runId) === active
-      if (!live && !this.store.get(runId)) return
+      if (!live) {
+        const stored = this.store.get(runId)
+        if (!stored) return
+        active.summary = stored
+        active.record.summary = stored
+      }
       active.summary.title = title
       this.store.upsert(active.summary)
       if (live) {
         active.emit({ type: 'run.title', runId, title })
       } else {
-        // The session already ended and its record was flushed; record.summary is active.summary, so save it again.
+        // The session already ended and its record was flushed; save the latest summary with the title.
         this.flush(active)
         logRunEvent(active.summary, { type: 'run.title', runId, title })
         this.broadcast({ type: 'run.title', runId, title })
@@ -4248,9 +4254,11 @@ export class RunManager {
   async switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult> {
     this.refuseWhileQuitting()
     if (!input || typeof input.runId !== 'string' || typeof input.model !== 'string' || !input.model || input.model.length > 200 || input.model.trim() !== input.model || /[\x00-\x1f\x7f]/.test(input.model)) throw new Error('Invalid model selection')
+    if (input.expectedRunId !== undefined && !isValidId(input.expectedRunId)) throw new Error('Invalid expected run id')
     let run = this.summary(input.runId)
     if (!run) throw new Error('Run not found')
     run = this.chainOf(run).reduce((latest, item) => item.startedAt > latest.startedAt || (item.startedAt === latest.startedAt && item.resumedFrom === latest.id) ? item : latest, run)
+    if (input.expectedRunId !== undefined && run.id !== input.expectedRunId) return { run, applied: false, reason: 'The conversation has continued; select the model again.' }
     const connection = input.connection ?? run.modelSelection?.connection ?? run.connection
     if (!connection) throw new Error('Connection is required')
     const model = (this.options.catalog?.() ?? []).find((m) => m.connection === connection && m.id === input.model)
