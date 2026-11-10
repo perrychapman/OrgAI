@@ -24,6 +24,7 @@ import {
   parseToolCall,
   parseTurnId,
   parseUserInputQuestions,
+  fullPolicyOverride,
   parseWorkspaceWriteTemp,
   policyFor,
   policyOverride,
@@ -336,6 +337,11 @@ const NATIVE_AGENTS_NOTICE =
 
 /** sendToRoot's rejection when the root thread does not exist yet (already logged). */
 const ROOT_DROPPED = new Error('the root thread does not exist yet')
+/**
+ * policyPending sentinel: a turn/start that carried a policy override was rejected (or timed out on OrgAI's side), so
+ * Codex may or may not hold that policy. The thread's next turn/start sends all three policy fields (review M1).
+ */
+const POLICY_UNKNOWN = 'unknown' as const
 
 class CodexSession implements RuntimeSession {
   readonly finished: Promise<void>
@@ -385,13 +391,14 @@ class CodexSession implements RuntimeSession {
   /**
    * Threads whose Codex-side policy still differs from ThreadInfo.policy after a live mode switch: thread id -> the
    * policy Codex holds. Their next turn/start carries the difference (policyOverride), then the entry goes.
+   * POLICY_UNKNOWN: an override's turn/start failed, so the next one carries the full policy (fullPolicyOverride).
    */
-  private policyPending = new Map<string, PolicyChoice>()
+  private policyPending = new Map<string, PolicyChoice | typeof POLICY_UNKNOWN>()
   /** Thread id -> the mode its ThreadInfo.policy was derived from by a live switch (what a turn/start override sends). */
   private policyMode = new Map<string, PermissionMode>()
   /** sandbox_workspace_write.writable_roots of the current app-server's launch config (a turn/start override never adds one). */
   private launchWritableRoots: string[] = []
-  /** The effective config's workspace-write temp-folder switches (config/read once per app-server, for turn/start overrides). */
+  /** The effective config's workspace-write temp-folder switches (config/read right after each app-server's initialize, for turn/start overrides). */
   private workspaceTemp?: Promise<WorkspaceWriteTemp>
   /** Thread id -> every permission mode that may hold on Codex's side for it (a live switch compares these). */
   private threadModes = new Map<string, PermissionMode[]>()
@@ -639,12 +646,14 @@ class CodexSession implements RuntimeSession {
         if (info.agentId !== ROOT_AGENT_ID) reportsUnchanged += 1
         continue
       }
-      // A turn running or a turn/start in flight (the serialized queue) can act whatever the agent's state says.
-      const inTurn = this.activeTurn.has(threadId) || this.queues.has(threadId)
+      // A turn running or a turn/start in flight (the serialized queue) can act whatever the agent's state says. A
+      // thread whose Codex-side policy is unknown (an override's turn/start failed, review M1) keeps every mode it may
+      // hold until a turn/start succeeds.
+      const inTurn = this.activeTurn.has(threadId) || this.queues.has(threadId) || this.policyPending.get(threadId) === POLICY_UNKNOWN
       info.policy = this.policyFor(role, mode)
       this.policyMode.set(threadId, mode)
       if (inTurn) {
-        // Codex keeps the old policy until this turn ends: the thread may run under either mode until then.
+        // Codex keeps the old policy until this turn ends (or until a turn/start lands): the thread may run under either mode.
         const modes = new Set([...(this.threadModes.get(threadId) ?? []), mode])
         this.threadModes.set(threadId, [...modes])
         if (info.agentId !== ROOT_AGENT_ID && !(this.threadModes.get(threadId) ?? []).every((m) => canNarrowPermissionMode(mode, m))) reportsUnchanged += 1
@@ -679,6 +688,20 @@ class CodexSession implements RuntimeSession {
   }
 
   /**
+   * A turn/start that carried an override was rejected or timed out on OrgAI's side (review M1): Codex may have applied
+   * it anyway (a timed-out request it still processed) or not. The thread's Codex-side policy is unknown until a
+   * turn/start succeeds, so its next turn/start sends the full policy, and it counts under the sent mode as well as the
+   * modes it already had (setPermissionMode keeps them while the sentinel stands).
+   */
+  private policyUnknown(threadId: string, sentMode: PermissionMode | undefined): void {
+    this.policyPending.set(threadId, POLICY_UNKNOWN)
+    const modes = new Set<PermissionMode>(this.threadModes.get(threadId) ?? [])
+    if (sentMode) modes.add(sentMode)
+    if (this.liveMode) modes.add(this.liveMode)
+    this.threadModes.set(threadId, [...modes])
+  }
+
+  /**
    * Writable roots for a turn/start sandboxPolicy (review L1): the launch config's roots that are still writable roots
    * now (codexWritableRoots read live), so an override is never wider than the launch nor than the current folders.
    */
@@ -688,21 +711,27 @@ class CodexSession implements RuntimeSession {
   }
 
   /**
-   * The effective config's workspace-write temp-folder switches, read once per app-server through config/read
-   * (stable in generate-ts of @openai/codex 0.166.0; cwd = the project folder so project layers count). A failed or
-   * unreadable answer excludes both temp folders (parseWorkspaceWriteTemp / TEMP_EXCLUDED): never wider than the user's.
+   * The effective config's workspace-write temp-folder switches, read through config/read right after the app-server's
+   * initialize (run() and the MCP restart call this once per app-server, before any thread starts, so the answer is the
+   * config the threads start with, not a config.toml edited later; review L2). Stable in generate-ts of @openai/codex
+   * 0.166.0; cwd = the project folder so project layers count. A failed or unreadable answer excludes both temp folders
+   * (parseWorkspaceWriteTemp / TEMP_EXCLUDED): never wider than the user's. Not awaited at launch: a turn/start
+   * override awaits the stored answer.
    */
+  private readWorkspaceTempAtLaunch(server: CodexServerLike): void {
+    const cwd = this.ctx.project.path
+    const answer = server
+      .request(METHOD.configRead, { includeLayers: false, ...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}) })
+      .then(parseWorkspaceWriteTemp, (e: Error) => {
+        this.log('info', `Could not read Codex's sandbox settings (${e?.message ?? e}); a mode change keeps temp folders out of writable roots.`)
+        return TEMP_EXCLUDED
+      })
+    this.workspaceTemp = answer
+  }
+
+  /** The launch-time temp switches (readWorkspaceTempAtLaunch); TEMP_EXCLUDED when no read was made for this app-server. */
   private readWorkspaceTemp(): Promise<WorkspaceWriteTemp> {
-    if (!this.workspaceTemp) {
-      const cwd = this.ctx.project.path
-      this.workspaceTemp = this.server
-        .request(METHOD.configRead, { includeLayers: false, ...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}) })
-        .then(parseWorkspaceWriteTemp, (e: Error) => {
-          this.log('info', `Could not read Codex's sandbox settings (${e?.message ?? e}); a mode change keeps temp folders out of writable roots.`)
-          return TEMP_EXCLUDED
-        })
-    }
-    return this.workspaceTemp
+    return this.workspaceTemp ?? Promise.resolve(TEMP_EXCLUDED)
   }
 
   /**
@@ -935,8 +964,19 @@ class CodexSession implements RuntimeSession {
       const pending = this.policyPending.get(threadId)
       const target = this.threads.get(threadId)?.policy
       const sentMode = this.policyMode.get(threadId) ?? this.liveMode
-      const override = pending && target ? policyOverride(pending, target, this.overrideWritableRoots(), temp) : {}
-      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...(staffedEffort ? { effort: staffedEffort } : {}), ...extra, ...override, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
+      const override = !pending || !target
+        ? {}
+        : pending === POLICY_UNKNOWN
+          ? fullPolicyOverride(target, this.overrideWritableRoots(), temp)
+          : policyOverride(pending, target, this.overrideWritableRoots(), temp)
+      let res: unknown
+      try {
+        res = await this.server.request(METHOD.turnStart, { threadId, input, ...(staffedEffort ? { effort: staffedEffort } : {}), ...extra, ...override, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
+      } catch (e) {
+        // Codex may have applied the override even though OrgAI saw a failure (a timeout): unknown until one succeeds.
+        if (Object.keys(override).length > 0) this.policyUnknown(threadId, sentMode)
+        throw e
+      }
       if (pending && target) this.settlePolicy(threadId, target, sentMode)
       const id = parseTurnId(res)
       if (id && !this.completedTurns.has(id)) this.activeTurn.set(threadId, id)
@@ -1305,6 +1345,7 @@ class CodexSession implements RuntimeSession {
       })
       // End session during the start (the version check, the handshake): no thread, no prompt to the model.
       if (this.ending) return
+      this.readWorkspaceTempAtLaunch(this.server)
 
       const policy = this.policyFor(this.root)
       const params = this.threadParams(this.root, true, ctx.project.path)
@@ -2445,6 +2486,7 @@ class CodexSession implements RuntimeSession {
         this.wire(server)
       })
       if (this.ending) return abandon()
+      this.readWorkspaceTempAtLaunch(this.server)
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)

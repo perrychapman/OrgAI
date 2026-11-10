@@ -1449,8 +1449,12 @@ export class ClaudeSession implements RuntimeSession {
   /**
    * Agent tool_use id -> the modes in force when the hook approved the spawn (its caller's included), until task_started
    * moves them onto the report or the call comes back as an error. Approved spawns not started yet are counted too.
+   * `caller` is the agent whose Agent call it is. A spawn cut before task_started without an error result (review L4)
+   * goes at a query restart (dropSpawnsAtRestart) or after an interrupt (sweepCutSpawns).
    */
-  private spawnModes = new Map<string, PermissionMode[]>()
+  private spawnModes = new Map<string, { modes: PermissionMode[]; caller: string }>()
+  /** Approved, unstarted spawns that existed when interrupt() was called: swept once their caller's turn is over. */
+  private spawnsCutByInterrupt = new Set<string>()
   /**
    * Every message the current query may have read before its init (review N2): what was queued when it started plus
    * everything pushed since. A restarted query that dies before init may have read some of them; recoverRestart
@@ -1588,10 +1592,37 @@ export class ClaudeSession implements RuntimeSession {
     this.held = true
     // The result that ends this turn reports it as interrupted (RootTurnEnd.interrupted), never as a failed turn.
     if (this.turnInFlight) this.interruptPending = true
+    // Approved spawns the interrupt may cut before task_started (review L4): swept when their caller's turn is over.
+    for (const id of this.spawnModes.keys()) this.spawnsCutByInterrupt.add(id)
+    if (!this.turnInFlight) this.sweepCutSpawns()
     try {
       await this.q?.interrupt()
     } catch (e) {
       this.log('warn', `Interrupt failed: ${(e as Error).message}`)
+    }
+  }
+
+  /**
+   * Review L4: an approved spawn cut by an interrupt never reaches task_started and may never get an is_error result, so
+   * its spawnModes entry would count forever. Called at the root result after interrupt() (and at once when no root turn
+   * was running), and at every root result after that while candidates are left. A candidate goes when its caller's
+   * turn is over: the root's (a root result has arrived; task_started precedes the Agent call's result and so the turn's
+   * result), or a report that is no longer running (done, error, or unknown). A candidate whose caller is a report still
+   * running stays: its Agent call may still start (genuinely pending). Spawns approved after the interrupt are never
+   * candidates.
+   */
+  private sweepCutSpawns(): void {
+    for (const id of [...this.spawnsCutByInterrupt]) {
+      const entry = this.spawnModes.get(id)
+      if (!entry) {
+        this.spawnsCutByInterrupt.delete(id)
+        continue
+      }
+      const caller = entry.caller === ROOT_ID ? undefined : this.agents.get(entry.caller)
+      const callerRunning = !!caller && caller.state !== 'done' && caller.state !== 'error'
+      if (entry.caller !== ROOT_ID && callerRunning) continue
+      this.spawnModes.delete(id)
+      this.spawnsCutByInterrupt.delete(id)
     }
   }
 
@@ -1698,7 +1729,7 @@ export class ClaudeSession implements RuntimeSession {
       if (!reportWithin(this.reportModes.get(a.id), mode)) reportsUnchanged += 1
     }
     // Spawns the hook approved whose report has not started yet (review M1a).
-    for (const modes of this.spawnModes.values()) if (!reportWithin(modes, mode)) reportsUnchanged += 1
+    for (const { modes } of this.spawnModes.values()) if (!reportWithin(modes, mode)) reportsUnchanged += 1
     return reportsUnchanged ? { applied: true, reportsUnchanged } : true
   }
 
@@ -2635,7 +2666,7 @@ export class ClaudeSession implements RuntimeSession {
         }
         // The spawn is approved: what it may run under is fixed now, its caller's modes included (review M1a/b). A live
         // switch before task_started counts it; task_started moves this onto the report.
-        this.spawnModes.set(input.tool_use_id, [...new Set([...this.modesInForce(), ...(this.parentModes(agentId) ?? [])])])
+        this.spawnModes.set(input.tool_use_id, { modes: [...new Set([...this.modesInForce(), ...(this.parentModes(agentId) ?? [])])], caller: agentId })
         this.setState(agentId, 'delegating', describe(input.tool_name, toolInput))
         // Writing reports get their own worktree when their parent is the orchestrator or is itself
         // isolated (nested isolation). A nested spawn runs from the parent's worktree, so Claude Code
@@ -3518,6 +3549,10 @@ export class ClaudeSession implements RuntimeSession {
   /** Start the query that replaces the one an MCP restart ended, then tell the orchestrator what is attached. */
   private startRestartedQuery(next: NextQuery): void {
     this.dropHeldHarnessMessages()
+    // The old query has ended: an Agent call it approved but never started cannot start in the new one (review L4).
+    // Reports that did start keep their modes (reportModes); only these unstarted entries go.
+    this.spawnModes.clear()
+    this.spawnsCutByInterrupt.clear()
     this.restarts += 1
     this.queryInitSeen = false
     // What the new query may read before its init: everything queued now plus what is pushed until then.
@@ -4099,7 +4134,7 @@ export class ClaudeSession implements RuntimeSession {
             ...(handle ? { handle } : {})
           })
           // The modes fixed when the hook approved the spawn and the parent's (review M1a/b) join the report's.
-          const spawnSnapshot = msg.tool_use_id ? this.spawnModes.get(msg.tool_use_id) : undefined
+          const spawnSnapshot = msg.tool_use_id ? this.spawnModes.get(msg.tool_use_id)?.modes : undefined
           if (msg.tool_use_id) this.spawnModes.delete(msg.tool_use_id)
           const resumed = this.gateKnown.has(msg.task_id)
           this.noteReportModes(msg.task_id, spawnSnapshot, this.parentModes(parentId), resumed ? this.modesInForce() : undefined)
@@ -4294,6 +4329,8 @@ export class ClaudeSession implements RuntimeSession {
         const root = this.ensureAgent(ROOT_ID)
         const interrupted = this.interruptPending
         this.interruptPending = false
+        // The interrupted turn (or a later one) is over: spawns it cut before task_started stop counting (review L4).
+        if (this.spawnsCutByInterrupt.size) this.sweepCutSpawns()
         if (msg.subtype === 'success') {
           root.result = msg.result
           root.state = 'idle'

@@ -397,16 +397,103 @@ describe('CodexAdapter session', () => {
       expect(s.turnStarts('th-2').at(-1).params).not.toHaveProperty('approvalPolicy')
     })
 
+    it('a report turn/start that times out after Codex applied the override leaves the policy unknown: counted, and the next turn/start carries the full policy (review M1)', async () => {
+      const { adapter, servers } = setup()
+      const ctx = fakeCtx({ project: project({ path: dir, isolateWriters: false, permissionMode: 'plan' }), continuationDelayMs: 5, autoContinue: false })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      // The engineer starts while the run is in Plan.
+      await spawnEngineer(s, 'c-1')
+      await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
+      expect(s.of('thread/start')[1]!.params).toMatchObject({ approvalPolicy: 'never', sandbox: 'read-only' })
+      const internals = session as unknown as {
+        deliverTo(agentId: string, text: string): Promise<void>
+        threads: Map<string, { agentId: string }>
+        activeTurn: Map<string, string>
+        queues: Map<string, unknown>
+        policyPending: Map<string, unknown>
+      }
+      const engineer = internals.threads.get('th-2')!.agentId
+      const reportIdle = async () => {
+        s.push('turn/completed', turnDone('th-2', internals.activeTurn.get('th-2') ?? 'tu-2'))
+        await vi.waitFor(() => expect(internals.activeTurn.has('th-2') || internals.queues.has('th-2')).toBe(false))
+        await quietRoot(s)
+      }
+      await reportIdle()
+      // The user widens to Bypass while the engineer is between turns.
+      await expect(session.setPermissionMode!('bypassPermissions')).resolves.toBe(true)
+      // The engineer's turn/start carries the Bypass override; Codex processes it (turn/started) but OrgAI's request times out.
+      s.overrides['turn/start'] = (params: { threadId: string }) => {
+        if (params.threadId !== 'th-2') return { turn: { id: 'tu-root' } }
+        s.push('turn/started', { threadId: 'th-2', turn: { id: 'tu-late', status: 'inProgress', items: [], error: null } })
+        throw new Error('Codex did not answer turn/start within 30 s')
+      }
+      await expect(internals.deliverTo(engineer, 'More')).rejects.toThrow('30 s')
+      // Plan and Bypass both use approval 'never': only the sandbox differs.
+      expect(s.turnStarts('th-2').at(-1).params).toMatchObject({ sandboxPolicy: { type: 'dangerFullAccess' } })
+      expect(internals.policyPending.get('th-2')).toBe('unknown')
+      expect(internals.activeTurn.get('th-2')).toBe('tu-late')
+      delete s.overrides['turn/start']
+      // The user narrows back to Plan while that turn runs: counted.
+      await expect(session.setPermissionMode!('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+      await reportIdle()
+      // Between turns, Codex may still hold dangerFullAccess / never: the engineer still counts (before the fix: plain true).
+      await expect(session.setPermissionMode!('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+      // Its next turn/start sends all three policy fields although Plan equals the policy it last knew (before: none).
+      await internals.deliverTo(engineer, 'Next')
+      expect(s.turnStarts('th-2').at(-1).params).toMatchObject({
+        approvalPolicy: 'never',
+        approvalsReviewer: 'user',
+        sandboxPolicy: { type: 'readOnly', networkAccess: false }
+      })
+      expect(internals.policyPending.has('th-2')).toBe(false)
+      // Settled: covered between turns, and the turn after that carries no override.
+      await reportIdle()
+      await expect(session.setPermissionMode!('plan')).resolves.toBe(true)
+      await internals.deliverTo(engineer, 'Again')
+      expect(s.turnStarts('th-2').at(-1).params).not.toHaveProperty('sandboxPolicy')
+      expect(s.turnStarts('th-2').at(-1).params).not.toHaveProperty('approvalPolicy')
+    })
+
+    it('a turn/start without an override that fails leaves the pending policy as it was', async () => {
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor({ autoContinue: false }))
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await spawnEngineer(s, 'c-1')
+      await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
+      s.push('turn/completed', turnDone('th-2', 'tu-2'))
+      await quietRoot(s)
+      const internals = session as unknown as { deliverTo(agentId: string, text: string): Promise<void>; threads: Map<string, { agentId: string }>; policyPending: Map<string, unknown> }
+      s.overrides['turn/start'] = () => { throw new Error('boom') }
+      await expect(internals.deliverTo(internals.threads.get('th-2')!.agentId, 'More')).rejects.toThrow('boom')
+      expect(internals.policyPending.has('th-2')).toBe(false)
+    })
+
     it('a workspace-write override carries the launch roots still allowed, no network and the temp switches config/read reports (review L1)', async () => {
       const a = join(dir, 'a')
       const b = join(dir, 'b')
       const c = join(dir, 'c')
       let allowed = [a, b]
-      const { adapter, servers } = setup()
+      const servers: FakeServer[] = []
+      const adapter = new CodexAdapter({
+        createServer: (options) => {
+          const fake = new FakeServer(options)
+          fake.overrides['config/read'] = () => ({ config: { sandbox_workspace_write: { writable_roots: ['/elsewhere'], network_access: true, exclude_tmpdir_env_var: true, exclude_slash_tmp: false } } })
+          servers.push(fake)
+          return fake
+        }
+      })
       session = await adapter.start(ctxFor({ autoContinue: false, allowedDirectories: () => allowed }))
       const s = servers[0]!
       await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-      s.overrides['config/read'] = () => ({ config: { sandbox_workspace_write: { writable_roots: ['/elsewhere'], network_access: true, exclude_tmpdir_env_var: true, exclude_slash_tmp: false } } })
+      // Read right after initialize, before any thread starts (review L2).
+      const order = s.requests.map((r) => r.method)
+      expect(order.indexOf('config/read')).toBeGreaterThanOrEqual(0)
+      expect(order.indexOf('config/read')).toBeLessThan(order.indexOf('thread/start'))
+      // A config.toml edited after launch does not change what an override sends.
+      s.overrides['config/read'] = () => ({ config: { sandbox_workspace_write: null } })
       await spawnEngineer(s, 'c-1')
       await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
       s.push('turn/completed', turnDone('th-2', 'tu-2'))

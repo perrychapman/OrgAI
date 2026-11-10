@@ -383,14 +383,15 @@ export const TEMP_EXCLUDED: WorkspaceWriteTemp = { excludeTmpdirEnvVar: true, ex
 /**
  * The temp-folder switches of the effective config from a `config/read` answer (v2/ConfigReadResponse.ts:
  * `config.sandbox_workspace_write: SandboxWorkspaceWrite | null`, snake_case fields; generate-ts of @openai/codex
- * 0.166.0). A null / missing section means Codex's defaults (temp folders writable: both false). Anything else that is
- * not a boolean, or an answer without a config, is unknown and excludes the folder (never wider than the user's setting).
+ * 0.166.0). Only an explicit null (the key present, no section, as Codex documents it) means Codex's defaults (temp
+ * folders writable: both false). A missing key (a Codex version that renamed or moved it), a value that is not a
+ * boolean, or an answer without a config is unknown and excludes the folder (never wider than the user's setting).
  */
 export function parseWorkspaceWriteTemp(res: unknown): WorkspaceWriteTemp {
   const config = isRec(res) && isRec(res.config) ? res.config : undefined
   if (!config) return TEMP_EXCLUDED
   const ww = config.sandbox_workspace_write
-  if (ww === null || ww === undefined) return { excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+  if (ww === null) return { excludeTmpdirEnvVar: false, excludeSlashTmp: false }
   if (!isRec(ww)) return TEMP_EXCLUDED
   return {
     excludeTmpdirEnvVar: typeof ww.exclude_tmpdir_env_var === 'boolean' ? ww.exclude_tmpdir_env_var : true,
@@ -429,6 +430,14 @@ export function policyOverride(from: PolicyChoice, to: PolicyChoice, writableRoo
   if ((from.approvalsReviewer ?? 'user') !== (to.approvalsReviewer ?? 'user')) out.approvalsReviewer = to.approvalsReviewer ?? 'user'
   if (from.sandbox !== to.sandbox) out.sandboxPolicy = sandboxPolicyFor(to.sandbox, writableRoots, temp)
   return out
+}
+
+/**
+ * All three turn/start policy fields for `to`, unconditionally: for a thread whose Codex-side policy is unknown (a
+ * turn/start that carried an override was rejected or timed out on OrgAI's side, so Codex may or may not hold it).
+ */
+export function fullPolicyOverride(to: PolicyChoice, writableRoots: string[], temp: WorkspaceWriteTemp = TEMP_EXCLUDED): Record<string, unknown> {
+  return { approvalPolicy: to.approvalPolicy, approvalsReviewer: to.approvalsReviewer ?? 'user', sandboxPolicy: sandboxPolicyFor(to.sandbox, writableRoots, temp) }
 }
 
 // ---------- saved allow rules ----------

@@ -20,6 +20,7 @@ import {
   parseToolCall,
   parseTurnId,
   parseUserInputQuestions,
+  fullPolicyOverride,
   policyFor,
   parseWorkspaceWriteTemp,
   policyOverride,
@@ -64,9 +65,17 @@ describe('policyOverride / sandboxPolicyFor (live permission mode, turn/start fi
     expect(TEMP_EXCLUDED).toEqual({ excludeTmpdirEnvVar: true, excludeSlashTmp: true })
     expect(sandboxPolicyFor('read-only', ['/a'])).toEqual({ type: 'readOnly', networkAccess: false })
   })
-  it('parseWorkspaceWriteTemp reads config/read: a null section is Codex defaults, the user settings are kept, anything unreadable excludes', () => {
+  it('fullPolicyOverride sends all three policy fields even when nothing differs (an unknown Codex-side policy, review M1)', () => {
+    expect(fullPolicyOverride(policyFor('plan', work), ['/a'])).toEqual({ approvalPolicy: 'never', approvalsReviewer: 'user', sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+    expect(fullPolicyOverride(policyFor('auto', work), ['/a'])).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandboxPolicy: { type: 'workspaceWrite', writableRoots: ['/a'], ...TEMP_EXCLUDED } })
+  })
+  it('parseWorkspaceWriteTemp reads config/read: only an explicit null section is Codex defaults, the user settings are kept, anything unreadable excludes', () => {
     expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: null } })).toEqual({ excludeTmpdirEnvVar: false, excludeSlashTmp: false })
-    expect(parseWorkspaceWriteTemp({ config: {} })).toEqual({ excludeTmpdirEnvVar: false, excludeSlashTmp: false })
+    // A missing key (renamed or moved in another Codex version) is unknown, not defaults (review L2).
+    expect(parseWorkspaceWriteTemp({ config: {} })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: undefined } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox: { workspace_write: null } } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: [] } })).toEqual(TEMP_EXCLUDED)
     expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: { writable_roots: [], network_access: true, exclude_tmpdir_env_var: true, exclude_slash_tmp: false } } })).toEqual({ excludeTmpdirEnvVar: true, excludeSlashTmp: false })
     expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: { exclude_tmpdir_env_var: 'no' } } })).toEqual(TEMP_EXCLUDED)
     expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: 'x' } })).toEqual(TEMP_EXCLUDED)
