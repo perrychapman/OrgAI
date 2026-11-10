@@ -110,7 +110,7 @@ export interface ConnectionStatus {
    * What a proxy probe / test / connect found out (proxies only; never persisted, no secrets). null = not
    * determined. reached: false on a network failure (DNS, refused, timeout); keyAccepted: false on 401 / 403, true
    * when the models list answered; modelCount: models in the answer; reportsPrices: any discovered model carries a
-   * price (null until discovery has run: a status probe lists only); reportsSpend: kind 'litellm' and /key/info
+   * price (null until discovery has run: a status probe lists only); reportsSpend: LiteLLM reporting enabled and /key/info
    * answered (false otherwise, null when not checked). The mock proxy host fills sensible values (key
    * 'mock-bad-key' => reached true, keyAccepted false).
    */
@@ -163,9 +163,8 @@ export interface OpenAIConnection extends ConnectionBase {
 }
 
 /**
- * What a proxy speaks beyond model listing. 'litellm' adds /model/info prices and /key/info + daily spend (and the
- * LiteLLM-only key hash filter); 'openai-compatible' (CLIProxyAPI-style gateways and similar) does only
- * GET <modelsUrl> (OpenAI `{ data: [{ id, object, owned_by, created? }] }`): no prices, no spend. Immutable after create.
+ * Legacy proxy reporting default, immutable after create. litellmFeatures explicitly overrides this default:
+ * 'litellm' enables /model/info prices and /key/info + daily spend, while 'openai-compatible' lists models only.
  */
 export type ProxyKind = 'litellm' | 'openai-compatible'
 export const PROXY_KINDS: readonly ProxyKind[] = ['litellm', 'openai-compatible']
@@ -186,6 +185,8 @@ export interface ProxyConnection extends ConnectionBase {
   /** Display name: trimmed, 1..PROXY_NAME_MAX chars, no control or hidden characters, unique (case-insensitive). */
   name: string
   kind: ProxyKind
+  /** Enable optional LiteLLM metadata/pricing/spend endpoints. Missing preserves legacy kind === 'litellm' behavior. */
+  litellmFeatures?: boolean
   /** The Anthropic / Claude Code base URL (ANTHROPIC_BASE_URL), e.g. "https://proxy.example.com". '' until set. */
   anthropicBaseUrl: string
   /** The OpenAI / Codex base URL. Unset or '' = `<anthropicBaseUrl>/v1` (defaults.ts `proxyOpenAIBase`). */
@@ -219,6 +220,8 @@ export function isProxyConnection(c: ProviderConnection | undefined | null): c i
 export interface ProxyCreateInput {
   name: string
   kind?: ProxyKind
+  /** Explicit opt-in to LiteLLM metadata/pricing/spend endpoints; missing follows kind for legacy callers. */
+  litellmFeatures?: boolean
   anthropicBaseUrl: string
   openaiBaseUrl?: string
   modelsUrl?: string
