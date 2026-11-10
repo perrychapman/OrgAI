@@ -9,6 +9,9 @@
 //    usage csv --out (a header plus one row; a second --out without --force exits 1).
 // 5. notes add / list / show / edit, a stale edit (another save in between, the CLI edit with the old revision exits
 //    1), remove; notes plan set / show and a stale plan set.
+// 6. connections tier anthropic: four rows (unmapped shown), an id outside the catalog exits 2, --dry-run saves
+//    nothing, a catalog id saves and --reset returns the tier to discovery's choice.
+// 7. settings list / get / set: one key at a time, none clears the budget, unknown keys and bad values exit 2.
 // Not driven: connections test / connect / login and usage refresh (they spawn `claude` or the Codex app-server).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -98,6 +101,34 @@ try {
   check(otherPlan.code === 0, 'another plan save lands in between', show(otherPlan))
   const planStale = await cli([...d, 'notes', 'plan', 'set', '--text', 'Mine', '--expected-updated-at', String(plan.updatedAt)], { cwd: repo })
   check(planStale.code === 1 && /changed since/.test(planStale.err), 'a stale notes plan set exits 1', show(planStale))
+
+  // 6. connections tier
+  const tiers = await cli([...d, 'connections', 'tier', 'anthropic', '--output-format', 'json'], { cwd: repo })
+  const tj = json(tiers.out)
+  check(tiers.code === 0 && JSON.stringify(tj?.tiers?.map((t) => t.tier)) === '["top","deep","everyday","fast"]', 'connections tier lists the four tiers', show(tiers))
+  const fastWas = tj?.tiers?.[3]?.model ?? null
+  const pick = mj?.models?.filter((m) => m.connection === 'anthropic').map((m) => m.id).find((id) => id !== fastWas)
+  const tierBad = await cli([...d, 'connections', 'tier', 'anthropic', 'fast=not-a-model-xyz'], { cwd: repo })
+  check(tierBad.code === 2 && tierBad.err.includes("not in Anthropic's catalog"), 'connections tier refuses an id outside the catalog', show(tierBad))
+  const tierDry = await cli([...d, 'connections', 'tier', 'anthropic', `fast=${pick}`, '--dry-run', '--output-format', 'json'], { cwd: repo })
+  check(tierDry.code === 0 && json(tierDry.out)?.applied === false, 'connections tier --dry-run saves nothing', show(tierDry))
+  const tierSet = await cli([...d, 'connections', 'tier', 'anthropic', `fast=${pick}`, '--output-format', 'json'], { cwd: repo })
+  check(tierSet.code === 0 && json(tierSet.out)?.applied === true && json(tierSet.out)?.tiers?.[3]?.model === pick, 'connections tier saves a catalog id', show(tierSet))
+  const tierReset = await cli([...d, 'connections', 'tier', 'anthropic', '--reset', 'fast', '--output-format', 'json'], { cwd: repo })
+  check(tierReset.code === 0 && json(tierReset.out)?.tiers?.[3]?.model === fastWas, "connections tier --reset returns to discovery's choice", show(tierReset))
+
+  // 7. settings
+  const sl = await cli([...d, 'settings', 'list', '--output-format', 'json'], { cwd: repo })
+  check(sl.code === 0 && json(sl.out)?.settings?.some((s) => s.key === 'defaultKeepRuns'), 'settings list json', show(sl))
+  const sset = await cli([...d, 'settings', 'set', 'defaultKeepRuns', '33'], { cwd: repo })
+  const sget = await cli([...d, 'settings', 'get', 'defaultKeepRuns'], { cwd: repo })
+  check(sset.code === 0 && sget.out.trim() === '33', 'settings set / get round-trip', `${show(sset)} ${show(sget)}`)
+  const sbudget = await cli([...d, 'settings', 'set', 'defaultMaxBudgetUsd', 'none', '--output-format', 'json'], { cwd: repo })
+  check(sbudget.code === 0 && json(sbudget.out)?.value === null, 'settings set defaultMaxBudgetUsd none clears the cap', show(sbudget))
+  const sunknown = await cli([...d, 'settings', 'set', 'appearance', 'dark'], { cwd: repo })
+  check(sunknown.code === 2 && sunknown.err.includes('Unknown setting'), 'settings set refuses a key outside the list', show(sunknown))
+  const sbad = await cli([...d, 'settings', 'set', 'defaultKeepRuns', '0'], { cwd: repo })
+  check(sbad.code === 2, 'settings set refuses an out-of-range value', show(sbad))
 
   // A code project has no notes.
   const codeDir = makeFixtureRepo('cli-connections-code')

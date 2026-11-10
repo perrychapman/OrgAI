@@ -20,6 +20,7 @@ import { runPermissions } from './commands/permissions'
 import { runProjects } from './commands/projects'
 import { runRuns } from './commands/runs'
 import { runSecrets } from './commands/secrets'
+import { runSettings } from './commands/settings'
 import { runSkills } from './commands/skills'
 import { runStatus } from './commands/status'
 import { runTeam } from './commands/team'
@@ -59,7 +60,8 @@ export const ROUTES: Record<string, CommandFn> = {
   usage: runUsage,
   kit: runKit,
   projects: runProjects,
-  secrets: runSecrets
+  secrets: runSecrets,
+  settings: runSettings
 }
 
 export interface MainOverrides {
