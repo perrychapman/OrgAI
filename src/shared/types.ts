@@ -3201,6 +3201,8 @@ export interface SetupStartInput {
 /** Explicit root-model selection for a running or recoverable conversation. */
 export interface SwitchRunModelInput {
   runId: string
+  /** Refuse if the latest conversation run no longer matches this captured id. */
+  expectedRunId?: string
   model: string
   connection?: ConnectionId
 }
