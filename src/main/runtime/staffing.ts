@@ -112,10 +112,19 @@ export interface ResolvedStaffing {
   /** One short human sentence when the result differs from what was asked or from the role's own setting. */
   note?: string
   /**
-   * True when tier or effort differs from the role's chart values (so the adapter must override at spawn). Tiers are
-   * compared, not model strings, when the role has a tier; an 'inherit' role's chart tier is parentTier.
+   * True when tier or effort differs from the role's chart values (so the adapter must override at spawn): tierChanged
+   * or effortChanged. Tiers are compared, not model strings, when the role has a tier; an 'inherit' role's chart tier
+   * is parentTier.
    */
   overrides: boolean
+  /**
+   * True when the tier differs from the tier the chart runs this role on (for an 'inherit' role: parentTier). An adapter
+   * changes a spawn's model only then: an effort-only override must leave the model alone, since a tier's alias or
+   * mapped id is not always the model the role would otherwise run on (an inherited or switched model).
+   */
+  tierChanged: boolean
+  /** True when the effort differs from the role's own effort. An adapter changes a spawn's effort only then. */
+  effortChanged: boolean
   /** The values a clamp moved away from (only the fields that moved). Present only with `adjustment`. */
   asked?: StaffingRequest
   /** Why the result was moved; present only when source is 'clamped', or 'role' after an 'unmapped' fallback. */
@@ -312,7 +321,7 @@ export function resolveStaffing(input: ResolveStaffingInput): ResolvedStaffing {
     if (requested) notes.push(fixedRole ? WORDS.note.fixedIgnored(fmt(requested)) : WORDS.note.noCeilingIgnored(fmt(requested)))
     else if (escalatedFrom) notes.push(fixedRole ? WORDS.note.fixedNoEscalation : WORDS.note.noCeilingNoEscalation)
     const model = roleModel || fallbackModel(tierModels, chartTier ?? 'everyday')?.model || ''
-    const base: ResolvedStaffing = { mode: 'fixed', model, source: 'role', overrides: false }
+    const base: ResolvedStaffing = { mode: 'fixed', model, source: 'role', overrides: false, tierChanged: false, effortChanged: false }
     if (chartTier) base.tier = chartTier
     if (roleEffort) base.effort = roleEffort
     // 6. The plan guard, exactly as the Claude adapter's steerToEveryday: by the role's tier or by its model.
@@ -325,6 +334,7 @@ export function resolveStaffing(input: ResolveStaffingInput): ResolvedStaffing {
         base.model = to
         base.source = 'plan-guard'
         base.overrides = true
+        base.tierChanged = true
       }
     }
     const note = joinNotes(notes)
@@ -506,13 +516,9 @@ export function resolveStaffing(input: ResolveStaffingInput): ResolvedStaffing {
   }
 
   // ---- 9. result ----
-  const out: ResolvedStaffing = {
-    mode: 'auto',
-    tier,
-    model,
-    source,
-    overrides: tier !== chartTier || effort !== roleEffort
-  }
+  const tierChanged = tier !== chartTier
+  const effortChanged = effort !== roleEffort
+  const out: ResolvedStaffing = { mode: 'auto', tier, model, source, overrides: tierChanged || effortChanged, tierChanged, effortChanged }
   if (effort) out.effort = effort
   const note = joinNotes(notes)
   if (note) out.note = note

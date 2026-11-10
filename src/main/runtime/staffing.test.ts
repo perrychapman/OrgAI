@@ -76,7 +76,7 @@ describe('rule 1: fixed roles', () => {
 
   it('a concrete model no tier describes has no tier', () => {
     const r = run({ role: { model: 'gpt-x' } })
-    expect(r).toEqual({ mode: 'fixed', model: 'gpt-x', source: 'role', overrides: false })
+    expect(r).toEqual({ mode: 'fixed', model: 'gpt-x', source: 'role', overrides: false, tierChanged: false, effortChanged: false })
     expect(r.tier).toBeUndefined()
     expect(staffingLabel(r)).toBe('gpt-x (fixed by the role)')
   })
@@ -415,8 +415,21 @@ describe('rule 9: model and overrides', () => {
     expect(r).toMatchObject({ model: 'opus', tier: 'deep', overrides: false })
   })
 
-  it('an effort change alone is an override', () => {
-    expect(run({ requested: { effort: 'low' } }).overrides).toBe(true)
+  it('an effort change alone is an override that leaves the tier alone', () => {
+    expect(run({ requested: { effort: 'low' } })).toMatchObject({ overrides: true, tierChanged: false, effortChanged: true })
+  })
+
+  it('a tier change alone is flagged as such', () => {
+    expect(run({ role: { model: 'opus', tier: 'deep', effort: 'high' }, requested: { tier: 'everyday' } })).toMatchObject({ overrides: true, tierChanged: true, effortChanged: false })
+  })
+
+  it("an inherit role's chart tier is its parent's: an effort-only pick does not change the tier", () => {
+    expect(run({ role: { model: 'inherit' }, parentTier: 'deep', requested: { effort: 'low' } })).toMatchObject({ tier: 'deep', tierChanged: false, effortChanged: true })
+    expect(run({ role: { model: 'inherit' }, parentTier: 'deep', requested: { tier: 'fast' } })).toMatchObject({ tier: 'fast', tierChanged: true })
+  })
+
+  it('the plan guard on a fixed role is a tier change', () => {
+    expect(run({ project: { staffing: 'fixed' }, role: { model: 'opus', tier: 'deep' }, planGuard: true })).toMatchObject({ source: 'plan-guard', tierChanged: true, effortChanged: false })
   })
 })
 
