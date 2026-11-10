@@ -53,8 +53,11 @@ export function Popover({
   const id = useId()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const onOpenChangeRef = useRef(onOpenChange)
+  onOpenChangeRef.current = onOpenChange
   const [open, setOpen] = useState(false)
   const [placed, setPlaced] = useState(false)
+  const [opening, setOpening] = useState(0)
 
   const place = useCallback(() => {
     const t = triggerRef.current
@@ -81,27 +84,38 @@ export function Popover({
     setPlaced(true)
   }, [placement])
 
-  // Native light dismiss and Esc change the popover state without React; mirror it from the toggle event.
+  // Close synchronously: a close and reopen in one task can coalesce into one open toggle.
   useEffect(() => {
     const el = panelRef.current
     if (!el) return
+    const onBeforeToggle = (e: Event): void => {
+      if ((e as ToggleEvent).newState !== 'closed') return
+      setOpen(false)
+      onOpenChangeRef.current?.(false)
+    }
     const onToggle = (e: Event): void => {
       const next = (e as ToggleEvent).newState === 'open'
-      setOpen(next)
-      if (!next) {
+      if (next) {
+        setOpen(true)
+        setOpening((revision) => revision + 1)
+        onOpenChangeRef.current?.(true)
+      } else {
         // `placed` stays true: hiding the panel here would cut the CSS exit short. It is positioned again on the next open.
         const active = document.activeElement
         if (!active || active === document.body || el.contains(active)) triggerRef.current?.focus()
       }
-      onOpenChange?.(next)
     }
+    el.addEventListener('beforetoggle', onBeforeToggle)
     el.addEventListener('toggle', onToggle)
-    return () => el.removeEventListener('toggle', onToggle)
-  }, [onOpenChange])
+    return () => {
+      el.removeEventListener('beforetoggle', onBeforeToggle)
+      el.removeEventListener('toggle', onToggle)
+    }
+  }, [])
 
   useLayoutEffect(() => {
     if (open) place()
-  }, [open, place])
+  }, [open, opening, place])
 
   // Focus moves in once the panel is placed (it is visibility:hidden, hence unfocusable, until then).
   useEffect(() => {
@@ -109,7 +123,7 @@ export function Popover({
     if (!open || !placed || !el) return
     const first = el.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
     ;(first ?? el).focus()
-  }, [open, placed])
+  }, [open, placed, opening])
 
   useEffect(() => {
     if (!open) return
