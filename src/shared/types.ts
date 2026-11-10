@@ -3309,7 +3309,8 @@ export interface RunSummary {
    * Live runs only: 'acceptEdits' while a session or project allow of an "accept edits" suggestion has the provider
    * session accepting edits past a narrower permissionMode. Show this as the mode in force while it is set. Never
    * carried by a continuation (a session grant ends with its session), cleared at session end and by an applied
-   * runs:setPermissionMode, dropped when a stored run is loaded. Main-owned; run.permissionMode events carry it.
+   * runs:setPermissionMode (the exception: a change that raced twice with a new grant answers applied false and leaves
+   * the grant set), dropped when a stored run is loaded. Main-owned; run.permissionMode events carry it.
    */
   sessionPermissionMode?: 'acceptEdits'
   id: string
@@ -4367,13 +4368,19 @@ export interface SetRunPermissionModeInput {
  * `reportsUnchanged` > 0, that many running reports keep their earlier mode until they finish and `reason` says so in
  * a plain sentence. `applied` false on an ended / paused run: saved for its next continuation (run.permissionMode is
  * updated). `applied` false on a live run: nothing changed (the session cannot switch now, or another change of this
- * run's mode is still in progress; `reason` is a fixed plain sentence saying what to do, never a provider message).
+ * run's mode is still in progress; `reason` is a fixed plain sentence saying what to do, never a provider message),
+ * with one exception: a change that raced twice with an "accept edits" grant (the grant landed after the session applied
+ * `mode`, both times) is also `applied` false, but main records `mode` as the run's choice with the grant on top
+ * (permissionModeChosen, sessionPermissionMode), so run.permissionMode IS updated, and `reason` asks to choose again.
  */
 export interface SetRunPermissionModeResult {
   run: RunSummary
   applied: boolean
   reason?: string
-  /** Applied only: running reports that keep their earlier mode until they finish (absent when none). */
+  /**
+   * Running reports that keep their earlier mode until they finish (absent when none). Arrives with `applied` true, and
+   * also with that raced `applied` false (the session did apply `mode`, so its reports are counted the same way).
+   */
   reportsUnchanged?: number
 }
 

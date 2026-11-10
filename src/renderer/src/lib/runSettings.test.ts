@@ -19,15 +19,20 @@ import {
   livePermissionOutcome,
   livePermissionValue,
   MODEL_HELP_TEAM,
+  metaPermission,
   metaPermissionMode,
   newRunPermissionChoices,
   offersInterruptToChange,
+  permissionBaseline,
   permissionOutcomeText,
+  permissionTone,
   reportsUnchangedOf,
   reportsUnchangedText,
+  retryNeedsConfirm,
   runPermissionMode,
   showsModeInMeta,
   startChoicesToSend,
+  wideningConfirmOptions,
   wideningCopy
 } from './runSettings'
 
@@ -72,6 +77,19 @@ describe('default model', () => {
     const m = defaultRunModel(project(), { ask: true, quickRunModel: 'everyday', tierModels: { everyday: 'claude-sonnet-4-5' }, catalog })
     expect(m?.model).toBe('claude-sonnet-4-5')
     expect(m?.label).toBe('Sonnet')
+  })
+  it('ignores a connection saved on the root role: the root always runs on the project connection', () => {
+    // Role.connection is ignored on the root (defaults.ts roleConnection, main's runManager), so the chip must not move.
+    const p = project({ roles: [role({ model: 'claude-opus-4-5', connection: 'proxy-b' as never })] })
+    const m = defaultRunModel(p, { ask: false, catalog })
+    expect(m).toEqual({ model: 'claude-opus-4-5', connection: 'anthropic', adapter: 'claude', label: 'Opus' })
+    // Picking that same model on the project connection is therefore "the default" and is not sent; the same model on
+    // the root's stale connection is a real pick and is.
+    const defaults = { model: m, effort: undefined, permissionMode: 'default' as PermissionMode }
+    expect(startChoicesToSend({ model: { model: 'claude-opus-4-5', connection: 'anthropic' }, effort: null, permissionMode: null }, defaults, 'claude')).toEqual({})
+    expect(startChoicesToSend({ model: { model: 'claude-opus-4-5', connection: 'proxy-b' }, effort: null, permissionMode: null }, defaults, 'claude')).toEqual({
+      modelSelection: { model: 'claude-opus-4-5', connection: 'proxy-b' }
+    })
   })
   it('is null for an inherit root and runs on mock for mock projects', () => {
     expect(defaultRunModel(project({ roles: [role({ model: 'inherit' })] }), { ask: false })).toBeNull()
@@ -197,6 +215,63 @@ describe('startChoicesToSend', () => {
     expect(startChoicesToSend({ model: { model: 'gpt-5', connection: 'openai' }, effort: 'xhigh', permissionMode: null }, defaults, 'codex').effort).toBe('high')
     // The default effort (max) does not fit a Codex pick: it is sent fitted.
     expect(startChoicesToSend({ model: { model: 'gpt-5', connection: 'openai' }, effort: null, permissionMode: null }, defaults, 'codex').effort).toBe('high')
+  })
+})
+
+describe('permission tones', () => {
+  it('gives Bypass the danger tone and keeps warning for Unattended and Auto-accept edits', () => {
+    expect(permissionTone('bypassPermissions')).toBe('danger')
+    expect(permissionTone('auto')).toBe('warning')
+    expect(permissionTone('acceptEdits')).toBe('warning')
+    expect(permissionTone('default')).toBeNull()
+    expect(permissionTone('plan')).toBeNull()
+    expect(permissionTone('dontAsk')).toBeNull()
+  })
+})
+
+describe('RunMeta and the chip agree on an ended run', () => {
+  const project = { permissionMode: 'default' as const }
+  it('shows the live mode in force while the run is going', () => {
+    expect(metaPermission({ status: 'running', kind: 'work', permissionMode: 'plan' } as never, project)).toEqual({ mode: 'plan', next: false })
+    expect(metaPermission({ status: 'running', kind: 'work', permissionMode: 'default' } as never, project)).toBeNull()
+  })
+  it('shows the chip\'s value once the session is over, "Next message:" only for a pending choice', () => {
+    expect(metaPermission({ status: 'finished', kind: 'work', permissionMode: 'plan', permissionModeChosen: true } as never, project)).toEqual({ mode: 'plan', next: true })
+    // Not chosen: the next message follows the exec override, else the project's mode, which is what the chip shows, unprefixed.
+    expect(metaPermission({ status: 'finished', kind: 'work', permissionMode: 'plan', overrides: { permissionMode: 'acceptEdits' } } as never, project)).toEqual({ mode: 'acceptEdits', next: false })
+    expect(metaPermission({ status: 'paused', kind: 'work', permissionMode: 'plan' } as never, project)).toBeNull()
+    expect(metaPermission({ status: 'finished', kind: 'setup' } as never, project)).toBeNull()
+  })
+})
+
+describe('Interrupt and change asks again when the mode in force moved', () => {
+  it('does not ask while the baseline is the one the choice was made against', () => {
+    // Auto -> Accept edits is a narrowing: no confirmation, and none on the retry while the run is still in Auto.
+    expect(retryNeedsConfirm('auto', 'auto', 'acceptEdits')).toBe(false)
+    // A confirmed widening stays confirmed against the same baseline.
+    expect(retryNeedsConfirm('default', 'default', 'bypassPermissions')).toBe(false)
+  })
+  it('asks when a project change narrowed the run and the retry would now widen it', () => {
+    // The reviewer's path: Auto, picked Accept edits (narrowing), then a project change narrowed the run to Plan.
+    expect(retryNeedsConfirm('auto', 'plan', 'acceptEdits')).toBe(true)
+  })
+  it('asks when the baseline moved and a confirmed target is still a widening against the new one', () => {
+    expect(retryNeedsConfirm('default', 'plan', 'auto')).toBe(true)
+  })
+  it('does not ask when the baseline moved but the target is still no wider than it', () => {
+    expect(retryNeedsConfirm('plan', 'auto', 'acceptEdits')).toBe(false)
+    expect(retryNeedsConfirm('default', 'default', 'plan')).toBe(false)
+    expect(retryNeedsConfirm('auto', 'dontAsk', 'plan')).toBe(false)
+  })
+  it('measures the baseline from the mode in force, the grant included, or the next-message mode when ended', () => {
+    const live = { status: 'running' as const, kind: 'work' as const, permissionMode: 'default' as const, sessionPermissionMode: 'acceptEdits' }
+    expect(permissionBaseline(live as never, { permissionMode: 'default' })).toBe('acceptEdits')
+    const ended = { status: 'finished' as const, kind: 'work' as const, permissionMode: 'plan' as const, permissionModeChosen: true as const, sessionPermissionMode: 'acceptEdits' }
+    expect(permissionBaseline(ended as never, { permissionMode: 'default' })).toBe('plan')
+  })
+  it('uses one confirmation wording and test id everywhere', () => {
+    const o = wideningConfirmOptions('plan', 'bypassPermissions')
+    expect(o).toMatchObject({ danger: true, confirmTestId: 'run-permission-confirm', cancelLabel: 'Keep current mode' })
   })
 })
 

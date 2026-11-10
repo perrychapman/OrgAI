@@ -17,7 +17,8 @@ import TeamFilesPointer from './team/TeamFilesPointer'
 import Composer from './Composer'
 import { goalToSend, selectedGoal, showsGoalChoice } from '../lib/runGoal'
 import { staffingGoalOf } from '@shared/defaults'
-import { EMPTY_RUN_SETTINGS, defaultRunEffort, defaultRunModel, newRunPermissionChoices, startChoicesToSend } from '../lib/runSettings'
+import { EMPTY_RUN_SETTINGS, defaultRunEffort, defaultRunModel, isWideningMode, newRunPermissionChoices, startChoicesToSend, wideningConfirmOptions } from '../lib/runSettings'
+import { useConfirm } from './ui/ConfirmDialog'
 import type { RunModel } from '../lib/runSettings'
 import { useAssistantModel } from '../lib/assistantModels'
 import McpAuthNotice from './mcp/McpAuthNotice'
@@ -33,6 +34,9 @@ const ROLE_CHIP_LIMIT = 5
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
+
+/** Thrown from onSubmit when the user declines the confirmation at Start: the draft comes back and no error is shown. */
+class DeclinedStart extends Error {}
 
 type NewRunMode = 'team' | 'ask'
 const newRunModeKey = (projectId: string): string => `orgai.newRunMode.${projectId}`
@@ -103,13 +107,22 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const [pickedModel, setPickedModel] = useState<RunModel | null>(null)
   const [pickedEffort, setPickedEffort] = useState<Effort | null>(null)
   const [pickedMode, setPickedMode] = useState<PermissionMode | null>(null)
+  // The project mode the staged mode was chosen against (and confirmed against, when it widened).
+  const [pickedModeBaseline, setPickedModeBaseline] = useState<PermissionMode | null>(null)
+  const { confirm, dialog } = useConfirm()
+  const resetMode = (): void => {
+    setPickedMode(null)
+    setPickedModeBaseline(null)
+  }
   const resetPicks = (): void => {
     setPickedGoal(null)
     setPickedModel(null)
     setPickedEffort(null)
-    setPickedMode(null)
+    resetMode()
   }
   useEffect(resetPicks, [project.id])
+  // The project's own mode changed in its settings: a staged narrowing may now be a widening nobody confirmed.
+  useEffect(resetMode, [project.permissionMode])
   const showGoal = canChooseMode && showsGoalChoice(project, ask)
   const goal = selectedGoal(project, pickedGoal)
   const quickRunModel = useAssistantModel('quickRunModel')
@@ -244,7 +257,11 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
                     baseline={project.permissionMode}
                     isDefault={pickedMode === null}
                     defaultMode={project.permissionMode}
-                    onChoose={(m) => setPickedMode(m === project.permissionMode ? null : m)}
+                    onChoose={(m) => {
+                      const same = m === project.permissionMode
+                      setPickedMode(same ? null : m)
+                      setPickedModeBaseline(same ? null : project.permissionMode)
+                    }}
                   />
                   {showGoal && <GoalControl goal={goal} isDefault={pickedGoal === null} onChange={(g) => setPickedGoal(g === staffingGoalOf(project) ? null : g)} />}
                 </RunSettingsRow>
@@ -263,7 +280,16 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           }
           autoFocus
           focusToken={focusToken}
+          onFail={(err) => err instanceof DeclinedStart}
           onSubmit={async (text, images) => {
+            // A staged mode that asks less than the project's mode now and was not confirmed against it is confirmed first.
+            if (canChooseMode && pickedMode && isWideningMode(project.permissionMode, pickedMode) && pickedModeBaseline !== project.permissionMode) {
+              const accepted = await confirm(wideningConfirmOptions(project.permissionMode, pickedMode))
+              if (!accepted) {
+                resetMode()
+                throw new DeclinedStart()
+              }
+            }
             const sendGoal = goalToSend(project, ask, pickedGoal)
             // Setup pending and virtual projects show no settings row, so nothing of the draft applies there.
             const choices = canChooseMode
@@ -278,6 +304,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             resetPicks()
           }}
         />
+
+        {dialog}
 
         {others.length > 0 && (
           <section className="new-run-others" aria-label="Other runs of this project">

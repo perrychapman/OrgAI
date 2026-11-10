@@ -1,13 +1,13 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useId, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { useTriggerAttrs } from './triggerAttrs'
-import { ChevronDown, Shield, ShieldAlert } from 'lucide-react'
+import { ChevronDown, Shield, ShieldAlert, ShieldOff } from 'lucide-react'
 import type { PermissionMode } from '@shared/types'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import { useConfirm } from '../ui/ConfirmDialog'
-import { isPermissiveMode, isWideningMode, permissionModeHelp, permissionModeName, wideningCopy } from '../../lib/runSettings'
+import { isWideningMode, permissionModeHelp, permissionModeName, permissionTone, wideningConfirmOptions } from '../../lib/runSettings'
 import '../../styles/run-settings.css'
 
 /**
@@ -18,7 +18,8 @@ import '../../styles/run-settings.css'
  *   cursor passes. "Use this mode" applies it.
  * - A mode that asks less than `baseline` (isWideningMode) is confirmed first, naming what stops asking (danger for
  *   Bypass). Cancel keeps the old value and returns focus to the chip. A narrower mode applies at once.
- * - A permissive current mode shows a warning tone, always with an icon and the name (never colour alone).
+ * - A permissive current mode shows a tone (warning; danger for Bypass), always with an icon and the name (never colour
+ *   alone). An untouched default keeps its tone but shows no "Changed" tag; only a picked change does.
  * - `onChoose` may be async (the live run's runs:setPermissionMode). A refusal or failure stays visible beside the chip.
  */
 export function PermissionModeControl({
@@ -69,22 +70,31 @@ export function PermissionModeControl({
   const [choice, setChoice] = useState<PermissionMode>(value)
   const [error, setError] = useState('')
   const [working, setWorking] = useState(false)
-  const permissive = isPermissiveMode(inForce ?? value)
+  // Bypass is the danger tone, Unattended and Auto-accept edits the warning tone; always with an icon and the name too.
+  const tone = permissionTone(inForce ?? value)
   // Unchanged = nothing to apply, except re-applying the run's own mode to end a session grant.
   const unchanged = choice === value && !(inForce && inForce !== value)
-  const region = useTriggerAttrs({ 'data-default': isDefault ? 'true' : 'false', 'data-tone': permissive ? 'warning' : null })
+  const region = useTriggerAttrs({ 'data-default': isDefault ? 'true' : 'false', 'data-tone': tone })
   const { confirm, dialog } = useConfirm()
   const name = permissionModeName(value)
   const pending = busy || working
   const focusTrigger = (): void => region.current?.querySelector<HTMLButtonElement>('[data-testid="run-permission-change"]')?.focus()
 
+  // True from the click until the confirmation is answered: a second click (or Enter) must not open a second dialog.
+  const confirming = useRef(false)
+
   const apply = async (close: () => void): Promise<void> => {
-    if (unchanged || pending) return
+    if (unchanged || pending || confirming.current) return
     setError('')
     if (isWideningMode(baseline, choice)) {
       // The modal dismisses the popover; Cancel hands focus back to the chip.
-      const copy = wideningCopy(baseline, choice)
-      const accepted = await confirm({ title: copy.title, body: copy.body, confirmLabel: copy.confirmLabel, danger: copy.danger, confirmTestId: 'run-permission-confirm', cancelLabel: 'Keep current mode' })
+      confirming.current = true
+      let accepted = false
+      try {
+        accepted = await confirm(wideningConfirmOptions(baseline, choice))
+      } finally {
+        confirming.current = false
+      }
       if (!accepted) {
         setChoice(value)
         requestAnimationFrame(focusTrigger)
@@ -112,11 +122,11 @@ export function PermissionModeControl({
           triggerTestId="run-permission-change"
           testId="run-permission-picker"
           className="run-permission-picker"
-          triggerClassName={permissive ? 'run-chip run-chip--warning' : 'run-chip'}
+          triggerClassName={tone ? `run-chip run-chip--${tone}` : 'run-chip'}
           triggerTitle={`${permissionModeName(value)}${valueSuffix ? ` · ${valueSuffix}` : ''}: ${permissionModeHelp(value)}`}
           trigger={
             <>
-              <Icon icon={permissive ? ShieldAlert : Shield} size="xs" />
+              <Icon icon={tone === 'danger' ? ShieldOff : tone ? ShieldAlert : Shield} size="xs" />
               {/* Same order as the model chip ("Model: Next message: …"): label, then the next-message prefix, then the value. */}
               <span className="run-chip__label">Permission:</span>
               {prefix && <span className="run-chip__prefix">{prefix}</span>}
@@ -124,7 +134,7 @@ export function PermissionModeControl({
                 {name}
               </span>
               {valueSuffix && <span className="run-chip__suffix" data-testid="run-permission-session"> · {valueSuffix}</span>}
-              {showState && <span className="run-chip__state">{isDefault ? 'Default' : 'Changed'}</span>}
+              {showState && !isDefault && <span className="run-chip__state">Changed</span>}
               <Icon icon={ChevronDown} size="xs" />
             </>
           }
@@ -140,10 +150,16 @@ export function PermissionModeControl({
               <fieldset className="run-permission-list" disabled={disabled || pending}>
                 <legend className="run-popover-legend">What this run may do without asking</legend>
                 {choices.map((mode) => (
-                  <label key={mode} className="run-permission-option" data-tone={isPermissiveMode(mode) ? 'warning' : undefined}>
+                  <label key={mode} className="run-permission-option" data-tone={permissionTone(mode) ?? undefined}>
                     <input type="radio" name={`${id}-mode`} value={mode} checked={choice === mode} data-testid="run-permission-choice" onChange={() => setChoice(mode)} />
                     <span>
                       <span className="run-permission-option__name">
+                        {/* Never colour alone: a permissive mode also carries the warning icon, as the chip does. */}
+                        {permissionTone(mode) && (
+                          <span className="run-permission-option__icon" data-testid="run-permission-option-icon">
+                            <Icon icon={mode === 'bypassPermissions' ? ShieldOff : ShieldAlert} size="xs" />
+                          </span>
+                        )}
                         {permissionModeName(mode)}
                         {defaultMode === mode && <span className="run-permission-option__tag"> · {defaultLabel}</span>}
                       </span>

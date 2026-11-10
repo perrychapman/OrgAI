@@ -72,6 +72,10 @@ export function adapterOfModel(model: string, connection: ConnectionId, catalog:
  * The model a new run would use with no choice (what main does): Team = the root role's model on the project's
  * connection; Ask = the single assistant's AppSettings.quickRunModel ('everyday' when blank). Tier names and aliases
  * resolve through the connection's tier mapping. Null when it cannot be named (an 'inherit' root, an unmapped tier).
+ *
+ * The connection is always the project's, even when the root role carries a `connection`: Role.connection is ignored on
+ * the root (defaults.ts roleConnection, src/shared/types.ts Role.connection, main's runManager and claude.ts), so a stale
+ * value on the root must not move the chip or the "same as default" test in startChoicesToSend.
  */
 export function defaultRunModel(
   project: Pick<Project, 'roles' | 'provider'>,
@@ -134,6 +138,15 @@ export function isPermissiveMode(mode: PermissionMode): boolean {
   return mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions'
 }
 
+/**
+ * The tone of a mode on a chip, an option or RunMeta: Bypass skips every prompt and is the danger tone; Unattended
+ * (auto) and Auto-accept edits are warnings; the rest have none. Always paired with an icon and the mode's name.
+ */
+export function permissionTone(mode: PermissionMode): 'danger' | 'warning' | null {
+  if (mode === 'bypassPermissions') return 'danger'
+  return isPermissiveMode(mode) ? 'warning' : null
+}
+
 /** Short name for the chip ("Plan only"). */
 export function permissionModeName(mode: PermissionMode): string {
   return PERMISSION_MODE_SHORT[mode]
@@ -169,6 +182,11 @@ export function wideningCopy(from: PermissionMode, to: PermissionMode): { title:
     confirmLabel: `Use ${name} for this run`,
     danger: false
   }
+}
+
+/** The ConfirmDialog options for a widening: one wording for the start page, the live chip and "Interrupt and change". */
+export function wideningConfirmOptions(from: PermissionMode, to: PermissionMode): { title: string; body: string; confirmLabel: string; danger: boolean; confirmTestId: string; cancelLabel: string } {
+  return { ...wideningCopy(from, to), confirmTestId: 'run-permission-confirm', cancelLabel: 'Keep current mode' }
 }
 
 /** The mode a live or ended run shows: its own record, else the project's (runs saved before the field existed). */
@@ -252,6 +270,30 @@ export function livePermissionOutcome(
   return { ...base, reports, message }
 }
 
+/**
+ * The mode a live permission choice is measured against for widening: a live run's mode in force (a session accept-edits
+ * grant counts), an ended or paused run's next-message mode.
+ */
+export function permissionBaseline(
+  run: Pick<RunSummary, 'status' | 'permissionMode' | 'permissionModeChosen' | 'overrides' | 'kind' | 'quick' | 'buildWorkspace'>,
+  project: Pick<Project, 'permissionMode'>
+): PermissionMode {
+  const { mode, next } = livePermissionValue(run, project)
+  return next ? mode : modeInForce(run, mode)
+}
+
+/**
+ * Whether "Interrupt and change" must ask again before it re-sends `target`. A confirmation (or the no-confirmation of a
+ * narrowing) only covers the baseline it was given against (`covered`); when the run's mode moved since (a project change
+ * narrowed it, a card granted edits) and `target` now asks less than the current baseline, the user decides again.
+ */
+export function retryNeedsConfirm(covered: PermissionMode, current: PermissionMode, target: PermissionMode): boolean {
+  return current !== covered && isWideningMode(current, target)
+}
+
+/** Shown when main answered for another run of the conversation (it redirected a stale id to the newest one). */
+export const PERMISSION_CONTINUED_ELSEWHERE = 'This conversation continued elsewhere. Open its latest session before changing the permission mode.'
+
 /** True when a refusal leaves a way forward: the run is replying now, so an interrupt may open a boundary. */
 export function offersInterruptToChange(outcome: { tone: string }, status: RunSummary['status']): boolean {
   return outcome.tone === 'refused' && status === 'running'
@@ -318,6 +360,25 @@ export function metaPermissionMode(run: Pick<RunSummary, 'kind' | 'permissionMod
   return showsModeInMeta(mode) || sessionEditsAccepted(run) ? mode : null
 }
 
+/**
+ * What RunMeta shows, in the chip's terms. A live run: the mode in force (metaPermissionMode). An ended or paused run:
+ * the mode its next message uses (livePermissionValue, the chip's value), so the two never disagree; `next` is set only
+ * when that value is a pending choice of the user (permissionModeChosen), the same rule as the chip's "Next message:"
+ * prefix. Null when there is nothing to show.
+ */
+export function metaPermission(
+  run: Pick<RunSummary, 'status' | 'kind' | 'permissionMode' | 'permissionModeChosen' | 'overrides' | 'quick' | 'buildWorkspace'>,
+  project: Pick<Project, 'permissionMode'>
+): { mode: PermissionMode; next: boolean } | null {
+  if (run.kind !== 'work') return null
+  const value = livePermissionValue(run, project)
+  if (!value.next) {
+    const mode = metaPermissionMode(run, project)
+    return mode ? { mode, next: false } : null
+  }
+  return showsModeInMeta(value.mode) ? { mode: value.mode, next: run.permissionModeChosen === true } : null
+}
+
 /** RunMeta's / the chip's visible mode text: the short name, plus the session's accept-edits grant while it is in force. */
 export function modeInForceLabel(run: object, mode: PermissionMode): string {
   return sessionEditsAccepted(run) && mode !== 'acceptEdits' ? `${permissionModeName(mode)} · ${SESSION_EDITS_SUFFIX}` : permissionModeName(mode)
@@ -327,6 +388,9 @@ export function modeInForceLabel(run: object, mode: PermissionMode): string {
 export function modeInForce(run: object, mode: PermissionMode): PermissionMode {
   return sessionEditsAccepted(run) && isNarrowingMode('acceptEdits', mode) ? 'acceptEdits' : mode
 }
+
+/** The reset link in the start pickers (effort, model), one wording: the chip itself says what the default is. */
+export const RESET_TO_DEFAULT_LABEL = 'Use default'
 
 /** The model chip's help line (start page title, live picker footer): which agents the choice reaches. */
 export const MODEL_HELP_TEAM = 'Model for the lead agent. Roles set to inherit follow it; other team members keep the models set in the Team tab.'
