@@ -75,3 +75,41 @@ What was verified against SDK v0.3.312 by smoke scripts: task events, hooks, per
     use `agent_id` (absent on the main thread) to tell a subagent.
   - Not checked: `reloadSkills()`, `Options.skills` blocking, resume honouring new `agents`, and whether a resumed
     session keeps its session id or `total_cost_usd`.
+
+## Verified against v0.3.318 by `scripts/smoke-staffing.mjs` (2026-11-09)
+
+Haiku root, sonnet only where a check needs a second model or effort support; Max login. Model ids: `sonnet` resolves
+to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is token-free). Hook input carries
+`effort.level` on every tool call, and the default level was `medium` for the root and for subagents.
+
+- Model through the hook, FULL id: NOT accepted. A `PreToolUse` `updatedInput.model = 'claude-sonnet-5-5'` on an
+  `Agent` call is rejected by schema validation: the call returns an error tool_result "PreToolUse hook for Agent
+  returned updatedInput that failed schema validation" with the allowed values `sonnet | opus | haiku | fable`, no
+  subagent starts, and the model retries (same failure again). Only the four aliases pass through `updatedInput`.
+- Model through the hook, alias: works. `updatedInput.model = 'sonnet'` over a definition that says `haiku`: the
+  child's assistant messages carry `claude-sonnet-5-5` and `modelUsage` lists both models.
+- Effort through the hook: works. Definition `effort: 'high'` (sonnet), hook sets `updatedInput.effort = 'low'`: the
+  `PreToolUse` input for the child's own Bash call reports `effort.level = "low"`.
+- Model and effort set by the model: works. Told to pass `model "sonnet"` and `effort "low"`, the root's Agent
+  `tool_input` carried both; the child ran on `claude-sonnet-5-5` and its Bash hook input reported `low` (definition
+  said `high` and haiku).
+- Subagent effort from its definition (no override, definition `low`, sonnet): the child's Bash hook input reports
+  `low` (the root's own level was `medium`).
+- Root effort from its definition: NOT verified as working. `Options.agent = 'lead'` with a definition
+  `effort: 'low'` (sonnet): the root's own Bash `PreToolUse` input reported `effort.level = "medium"`, not `low`. So
+  an `AgentDefinition.effort` applies to a spawned subagent but, in this run, not to the main-thread agent chosen by
+  `Options.agent`. OrgAI's root effort therefore needs `Options.effort` (typed at `sdk.d.ts` `effort?: EffortLevel`),
+  which this script did NOT test.
+- Parallel foreground spawns: works. Two Agent calls in ONE assistant message (same `message.id`), both forced to
+  `run_in_background = false` by the hook, each child running `sleep 5` (about 7.5 s per child including model
+  turns): SubagentStart at 1.3 s and 1.6 s, SubagentStop at 8.9 s and 9.2 s, so they overlapped almost completely.
+  Sum of child durations 15.2 s, total wall 11.9 s (the rest is the root's two turns). The model put both calls in
+  one message when told to in capital letters; without such an instruction that is not verified. The SDK emits one
+  `assistant` message per content block, so count calls per `message.id`, not per message. Both receipts returned
+  as separate `tool_result`s after their own `SubagentStop`.
+- One-shot latency (haiku, same options as `buildCompletionOptions`: custom system prompt, `tools: []`,
+  `maxTurns: 1`, `settingSources: []`, strict empty MCP; mirrored, the adapter was not imported; 5 sequential
+  calls, ~60-word system prompt, one-word answer, all answered "solo"): total 2062 / 2502 / 3274 ms
+  (min / median / max); median 1226 ms to the `init` message (process spawn and handshake) and 2019 ms to the first
+  assistant message, so roughly half is process start and half model time. Above the 1.5 s median line in the
+  design, so triage as a model call does not meet it on this machine.
