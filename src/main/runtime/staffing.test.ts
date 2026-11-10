@@ -646,4 +646,66 @@ describe('recording', () => {
     await recordStaffing({ getStaffing: () => stored, updateStaffing: async (s) => void (stored = s) }, row(1))
     expect(stored?.goal).toBe('balanced')
   })
+
+  describe('recordStaffing marks the bound step in_progress', () => {
+    const st = (id: string, status: PlanStep['status']): PlanStep => ({ id, title: id, status })
+    const mkPlan = (steps: PlanStep[], over: Partial<RunPlan> = {}): RunPlan => ({ goal: 'g', steps, status: 'active', autoContinues: 2, updatedAt: 0, ...over })
+    const setup = (initial: RunPlan | undefined, failPlan = false) => {
+      let plan = initial
+      let stored: RunStaffing | undefined
+      const writes: RunPlan[] = []
+      const ctx = {
+        getStaffing: () => stored,
+        updateStaffing: async (s: RunStaffing) => void (stored = s),
+        getPlan: () => plan,
+        updatePlan: async (p: RunPlan) => {
+          writes.push(p)
+          if (failPlan) throw new Error('plan store down')
+          plan = p
+        }
+      }
+      return { ctx, writes, plan: () => plan, staffing: () => stored }
+    }
+    const bound = (i: number, stepId?: string): StaffingAssignment => ({ ...row(i), ...(stepId ? { stepId } : {}) })
+
+    it('a pending step bound by a row becomes in_progress, nothing else changes', async () => {
+      const t = setup(mkPlan([st('p1', 'pending'), st('p2', 'pending')]))
+      await recordStaffing(t.ctx, bound(1, 'p1'))
+      expect(t.plan()!.steps.map((s) => s.status)).toEqual(['in_progress', 'pending'])
+      expect(t.plan()).toMatchObject({ goal: 'g', status: 'active', autoContinues: 2 })
+      expect(t.staffing()!.assignments).toHaveLength(1)
+    })
+
+    it.each(['in_progress', 'done', 'blocked', 'skipped'] as const)('leaves a %s step alone', async (status) => {
+      const t = setup(mkPlan([st('p1', status)]))
+      await recordStaffing(t.ctx, bound(1, 'p1'))
+      expect(t.writes).toEqual([])
+    })
+
+    it('leaves the plan alone without a stepId, for an unknown step, with no plan, or without getPlan/updatePlan', async () => {
+      const a = setup(mkPlan([st('p1', 'pending')]))
+      await recordStaffing(a.ctx, bound(1))
+      await recordStaffing(a.ctx, bound(2, 'p9'))
+      expect(a.writes).toEqual([])
+      const b = setup(undefined)
+      await recordStaffing(b.ctx, bound(1, 'p1'))
+      expect(b.writes).toEqual([])
+      let stored: RunStaffing | undefined
+      await recordStaffing({ getStaffing: () => stored, updateStaffing: async (s) => void (stored = s) }, bound(1, 'p1'))
+      expect(stored!.assignments).toHaveLength(1)
+    })
+
+    it('two rows recorded back to back mark both steps', async () => {
+      const t = setup(mkPlan([st('p1', 'pending'), st('p2', 'pending'), st('p3', 'pending')]))
+      await Promise.all([recordStaffing(t.ctx, bound(1, 'p1')), recordStaffing(t.ctx, bound(2, 'p2'))])
+      expect(t.plan()!.steps.map((s) => s.status)).toEqual(['in_progress', 'in_progress', 'pending'])
+      expect(t.staffing()!.assignments).toHaveLength(2)
+    })
+
+    it('a failing updatePlan still stores the row and rejects afterwards', async () => {
+      const t = setup(mkPlan([st('p1', 'pending')]), true)
+      await expect(recordStaffing(t.ctx, bound(1, 'p1'))).rejects.toThrow('plan store down')
+      expect(t.staffing()!.assignments).toHaveLength(1)
+    })
+  })
 })

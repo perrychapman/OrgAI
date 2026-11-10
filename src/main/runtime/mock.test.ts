@@ -13,7 +13,7 @@ import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
 import { addRules } from './permissionRules'
 import { defaultRoles } from '@shared/defaults'
-import type { AgentInstance, Effort, ModelTier } from '@shared/types'
+import type { AgentInstance, Effort, ModelTier, RunPlan } from '@shared/types'
 import { staffingBrief, type StaffingProfile, type StaffingProfileEntry } from '../store/staffingProfile'
 import type { MockStep } from './mock'
 import { harnessToolsFor } from './harnessTools'
@@ -1567,6 +1567,14 @@ describe('mock [mock:staffing]', () => {
     expect(session.staffedFor('mock-staffed-1')).toEqual({ model: 'm-fast', effort: 'low' })
     const agent = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === 'mock-staffed-1').at(-1)
     expect(agent).toMatchObject({ agent: { model: 'm-fast' } })
+    await session.stop()
+  })
+
+  it('the staffed steps run while their reports work and end done', async () => {
+    const { ctx, session } = await run()
+    const plans = (ctx.updatePlan as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as RunPlan).steps.map((s) => s.status).join(','))
+    expect(plans).toContain('in_progress,in_progress')
+    await vi.waitFor(() => expect(ctx.getPlan()!.steps.map((s) => s.status)).toEqual(['done', 'done']), { timeout: 3000 })
     await session.stop()
   })
 
