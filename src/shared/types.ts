@@ -3292,6 +3292,16 @@ export interface RunSummary {
   conversationBudgetUsd?: number
   /** Root selection; on an ended/paused run applies to its next continuation. Never alters project defaults. */
   modelSelection?: { model: string; connection: ConnectionId }
+  /** Root reasoning effort chosen at start (StartRunInput.effort); continuations keep it. Absent = the root role's own. Main-owned. */
+  rootEffort?: Effort
+  /**
+   * The permission mode RunManager put in force for this run's session (project mode, exec override or the user's
+   * per-run choice); on an ended / paused run with permissionModeChosen, the mode its next continuation uses. Main-owned;
+   * absent on runs saved before it existed.
+   */
+  permissionMode?: PermissionMode
+  /** True when permissionMode is the user's per-run choice (runs:start / runs:setPermissionMode), which continuations carry. */
+  permissionModeChosen?: true
   id: string
   projectId: string
   kind: RunKind
@@ -4302,6 +4312,58 @@ export interface StartRunInput {
   team?: RunTeam
   /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
   overrides?: RunOverrides
+  /**
+   * Desktop only (socket / inproc clients are refused with bad_request). The root agent's model for this run and its
+   * continuations; reports and the project's defaults are untouched. `model` must be a catalog entry (models:list) on
+   * `connection`, else the start is refused before a run exists. Wins over the single assistant's quick-run model.
+   * Recorded as RunSummary.modelSelection.
+   */
+  modelSelection?: { model: string; connection: ConnectionId }
+  /**
+   * Desktop only (socket / inproc clients are refused). The root agent's reasoning effort for this run and its
+   * continuations; reports keep their staffing (runtime/staffing.ts). Must be one of `effortOptionsFor(adapter)`
+   * (shared/defaults.ts) for the adapter of the chosen (or project) model, else the start is refused. Recorded as
+   * RunSummary.rootEffort.
+   */
+  effort?: Effort
+  /**
+   * Desktop only (socket / inproc clients are refused; they keep overrides.permissionMode). This run's permission mode
+   * and its continuations'; never the project default. Any mode may be chosen (widening included) on a work run;
+   * `runPermissionModeChoices` lists what a run accepts. Recorded as RunSummary.permissionMode with
+   * permissionModeChosen true.
+   */
+  permissionMode?: PermissionMode
+}
+
+/**
+ * runs:setPermissionMode (desktop only): change a run's permission mode. Main owns the state; the run's adapter applies
+ * it live when it can. Refusals (unknown run, setup-like or exec run, a mode outside runPermissionModeChoices) throw.
+ */
+export interface SetRunPermissionModeInput {
+  runId: string
+  mode: PermissionMode
+}
+
+/**
+ * Shaped like SwitchRunModelResult. `applied` true: the live session now runs in `mode` (run.permissionMode). `applied`
+ * false on an ended / paused run: saved for its next continuation (run.permissionMode is updated). `applied` false on a
+ * live run: nothing changed (the session cannot switch now; `reason` says what to do).
+ */
+export interface SetRunPermissionModeResult {
+  run: RunSummary
+  applied: boolean
+  reason?: string
+}
+
+/**
+ * The permission modes a run accepts from the user (runs:start permissionMode, runs:setPermissionMode). Setup-like runs
+ * pin their mode (empty list). Chat and build sessions (trust-restricted) only take modes that ask or deny, because their
+ * adapters downgrade the others to asking. Every other work run takes any mode. Pure; main enforces the same list.
+ */
+export function runPermissionModeChoices(run: Pick<RunSummary, 'kind' | 'quick' | 'buildWorkspace'>): PermissionMode[] {
+  if (run.kind !== 'work') return []
+  if (run.quick || typeof run.buildWorkspace === 'string') return ['default', 'dontAsk', 'plan']
+  return [...PERMISSION_MODES]
 }
 
 /** runs:send: a follow-up message to a live run's orchestrator. */
@@ -5080,6 +5142,8 @@ export interface OrgAIApi {
     /** A paused run: continue it now instead of waiting for the usage window to reset. */
     resumeNow(runId: string): Promise<RunSummary>
     switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult>
+    /** Change a run's permission mode (live when the session can, else saved for its continuation). See SetRunPermissionModeResult. */
+    setPermissionMode(input: SetRunPermissionModeInput): Promise<SetRunPermissionModeResult>
     /** A paused run: keep it paused; the user continues it by hand. */
     cancelAutoResume(runId: string): Promise<void>
     /**
@@ -6080,6 +6144,7 @@ export const IPC = {
   runsContinue: 'runs:continue',
   runsResumeNow: 'runs:resumeNow',
   runsSwitchModel: 'runs:switchModel',
+  runsSetPermissionMode: 'runs:setPermissionMode',
   runsCancelAutoResume: 'runs:cancelAutoResume',
   runEvent: 'runs:event',
   setupStart: 'setup:start',
