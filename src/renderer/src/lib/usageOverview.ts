@@ -23,6 +23,7 @@ import type {
 } from '@shared/types'
 import { USAGE_STATS_MAX_LIMIT } from '@shared/types'
 import { sumCosts, type CostInput } from './cost'
+import { usageKindOf, type UsageKind } from '@shared/view/usageInsights'
 import { bucketKey, monthBounds, monthKey, monthName, monthOptions, rangeSince, totalTokens } from './trends'
 
 // ---------- filters ----------
@@ -37,7 +38,7 @@ export type UsagePeriod =
 export type UsageBucket = 'day' | 'week' | 'month'
 
 /** The page's run kinds (section 8). Ask and Chat are work runs told apart by team 'single' / quick. */
-export type UsageKind = 'work' | 'setup' | 'ask' | 'chat' | 'assistants'
+export type { UsageKind }
 export const USAGE_KINDS: readonly UsageKind[] = ['work', 'setup', 'ask', 'chat', 'assistants']
 export const USAGE_KIND_LABELS: Record<UsageKind, string> = {
   work: 'Work runs',
@@ -278,13 +279,7 @@ export function previousQuery(f: UsageFilters, now: number): UsageOverviewQuery 
   return { ...overviewQuery(f, now, span), bucket: 'month', limit: 1 }
 }
 
-/** The page kind of a row (section 8). Chat wins over Ask: a Chat is a single-agent conversation by default. */
-export function usageKindOf(row: Pick<UsageOverviewRow, 'kind' | 'team' | 'quick' | 'projectId'>): UsageKind {
-  if (row.kind === 'setup') return 'setup'
-  if (row.kind === 'mcp-assist' || row.kind === 'skill-assist') return 'assistants'
-  if (row.quick || row.projectId === 'quick') return 'chat'
-  return row.team === 'single' ? 'ask' : 'work'
-}
+export { usageKindOf }
 
 /** True when a narrowing can only be answered from the rows (the server rollups do not cover it). */
 export function needsClientFold(f: UsageFilters): boolean {

@@ -125,4 +125,17 @@ describe('usageText (F11)', () => {
     expect(t).toContain('~ approximate')
     expect(t).toContain('no usage numbers yet')
   })
+
+  it('By model lists every model with the agents that used it; requests only where attributable', () => {
+    let s: TuiState = { ...createInitialState('/work'), project: P }
+    const tok = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }
+    const mixed = usage({ turns: 4, models: [{ model: 'opus-x', tokens: tok, costUsd: 0.1, priceSource: 'builtin' }, { model: 'mystery-1', tokens: tok, costUsd: null, priceSource: 'unknown' }] })
+    s = applyRecord(s, { ...record({ ...summary('a'), usage: runUsage() }), agents: { root: agent('root', null, { usage: mixed }), w: agent('w', 'root', { usage: usage({ turns: 3, models: [{ model: 'opus-x', tokens: tok, costUsd: 0.05, priceSource: 'builtin' }] }) }) } })
+    s = setActiveRun(s, 'a')
+    const t = usageText(s)
+    expect(t).toContain('By model')
+    expect(t).toMatch(/opus-x\s+3\+\s.*\$0\.15\s+Orchestrator, Writer/)
+    expect(t).toMatch(/mystery-1\s+-\s.*unknown\s+Orchestrator/)
+    expect(t).toContain('lower bound')
+  })
 })

@@ -2,6 +2,7 @@
  * `orgai usage` (cli-spec 6.3, Wave 5): token and cost usage of a project's runs, the CSV export and plan windows.
  *
  *   usage [show] [--range day|week|month|all] [--month YYYY-MM] [--limit N] [--all-projects]   read
+ *   usage show --overview [same filters]   cost by model and tier, lead alone against reports, runs worth a look (runs:usageOverview)
  *   usage csv [same filters] [--out <file>] [--force]                                           read
  *   usage refresh                                                                               operate
  *
@@ -10,8 +11,9 @@
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { isProxyConnection, isVirtualProjectId, RUN_KIND_LABELS, USAGE_STATS_MAX_LIMIT, type ConnectionInfo, type Project, type RateLimitWindow, type RunKind, type RunUsage, type TokenUsage, type UsageStats, type UsageStatsQuery, type UsageStatus } from '../../shared/types'
-import { totalTokens } from '../../shared/defaults'
+import { isProxyConnection, isVirtualProjectId, RUN_KIND_LABELS, USAGE_STATS_MAX_LIMIT, type ConnectionInfo, type ModelUsageEntry, type Project, type RateLimitWindow, type RunKind, type RunUsage, type TokenUsage, type UsageOverview, type UsageOverviewQuery, type UsageStats, type UsageStatsQuery, type UsageStatus } from '../../shared/types'
+import { tierForModel, totalTokens } from '../../shared/defaults'
+import { costByTier, effectiveWastefulSort, leadComparison, makeTierOf, minutesText, pageCost, tierLabel, wastefulRuns, type GroupStats } from '../../shared/view/usageInsights'
 import { formatDateTime } from '../../shared/view/dates'
 import { costView, formatTokens, sumCosts, type CostInput } from '../../shared/view/cost'
 import { parseFlags } from '../flags'
@@ -40,6 +42,9 @@ const FILTER_FLAGS = {
   limit: { type: 'string' },
   'all-projects': { type: 'boolean' }
 } as const
+const SHOW_FLAGS = { ...FILTER_FLAGS, overview: { type: 'boolean' } } as const
+/** Rows of "runs worth a look" and of the per-run model lists in the text. */
+const LIST_SHOWN = 10
 
 function filtersOf(values: { range?: string; month?: string; limit?: string }): UsageFilters {
   if (values.range !== undefined && !(RANGES as readonly string[]).includes(values.range)) throw new CliError(`--range takes ${RANGES.join(', ')}.`, EXIT.usage)
@@ -142,6 +147,63 @@ export function pointCost(p: UsageStats['trend'][number]): CostInput {
   return { costUsd: p.costUsd, costSource: 'provider', sourceMixed: true, ...(p.costUnknownRuns > 0 ? { costPartial: true } : {}) }
 }
 
+// ---------- by model ----------
+
+export interface ModelRow {
+  model: string
+  runs: number
+  /**
+   * Model responses attributable to this model: a run's turns count when the run used only this model. A run that
+   * mixed models cannot be split (UsageStats rows carry no per-model turns), so `requestsExact` is then false and the
+   * number is a lower bound; null when no run could be attributed.
+   */
+  requests: number | null
+  requestsExact: boolean
+  tokens: TokenUsage
+  cost: CostInput
+}
+
+const ZERO_TOKENS: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+const addTok = (a: TokenUsage, b: TokenUsage): TokenUsage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite })
+
+/** A model entry's cost for the shared cost view: no price is unknown, never $0. */
+export function modelEntryCost(m: Pick<ModelUsageEntry, 'costUsd' | 'priceSource' | 'tokens'>): CostInput {
+  if (m.costUsd === null || m.priceSource === 'unknown') return totalTokens(m.tokens) > 0 ? { costUsd: null, costSource: 'unknown' } : { costUsd: 0, costSource: 'none' }
+  return { costUsd: m.costUsd, costSource: m.priceSource === 'provider' ? 'provider' : 'computed' }
+}
+
+/** The models actually used across `usages`, most tokens first. */
+export function modelRows(usages: readonly Pick<RunUsage, 'models' | 'turns'>[]): ModelRow[] {
+  const by = new Map<string, { runs: number; requests: number; exact: boolean; attributed: boolean; tokens: TokenUsage; costs: CostInput[] }>()
+  for (const u of usages) {
+    const models = Array.isArray(u.models) ? u.models : []
+    for (const m of models) {
+      const g = by.get(m.model) ?? { runs: 0, requests: 0, exact: true, attributed: false, tokens: ZERO_TOKENS, costs: [] }
+      g.runs++
+      if (models.length === 1) {
+        g.requests += u.turns
+        g.attributed = true
+      } else g.exact = false
+      g.tokens = addTok(g.tokens, m.tokens)
+      g.costs.push(modelEntryCost(m))
+      by.set(m.model, g)
+    }
+  }
+  return [...by]
+    .map(([model, g]) => ({ model, runs: g.runs, requests: g.attributed ? g.requests : null, requestsExact: g.exact, tokens: g.tokens, cost: sumCosts(g.costs) }))
+    .sort((a, b) => totalTokens(b.tokens) - totalTokens(a.tokens) || a.model.localeCompare(b.model))
+}
+
+const requestsText = (r: Pick<ModelRow, 'requests' | 'requestsExact'>): string => (r.requests === null ? '-' : `${r.requests}${r.requestsExact ? '' : '+'}`)
+
+function modelRowJson(r: ModelRow): Json {
+  return { model: r.model, runs: r.runs, requests: r.requests, requestsExact: r.requestsExact, tokens: totalTokens(r.tokens), costUsd: r.cost.costUsd, costPartial: !!r.cost.costPartial, cost: costText(r.cost) }
+}
+
+function modelTable(rows: readonly ModelRow[], w: number, st: ReturnType<typeof styleFor>): string[] {
+  return table([{ header: 'MODEL', flex: true, min: 8, ellipsis: 'middle' }, { header: 'RUNS', align: 'right', min: 4 }, { header: 'REQUESTS', align: 'right', min: 8 }, { header: 'TOKENS', align: 'right', min: 6 }, { header: 'COST', align: 'right', min: 6 }], rows.map((r) => [safeLine(r.model), String(r.runs), requestsText(r), formatTokens(totalTokens(r.tokens)), costText(r.cost)]), w, st)
+}
+
 function statsJson(project: Project, stats: UsageStats): Json {
   const totals = stats.totals
   return {
@@ -151,7 +213,9 @@ function statsJson(project: Project, stats: UsageStats): Json {
     totals: { tokens: totals.tokens, costUsd: totals.costUsd, costSource: totals.costSource, costPartial: !!totals.costPartial, cost: costText(totals), turns: totals.turns, toolCalls: totals.toolCalls, wallMs: totals.wallMs },
     roles: stats.roles.map((r) => ({ roleId: r.roleId, roleSlug: r.roleSlug, roleName: r.roleName, runs: r.runs, agents: r.agents, tokens: r.tokens, costUsd: r.costUsd, costSource: r.costSource, costPartial: !!r.costPartial, cost: costText(r) })),
     kinds: byKind(stats).map((k) => ({ kind: k.kind, runs: k.runs, tokens: k.tokens, costUsd: k.cost.costUsd, costPartial: !!k.cost.costPartial, cost: costText(k.cost) })),
-    trend: stats.trend.map((p) => ({ bucket: p.bucket, runs: p.runs, tokens: p.tokens, costUsd: p.costUsd, costUnknownRuns: p.costUnknownRuns, cost: costText(pointCost(p)) }))
+    trend: stats.trend.map((p) => ({ bucket: p.bucket, runs: p.runs, tokens: p.tokens, costUsd: p.costUsd, costUnknownRuns: p.costUnknownRuns, cost: costText(pointCost(p)) })),
+    byModel: modelRows(stats.runs.map((r) => r.usage)).map(modelRowJson),
+    runModels: stats.runs.map((r) => ({ runId: r.runId, models: modelRows([r.usage]).map(modelRowJson) }))
   }
 }
 
@@ -167,6 +231,19 @@ function statsLines(ctx: CliContext, project: Project, stats: UsageStats, f: Usa
   }
   const kinds = byKind(stats)
   lines.push('', ...table([{ header: 'KIND', flex: true, min: 6 }, { header: 'RUNS', align: 'right', min: 4 }, { header: 'TOKENS', align: 'right', min: 6 }, { header: 'COST', align: 'right', min: 6 }], kinds.map((k) => [k.kind, String(k.runs), formatTokens(k.tokens), costText(k.cost)]), w, st))
+  const models = modelRows(stats.runs.map((r) => r.usage))
+  if (models.length) {
+    lines.push('', 'By model', ...modelTable(models, w, st))
+    if (models.some((m) => m.requests === null || !m.requestsExact)) lines.push(st.dim('REQUESTS counts only runs that used one model; a + marks a lower bound, - none attributable.'))
+    const perRun = stats.runs.filter((r) => Array.isArray(r.usage.models) && r.usage.models.length > 0).slice(0, LIST_SHOWN)
+    if (perRun.length) {
+      lines.push('', `By model, per run${stats.runs.length > perRun.length ? ` (newest ${perRun.length}; --json has all)` : ''}`)
+      for (const r of perRun) {
+        lines.push(`  ${safeLine(r.runId)}  ${safeLine(r.title || r.prompt).slice(0, 60)}`)
+        for (const m of modelRows([r.usage])) lines.push(`    ${safeLine(m.model)}: ${requestsText(m) === '-' ? '' : `${requestsText(m)} request${m.requests === 1 ? '' : 's'}, `}${formatTokens(totalTokens(m.tokens))} tokens, ${costText(m.cost)}`)
+      }
+    }
+  }
   if (stats.trend.length) {
     lines.push('', ...table([{ header: 'FROM', min: 10 }, { header: 'RUNS', align: 'right', min: 4 }, { header: 'TOKENS', align: 'right', min: 6 }, { header: 'COST', align: 'right', min: 6 }], stats.trend.map((p) => [p.bucket, String(p.runs), tokensText(p.tokens), costText(pointCost(p))]), w, st))
   }
@@ -174,10 +251,84 @@ function statsLines(ctx: CliContext, project: Project, stats: UsageStats, f: Usa
   return lines
 }
 
+// ---------- overview ----------
+
+/** The runs:usageOverview query of the same filters (the overview's own query shape, project ids instead of one id). */
+export function overviewQueryOf(projectIds: readonly string[], f: UsageFilters, now: number): UsageOverviewQuery {
+  const { projectId: _projectId, ...q } = usageQuery('', f, now)
+  return { ...q, ...(projectIds.length ? { projectIds: [...projectIds] } : {}) }
+}
+
+const groupLine = (label: string, g: GroupStats): string =>
+  `  ${label}: ${g.runs} run${g.runs === 1 ? '' : 's'}${g.runs > 0 ? `, median ${g.medianWallMs === null ? 'time unknown' : minutesText(g.medianWallMs)}, median cost ${g.medianCostUsd === null ? 'unknown' : pageCost(g.medianCostUsd)}${g.costKnownRuns < g.runs ? ` (from ${g.costKnownRuns})` : ''}` : ''}`
+
+interface OverviewView {
+  overview: UsageOverview
+  tiers: ReturnType<typeof costByTier>
+  lead: ReturnType<typeof leadComparison>
+  worth: ReturnType<typeof wastefulRuns>
+}
+
+function overviewView(overview: UsageOverview, infos: readonly ConnectionInfo[]): OverviewView {
+  const tierOf = makeTierOf(infos.map((i) => ({ id: i.connection.id, tierModels: i.connection.tierModels ?? {} })), (m) => tierForModel(m))
+  const rows = overview.runs
+  return { overview, tiers: costByTier(rows, overview.totals.costUsd, tierOf), lead: leadComparison(rows), worth: wastefulRuns(rows, effectiveWastefulSort('no-result', rows)).slice(0, LIST_SHOWN) }
+}
+
+const overviewModelCost = (m: UsageOverview['models'][number]): CostInput => modelEntryCost({ costUsd: m.costUsd, priceSource: m.priceSource, tokens: m.tokens })
+
+function overviewJson(v: OverviewView, f: UsageFilters): Json {
+  const o = v.overview
+  const group = (g: GroupStats): Json => ({ runs: g.runs, medianWallMs: g.medianWallMs, medianCostUsd: g.medianCostUsd, costKnownRuns: g.costKnownRuns })
+  return {
+    range: f.month ? { month: f.month } : (f.range ?? 'all'),
+    matchedRuns: o.matchedRuns,
+    ...(o.truncated ? { truncated: true } : {}),
+    totals: { tokens: totalTokens(o.totals.tokens), costUsd: o.totals.costUsd, costPartial: !!o.totals.costPartial, cost: costText(o.totals) },
+    byModel: o.models.map((m) => ({ model: m.model, runs: m.runs, projects: m.projects, tokens: totalTokens(m.tokens), costUsd: m.costUsd, costPartial: !!m.costPartial, cost: costText(overviewModelCost(m)) })),
+    byTier: v.tiers === null ? null : v.tiers.map((t) => ({ tier: t.key, label: t.label, costUsd: t.costUsd, share: t.share })),
+    leadAlone: group(v.lead.alone),
+    withReports: group(v.lead.withReports),
+    worthALook: v.worth.map((w) => ({ runId: w.row.runId, project: w.row.projectName, title: w.row.title ?? w.row.prompt, status: w.row.status, costUsd: w.row.usage.costUsd, unknownCost: w.unknownCost, noResult: w.noResult, why: w.why }))
+  }
+}
+
+function overviewLines(ctx: CliContext, v: OverviewView, f: UsageFilters): string[] {
+  const st = styleFor(ctx)
+  const w = termWidth(ctx)
+  const o = v.overview
+  const lines = [`Overview: ${o.matchedRuns} run${o.matchedRuns === 1 ? '' : 's'} ${rangeWords(f)}${o.truncated ? ' (the lists below use the newest only; raise --limit)' : ''}`]
+  if (o.matchedRuns === 0) return lines
+  lines.push(`  Tokens: ${tokensText(o.totals.tokens)}   Estimated cost: ${costText(o.totals)}`)
+  lines.push('', 'Cost by model')
+  if (o.models.length === 0) lines.push('  No model usage recorded.')
+  else lines.push(...table([{ header: 'MODEL', flex: true, min: 8, ellipsis: 'middle' }, { header: 'RUNS', align: 'right', min: 4 }, { header: 'TOKENS', align: 'right', min: 6 }, { header: 'COST', align: 'right', min: 6 }], o.models.map((m) => [safeLine(m.model), String(m.runs), formatTokens(totalTokens(m.tokens)), costText(overviewModelCost(m))]), w, st))
+  lines.push('', 'Cost by tier')
+  if (v.tiers === null) lines.push('  Not shown: the total cost is unknown or zero.')
+  else lines.push(...table([{ header: 'TIER', min: 6 }, { header: 'COST', align: 'right', min: 6 }, { header: 'SHARE', align: 'right', min: 5 }], v.tiers.map((t) => [tierLabel(t.key), pageCost(t.costUsd), `${Math.round(t.share * 100)}%`]), w, st))
+  lines.push('', 'Lead alone against runs with reports (team work runs)', groupLine('Lead alone', v.lead.alone), groupLine('With reports', v.lead.withReports))
+  lines.push('', 'Runs worth a look')
+  if (v.worth.length === 0) lines.push('  None.')
+  else lines.push(...table([{ header: 'RUN', min: 8 }, { header: 'PROJECT', min: 7, ellipsis: 'middle' }, { header: 'COST', align: 'right', min: 6 }, { header: 'WHY', flex: true, min: 12 }], v.worth.map((x) => [safeLine(x.row.runId).slice(0, 12), safeLine(x.row.projectName), x.unknownCost ? 'unknown' : pageCost(x.row.usage.costUsd, !!x.row.usage.costPartial), safeLine(x.why)]), w, st))
+  return lines
+}
+
+const runOverview = async (ctx: CliContext, values: { range?: string; month?: string; limit?: string; 'all-projects'?: boolean }, f: UsageFilters): Promise<number> =>
+  withHost(ctx, READ, async (client) => {
+    const projects = await scopeProjects(ctx, client, !!values['all-projects'])
+    const query = overviewQueryOf(values['all-projects'] ? [] : projects.map((p) => p.id), f, Date.now())
+    const overview = await hostCall<UsageOverview>(client, 'runs:usageOverview', [query])
+    const infos = await client.call<ConnectionInfo[]>('connections:list', []).catch(() => [] as ConnectionInfo[])
+    const v = overviewView(overview, Array.isArray(infos) ? infos : [])
+    emit(ctx, { overview: overviewJson(v, f) }, () => overviewLines(ctx, v, f))
+    return EXIT.ok
+  })
+
 const runShow = async (ctx: CliContext, args: string[]): Promise<number> => {
-  const { values, positionals } = parseFlags(args, FILTER_FLAGS)
+  const { values, positionals } = parseFlags(args, SHOW_FLAGS)
   if (positionals.length) throw new CliError(`Unexpected argument "${safeLine(positionals[0]).slice(0, 40)}".`, EXIT.usage)
   const f = filtersOf(values)
+  if (values.overview) return runOverview(ctx, values, f)
   const saved = await ownerSnapshot(ctx)
   const fromFiles = async (src: ReadSource): Promise<number> => showUsage(ctx, values, f, await savedStats(ctx, src, !!values['all-projects'], f))
   if (saved) return fromFiles(saved)
