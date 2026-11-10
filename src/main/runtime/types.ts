@@ -478,8 +478,8 @@ export interface RuntimeContext {
    * set sessionAcceptEdits), and never when it falls back to an allow-once. RunManager then lays acceptEdits over a
    * narrower mode in force (ctx.project, RunSummary.sessionPermissionMode, a run.permissionMode event) for the rest of
    * this session; the run's own mode and what continuations carry are untouched. Set only on work runs that are not
-   * trust-restricted; bridged child contexts never get it (bridge.ts passes an explicit list), because a child's grant
-   * moves only the child session.
+   * trust-restricted. A bridged child context gets a local one from bridge.ts that only marks the child (counted by
+   * BridgedSessions.liveWiderThan) and never reaches the parent, because a child's grant moves only the child session.
    */
   acceptEditsGranted?(): void
   /**

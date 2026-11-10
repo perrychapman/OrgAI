@@ -128,7 +128,7 @@ import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
+import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overlaidByAcceptEdits, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
 import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
 import { delegationPreflight, obligationsFor, subtreeFailed } from './delegation'
@@ -364,11 +364,6 @@ export function recordedRunPermissionMode(run: Pick<RunSummary, 'kind' | 'quick'
   const choices = runPermissionModeChoices(run)
   if (!choices.length) return undefined
   return choices.includes(mode) ? mode : 'default'
-}
-
-/** Modes an "accept edits" grant widens to acceptEdits: default, dontAsk and plan (auto and bypass are wider already). */
-export function overlaidByAcceptEdits(mode: PermissionMode): boolean {
-  return mode !== 'acceptEdits' && canNarrowPermissionMode('acceptEdits', mode)
 }
 
 /** The plain sentence for running reports that keep their earlier mode after a live permission mode change. */
@@ -1477,8 +1472,10 @@ export class RunManager {
    */
   private followAcceptEditsGrant(active: ActiveRun): void {
     const ctx = active.ctx
-    if (!ctx || active.acceptEditsGrant) return
+    if (!ctx) return
+    // Bumped on every grant, even a repeated one (re-check Low 1a): setPermissionMode must see each one that lands.
     active.modeGen = (active.modeGen ?? 0) + 1
+    if (active.acceptEditsGrant) return
     active.acceptEditsGrant = true
     const before = ctx.project.permissionMode
     this.rederiveRunMode(active)
@@ -5025,22 +5022,37 @@ export class RunManager {
       }
       let applied = false
       let reportsUnchanged = 0
-      // Review L-a: a grant followed while a narrowing awaited may reach the provider after it; the narrowing is sent once
-      // more so it is the last word. A second race is treated as a refusal.
-      for (let attempt = 0; attempt < (narrows ? 2 : 1) && !applied; attempt++) {
+      // Review L-a: a grant followed while the change awaited may reach the provider after it. That matters for every
+      // mode below acceptEdits (the adapter drops its grant there, re-check Low 1b), so such a change is sent once more
+      // to be the last word. Applied twice yet raced twice: refused (Low 1c, below).
+      const raceable = overlaidByAcceptEdits(mode)
+      let raced = false
+      for (let attempt = 0; attempt < (raceable ? 2 : 1) && !applied; attempt++) {
         const gen = active.modeGen ?? 0
         try {
           const answer = await session.setPermissionMode(mode)
           if (answer === true || (answer && typeof answer === 'object' && answer.applied === true)) {
             const n = typeof answer === 'object' ? answer.reportsUnchanged : 0
             reportsUnchanged = typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
-            applied = !narrows || (active.modeGen ?? 0) === gen
+            raced = raceable && (active.modeGen ?? 0) !== gen
+            applied = !raced
           } else break
         } catch (e) {
           // Review L2: a provider / SDK message is logged, never shown; the user gets a fixed plain sentence.
           log.warn(`Run ${run.id}: the session refused a permission mode change (${(e as Error)?.message ?? String(e)})`)
           break
         }
+      }
+      if (!applied && raced) {
+        // Re-check Low 1c: the session applied `mode` but a grant landed after it each time. The session's own mode is
+        // `mode` (never the earlier, possibly wider choice) with the grant on top, which the overlay shows.
+        active.chosenMode = mode
+        active.acceptEditsGrant = true
+        active.summary.permissionModeChosen = true
+        this.store.upsert(active.summary)
+        this.broadcastRunMode(active)
+        this.rederiveRunMode(active)
+        return { run: this.summary(run.id) ?? run, applied: false, reason: 'An "accept edits" permission was granted during the change. Choose the mode again.' }
       }
       if (!applied) {
         // Back to the earlier choice (unless something else replaced ours meanwhile) and the earlier grant (a grant that
