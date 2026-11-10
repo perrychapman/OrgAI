@@ -429,6 +429,10 @@ describe('RunStore exec fields (cli-spec Wave 0)', () => {
     }
     // A chosen flag with no mode at all is dropped.
     expect('permissionModeChosen' in normalizeCrashedRunSummary(bad({ permissionModeChosen: true }))).toBe(false)
+    // A session's "accept edits" overlay never survives a load (the session is gone).
+    const overlaid = normalizeCrashedRunSummary(bad({ permissionMode: 'plan', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' }))
+    expect('sessionPermissionMode' in overlaid).toBe(false)
+    expect(overlaid).toMatchObject({ permissionMode: 'plan', permissionModeChosen: true })
     // The store applies it on load.
     writeIndex([bad({ id: 'persist', permissionMode: 'dontAsk', permissionModeChosen: true, rootEffort: 'low' }), bad({ id: 'junk', permissionMode: 'x', rootEffort: 'x', permissionModeChosen: true })])
     const s = new RunStore(dataDir)

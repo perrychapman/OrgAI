@@ -340,6 +340,9 @@ export async function reviseOutput(deps: ReviseDeps, input: OutputReviseInput): 
         mode = 'sent'
         reconcile(runId)
       } else if (continuable(summary, project.id)) {
+        // No desktop flag (review L5, kept fail-safe): outputs:revise is an 'operate' channel that socket clients reach
+        // too, and this path cannot tell them apart, so a per-run mode that widens the project is not carried here (the
+        // continuation logs that the project's mode applies); a narrowing one is.
         const next = await runs.continueRun(project, targetId, text)
         runId = next.id
         mode = 'continued'

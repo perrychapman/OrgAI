@@ -118,6 +118,8 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
   if (r.rootEffort !== undefined && !isEffort(r.rootEffort)) delete r.rootEffort
   if (r.permissionMode !== undefined && !isPermissionMode(r.permissionMode)) delete r.permissionMode
   if (r.permissionModeChosen !== undefined && ((r.permissionModeChosen as unknown) !== true || r.permissionMode === undefined)) delete r.permissionModeChosen
+  // A session's "accept edits" grant ended with the session: never on a loaded run.
+  delete r.sessionPermissionMode
   if (r.overrides !== undefined) {
     const overrides = cleanRunOverrides(r.overrides)
     if (overrides) r.overrides = overrides

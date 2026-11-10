@@ -3295,13 +3295,23 @@ export interface RunSummary {
   /** Root reasoning effort chosen at start (StartRunInput.effort); continuations keep it. Absent = the root role's own. Main-owned. */
   rootEffort?: Effort
   /**
-   * The permission mode RunManager put in force for this run's session (project mode, exec override or the user's
-   * per-run choice); on an ended / paused run with permissionModeChosen, the mode its next continuation uses. Main-owned;
-   * absent on runs saved before it existed.
+   * The run's own permission mode (project mode, exec override or the user's per-run choice; while
+   * sessionPermissionMode is set, the session runs wider than this); on an ended / paused run with
+   * permissionModeChosen, the mode its next continuation uses. Recorded only for runs that take a per-run mode
+   * (runPermissionModeChoices non-empty): absent on setup-like runs (Architect, MCP / Skill assistants, build sessions),
+   * which pin their own mode. On a Chat (quick) run a project mode its adapter downgrades to asking is recorded as
+   * 'default'. Main-owned; absent on runs saved before it existed.
    */
   permissionMode?: PermissionMode
   /** True when permissionMode is the user's per-run choice (runs:start / runs:setPermissionMode), which continuations carry. */
   permissionModeChosen?: true
+  /**
+   * Live runs only: 'acceptEdits' while a session or project allow of an "accept edits" suggestion has the provider
+   * session accepting edits past a narrower permissionMode. Show this as the mode in force while it is set. Never
+   * carried by a continuation (a session grant ends with its session), cleared at session end and by an applied
+   * runs:setPermissionMode, dropped when a stored run is loaded. Main-owned; run.permissionMode events carry it.
+   */
+  sessionPermissionMode?: 'acceptEdits'
   id: string
   projectId: string
   kind: RunKind
@@ -3826,6 +3836,12 @@ export interface UsageStatus {
 
 export type RunEvent =
   | { type: 'run.model'; runId: string; selection: { model: string; connection: ConnectionId } }
+  /**
+   * RunManager only (an adapter's is dropped): the run's permission mode fields after any change on a live run
+   * (runs:setPermissionMode, an approved project change, an "accept edits" grant, session end). A snapshot: an absent
+   * field is absent on RunSummary too. The renderer replaces all three on the run's summary.
+   */
+  | { type: 'run.permissionMode'; runId: string; permissionMode?: PermissionMode; permissionModeChosen?: true; sessionPermissionMode?: 'acceptEdits' }
   | {
       type: 'run.status'
       runId: string
@@ -4314,14 +4330,16 @@ export interface StartRunInput {
   overrides?: RunOverrides
   /**
    * Desktop only (socket / inproc clients are refused with bad_request). The root agent's model for this run and its
-   * continuations; reports and the project's defaults are untouched. `model` must be a catalog entry (models:list) on
+   * continuations; the project's defaults are untouched. Reports keep their own model, except roles set to 'inherit':
+   * they follow the root's model, and staffing (runtime/staffing.ts parentTier) uses the root's tier as the tier
+   * ceiling of an 'inherit' role with no tier of its own. `model` must be a catalog entry (models:list) on
    * `connection`, else the start is refused before a run exists. Wins over the single assistant's quick-run model.
    * Recorded as RunSummary.modelSelection.
    */
   modelSelection?: { model: string; connection: ConnectionId }
   /**
    * Desktop only (socket / inproc clients are refused). The root agent's reasoning effort for this run and its
-   * continuations; reports keep their staffing (runtime/staffing.ts). Must be one of `effortOptionsFor(adapter)`
+   * continuations; reports keep their own effort (runtime/staffing.ts). Must be one of `effortOptionsFor(adapter)`
    * (shared/defaults.ts) for the adapter of the chosen (or project) model, else the start is refused. Recorded as
    * RunSummary.rootEffort.
    */
@@ -4345,23 +4363,29 @@ export interface SetRunPermissionModeInput {
 }
 
 /**
- * Shaped like SwitchRunModelResult. `applied` true: the live session now runs in `mode` (run.permissionMode). `applied`
- * false on an ended / paused run: saved for its next continuation (run.permissionMode is updated). `applied` false on a
- * live run: nothing changed (the session cannot switch now; `reason` says what to do).
+ * Shaped like SwitchRunModelResult. `applied` true: the live session now runs in `mode` (run.permissionMode); with
+ * `reportsUnchanged` > 0, that many running reports keep their earlier mode until they finish and `reason` says so in
+ * a plain sentence. `applied` false on an ended / paused run: saved for its next continuation (run.permissionMode is
+ * updated). `applied` false on a live run: nothing changed (the session cannot switch now, or another change of this
+ * run's mode is still in progress; `reason` is a fixed plain sentence saying what to do, never a provider message).
  */
 export interface SetRunPermissionModeResult {
   run: RunSummary
   applied: boolean
   reason?: string
+  /** Applied only: running reports that keep their earlier mode until they finish (absent when none). */
+  reportsUnchanged?: number
 }
 
 /**
  * The permission modes a run accepts from the user (runs:start permissionMode, runs:setPermissionMode). Setup-like runs
- * pin their mode (empty list). Chat and build sessions (trust-restricted) only take modes that ask or deny, because their
- * adapters downgrade the others to asking. Every other work run takes any mode. Pure; main enforces the same list.
+ * pin their mode (empty list). Chat runs (trust-restricted) only take modes that ask or deny, because their adapters
+ * downgrade the others to asking. Every other work run takes any mode. Pure; main enforces the same list.
  */
 export function runPermissionModeChoices(run: Pick<RunSummary, 'kind' | 'quick' | 'buildWorkspace'>): PermissionMode[] {
   if (run.kind !== 'work') return []
+  // buildWorkspace: defensive only. A build session is an mcp-assist run (RunManager.start refuses a build workspace on
+  // any other kind), so it already got [] above; a work run with one would stay ask-only like a Chat run.
   if (run.quick || typeof run.buildWorkspace === 'string') return ['default', 'dontAsk', 'plan']
   return [...PERMISSION_MODES]
 }

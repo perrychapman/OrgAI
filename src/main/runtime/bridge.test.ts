@@ -636,3 +636,21 @@ describe('bridge review fixes', () => {
     expect(done).toBe(true)
   })
 })
+
+describe('BridgedSessions.liveWiderThan (permission mode narrowing)', () => {
+  it('counts live children whose start mode is wider than the new mode, never finished ones', async () => {
+    const r = rig({ project: { permissionMode: 'acceptEdits' }, parent: { acceptEditsGranted: () => {} } })
+    const a = r.b.spawn({ role: 'oa', brief: 'one', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    expect(r.codex.sessions[0]!.ctx.project.permissionMode).toBe('acceptEdits')
+    expect(r.b.liveWiderThan('default')).toBe(1)
+    expect(r.b.liveWiderThan('plan')).toBe(1)
+    expect(r.b.liveWiderThan('acceptEdits')).toBe(0)
+    expect(r.b.liveWiderThan('bypassPermissions')).toBe(0)
+    // A bridged child never gets the parent's acceptEditsGranted hook (a child's grant moves only the child).
+    expect(r.codex.sessions[0]!.ctx.acceptEditsGranted).toBeUndefined()
+    await r.b.stopAll('done')
+    await a
+    expect(r.b.liveWiderThan('plan')).toBe(0)
+  })
+})
