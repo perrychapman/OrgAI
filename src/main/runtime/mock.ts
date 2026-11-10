@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, Effort, ModelTier, ImageAttachment, McpServerSpec, PermissionMode, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { cleanRequiredReports, effortOptionsFor, mcpServersForRole, newId, projectKindOf, settingTier } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
+import { PermissionModeRefusal } from './permissionModeRefusal'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo,type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
@@ -1531,13 +1532,13 @@ export class MockSession implements RuntimeSession {
    * and kept in `permissionModes`.
    */
   async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
-    if (this.ctx.bridgedChild) throw new Error('Only the run root can change the permission mode.')
-    if (this.isSetup) throw new Error('This run keeps its own permission mode.')
-    if (this.stopped || this.ended) throw new Error('This session is not live. The mode will apply when the run continues.')
+    if (this.ctx.bridgedChild) throw new PermissionModeRefusal('Only the run root can change the permission mode.')
+    if (this.isSetup) throw new PermissionModeRefusal('This run keeps its own permission mode.')
+    if (this.stopped || this.ended) throw new PermissionModeRefusal('This session is not live. The mode will apply when the run continues.')
     if (isTrustRestrictedRun(this.ctx.run) && (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions')) {
-      throw new Error('This run asks before each change, so it cannot use that permission mode.')
+      throw new PermissionModeRefusal('This run asks before each change, so it cannot use that permission mode.')
     }
-    if (this.ctx.prompt.includes(MODE_REFUSE_TOKEN)) throw new Error('This provider applies a new permission mode from the next session.')
+    if (this.ctx.prompt.includes(MODE_REFUSE_TOKEN)) throw new PermissionModeRefusal('This provider applies a new permission mode from the next session.')
     if (mode === 'default' || mode === 'plan' || mode === 'dontAsk') this.sessionAcceptEdits = false
     this.permissionModes.push(mode)
     this.log('info', mockPermissionModeLog(mode))

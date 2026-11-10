@@ -12,6 +12,7 @@ import { clearNativeCatalogMemory, isNativeCatalogRejected, type NativeCatalogIn
 import { acquireCodexStartLock, codexStartLockKey, codexStartLockState, type CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import { ROOT_AGENT_ID, type RuntimeContext, type RuntimeSession } from './types'
+import { PermissionModeRefusal } from './permissionModeRefusal'
 import { buildRolePrompt } from './prompts'
 import { RESUME_TEXT } from './runManager'
 import { harnessToolsFor } from './harnessTools'
@@ -265,6 +266,9 @@ describe('CodexAdapter session', () => {
       const s = servers[0]!
       await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
       await expect(session.setPermissionMode!('dontAsk')).rejects.toThrow('when a turn starts')
+      const busy = await session.setPermissionMode!('dontAsk').catch((e: unknown) => e)
+      expect(busy).toBeInstanceOf(PermissionModeRefusal)
+      expect((busy as Error).message).toBe('Codex applies a new permission mode when a turn starts. Interrupt the run or wait until the orchestrator is idle, then change it.')
       await idleRoot(s)
       // ctx.project still holds 'default' (RunManager sets it after a widening answers); the adapter reads `mode`.
       await expect(session.setPermissionMode!('dontAsk')).resolves.toBe(true)
@@ -332,6 +336,7 @@ describe('CodexAdapter session', () => {
       await vi.waitFor(() => expect(r.servers[0]!.turnStarts('th-1')).toHaveLength(1))
       await idleRoot(r.servers[0]!)
       await expect(session.setPermissionMode!('bypassPermissions')).rejects.toThrow('Reference folders')
+      await expect(session.setPermissionMode!('bypassPermissions')).rejects.toBeInstanceOf(PermissionModeRefusal)
       await session.stop()
 
       const st = setup()

@@ -7,6 +7,7 @@ import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '
 import { RESUME_TEXT } from './runManager'
 import { STAFFING_TOKEN, DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MODE_REFUSE_TOKEN, MODE_REPORTS_UNCHANGED_TOKEN, MockAdapter, mockPermissionModeLog, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext, type RuntimeSession } from './types'
+import { PermissionModeRefusal } from './permissionModeRefusal'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
 import { authFailureMessage } from './activity'
@@ -88,6 +89,9 @@ describe('mock listModels', () => {
     const adapter = new MockAdapter({ script: { delayMs: 0 } })
     const refuse = await adapter.start(fakeCtx({ prompt: `[mock:model-switch] ${MODE_REFUSE_TOKEN}`, autoContinue: false })) as MockSession
     await expect(refuse.setPermissionMode('plan')).rejects.toThrow('from the next session')
+    const refused = await refuse.setPermissionMode('plan').catch((e: unknown) => e)
+    expect(refused).toBeInstanceOf(PermissionModeRefusal)
+    expect((refused as Error).message).toBe('This provider applies a new permission mode from the next session.')
     expect(refuse.permissionModes).toEqual([])
     await refuse.stop()
     const unchanged = await adapter.start(fakeCtx({ prompt: `[mock:model-switch] ${MODE_REPORTS_UNCHANGED_TOKEN}`, autoContinue: false })) as MockSession
