@@ -21,6 +21,9 @@ class FakeServer implements CodexServerLike {
   /** thread/start numbers (1-based, counting every start) that fail. */
   failStarts = new Set<number>()
   private startCount = 0
+  /** turn/start numbers (1-based, counting every start) that fail. */
+  failTurns = new Set<number>()
+  private turnStartCount = 0
   readonly exited: Promise<void>
   private markExited!: () => void
   constructor(readonly options: CodexAppServerOptions) {
@@ -36,6 +39,7 @@ class FakeServer implements CodexServerLike {
         if (this.failStarts.has(++this.startCount)) throw new Error('thread/start refused')
         return { thread: { id: `th-${++this.threadCount}` }, model: 'gpt-test', cwd: (params as { cwd?: string })?.cwd } as T
       case 'turn/start':
+        if (this.failTurns.has(++this.turnStartCount)) throw new Error('turn/start refused')
         return { turn: { id: `tu-${++this.turnCount}` } } as T
       case 'turn/steer':
         return { turnId: (params as { expectedTurnId: string }).expectedTurnId } as T
@@ -87,6 +91,7 @@ const BRIDGED: BridgedRole = { roleId: 'r-ext', slug: 'analyst', name: 'Analyst'
 
 const call = (threadId: string, callId: string, tool: string, args: Record<string, unknown>) => ({ threadId, turnId: 'tu-1', callId, namespace: null, tool, arguments: args })
 const turnDone = (threadId: string, turnId: string) => ({ threadId, turn: { id: turnId, status: 'completed', items: [], error: null } })
+const turnFailed = (threadId: string, turnId: string) => ({ threadId, turn: { id: turnId, status: 'failed', items: [], error: { message: 'boom' } } })
 const agentMessage = (threadId: string, id: string, body: string) => ({ threadId, turnId: 'x', item: { type: 'agentMessage', id, text: body, phase: 'final_answer' } })
 
 describe('Codex run staffing', () => {
@@ -211,13 +216,52 @@ describe('Codex run staffing', () => {
     expect(ctx.getStaffing()!.assignments[0]).toMatchObject({ stepId: 'p1', source: 'orchestrator', tier: 'fast', effort: 'low' })
   })
 
-  it('a second spawn for a step whose first report ended goes one step up', async () => {
+  it('leaves no row and no attempt when the first message to the new thread is refused', async () => {
+    const { ctx, s } = await start()
+    await plan(s, [{ title: 'Build', staff: { role: 'engineer', tier: 'fast', effort: 'low' } }])
+    s.failTurns.add(2) // the root's turn is 1; the report's first message is 2
+    const failed = await spawn(s, 'c1', { role: 'engineer' })
+    expect(failed.success).toBe(false)
+    expect(failed.contentItems[0].text).toContain('Could not start')
+    expect(ctx.updateStaffing).not.toHaveBeenCalled()
+    expect(ctx.getStaffing()?.assignments ?? []).toHaveLength(0)
+    // The next spawn is a first attempt of the same step, not a retry.
+    const out = await spawn(s, 'c2', { role: 'engineer' })
+    expect(out.success).toBe(true)
+    const rows = ctx.getStaffing()!.assignments
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ stepId: 'p1', source: 'orchestrator', tier: 'fast', effort: 'low' })
+  })
+
+  it('a second spawn after a report that finished without failure is a plain attempt, not an escalation', async () => {
+    const { ctx, s } = await start()
+    await plan(s, [{ title: 'Build', staff: { role: 'engineer', tier: 'fast', effort: 'low' } }])
+    await spawn(s, 'c1', { role: 'engineer' })
+    s.push('item/completed', agentMessage('th-2', 'm1', 'Done'))
+    s.push('turn/completed', turnDone('th-2', 'tu-2'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1' && e.agent.state === 'done')).toBe(true))
+    await spawn(s, 'c2', { role: 'engineer' })
+    const rows = ctx.getStaffing()!.assignments
+    expect(rows).toHaveLength(2)
+    expect(rows[1]).toMatchObject({ stepId: 'p1', source: 'orchestrator', tier: 'fast', effort: 'low' })
+  })
+
+  it('tells the orchestrator when a pick on the call is ignored because the project is fixed', async () => {
+    const { s } = await start({}, { staffing: 'fixed' })
+    const out = await spawn(s, 'c1', { role: 'engineer', tier: 'fast' })
+    expect(out.success).toBe(true)
+    expect(out.contentItems[0].text).toContain('the tier you gave was ignored')
+    const none = await spawn(s, 'c2', { role: 'engineer' })
+    expect(none.contentItems[0].text).not.toContain('ignored')
+  })
+
+  it('a second spawn for a step whose first report failed goes one step up', async () => {
     const { ctx, s } = await start()
     await plan(s, [{ title: 'Build', staff: { role: 'engineer', tier: 'fast', effort: 'low' } }])
     await spawn(s, 'c1', { role: 'engineer' })
     s.push('item/completed', agentMessage('th-2', 'm1', 'Could not finish'))
-    s.push('turn/completed', turnDone('th-2', 'tu-2'))
-    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1' && e.agent.state === 'done')).toBe(true))
+    s.push('turn/completed', turnFailed('th-2', 'tu-2'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1' && e.agent.state === 'error')).toBe(true))
     const out = await spawn(s, 'c2', { role: 'engineer' })
     expect(out.success).toBe(true)
     const rows = ctx.getStaffing()!.assignments

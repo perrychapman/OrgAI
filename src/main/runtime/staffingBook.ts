@@ -91,6 +91,8 @@ interface Attempt {
   staffAt?: StaffingRequest
   /** This attempt was a retry that passed escalatedFrom (counts toward STAFFING_ESCALATIONS_MAX). */
   escalated: boolean
+  /** The agent ended in failure (`ended(id, { failed: true })`); only a failed last attempt makes the next spawn a retry. */
+  failed?: boolean
   seq: number
 }
 
@@ -99,7 +101,6 @@ interface StepState {
   title: string
   role: string
   attempts: Attempt[]
-  escalations: number
   touched: number
 }
 
@@ -127,6 +128,8 @@ export class StaffingBook {
   private readonly pending = new Map<string, Attempt>()
   private readonly agents = new Map<string, Attempt>()
   private readonly steps = new Map<string, StepState>()
+  /** Escalations used per plan step id (not per step identity: a title or role edit does not reset the limit). Oldest first. */
+  private readonly escalations = new Map<string, number>()
   private seq = 0
 
   constructor(deps: StaffingBookDeps) {
@@ -138,8 +141,10 @@ export class StaffingBook {
    * decision is remembered under `input.key` until `started` or `cancel`. Binding, in this order:
    * 1. A step never attempted: staffRequestForSpawn(plan, role.slug, <steps with any attempt>, onCall) (ready steps
    *    first, then any open step naming the role; `requested` = onCall over the step's staff). The step's first attempt.
-   * 2. A retry: the first open (pending or in_progress) step naming the role whose attempts have all ended. The first
-   *    STAFFING_ESCALATIONS_MAX retries pass `escalatedFrom` = the last attempt's resolved tier and effort, and a
+   * 2. The first open (pending or in_progress) step naming the role whose attempts have all ended. When its last attempt
+   *    did not fail (`ended(id, { failed })`) the spawn is a plain new attempt: `requested` = onCall over the step's
+   *    staff, no raise, not counted as an escalation, `retry` false. When it failed, it is a retry: the first
+   *    STAFFING_ESCALATIONS_MAX retries (counted per step id, surviving title and role edits) pass `escalatedFrom` = the last attempt's resolved tier and effort, and a
    *    `requested` only from onCall and from step staff fields the orchestrator changed since the last attempt was
    *    decided (resolveStaffing raises nothing for a request equal to the previous attempt). Later retries resolve to
    *    the last attempt's values (onCall may only lower them) with a note that the limit is reached.
@@ -154,6 +159,7 @@ export class StaffingBook {
     const plan = this.deps.plan()
     const planSteps = plan && Array.isArray(plan.steps) ? plan.steps : []
     this.forgetStale(planSteps)
+    this.forgetEscalations(planSteps)
     const slug = typeof role.slug === 'string' ? role.slug.trim() : ''
     const parentTier = input.parentAgentId !== undefined ? this.tierOf(input.parentAgentId) : this.deps.rootTier
 
@@ -172,17 +178,21 @@ export class StaffingBook {
       step = planSteps.find((s) => s.id === stepId)
     } else if (slug) {
       const named = planSteps.filter((s) => isOpen(s) && roleOf(s) === slug && this.steps.has(s.id))
-      // 2. A retry: every attempt of the step has ended.
+      // 2. Every attempt of the step has ended: a retry when the last one failed, else a plain new attempt.
       const again = named.find((s) => this.steps.get(s.id)!.attempts.every((a) => a.state === 'ended'))
-      if (again) {
+      const state = again ? this.steps.get(again.id)! : undefined
+      const last = state?.attempts[state.attempts.length - 1]
+      if (again && last && !last.failed) {
+        step = again
+        stepId = again.id
+        requested = req(onCall?.tier ?? again.staff?.tier, onCall?.effort ?? again.staff?.effort)
+      } else if (again && state) {
         step = again
         stepId = again.id
         retry = true
-        const state = this.steps.get(again.id)!
-        const last = state.attempts[state.attempts.length - 1]
         const lastTier = last?.resolved.tier
         const lastEffort = last?.resolved.effort
-        if (state.escalations < STAFFING_ESCALATIONS_MAX) {
+        if ((this.escalations.get(again.id) ?? 0) < STAFFING_ESCALATIONS_MAX) {
           escalatedFrom = req(lastTier, lastEffort) ?? {}
           const staffNow = again.staff
           const edited = req(
@@ -248,12 +258,12 @@ export class StaffingBook {
       if (staffAt) attempt.staffAt = staffAt
       let state = this.steps.get(stepId)
       if (!state) {
-        state = { title: step?.title ?? '', role: slug, attempts: [], escalations: 0, touched: attempt.seq }
+        state = { title: step?.title ?? '', role: slug, attempts: [], touched: attempt.seq }
         this.steps.set(stepId, state)
       }
       state.attempts.push(attempt)
       state.touched = attempt.seq
-      if (attempt.escalated) state.escalations++
+      if (attempt.escalated) this.bumpEscalations(stepId, 1)
       this.trimStep(state)
       this.trimSteps(planSteps)
     }
@@ -298,11 +308,16 @@ export class StaffingBook {
     this.dropFromStep(attempt)
   }
 
-  /** The agent finished, with any outcome. Its step becomes a retry candidate once all its attempts have ended. Unknown id: nothing. */
-  ended(agentId: string): void {
+  /**
+   * The agent finished. `failed` = it ended in an error state, its turn or task failed, or the harness failed it (not an
+   * interrupt or a stop). Once all attempts of its step have ended, the next spawn is a retry (raised one step) only when
+   * the last attempt failed; otherwise it is a plain new attempt. Unknown id: nothing.
+   */
+  ended(agentId: string, outcome?: { failed?: boolean }): void {
     const attempt = this.agents.get(agentId)
     if (!attempt || attempt.state === 'ended') return
     attempt.state = 'ended'
+    if (outcome?.failed) attempt.failed = true
     const state = attempt.stepId ? this.steps.get(attempt.stepId) : undefined
     if (state?.attempts.includes(attempt)) this.trimStep(state)
     this.trimAgents()
@@ -329,6 +344,20 @@ export class StaffingBook {
     }
   }
 
+  /** The escalation counts follow the step id alone, for as long as the id is in the plan. */
+  private forgetEscalations(planSteps: readonly PlanStep[]): void {
+    if (!this.escalations.size) return
+    const ids = new Set(planSteps.map((s) => s.id))
+    for (const id of this.escalations.keys()) if (!ids.has(id)) this.escalations.delete(id)
+  }
+
+  private bumpEscalations(stepId: string, by: number): void {
+    const n = Math.max(0, (this.escalations.get(stepId) ?? 0) + by)
+    this.escalations.delete(stepId)
+    if (n > 0) this.escalations.set(stepId, n)
+    while (this.escalations.size > STAFFING_BOOK_STEPS_MAX) this.escalations.delete(this.escalations.keys().next().value as string)
+  }
+
   private dropFromStep(attempt: Attempt): void {
     if (!attempt.stepId) return
     const state = this.steps.get(attempt.stepId)
@@ -336,7 +365,7 @@ export class StaffingBook {
     const i = state.attempts.indexOf(attempt)
     if (i < 0) return
     state.attempts.splice(i, 1)
-    if (attempt.escalated) state.escalations = Math.max(0, state.escalations - 1)
+    if (attempt.escalated) this.bumpEscalations(attempt.stepId, -1)
     if (!state.attempts.length) this.steps.delete(attempt.stepId)
   }
 

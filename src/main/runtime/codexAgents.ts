@@ -286,7 +286,7 @@ export interface SpawnRequest extends SpawnPlan {
 export interface NetworkHost {
   agents(): Iterable<AgentInstance>
   /** Create the thread (and worktree), register the agent and start its first turn. Throws an Error with a model-readable message. */
-  spawn(req: SpawnRequest): Promise<{ staffing?: string } | void>
+  spawn(req: SpawnRequest): Promise<{ staffing?: string; note?: string } | void>
   /** Hand `text` to the agent: steer its running turn, or start one. */
   deliver(toAgentId: string, text: string): Promise<void>
   /** Draw the message on the canvas and keep a copy in the sender's transcript. */
@@ -389,15 +389,17 @@ export async function callNetworkTool(
       if (parsed.data.tier) onCall.tier = parsed.data.tier
       if (parsed.data.effort) onCall.effort = parsed.data.effort
       let staffing: string | undefined
+      let note: string | undefined
       try {
         const started = await host.spawn({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId, ...(onCall.tier || onCall.effort ? { onCall } : {}) })
         staffing = started?.staffing
+        note = started?.note
       } catch (e) {
         net.abort(check.id)
         return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
       }
       return {
-        text: `Spawned ${check.handle} (${check.role.slug})${staffing ? ` on ${staffing}` : ''}. It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.`,
+        text: `Spawned ${check.handle} (${check.role.slug})${staffing ? ` on ${staffing}` : ''}. It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.${note ? ` ${note}` : ''}`,
         success: true
       }
     }
