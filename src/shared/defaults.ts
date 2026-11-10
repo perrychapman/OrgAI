@@ -408,7 +408,7 @@ export function importTierForModel(model: unknown): ModelTier | undefined {
 export function modelFamily(model: ModelRef): ModelFamily {
   const id = bareModelId(model)
   if (Object.hasOwn(CLAUDE_ALIAS_TIERS, id) || id.includes('claude')) return 'claude'
-  if (/^(gpt|o\d|codex|chatgpt)/.test(id)) return 'openai'
+  if (/(^|\.)(gpt|o\d|codex|chatgpt)/.test(id)) return 'openai'
   return 'other'
 }
 

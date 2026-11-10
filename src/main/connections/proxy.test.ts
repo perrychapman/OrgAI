@@ -153,6 +153,16 @@ describe('mock proxy host', () => {
 })
 
 describe('fetchProxyModels', () => {
+  it('uses explicit LiteLLM reporting opt-in while retaining exact AWS ids and legacy fallback', async () => {
+    for (const [kind, litellmFeatures, calls] of [['openai-compatible', true, 2], ['litellm', false, 1], ['litellm', undefined, 2]] as const) {
+      const f = vi.fn(async () => json({ data: [{ id: 'us.openai.gpt-6.1-terra' }] }))
+      const models = await fetchProxyModels('https://p.example.com/v1/models', 'k', f as unknown as typeof fetch, { kind, litellmFeatures, connection: 'litellm', baseUrl: 'https://p.example.com' })
+      expect(f).toHaveBeenCalledTimes(calls)
+      expect(models[0]).toMatchObject({ id: 'us.openai.gpt-6.1-terra', family: 'openai', adapter: 'codex' })
+      expect(models[0]).not.toHaveProperty('contextWindow')
+      expect(models[0]).not.toHaveProperty('price')
+    }
+  })
   const connection = 'proxy-0a1b2c3d'
   const list = { data: [{ id: 'claude-opus-5', owned_by: 'anthropic' }, { id: 'gpt-6-sol', owned_by: 'openai' }, { id: 'qwen38', owned_by: 'vllm-mock' }, { id: 'claude-opus-5-high', owned_by: 'antigravity' }] }
 
