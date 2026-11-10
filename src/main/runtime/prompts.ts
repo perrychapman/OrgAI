@@ -240,22 +240,25 @@ export function reportsText(
  * For the root of a team work run that has reports (not setup-like, quick, single or bridged-child runs): when to do the
  * work itself, when to hand it out, and how to run what it hands out together (docs/design/orchestration-efficiency.md
  * 4.1, 4.2). It yields to the role prompt, the brief and required delegation: with required reports it governs only how
- * they run. `required`: the role has required reports (obligationsFor). `isolation`: writers get worktrees; without
+ * they run. Decision order: the sizing rule first says whether work goes out at all; work kept is done alone, its tests
+ * and checks included; the parallel, contract and risk-review rules apply to handed-out work (Phase 6 lab: the Codex
+ * lead otherwise invented test and review steps for reports on a task it did alone). `required`: the role has required reports (obligationsFor). `isolation`: writers get worktrees; without
  * it, writers that run together are told to keep to disjoint files (with it, orchestratorIsolationText says why it is safe).
  * `review`: the project's review policy (reviewPolicyOf, default 'risk'); its sentence (reviewPolicyText) is the
  * paragraph's only review rule, shown whatever the staffing mode.
  */
 export function teamSizingText(opts: { required?: boolean; isolation?: boolean; review?: ReviewPolicy } = {}): string {
   return (
-    'Unless your instructions, the brief or required reports say otherwise, do the work yourself when it is one contained piece and you hold the tools. ' +
+    'Unless your instructions, the brief or required reports say otherwise, do the work yourself, its tests and checks included, when it is one contained piece and you hold the tools. ' +
     "Hand work out when it splits into independent pieces of more than a couple of minutes each, needs a report's tools, skills or connections, or a rule demands it; " +
     'one report doing it all while you wait is slower than doing it alone. ' +
+    'Invent no extra tests or docs to hand out. ' +
     (opts.required ? "Required reports still go out: start together those that do not need each other's result; start one that needs another's result as soon as that result lands, only handing it over; do not redo their work. " : '') +
     'Cut the longest piece first; a split leaving one piece nearly as long as the whole saves nothing. ' +
     'Run several instances of a role on disjoint scopes. ' +
     'Start every ready piece in one message: calls in one message run together, separate messages run in sequence. ' +
     (opts.isolation ? '' : 'Parallel writers need disjoint files. ') +
-    'Once interface and acceptance criteria are set, start tests, checks and docs beside the implementation. ' +
+    'Once interface and acceptance criteria are set, start tests and checks of handed-out work beside it. ' +
     `${reviewPolicyText(opts.review)} ` +
     'While reports run, do only work you kept, never work you handed out, or end your turn and wait. ' +
     'Do not re-run checks a report ran on the same result; read its evidence.'
@@ -265,16 +268,19 @@ export function teamSizingText(opts: { required?: boolean; isolation?: boolean; 
 /**
  * The review rule of a team root (docs/design/orchestration-efficiency.md 4.4), one sentence inside teamSizingText.
  * Required reports win over every policy: teamSizingText opens with "unless ... required reports say otherwise".
+ * Under 'risk' the lead's own work is reviewed only when a rule or the brief demands it; the risk conditions (sensitive
+ * code, a large diff, a failed verification) apply to handed-out work.
  */
 export function reviewPolicyText(policy: ReviewPolicy = 'risk'): string {
   if (policy === 'always') return 'Have every change reviewed before you finish, beside the next step, not after everything.'
   if (policy === 'never') return 'Do not ask for review unless a rule demands it; verify and finish.'
-  return 'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is large or verification failed once; else verify and finish.'
+  return 'Ask for review beside the next step only when a rule or the brief demands it or handed-out work touches sensitive or security-relevant code, has a large diff or failed verification once; else verify and finish.'
 }
 
 /**
  * Run staffing (docs/design/orchestration-efficiency.md 4.2, 4.3): for the root of a team work run (teamSizingText's
- * conditions) when the project's staffing mode is 'auto'. How to staff the plan's steps (staff, after, paths), the
+ * conditions) when the project's staffing mode is 'auto'. How to staff the steps the sizing rule hands out (it never
+ * decides whether any are; staff, after, paths), the
  * tier and effort rubric, the longest path, escalation, and a line for the run's goal ('balanced' adds none).
  * Tiers and efforts named here are the only automatic picks: never top, xhigh or max.
  */
@@ -286,7 +292,7 @@ export function staffingText(goal: StaffingGoal = 'balanced'): string {
         ? ' This run favours cost: treat no step as on the longest path; one well-specified piece may go to a single report on a cheaper tier.'
         : ''
   return (
-    'In the plan, give every step a report will do staff (role, tier, effort), after (steps it waits for; omit it if it can start now) and paths (files it will change); ' +
+    'In the plan, give each step you hand out (the rule above decides if any) staff (role, tier, effort), after (steps it waits for; omit it if it can start now) and paths (files it will change); ' +
     'the harness applies the tier and effort when you start that role, never above what the role allows. ' +
     'Tier fast for search, mechanical edits, running checks and summaries; everyday for well-specified implementation, tests and routine review; deep for ambiguous design, cross-module change, hard debugging and security review. ' +
     'Effort low for mechanical work, medium by default, high only where the reasoning is subtle. ' +

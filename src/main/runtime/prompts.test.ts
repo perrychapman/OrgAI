@@ -607,15 +607,16 @@ describe('team sizing paragraph', () => {
 
   it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
     // Review policy 'risk' (the default) carries the longest review sentence.
-    expect(teamSizingText({ isolation: false }).length).toBe(1153)
-    expect(teamSizingText({ isolation: true }).length).toBe(1115)
-    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1357)
-    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1319)
-    expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1038)
-    expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1015)
+    // Phase 6 decision order (kept work stays alone, side work only for handed-out work): +78 on every variant.
+    expect(teamSizingText({ isolation: false }).length).toBe(1231)
+    expect(teamSizingText({ isolation: true }).length).toBe(1193)
+    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1435)
+    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1397)
+    expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1110)
+    expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1087)
     for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
       const t = teamSizingText({ required, isolation, review })
-      expect(t.length).toBeLessThanOrEqual(1400)
+      expect(t.length).toBeLessThanOrEqual(1450)
       expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
     }
   })
@@ -630,11 +631,65 @@ describe('team sizing paragraph', () => {
       'Start every ready piece in one message: calls in one message run together, separate messages run in sequence',
       'Cut the longest piece first',
       'Run several instances of a role on disjoint scopes',
-      'tests, checks and docs beside the implementation',
+      'start tests and checks of handed-out work beside it',
       'Ask for review beside the next step only when',
       'never work you handed out, or end your turn and wait',
       'read its evidence'
     ]) expect(t).toContain(s)
+  })
+
+  describe('decision order (Phase 6 lab: no invented side work on a task the lead keeps)', () => {
+    const kept = 'do the work yourself, its tests and checks included, when it is one contained piece and you hold the tools.'
+    const noInvent = 'Invent no extra tests or docs to hand out.'
+    const contract = 'Once interface and acceptance criteria are set, start tests and checks of handed-out work beside it.'
+    const requiredLine = "Required reports still go out: start together those that do not need each other's result;"
+    const parallel = [
+      'Cut the longest piece first',
+      'Run several instances of a role on disjoint scopes',
+      'Start every ready piece in one message: calls in one message run together, separate messages run in sequence'
+    ]
+
+    it('every policy, with and without required reports and isolation: kept work alone first, side work only for handed-out work', () => {
+      for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
+        const t = teamSizingText({ required, isolation, review })
+        expect(t.startsWith(`Unless your instructions, the brief or required reports say otherwise, ${kept} `)).toBe(true)
+        // The kept-work rule and the no-invention rule come before anything about splitting, contracts or review.
+        expect(t.indexOf(noInvent)).toBeGreaterThan(t.indexOf(kept))
+        for (const later of [contract, reviewPolicyText(review), ...parallel]) expect(t.indexOf(later)).toBeGreaterThan(t.indexOf(noInvent))
+        expect(t).toContain(contract)
+        expect(t).not.toContain('docs beside the implementation')
+        expect(t.split(reviewPolicyText(review))).toHaveLength(2)
+        // The rules that make a real split parallel are unchanged.
+        for (const s of parallel) expect(t).toContain(s)
+        expect(t.includes('Parallel writers need disjoint files.')).toBe(!isolation)
+        // Required reports still go out, and the sentence follows the new ones so they cannot talk a mandated run out of them.
+        if (required) {
+          expect(t).toContain(requiredLine)
+          expect(t).toContain('do not redo their work.')
+          expect(t.indexOf(requiredLine)).toBeGreaterThan(t.indexOf(noInvent))
+        } else expect(t).not.toContain('Required reports still go out')
+      }
+    })
+
+    it('always and never keep their meaning; only risk ties its conditions to handed-out work', () => {
+      expect(reviewPolicyText('always')).toBe('Have every change reviewed before you finish, beside the next step, not after everything.')
+      expect(reviewPolicyText('never')).toBe('Do not ask for review unless a rule demands it; verify and finish.')
+      expect(reviewPolicyText('risk')).toContain('a rule or the brief demands it or handed-out work touches sensitive or security-relevant code')
+    })
+
+    it('reaches the root of a team work run, mandated or not, and none of it reaches a report, a quick, setup or single-assistant run', () => {
+      const mandated = [{ ...lead, requiredReports: [eng.id] }, ...roles.slice(1)]
+      const mandatedRoot = buildRolePrompt(mandated[0]!, mandated, project({ roles: mandated }), { ...flags, strictDelegation: true })
+      expect(mandatedRoot).toContain(teamSizingText({ required: true, isolation: false }))
+      expect(buildRolePrompt(lead, roles, project(), flags)).toContain(noInvent)
+      const others = [
+        buildRolePrompt(eng, roles, project(), flags),
+        buildRolePrompt(lead, roles, project(), { ...flags, team: 'single' }),
+        buildRolePrompt(lead, roles, project(), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } }),
+        buildRolePrompt(lead, roles, project(), { ...flags, isSetup: true })
+      ]
+      for (const text of others) for (const s of [kept, noInvent, contract, reviewPolicyText('risk'), 'the rule above decides if any']) expect(text).not.toContain(s)
+    })
   })
 
   it('agrees with isolation: disjoint files without worktrees, and the isolation text no longer repeats the parallel advice', () => {
@@ -664,7 +719,7 @@ describe('staffing paragraph', () => {
   const roles = orgChart()
   const [lead, eng] = roles
   const flags = { isSetup: false, isolation: false }
-  const opening = 'In the plan, give every step a report will do staff (role, tier, effort)'
+  const opening = 'In the plan, give each step you hand out (the rule above decides if any) staff (role, tier, effort)'
 
   it('goes to the root of a team work run with reports when staffing is auto, right after the team sizing paragraph', () => {
     const text = buildRolePrompt(lead, roles, project(), flags)
@@ -727,9 +782,9 @@ describe('staffing paragraph', () => {
   })
 
   it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
-    expect(staffingText('balanced').length).toBe(824)
-    expect(staffingText('speed').length).toBe(889)
-    expect(staffingText('cost').length).toBe(955)
+    expect(staffingText('balanced').length).toBe(851)
+    expect(staffingText('speed').length).toBe(916)
+    expect(staffingText('cost').length).toBe(982)
     expect(staffingText('balanced').length).toBeLessThanOrEqual(900)
     for (const goal of ['balanced', 'speed', 'cost'] as const) {
       const t = staffingText(goal)
@@ -739,8 +794,18 @@ describe('staffing paragraph', () => {
     // The default chart's root (auto, balanced, risk) grows by at most 950 characters over the text before staffing.
     const before = 'Review risky or large changes, or when a rule says so, beside the next step, not by habit.'
     const growth = staffingText().length + 2 + reviewPolicyText().length - before.length
-    expect(growth).toBe(940)
-    expect(growth).toBeLessThanOrEqual(950)
+    expect(growth).toBe(973)
+    expect(growth).toBeLessThanOrEqual(980)
+  })
+
+  it('staffs only the steps the sizing rule hands out and never decides whether any are', () => {
+    for (const goal of ['balanced', 'speed', 'cost'] as const) {
+      const t = staffingText(goal)
+      expect(t.startsWith('In the plan, give each step you hand out (the rule above decides if any) staff')).toBe(true)
+      expect(t).not.toContain('every step a report will do')
+    }
+    // "The rule above" is the sizing paragraph, which always comes right before it.
+    expect(buildRolePrompt(lead, roles, project(), flags)).toContain(`${teamSizingText({ isolation: false })}\n\n${staffingText()}`)
   })
 
   it('covers staff, after and paths, the clamp, the rubric, the longest path and escalation', () => {
@@ -769,10 +834,13 @@ describe('review policy sentence', () => {
   const flags = { isSetup: false, isolation: false }
   const sentences = { risk: reviewPolicyText('risk'), always: reviewPolicyText('always'), never: reviewPolicyText('never') }
 
-  it('risk (the default): review on a rule or the brief, sensitive or security-relevant code, a large diff or a failed verification; else verify and finish', () => {
+  it('risk (the default): review on a rule or the brief; for handed-out work also on sensitive or security-relevant code, a large diff or a failed verification; else verify and finish', () => {
     expect(reviewPolicyText()).toBe(sentences.risk)
-    for (const s of ['a rule or the brief demands it', 'sensitive or security-relevant code', 'the diff is large', 'verification failed once', 'else verify and finish', 'beside the next step'])
-      expect(sentences.risk).toContain(s)
+    expect(sentences.risk).toBe(
+      'Ask for review beside the next step only when a rule or the brief demands it or handed-out work touches sensitive or security-relevant code, has a large diff or failed verification once; else verify and finish.'
+    )
+    // The risk conditions are tied to handed-out work: a contained task the lead did alone is not reviewed for its subject or size.
+    expect(sentences.risk).not.toMatch(/the change touches|the diff is large/)
   })
 
   it('always reviews every change before finishing; never asks only when a rule demands it', () => {
