@@ -18,8 +18,10 @@ function effectiveModel(project: Project, role: Role): string | undefined {
 }
 
 /**
- * "Model and effort" in the role editor: one line saying what the role's model and effort mean now, and the controls
- * for staffing (mode, lowest tier, highest effort). Saves through updateRoles like the model picker beside it.
+ * "Tier and effort" in the role editor: one line saying what the role's model and effort mean now, and the controls
+ * for staffing (mode, lowest tier, highest effort). Saves through updateRoles like the model picker beside it. It sits
+ * inside the role's Model fold, whose visible text says "Model" once (e2e/connections.mjs N4), so nothing here shows
+ * that word again.
  */
 export default function RoleStaffingControls({ project, role }: { project: Project; role: Role }): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
@@ -46,7 +48,7 @@ export default function RoleStaffingControls({ project, role }: { project: Proje
   return (
     <div className="role-staffing stack-2" data-testid="role-staffing" data-kind={c.kind}>
       <p className="role-staffing-line" data-testid="role-staffing-line">
-        <strong>Model and effort:</strong> {line.text}
+        <strong>Tier and effort:</strong> {line.text}
       </p>
       {line.note && (
         <span className="hint" data-testid="role-staffing-note">

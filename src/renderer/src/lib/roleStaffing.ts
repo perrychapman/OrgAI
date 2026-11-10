@@ -98,7 +98,7 @@ export function roleStaffingControls(role: Role, project: Project, adapter: Prov
 
   let explanation: string | undefined
   if (kind === 'root') explanation = 'The top of the chart always runs as configured.'
-  else if (kind === 'exact') explanation = 'You picked an exact model, so this role always runs on it. Choose a tier under Model to let it be picked automatically.'
+  else if (kind === 'exact') explanation = 'You picked an exact model, so this role always runs on it. Choose a tier above to let it be picked automatically.'
   else if (projectMode === 'fixed') explanation = 'This project is set to Always as configured, so this role does not change per assignment.'
   else if (inherits) explanation = 'This role follows the agent that started it, so its tier is never above that agent.'
 

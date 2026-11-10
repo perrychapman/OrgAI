@@ -533,7 +533,8 @@ Measured in Phase 0 (`scripts/measure-prompt-size.mjs`, token-free; the baseline
   the orchestrator", "fast: capped by the role"). The plan pane shows ready, running and waiting-on for each step;
   the run strip shows how many agents are working now and how many steps are ready.
 - CLI: `--goal balanced | speed | cost`. The team choice in the composer and `--team` stay as they are.
-- Team tab, role editor: "Model and effort: Automatic up to <tier> / <effort>" or "Always <model> / <effort>".
+- Team tab, role editor: "Tier and effort: Automatic, up to <tier> / <effort>" or "Always <model> / <effort>" (it sits
+  in the Model fold, which shows the word "Model" once; `e2e/connections.mjs` checks that).
 - Team files: `staffing` on a role, `reviewPolicy` and `staffingGoal` on the project. The gate treats a raised
   ceiling as "May spend more", like a raised effort today; lowering or switching to automatic needs no card.
 - Usage: time to first spawn, overlap and tail beside the existing efficiency signals; cost by tier; runs the lead
