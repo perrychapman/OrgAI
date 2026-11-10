@@ -1260,7 +1260,8 @@ describe('RunManager with the mock adapter', () => {
 
       const continueRun = vi.spyOn(m, 'continueRun')
       vi.advanceTimersByTime(HOUR + 1000)
-      await vi.waitFor(() => expect(continueRun).toHaveBeenCalledWith(p, run.id, RESUME_TEXT))
+      // The timer acts for the desktop user, so a per-run permission mode they chose carries over (desktop: true).
+      await vi.waitFor(() => expect(continueRun).toHaveBeenCalledWith(p, run.id, RESUME_TEXT, undefined, { desktop: true }))
       const next = await continueRun.mock.results[0].value
       expect(next.resumedFrom).toBe(run.id)
       expect(store.get(run.id)).toMatchObject({ status: 'finished', autoResume: false })
