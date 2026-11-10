@@ -2,10 +2,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { HostScope, RunUsage, UsageStats, UsageStatsQuery, UsageStatus } from '../../shared/types'
+import type { HostScope, RunUsage, UsageOverview, UsageOverviewQuery, UsageStats, UsageStatsQuery, UsageStatus } from '../../shared/types'
 import { fakeContext, FakeHostClient, project, type Answer, type FakeContextOptions } from '../testing/fakeContext'
 import { CliError, EXIT } from '../types'
-import { byKind, joinCsv, monthOf, runUsage, usageQuery, usageStatusLines } from './usage'
+import { byKind, joinCsv, modelRows, monthOf, overviewQueryOf, runUsage, usageQuery, usageStatusLines } from './usage'
 
 const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate', 'decide', 'configure'] }
 const clients = new WeakMap<object, FakeHostClient>()
@@ -109,6 +109,96 @@ describe('usage show', () => {
   it('no project here is exit 2', async () => {
     const { f } = setup({}, { cwd: '/nowhere' })
     expect(await run(f, ['show'])).toBe(EXIT.usage)
+  })
+})
+
+const mtok = { input: 600, output: 400, cacheRead: 0, cacheWrite: 0 }
+describe('usage show: by model', () => {
+  const two = (): UsageStats =>
+    stats({
+      runs: [
+        { runId: 'r1', kind: 'work', status: 'finished', prompt: 'a', startedAt: 1, usage: usage({ turns: 4, models: [{ model: 'claude-opus-x', tokens: mtok, costUsd: 0.4, priceSource: 'builtin' }] }) },
+        { runId: 'r2', kind: 'work', status: 'finished', prompt: 'b', startedAt: 2, usage: usage({ turns: 6, models: [{ model: 'claude-opus-x', tokens: mtok, costUsd: 0.2, priceSource: 'builtin' }, { model: 'mystery-1', tokens: mtok, costUsd: null, priceSource: 'unknown' }] }) }
+      ]
+    })
+  it('modelRows sums per model: requests only from single-model runs (lower bound otherwise), unknown never $0', () => {
+    const rows = modelRows(two().runs.map((r) => r.usage))
+    expect(rows[0]).toMatchObject({ model: 'claude-opus-x', runs: 2, requests: 4, requestsExact: false })
+    expect(rows[0].cost).toMatchObject({ costUsd: expect.closeTo(0.6) })
+    expect(rows[1]).toMatchObject({ model: 'mystery-1', requests: null })
+    expect(rows[1].cost).toMatchObject({ costUsd: null, costSource: 'unknown' })
+  })
+  it('text has the project table and per-run lines', async () => {
+    const { f } = setup({ 'runs:usageStats': () => two() })
+    expect(await run(f, [])).toBe(0)
+    const out = f.out()
+    expect(out).toContain('By model')
+    expect(out).toMatch(/claude-opus-x\s+2\s+4\+\s+2\.0k\s+\$0\.60/)
+    expect(out).toMatch(/mystery-1\s+1\s+-\s+1\.0k\s+unknown/)
+    expect(out).toContain('By model, per run')
+    expect(out).toMatch(/r1 .*\n\s+claude-opus-x: 4 requests, 1\.0k tokens, \$0\.40/)
+  })
+  it('json carries byModel and runModels', async () => {
+    const { f } = setup({ 'runs:usageStats': () => two() }, { globals: { outputFormat: 'json' } })
+    expect(await run(f, ['show'])).toBe(0)
+    const j = JSON.parse(f.out())
+    expect(j.byModel.map((m: { model: string }) => m.model)).toEqual(['claude-opus-x', 'mystery-1'])
+    expect(j.byModel[1].cost).toBe('unknown')
+    expect(j.runModels[1].models).toHaveLength(2)
+  })
+})
+
+describe('usage show --overview', () => {
+  const rowUsage = (extra: Partial<RunUsage>): RunUsage => usage({ models: [{ model: 'claude-opus-x', tokens: mtok, costUsd: 1, priceSource: 'builtin' }], ...extra })
+  const overview = (): UsageOverview =>
+    ({
+      runs: [
+        { runId: 'run-alone', projectId: 'p1', projectName: 'App', projectKind: 'code', kind: 'work', status: 'finished', prompt: 'solo', startedAt: 3, connection: 'anthropic', usage: rowUsage({ costUsd: 1, agents: 1, wallMs: 60_000 }) },
+        { runId: 'run-team', projectId: 'p1', projectName: 'App', projectKind: 'code', kind: 'work', status: 'finished', prompt: 'team', startedAt: 2, connection: 'anthropic', usage: rowUsage({ costUsd: 3, agents: 3, wallMs: 300_000, efficiency: { reports: 2 } as RunUsage['efficiency'] }) },
+        { runId: 'run-bad', projectId: 'p1', projectName: 'App', projectKind: 'code', kind: 'work', status: 'error', prompt: 'bad', startedAt: 1, connection: 'anthropic', usage: rowUsage({ costUsd: 2, agents: 2, agentsWithoutResult: 1, noResultTokens: 900, noResultCostUsd: 0.7 }) }
+      ],
+      models: [{ model: 'claude-opus-x', tokens: mtok, costUsd: 6, priceSource: 'builtin', runs: 3, projects: 1, costKnownRuns: 3, costUnknownRuns: 0 }],
+      totals: usage({ costUsd: 6, costSource: 'computed' }),
+      matchedRuns: 3
+    }) as unknown as UsageOverview
+  const answers = (): Record<string, Answer> => ({
+    'runs:usageOverview': () => overview(),
+    'connections:list': () => [{ connection: { id: 'anthropic', tierModels: { top: 'claude-opus-x' } } }]
+  })
+  it('queries the overview for the project and prints model, tier, lead and worth-a-look sections', async () => {
+    const { f, client } = setup(answers())
+    expect(await run(f, ['show', '--overview', '--range', 'month'])).toBe(0)
+    const q = (client.callsOf('runs:usageOverview')[0] as [UsageOverviewQuery])[0]
+    expect(q.projectIds).toEqual(['p1'])
+    expect(q.range).toEqual({ month: monthOf(Date.now()) })
+    expect(client.callsOf('runs:usageStats')).toHaveLength(0)
+    const out = f.out()
+    expect(out).toContain('Overview: 3 runs this month')
+    expect(out).toContain('Cost by model')
+    expect(out).toMatch(/claude-opus-x\s+3\s+1\.0k\s+\$6/)
+    expect(out).toContain('Cost by tier')
+    expect(out).toMatch(/Top\s+\$3\.00\s+50%/)
+    expect(out).toContain('Not tied to a tier')
+    expect(out).toMatch(/Lead alone: 1 run, median 1 min/)
+    expect(out).toMatch(/With reports: 1 run, median 5 min/)
+    expect(out).toContain('Runs worth a look')
+    expect(out).toMatch(/run-bad\s+App\s+.*produced no result/)
+  })
+  it('--all-projects sends no project ids; json', async () => {
+    const { f, client } = setup(answers(), { globals: { outputFormat: 'json' } })
+    expect(await run(f, ['show', '--overview', '--all-projects'])).toBe(0)
+    expect((client.callsOf('runs:usageOverview')[0] as [UsageOverviewQuery])[0].projectIds).toBeUndefined()
+    const j = JSON.parse(f.out()).overview
+    expect(j.matchedRuns).toBe(3)
+    expect(j.leadAlone.runs).toBe(1)
+    expect(j.withReports.runs).toBe(1)
+    expect(j.byTier[0]).toMatchObject({ tier: 'top', costUsd: 3 })
+    expect(j.worthALook[0].runId).toBe('run-bad')
+  })
+  it('overviewQueryOf maps the filters', () => {
+    const now = new Date(2026, 10, 5, 15, 30).getTime()
+    expect(overviewQueryOf(['p1'], { month: '2026-10', limit: 5 }, now)).toMatchObject({ projectIds: ['p1'], range: { month: '2026-10' }, limit: 5 })
+    expect('projectId' in overviewQueryOf([], {}, now)).toBe(false)
   })
 })
 

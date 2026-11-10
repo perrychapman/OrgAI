@@ -70,6 +70,41 @@ function rolesOf(runs: readonly TuiRun[]): RoleAcc[] {
   return [...by.values()].sort((a, b) => promptOf(b.tokens) + b.tokens.output - (promptOf(a.tokens) + a.tokens.output) || a.name.localeCompare(b.name))
 }
 
+interface ModelAcc {
+  model: string
+  agents: string[]
+  requests: number
+  exact: boolean
+  attributed: boolean
+  tokens: TokenUsage
+  costs: CostInput[]
+}
+
+/** The models the agents actually used (ModelUsageEntry.model: what the provider reported), most tokens first. */
+function modelsOf(agents: readonly AgentInstance[]): ModelAcc[] {
+  const by = new Map<string, ModelAcc>()
+  for (const a of agents) {
+    const models = a.usage?.models ?? []
+    for (const m of models) {
+      const acc = by.get(m.model) ?? { model: m.model, agents: [], requests: 0, exact: true, attributed: false, tokens: ZERO, costs: [] }
+      const label = safeLine(a.name)
+      if (!acc.agents.includes(label)) acc.agents.push(label)
+      // Turns are per agent: they belong to a model only when it was the agent's only one.
+      if (models.length === 1) {
+        acc.requests += a.usage?.turns ?? 0
+        acc.attributed = true
+      } else acc.exact = false
+      acc.tokens = addTokens(acc.tokens, m.tokens)
+      const priced = m.costUsd !== null && m.priceSource !== 'unknown'
+      acc.costs.push(priced ? { costUsd: m.costUsd, costSource: m.priceSource === 'provider' ? 'provider' : 'computed' } : promptOf(m.tokens) + m.tokens.output > 0 ? { costUsd: null, costSource: 'unknown' } : { costUsd: 0, costSource: 'none' })
+      by.set(m.model, acc)
+    }
+  }
+  return [...by.values()].sort((a, b) => promptOf(b.tokens) + b.tokens.output - (promptOf(a.tokens) + a.tokens.output) || a.model.localeCompare(b.model))
+}
+
+const AGENTS_SHOWN = 4
+
 /** The usage text for the followed chain. Empty-run cases answer with one sentence. */
 export function usageText(s: TuiState): string {
   const runs = chainRuns(s)
@@ -118,6 +153,21 @@ export function usageText(s: TuiState): string {
     ])
     out.push(...table(['Agent', 'In', 'Out', 'Cost', 'Turns', 'Tools'], body).map((l) => `  ${l}`))
     if (rows.some((r) => r.approximate)) out.push('  ~ approximate: recorded before usage tracking, or no usage reported yet.')
+  }
+
+  const models = modelsOf(agentList)
+  if (models.length > 0) {
+    out.push('', 'By model')
+    const body = models.map((m) => [
+      safeLine(m.model),
+      m.attributed ? `${m.requests}${m.exact ? '' : '+'}` : '-',
+      `${formatTokens(promptOf(m.tokens))} in`,
+      `${formatTokens(m.tokens.output)} out`,
+      costText(sumCosts(m.costs)),
+      m.agents.slice(0, AGENTS_SHOWN).join(', ') + (m.agents.length > AGENTS_SHOWN ? `, +${m.agents.length - AGENTS_SHOWN} more` : '')
+    ])
+    out.push(...table(['Model', 'Requests', 'In', 'Out', 'Cost', 'Agents'], body, 1).map((l) => `  ${l}`))
+    out.push('  Requests count an agent only when it used one model; + marks a lower bound, - none attributable.')
   }
 
   const roles = rolesOf(runs)
