@@ -18,6 +18,9 @@ import { commandSummary, isCompoundCommand } from './streamRows'
 import { roleRepresentatives, withTeamRows } from './teamRows'
 import { agentIdentityTone } from './identity'
 import { safe, safeLine } from '../output'
+import { latestByAgent, staffingLabel, staffingReason, stepStaffText } from '../staffingText'
+import { readyCount, stepFlows, usesGraph } from './planGraph'
+import { isWorkingAgentState } from './activity'
 import { agentLabel, imageLabel, mediaLabel, pendingItems, resultPartsLabel, statusViewOf, toolNamesOf } from '../render'
 import { statusText } from '../../shared/view/runStatus'
 import { CARD_BUCKETS, cardArrivalSeq } from './state'
@@ -428,7 +431,11 @@ export function orgTreeRows(s: TuiState, opts: OrgTreeOptions = {}): OrgTreeRow[
   const options = { ...opts, persistentAgents: new Set(roleRepresentatives(roles, agents).values()) }
   const waiting = cardsByAgent(s)
   const paletteRoles = s.project?.roles ?? []
-  let own: OrgTreeRow[] = treeOf(run, 0, false, false, options, waiting, trafficByAgent(run, opts.now ?? Date.now())).map(row => ({ ...row, identityTone: agentIdentityTone(paletteRoles, run.agents[row.id]) }))
+  const staffed = latestByAgent(run.staffing)
+  let own: OrgTreeRow[] = treeOf(run, 0, false, false, options, waiting, trafficByAgent(run, opts.now ?? Date.now())).map(row => {
+    const pick = staffed.get(row.id)
+    return { ...row, identityTone: agentIdentityTone(paletteRoles, run.agents[row.id]), ...(pick && row.kind !== 'group' ? { staffing: staffingLabel(pick) } : {}) }
+  })
   if (opts.rootId !== undefined && run.agents[opts.rootId]) return own
   own = withTeamRows(own, roles, agents, run.summary.id)
   const earlier = chainRuns(s)
@@ -607,6 +614,7 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
   const end = a.endedAt ?? now
   const traffic = trafficByAgent(run, now).get(agentId)
   const wt = a.worktree
+  const staffed = latestByAgent(run.staffing).get(agentId)
   return {
     id: a.id,
     runId: run.summary.id,
@@ -626,7 +634,8 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
       : {}),
     waiting: cardsByAgent(s)[agentId]?.length ?? 0,
     msgOut: traffic?.out ?? [],
-    msgIn: traffic?.in ?? []
+    msgIn: traffic?.in ?? [],
+    ...(staffed ? { staffing: { label: staffingLabel(staffed), reason: staffingReason(staffed), model: safeLine(staffed.model) } } : {})
   }
 }
 
@@ -638,13 +647,21 @@ export function planView(s: TuiState): PlanView | undefined {
   const run = activeRun(s)
   const plan = run?.plan
   if (!run || !plan || !Array.isArray(plan.steps)) return undefined
-  const steps = plan.steps.map((st) => ({
-    id: safeLine(st.id),
-    title: safeLine(st.title),
-    status: st.status,
-    ...(st.owner ? { owner: safeLine(st.owner) } : {}),
-    ...(st.note ? { note: safeLine(st.note) } : {})
-  }))
+  const graph = usesGraph(plan.steps)
+  const flows = graph ? stepFlows(plan.steps) : undefined
+  const titleOf = new Map(plan.steps.map((st) => [st.id, safeLine(st.title)]))
+  const steps = plan.steps.map((st) => {
+    const f = flows?.get(st.id)
+    return {
+      id: safeLine(st.id),
+      title: safeLine(st.title),
+      status: st.status,
+      ...(st.owner ? { owner: safeLine(st.owner) } : {}),
+      ...(st.note ? { note: safeLine(st.note) } : {}),
+      ...(f ? { flow: f.state === 'waiting' ? { state: f.state, on: f.on.map((id) => titleOf.get(id) ?? safeLine(id)) } : { state: f.state } } : {}),
+      ...(graph && st.staff ? { staff: stepStaffText(st.staff) } : {})
+    }
+  })
   return {
     runId: run.summary.id,
     continued: !!run.summary.resumedFrom,
@@ -656,7 +673,8 @@ export function planView(s: TuiState): PlanView | undefined {
     statusWord: PLAN_WORD[plan.status] ?? safeLine(plan.status),
     done: plan.steps.filter((st) => st.status === 'done').length,
     total: plan.steps.length,
-    steps
+    steps,
+    ...(graph ? { graph: true } : {})
   }
 }
 
@@ -722,6 +740,13 @@ export function statusSummary(s: TuiState): StatusSummary {
   }
   const run = activeRun(s)
   if (!run) return out
+  const graph = !!run.plan && Array.isArray(run.plan.steps) && usesGraph(run.plan.steps)
+  if (graph || (run.staffing?.assignments.length ?? 0) > 0) {
+    const working = Object.values(run.agents).filter((a) => isWorkingAgentState(a.state)).length
+    const ready = graph ? readyCount(run.plan!.steps) : 0
+    if (working > 0) out.working = working
+    if (ready > 0) out.readySteps = ready
+  }
   const view = statusViewOf({ summary: run.summary, plan: run.plan, agents: run.agents }, openDecisions(run) > 0, s.project)
   const chain = chainRuns(s)
   const cost = costView(chain.length > 1 ? sumCosts(chain.map((r) => runCostInput(r.summary))) : runCostInput(run.summary))

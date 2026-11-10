@@ -4,7 +4,7 @@
  *
  * - Flags map to RunOverrides (always `execMode: true`): --permission-mode, --no-auto-continue,
  *   --max-auto-continues, --max-budget / --max-cost (USD, finite >= 0; not both), --allow-unpriced-budget,
- *   --allow-unmerged, --strict-delegation, --allow-peer-messages, --wait-for-reset, --stall-timeout s, --on-* (decisionPolicy),
+ *   --allow-unmerged, --strict-delegation, --goal balanced|speed|cost, --allow-peer-messages, --wait-for-reset, --stall-timeout s, --on-* (decisionPolicy),
  *   --max-auto-denials. Bad values are usage errors (exit 2); a `wait` policy is refused.
  * - The prompt is the positional, else --prompt-file <path|-> (resume: --prompt, --prompt-file), else stdin ('-', or no
  *   positional with a non-TTY stdin); at most 1 MB. Empty: exit 2. Untrusted text belongs in --prompt-file or stdin,
@@ -28,7 +28,9 @@ import { MAX_AUTO_CONTINUES_LIMIT } from '../../shared/defaults'
 import {
   EXEC_OUTCOME_EXIT_CODE,
   MAX_TIMER_DELAY_MS,
+  STAFFING_GOALS,
   isPermissionMode,
+  isStaffingGoal,
   type AgentInstance,
   type ExecOutcome,
   type HeadlessDecisionPolicy,
@@ -53,6 +55,7 @@ import { parseFlags, type FlagSpec } from '../flags'
 import { readStdinText } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
+import { staffingLine } from '../staffingText'
 import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
@@ -129,6 +132,11 @@ export function overridesFromFlags(v: Values): RunOverrides {
   if (v['allow-unpriced-budget'] === true) o.allowUnpricedBudget = true
   if (v['allow-unmerged'] === true) o.allowUnmerged = true
   if (v['strict-delegation'] === true) o.strictDelegation = true
+  const goal = str(v, 'goal')
+  if (goal !== undefined) {
+    if (!isStaffingGoal(goal)) throw usage(`--goal must be one of ${STAFFING_GOALS.join(', ')}.`)
+    o.goal = goal
+  }
   if (v['allow-peer-messages'] === true) o.allowPeerMessages = true
   if (v['wait-for-reset'] === true) o.waitForReset = true
   const stall = secondsMs('stall-timeout', str(v, 'stall-timeout'), true)
@@ -488,6 +496,7 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
   let index = new Map<string, number>()
   let nextIndex = 1
   const printed = new Set<string>()
+  const staffed = new Set<string>()
   let lastActive: RunRecord | undefined
 
   const tagOf = (runId: string): string => {
@@ -607,7 +616,16 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
         if (!json) printText(ctx, `${st.dim(tagOf(runId))} ${planUpdateLine(ev.plan)}`)
         return
       case 'staffing.updated':
-        // Run staffing has no exec output yet (stream-json still carries the event).
+        // One line per staffed report, once; json and stream-json carry the raw event instead.
+        if (!json) {
+          for (const a of ev.staffing.assignments) {
+            if (!a.agentId) continue
+            const key = `${runId}:${a.agentId}:${a.at}:${a.source}:${a.model}:${a.effort ?? ''}`
+            if (staffed.has(key)) continue
+            staffed.add(key)
+            printText(ctx, `${st.dim(tagOf(runId))} ${staffingLine(agentOf(runId, a.agentId) ? agentLabel(agentOf(runId, a.agentId)) : a.roleId, a)}`)
+          }
+        }
         return
       default:
         printCards(runId, cardOf(ev))

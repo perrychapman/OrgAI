@@ -4,7 +4,7 @@
  * The Wave 5 management commands each live in their own file under ./entries (one per domain, so parallel work never
  * collides here).
  */
-import { PERMISSION_MODES } from '../shared/types'
+import { PERMISSION_MODES, STAFFING_GOALS } from '../shared/types'
 import { ENTRY as INIT_ENTRY } from './entries/init'
 import { ENTRY as ORG_ENTRY } from './entries/org'
 import { ENTRY as TEAM_ENTRY } from './entries/team'
@@ -80,6 +80,7 @@ const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
   { name: 'allow-unpriced-budget', takesValue: false, summary: 'Allow a budget even when a model has no known price' },
   { name: 'allow-unmerged', takesValue: false, summary: 'Count unmerged conflict branches as completed' },
   { name: 'strict-delegation', takesValue: false, summary: 'Every role that can spawn must delegate to all of its spawnable roles' },
+  { name: 'goal', takesValue: true, values: STAFFING_GOALS, summary: 'What staffing favors for this run: balanced (default), speed or cost' },
   { name: 'allow-peer-messages', takesValue: false, summary: 'Accept messages from other runs (message_run)' },
   { name: 'wait-for-reset', takesValue: false, summary: 'On a usage limit, wait for the reset instead of ending' },
   { name: 'stall-timeout', takesValue: true, summary: 'Seconds without progress before the run ends as stalled' },
