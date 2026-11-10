@@ -1,10 +1,11 @@
 # Orchestration efficiency: adaptive staffing and parallel execution
 
-Status: draft 3, 2026-11-10. Decisions settled 2026-11-09: the owner accepted every recommendation in section 6 ("i
-agree with all your recomendations") and asked for execution. Phase 0 (measure) is done and changed the plan: the
-unforced baseline is already near native, so the ranking was redone (1.5) and the automatic one-assistant shape was
-dropped (4.1). Built so far on `feat/orchestration-efficiency`: `RunUsage.efficiency`, the prompt-size and SDK smoke
-scripts, and the continuation wait fix.
+Status: draft 4, 2026-11-10. Decisions settled 2026-11-09: the owner accepted every recommendation in section 6 ("i
+agree with all your recomendations") and asked for execution. Phase 0 (measure) is done and changed the plan twice:
+the unforced baseline looked near native, so the ranking was redone (1.5) and the automatic one-assistant shape was
+dropped (4.1); the second campaign (1.1a) then showed that the near-parity was an effort mismatch, that Codex's own
+sub-agent rule stops the lead from delegating at all, and that the Claude adapter's lead delegates unprompted.
+Phases 1 and most of 2 are built on `feat/orchestration-efficiency` (section 8).
 
 Base: `origin/dev` at `aad24c38` (PR #41, required delegation). Every code fact below was read from that commit with
 `git show`, not from the local `dev` checkout, which is 310 commits behind it and lacks the delegation runtime.
@@ -22,8 +23,8 @@ run asks for:
 
 ## 1. Evidence
 
-Source: `~/orca/projects/orgai-performance-lab` (reports, run event logs and driver scripts). Every OrgAI run used
-the Codex adapter. Costs are retail-equivalent.
+Source: `~/orca/projects/orgai-performance-lab` (reports, run event logs and driver scripts). Every valid OrgAI
+run so far used the Codex adapter; the first Claude-adapter trials were void (1.1a). Costs are retail-equivalent.
 
 ### 1.1 Baseline: OrgAI with nothing forced (`baseline-20261110T051332Z`)
 
@@ -45,9 +46,9 @@ check (40 hidden tests, 58 hidden tests, 26 browser checks).
 - **Unforced OrgAI is not 2x slower.** Against native Codex it took 0.7x to 1.1x the time at 1.0x to 1.9x the cost.
   The 2x of the pilots (1.2) is the price of a mandated pipeline, not of the harness.
 - **Effort is confounded.** The Codex adapter sends an effort only when a role sets low, medium or high. The default
-  chart sets none, and Codex then ran every call at `low` (relay metering), against medium for the native Codex arm.
-  The time ratios therefore flatter OrgAI until the effort-matched arms report (`baseline2`, running). What this
-  does establish: low effort passed every check on all three tasks.
+  chart sets none, and Codex then ran every call at `low` (relay metering; Codex's catalog default is low for Sol
+  and Terra, medium for Luna), against medium for the native Codex arm. The time ratios here flatter OrgAI; 1.1a
+  has the effort-matched numbers. What this does establish: low effort passed every check on all three tasks.
 - **A team root working alone costs little more than the single assistant**: 1.23x the time on the ledger, 1.05x
   on the inventory, 0.88x on the dashboard. On the small task the difference is the plan tools' round trips (7
   requests against 6) and the 1.5 s continuation wait.
@@ -59,6 +60,42 @@ check (40 hidden tests, 58 hidden tests, 26 browser checks).
 - The run title is one more call per run. On Codex it carries 10.9k input tokens, Codex's own base prompt. In the
   lab it ran on Sol because the driver passed no fast model; in the app it goes to the fast tier.
 - Nothing was learned about worktrees: with isolation on, no writer was spawned.
+
+### 1.1a Effort-matched and mandated arms (`baseline2-20261110T062055Z`)
+
+Same build (`aad24c38`), tasks and graders. `orgai-adaptive-medium` is the unforced team with the root's effort set
+to medium; `orgai-required` is the default chart with required reports for implementer and reviewer and nothing
+scripted. Medians of three (the dashboard: one run); every run passed its grader.
+
+| Task | Codex (Sol, medium) | OrgAI unforced, medium | OrgAI required reports |
+|---|---|---|---|
+| Ledger repair | 55.8 s, $0.045 | 70.9 s, $0.088 (1.27x, 1.95x) | 75.7 s, $0.092 |
+| Inventory service | 138.5 s, $0.120 | 180.2 s, $0.134 (1.30x, 1.12x) | 113.6 s, $0.113 |
+| Dashboard from scratch | 455.9 s, $0.332 | 651.6 s, $0.437 (1.43x, 1.32x) | 638.3 s, $0.440 |
+
+- **At the same effort OrgAI's lead, working alone, takes 1.27x to 1.43x native Codex's time.** The near-parity of
+  1.1 was the low effort. This is the harness's own overhead on Codex before phase 1 (the continuation wait, the
+  plan round trips, 8k to 12k more input tokens per call).
+- **On Codex the lead does not delegate because Codex tells it not to.** Codex 0.167 offers its own multi-agent
+  tools beside OrgAI's `spawn_report` and adds a `<multi_agent_mode>` developer message: "Do not spawn sub-agents
+  unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel
+  agent work." The leads cite it. No unforced run delegated in either campaign, and with required reports 5 of 7
+  runs still refused after the harness's correction and ended `delegation-incomplete`; the two that complied did
+  the work themselves first and then spawned both reports together. The pilots of 1.2 delegated only because
+  their task text asked for it. The tools and the rule come from Codex's model catalog (`multi_agent_version: v2`);
+  no feature flag removes them, a `model_catalog_json` override does (checked at a local stub, zero spend).
+- **So a mandated team on the default chart is not a pipeline on Codex today, it is a refusal.** The required arm's
+  times are a lead working alone at low effort; they are not a baseline for a parallel pipeline.
+- The single assistant could not be run at medium effort: nothing in the product sets its effort.
+- Input per call: orchestrator 23.4k to 27.5k tokens (first call about 19k to 20k), a report 21k to 23k (first call
+  about 13k), native Codex 15.4k to 16.3k (first call 11.6k to 12.5k).
+- **Claude adapter.** A headless driver now runs OrgAI's Claude adapter through a proxy connection. Its first seven
+  trials are void: the driver's permission settings (`dontAsk`, an empty protected-path list) made the harness
+  refuse every edit and shell command, so each run ended `blocked` with the workspace untouched. One thing they
+  do show, because it happens before any edit: **on Claude the lead delegates unprompted**, one implementer in
+  every unforced run, where the Codex lead never does. Its cost is unmeasured until the corrected rerun (phase 1
+  gate).
+- Worktrees: still unmeasured; the isolated arm did not delegate.
 
 ### 1.2 Pilots: the team mandated (`native-vs-orgai-pilot-20261109`, `complex-pilot-20261109T092758Z`, `dashboard-pilot-20261109T173008Z`)
 
@@ -115,10 +152,11 @@ Derived from each pilot run's `orgai/events.jsonl`, seconds from run start.
 | Team size, one episode (`scenario-screen-20261108T190810Z`) | Solo 31 s; pair 38 s; lead and three 49 s; hierarchy 79 s (out of budget); swarm 112 s (out of budget). All answers correct. |
 | Effort, same four-agent team (`model-effort-pilot-20261108T182044Z`) | Specialists at medium 53 s; at xhigh 74 s; lead at xhigh too 84 s. All correct. |
 
-### 1.5 What follows (ranking redone at the Phase 0 gate)
+### 1.5 What follows (ranking redone at the Phase 0 gate, amended after `baseline2`)
 
-The first ranking put a solo shape near the top. The baseline removes it: the harness is not the problem, the
-mandated pipeline is, and left alone the lead uses no team at all.
+The first ranking put a solo shape near the top. The baselines remove it, and they split the problem by adapter:
+on Codex the lead never delegates and pays a fixed overhead of about 30% at equal effort; on Claude the lead
+delegates whether or not it pays; and a pipeline that is made to run, runs one agent after another.
 
 1. **A mandated pipeline runs one agent after another and spends a third to more than half of the run after the
    work exists** (1.3). This is where the 2x is. It is addressed by running everything that can run together (4.2),
@@ -126,19 +164,22 @@ mandated pipeline is, and left alone the lead uses no team at all.
 2. **The critical path is staffed without regard to time.** A slow tier or a high effort on the longest step sets
    the run's length; xhigh added 40 to 60% with no change in correctness, and low passed everything in the baseline.
    Addressed by staffing each assignment (4.3).
-3. **Left alone, the lead never delegates, so work that splits gets no speedup.** The dashboard took the lone lead
-   512 s, against 456 s for native Codex; the reports that could have built it in parallel were never started. When
-   delegation does happen it is cut badly (144 s against 422 s). Addressed by the sizing rule (4.1) and the plan
+3. **Delegation happens for the wrong reason on both adapters.** On Codex the lead never delegates, because
+   Codex's own rule forbids it (1.1a): work that splits gets no speedup (the dashboard took the lone lead 512 s at
+   low effort and 652 s at medium, against 456 s native), and required reports are refused. On Claude the lead
+   delegates a contained task to one report and waits. When delegation does happen it is cut badly (144 s against
+   422 s). Addressed by removing Codex's native tools and rule at launch (4.2), the sizing rule (4.1) and the plan
    graph with ready lines (4.2). The goal is delegation exactly when it pays.
-4. **A team root's fixed overhead on small work**: the plan tools' round trips, the continuation wait (fixed), and
-   7.4k more input tokens on every call, most of it tool definitions (4.6). It is the 1.9x cost on the ledger.
+4. **A team root's fixed overhead**: 1.27x to 1.43x native Codex's time at equal effort with the lead alone (1.1a).
+   The plan tools' round trips, the continuation wait (fixed), and 8k to 12k more input tokens on every call, most
+   of it tool definitions (4.6). It is also the 1.9x cost on the ledger.
 5. **Not built: a separate one-assistant shape chosen automatically.** A team root working alone is already within
    1.05x to 1.23x of the single assistant, and item 4 closes most of what is left. Triage, `soloRunProject` and
    `escalate_to_team` are dropped; the single assistant stays what it is, the user's explicit choice.
 
-Not established yet: effort-matched numbers and a mandated team on the default chart (`baseline2`), anything about
-the Claude adapter (the lab drives only Codex; whether its lead delegates unforced is unknown), and the cost of
-worktree isolation.
+Not established yet: any valid time or cost on the Claude adapter (the corrected rerun at the phase 1 gate), how
+much of the 1.27x to 1.43x phase 1 removed (same rerun), a mandated pipeline that actually runs on the default
+chart, and the cost of worktree isolation.
 
 ## 2. Current behaviour (origin/dev, read 2026-11-09)
 
@@ -241,7 +282,9 @@ all done or skipped.
 **The harness says what is ready, at the moment of decision.**
 - `set_plan` and `update_plan` end their result with the ready set and the free slots: "Ready now: p2 (implementer),
   p3 (implementer), p5 (researcher). 6 of 8 agent slots are free. Start all of them in this message."
-- A report's delivery message names the steps that its completion unblocks.
+- Not built in phase 2: a report's delivery message naming the steps its completion unblocks. The plan tools'
+  ready line and the `ready` nudge already say it at the two moments the root decides; it comes back only if the
+  phase 2 rerun shows ready steps idling after a report lands.
 - A new nudge kind, `ready`: when a root turn ends with ready steps nobody is working on and slots free, the harness
   says so once per ready set, even while other reports are running (today `nudgeBlocked` forbids that). It counts
   against `maxAutoContinues` and never fires on a held, rate-limited or waiting run.
@@ -260,6 +303,10 @@ all done or skipped.
   turn and waits.
 
 **Mechanics that are missing today.**
+- Codex: the native multi-agent tools and their "do not spawn sub-agents unless explicitly asked" rule are removed
+  at launch with a `model_catalog_json` override written from the installed binary's own catalog (1.1a), failing
+  open to today's launch; until it is in effect the Codex prompt says that the project's instructions ask for
+  delegation through `spawn_report`. Without this nothing else in this section happens on Codex.
 - Bridged roles on Claude: `delegate_agent` gains `background: true`, returning a handle at once with the report
   delivered later as a harness message, as Codex `spawn_report` already does. Required bridged reports keep the
   blocking form.
@@ -267,8 +314,9 @@ all done or skipped.
   in one message run together (smoke check 6), so nothing moves to the background. The SDK emits one `assistant`
   message per content block; calls that went out together share a `message.id`, which is how the harness counts
   them.
-- Width: the ready line states free slots from `effectiveSubagentLimits`. After a rate-limit or overload event the
-  harness reports one free slot until the window clears, so a fan-out does not turn into retries.
+- Width: the ready line states free slots from `effectiveSubagentLimits`. Not built: reporting one free slot after
+  a rate-limit or overload event. The plan tools have no such signal to read (the adapters hold it), and a
+  rate-limited run already holds its nudges; section 10 keeps the risk.
 - Merges stay serialized per working directory; nothing changes in `integration.ts`.
 
 **What is measured**: overlap ratio (summed agent time over wall time), ready-idle time (a ready step with a free
@@ -302,8 +350,13 @@ slot and nobody on it), the critical path's length against the run's, time to fi
   to a full id. A `fixed` role on a concrete model keeps its definition's model and gets no `model` at spawn. The root's effort goes on `Options.effort` when the session is
   built; because a report without an effort inherits that value, the gate writes an effort on every spawn. Codex:
   `spawn_report` gains optional `tier` and `effort`; the thread starts on the resolved model and each message
-  carries the resolved effort. Bridged roles resolve against their own connection. Mock implements the whole path
-  first.
+  carries the resolved effort. A bridged role keeps its chart's tier and effort in phase 2: its child session is
+  built by RunManager on another connection, and a pick would have to cross `bridge.spawn`. Mock implements the
+  whole path.
+- Bookkeeping shared by the three adapters is `runtime/staffingBook.ts`, pure like the resolver: which plan step a
+  spawn belongs to, the tier its parent resolved to (the ceiling of an `inherit` role), and retries. A spawn for a
+  step that is still open after its earlier attempt ended is a retry and goes one step up; a spawn while an
+  attempt is live shares the step (fan-out) and its pick. The adapters keep only the mechanics.
 - The rubric (about eight lines in the root prompt, and an explicit instruction to set model and effort on every
   spawn, which the SDK tool otherwise discourages):
   - fast: search, mechanical edits, running checks, summaries;
@@ -440,18 +493,22 @@ if `baseline2` or the Claude arm shows a team root that does not behave this way
 
 ## 7. Acceptance
 
-Revisited once, here, at the Phase 0 gate, and frozen when `baseline2` has filled in the two baselines marked
-below. Lab runs cost real tokens and run once per phase gate; at least 3 repeats per cell on the ledger and the
-inventory, 1 on the dashboard, plus one task that splits into independent modules (to be added to the lab).
+Revisited at the Phase 0 gate and once more when `baseline2` reported (1.1a), which filled in the baselines and
+changed the form of the mandated target: the mandated arm on the default chart turned out to be a refusal, not a
+pipeline, so "0.7x of arm 3" would have compared against a lead working alone. Frozen from here. Lab runs cost real
+tokens and run once per phase gate; at least 3 repeats per cell on the ledger and the inventory, 1 on the
+dashboard, plus one task that splits into independent modules (to be added to the lab).
 
 Arms:
 
 1. native Codex; 2. native Claude Code;
 3. OrgAI with the team mandated: the default chart, required reports for implementer and reviewer, nothing
-   scripted (`baseline2`'s `orgai-required`). The pilots of 1.2 stay as the historical record;
-4. OrgAI unforced on `origin/dev` as it was at `aad24c38` (1.1), and the same at medium effort (`baseline2`);
-5. OrgAI single assistant, at the native arm's model and effort (`baseline2`): the harness's own overhead;
-6. OrgAI with this spec, unforced; 7. OrgAI with this spec, team mandated as in arm 3.
+   scripted (`orgai-required`: 75.7 / 113.6 / 638.3 s on Codex, 5 of 7 runs `delegation-incomplete`). The scripted
+   pilots of 1.2 (132 / 497 / 1093 s) are the only runs in which a pipeline ran;
+4. OrgAI unforced at `aad24c38`, root at medium effort (`orgai-adaptive-medium`: 70.9 s $0.088, 180.2 s $0.134,
+   651.6 s $0.437 on Codex; the Claude adapter's row comes from the corrected rerun);
+5. OrgAI single assistant (47.3 / 93.4 / 580.0 s at low effort; it cannot be run at medium, nothing sets its effort);
+6. OrgAI with this spec, unforced; 7. OrgAI with this spec, team mandated as in arm 3. Both on each adapter.
 
 Targets:
 
@@ -460,12 +517,15 @@ Targets:
 - **Unforced, work that splits (arm 6 on the dashboard and the module task):** wall time at or below the faster
   native arm, overlap ratio (`reportSumMs / reportBusyMs`) at least 1.5 when it delegates, cost within 1.25x of the
   cheaper native arm.
-- **Team mandated (arm 7 against arm 3):** wall time at most 0.7x and cost no higher; tail (`tailMs` over the run)
-  under 35%; every required receipt still valid.
+- **Team mandated (arm 7):** every run ends `completed` with every required receipt valid (2 of 7 at baseline on
+  Codex); wall time at most 1.5x and cost at most 2x the native arm of the same adapter at the same model and
+  effort (the scripted pilots took 2.4x to 2.9x the time); tail (`tailMs` over the run) under 35%; the required
+  reports that do not need each other's result overlap.
 - **Fixed overhead:** first-call input tokens within 4k of native Codex for a team root (7.4k today) and within 2k
   for a report; a run with no report ends within 150 ms of its last model response.
 - **Quality:** no task loses pass rate against arm 4 or arm 3.
-- A Claude-adapter arm is added before any Claude number counts.
+- Claude adapter: the same targets against native Claude Code, from the corrected driver; in arm 6 the lead spawns
+  no report on the ledger or the inventory (at baseline it spawns one in every run).
 
 ## 8. Phases
 
@@ -483,7 +543,9 @@ Targets:
 2. **Contract, plan graph and per-spawn staffing.** Types and defaults; `staffing.ts`; the rubric in the root
    prompt; `readySteps` and the ready lines; mock; Claude gate (aliases, the plan guard on the same path, the tier variables on the Anthropic
    connection behind a smoke check); Codex spawn parameters; the `ready` nudge; background `delegate_agent`; team
-   files and the gate rule. Reviewer pass on team files and anything that can raise spend.
+   files and the gate rule; the shared `staffingBook.ts`; Codex's native multi-agent tools switched off at launch
+   (added after `baseline2`). Reviewer pass on team files and anything that can raise spend. Gate: lab rerun of
+   arms 6 and 7 on both adapters.
 3. **Review policy.** The policy sentence ships with the rubric in phase 2. What is left here is checked against
    the phase 2 lab rerun: verification once per integrated result and findings going back to the author, as prompt
    rules first, as mechanics only if the rerun shows the lead still redoing the work.
@@ -522,8 +584,11 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
 
 ## 10. Risks and open items
 
-- The evidence is Codex-only and small: three runs per cell, one on the dashboard, one run per arm for the mandated
-  pilots. Whether the Claude adapter's lead also works alone when nothing forces a team is unknown.
+- The evidence is small and, for time and cost, Codex-only: three runs per cell, one on the dashboard, one run per
+  arm for the mandated pilots. The Claude adapter's lead is known to delegate unprompted; what that costs is not.
+- Switching off Codex's native multi-agent tools rests on a debug command (`codex debug models`) and a catalog
+  field name, checked on Codex 0.167 only. It fails open, and then the prompt sentence is all that stands against
+  Codex's rule; whether that sentence is enough is unmeasured.
 - The sizing rule could make the lead delegate small work it does well alone today. The unforced targets in
   section 7 require the ledger and the inventory to stay one-agent runs.
 - Asking for parallel fan-out does not make a split good. The dashboard pilot split 144 s against 422 s. The
