@@ -128,7 +128,6 @@ describe('approvals at the terminal, end to end', () => {
       const c = await connect('cli')
       expect(c.hello.grantedScopes).not.toContain('attested_approve')
       expect(c.hello.grantedScopes).toContain('configure')
-      expect(c.hello.approvalsWithheld).toMatch(/terminal UI/)
       const s = await pending(c)
       const err = await c.call('approvals:offer', [{ kind: 'teamFiles', projectId: project.id, digest: s!.digest }]).catch((e: unknown) => e)
       expect(codeOf(err)).toBe('scope_denied')
@@ -139,31 +138,29 @@ describe('approvals at the terminal, end to end', () => {
     })
   }, 60_000)
 
-  it('the real attestation decides the grant from this process; under a test runner without a terminal it refuses', async () => {
-    const verdict = decideTerminalAttestation(await gatherTerminalFacts(), { coResident: false })
+  it('the real attestation decides every offer from this process; under a test runner without a terminal it refuses', async () => {
+    const verdict = decideTerminalAttestation(await gatherTerminalFacts({ coResident: true }), { coResident: true })
     await withHost(undefined, async (connect) => {
       const c = await connect('tui')
-      expect(c.hello.grantedScopes.includes('attested_approve')).toBe(verdict.ok)
+      expect(c.hello.grantedScopes).toContain('attested_approve')
+      const res = await c.call<ApprovalOffer>('approvals:offer', [{ kind: 'teamFiles', projectId: project.id }]).catch((e: unknown) => e)
       if (verdict.ok) return
-      // Environmental: this is the very mechanism under test (stdin not a terminal, or an agent ancestor).
-      expect(c.hello.approvalsWithheld).toBe(verdict.reason)
-      const err = await c.call('approvals:offer', [{ kind: 'teamFiles', projectId: project.id }]).catch((e: unknown) => e)
-      expect(codeOf(err)).toBe('scope_denied')
+      // Environmental: this is the very mechanism under test (stdin not a terminal, an agent ancestor, no terminal app).
+      expect(codeOf(res)).toBe('scope_denied')
       expect(await reviewerTools(c)).not.toContain('Bash')
     })
   }, 60_000)
 
-  it('an unverified terminal (the attestation refuses: an agent ancestor) gets no scope and no offer', async () => {
+  it('an unverified terminal (the attestation refuses: an agent ancestor) gets no offer, with the host reason', async () => {
     await withHost(IN_AGENT, async (connect) => {
       const c = await connect('tui')
-      expect(c.hello.grantedScopes).not.toContain('attested_approve')
-      expect(c.hello.approvalsWithheld).toContain('inside an agent')
       const err = await c.call('approvals:offer', [{ kind: 'teamFiles', projectId: project.id }]).catch((e: unknown) => e)
       expect(codeOf(err)).toBe('scope_denied')
+      expect((err as { data?: { message?: string } }).data?.message).toContain('inside an agent')
     })
-    // The scope granted at hello is not enough: the terminal is checked again at the offer and after the key press.
+    // The terminal is checked at the offer and again after the key press.
     let ok = true
-    await withHost(async (o) => (ok || !o.coResident ? { ok: true, tty: 'ttys042' } : { ok: false, code: 'process_shares_terminal', reason: 'A process OrgAI started shares this terminal (claude, pid 9).' }), async (connect) => {
+    await withHost(async () => (ok ? { ok: true, tty: 'ttys042' } : { ok: false, code: 'process_shares_terminal', reason: 'A process OrgAI started shares this terminal (claude, pid 9).' }), async (connect) => {
       const c = await connect('tui')
       expect(c.hello.grantedScopes).toContain('attested_approve')
       const offer = await c.call<ApprovalOffer>('approvals:offer', [{ kind: 'teamFiles', projectId: project.id }])
@@ -198,13 +195,14 @@ describe('approvals at the terminal, end to end', () => {
       const offer = await c.call<ApprovalOffer>('approvals:offer', [{ kind: 'teamFiles', projectId: project.id }])
       expect(offer.actions).toContain('approve')
       expect(offer.teamFiles?.changes.filter((ch) => ch.needsApproval).map((ch) => ch.name)).toContain('Reviewer')
-      // A wrong code spends the offer and changes nothing.
+      // A wrong code changes nothing (the offer allows a few tries); the right one, typed in lower case, applies.
       const wrong = await c.call('approvals:answer', [{ offerId: offer.offerId, action: 'approve', code: offer.code === 'AAAA' ? 'CCCC' : 'AAAA' }]).catch((e: unknown) => e)
       expect(codeOf(wrong)).toBe('bad_request')
+      expect(await reviewerTools(c)).not.toContain('Bash')
+      const done = await c.call<{ message: string; teamFiles: TeamFilesStatus }>('approvals:answer', [{ offerId: offer.offerId, action: 'approve', code: offer.code.toLowerCase() }])
+      // Single use: the same offer cannot be answered again.
       const replay = await c.call('approvals:answer', [{ offerId: offer.offerId, action: 'approve', code: offer.code }]).catch((e: unknown) => e)
       expect(codeOf(replay)).toBe('stale_revision')
-      const fresh = await c.call<ApprovalOffer>('approvals:offer', [{ kind: 'teamFiles', projectId: project.id }])
-      const done = await c.call<{ message: string; teamFiles: TeamFilesStatus }>('approvals:answer', [{ offerId: fresh.offerId, action: 'approve', code: fresh.code.toLowerCase() }])
       expect(done.teamFiles.state).toBe('in-sync')
       const tools = await reviewerTools(c)
       expect(tools).toContain('Bash')

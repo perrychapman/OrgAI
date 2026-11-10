@@ -96,6 +96,22 @@ describe('team files text', () => {
     expect(text).not.toContain('‮')
   })
 
+  it('the undo screen says what comes back, role by role, not only a label', () => {
+    const s = status({ state: 'in-sync', changes: [], undo: { at: 't', label: 'Undo approving 1 change', files: ['.orgai/agents/reviewer.md'] } })
+    const back = { ...bash, summary: 'Reviewer loses Bash.', toolsBefore: ['Read', 'Bash'], toolsAfter: ['Read'], elevatedAdded: undefined, toolsAdded: undefined }
+    const text = teamFilesDetailLines(s, [back]).join('\n')
+    expect(text).toContain('Undo: Undo approving 1 change (rewrites .orgai/agents/reviewer.md).')
+    expect(text).toContain('Undo brings back:')
+    expect(text).toContain('- Reviewer loses Bash.')
+    expect(text).toContain('tools now: Read, Bash; after undo: Read')
+    expect(teamFilesDetailLines(s).join('\n')).toContain('Undo brings back no difference OrgAI can describe.')
+  })
+
+  it('the approve-shaped commands do not overclaim', () => {
+    expect(NO_APPROVE_COMMAND).toContain('it does not stop a program that already runs as you')
+    expect(NO_APPROVE_COMMAND).not.toMatch(/nothing an agent runs can/i)
+  })
+
   it('the run-start line: only while changes wait for this project', () => {
     const s = status()
     expect(pendingTeamFilesLine([s], 'p1')).toBe(

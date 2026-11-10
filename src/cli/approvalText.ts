@@ -21,7 +21,7 @@ export const APPROVE_WHERE = 'Approve or reject them at an interactive terminal:
 export const TRUST_WHERE = "Allow or deny this folder's own config at an interactive terminal: run orgai there and type /approvals."
 /** Printed by the approve-shaped subcommands, which never approve. */
 export const NO_APPROVE_COMMAND =
-  'Team-file changes and folder config trust are decided only inside the orgai terminal UI, by a person at its terminal: run orgai and type /approvals. No command, flag (--yes), environment variable or JSON mode approves, so nothing an agent runs can approve what an agent wrote.'
+  'Team-file changes and folder config trust are decided only inside the orgai terminal UI, at a terminal OrgAI checks: run orgai and type /approvals. No command, flag (--yes), environment variable or JSON mode approves. This removes the scripted ways to approve; it does not stop a program that already runs as you.'
 
 export const shortDigest = (d: string | undefined): string => (d ? d.slice(0, 12) : 'none')
 
@@ -133,8 +133,11 @@ export function folderTrustLines(r: FolderConfigReview, projectName: string): st
 
 // ---------- the TUI overlay body ----------
 
-/** The whole team files change list for the approval overlay: every change in full, prompts before and after. */
-export function teamFilesDetailLines(s: TeamFilesStatus): string[] {
+/**
+ * The whole team files change list for the approval overlay: every change in full, prompts before and after; with
+ * `undoChanges` (ApprovalOffer.undoChanges), what Undo would bring back, role by role.
+ */
+export function teamFilesDetailLines(s: TeamFilesStatus, undoChanges: readonly TeamFileChange[] = []): string[] {
   const out = teamFilesStatusLines(s).slice(0, 2)
   for (const p of s.problems) out.push(`problem: ${visibleLine(p.file)}: ${visibleLine(p.message)}`)
   const pending = pendingChanges(s)
@@ -146,7 +149,17 @@ export function teamFilesDetailLines(s: TeamFilesStatus): string[] {
     if (c.after !== undefined) out.push('   after:', ...visibleLines(c.after).map((l) => `   | ${l}`))
   })
   if (s.omittedChanges) out.push('', `...and ${plural(s.omittedChanges, 'more change')} not listed: approve is refused until fewer change at once.`)
-  if (s.undo) out.push('', `Undo: ${visibleLine(s.undo.label)} (rewrites ${s.undo.files.map(visibleLine).join(', ') || 'the team files'}).`)
+  if (s.undo) {
+    out.push('', `Undo: ${visibleLine(s.undo.label)} (rewrites ${s.undo.files.map(visibleLine).join(', ') || 'the team files'}).`)
+    if (undoChanges.length) {
+      out.push('Undo brings back:')
+      for (const c of undoChanges) {
+        out.push(`  - ${visibleLine(c.summary)}`)
+        for (const f of changeFacts(c)) out.push(`      ${f}`)
+        if (c.toolsBefore || c.toolsAfter) out.push(`      tools now: ${(c.toolsBefore ?? []).map(visibleLine).join(', ') || 'none'}; after undo: ${(c.toolsAfter ?? []).map(visibleLine).join(', ') || 'none'}`)
+      }
+    } else out.push('Undo brings back no difference OrgAI can describe.')
+  }
   if (s.isGitRepo && s.uncommitted) out.push('', `Not committed: ${s.uncommittedFiles.map(visibleLine).join(', ')}.`)
   out.push('', writtenByLine(s))
   return out

@@ -796,7 +796,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     ...(teamFiles ? { teamFiles } : {}),
     projects,
     dataDir: () => settings.dataDir,
-    ...(services.attestTerminal ? { attest: services.attestTerminal } : {})
+    ...(services.attestTerminal ? { attest: services.attestTerminal } : {}),
+    liveRuns: () => runs.liveRuns()
   })
   handle(HOST_IPC.approvalsOffer, (ctx, input: unknown) => approvals.offer(ctx, input))
   handle(HOST_IPC.approvalsAnswer, (ctx, input: unknown) => approvals.answer(ctx, input))

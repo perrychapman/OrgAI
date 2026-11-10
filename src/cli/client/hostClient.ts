@@ -353,7 +353,7 @@ const SCOPES: ReadonlySet<string> = new Set<string>(HOST_SCOPES)
 
 function parseHelloResult(v: unknown): RpcHelloResult | null {
   if (!isObj(v)) return null
-  const { protocolVersion, hostInstanceId, hostKind, appVersion, dataDir, mock, grantedScopes, hostProof: proof, versionSkewWarning, approvalsWithheld } = v
+  const { protocolVersion, hostInstanceId, hostKind, appVersion, dataDir, mock, grantedScopes, hostProof: proof, versionSkewWarning } = v
   if (protocolVersion !== HOST_PROTOCOL_VERSION) return null
   if (typeof hostInstanceId !== 'string' || typeof hostKind !== 'string' || !KINDS.has(hostKind)) return null
   if (typeof appVersion !== 'string' || typeof dataDir !== 'string' || typeof mock !== 'boolean' || typeof proof !== 'string') return null
@@ -367,7 +367,6 @@ function parseHelloResult(v: unknown): RpcHelloResult | null {
     mock,
     grantedScopes: grantedScopes as HostScope[],
     ...(typeof versionSkewWarning === 'string' ? { versionSkewWarning } : {}),
-    ...(typeof approvalsWithheld === 'string' ? { approvalsWithheld: approvalsWithheld.slice(0, 400) } : {}),
     hostProof: proof
   }
 }

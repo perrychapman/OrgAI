@@ -7,7 +7,8 @@ import { commitAll, createProject, initRepo, makeComputer, rolePath, type Comput
 import {
   APPROVAL_EXPIRED_MESSAGE,
   APPROVAL_GONE_MESSAGE,
-  APPROVAL_LOCKED_MESSAGE,
+  APPROVAL_MAX_ATTEMPTS,
+  APPROVAL_SPENT_MESSAGE,
   APPROVAL_OFFER_TTL_MS,
   APPROVAL_STALE_MESSAGE,
   APPROVAL_TERMINAL_ONLY_MESSAGE,
@@ -97,7 +98,7 @@ describe('approvals:offer / approvals:answer, the verified path', () => {
     expect(attests).toEqual([{ coResident: true }, { coResident: true }, { coResident: true }])
   })
 
-  it('reject needs no code; undo needs it; commit needs none', async () => {
+  it('reject needs no code; undo and commit need it; undo shows what it brings back', async () => {
     initRepo(repo)
     commitAll(repo, 'start')
     const digest = raiseReviewer()
@@ -112,13 +113,16 @@ describe('approvals:offer / approvals:answer, the verified path', () => {
     await g.answer(TUI, { offerId: o2.offerId, action: 'approve', code: 'KMNP' })
     const o3 = await offer(g, c.svc.check(project.id).digest!)
     expect(o3.actions).toEqual(['undo', 'commit'])
-    const committed = await g.answer(TUI, { offerId: o3.offerId, action: 'commit' })
+    // What Undo brings back, role by role: the reviewer loses Bash again.
+    expect(o3.undoChanges?.some((ch) => ch.name === 'Reviewer' && (ch.toolsAfter ?? []).every((t) => t !== 'Bash'))).toBe(true)
+    expect(o3.codeActions).toEqual(['undo', 'commit'])
+    await expect(g.answer(TUI, { offerId: o3.offerId, action: 'commit' })).rejects.toMatchObject({ code: 'bad_request', message: /^The code did not match/ })
+    const committed = await g.answer(TUI, { offerId: o3.offerId, action: 'commit', code: 'KMNP' })
     expect(committed.committed?.length).toBeGreaterThan(0)
     const o4 = await offer(g, c.svc.check(project.id).digest!)
     expect(o4.actions).toEqual(['undo'])
-    await expect(g.answer(TUI, { offerId: o4.offerId, action: 'undo' })).rejects.toMatchObject({ code: 'bad_request', message: APPROVAL_WRONG_CODE_MESSAGE })
-    const o5 = await offer(g, c.svc.check(project.id).digest!)
-    const undone = await g.answer(TUI, { offerId: o5.offerId, action: 'undo', code: 'KMNP' })
+    await expect(g.answer(TUI, { offerId: o4.offerId, action: 'undo' })).rejects.toMatchObject({ code: 'bad_request', message: /^The code did not match/ })
+    const undone = await g.answer(TUI, { offerId: o4.offerId, action: 'undo', code: 'KMNP' })
     expect(undone.message).toMatch(/^Undid/)
     expect(reviewerTools()).not.toContain('Bash')
   })
@@ -184,52 +188,85 @@ describe('every refusal path', () => {
   it('single use, bound to the connection, short lived', async () => {
     const digest = raiseReviewer()
     const g = gate()
-    // Another connection cannot use it (and using it there spends it).
+    // Another connection cannot use it.
     const o = await offer(g, digest)
     await expect(g.answer({ ...TUI, connectionId: '8' }, { offerId: o.offerId, action: 'approve', code: 'KMNP' })).rejects.toMatchObject({ code: 'stale_revision' })
+    // An action the offer does not hold spends it.
+    await expect(g.answer(TUI, { offerId: o.offerId, action: 'undo', code: 'KMNP' })).rejects.toMatchObject({ code: 'bad_request' })
     await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve', code: 'KMNP' })).rejects.toMatchObject({ code: 'stale_revision' })
     // Expired.
     const o2 = await offer(g, digest)
     clock += APPROVAL_OFFER_TTL_MS
     await expect(g.answer(TUI, { offerId: o2.offerId, action: 'approve', code: 'KMNP' })).rejects.toMatchObject({ code: 'stale_revision', message: APPROVAL_EXPIRED_MESSAGE })
-    // A newer offer on the same connection replaces the older one.
+    // One live offer: a newer one replaces the older one (from any connection).
     const o3 = await offer(g, digest)
     const o4 = await offer(g, digest)
     await expect(g.answer(TUI, { offerId: o3.offerId, action: 'approve', code: 'KMNP' })).rejects.toMatchObject({ code: 'stale_revision' })
     // A used offer cannot be replayed.
     await g.answer(TUI, { offerId: o4.offerId, action: 'reject' })
     await expect(g.answer(TUI, { offerId: o4.offerId, action: 'reject' })).rejects.toMatchObject({ code: 'stale_revision' })
+    const o5 = await offer(g, digest)
+    await offer(g, digest, { ...TUI, connectionId: '9' })
+    await expect(g.answer(TUI, { offerId: o5.offerId, action: 'reject' })).rejects.toMatchObject({ code: 'stale_revision' })
     // An unknown id.
     await expect(g.answer(TUI, { offerId: 'c'.repeat(32), action: 'reject' })).rejects.toMatchObject({ code: 'stale_revision' })
     expect(reviewerTools()).not.toContain('Bash')
   })
 
-  it('no code, a wrong code, an action the offer does not hold', async () => {
+  it(`a mistyped code may be retried on the same offer; ${APPROVAL_MAX_ATTEMPTS} wrong codes spend it`, async () => {
     const digest = raiseReviewer()
     const g = gate()
-    for (const code of [undefined, '', 'KMNA', 'KMN', 'KMNPX']) {
-      const o = await offer(g, digest)
-      await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve', ...(code === undefined ? {} : { code }) }), String(code)).rejects.toMatchObject({ message: APPROVAL_WRONG_CODE_MESSAGE })
-      // The lock (3 wrong codes) is tested below; keep under it here.
-      clock += 11 * 60_000
-    }
     const o = await offer(g, digest)
-    await expect(g.answer(TUI, { offerId: o.offerId, action: 'undo', code: 'KMNP' })).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve' })).rejects.toMatchObject({ code: 'bad_request', message: `${APPROVAL_WRONG_CODE_MESSAGE} 2 tries left.` })
+    await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve', code: 'KMNA' })).rejects.toMatchObject({ code: 'bad_request', message: `${APPROVAL_WRONG_CODE_MESSAGE} 1 try left.` })
+    expect(reviewerTools()).not.toContain('Bash')
+    // A typo, then the right code: applied.
+    const ok = await g.answer(TUI, { offerId: o.offerId, action: 'approve', code: 'KMNP' })
+    expect(ok.teamFiles?.state).toBe('in-sync')
+  })
+
+  it('the third wrong code spends the offer; no attestation runs for a wrong code', async () => {
+    const digest = raiseReviewer()
+    const g = gate()
+    const o = await offer(g, digest)
+    const before = attests.length
+    for (const code of ['', 'KMN']) await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve', code })).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve', code: 'KMNPX' })).rejects.toMatchObject({ code: 'stale_revision', message: APPROVAL_SPENT_MESSAGE })
+    await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve', code: 'KMNP' })).rejects.toMatchObject({ code: 'stale_revision', message: APPROVAL_GONE_MESSAGE })
+    expect(attests.length).toBe(before)
     expect(reviewerTools()).not.toContain('Bash')
   })
 
-  it('three wrong codes lock every offer for five minutes (a blind key injector cannot guess on)', async () => {
+  it('refused while a run of the project is alive in this host (its agents share the terminal), at the offer and the answer', async () => {
     const digest = raiseReviewer()
-    const g = gate()
-    for (let k = 0; k < 3; k++) {
-      const o = await offer(g, digest)
-      await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve', code: 'AAAA' })).rejects.toMatchObject({ message: APPROVAL_WRONG_CODE_MESSAGE })
-    }
-    await expect(offer(g, digest)).rejects.toMatchObject({ code: 'scope_denied', message: APPROVAL_LOCKED_MESSAGE })
-    clock += 5 * 60_000
+    let live = [{ id: 'run1', projectId: project.id, title: 'Build it' }]
+    const g = gate({ liveRuns: () => live })
+    await expect(offer(g, digest)).rejects.toMatchObject({ code: 'scope_denied', message: /still going \("Build it"\); stop it first/ })
+    expect(attests).toEqual([])
+    // Another project's run does not block.
+    live = [{ id: 'run2', projectId: 'other', title: '' }]
     const o = await offer(g, digest)
-    await g.answer(TUI, { offerId: o.offerId, action: 'approve', code: 'KMNP' })
-    expect(reviewerTools()).toContain('Bash')
+    live = [{ id: 'run3', projectId: project.id, title: '' }]
+    await expect(g.answer(TUI, { offerId: o.offerId, action: 'approve', code: 'KMNP' })).rejects.toMatchObject({ code: 'scope_denied' })
+    expect(reviewerTools()).not.toContain('Bash')
+  })
+
+  it('F5: the item is read before the terminal is attested (reading may run git)', async () => {
+    const digest = raiseReviewer()
+    const order: string[] = []
+    const g = gate({
+      attest: async (o) => (order.push('attest'), attests.push(o), verdict),
+      teamFiles: {
+        check: (id: string, o?: { firstWrite?: boolean }) => c.svc.check(id, o),
+        withGit: async (st) => (order.push('git'), c.svc.withGit(st)),
+        approve: (i) => c.svc.approve(i),
+        reject: (i) => c.svc.reject(i),
+        undo: (i) => c.svc.undo(i),
+        commit: (i) => c.svc.commit(i)
+      }
+    })
+    await offer(g, digest)
+    expect(order).toEqual(['git', 'attest'])
   })
 
   it('approve is not offered while the files have a problem or too many changes; reject still is', async () => {
@@ -269,7 +306,7 @@ describe('folder config trust', () => {
     const g = gate()
     const o = await g.offer(TUI, { kind: 'folderTrust', projectId: p.id, digest: review.digest })
     expect(o.actions).toEqual(['allow'])
-    await expect(g.answer(TUI, { offerId: o.offerId, action: 'allow', code: 'NOPE' })).rejects.toMatchObject({ message: APPROVAL_WRONG_CODE_MESSAGE })
+    await expect(g.answer(TUI, { offerId: o.offerId, action: 'allow', code: 'NOPE' })).rejects.toMatchObject({ message: /^The code did not match/ })
     const o2 = await g.offer(TUI, { kind: 'folderTrust', projectId: p.id, digest: review.digest })
     const r = await g.answer(TUI, { offerId: o2.offerId, action: 'allow', code: 'KMNP' })
     expect(r.folderConfig?.state).toBe('trusted')

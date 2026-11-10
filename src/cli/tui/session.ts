@@ -67,8 +67,8 @@ import type {
 } from './types'
 
 /**
- * 'attested_approve' (cli-parity 3.4): the host grants it only after attesting this terminal (host.hello
- * approvalsWithheld says why not); every other scope is unaffected when it is withheld.
+ * 'attested_approve' (cli-parity 3.4): granted to the terminal UI's own connection; the host attests this terminal at
+ * every approval offer and answer and says why when it refuses.
  */
 export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'attested_approve']
 export const TUI_CONFIGURE_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
@@ -546,11 +546,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     },
     modelCatalog: () => loadModelCatalog(call),
     approvals: {
-      withheld: () => {
-        const hello = client().hello
-        if (hello.grantedScopes.includes('attested_approve')) return undefined
-        return hello.approvalsWithheld ?? 'This terminal was not granted approvals.'
-      },
+      withheld: () => (client().hello.grantedScopes.includes('attested_approve') ? undefined : 'This connection to OrgAI was not given approvals.'),
       async list() {
         const { attention, folderConfig } = await waitingReads()
         const p = state.project

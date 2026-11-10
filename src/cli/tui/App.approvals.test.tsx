@@ -167,7 +167,7 @@ describe('/approvals in the shell', () => {
     await app.typed('/approvals\r')
     await tick()
     const f = app.frame()
-    expect(f).toContain('This terminal cannot approve:')
+    expect(f).toContain('Not approved:')
     expect(f).toContain('inside an agent (claude, pid 7)')
     expect(a.offers).toEqual([])
     await app.typed('a')
@@ -192,6 +192,36 @@ describe('/approvals in the shell', () => {
     await tick()
     expect(app2.frame()).toContain('This changed since you looked. Review it again.')
     expect(stale.offers).toHaveLength(2)
+  })
+
+  it('a mistyped code stays on the same offer with the host words; a spent offer ends and is not offered again by itself', async () => {
+    let n = 0
+    const a = api({
+      answer: async () => {
+        n += 1
+        throw Object.assign(new Error(n === 1 ? 'The code did not match; nothing was changed. 2 tries left.' : 'The code did not match too many times; nothing was changed. Open the approval again for a new code.'), {
+          code: n === 1 ? 'bad_request' : 'stale_revision'
+        })
+      }
+    })
+    const app = mount({ approvals: a })
+    await tick()
+    await app.typed('/approvals\r')
+    await tick()
+    await app.typed('aKMNA')
+    await app.send(named('enter'))
+    await tick()
+    let f = app.frame()
+    expect(f).toContain('2 tries left.')
+    expect(f).toContain('Type KMNP to approve')
+    expect(a.offers).toHaveLength(1)
+    await app.typed('KMNX')
+    await app.send(named('enter'))
+    await tick()
+    f = app.frame()
+    expect(f).toContain('Not approved:')
+    expect(f).toContain('too many times')
+    expect(a.offers).toHaveLength(1)
   })
 
   it('says on open when something waits', async () => {

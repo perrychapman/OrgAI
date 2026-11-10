@@ -8,6 +8,7 @@ import { Box, Text } from 'ink'
 import { basename } from 'node:path'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Project, ProjectPathCheck, RunOverrides, RunStatus, RunSummary, RunTeam } from '../../shared/types'
+import { APPROVAL_WRONG_CODE_MESSAGE } from '../../shared/types'
 import { nextSettleAt, settleTimerDelay } from '../../shared/view/foldFinished'
 import { isOpenStatus } from '../../shared/view/runChains'
 import { statusOfRun, statusText } from '../../shared/view/runStatus'
@@ -743,8 +744,12 @@ export function App(props: AppProps) {
           void offerInto(token, again, { text: sanitizeTty(r.message), tone: 'ok' })
         },
         (e: unknown) => {
-          if ((e as { code?: string }).code === 'scope_denied') showApproval(token, refusedView(view.item, errText(e)))
-          else void offerInto(token, again, { text: errText(e), tone: 'danger' })
+          const code = (e as { code?: string }).code
+          // A mistyped code keeps the offer (a few tries); changed content is shown again from a fresh offer; anything
+          // else (refused terminal, spent or expired offer) ends here, and /approvals opens it again.
+          if (code === 'bad_request' && errText(e).startsWith(APPROVAL_WRONG_CODE_MESSAGE)) showApproval(token, { ...view, phase: 'code', typed: '', message: { text: errText(e), tone: 'danger' } })
+          else if (code === 'stale_target_digest') void offerInto(token, again, { text: errText(e), tone: 'danger' })
+          else showApproval(token, refusedView(view.item, errText(e)))
         }
       )
     },

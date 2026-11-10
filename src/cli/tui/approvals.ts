@@ -2,10 +2,10 @@
  * The terminal UI's /approvals (cli-parity 3.4): the list of what waits for a person, and the approval overlay's pure
  * state and keys. The host decides (approvals:offer / approvals:answer, host/approvalGate.ts): it attests this terminal,
  * binds every offer to this connection and the digest of the content it returns, and wants the code it showed typed
- * back for approve, undo and allow. The overlay shows only the content an offer returned, never an older list.
+ * back for approve, undo, allow and commit. The overlay shows only the content an offer returned, never an older list.
  *
  * Keys, in the overlay only: a approve (team files) or allow (folder config), r reject, u undo, c commit, d deny; then
- * the code and Enter for approve / undo / allow, y for the others; Esc steps back, then closes. A paste is ignored: the
+ * the code and Enter for approve / undo / allow / commit, y for reject and deny; Esc steps back, then closes. A paste is ignored: the
  * code is typed. Approve and allow stay inert until the change list was scrolled to its end (or fits), as on the desktop.
  *
  * Pure: no ink, no host.
@@ -26,7 +26,7 @@ export interface ApprovalItem {
 
 /** The session calls /approvals uses (TuiSessionApi.approvals). */
 export interface ApprovalsApi {
-  /** Why this terminal may not approve (host.hello approvalsWithheld), else undefined. */
+  /** Why this connection may not approve at all (no 'attested_approve'), else undefined. */
   withheld(): string | undefined
   list(): Promise<ApprovalItem[]>
   /** The notice on open (waitingNotice), undefined when nothing waits. */
@@ -95,7 +95,7 @@ export function loadingView(item: ApprovalItem): ApprovalView {
 
 /** The view of a fresh offer (its own content, never the list's). */
 export function offerView(item: ApprovalItem, offer: ApprovalOffer, message?: ApprovalView['message']): ApprovalView {
-  const lines = offer.teamFiles ? teamFilesDetailLines(offer.teamFiles) : offer.folderConfig ? folderTrustLines(offer.folderConfig, item.projectName) : ['Nothing to show.']
+  const lines = offer.teamFiles ? teamFilesDetailLines(offer.teamFiles, offer.undoChanges) : offer.folderConfig ? folderTrustLines(offer.folderConfig, item.projectName) : ['Nothing to show.']
   if (offer.blockedReason) lines.push('', `Cannot ${offer.kind === 'folderTrust' ? 'allow' : 'approve'}: ${visibleLine(offer.blockedReason)}`)
   if (!offer.actions.length) lines.push('', 'Nothing to approve, reject, undo or commit here right now.')
   return { item, phase: 'choose', offer, lines, offset: 0, seenEnd: false, typed: '', ...(message ? { message } : {}) }
@@ -105,7 +105,7 @@ export function refusedView(item: ApprovalItem, reason: string): ApprovalView {
   return {
     item,
     phase: 'refused',
-    lines: ['This terminal cannot approve:', `  ${visibleLine(reason)}`, '', 'Run orgai yourself in a terminal you opened (not from an agent, a script or a pipe), with no run working in it, then type /approvals.'],
+    lines: ['Not approved:', `  ${visibleLine(reason)}`, '', 'Run orgai yourself in a plain terminal window you opened (not tmux or screen, not from an agent, a script or a pipe), with no run of the project going, then type /approvals.'],
     offset: 0,
     seenEnd: true,
     typed: ''
@@ -186,9 +186,4 @@ export function approvalKey(v: ApprovalView, e: InputEvent, room: number, total 
     return { view: { ...v, phase: 'code', pending: action, typed: '', message: undefined } }
   }
   return { view: { ...v, phase: 'confirm', pending: action, message: undefined } }
-}
-
-/** The host's refusal codes that mean "show it again with a fresh offer". */
-export function reofferAfter(code: string | undefined): boolean {
-  return code === 'stale_target_digest' || code === 'stale_revision' || code === 'bad_request'
 }

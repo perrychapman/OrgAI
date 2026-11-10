@@ -139,9 +139,10 @@ self-help entry point; clearing the knowledge graph; run rename, dismiss and pro
 - This phase gets an independent security review before merge; a Medium or higher finding blocks it.
 - As built (cp/approvals; the gate, its checks and residual risks are in `docs/agent-notes/cli-host.md` "Approvals at
   the terminal"): the desktop channels stay `desktop_only`; two new socket-only channels `approvals:offer` /
-  `approvals:answer` form the scope `attested_approve`, granted only to the TUI's own connection after the host attests
-  its terminal. Deciding happens only in the TUI's `/approvals` overlay (a typed code for approve, undo and allow);
-  `team files approve|reject|undo|commit` and `projects trust allow|deny` only say so (exit 2).
+  `approvals:answer` form the scope `attested_approve`, granted only to the TUI's own connection; the host attests its
+  terminal at every offer and answer. Deciding happens only in the TUI's `/approvals` overlay (a typed code for
+  approve, undo, allow and commit); `team files approve|reject|undo|commit` and `projects trust allow|deny` only say so
+  (exit 2). This removes the scripted ways to approve; it is not a boundary against code that already runs as the user.
 
 ### 3.5 Acting on a run (B8, I7, I8, I9, I15)
 

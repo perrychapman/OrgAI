@@ -3,6 +3,8 @@
  * no desktop-shell import, ever. Routes over commandTable.ts (cli-spec 6.1): global flags first (flags.ts), then the
  * command. Exit codes are EXIT in types.ts; a CliError carries its own, anything else is 1.
  */
+// First: before anything else of the CLI loads (inspectorSignal.ts).
+import './inspectorSignal'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { runCompletions } from './commands/completions'

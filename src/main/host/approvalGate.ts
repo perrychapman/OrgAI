@@ -4,26 +4,26 @@
  * relative imports only. The desktop keeps its own desktop-only channels (teamFiles:approve and friends,
  * projects:setFolderConfigTrust in ipc.ts); nothing here is reachable from a window.
  *
- * The host decides, from what it can check itself:
- * - who: the call comes over the socket from the orgai process's own connection (`owner`, the in-memory owner proof),
- *   its client kind is 'tui' (only the terminal UI asks; exec and the management commands never do), and the
- *   connection holds 'attested_approve', which socketServer grants at hello only after attesting the terminal;
- * - where: the terminal is attested again (terminalAttestation.ts, coResident included) at the offer and again after
- *   the key press, at the answer: a process OrgAI started that shares the terminal, an agent ancestor, a redirected
- *   stdin, no controlling terminal, Windows: refused;
- * - what: an offer is bound to that connection, the item (kind, project) and the digest of the content it returns for
- *   the terminal to show (TeamFilesStatus.digest, FolderConfigReview.digest; for undo also the undo record's time); a
- *   digest sent with the offer (what the list showed) must still match. It is single use
- *   (taken out before anything is checked), expires after APPROVAL_OFFER_TTL_MS, and one connection holds one offer;
- * - how: approve, undo and allow (they can give agents more) need the 4-letter code the offer showed, typed back;
- *   reject, commit and deny need the attested key press only. APPROVAL_MAX_WRONG_CODES wrong codes within
- *   APPROVAL_WRONG_CODE_WINDOW_MS lock every offer for APPROVAL_LOCKOUT_MS.
+ * This removes the scripted ways to approve and raises the cost of the others; it is not a boundary against code that
+ * already runs as the user (see the agent note's residual risks). The host decides, from what it can check itself:
+ * - who: the call comes over the socket from the orgai process's own connection (`owner`, the in-memory owner proof)
+ *   as the terminal UI ('tui'; exec and the management commands never are) holding 'attested_approve';
+ * - when: no run of the project is alive in this host (its agents share the terminal and could type into it);
+ * - where: the item is read first (reading may run git), then the terminal is attested (terminalAttestation.ts,
+ *   coResident included); again after the key press, at the answer;
+ * - what: one live offer at a time, bound to the connection, the item (kind, project) and the digest of the content it
+ *   returns for the terminal to show (TeamFilesStatus.digest, FolderConfigReview.digest; for undo also the undo
+ *   record's time); a digest sent with the offer (what the list showed) must still match. It expires after
+ *   APPROVAL_OFFER_TTL_MS and is spent by any answer except a mistyped code, which may be retried
+ *   APPROVAL_MAX_ATTEMPTS times in all;
+ * - how: approve, undo, allow and commit need the 4-letter code the offer showed, typed back; reject and deny need the
+ *   attested key press.
  * The digest is compared again, synchronously, right before the service call (which compares it once more for approve
  * and reject): files that changed since the offer refuse with stale_target_digest and the terminal shows them again.
  */
 import { randomBytes, randomInt } from 'node:crypto'
 import { isSafeId } from '../../shared/defaults'
-import { APPROVAL_CODE_ACTIONS, isVirtualProjectId } from '../../shared/types'
+import { APPROVAL_CODE_ACTIONS, APPROVAL_WRONG_CODE_MESSAGE, isVirtualProjectId } from '../../shared/types'
 import type {
   ApprovalAction,
   ApprovalAnswerInput,
@@ -33,6 +33,8 @@ import type {
   ApprovalOfferInput,
   FolderConfigReview,
   Project,
+  RunSummary,
+  TeamFileChange,
   TeamFilesStatus
 } from '../../shared/types'
 import { applyFolderConfigTrust, folderConfigReview } from '../runtime/folderConfigTrust'
@@ -44,12 +46,8 @@ import type { InvokeContext } from './types'
 
 /** How long an offer may be answered. */
 export const APPROVAL_OFFER_TTL_MS = 3 * 60_000
-/** Wrong codes that lock approvals, within the window below. */
-export const APPROVAL_MAX_WRONG_CODES = 3
-export const APPROVAL_WRONG_CODE_WINDOW_MS = 10 * 60_000
-export const APPROVAL_LOCKOUT_MS = 5 * 60_000
-/** Most live offers across connections. */
-export const APPROVAL_MAX_OFFERS = 8
+/** Code attempts one offer allows; then it is gone. */
+export const APPROVAL_MAX_ATTEMPTS = 3
 /** Letters the code uses: no I, O, L, B, S, G, Z, Q, U (easily confused). */
 export const APPROVAL_CODE_ALPHABET = 'ACDEFHJKMNPRTVWXY'
 export const APPROVAL_CODE_LENGTH = 4
@@ -61,12 +59,12 @@ const ACTIONS: readonly ApprovalAction[] = ['approve', 'reject', 'undo', 'commit
 
 export const APPROVAL_GONE_MESSAGE = 'This approval is no longer open. Open it again.'
 export const APPROVAL_EXPIRED_MESSAGE = 'This approval code expired. Open it again for a new code.'
-export const APPROVAL_WRONG_CODE_MESSAGE = 'The code did not match; nothing was changed. Open the approval again for a new code.'
-export const APPROVAL_LOCKED_MESSAGE = 'Too many wrong codes: approvals are locked in this terminal for 5 minutes.'
+export { APPROVAL_WRONG_CODE_MESSAGE }
+export const APPROVAL_SPENT_MESSAGE = 'The code did not match too many times; nothing was changed. Open the approval again for a new code.'
 export const APPROVAL_STALE_MESSAGE = 'This changed since you looked. Review it again.'
 export const APPROVAL_TERMINAL_ONLY_MESSAGE = "Approvals are answered only in the orgai terminal UI ('/approvals')."
 
-export type ApprovalTeamFiles = Pick<TeamFilesService, 'check' | 'withGit' | 'approve' | 'reject' | 'undo' | 'commit'>
+export type ApprovalTeamFiles = Pick<TeamFilesService, 'check' | 'withGit' | 'approve' | 'reject' | 'undo' | 'commit'> & Partial<Pick<TeamFilesService, 'undoChanges'>>
 
 export interface ApprovalGateDeps {
   teamFiles?: ApprovalTeamFiles
@@ -75,6 +73,8 @@ export interface ApprovalGateDeps {
   dataDir: () => string
   /** Absent: every call is refused (a host that cannot attest a terminal, e.g. the desktop). */
   attest?: AttestTerminalFn
+  /** The host's live runs (RunManager.liveRuns): an offer is refused while one of the project is alive. */
+  liveRuns?: () => readonly Pick<RunSummary, 'projectId' | 'title' | 'id'>[]
   now?: () => number
   /** Tests: a fixed code. */
   makeCode?: () => string
@@ -88,6 +88,7 @@ interface OfferItem {
   blockedReason?: string
   teamFiles?: TeamFilesStatus
   folderConfig?: FolderConfigReview
+  undoChanges?: TeamFileChange[]
 }
 
 interface Offer {
@@ -101,6 +102,7 @@ interface Offer {
   actions: ApprovalAction[]
   code: string
   expiresAt: number
+  attempts: number
 }
 
 /** ApprovalOfferInput rebuilt (unknown fields dropped). Throws bad_request. */
@@ -147,9 +149,8 @@ function sameCode(a: string, b: string): boolean {
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
 export class ApprovalGate {
-  private readonly offers = new Map<string, Offer>()
-  private wrongCodes: number[] = []
-  private lockedUntil = 0
+  /** The one live offer. */
+  private current: Offer | undefined
 
   constructor(private readonly deps: ApprovalGateDeps) {}
 
@@ -166,10 +167,6 @@ export class ApprovalGate {
     return ctx.connectionId
   }
 
-  private checkLock(): void {
-    if (this.now() < this.lockedUntil) throw new HostRpcFailure('scope_denied', APPROVAL_LOCKED_MESSAGE)
-  }
-
   private async attest(): Promise<void> {
     const attest = this.deps.attest
     if (!attest) throw new HostRpcFailure('scope_denied', 'This OrgAI cannot check a terminal, so it takes no approvals from one.')
@@ -182,24 +179,30 @@ export class ApprovalGate {
     if (!r.ok) throw new HostRpcFailure('scope_denied', r.reason)
   }
 
-  private dropExpired(): void {
-    const now = this.now()
-    for (const [id, o] of this.offers) if (o.expiresAt <= now) this.offers.delete(id)
+  /** Refused while a run of the project is alive in this host: its agents share the terminal. */
+  private noLiveRun(projectId: string): void {
+    let live: readonly Pick<RunSummary, 'projectId' | 'title' | 'id'>[] = []
+    try {
+      const got = this.deps.liveRuns?.()
+      live = Array.isArray(got) ? got : []
+    } catch {
+      live = []
+    }
+    const run = live.find((r) => r.projectId === projectId)
+    if (run) throw new HostRpcFailure('scope_denied', `A run of this project is still going${run.title ? ` ("${run.title.slice(0, 60)}")` : ''}; stop it first (/stop), then approve.`)
   }
 
   /** approvals:offer. */
   async offer(ctx: InvokeContext, raw: unknown): Promise<ApprovalOffer> {
     const connectionId = this.who(ctx)
     const input = approvalOfferArgs(raw)
-    this.checkLock()
-    await this.attest()
+    this.noLiveRun(input.projectId)
+    // The item first (reading it may run git in the project), then the terminal: a helper that git started and that
+    // still holds the terminal is seen by the check.
     const item: OfferItem = input.kind === 'teamFiles' ? await this.teamFilesItem(input.projectId) : this.folderTrustItem(input.projectId)
     // The digest of what the terminal listed, when it sent one; the offer carries the content it binds either way.
     if (input.digest !== undefined && item.digest !== input.digest) throw new HostRpcFailure('stale_target_digest', APPROVAL_STALE_MESSAGE)
-    // One open offer per connection; the oldest go first past the cap.
-    this.dropExpired()
-    for (const [id, o] of this.offers) if (o.connectionId === connectionId) this.offers.delete(id)
-    while (this.offers.size >= APPROVAL_MAX_OFFERS) this.offers.delete(this.offers.keys().next().value as string)
+    await this.attest()
     const offer: Offer = {
       id: randomBytes(16).toString('hex'),
       connectionId,
@@ -209,9 +212,11 @@ export class ApprovalGate {
       ...(item.undoAt ? { undoAt: item.undoAt } : {}),
       actions: item.actions,
       code: (this.deps.makeCode ?? newApprovalCode)(),
-      expiresAt: this.now() + APPROVAL_OFFER_TTL_MS
+      expiresAt: this.now() + APPROVAL_OFFER_TTL_MS,
+      attempts: 0
     }
-    this.offers.set(offer.id, offer)
+    // One live offer: a new one replaces any other.
+    this.current = offer
     return {
       offerId: offer.id,
       kind: offer.kind,
@@ -223,7 +228,8 @@ export class ApprovalGate {
       expiresAt: offer.expiresAt,
       ...(item.blockedReason ? { blockedReason: item.blockedReason } : {}),
       ...(item.teamFiles ? { teamFiles: item.teamFiles } : {}),
-      ...(item.folderConfig ? { folderConfig: item.folderConfig } : {})
+      ...(item.folderConfig ? { folderConfig: item.folderConfig } : {}),
+      ...(item.undoChanges?.length ? { undoChanges: item.undoChanges } : {})
     }
   }
 
@@ -231,31 +237,34 @@ export class ApprovalGate {
   async answer(ctx: InvokeContext, raw: unknown): Promise<ApprovalAnswerResult> {
     const connectionId = this.who(ctx)
     const input = approvalAnswerArgs(raw)
-    // Single use: taken out before anything else is checked, whatever the outcome.
-    const offer = this.offers.get(input.offerId)
-    this.offers.delete(input.offerId)
-    if (!offer || offer.connectionId !== connectionId) throw new HostRpcFailure('stale_revision', APPROVAL_GONE_MESSAGE)
-    if (this.now() >= offer.expiresAt) throw new HostRpcFailure('stale_revision', APPROVAL_EXPIRED_MESSAGE)
-    if (!offer.actions.includes(input.action)) throw new HostRpcFailure('bad_request', `"${input.action}" is not open for this item.`)
-    this.checkLock()
-    if (APPROVAL_CODE_ACTIONS.includes(input.action) && !sameCode(foldCode(input.code ?? ''), offer.code)) {
-      this.wrongCode()
-      throw new HostRpcFailure('bad_request', APPROVAL_WRONG_CODE_MESSAGE)
+    const offer = this.current
+    if (!offer || offer.id !== input.offerId || offer.connectionId !== connectionId) throw new HostRpcFailure('stale_revision', APPROVAL_GONE_MESSAGE)
+    const spend = (): void => {
+      if (this.current === offer) this.current = undefined
     }
+    if (this.now() >= offer.expiresAt) {
+      spend()
+      throw new HostRpcFailure('stale_revision', APPROVAL_EXPIRED_MESSAGE)
+    }
+    if (!offer.actions.includes(input.action)) {
+      spend()
+      throw new HostRpcFailure('bad_request', `"${input.action}" is not open for this item.`)
+    }
+    if (APPROVAL_CODE_ACTIONS.includes(input.action) && !sameCode(foldCode(input.code ?? ''), offer.code)) {
+      offer.attempts += 1
+      if (offer.attempts >= APPROVAL_MAX_ATTEMPTS) {
+        spend()
+        throw new HostRpcFailure('stale_revision', APPROVAL_SPENT_MESSAGE)
+      }
+      const left = APPROVAL_MAX_ATTEMPTS - offer.attempts
+      throw new HostRpcFailure('bad_request', `${APPROVAL_WRONG_CODE_MESSAGE} ${left} ${left === 1 ? 'try' : 'tries'} left.`)
+    }
+    // Spent from here, whatever happens next.
+    spend()
+    this.noLiveRun(offer.projectId)
     // After the key press: the terminal again (an agent that started since the offer, a process that joined it).
     await this.attest()
     return offer.kind === 'teamFiles' ? this.applyTeamFiles(offer, input.action) : this.applyFolderTrust(offer, input.action)
-  }
-
-  private wrongCode(): void {
-    const now = this.now()
-    this.wrongCodes = [...this.wrongCodes.filter((t) => now - t < APPROVAL_WRONG_CODE_WINDOW_MS), now]
-    if (this.wrongCodes.length >= APPROVAL_MAX_WRONG_CODES) {
-      this.lockedUntil = now + APPROVAL_LOCKOUT_MS
-      this.wrongCodes = []
-      // Every open offer goes too.
-      this.offers.clear()
-    }
   }
 
   // ---------- team files ----------
@@ -288,7 +297,15 @@ export class ApprovalGate {
     }
     if (status.undo) actions.push('undo')
     if (status.isGitRepo && status.uncommitted) actions.push('commit')
-    return { digest: status.digest, ...(status.undo ? { undoAt: status.undo.at } : {}), actions, ...(blockedReason ? { blockedReason } : {}), teamFiles: status }
+    const undoChanges = status.undo ? (svc.undoChanges?.(projectId) ?? []) : []
+    return {
+      digest: status.digest,
+      ...(status.undo ? { undoAt: status.undo.at } : {}),
+      actions,
+      ...(blockedReason ? { blockedReason } : {}),
+      teamFiles: status,
+      ...(undoChanges.length ? { undoChanges } : {})
+    }
   }
 
   private async applyTeamFiles(offer: Offer, action: ApprovalAction): Promise<ApprovalAnswerResult> {

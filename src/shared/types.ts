@@ -6674,8 +6674,11 @@ export type ApprovalKind = 'teamFiles' | 'folderTrust'
  */
 export type ApprovalAction = 'approve' | 'reject' | 'undo' | 'commit' | 'allow' | 'deny'
 
-/** Actions that can give agents more than they had: the typed code is required for these. */
-export const APPROVAL_CODE_ACTIONS: readonly ApprovalAction[] = ['approve', 'undo', 'allow']
+/** approvals:answer's refusal (bad_request) for a mistyped code while the offer has tries left; it continues "N tries left." */
+export const APPROVAL_WRONG_CODE_MESSAGE = 'The code did not match; nothing was changed.'
+
+/** Actions that need the typed code: those that can give agents more than they had, and commit (it writes git history). */
+export const APPROVAL_CODE_ACTIONS: readonly ApprovalAction[] = ['approve', 'undo', 'allow', 'commit']
 
 /**
  * approvals:offer input: the item and, when the terminal listed it, the digest it showed (TeamFilesStatus /
@@ -6706,6 +6709,8 @@ export interface ApprovalOffer {
   /** The content this offer binds (`digest` is its digest): the terminal shows exactly this. */
   teamFiles?: TeamFilesStatus
   folderConfig?: FolderConfigReview
+  /** teamFiles with undo open: what Undo would bring back (every difference from the team in use). */
+  undoChanges?: TeamFileChange[]
 }
 
 /** approvals:answer input. */
@@ -6737,8 +6742,8 @@ export const HOST_PROTOCOL_VERSION = 1
 /**
  * What an authenticated client may do. 'read' < 'operate' < 'decide' < 'configure' by convention; each is granted explicitly.
  * 'attested_approve' (cli-parity 3.4) is outside that order: approvals of team files and folder config trust
- * (HOST_IPC approvals:*). The host grants it only to the terminal UI's own connection after attesting the terminal
- * (host/terminalAttestation.ts); asking for it never gets it anywhere else, and 'configure' does not include it.
+ * (HOST_IPC approvals:*). The host grants it only to the terminal UI's own connection, and its approval gate attests
+ * the terminal at every offer and answer (host/terminalAttestation.ts); 'configure' does not include it.
  */
 export type HostScope = 'read' | 'operate' | 'decide' | 'configure' | 'attested_approve'
 export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure', 'attested_approve']
@@ -6835,8 +6840,6 @@ export interface RpcHelloResult {
   grantedScopes: HostScope[]
   /** Populated when clientVersion !== appVersion; 'read', 'operate', and 'decide' still work when protocolVersion matches. */
   versionSkewWarning?: string
-  /** 'attested_approve' was asked for and not granted: why, in one sentence (not covered by hostProof; display only). */
-  approvalsWithheld?: string
   /**
    * Canonical structured full-transcript HMAC (binds all host fields):
    * HMAC-SHA256(daemon.secret,

@@ -74,7 +74,7 @@ export interface StartInprocHostOptions {
   /** The shutdown's hard limit and tree-kill waits (bootOrgAIHost shutdownLimits); tests shorten them. */
   shutdownLimits?: { hardLimitMs?: number; kill?: { termGraceMs?: number; waitMs?: number; stepMs?: number } }
   /**
-   * cli-parity 3.4: how this process's terminal is attested for approvals (socket hello and the approvals:* channels).
+   * cli-parity 3.4: how this process's terminal is attested for approvals (the approvals:* channels).
    * Default attestThisTerminal (the OS process table). Code only: no flag or environment variable reaches it; tests
    * inject a fake.
    */
@@ -172,7 +172,6 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     appVersion: CLI_VERSION,
     mock: opts.mock,
     ...(ownerKey ? { ownerKey } : {}),
-    attestTerminal,
     // Ownership restricts daemon.secret before it binds; the server only refuses while that reported a problem.
     secretAclProblem: () => ownershipRef?.secretAclWarning,
     ...(opts.log ? { log: opts.log } : {})
