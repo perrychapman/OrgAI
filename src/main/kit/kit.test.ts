@@ -535,6 +535,23 @@ describe('untrusted files', () => {
     expect(w.kit.previewImport({ path: ok }).items[0].status).toBe('new')
   })
 
+  it("previews a template role's model, effort and staffing, and drops malformed values", () => {
+    const w = world()
+    const raw = `{"format":"${KIT_FORMAT}","templates":[{"name":"Spend","description":"d","kind":"code","org":{"format":"orgai.org/1","roles":[` +
+      `{"slug":"lead","name":"Lead","description":"Leads","prompt":"Lead","tools":["Read"],"canSpawn":true,"spawnable":["dev","bad"],"reportsTo":null,"model":"deep","effort":"high"},` +
+      `{"slug":"dev","name":"Dev","description":"Builds","prompt":"Build","tools":["Read"],"canSpawn":false,"reportsTo":"lead","model":"everyday","effort":"medium","staffing":{"mode":"auto","minTier":"fast","maxEffort":"low"}},` +
+      `{"slug":"bad","name":"Bad","description":"Odd","prompt":"Odd","tools":["Read"],"canSpawn":false,"reportsTo":"lead","model":"everyday","effort":"extreme","staffing":{"mode":"sometimes","maxEffort":9}}]}}]}`
+    const f = join(w.dir, 'spend.json')
+    writeFileSync(f, raw)
+    const roles = w.kit.previewImport({ path: f }).items[0].roles
+    expect(roles?.[0]).toMatchObject({ slug: 'lead', model: 'deep', effort: 'high' })
+    expect(roles?.[0]).not.toHaveProperty('staffing')
+    expect(roles?.[1]).toMatchObject({ slug: 'dev', model: 'everyday', effort: 'medium', staffing: { mode: 'auto', minTier: 'fast', maxEffort: 'low' } })
+    expect(roles?.[2]).toMatchObject({ slug: 'bad', model: 'everyday' })
+    expect(roles?.[2]).not.toHaveProperty('effort')
+    expect(roles?.[2]).not.toHaveProperty('staffing')
+  })
+
   it('stores a template rebuilt from known fields and previews each role (review M3)', () => {
     const w = world()
     const longPrompt = 'p'.repeat(25_000)
@@ -551,6 +568,11 @@ describe('untrusted files', () => {
     expect(item.roles?.[0].prompt).toBe('Lead things')
     expect(item.roles?.[1].prompt.length).toBe(20_000)
     expect(item.roles?.[1].elevatedTools).toEqual([])
+    // The preview says what a role may spend when the template gives it, and nothing when it does not.
+    expect(item.roles?.[0].model).toBe('inherit')
+    expect(item.roles?.[1]).not.toHaveProperty('model')
+    expect(item.roles?.[1]).not.toHaveProperty('effort')
+    expect(item.roles?.[1]).not.toHaveProperty('staffing')
     expect(item.notes.join(' ')).toMatch(/services and skills/)
     w.kit.applyImport({ path: f, digest: preview.digest, choices: [{ key: item.key, action: 'add' }] })
     const stored = w.templates.readForKit(w.templates.list()[0].id)!.orgText

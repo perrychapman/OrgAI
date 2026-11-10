@@ -6513,6 +6513,14 @@ export interface KitPreviewRole {
   slug: string
   prompt: string
   elevatedTools: ('Bash' | 'Edit' | 'Write' | 'NotebookEdit' | 'canSpawn' | 'mcp')[]
+  /**
+   * What the role may spend, so nobody imports a team without seeing it: the model as the template wrote it (a tier
+   * name, an alias or an id, at most 80 characters), its effort and its staffing. Each is absent when the template
+   * gives none.
+   */
+  model?: string
+  effort?: Effort
+  staffing?: RoleStaffing
 }
 
 export interface KitImportPreview {
