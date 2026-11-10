@@ -21,6 +21,8 @@ import {
   parseTurnId,
   parseUserInputQuestions,
   policyFor,
+  policyOverride,
+  sandboxPolicyFor,
   tomlKey,
   tomlString,
   unwrapShellCommand,
@@ -38,6 +40,25 @@ function spec(over: Partial<McpServerSpec> & { name: string }): McpServerSpec {
 function resolved(s: McpServerSpec, env: Record<string, string> = {}, headers: Record<string, string> = {}): ResolvedMcpServer {
   return { spec: s, env, headers }
 }
+
+describe('policyOverride / sandboxPolicyFor (live permission mode, turn/start fields)', () => {
+  const work = { writes: true, setupLike: false }
+  it('sends only what differs, and clears the auto reviewer with user', () => {
+    expect(policyOverride(policyFor('default', work), policyFor('default', work), [])).toEqual({})
+    expect(policyOverride(policyFor('default', work), policyFor('dontAsk', work), [])).toEqual({ approvalPolicy: 'never' })
+    expect(policyOverride(policyFor('auto', work), policyFor('default', work), [])).toEqual({ approvalPolicy: 'untrusted', approvalsReviewer: 'user' })
+    expect(policyOverride(policyFor('default', work), policyFor('auto', work), [])).toEqual({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' })
+    expect(policyOverride(policyFor('default', work), policyFor('plan', work), [])).toEqual({ approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+    expect(policyOverride(policyFor('default', work), policyFor('bypassPermissions', work), [])).toEqual({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } })
+  })
+  it('workspace-write carries the writable roots, no network and the default temp folders', () => {
+    expect(policyOverride(policyFor('plan', work), policyFor('default', work), ['/a', ''])).toEqual({
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: ['/a'], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+    })
+    expect(sandboxPolicyFor('read-only', ['/a'])).toEqual({ type: 'readOnly', networkAccess: false })
+  })
+})
 
 describe('policyFor (permission mode -> approval policy + sandbox)', () => {
   const work = { writes: true, setupLike: false }

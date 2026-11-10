@@ -771,7 +771,7 @@ export interface RuntimeSession {
    * false (or throw) to refuse, e.g. when the provider cannot switch now. Missing = this session cannot switch live
    * (RunManager answers applied: false and changes nothing).
    */
-  setPermissionMode?(mode: PermissionMode): Promise<boolean>
+  setPermissionMode?(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }>
   /**
    * Send a follow-up user message to the orchestrator. `images` are already validated; `text` may be
    * empty when images are present. The user transcript block records both.

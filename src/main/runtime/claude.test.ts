@@ -15,6 +15,7 @@ const sdk = vi.hoisted(() => {
     inputs: Msg[] = []
     setMcpCalls: Record<string, unknown>[] = []
     setModel = vi.fn(async (_model: string) => {})
+    setPermissionMode = vi.fn(async (_mode: string) => {})
     inputClosed = false
     private out: Msg[] = []
     private waiters: { resolve: (r: IteratorResult<Msg>) => void; reject: (e: Error) => void }[] = []
@@ -3068,5 +3069,116 @@ describe('run staffing at spawn (orchestration-efficiency 4.3)', () => {
     vi.mocked(buildRolePrompt).mockClear()
     buildAgents(fakeCtx(), [], false)
     expect(vi.mocked(buildRolePrompt).mock.calls.some((c) => 'staffingGoal' in (c[3] ?? {}))).toBe(false)
+  })
+})
+
+describe('ClaudeSession live permission mode (fake query)', () => {
+  const sessions: ClaudeSession[] = []
+  afterEach(async () => {
+    for (const s of sessions.splice(0)) await s.stop()
+    sdk.queries.length = 0
+    sdk.autoEnd = true
+  })
+  const init = { type: 'system', subtype: 'init', session_id: 'sess-pm', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] }
+  const result = { type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} }
+  async function live(over: Partial<RuntimeContext> = {}, projectOver: Partial<Project> = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-pm-'))
+    const ctx = fakeCtx({ project: project({ path: dir, ...projectOver }), autoContinue: false, ...over })
+    const session = new ClaudeSession(ctx)
+    sessions.push(session)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    q.emit(init)
+    q.emit(result)
+    await vi.waitFor(() => expect(session.settlement().rootIdle).toBe(true))
+    return { ctx, session, q }
+  }
+  type Internals = { ensureAgent(id: string, init?: Record<string, unknown>): { state: string } }
+  const spawnReport = (s: ClaudeSession, id: string) => (s as unknown as Internals).ensureAgent(id, { roleSlug: 'general-purpose', state: 'thinking' })
+
+  it('applies the requested mode to the root query, derived from the argument (ctx.project still holds the old mode)', async () => {
+    const { ctx, session, q } = await live()
+    expect(ctx.project.permissionMode).toBe('default')
+    await expect(session.setPermissionMode('acceptEdits')).resolves.toBe(true)
+    expect(q.setPermissionMode).toHaveBeenCalledWith('acceptEdits')
+    await expect(session.setPermissionMode('plan')).resolves.toBe(true)
+    expect(q.setPermissionMode).toHaveBeenLastCalledWith('plan')
+    // No restart, no new query: the live session changes in place.
+    expect(sdk.queries).toHaveLength(1)
+    // Reports inherit the session's mode: no role definition pins its own.
+    expect(Object.values(q.options.agents as Record<string, Record<string, unknown>>).some((a) => 'permissionMode' in a)).toBe(false)
+  })
+
+  it('refuses a mode the run would not honour: a quick (trust-restricted) run asks before each change', async () => {
+    const quick = { folder: '/some/user/folder', team: 'single' as const, allowEdits: false, gitRepo: false }
+    const { session, q } = await live({ run: runSummary({ projectId: 'quick', quick }) }, { roles: [role({ id: 'q', slug: 'assistant', canSpawn: false })] })
+    for (const m of ['acceptEdits', 'auto', 'bypassPermissions'] as const) await expect(session.setPermissionMode(m)).rejects.toThrow('asks before each change')
+    expect(q.setPermissionMode).not.toHaveBeenCalled()
+    await expect(session.setPermissionMode('plan')).resolves.toBe(true)
+  })
+
+  it('never turns on bypass live when the query started without it, and honours it when it did', async () => {
+    const plain = await live()
+    expect(plain.q.options.allowDangerouslySkipPermissions).toBe(false)
+    await expect(plain.session.setPermissionMode('bypassPermissions')).rejects.toThrow('applies from the next session')
+    expect(plain.q.setPermissionMode).not.toHaveBeenCalled()
+    await plain.session.stop()
+    sdk.queries.length = 0
+    const bypass = await live({}, { permissionMode: 'bypassPermissions' })
+    expect(bypass.q.options.allowDangerouslySkipPermissions).toBe(true)
+    await expect(bypass.session.setPermissionMode('default')).resolves.toBe(true)
+    await expect(bypass.session.setPermissionMode('bypassPermissions')).resolves.toBe(true)
+    expect(bypass.q.setPermissionMode).toHaveBeenLastCalledWith('bypassPermissions')
+  })
+
+  it('counts live reports that started under a wider mode, never a plain true while one stays wider', async () => {
+    const { ctx, session } = await live({}, { permissionMode: 'acceptEdits' })
+    // What RunManager does around the call: ctx.project holds the new mode once the session applied it.
+    const apply = async (mode: 'default' | 'acceptEdits' | 'plan' | 'dontAsk') => {
+      const answer = await session.setPermissionMode(mode)
+      ctx.project = { ...ctx.project, permissionMode: mode }
+      return answer
+    }
+    spawnReport(session, 'agent-a')
+    // Narrowing: the report started in acceptEdits may keep it.
+    await expect(apply('default')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+    // Widening back: nothing running is wider than acceptEdits.
+    await expect(apply('acceptEdits')).resolves.toBe(true)
+    // A report spawned under plan is within dontAsk (plan is no wider than any mode); agent-a (acceptEdits) is not.
+    await apply('plan')
+    const report = spawnReport(session, 'agent-b')
+    expect(await apply('dontAsk')).toEqual({ applied: true, reportsUnchanged: 1 })
+    const a = (session as unknown as { agents: Map<string, { state: string }> }).agents.get('agent-a')!
+    a.state = 'done'
+    await expect(apply('plan')).resolves.toBe(true)
+    // Finished reports do not count either way.
+    ;(report as { state: string }).state = 'done'
+    await expect(apply('plan')).resolves.toBe(true)
+  })
+
+  it('a card that granted accept-edits for the session counts for reports started under it', async () => {
+    const { session } = await live()
+    ;(session as unknown as { acceptEditsGranted: boolean }).acceptEditsGranted = true
+    spawnReport(session, 'agent-c')
+    await expect(session.setPermissionMode('default')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+  })
+
+  it('keeps raw CLI errors out of the thrown message, and refuses a session that is not live or a bridged child', async () => {
+    const { ctx, session, q } = await live()
+    q.setPermissionMode.mockRejectedValueOnce(new Error('control request failed at C:\\secret\\path'))
+    const err = await session.setPermissionMode('plan').catch((e: Error) => e)
+    expect((err as Error).message).toBe('The session could not change its permission mode now.')
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('control request failed'))).toBe(true)
+    await session.stop()
+    await expect(session.setPermissionMode('plan')).rejects.toThrow('not live')
+    sdk.queries.length = 0
+    const child = await live({ bridgedChild: { agentId: 'b1', parentAgentId: ROOT_AGENT_ID, roleId: 'r1' } })
+    await expect(child.session.setPermissionMode('plan')).rejects.toThrow('Only the run root')
+  })
+
+  it('refuses setup-like runs', async () => {
+    const { session, q } = await live({ run: runSummary({ kind: 'setup' }) })
+    await expect(session.setPermissionMode('plan')).rejects.toThrow('keeps its own permission mode')
+    expect(q.setPermissionMode).not.toHaveBeenCalled()
   })
 })

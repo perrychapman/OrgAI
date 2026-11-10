@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { EngagementNote, ImageAttachment, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
 import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
 import { RESUME_TEXT } from './runManager'
-import { STAFFING_TOKEN, DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
+import { STAFFING_TOKEN, DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MODE_REFUSE_TOKEN, MODE_REPORTS_UNCHANGED_TOKEN, MockAdapter, mockPermissionModeLog, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -62,6 +62,48 @@ describe('mock listModels', () => {
     await resumed.switchModel({ model: 'mock-next' })
     await resumed.stop()
     await resumed.finished
+  })
+
+  it('setPermissionMode applies at once, records the mode and logs the e2e line', async () => {
+    const ctx = fakeCtx({ prompt: '[mock:model-switch]', autoContinue: false })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx) as MockSession
+    await expect(session.setPermissionMode('plan')).resolves.toBe(true)
+    await expect(session.setPermissionMode('acceptEdits')).resolves.toBe(true)
+    expect(session.permissionModes).toEqual(['plan', 'acceptEdits'])
+    expect(mockPermissionModeLog('plan')).toBe('Mock session permission mode: plan.')
+    expect(ctx.events).toContainEqual({ type: 'log', runId: ctx.run.id, level: 'info', message: 'Mock session permission mode: plan.' })
+    // A narrowing below acceptEdits clears a card's session accept-edits grant; auto keeps it.
+    const flag = session as unknown as { sessionAcceptEdits: boolean }
+    flag.sessionAcceptEdits = true
+    await session.setPermissionMode('auto')
+    expect(flag.sessionAcceptEdits).toBe(true)
+    await session.setPermissionMode('dontAsk')
+    expect(flag.sessionAcceptEdits).toBe(false)
+    await session.stop()
+    await session.finished
+    await expect(session.setPermissionMode('plan')).rejects.toThrow('not live')
+  })
+
+  it('setPermissionMode markers and refusals: [mock:mode-refuse], [mock:mode-reports-unchanged], quick, setup-like, bridged', async () => {
+    const adapter = new MockAdapter({ script: { delayMs: 0 } })
+    const refuse = await adapter.start(fakeCtx({ prompt: `[mock:model-switch] ${MODE_REFUSE_TOKEN}`, autoContinue: false })) as MockSession
+    await expect(refuse.setPermissionMode('plan')).rejects.toThrow('from the next session')
+    expect(refuse.permissionModes).toEqual([])
+    await refuse.stop()
+    const unchanged = await adapter.start(fakeCtx({ prompt: `[mock:model-switch] ${MODE_REPORTS_UNCHANGED_TOKEN}`, autoContinue: false })) as MockSession
+    await expect(unchanged.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+    await unchanged.stop()
+    const quick = { folder: '/some/user/folder', team: 'single' as const, allowEdits: false, gitRepo: false }
+    const q = await adapter.start(fakeCtx({ prompt: '[mock:model-switch]', autoContinue: false, run: runSummary({ projectId: 'quick', quick }) })) as MockSession
+    for (const m of ['acceptEdits', 'auto', 'bypassPermissions'] as const) await expect(q.setPermissionMode(m)).rejects.toThrow('asks before each change')
+    await expect(q.setPermissionMode('dontAsk')).resolves.toBe(true)
+    await q.stop()
+    const setupRun = await adapter.start(fakeCtx({ prompt: 'x', autoContinue: false, run: runSummary({ kind: 'setup' }) })) as MockSession
+    await expect(setupRun.setPermissionMode('plan')).rejects.toThrow('keeps its own permission mode')
+    await setupRun.stop()
+    const child = await adapter.start(fakeCtx({ prompt: 'x', autoContinue: false, bridgedChild: { agentId: 'b1', parentAgentId: ROOT_AGENT_ID, roleId: 'r1' } })) as MockSession
+    await expect(child.setPermissionMode('plan')).rejects.toThrow('Only the run root')
+    await child.stop()
   })
 
   it('lists the builtin aliases plus an unknown family', async () => {

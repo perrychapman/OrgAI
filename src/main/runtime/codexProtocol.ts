@@ -373,6 +373,31 @@ export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLi
   return choice
 }
 
+/**
+ * turn/start's SandboxPolicy object for a sandbox mode (TurnStartParams.sandboxPolicy, "for this turn and subsequent
+ * turns"; generate-ts of @openai/codex 0.166.0, v2/SandboxPolicy.ts). thread/start takes the mode string, turn/start
+ * only the object. workspace-write carries OrgAI's writable roots (what the launch config's
+ * sandbox_workspace_write.writable_roots holds) and Codex's documented defaults otherwise: no network, temp folders
+ * writable. A user's own CODEX_HOME setting that allows network is therefore narrowed, never widened. Live: unverified.
+ */
+export function sandboxPolicyFor(sandbox: SandboxMode, writableRoots: string[]): Record<string, unknown> {
+  if (sandbox === 'read-only') return { type: 'readOnly', networkAccess: false }
+  if (sandbox === 'danger-full-access') return { type: 'dangerFullAccess' }
+  return { type: 'workspaceWrite', writableRoots: writableRoots.filter((r) => typeof r === 'string' && r.length > 0), networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+}
+
+/**
+ * The turn/start fields that move a thread from the policy it was started with (`from`) to `to`: approvalPolicy,
+ * approvalsReviewer ('user' clears auto_review) and sandboxPolicy, each only when it differs. Empty = nothing to send.
+ */
+export function policyOverride(from: PolicyChoice, to: PolicyChoice, writableRoots: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (from.approvalPolicy !== to.approvalPolicy) out.approvalPolicy = to.approvalPolicy
+  if ((from.approvalsReviewer ?? 'user') !== (to.approvalsReviewer ?? 'user')) out.approvalsReviewer = to.approvalsReviewer ?? 'user'
+  if (from.sandbox !== to.sandbox) out.sandboxPolicy = sandboxPolicyFor(to.sandbox, writableRoots)
+  return out
+}
+
 // ---------- saved allow rules ----------
 
 // The matcher is vendor-neutral and shared with the Claude adapter's PreToolUse hook.
