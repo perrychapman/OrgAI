@@ -70,13 +70,22 @@ const MODEL_ID_RE = /^[!-~]{1,200}$/
 export const roleEditDeps = { editText: (ctx: CliContext, initial: string): Promise<string> => editInEditor(ctx, initial) }
 
 async function editInEditor(ctx: CliContext, initial: string): Promise<string> {
-  const editor = (ctx.env.VISUAL || ctx.env.EDITOR || (ctx.platform === 'win32' ? 'notepad' : 'vi')).trim()
+  return editTextIn(ctx.env, ctx.platform, initial)
+}
+
+/**
+ * Opens $VISUAL / $EDITOR (vi, notepad on Windows) on `initial` in a private temp file and returns the saved text; the
+ * caller owns the terminal around it (the TUI suspends Ink first). Synchronous on purpose: while the editor runs no
+ * event loop turn can read the terminal it shares. Throws a CliError when the editor fails; the file is always removed.
+ */
+export function editTextIn(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, initial: string, run: typeof spawnSync = spawnSync): string {
+  const editor = (env.VISUAL || env.EDITOR || (platform === 'win32' ? 'notepad' : 'vi')).trim()
   const dir = mkdtempSync(join(tmpdir(), 'orgai-prompt-'))
   const file = join(dir, 'prompt.md')
   try {
     writeFileSync(file, initial, { encoding: 'utf8', mode: 0o600 })
     // EDITOR may carry arguments ("code -w"), so it runs through the shell; the file path is quoted.
-    const r = spawnSync(`${editor} "${file}"`, { stdio: 'inherit', shell: true, env: ctx.env })
+    const r = run(`${editor} "${file}"`, { stdio: 'inherit', shell: true, env })
     if (r.error || r.status !== 0) throw new CliError(`The editor (${safeLine(editor)}) did not exit cleanly; nothing changed.`, EXIT.failure)
     return readFileSync(file, 'utf8')
   } finally {
@@ -580,9 +589,7 @@ export function labelFrom(env: ModelEnv | null): (id: string) => string {
 /** Ask before a change that may spend more (and before `extra`, a question that always asks). False = do not save. */
 async function gate(ctx: CliContext, sentences: string[], yes: boolean, extra?: string): Promise<boolean> {
   if (!sentences.length && !extra) return true
-  const spend = sentences.length ? `May spend more: ${sentences.join(' ')}` : ''
-  const question = [extra, spend, extra ? '' : 'Save anyway?'].filter(Boolean).join(' ')
-  return confirm(ctx, question, yes)
+  return confirm(ctx, spendQuestion(sentences, extra), yes)
 }
 
 const roleJson = (r: Role): Json => structuredClone(r) as unknown as Json
@@ -591,6 +598,128 @@ function saved(project: Project, id: string): Role {
   const r = project.roles.find((x) => x.id === id)
   if (!r) throw new CliError('The host did not keep the role; nothing to show.', EXIT.failure)
   return r
+}
+
+// ---------- Plans (shared by the commands and the TUI's Team view) ----------
+
+/** The prompt a new role starts with (TeamView addRole). */
+export const NEW_ROLE_PROMPT = 'You are a specialist. Complete the assigned task and report back concisely.'
+
+/** A chart change worked out but not saved: the roles to send with projects:save, and what to tell the user first. */
+export interface RolePlan {
+  /** The whole chart as it would be saved. */
+  roles: Role[]
+  /** The role the change is about (the new one for add, the removed one for rm). */
+  roleId: string
+  /** "May spend more" sentences (spendSentences); a non-empty list needs a confirmation. */
+  sentences: string[]
+  notes: string[]
+}
+
+/**
+ * `team role add`: the new role (TeamView addRole) under `managerRef`, with `edits` applied. Pure apart from the catalog.
+ * Throws a usage CliError naming the flag.
+ */
+export function planRoleAdd(project: Project, managerRef: string, edits: RoleEdits & { name: string }, env: ModelEnv, label?: (id: string) => string): RolePlan & { manager: Role; base: Role } {
+  const manager = roleRef(project.roles, managerRef, '--reports-to')
+  const everyday = modelForTier('everyday', tierCtx(env, projectConnection(project)))
+  const base: Role = {
+    id: newId('role'),
+    slug: slugify(edits.name),
+    name: edits.name.trim(),
+    description: 'Describe when a manager should delegate to this role.',
+    responsibilities: [],
+    prompt: NEW_ROLE_PROMPT,
+    tools: ['Read', 'Glob', 'Grep'],
+    model: everyday?.model ?? 'inherit',
+    ...(everyday ? { tier: everyday.tier } : {}),
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: manager.id,
+    position: { x: manager.position.x + 120, y: manager.position.y + 210 },
+    color: ROLE_COLORS[project.roles.length % ROLE_COLORS.length]
+  }
+  const withManager = [...project.roles.map((r) => (r.id === manager.id ? { ...r, canSpawn: true, spawnable: [...new Set([...r.spawnable, base.id])] } : r)), base]
+  const edited = applyRoleEdits(project, withManager, base, edits, env)
+  const roles = withManager.map((r) => (r.id === base.id ? edited.role : r))
+  const problem = chartProblem(roles, '--name', new Set([base.id]))
+  if (problem) throw usage(problem)
+  const sentences = spendSentences(project, project.roles, roles, new Map([[base.id, base]]), label)
+  return { roles, roleId: base.id, sentences, notes: edited.notes, manager, base }
+}
+
+/** `team role set`: `edits` applied to the role `ref` names. Throws a usage CliError naming the flag. */
+export function planRoleSet(project: Project, ref: string, edits: RoleEdits, env: ModelEnv | null, label?: (id: string) => string): RolePlan & { before: Role } {
+  const before = roleRef(project.roles, ref, 'team role set')
+  const edited = applyRoleEdits(project, project.roles, before, edits, env)
+  const roles = project.roles.map((r) => (r.id === before.id ? edited.role : r))
+  const problem = chartProblem(roles, '--name', new Set([before.id]))
+  if (problem) throw usage(problem)
+  return { roles, roleId: before.id, sentences: spendSentences(project, project.roles, roles, undefined, label), notes: edited.notes, before }
+}
+
+/** `team role move`: the role `ref` reports to `toRef`. `unchanged` when it already does (roles is then the chart as is). */
+export function planRoleMove(project: Project, ref: string, toRef: string): RolePlan & { before: Role; manager: Role; unchanged: boolean } {
+  const before = roleRef(project.roles, ref, 'team role move')
+  const manager = roleRef(project.roles, toRef, '--reports-to')
+  if (before.reportsTo === null) throw usage(`--reports-to: ${safeLine(before.name)} is the top of the chart; a chart keeps its top role.`)
+  if (isUnder(project.roles, manager.id, before.id)) throw usage(`--reports-to: ${safeLine(manager.name)} reports (directly or not) to ${safeLine(before.name)}; that would make a loop.`)
+  if (before.reportsTo === manager.id) return { roles: [...project.roles], roleId: before.id, sentences: [], notes: [], before, manager, unchanged: true }
+  const roles = setReportsTo(project.roles, before.id, manager.id)
+  const problem = chartProblem(roles, '--reports-to', new Set())
+  if (problem) throw usage(problem)
+  const notes = !manager.canSpawn ? [`${safeLine(manager.name)} can now create subagents, because ${safeLine(before.name)} reports to it.`] : []
+  return { roles, roleId: before.id, sentences: spendSentences(project, project.roles, roles), notes, before, manager, unchanged: false }
+}
+
+/**
+ * `team role rm`: the chart without the role `ref` names (lib/roleOps removeRole), its reports handed to `reparentRef`
+ * (required when it has reports). `question` is the confirmation every removal asks.
+ */
+export function planRoleRemove(project: Project, ref: string, reparentRef?: string): RolePlan & { gone: Role; children: Role[]; target?: Role; moved: string; question: string } {
+  const gone = roleRef(project.roles, ref, 'team role rm')
+  if (gone.reportsTo === null) throw usage(`team role rm: ${safeLine(gone.name)} is the top of the chart and cannot be removed.`)
+  const children = project.roles.filter((r) => r.reportsTo === gone.id)
+  let target: Role | undefined
+  if (reparentRef !== undefined) {
+    target = roleRef(project.roles, reparentRef, '--reparent-to')
+    if (isUnder(project.roles, target.id, gone.id)) throw usage(`--reparent-to: ${safeLine(target.name)} is ${safeLine(gone.name)} or one of its reports.`)
+  } else if (children.length) {
+    throw usage(`team role rm: ${children.map((c) => safeLine(c.name)).join(', ')} report${children.length === 1 ? 's' : ''} to ${safeLine(gone.name)}; give --reparent-to <role> to move ${children.length === 1 ? 'it' : 'them'}.`)
+  }
+  // lib/roleOps removeRole, with the reports handed to the named manager: references to the role are cleaned everywhere.
+  let roles: Role[] = project.roles
+  for (const c of children) roles = setReportsTo(roles, c.id, target!.id)
+  roles = roles
+    .filter((r) => r.id !== gone.id)
+    .map((r) => {
+      if (!r.spawnable.includes(gone.id) && !r.requiredReports?.includes(gone.id)) return r
+      const next: Role = { ...r, spawnable: r.spawnable.filter((id) => id !== gone.id) }
+      const required = cleanRequiredReports({ ...next, requiredReports: next.requiredReports?.filter((id) => id !== gone.id) })
+      if (required) next.requiredReports = required
+      else delete next.requiredReports
+      return next
+    })
+  const problem = chartProblem(roles, '--reparent-to', new Set())
+  if (problem) throw usage(problem)
+  const moved = children.length ? ` Its report${children.length === 1 ? '' : 's'} (${children.map((c) => safeLine(c.name)).join(', ')}) move${children.length === 1 ? 's' : ''} to ${safeLine(target!.name)}.` : ''
+  return {
+    roles,
+    roleId: gone.id,
+    sentences: spendSentences(project, project.roles, roles),
+    notes: [],
+    gone,
+    children,
+    ...(target ? { target } : {}),
+    moved,
+    question: `Remove ${safeLine(gone.name)} from ${safeLine(project.name)}?${moved}`
+  }
+}
+
+/** The confirmation question of a change: `extra` (always asks), then "May spend more: ..." (and "Save anyway?" alone). */
+export function spendQuestion(sentences: readonly string[], extra?: string): string {
+  const spend = sentences.length ? `May spend more: ${sentences.join(' ')}` : ''
+  return [extra, spend, extra ? '' : 'Save anyway?'].filter(Boolean).join(' ')
 }
 
 // ---------- Commands ----------
@@ -612,44 +741,21 @@ export const roleAdd: SubcommandFn = async (ctx, args) => {
     const fresh = await freshProject(ctx, client)
     const env = await modelEnv(client)
     const label = labelFrom(env)
-    const manager = roleRef(fresh.roles, managerRef, '--reports-to')
-    const conn = projectConnection(fresh)
-    const everyday = modelForTier('everyday', tierCtx(env, conn))
-    // TeamView addRole's new role, under the manager.
-    const base: Role = {
-      id: newId('role'),
-      slug: slugify(name),
-      name: name.trim(),
-      description: 'Describe when a manager should delegate to this role.',
-      responsibilities: [],
-      prompt: 'You are a specialist. Complete the assigned task and report back concisely.',
-      tools: ['Read', 'Glob', 'Grep'],
-      model: everyday?.model ?? 'inherit',
-      ...(everyday ? { tier: everyday.tier } : {}),
-      canSpawn: false,
-      spawnable: [],
-      reportsTo: manager.id,
-      position: { x: manager.position.x + 120, y: manager.position.y + 210 },
-      color: ROLE_COLORS[fresh.roles.length % ROLE_COLORS.length]
-    }
-    const withManager = [...fresh.roles.map((r) => (r.id === manager.id ? { ...r, canSpawn: true, spawnable: [...new Set([...r.spawnable, base.id])] } : r)), base]
-    const prompt = await promptFrom(ctx, values, base.prompt)
-    const edited = applyRoleEdits(fresh, withManager, base, { ...editsOf(values), name: values.name ?? name, prompt }, env)
-    const roles = withManager.map((r) => (r.id === base.id ? edited.role : r))
-    const problem = chartProblem(roles, '--name', new Set([base.id]))
-    if (problem) throw usage(problem)
-    const sentences = spendSentences(fresh, fresh.roles, roles, new Map([[base.id, base]]), label)
-    if (!(await gate(ctx, sentences, !!values.yes))) {
+    roleRef(fresh.roles, managerRef, '--reports-to')
+    const prompt = await promptFrom(ctx, values, NEW_ROLE_PROMPT)
+    const plan = planRoleAdd(fresh, managerRef, { ...editsOf(values), name: values.name ?? name, prompt }, env, label)
+    if (!(await gate(ctx, plan.sentences, !!values.yes))) {
       emit(ctx, { saved: false }, () => 'Nothing changed.')
       return EXIT.failure
     }
-    const project = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles }])
-    const after = saved(project, base.id)
+    const project = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles: plan.roles }])
+    const after = saved(project, plan.roleId)
+    const manager = plan.manager
     const managerNote = !manager.canSpawn ? [`${safeLine(manager.name)} can now create subagents, because ${safeLine(after.name)} reports to it.`] : []
-    emit(ctx, { project: projectJson(project), role: { before: null, after: roleJson(after) }, spend: sentences, notes: [...edited.notes, ...managerNote] }, () => [
+    emit(ctx, { project: projectJson(project), role: { before: null, after: roleJson(after) }, spend: plan.sentences, notes: [...plan.notes, ...managerNote] }, () => [
       `Added ${safeLine(after.name)} [${safeLine(after.slug)}] under ${safeLine(manager.name)}.`,
       ...roleSummaryLines(after, project, label),
-      ...edited.notes.map((n) => safeLine(n)),
+      ...plan.notes.map((n) => safeLine(n)),
       ...managerNote
     ])
     return EXIT.ok
@@ -663,26 +769,23 @@ export const roleSet: SubcommandFn = async (ctx, args) => {
   if (!hasEdits(values)) throw usage(`Nothing to change. Usage: orgai ${SET_USAGE}`)
   return withHost(ctx, ['read', 'configure'], async (client) => {
     const fresh = await freshProject(ctx, client)
-    const before = roleRef(fresh.roles, ref, 'team role set')
+    const current = roleRef(fresh.roles, ref, 'team role set')
     const env = needsModelEnv(values) ? await modelEnv(client) : null
     const label = labelFrom(env)
-    const prompt = await promptFrom(ctx, values, before.prompt)
-    const edited = applyRoleEdits(fresh, fresh.roles, before, { ...editsOf(values), prompt }, env)
-    const roles = fresh.roles.map((r) => (r.id === before.id ? edited.role : r))
-    const problem = chartProblem(roles, '--name', new Set([before.id]))
-    if (problem) throw usage(problem)
-    const sentences = spendSentences(fresh, fresh.roles, roles, undefined, label)
-    if (!(await gate(ctx, sentences, !!values.yes))) {
+    const prompt = await promptFrom(ctx, values, current.prompt)
+    const plan = planRoleSet(fresh, ref, { ...editsOf(values), prompt }, env, label)
+    const before = plan.before
+    if (!(await gate(ctx, plan.sentences, !!values.yes))) {
       emit(ctx, { saved: false }, () => 'Nothing changed.')
       return EXIT.failure
     }
-    const project = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles }])
+    const project = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles: plan.roles }])
     const after = saved(project, before.id)
     const changes = changeLines(before, after, project, label)
-    emit(ctx, { project: projectJson(project), role: { before: roleJson(before), after: roleJson(after) }, spend: sentences, notes: edited.notes }, () => [
+    emit(ctx, { project: projectJson(project), role: { before: roleJson(before), after: roleJson(after) }, spend: plan.sentences, notes: plan.notes }, () => [
       `Saved ${safeLine(after.name)} [${safeLine(after.slug)}].`,
       ...(changes.length ? changes : ['  Nothing changed.']),
-      ...edited.notes.map((n) => safeLine(n))
+      ...plan.notes.map((n) => safeLine(n))
     ])
     return EXIT.ok
   })
@@ -695,25 +798,19 @@ export const roleMove: SubcommandFn = async (ctx, args) => {
   const to = checkArg('new manager (--reports-to <role>)', values['reports-to'])
   return withHost(ctx, ['read', 'configure'], async (client) => {
     const fresh = await freshProject(ctx, client)
-    const before = roleRef(fresh.roles, ref, 'team role move')
-    const manager = roleRef(fresh.roles, to, '--reports-to')
-    if (before.reportsTo === null) throw usage(`--reports-to: ${safeLine(before.name)} is the top of the chart; a chart keeps its top role.`)
-    if (isUnder(fresh.roles, manager.id, before.id)) throw usage(`--reports-to: ${safeLine(manager.name)} reports (directly or not) to ${safeLine(before.name)}; that would make a loop.`)
-    if (before.reportsTo === manager.id) {
+    const plan = planRoleMove(fresh, ref, to)
+    const { before, manager } = plan
+    if (plan.unchanged) {
       emit(ctx, { project: projectJson(fresh), role: { before: roleJson(before), after: roleJson(before) }, spend: [] }, () => `${safeLine(before.name)} already reports to ${safeLine(manager.name)}.`)
       return EXIT.ok
     }
-    const roles = setReportsTo(fresh.roles, before.id, manager.id)
-    const problem = chartProblem(roles, '--reports-to', new Set())
-    if (problem) throw usage(problem)
-    const sentences = spendSentences(fresh, fresh.roles, roles)
-    if (!(await gate(ctx, sentences, !!values.yes))) {
+    if (!(await gate(ctx, plan.sentences, !!values.yes))) {
       emit(ctx, { saved: false }, () => 'Nothing changed.')
       return EXIT.failure
     }
-    const project = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles }])
+    const project = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles: plan.roles }])
     const after = saved(project, before.id)
-    emit(ctx, { project: projectJson(project), role: { before: roleJson(before), after: roleJson(after) }, spend: sentences }, () => [
+    emit(ctx, { project: projectJson(project), role: { before: roleJson(before), after: roleJson(after) }, spend: plan.sentences }, () => [
       `${safeLine(after.name)} now reports to ${safeLine(manager.name)}.`,
       ...(!manager.canSpawn ? [`${safeLine(manager.name)} can now create subagents, because ${safeLine(after.name)} reports to it.`] : [])
     ])
@@ -727,41 +824,17 @@ export const roleRemove: SubcommandFn = async (ctx, args) => {
   const ref = checkArg('role (team role rm <role>)', positionals[0])
   return withHost(ctx, ['read', 'configure'], async (client) => {
     const fresh = await freshProject(ctx, client)
-    const gone = roleRef(fresh.roles, ref, 'team role rm')
-    if (gone.reportsTo === null) throw usage(`team role rm: ${safeLine(gone.name)} is the top of the chart and cannot be removed.`)
-    const children = fresh.roles.filter((r) => r.reportsTo === gone.id)
-    let target: Role | undefined
-    if (values['reparent-to'] !== undefined) {
-      target = roleRef(fresh.roles, checkArg('new manager (--reparent-to)', values['reparent-to']), '--reparent-to')
-      if (isUnder(fresh.roles, target.id, gone.id)) throw usage(`--reparent-to: ${safeLine(target.name)} is ${safeLine(gone.name)} or one of its reports.`)
-    } else if (children.length) {
-      throw usage(`team role rm: ${children.map((c) => safeLine(c.name)).join(', ')} report${children.length === 1 ? 's' : ''} to ${safeLine(gone.name)}; give --reparent-to <role> to move ${children.length === 1 ? 'it' : 'them'}.`)
-    }
-    // lib/roleOps removeRole, with the reports handed to the named manager: references to the role are cleaned everywhere.
-    let roles: Role[] = fresh.roles
-    for (const c of children) roles = setReportsTo(roles, c.id, target!.id)
-    roles = roles
-      .filter((r) => r.id !== gone.id)
-      .map((r) => {
-        if (!r.spawnable.includes(gone.id) && !r.requiredReports?.includes(gone.id)) return r
-        const next: Role = { ...r, spawnable: r.spawnable.filter((id) => id !== gone.id) }
-        const required = cleanRequiredReports({ ...next, requiredReports: next.requiredReports?.filter((id) => id !== gone.id) })
-        if (required) next.requiredReports = required
-        else delete next.requiredReports
-        return next
-      })
-    const problem = chartProblem(roles, '--reparent-to', new Set())
-    if (problem) throw usage(problem)
-    const sentences = spendSentences(fresh, fresh.roles, roles)
-    const moved = children.length ? ` Its report${children.length === 1 ? '' : 's'} (${children.map((c) => safeLine(c.name)).join(', ')}) move${children.length === 1 ? 's' : ''} to ${safeLine(target!.name)}.` : ''
-    if (!(await gate(ctx, sentences, !!values.yes, `Remove ${safeLine(gone.name)} from ${safeLine(fresh.name)}?${moved}`))) {
+    const reparent = values['reparent-to'] !== undefined ? checkArg('new manager (--reparent-to)', values['reparent-to']) : undefined
+    const plan = planRoleRemove(fresh, ref, reparent)
+    const { gone, children, target, moved } = plan
+    if (!(await gate(ctx, plan.sentences, !!values.yes, plan.question))) {
       emit(ctx, { saved: false }, () => 'Nothing removed.')
       return EXIT.failure
     }
-    const project = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles }])
+    const project = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles: plan.roles }])
     emit(
       ctx,
-      { project: projectJson(project), removed: roleJson(gone), reparentedTo: target?.id ?? null, moved: children.map((c) => c.id), spend: sentences, previousRoles: fresh.roles as unknown as Json, roles: project.roles.length },
+      { project: projectJson(project), removed: roleJson(gone), reparentedTo: target?.id ?? null, moved: children.map((c) => c.id), spend: plan.sentences, previousRoles: fresh.roles as unknown as Json, roles: project.roles.length },
       () => [`Removed ${safeLine(gone.name)}.${moved}`, `The chart now has ${project.roles.length} role${project.roles.length === 1 ? '' : 's'}. JSON output carries the previous chart as previousRoles.`]
     )
     return EXIT.ok

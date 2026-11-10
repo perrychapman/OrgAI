@@ -768,6 +768,78 @@ function affectedLines(rows: readonly AffectedRole[], dryRun: boolean): string[]
   ]
 }
 
+/** A tier change worked out but not sent: the mapping before and after, the tiers that move, and notes. */
+export interface TierChangePlan {
+  before: Tiers
+  next: Tiers
+  changed: ModelTier[]
+  /** "  deep: a -> b" per changed tier. */
+  changeLines: string[]
+  /** Models sent although the catalog does not list them (force). */
+  forced: string[]
+  notes: string[]
+}
+
+/**
+ * `<tier>=<model>` pairs and resets on `connection` (shared by `connections tier` and the TUI's Settings view): every
+ * model is checked against the connection's catalog (a usage CliError with close matches unless `force`), a reset takes
+ * discovery's choice (tierDeps.suggest, as ConnectionService.retier does) or leaves the tier unmapped.
+ */
+export function planTierChange(connection: ProviderConnection, label: string, catalog: readonly ProviderModel[], pairs: Tiers, resets: readonly ModelTier[], force: boolean): TierChangePlan {
+  const id = connection.id
+  const ids = catalog.map((m) => m.id)
+  const known = new Set(ids)
+  const forced: string[] = []
+  for (const [tier, model] of Object.entries(pairs) as [ModelTier, string][]) {
+    if (known.has(model)) continue
+    if (force) {
+      forced.push(model)
+      continue
+    }
+    const close = closeModelIds(model, ids)
+    throw new CliError(
+      `${safeLine(model)} (${tier}) is not in ${label}'s catalog.${close.length ? ` Close matches: ${close.map(safeLine).join(', ')}.` : ''} See \`orgai models list --connection ${id}\`; --force sends it anyway.`,
+      EXIT.usage
+    )
+  }
+  const suggestion = resets.length ? tierDeps.suggest(id, [...catalog]) : {}
+  const before: Tiers = { ...connection.tierModels }
+  const next: Tiers = { ...before, ...pairs }
+  const unresolved: ModelTier[] = []
+  for (const t of resets) {
+    const want = suggestion[t]
+    if (want) next[t] = want
+    else {
+      delete next[t]
+      unresolved.push(t)
+    }
+  }
+  const changed = MODEL_TIERS.filter((t) => (next[t] ?? '') !== (before[t] ?? ''))
+  const changeLines = changed.map((t) => `  ${t}: ${safeLine(before[t] ?? 'unmapped')} -> ${safeLine(next[t] ?? 'unmapped')}`)
+  const notes = [
+    ...(forced.length ? [`Not in the catalog (sent with --force): ${forced.map(safeLine).join(', ')}.`] : []),
+    ...(unresolved.length ? [`Discovery has no model for ${unresolved.join(', ')}; ${unresolved.length === 1 ? 'it is' : 'they are'} left unmapped.`] : [])
+  ]
+  return { before, next, changed, changeLines, forced, notes }
+}
+
+/**
+ * The roles a tier change would touch, before it is sent: the same pure remap the host runs on a tier change
+ * (ConnectionService.remapConnectionProjects) over every project with a role on `connection`.
+ */
+export function previewTierChange(projects: readonly Project[], connection: ConnectionId, plan: Pick<TierChangePlan, 'before' | 'next' | 'changed'>, catalog: readonly ProviderModel[]): AffectedRole[] {
+  const list = projects.filter((p) => projectConnection(p) === connection || (p.roles ?? []).some((r) => roleConnection(r, p) === connection))
+  const changes = new Map<string, RemapResult['changes']>()
+  for (const p of list) {
+    const out = remapProject(p, { connection, tierModels: plan.next, previousTierModels: plan.before, catalog: [...catalog], reason: 'tierModels', include: (r) => roleConnection(r, p) === connection })
+    changes.set(p.id, out.result.changes)
+  }
+  return affectedRoles(list, connection, plan.changed, changes)
+}
+
+/** The lines `connections tier` prints for the touched roles (exported for the TUI). */
+export const tierAffectedLines = (rows: readonly AffectedRole[], dryRun: boolean): string[] => affectedLines(rows, dryRun)
+
 /** Swappable in tests: discovery's tier choice (main/connections/catalog.ts, what ConnectionService.retier uses). */
 export const tierDeps = { suggest: suggestTierModels }
 
@@ -797,41 +869,8 @@ const runTier = async (ctx: CliContext, args: string[]): Promise<number> => {
       return EXIT.ok
     }
 
-    // Validate every pair against the catalog before anything is sent.
-    const ids = catalog.map((m) => m.id)
-    const known = new Set(ids)
-    const forced: string[] = []
-    for (const [tier, model] of Object.entries(pairs) as [ModelTier, string][]) {
-      if (known.has(model)) continue
-      if (values.force) {
-        forced.push(model)
-        continue
-      }
-      const close = closeModelIds(model, ids)
-      throw new CliError(
-        `${safeLine(model)} (${tier}) is not in ${label}'s catalog.${close.length ? ` Close matches: ${close.map(safeLine).join(', ')}.` : ''} See \`orgai models list --connection ${id}\`; --force sends it anyway.`,
-        EXIT.usage
-      )
-    }
-    const suggestion = resets.length ? tierDeps.suggest(id, catalog) : {}
-    const before: Tiers = { ...current.connection.tierModels }
-    const next: Tiers = { ...before, ...pairs }
-    const unresolved: ModelTier[] = []
-    for (const t of resets) {
-      const want = suggestion[t]
-      if (want) next[t] = want
-      else {
-        delete next[t]
-        unresolved.push(t)
-      }
-    }
-    const changed = MODEL_TIERS.filter((t) => (next[t] ?? '') !== (before[t] ?? ''))
+    const { before, next, changed, changeLines, notes } = planTierChange(current.connection, label, catalog, pairs, resets, !!values.force)
     const changeJson = changed.map((t) => ({ tier: t, from: before[t] ?? null, to: next[t] ?? null }))
-    const changeLines = changed.map((t) => `  ${t}: ${safeLine(before[t] ?? 'unmapped')} -> ${safeLine(next[t] ?? 'unmapped')}`)
-    const notes = [
-      ...(forced.length ? [`Not in the catalog (sent with --force): ${forced.map(safeLine).join(', ')}.`] : []),
-      ...(unresolved.length ? [`Discovery has no model for ${unresolved.join(', ')}; ${unresolved.length === 1 ? 'it is' : 'they are'} left unmapped.`] : [])
-    ]
 
     if (changed.length === 0) {
       emit(ctx, { connection: id, label, applied: false, dryRun: !!values['dry-run'], changes: [], affected: [], notes, tiers: tierRows(current.connection, catalog).map(tierRowJson) }, () => [
@@ -842,15 +881,8 @@ const runTier = async (ctx: CliContext, args: string[]): Promise<number> => {
     }
 
     if (values['dry-run']) {
-      // The same pure remap the host runs on a tier change (ConnectionService.remapConnectionProjects).
       const projects = await hostCall<Project[]>(client, 'projects:list', [])
-      const list = (Array.isArray(projects) ? projects : []).filter((p) => projectConnection(p) === id || p.roles.some((r) => roleConnection(r, p) === id))
-      const changes = new Map<string, RemapResult['changes']>()
-      for (const p of list) {
-        const out = remapProject(p, { connection: id, tierModels: next, previousTierModels: before, catalog, reason: 'tierModels', include: (r) => roleConnection(r, p) === id })
-        changes.set(p.id, out.result.changes)
-      }
-      const affected = affectedRoles(list, id, changed, changes)
+      const affected = previewTierChange(Array.isArray(projects) ? projects : [], id, { before, next, changed }, catalog)
       emit(ctx, { connection: id, label, applied: false, dryRun: true, changes: changeJson, affected: affected as unknown as Json[], notes }, () => [
         `${label}: would change`,
         ...changeLines,

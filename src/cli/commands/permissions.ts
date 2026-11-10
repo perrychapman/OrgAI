@@ -11,7 +11,7 @@
  */
 import { isAbsolute, resolve } from 'node:path'
 import { projectRulesLocation } from '../../shared/defaults'
-import { PERMISSION_MODES, PERMISSION_MODE_OPTIONS, isPermissionMode, type Project } from '../../shared/types'
+import { PERMISSION_MODES, PERMISSION_MODE_OPTIONS, isPermissionMode, type PermissionMode, type Project } from '../../shared/types'
 import { droppedFolderNotice, droppedFolders, pathKey } from '../../shared/view/permissionCopy'
 import { PERMISSION_MODE_SHORT } from '../../shared/view/settingsCopy'
 import { ruleLabel } from '../../main/runtime/permissionRules'
@@ -102,13 +102,16 @@ const modeLine = (m: string): string => {
   return `${m} (${short})`
 }
 
+/** A permission mode for `permissions mode` and the TUI's Settings view; anything else is a usage error naming the modes. */
+export function permissionModeArg(raw: string): PermissionMode {
+  if (!isPermissionMode(raw)) throw new CliError(`Unknown permission mode "${safeLine(raw).slice(0, 40)}". Modes: ${PERMISSION_MODES.join(', ')}.`, EXIT.usage)
+  return raw
+}
+
 const permMode: SubcommandFn = async (ctx, args) => {
   const { positionals } = parseFlags(args, {})
   onlyPositionals(positionals, 1, 'permissions mode [<mode>]')
-  const wanted = positionals[0]
-  if (wanted !== undefined && !isPermissionMode(wanted)) {
-    throw new CliError(`Unknown permission mode "${safeLine(wanted).slice(0, 40)}". Modes: ${PERMISSION_MODES.join(', ')}.`, EXIT.usage)
-  }
+  const wanted = positionals[0] !== undefined ? permissionModeArg(positionals[0]) : undefined
   return withHost(ctx, wanted === undefined ? ['read'] : ['read', 'configure'], async (client) => {
     const project = await requireProject(ctx, client)
     if (wanted === undefined) {

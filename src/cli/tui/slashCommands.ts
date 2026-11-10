@@ -342,6 +342,29 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     run: (ctx) => guarded(ctx, () => runApprovals(ctx))
   },
   {
+    name: 'team',
+    summary: "The project's saved roles as a tree: models, effort, staffing; edit a role in place",
+    available: (s) => s.project !== undefined,
+    unavailableReason: () => 'Open a project folder first.',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.openConfig) ctx.openConfig('team')
+        else ctx.notify('The Team view is not available here; use orgai team roles.', 'warn')
+      })
+  },
+  {
+    name: 'settings',
+    aliases: ['config', 'tiers'],
+    summary: 'Project, tier and app settings with their values; edit one in place',
+    available: (s) => s.project !== undefined,
+    unavailableReason: () => 'Open a project folder first.',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.openConfig) ctx.openConfig('settings')
+        else ctx.notify('The Settings view is not available here; use orgai projects show and orgai settings.', 'warn')
+      })
+  },
+  {
     // The owning orgai's own card list; not the removed `orgai inbox` command (spec 4.1).
     name: 'inbox',
     aliases: ['tray', 'decisions'],

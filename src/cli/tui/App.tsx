@@ -23,6 +23,10 @@ import { cardDetailLines } from './decisions'
 import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
 import { InspectorPane } from './InspectorPane'
+import { CONFIG_HINT } from './configApi'
+import { SettingsView } from './SettingsView'
+import { TeamView } from './TeamView'
+import { editTextIn } from '../commands/teamRoleEdit'
 import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
 import { Onboarding, type OnboardingChoice } from './Onboarding'
 import { OrgTreePane } from './OrgTreePane'
@@ -116,6 +120,8 @@ type Overlay =
   | { kind: 'runs'; rows: RunPickRow[]; sel: number }
   /** A short list (/model): Enter picks, Esc dismisses (undefined). */
   | { kind: 'pick'; title: string; options: readonly { value: string; label: string }[]; sel: number; resolve(value: string | undefined): void }
+  /** /team or /settings (cli-parity 3.7): the view takes the body and its own keys; Esc backs out to the run view. */
+  | { kind: 'config'; view: 'team' | 'settings' }
 
 const isOpen = (status: RunStatus | undefined): boolean => status !== undefined && isOpenStatus(status)
 const isWorking = (status: RunStatus | undefined): boolean => status === 'starting' || status === 'running'
@@ -753,6 +759,23 @@ export function App(props: AppProps) {
     [processEnv, terminal, notify]
   )
 
+  // The Team view's prompt editor: $VISUAL / $EDITOR on the terminal, as `orgai team role set --edit` opens it. The
+  // terminal is handed over the way the pager gets it (signals held); the editor runs synchronously so no event loop
+  // turn reads the keys it is given, and the terminal comes back a moment after it exits, once any signal it raised
+  // was seen while it still owned the screen. No suspend support (tests, a stub terminal): the view names the command.
+  const editText = useMemo(() => {
+    if (!terminal.suspendForChild || !terminal.resumeFromChild) return undefined
+    return async (initial: string): Promise<string> => {
+      terminal.suspendForChild?.()
+      try {
+        return editTextIn(processEnv, process.platform, initial)
+      } finally {
+        await new Promise((r) => setTimeout(r, 50))
+        terminal.resumeFromChild?.()
+      }
+    }
+  }, [terminal, processEnv])
+
   // ---------- Sessions and runs ----------
 
   const switchSession = useCallback(
@@ -860,6 +883,20 @@ export function App(props: AppProps) {
     if (launch.prompt) startLaunchRun(session, launch)
     else if (launch.resumeText) session.submitPrompt(launch.resumeText).catch((e: unknown) => notify(errText(e), 'danger'))
   }, [launch, conn, session, notify])
+
+  // cli-parity 3.7: the first time this terminal opens a project, say once where its team and settings are.
+  const hintedProject = useRef<string | undefined>(undefined)
+  const openProjectId = state.project?.id
+  useEffect(() => {
+    if (onboarding || !openProjectId || hintedProject.current === openProjectId || state.readOnlyReason !== undefined) return
+    hintedProject.current = openProjectId
+    session.config
+      ?.firstOpen?.(openProjectId)
+      .then((first) => {
+        if (first) notify(CONFIG_HINT)
+      })
+      .catch(() => undefined)
+  }, [onboarding, openProjectId, session, notify, state.readOnlyReason])
 
   // exitWhenEnded: leave once the launched chain's newest member is no longer open; a setup run is ended here once its
   // project's setup completed and it is idle with no open card.
@@ -1018,6 +1055,18 @@ export function App(props: AppProps) {
     toggleFocusMode,
     openRuns: openRunsPicker,
     startRetro: () => startRetro(),
+    openConfig: (view) => {
+      const st = session.getState()
+      if (!st.project) {
+        notify('Open a project folder first: /team and /settings show a project.', 'warn')
+        return
+      }
+      if (!session.config) {
+        notify(`/${view} is not available here.`, 'warn')
+        return
+      }
+      setOverlay({ kind: 'config', view })
+    },
     openAgent: (arg) => {
       const st = session.getState()
       const agents = st.activeRunId ? Object.values(st.runs[st.activeRunId]?.agents ?? {}) : []
@@ -1084,7 +1133,13 @@ export function App(props: AppProps) {
   }
 
   const overlayKey = (e: InputEvent): void => {
-    if (!overlay || e.type !== 'key') return
+    if (!overlay) return
+    // The view handles its own keys (and pastes, for a typed value); Esc backs out one level, the last one closes it.
+    if (overlay.kind === 'config') {
+      bus.dispatch(e, 'config')
+      return
+    }
+    if (e.type !== 'key') return
     if (overlay.kind === 'runs') {
       const n = overlay.rows.length
       const row = overlay.rows[overlay.sel]
@@ -1524,8 +1579,39 @@ export function App(props: AppProps) {
   // One shared line below the input holds run state, notices and context-sensitive shortcuts.
   const status = <StatusBar compact={!inline} width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={inline || size.rows < 10 ? hints : footerHints} now={now} />
 
+  const configHeight = inline ? Math.max(8, size.rows - 5) : Math.max(3, bodyRows)
+  const liveRun = Object.values(state.runs).some((r) => isOpen(r.summary.status) && (!state.project || r.summary.projectId === state.project.id))
   const overlayNode = overlay ? (
-    overlay.kind === 'runs' ? (
+    overlay.kind === 'config' ? (
+      state.project && session.config ? (
+        overlay.view === 'team' ? (
+          <TeamView
+            key="team"
+            width={size.cols}
+            height={configHeight}
+            env={env}
+            projectId={state.project.id}
+            api={session.config}
+            liveRun={liveRun}
+            {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
+            {...(editText ? { editText } : {})}
+            onClose={() => setOverlay(undefined)}
+          />
+        ) : (
+          <SettingsView
+            key="settings"
+            width={size.cols}
+            height={configHeight}
+            env={env}
+            projectId={state.project.id}
+            api={session.config}
+            liveRun={liveRun}
+            {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
+            onClose={() => setOverlay(undefined)}
+          />
+        )
+      ) : null
+    ) : overlay.kind === 'runs' ? (
       <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, Math.min(bodyRows, overlay.rows.length + 4))}>
         <Text {...boldStyle}>Runs</Text>
         {runPickLines(overlay.rows, overlay.sel, overlayWidth, state.activeRunId, glyphs(env).ellipsis)

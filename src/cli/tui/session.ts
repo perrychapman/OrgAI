@@ -12,6 +12,8 @@
  */
 import {
   VIRTUAL_PROJECT_IDS,
+  type AppSettings,
+  type ConnectionInfo,
   type FolderConfigReview,
   type TeamFilesStatus,
   type CardKind,
@@ -52,8 +54,10 @@ import {
   setActiveRun,
   setComposeTarget,
   setConnection,
+  setProject,
   upsertRunSummary
 } from './state'
+import { hintStore, type TuiConfigApi } from './configApi'
 import type {
   ComposeTarget,
   DecisionCall,
@@ -115,6 +119,10 @@ class TuiConnection implements TuiHostConnection {
 
   get hello(): HostClient['hello'] {
     return this.client.hello
+  }
+
+  get userDataDir(): string {
+    return this.ctx.paths.userDataDir
   }
 
   /** A fresh connection with the same scopes (RunStream reconnects); on success it becomes the shared client. */
@@ -485,7 +493,52 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return approvalItems(Array.isArray(attention) ? attention : [], p ? { id: p.id, name: p.name, ...(folderConfig ? { folderConfig } : {}) } : undefined)
   }
 
+  // /team and /settings (cli-parity 3.7): reads on the shared client, writes on a one-call 'configure' connection.
+  const write = <T>(method: string, params: unknown[]): Promise<T> => (conn.callConfigured ? conn.callConfigured<T>(method, params) : call<T>(method, params))
+  const firstOpen = conn.userDataDir ? hintStore(conn.userDataDir) : undefined
+  const config: TuiConfigApi = {
+    async project(id) {
+      const p = await call<Project | null>('projects:get', [id])
+      if (!p || typeof p !== 'object') throw new Error('That project is gone.')
+      return p
+    },
+    async saveProject(p) {
+      const saved = await write<Project>('projects:save', [p])
+      if (saved && state.project?.id === saved.id) set(setProject(state, saved))
+      return saved
+    },
+    async projects() {
+      const list = await call<Project[]>('projects:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    async connections() {
+      const list = await call<ConnectionInfo[]>('connections:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    async models(connection) {
+      const list = await call<ProviderModel[]>('models:list', connection ? [{ connection }] : [])
+      return Array.isArray(list) ? list : []
+    },
+    async settings() {
+      const s = await call<Partial<AppSettings>>('settings:get', [])
+      return s && typeof s === 'object' ? s : {}
+    },
+    setSetting: (patch) => write<Partial<AppSettings>>('settings:set', [patch]),
+    async updateConnection(connection) {
+      const info = await write<ConnectionInfo>('connections:update', [connection])
+      // The host remapped the roles on that connection: the open project follows.
+      const id = state.project?.id
+      if (id) {
+        const p = await call<Project | null>('projects:get', [id]).catch(() => null)
+        if (p && typeof p === 'object' && state.project?.id === p.id) set(setProject(state, p))
+      }
+      return info
+    },
+    ...(firstOpen ? { firstOpen } : {})
+  }
+
   const api: TuiSessionApi = {
+    config,
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener)

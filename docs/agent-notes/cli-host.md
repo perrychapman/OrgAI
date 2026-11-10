@@ -327,3 +327,25 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     what was approved that agents cannot write. That work is preserved on the local branch `cp/approvals-full-gate`.
   - Known gap: the desktop app keeps its own data folder, so approving there does not clear a pending change of a project
     in the CLI's data folder; a terminal-only user can see such a change but not clear it today.
+- TUI Team and Settings views (cli-parity 3.7, branch cp/tuiPanes, 2026-11-10; unit and ink tests only, nothing live, e2e
+  rows in `e2e/cli-tui.mjs` added but not run). `/team` (`TeamView.tsx`, words in `teamModel.ts`) shows the project's SAVED
+  roles as a tree (roleTree): name, tier with the id it resolves to (models.ts `resolveRole`), effort, staffing in words,
+  "on <connection>" when it differs; rows drop runs-on, then long staffing words, then the model id, then effort before
+  the name is cut. Enter opens the details (`roleSummaryLines`, resolved model, prompt preview). Keys m model, e effort,
+  s staffing (then bounds for automatic), t tools, r reparent, n rename, p prompt, a add under, x remove (picks who takes
+  its reports). Every edit re-reads the project and goes through the commands' planners, now exported from
+  `commands/teamRoleEdit.ts` (`planRoleSet`, `planRoleAdd`, `planRoleMove`, `planRoleRemove`, `spendQuestion`; the
+  commands call the same functions), then projects:save; a "May spend more" plan and every removal wait for `y`. The
+  prompt opens $VISUAL / $EDITOR through `editTextIn` (shared with `team role set --edit`, synchronous, inside
+  `suspendForChild` / `resumeFromChild`, resume 50 ms after the editor exits); a terminal without those names
+  `orgai team role set <slug> --edit`. `/settings` (`SettingsView.tsx`, rows in `settingsModel.ts`): Project rows through
+  `projects set`'s `setPatch` and `staffingSpendSentence`, the permission mode through `permissions mode`'s
+  `permissionModeArg`; Tiers of the project's connection through `connections tier`'s `planTierChange` and
+  `previewTierChange` (now exported; the touched roles are listed before `y`), then connections:update; App rows through
+  `orgai settings`' `SETTING_KEYS` / `parseSettingValue`, then settings:set. The project's connection row is read-only.
+  Host calls: `TuiSessionApi.config` (`configApi.ts`), reads on the shared client, writes on a one-call 'configure'
+  connection (`callConfigured`); a save updates the session's project. Mid-run: the host lets a project be saved while a
+  run is live and RunManager keeps the live run's roles as they started, so a save during a live run says it applies from
+  the next run. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
+  backs out one level. The first time a terminal opens a project it shows one notice naming /team and /settings
+  (`<userDataDir>/tui-hints.json`, `hintStore`).
