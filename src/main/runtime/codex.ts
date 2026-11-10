@@ -24,15 +24,18 @@ import {
   parseToolCall,
   parseTurnId,
   parseUserInputQuestions,
+  parseWorkspaceWriteTemp,
   policyFor,
   policyOverride,
+  TEMP_EXCLUDED,
   toolResponse,
   untilFromRateLimits,
   userInput,
   type DynamicToolSpec,
   type FolderTrustConfig,
   type LaunchConfig,
-  type PolicyChoice
+  type PolicyChoice,
+  type WorkspaceWriteTemp
 } from './codexProtocol'
 import { countUsage, setModelTokens } from './runUsage'
 import { CodexEventMapper, ThrottledPartial, fileChangeTargets, fileChanges, type CodexUpdate } from './codexEvents'
@@ -384,6 +387,12 @@ class CodexSession implements RuntimeSession {
    * policy Codex holds. Their next turn/start carries the difference (policyOverride), then the entry goes.
    */
   private policyPending = new Map<string, PolicyChoice>()
+  /** Thread id -> the mode its ThreadInfo.policy was derived from by a live switch (what a turn/start override sends). */
+  private policyMode = new Map<string, PermissionMode>()
+  /** sandbox_workspace_write.writable_roots of the current app-server's launch config (a turn/start override never adds one). */
+  private launchWritableRoots: string[] = []
+  /** The effective config's workspace-write temp-folder switches (config/read once per app-server, for turn/start overrides). */
+  private workspaceTemp?: Promise<WorkspaceWriteTemp>
   /** Thread id -> every permission mode that may hold on Codex's side for it (a live switch compares these). */
   private threadModes = new Map<string, PermissionMode[]>()
   /** The reference-folder policy downgrade warning was logged (once per run). */
@@ -597,13 +606,16 @@ class CodexSession implements RuntimeSession {
    * TurnStartParams.approvalPolicy / approvalsReviewer / sandboxPolicy hold "for this turn and subsequent turns", so:
    *   - the root must be between turns (else refused): its next turn/start carries the new policy;
    *   - every thread's OrgAI-side policy (ThreadInfo.policy: declined approvals, accepted edits) changes at once;
-   *   - a report between turns gets the new policy on its next turn/start (covered); a report inside a turn keeps
-   *     Codex's old sandbox and approval policy until that turn ends, and is counted in `reportsUnchanged` unless every
-   *     mode it may run under is no wider than `mode`;
+   *   - a report between turns gets the new policy on its next turn/start (covered); a report inside a turn or with a
+   *     turn/start in flight (the serialized queue) keeps what Codex holds until that turn ends, and is counted in
+   *     `reportsUnchanged` unless every mode it may run under is no wider than `mode`, whatever its agent state says;
+   *   - policyPending always holds what Codex holds: a turn/start answered after another switch leaves the entry on the
+   *     policy it sent, so the next turn/start corrects it (settlePolicy, review H1);
+   *   - a thread whose role cannot be resolved keeps its policy and is counted (review L3);
    *   - reports spawned from now on start with the new policy (policyFor reads `mode` through ctx.project / liveMode).
    * Bridged reports are separate sessions RunManager tracks (BridgedSessions); not counted here. Bypass is refused where
-   * policyFor would not honour it (a quick run, reference folders). A narrowing below acceptEdits clears a card's
-   * session accept-edits grant. Open cards stay open; session rules are untouched.
+   * policyFor would not honour it (a quick run, reference folders). A mode other than acceptEdits, auto or bypass clears
+   * a card's session accept-edits grant. Open cards stay open; session rules are untouched.
    */
   async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
     if (this.ctx.bridgedChild) throw new Error('Only the run root can change the permission mode.')
@@ -620,24 +632,93 @@ class CodexSession implements RuntimeSession {
     let reportsUnchanged = 0
     for (const [threadId, info] of this.threads) {
       const role = info.agentId === ROOT_AGENT_ID ? this.root : this.net.roleOf(info.agentId)
-      if (!role) continue
-      const agent = this.agents.get(info.agentId)
-      const finished = agent?.state === 'done' || agent?.state === 'error'
-      const inTurn = this.activeTurn.has(threadId) || this.queues.has(threadId)
+      // policyPending always holds what Codex holds for the thread (kept across switches until a turn/start moves it).
       if (!this.policyPending.has(threadId)) this.policyPending.set(threadId, info.policy)
+      if (!role) {
+        // No role to derive a policy from (review L3): the thread keeps its policy on both sides, so it is counted.
+        if (info.agentId !== ROOT_AGENT_ID) reportsUnchanged += 1
+        continue
+      }
+      // A turn running or a turn/start in flight (the serialized queue) can act whatever the agent's state says.
+      const inTurn = this.activeTurn.has(threadId) || this.queues.has(threadId)
       info.policy = this.policyFor(role, mode)
+      this.policyMode.set(threadId, mode)
       if (inTurn) {
         // Codex keeps the old policy until this turn ends: the thread may run under either mode until then.
         const modes = new Set([...(this.threadModes.get(threadId) ?? []), mode])
         this.threadModes.set(threadId, [...modes])
-        if (info.agentId !== ROOT_AGENT_ID && !finished && !(this.threadModes.get(threadId) ?? []).every((m) => canNarrowPermissionMode(mode, m))) reportsUnchanged += 1
+        if (info.agentId !== ROOT_AGENT_ID && !(this.threadModes.get(threadId) ?? []).every((m) => canNarrowPermissionMode(mode, m))) reportsUnchanged += 1
       } else {
         this.threadModes.set(threadId, [mode])
       }
     }
-    if (mode !== 'acceptEdits' && canNarrowPermissionMode('acceptEdits', mode)) this.sessionAcceptEdits = false
+    // RuntimeSession.setPermissionMode contract: a mode other than acceptEdits, auto or bypass drops the session grant.
+    if (mode !== 'acceptEdits' && mode !== 'auto' && mode !== 'bypassPermissions') this.sessionAcceptEdits = false
     this.liveMode = mode
     return reportsUnchanged ? { applied: true, reportsUnchanged } : true
+  }
+
+  /**
+   * After a turn/start that carried a live switch's override: Codex now holds `sent` (derived from `sentMode`) "for this
+   * turn and subsequent turns". If another switch changed ThreadInfo.policy while the request was in flight (review H1),
+   * the entry stays, now holding `sent`, so the thread's next turn/start moves it again, and the thread counts under both
+   * modes until then. Only when the thread's policy still matches what was sent does the entry go.
+   */
+  private settlePolicy(threadId: string, sent: PolicyChoice, sentMode: PermissionMode | undefined): void {
+    const now = this.threads.get(threadId)?.policy
+    if (now && Object.keys(policyOverride(sent, now, [], TEMP_EXCLUDED)).length === 0) {
+      this.policyPending.delete(threadId)
+      if (sentMode) this.threadModes.set(threadId, [sentMode])
+      return
+    }
+    this.policyPending.set(threadId, sent)
+    const modes = new Set<PermissionMode>(this.threadModes.get(threadId) ?? [])
+    if (sentMode) modes.add(sentMode)
+    if (this.liveMode) modes.add(this.liveMode)
+    this.threadModes.set(threadId, [...modes])
+  }
+
+  /**
+   * Writable roots for a turn/start sandboxPolicy (review L1): the launch config's roots that are still writable roots
+   * now (codexWritableRoots read live), so an override is never wider than the launch nor than the current folders.
+   */
+  private overrideWritableRoots(): string[] {
+    const live = new Set(codexWritableRoots(this.ctx))
+    return this.launchWritableRoots.filter((r) => live.has(r))
+  }
+
+  /**
+   * The effective config's workspace-write temp-folder switches, read once per app-server through config/read
+   * (stable in generate-ts of @openai/codex 0.166.0; cwd = the project folder so project layers count). A failed or
+   * unreadable answer excludes both temp folders (parseWorkspaceWriteTemp / TEMP_EXCLUDED): never wider than the user's.
+   */
+  private readWorkspaceTemp(): Promise<WorkspaceWriteTemp> {
+    if (!this.workspaceTemp) {
+      const cwd = this.ctx.project.path
+      this.workspaceTemp = this.server
+        .request(METHOD.configRead, { includeLayers: false, ...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}) })
+        .then(parseWorkspaceWriteTemp, (e: Error) => {
+          this.log('info', `Could not read Codex's sandbox settings (${e?.message ?? e}); a mode change keeps temp folders out of writable roots.`)
+          return TEMP_EXCLUDED
+        })
+    }
+    return this.workspaceTemp
+  }
+
+  /**
+   * A session / project allow's setMode acceptEdits: edits inside free folders need no card from now on, and RunManager
+   * lays acceptEdits over a narrower mode for the rest of this session (RuntimeContext.acceptEditsGranted). A card raised
+   * under a wider mode and answered after the run moved to plan or dontAsk does not take the run out of it (as claude.ts
+   * allowWithScope); the card's rules still apply. Called once per applied grant.
+   */
+  private grantAcceptEdits(): void {
+    const now = this.liveMode ?? this.ctx.project.permissionMode
+    if (now === 'plan' || now === 'dontAsk') {
+      this.log('info', `Kept the run in ${now === 'plan' ? 'Plan' : "Don't ask"} mode: the permission card's mode change was not applied.`)
+      return
+    }
+    this.sessionAcceptEdits = true
+    this.ctx.acceptEditsGranted?.()
   }
 
   /** Every permission mode that may hold for a thread starting now (ctx.project, the live mode, a session accept-edits grant). */
@@ -850,14 +931,13 @@ class CodexSession implements RuntimeSession {
       }
       const staffedEffort = this.threadEffort.get(threadId)
       // A live permission mode switch reaches Codex's side here: turn/start's policy fields hold "for this turn and subsequent turns".
+      const temp = this.policyPending.has(threadId) ? await this.readWorkspaceTemp() : TEMP_EXCLUDED
       const pending = this.policyPending.get(threadId)
       const target = this.threads.get(threadId)?.policy
-      const override = pending && target ? policyOverride(pending, target, codexWritableRoots(this.ctx)) : {}
+      const sentMode = this.policyMode.get(threadId) ?? this.liveMode
+      const override = pending && target ? policyOverride(pending, target, this.overrideWritableRoots(), temp) : {}
       const res = await this.server.request(METHOD.turnStart, { threadId, input, ...(staffedEffort ? { effort: staffedEffort } : {}), ...extra, ...override, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
-      if (pending && this.policyPending.get(threadId) === pending) {
-        this.policyPending.delete(threadId)
-        if (this.liveMode) this.threadModes.set(threadId, [this.liveMode])
-      }
+      if (pending && target) this.settlePolicy(threadId, target, sentMode)
       const id = parseTurnId(res)
       if (id && !this.completedTurns.has(id)) this.activeTurn.set(threadId, id)
     })
@@ -1213,8 +1293,10 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = withoutControlEnv(ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : [])
-      const launch = this.buildLaunch(servers, { ...trustLaunchOpts(ctx), writableRoots: codexWritableRoots(ctx) })
+      const writableRoots = codexWritableRoots(ctx)
+      const launch = this.buildLaunch(servers, { ...trustLaunchOpts(ctx), writableRoots })
       this.launch = launch instanceof Promise ? await launch : launch
+      this.launchWritableRoots = writableRoots
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       await this.startServer(this.launch, (server) => {
@@ -1824,7 +1906,7 @@ class CodexSession implements RuntimeSession {
           this.sessionRules.push(...allowRuleStrings(scoped))
           const offer = this.safeMatchOptions()
           for (const s of scoped) {
-            if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
+            if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.grantAcceptEdits()
             if (s.type === 'addDirectories' && offer) {
               // Checked as written and by real path (reviewer-3 M3: a link or another case spelling of ~/.ssh).
               for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d) && isOfferableDirectory(d, offer) && offerableByRealPath(d, offer)) this.sessionDirs.push(d)
@@ -2344,9 +2426,10 @@ class CodexSession implements RuntimeSession {
     try {
       const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
       if (this.ending) return abandon()
+      const writableRoots = codexWritableRoots(this.ctx)
       const launch = await this.buildLaunch(servers, {
         ...trustLaunchOpts(this.ctx),
-        writableRoots: codexWritableRoots(this.ctx)
+        writableRoots
       })
       const old = this.server
       this.unwire()
@@ -2354,6 +2437,8 @@ class CodexSession implements RuntimeSession {
       await Promise.race([old.exited, new Promise((r) => setTimeout(r, EXIT_WAIT_MS))])
       if (this.ending) return abandon()
       this.launch = launch
+      this.launchWritableRoots = writableRoots
+      this.workspaceTemp = undefined
       await this.startServer(launch, (server) => {
         created = server
         this.server = server

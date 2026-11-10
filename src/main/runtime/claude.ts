@@ -1428,12 +1428,29 @@ export class ClaudeSession implements RuntimeSession {
   private queryInitSeen = false
   /** The current query was built with allowDangerouslySkipPermissions (fixed for its life; a live switch cannot add it). */
   private queryBypass = false
+  /**
+   * The mode the current query was built with (Options.permissionMode, fixed for its life). Always one of the modes a
+   * report may start under: whether a Task report spawned after Query.setPermissionMode inherits the new session mode or
+   * the build-time one is not documented (review M1a).
+   */
+  private queryMode?: PermissionMode
   /** The mode the root session last applied live (setPermissionMode); undefined = the start-time mode from ctx.project. */
   private liveMode?: PermissionMode
+  /** The mode a live switch is applying right now (set across Query.setPermissionMode's await): old and new both count. */
+  private pendingMode?: PermissionMode
+  /** An MCP restart check found a live mode change in flight and stood down; the change schedules it again. */
+  private restartHeldByMode = false
   /** A card granted a setMode acceptEdits for this session (the CLI's session mode moved with it). */
   private acceptEditsGranted = false
+  /** How many setMode acceptEdits grants reached the CLI (a live switch re-issues its mode when one lands during its await). */
+  private acceptEditsGrants = 0
   /** Report agent id -> every permission mode that may have been in force when it started (a live switch compares these). */
   private reportModes = new Map<string, PermissionMode[]>()
+  /**
+   * Agent tool_use id -> the modes in force when the hook approved the spawn (its caller's included), until task_started
+   * moves them onto the report or the call comes back as an error. Approved spawns not started yet are counted too.
+   */
+  private spawnModes = new Map<string, PermissionMode[]>()
   /**
    * Every message the current query may have read before its init (review N2): what was queued when it started plus
    * everything pushed since. A restarted query that dies before init may have read some of them; recoverRestart
@@ -1610,41 +1627,78 @@ export class ClaudeSession implements RuntimeSession {
 
   /**
    * Live permission mode switch (RuntimeSession.setPermissionMode; RunManager.setPermissionMode is the only caller).
-   * Everything is derived from `mode`: RunManager sets ctx.project before this call only for a narrowing. The root's
+   * Everything is derived from `mode`, never from ctx.project (RunManager may set it before this call). The root's
    * query gets the mapped mode through Query.setPermissionMode (SDK 0.3.318 sdk.d.ts, `Query.setPermissionMode(mode)`,
-   * streaming input only), which is the session's mode, so Task reports started from now on inherit it (buildAgents
-   * sets no per-agent permissionMode). Whether a Task report already running picks it up is not documented, so a live
-   * report that started under a wider mode is counted in `reportsUnchanged` (never a plain true). Bridged reports are
-   * separate sessions RunManager tracks (BridgedSessions); they are not counted here. Bypass is honoured only where
-   * claudeAllowsBypass honours it and only when this query was built with allowDangerouslySkipPermissions. Open cards
-   * and session rules are untouched; the CLI's session mode (a card's accept-edits grant included) is replaced.
+   * streaming input only), which is the session's mode. buildAgents sets no per-agent permissionMode, but whether a Task
+   * report picks up a session mode changed after the query was built is not documented, so `reportsUnchanged` counts
+   * every report (and every approved spawn not started yet) unless each mode it may run under is no wider than `mode`.
+   * Those modes (modesInForce, recorded at the hook's spawn approval and at task_started) are the query's build-time
+   * mode, the live and pending modes, a card's accept-edits grant and the parent report's modes (sdk-tools.d.ts
+   * AgentInput.mode: subagents inherit "the parent session's" mode, which for a nested report may be its spawner's).
+   * Finished reports count too: SendMessage resumes one. Bridged
+   * reports are separate sessions RunManager tracks (BridgedSessions); they are not counted here. Bypass is honoured
+   * only where claudeAllowsBypass honours it and only when this query was built with allowDangerouslySkipPermissions.
+   * Open cards and session rules are untouched; the CLI's session mode (a card's accept-edits grant included) is
+   * replaced, and re-issued once when a grant reached the CLI while the change was in flight (review M2).
    */
   async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
     if (this.ctx.bridgedChild) throw new Error('Only the run root can change the permission mode.')
     if (isSetupLikeRun(this.ctx.run.kind)) throw new Error('This run keeps its own permission mode.')
     if (this.ending || this.abort.signal.aborted || !this.q) throw new Error('This session is not live. The mode will apply when the run continues.')
     if (!this.queryInitSeen || this.restarting || this.nextQuery) throw new Error('The session is starting or restarting. Try again in a moment.')
+    if (this.pendingMode) throw new Error('A permission mode change is already in progress. Try again in a moment.')
     const mapped = claudePermissionMode(this.ctx, mode)
     if (mapped !== mode) throw new Error('This run asks before each change, so it cannot use that permission mode.')
     if (mode === 'bypassPermissions') {
       if (!claudeAllowsBypass(this.ctx, mode)) throw new Error('This run cannot use Bypass permissions.')
       if (!this.queryBypass) throw new Error('This session started without Bypass permissions, so it applies from the next session. End the session, then choose it before you continue.')
     }
+    const q = this.q
+    const grantsBefore = this.acceptEditsGrants
+    // Reports registered while the CLI applies the change may start under either mode (review M1a); an MCP restart
+    // waits (maybeRestartForMcp) so the query cannot be rebuilt in between (review L2).
+    this.pendingMode = mode
     try {
-      await this.q.setPermissionMode(mapped)
-    } catch (e) {
-      // The raw text stays in the run log (redacted); the user sees a plain reason.
-      this.log('warn', `The CLI refused the permission mode change: ${redactSecrets(String((e as Error)?.message ?? e), this.secrets)}`)
-      throw new Error('The session could not change its permission mode now.')
+      try {
+        await q.setPermissionMode(mapped)
+      } catch (e) {
+        // The raw text stays in the run log (redacted); the user sees a plain reason.
+        this.log('warn', `The CLI refused the permission mode change: ${redactSecrets(String((e as Error)?.message ?? e), this.secrets)}`)
+        throw new Error('The session could not change its permission mode now.')
+      }
+      // The query changed under the await (a restart): the change reached a query that is gone (review L2).
+      if (this.ending || this.abort.signal.aborted) throw new Error('This session is not live. The mode will apply when the run continues.')
+      if (this.q !== q || this.restarting || this.nextQuery) throw new Error('The session is starting or restarting. Try again in a moment.')
+      this.liveMode = mode
+      if (this.acceptEditsGrants !== grantsBefore) {
+        // A card's accept-edits grant reached the CLI while the change was in flight and may have landed after it
+        // (review M2): apply the chosen mode once more. If that fails or another grant lands, the flag stays set.
+        const again = this.acceptEditsGrants
+        try {
+          await q.setPermissionMode(mapped)
+          if (this.acceptEditsGrants === again && this.q === q) this.acceptEditsGranted = false
+        } catch (e) {
+          this.log('warn', `Accept-edits from a permission card may still be in force: the CLI refused the permission mode change again (${redactSecrets(String((e as Error)?.message ?? e), this.secrets)}).`)
+        }
+      } else {
+        // The CLI's session mode is the new one now; a card's earlier accept-edits grant went with the old mode.
+        this.acceptEditsGranted = false
+      }
+    } finally {
+      this.pendingMode = undefined
+      if (this.restartHeldByMode) {
+        this.restartHeldByMode = false
+        if (!this.ending && !this.abort.signal.aborted) this.scheduleMcpRestart()
+      }
     }
-    this.liveMode = mode
-    // The CLI's session mode is the new one now; a card's earlier accept-edits grant went with the old mode.
-    this.acceptEditsGranted = false
     let reportsUnchanged = 0
     for (const a of this.agents.values()) {
-      if (a.id === ROOT_ID || a.state === 'done' || a.state === 'error') continue
+      if (a.id === ROOT_ID) continue
+      // Finished reports count too (review M1c): SendMessage resumes a finished report, which may keep its old mode.
       if (!reportWithin(this.reportModes.get(a.id), mode)) reportsUnchanged += 1
     }
+    // Spawns the hook approved whose report has not started yet (review M1a).
+    for (const modes of this.spawnModes.values()) if (!reportWithin(modes, mode)) reportsUnchanged += 1
     return reportsUnchanged ? { applied: true, reportsUnchanged } : true
   }
 
@@ -1771,7 +1825,7 @@ export class ClaudeSession implements RuntimeSession {
         startedAt: Date.now(),
         ...init
       }
-      if (id !== ROOT_ID) this.reportModes.set(id, this.modesInForce())
+      if (id !== ROOT_ID) this.noteReportModes(id, this.modesInForce(), this.parentModes(a.parentId))
       this.upsert(a)
     }
     return a
@@ -1779,13 +1833,28 @@ export class ClaudeSession implements RuntimeSession {
 
   /**
    * Every permission mode that may be in force for a report starting now: the run's mode as RunManager holds it, the
-   * mode last applied live (RunManager sets ctx.project after a widening answers) and a session accept-edits grant.
+   * mode the current query was built with, the mode last applied live, a change in flight and a session accept-edits
+   * grant. Over-counting is the safe direction: a mode listed here only makes a later narrowing report it unchanged.
    */
   private modesInForce(): PermissionMode[] {
     const modes = new Set<PermissionMode>([this.ctx.project.permissionMode])
+    if (this.queryMode) modes.add(this.queryMode)
     if (this.liveMode) modes.add(this.liveMode)
+    if (this.pendingMode) modes.add(this.pendingMode)
     if (this.acceptEditsGranted) modes.add('acceptEdits')
     return [...modes]
+  }
+
+  /** A parent report's recorded modes (a nested report may inherit its spawner's mode, review M1b); none for the root. */
+  private parentModes(parentId: string | null | undefined): PermissionMode[] | undefined {
+    return parentId && parentId !== ROOT_ID ? this.reportModes.get(parentId) : undefined
+  }
+
+  /** Add modes to what a report may run under (never removes one). */
+  private noteReportModes(id: string, ...lists: (readonly PermissionMode[] | undefined)[]): void {
+    const modes = new Set<PermissionMode>(this.reportModes.get(id) ?? [])
+    for (const l of lists) for (const m of l ?? []) modes.add(m)
+    this.reportModes.set(id, [...modes])
   }
 
   private setState(id: string, state: AgentInstance['state'], activity?: string): void {
@@ -2564,6 +2633,9 @@ export class ClaudeSession implements RuntimeSession {
             }
           }
         }
+        // The spawn is approved: what it may run under is fixed now, its caller's modes included (review M1a/b). A live
+        // switch before task_started counts it; task_started moves this onto the report.
+        this.spawnModes.set(input.tool_use_id, [...new Set([...this.modesInForce(), ...(this.parentModes(agentId) ?? [])])])
         this.setState(agentId, 'delegating', describe(input.tool_name, toolInput))
         // Writing reports get their own worktree when their parent is the orchestrator or is itself
         // isolated (nested isolation). A nested spawn runs from the parent's worktree, so Claude Code
@@ -3221,6 +3293,11 @@ export class ClaudeSession implements RuntimeSession {
    * for the next run. Resolves true when the restart was set in motion.
    */
   private async maybeRestartForMcp(): Promise<boolean> {
+    // A live permission mode change in flight holds the restart (review L2); it schedules the check again when done.
+    if (this.pendingMode && this.restartDue()) {
+      this.restartHeldByMode = true
+      return false
+    }
     if (!this.restartDue() || this.restarting || this.nextQuery || !this.sessionId) return false
     if (mcpRestartBlocker(this.restartState())) return false
     const budget = this.restartBudget()
@@ -3460,6 +3537,7 @@ export class ClaudeSession implements RuntimeSession {
     this.queryGrants = this.optionGrants.get(next.options)
     this.liveGrants = this.queryGrants
     this.queryBypass = next.options.allowDangerouslySkipPermissions === true
+    this.queryMode = next.options.permissionMode ?? this.ctx.project.permissionMode
     this.q = query({ prompt: this.input, options: next.options })
     this.noteActivity('restart')
     const config = next.config
@@ -3787,9 +3865,23 @@ export class ClaudeSession implements RuntimeSession {
     if (!granted) return { behavior: 'allow', updatedInput: input }
     for (const r of allowRuleStrings(granted)) this.sessionRules.add(r)
     // Shell rules stay in sessionRules (the hook's allow path, kept across a restarted query) and never reach the CLI (H1).
-    const updates = toSdkSessionUpdates(granted)
+    let updates = toSdkSessionUpdates(granted)
+    // A card raised under a wider mode and answered after (or while) the run narrowed to plan or dontAsk must not move
+    // the CLI out of it (review M2): the setMode part is dropped, the rules stay. A 'default' run keeps the grant
+    // (RunManager raises such a run to acceptEdits when the grant is allowed).
+    const modesNow = [this.pendingMode, this.liveMode ?? this.ctx.project.permissionMode]
+    const held = modesNow.find((m) => m === 'plan' || m === 'dontAsk')
+    if (held && updates.some((u) => u.type === 'setMode')) {
+      updates = updates.filter((u) => u.type !== 'setMode')
+      this.log('info', `Kept the run in ${held === 'plan' ? 'Plan' : "Don't ask"} mode: the permission card's mode change was not applied.`)
+    }
     // The CLI's session mode moves with a setMode update: reports started from now on may run in accept-edits.
-    if (updates.some((u) => u.type === 'setMode' && u.mode === 'acceptEdits')) this.acceptEditsGranted = true
+    if (updates.some((u) => u.type === 'setMode' && u.mode === 'acceptEdits')) {
+      this.acceptEditsGranted = true
+      this.acceptEditsGrants += 1
+      // RunManager lays acceptEdits over a narrower mode for the rest of this session (RuntimeContext.acceptEditsGranted).
+      this.ctx.acceptEditsGranted?.()
+    }
     return {
       behavior: 'allow',
       updatedInput: input,
@@ -3831,6 +3923,7 @@ export class ClaudeSession implements RuntimeSession {
       this.queryGrants = this.optionGrants.get(first)
       this.liveGrants = this.queryGrants
       this.queryBypass = first.allowDangerouslySkipPermissions === true
+      this.queryMode = first.permissionMode ?? this.ctx.project.permissionMode
       this.q = query({ prompt: this.input, options: first })
       for (;;) {
         try {
@@ -4005,7 +4098,17 @@ export class ClaudeSession implements RuntimeSession {
             ...(worktree ? { worktree } : {}),
             ...(handle ? { handle } : {})
           })
-          if (!this.gateKnown.has(msg.task_id)) {
+          // The modes fixed when the hook approved the spawn and the parent's (review M1a/b) join the report's.
+          const spawnSnapshot = msg.tool_use_id ? this.spawnModes.get(msg.tool_use_id) : undefined
+          if (msg.tool_use_id) this.spawnModes.delete(msg.tool_use_id)
+          const resumed = this.gateKnown.has(msg.task_id)
+          this.noteReportModes(msg.task_id, spawnSnapshot, this.parentModes(parentId), resumed ? this.modesInForce() : undefined)
+          // A resumed report may keep the mode it first started under (review M1c): say so when that is wider than now.
+          if (resumed && this.liveMode && !reportWithin(this.reportModes.get(msg.task_id), this.liveMode)) {
+            const name = this.agents.get(msg.task_id)?.handle ?? this.agents.get(msg.task_id)?.name ?? msg.task_id
+            this.log('warn', `${name} resumed. It started under a wider permission mode than the run's current one and may still use it.`)
+          }
+          if (!resumed) {
             this.gateKnown.add(msg.task_id)
             if (role) this.ctx.delegation?.noteSpawn(msg.task_id, parentId ?? ROOT_ID, role.id)
           } else {
@@ -4150,7 +4253,10 @@ export class ClaudeSession implements RuntimeSession {
           for (const block of content) {
             if (block.type === 'tool_result') {
               // An Agent call that failed before its agent started (refused, rejected input): forget its staffing.
-              if (block.is_error) this.staffingRefused(block.tool_use_id)
+              if (block.is_error) {
+                this.staffingRefused(block.tool_use_id)
+                this.spawnModes.delete(block.tool_use_id)
+              }
               // A resumed session (continued run or MCP restart) may replay history; show each result once.
               if ((this.ctx.resumeSessionId || this.restarts > 0) && this.seenToolResults.has(block.tool_use_id)) continue
               this.seenToolResults.add(block.tool_use_id)

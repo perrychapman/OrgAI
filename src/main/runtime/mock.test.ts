@@ -6,7 +6,7 @@ import type { EngagementNote, ImageAttachment, KnowledgeEdge, KnowledgeGraph, Kn
 import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
 import { RESUME_TEXT } from './runManager'
 import { STAFFING_TOKEN, DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MODE_REFUSE_TOKEN, MODE_REPORTS_UNCHANGED_TOKEN, MockAdapter, mockPermissionModeLog, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
-import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext } from './types'
+import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext, type RuntimeSession } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
 import { authFailureMessage } from './activity'
@@ -876,6 +876,54 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     const work = [edit(join(sibling, 'a.md')), edit(join(sibling, 'b.md')), edit(join(projPath, 'src', 'x.ts')), edit(join(base, 'other', 'c.md'))]
     const { cards } = await play({}, () => ({ behavior: 'allow', scope: 'session' }), { work })
     expect(cards.map((c) => (c as { input: { file_path: string } }).input.file_path)).toEqual([join(sibling, 'a.md'), join(base, 'other', 'c.md')])
+  })
+
+  it('an accept-edits grant calls ctx.acceptEditsGranted once; a narrowing drops it and the next edit asks again', async () => {
+    const edit = (file: string) => ({ type: 'tool' as const, name: 'Edit', input: { file_path: file }, ask: true })
+    const [a, b, c, d] = [join(sibling, 'a.md'), join(sibling, 'b.md'), join(base, 'other', 'c.md'), join(sibling, 'd.md')]
+    // What RunManager does: the grant lays acceptEdits over the run's mode; a narrowing sets ctx.project before the call.
+    const holder: { session?: RuntimeSession } = {}
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Run the tests ${FATIGUE_TOKEN}`, project: project({ path: projPath }) })
+    const granted = vi.fn(() => {
+      ctx.project = { ...ctx.project, permissionMode: 'acceptEdits' }
+    })
+    ctx.acceptEditsGranted = granted
+    vi.mocked(ctx.requestPermission).mockImplementation(async (req) => {
+      if ((req.input as { file_path?: string }).file_path !== c) return { behavior: 'allow', scope: 'session' }
+      await vi.waitFor(() => expect(holder.session).toBeDefined())
+      ctx.project = { ...ctx.project, permissionMode: 'default' }
+      await expect(holder.session!.setPermissionMode!('default')).resolves.toBe(true)
+      return { behavior: 'allow', scope: 'once' }
+    })
+    holder.session = await new MockAdapter({ script: { delayMs: 0, work: [edit(a), edit(b), edit(c), edit(d)] } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await holder.session.stop()
+    await holder.session.finished
+    const asked = vi.mocked(ctx.requestPermission).mock.calls.map((call) => (call[0].input as { file_path: string }).file_path)
+    // a asks and is granted for the session; b rides on it; c asks (outside the folder) and the run narrows; d asks again.
+    expect(asked).toEqual([a, c, d])
+    // d's session grant is a second applied grant: the hook runs once per applied grant, never for the allow-once on c.
+    expect(granted).toHaveBeenCalledTimes(2)
+  })
+
+  it('a card answered after a narrowing to plan or dontAsk does not turn on accept-edits nor call the hook', async () => {
+    for (const narrow of ['plan', 'dontAsk'] as const) {
+      const edit = (file: string) => ({ type: 'tool' as const, name: 'Edit', input: { file_path: file }, ask: true })
+      const ctx = fakeCtx({ autoContinue: false, prompt: `Run the tests ${FATIGUE_TOKEN}`, project: project({ path: projPath }) })
+      const granted = vi.fn()
+      ctx.acceptEditsGranted = granted
+      vi.mocked(ctx.requestPermission).mockImplementation(async () => {
+        // The card was raised under 'default'; the run narrowed before the user answered.
+        ctx.project = { ...ctx.project, permissionMode: narrow }
+        return { behavior: 'allow', scope: 'session' }
+      })
+      const session = await new MockAdapter({ script: { delayMs: 0, work: [edit(join(sibling, 'a.md'))] } }).start(ctx)
+      for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+      await session.stop()
+      await session.finished
+      expect(granted).not.toHaveBeenCalled()
+      expect((session as unknown as { sessionAcceptEdits: boolean }).sessionAcceptEdits).toBe(false)
+    }
   })
 
   it('a project scope on the edit card persists the folder and acceptEdits through the ctx hooks', async () => {

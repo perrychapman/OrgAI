@@ -245,6 +245,16 @@ describe('CodexAdapter session', () => {
       s.push('turn/completed', turnDone('th-1', 'tu-1'))
       await vi.waitFor(() => expect(session!.settlement!().rootIdle).toBe(true))
     }
+    /** Complete every root turn (a report's turn end notifies the root) until the root is idle and its queue drained. */
+    const quietRoot = async (s: FakeServer) => {
+      const inner = session as unknown as { activeTurn: Map<string, string>; queues: Map<string, unknown> }
+      await vi.waitFor(() => {
+        const t = inner.activeTurn.get('th-1')
+        if (t) s.push('turn/completed', turnDone('th-1', t))
+        expect(inner.activeTurn.has('th-1') || inner.queues.has('th-1')).toBe(false)
+        expect(session!.settlement!().rootIdle).toBe(true)
+      })
+    }
     const spawnEngineer = (s: FakeServer, callId: string) =>
       s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId, namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
 
@@ -332,6 +342,110 @@ describe('CodexAdapter session', () => {
       const b = setup()
       session = await b.adapter.start(ctxFor({ autoContinue: false, bridgedChild: { agentId: 'b1', parentAgentId: ROOT_AGENT_ID, roleId: 'r1' } }))
       await expect(session.setPermissionMode!('plan')).rejects.toThrow('Only the run root')
+    })
+
+    it('two switches across a report turn/start in flight: the report counts in between and its next turn/start carries the corrective override (review H1)', async () => {
+      const { adapter, servers } = setup()
+      const ctx = ctxFor({ autoContinue: false })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await spawnEngineer(s, 'c-1')
+      await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
+      const internals = session as unknown as {
+        deliverTo(agentId: string, text: string): Promise<void>
+        threads: Map<string, { agentId: string }>
+        activeTurn: Map<string, string>
+        queues: Map<string, unknown>
+      }
+      const engineer = internals.threads.get('th-2')!.agentId
+      const reportIdle = async () => {
+        s.push('turn/completed', turnDone('th-2', internals.activeTurn.get('th-2') ?? 'tu-2'))
+        await vi.waitFor(() => expect(internals.activeTurn.has('th-2') || internals.queues.has('th-2')).toBe(false))
+        await quietRoot(s)
+      }
+      await reportIdle()
+      // Switch 1 (default -> bypass) while the engineer is idle: covered by its next turn/start.
+      await expect(session.setPermissionMode!('bypassPermissions')).resolves.toBe(true)
+      // The engineer's next turn/start (carrying bypass) is held open.
+      let release!: () => void
+      const held = new Promise<void>((r) => (release = r))
+      let n = 0
+      s.overrides['turn/start'] = async (params: { threadId: string }) => {
+        if (params.threadId === 'th-2' && n === 0) await held
+        return { turn: { id: `tu-o${++n}` } }
+      }
+      const sending = internals.deliverTo(engineer, 'More')
+      await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(2))
+      expect(s.turnStarts('th-2')[1].params).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } })
+      // Switch 2 (bypass -> plan) while that request is in flight: the engineer may run under bypass.
+      await expect(session.setPermissionMode!('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+      release()
+      await sending
+      // Codex now holds bypass for the running turn: still counted.
+      await expect(session.setPermissionMode!('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+      await reportIdle()
+      // Between turns the next turn/start corrects it, so the idle engineer is covered.
+      await expect(session.setPermissionMode!('plan')).resolves.toBe(true)
+      await internals.deliverTo(engineer, 'Next')
+      expect(s.turnStarts('th-2').at(-1).params).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+      expect(s.turnStarts('th-2').at(-1).params).not.toHaveProperty('approvalPolicy')
+      // Settled: the turn after that carries no override.
+      await reportIdle()
+      await internals.deliverTo(engineer, 'Again')
+      expect(s.turnStarts('th-2').at(-1).params).not.toHaveProperty('sandboxPolicy')
+      expect(s.turnStarts('th-2').at(-1).params).not.toHaveProperty('approvalPolicy')
+    })
+
+    it('a workspace-write override carries the launch roots still allowed, no network and the temp switches config/read reports (review L1)', async () => {
+      const a = join(dir, 'a')
+      const b = join(dir, 'b')
+      const c = join(dir, 'c')
+      let allowed = [a, b]
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor({ autoContinue: false, allowedDirectories: () => allowed }))
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      s.overrides['config/read'] = () => ({ config: { sandbox_workspace_write: { writable_roots: ['/elsewhere'], network_access: true, exclude_tmpdir_env_var: true, exclude_slash_tmp: false } } })
+      await spawnEngineer(s, 'c-1')
+      await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
+      s.push('turn/completed', turnDone('th-2', 'tu-2'))
+      await quietRoot(s)
+      await expect(session.setPermissionMode!('plan')).resolves.toBe(true)
+      await expect(session.setPermissionMode!('default')).resolves.toBe(true)
+      // b left the allowed folders and c was added after launch: only a stays (never wider than either).
+      allowed = [a, c]
+      const internals = session as unknown as { deliverTo(agentId: string, text: string): Promise<void>; threads: Map<string, { agentId: string }> }
+      // Plan then default: Codex still holds the launch policy (pending kept), so nothing differs.
+      await internals.deliverTo(internals.threads.get('th-2')!.agentId, 'More')
+      expect(s.turnStarts('th-2').at(-1).params).not.toHaveProperty('sandboxPolicy')
+      s.push('turn/completed', turnDone('th-2', (session as unknown as { activeTurn: Map<string, string> }).activeTurn.get('th-2')!))
+      await quietRoot(s)
+      await expect(session.setPermissionMode!('plan')).resolves.toBe(true)
+      await internals.deliverTo(internals.threads.get('th-2')!.agentId, 'Read only')
+      s.push('turn/completed', turnDone('th-2', (session as unknown as { activeTurn: Map<string, string> }).activeTurn.get('th-2')!))
+      await quietRoot(s)
+      await expect(session.setPermissionMode!('default')).resolves.toBe(true)
+      await internals.deliverTo(internals.threads.get('th-2')!.agentId, 'Write again')
+      expect(s.turnStarts('th-2').at(-1).params.sandboxPolicy).toEqual({ type: 'workspaceWrite', writableRoots: [a], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: false })
+      expect(s.of('config/read')).toHaveLength(1)
+      expect(s.of('config/read')[0]!.params).toMatchObject({ cwd: dir })
+    })
+
+    it('a thread whose role cannot be resolved is counted, not skipped (review L3)', async () => {
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor({ autoContinue: false }))
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await spawnEngineer(s, 'c-1')
+      await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
+      s.push('turn/completed', turnDone('th-2', 'tu-2'))
+      await quietRoot(s)
+      const internals = session as unknown as { net: { roleOf(id: string): unknown }; policyPending: Map<string, unknown> }
+      const roleOf = internals.net.roleOf.bind(internals.net)
+      internals.net.roleOf = (id: string) => (id === ROOT_AGENT_ID ? roleOf(id) : undefined)
+      await expect(session.setPermissionMode!('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+      expect(internals.policyPending.has('th-2')).toBe(true)
     })
 
     it('a narrowing below acceptEdits clears a session accept-edits grant; auto keeps it', async () => {
@@ -1070,6 +1184,48 @@ describe('CodexAdapter session', () => {
         change(s, join(other, '..', 'elsewhere.ts'), 'f3')
         await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f3' })
         expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('an applied accept-edits grant calls ctx.acceptEditsGranted once; allow-once does not; a narrowing drops it and edits ask again', async () => {
+        const acceptEditsGranted = vi.fn()
+        const { ctx, s } = await started('default', { allowedDirectories: () => [other], acceptEditsGranted })
+        change(s, join(other, 'x.ts'))
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'once' })
+        await s.ask('item/fileChange/requestApproval', edit)
+        expect(acceptEditsGranted).not.toHaveBeenCalled()
+        change(s, join(other, 'y.ts'), 'f2')
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f2' })
+        expect(acceptEditsGranted).toHaveBeenCalledTimes(1)
+        change(s, join(dir, 'b.ts'), 'f3')
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f3' })).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+        // Narrowing to default (root idle): the grant goes and the next edit in the project asks again.
+        s.push('turn/completed', turnDone('th-1', 'tu-1'))
+        await vi.waitFor(() => expect(session!.settlement!().rootIdle).toBe(true))
+        await expect(session!.setPermissionMode!('default')).resolves.toBe(true)
+        change(s, join(dir, 'c.ts'), 'f4')
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'once' })
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f4' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(3)
+        expect(acceptEditsGranted).toHaveBeenCalledTimes(1)
+      })
+
+      it('a card answered after a narrowing to plan or dontAsk does not turn on accept-edits nor call the hook', async () => {
+        for (const narrow of ['plan', 'dontAsk'] as const) {
+          const acceptEditsGranted = vi.fn()
+          const { ctx, s } = await started('default', { allowedDirectories: () => [other], acceptEditsGranted })
+          change(s, join(other, 'x.ts'))
+          ;(ctx.requestPermission as any).mockImplementationOnce(async () => {
+            // Raised under default; the run narrowed (RunManager sets ctx.project first) before the user answered.
+            ctx.project = { ...ctx.project, permissionMode: narrow }
+            return { behavior: 'allow', scope: 'session' }
+          })
+          await s.ask('item/fileChange/requestApproval', edit)
+          expect(acceptEditsGranted).not.toHaveBeenCalled()
+          expect((session as any).sessionAcceptEdits).toBe(false)
+          await session?.stop()
+        }
       })
 
       it('adds a granted session folder to the session dirs only when it passes the safety check at grant time', async () => {
