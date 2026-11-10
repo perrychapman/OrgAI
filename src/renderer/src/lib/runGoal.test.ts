@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { goalToSend, selectedGoal, showsGoalChoice } from './runGoal'
+import { GOAL_LABEL, GOAL_OPTIONS, goalToSend, selectedGoal, showsGoalChoice } from './runGoal'
 
 describe('run goal choice', () => {
+  it('names the goals by what the run is optimised for', () => {
+    expect(GOAL_LABEL).toEqual({ balanced: 'Balanced', speed: 'Faster', cost: 'Cheaper' })
+    expect(GOAL_OPTIONS.map((o) => o.label)).toEqual(['Balanced', 'Faster', 'Cheaper'])
+  })
   it('shows only for team runs of an automatic-staffing project', () => {
     expect(showsGoalChoice({}, false)).toBe(true)
     expect(showsGoalChoice({ staffing: 'auto' }, false)).toBe(true)
