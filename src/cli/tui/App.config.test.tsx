@@ -13,7 +13,8 @@ import { fakeConfig, fixtureProject } from './configTestUtil'
 import { DEFAULT_TUI_ENV } from './context'
 import { KeyParser } from './input/keys'
 import { HELP_TEXT } from './slashCommands'
-import { addNotice, createInitialState, setComposeTarget } from './state'
+import { addNotice, applyRecord, createInitialState, setActiveRun, setComposeTarget } from './state'
+import { record, summary } from '../testing/fakeContext'
 import type { ComposeTarget, InputEvent, KeyEvent, TuiEnv, TuiState } from './types'
 
 const named = (name: KeyEvent['name']): InputEvent => ({ type: 'key', name, ctrl: false, alt: false, shift: false, raw: '' })
@@ -28,8 +29,8 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-function mount(config: TuiConfigApi | undefined) {
-  let state: TuiState = { ...createInitialState('/work'), project: fixtureProject(), connection: 'live' }
+function mount(config: TuiConfigApi | undefined, initial?: TuiState) {
+  let state: TuiState = initial ?? { ...createInitialState('/work'), project: fixtureProject(), connection: 'live' }
   const listeners = new Set<(e: InputEvent) => void>()
   const subs = new Set<() => void>()
   const setState = (next: TuiState): void => {
@@ -143,4 +144,33 @@ describe('/team and /settings in the shell', () => {
     await tick()
     expect(b.session.notify.mock.calls.some((c) => c[0] === CONFIG_HINT)).toBe(false)
   })
+
+  it.each(['team', 'settings'])('leaving /%s returns to the same transcript position and follow state', async (view) => {
+    const text = Array.from({ length: 60 }, (_, i) => `Transcript line ${i + 1}`).join('\n')
+    let st: TuiState = { ...createInitialState('/work'), project: fixtureProject(), connection: 'live' }
+    st = applyRecord(st, record(summary('run1', { status: 'idle' }), { transcript: [{ id: 't1', agentId: 'root', at: 1, block: { kind: 'text', text } }] }))
+    st = setActiveRun(st, 'run1')
+    const app = mount(fakeConfig(), st)
+    await tick()
+    // Focus the transcript (Tab through the panes) and scroll up two pages: the view leaves follow mode.
+    for (let i = 0; i < 6 && !app.frame().includes('More below'); i++) {
+      await app.send(named('tab'))
+      await app.send(named('pageup'), named('pageup'))
+    }
+    const lines = (f: string): string[] => f.split('\n').filter((l) => /Transcript line \d+|More below/.test(l))
+    const scrolled = lines(app.frame())
+    // Tab on to the composer (Esc in the transcript jumps to the end): the pane keeps its place, it only loses its key line.
+    for (let i = 0; i < 6 && !app.frame().includes('/ commands'); i++) await app.send(named('tab'))
+    const before = lines(app.frame())
+    expect(before[0]).toBe(scrolled[0])
+    expect(before.join('\n')).toContain('More below')
+    expect(before.join('\n')).not.toContain('Transcript line 60')
+    await app.typed(`/${view}\r`)
+    await tick()
+    expect(app.frame()).toContain(view === 'team' ? 'Team of App' : 'Settings of App')
+    await app.send(named('escape'))
+    await tick()
+    expect(lines(app.frame())).toEqual(before)
+  })
 })
+

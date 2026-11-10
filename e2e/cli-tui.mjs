@@ -270,14 +270,16 @@ try {
       await t.waitFor((s) => s.includes('Team of ') && s.includes(knownRole), 10_000)
       check(true, 'a: /team shows a known role of the project')
       t.key('escape')
-      await t.waitFor((s) => !s.includes('Team of '), 10_000)
+      // The whole run view is drawn again (a frame arrives in several reads: the overlay can be gone before the transcript is back).
+      await t.waitFor((s) => !s.includes('Team of ') && /E2E-MARK-(ALPHA|OMEGA)/.test(s), 10_000)
       check(true, 'a: Esc leaves /team for the run view')
       await type(t, '/settings')
       t.key('enter')
       await t.waitFor((s) => s.includes('Settings of ') && /Staffing mode\s+(auto|fixed)/.test(s), 10_000)
       check(true, 'a: /settings shows a known project setting with its value')
       t.key('escape')
-      await t.waitFor((s) => !s.includes('Settings of '), 10_000)
+      // The whole run view is drawn again (a frame arrives in several reads: the overlay can be gone before the transcript is back).
+      await t.waitFor((s) => !s.includes('Settings of ') && /E2E-MARK-(ALPHA|OMEGA)/.test(s), 10_000)
       check(true, 'a: Esc leaves /settings for the run view')
 
       // b. Resize.

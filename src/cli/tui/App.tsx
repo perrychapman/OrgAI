@@ -1403,11 +1403,12 @@ export function App(props: AppProps) {
     // The focused pane's own keys sit on a dim line at its bottom, so a long status line can never cut them off.
     const hint = focus === box.pane && box.height >= 6 ? paneHint(box.pane, box.pane === 'tree' ? rowKind : 'agent', 5, box.width, listSep) : ''
     const node = paneBody(box, hint ? box.height - 1 : box.height)
-    if (!hint) return node
+    // Always the same wrapper, focused or not: a pane is never remounted by a focus change, so the transcript keeps
+    // its scroll position and follow state when focus moves to the composer (and on to /team or /settings).
     return (
       <Box key={box.pane} flexDirection="column" width={box.width} height={box.height}>
         {node}
-        <PaneLines width={box.width} height={1} lines={[{ key: 'hint', segs: cutSegs([{ text: hint, dim: true }], box.width, env) }]} env={env} />
+        {hint ? <PaneLines width={box.width} height={1} lines={[{ key: 'hint', segs: cutSegs([{ text: hint, dim: true }], box.width, env) }]} env={env} /> : null}
       </Box>
     )
   }
@@ -1698,21 +1699,23 @@ export function App(props: AppProps) {
     body = (
       <Box flexDirection="column" width={size.cols} height={size.rows}>
         <Box width={size.cols} height={bodyRows} flexShrink={0}>
-        {(!inlineConfirmation && overlayNode) || (
-          <Box flexDirection={plan.mode === 'split' ? 'row' : 'column'} flexGrow={1}>
-            {plan.mode === 'split' ? (
-              <>
-                <Box flexDirection="column">{inspectorNode ?? col(0).map(paneNode)}</Box>
-                <Box width={plan.gutter ?? 0} flexShrink={0} />
-                <Box flexDirection="column" flexGrow={1}>
-                  {col(1).map(paneNode)}
-                </Box>
-              </>
-            ) : (
-              (inspectorNode ? [inspectorNode] : panes.map(paneNode))
-            )}
-          </Box>
-        )}
+        {/* An overlay (a view, a text, a list) shows over the run view, which stays mounted but hidden (display none)
+            at the same place in the tree: the transcript keeps its scroll position and follow state, and the panes
+            their selection, so leaving the overlay returns to the run view unchanged. */}
+        {!inlineConfirmation && overlayNode}
+        <Box key="run-view" display={!inlineConfirmation && overlayNode ? 'none' : 'flex'} flexDirection={plan.mode === 'split' ? 'row' : 'column'} flexGrow={1}>
+          {plan.mode === 'split' ? (
+            <>
+              <Box flexDirection="column">{inspectorNode ?? col(0).map(paneNode)}</Box>
+              <Box width={plan.gutter ?? 0} flexShrink={0} />
+              <Box flexDirection="column" flexGrow={1}>
+                {col(1).map(paneNode)}
+              </Box>
+            </>
+          ) : (
+            (inspectorNode ? [inspectorNode] : panes.map(paneNode))
+          )}
+        </Box>
         </Box>
         {inlineConfirmation ? overlayNode : tray}
         {palette}
