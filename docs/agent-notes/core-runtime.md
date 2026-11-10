@@ -92,6 +92,28 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   entries carry `runId` and `mergeProfile` replaces a run's earlier entries, so a second merge cannot double count.
   A failed write logs one warning (step and errno code, no path) and never fails the end. Unit tests only
   (staffingProfile, runManagerStaffing, mock, claude, claudeKnowledge, codexStaffing); no live run.
+- Context pack on spawn (2026-11-10, split-execution 3.2; `runtime/contextPack.ts`): Codex `spawn_report` and the mock
+  spawn step take `files` (paths the lead read). At spawn time the host reads them and appends them to the report's
+  first message under `CONTEXT_PACK_HEADING`, one fence per file with its path (the transcript keeps the brief only).
+  Limits: the first 8 entries, 24,000 characters per file, 60,000 in total, UTF-8 text with no NUL byte. Checks per
+  file: not a network path (`isNetworkPath`), `checkSelfControlDenial('Read', ...)` on the path as written and on its
+  real path (unavailable protected paths refuse every file), and the real path (`realpathSync.native`) inside the
+  project folder, the lead's or the report's working folder, or the run's allowed or reference folders
+  (`contextPackRoots`, `isInsideEither`). Trust-restricted and setup-like runs get none (`contextPackRefusal`). Every
+  file left out is named with its reason in the tool result (`contextPackResultLine`). A bridged report gets no pack
+  (the result says so); `delegate_agent` and the Claude Agent tool take no `files` (the Agent tool is the SDK's own and a
+  rewrite of a well-formed spawn costs a classifier request; note in claude.ts' spawn hook). Without `files` nothing
+  changes. spawn_report's definition grew 126 chars (Codex team-root budget 20,050, `toolDefinitionSize.test.ts`).
+  Unit tests only (contextPack, codexContextPack, mockContextPack); no live run, `reportStartMs` not measured yet.
+- One report and a waiting lead (2026-11-10, split-execution 3.6; `runtime/waitingNote.ts`, pure `waitingNote`): after
+  a successful spawn by the run's root (not a bridged child's root) that leaves exactly one of the root's reports
+  running, for a role that is not one of the root's required reports (`obligationsFor`), with an active plan that has a
+  ready step (`readySteps`) and no `in_progress` step without a running report bound to it (staffing rows), the spawn
+  result gets `WAITING_NOTE`. Never a refusal, at most once per run, never on setup-like, Chat (quick) or single runs.
+  The ready-step condition is an addition to the spec: with nothing ready, waiting is all the lead can do. Codex
+  (`afterSpawn` on the NetworkHost, also on a bridged spawn_report) and the mock (a harness system row on the parent and
+  `spawnNotes`); Claude would need the hook's additional context, unverified. Unit tests only (waitingNote,
+  codexContextPack, mockContextPack).
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls

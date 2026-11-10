@@ -241,7 +241,7 @@ describe('tool exposure', () => {
     const schema = specs[0].inputSchema as { type: string; required: string[]; properties: Record<string, unknown> }
     expect(schema.type).toBe('object')
     expect(schema.required).toEqual(['role', 'brief'])
-    expect(Object.keys(schema.properties)).toEqual(['role', 'brief', 'name', 'description', 'tier', 'effort'])
+    expect(Object.keys(schema.properties)).toEqual(['role', 'brief', 'name', 'description', 'tier', 'effort', 'files'])
     expect(specs[1].inputSchema).toMatchObject({ type: 'object', properties: {} })
     expect(JSON.stringify(specs)).not.toContain('$schema')
   })
