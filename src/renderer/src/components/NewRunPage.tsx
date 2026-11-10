@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Effort, PermissionMode, Project, StaffingGoal } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { setupPending } from '@shared/setup'
@@ -135,6 +135,9 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const runAdapter = (pickedModel ?? defaultModel)?.adapter ?? null
   const permissionChoices = useMemo(() => newRunPermissionChoices(), [])
   const shownMode = pickedMode ?? project.permissionMode
+  // Latest values for a start whose confirm dialog stays open while the project's mode or the pick changes.
+  const modeNow = useRef({ project: project.permissionMode, picked: pickedMode })
+  modeNow.current = { project: project.permissionMode, picked: pickedMode }
   const noun = projectNoun(kind)
   const hasReferences = (project.referenceDirectories?.length ?? 0) > 0
   const askLead = `One assistant answers here as a conversation. It can use this ${noun}'s folders, services and skills, with the same permissions. No team members start.${hasReferences ? ' It can read the reference folders but not change them.' : ''}`
@@ -289,6 +292,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
                 resetMode()
                 throw new DeclinedStart()
               }
+              // The confirmation covered those two values only: if either moved meanwhile, nothing is sent.
+              if (modeNow.current.project !== project.permissionMode || modeNow.current.picked !== pickedMode) throw new DeclinedStart()
             }
             const sendGoal = goalToSend(project, ask, pickedGoal)
             // Setup pending and virtual projects show no settings row, so nothing of the draft applies there.

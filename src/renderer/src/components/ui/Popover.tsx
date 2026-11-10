@@ -146,6 +146,7 @@ export function Popover({
     let frame = 0
     let tries = 0
     const focusIn = (): void => {
+      if (!el.matches(':popover-open')) return
       if (el.contains(document.activeElement) && document.activeElement !== el) return
       const target =
         el.querySelector<HTMLElement>('input[type=search]') ??

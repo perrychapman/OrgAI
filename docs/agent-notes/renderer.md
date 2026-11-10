@@ -352,7 +352,7 @@ Spec: `docs/design/ux-review-run-start-pre.md` (H1-H3, M1-M8). Contract: `StartR
   `ModelPickerList` + `useModelCatalog` shared with `LiveModelSwitch`, `StartModelControl`, `EffortControl` /
   `EffortReadOnly`, `PermissionModeControl`, `LivePermissionMode`, `GoalControl` / `GoalReadOnly`), styles
   `styles/run-settings.css`. Every chip is one Tab stop with a Popover; `data-default`, and `data-tone=warning` plus a
-  ShieldAlert icon for permissive modes (auto, acceptEdits, bypass).
+  ShieldAlert icon for auto and acceptEdits; bypass is the danger tone with ShieldOff.
 - Effort is a native radio `SegmentedControl` ordered least to most inside a popover (the "slider": arrow keys step,
   every level named; a native range would hide the names). Live it is read-only: the contract has no mid-run effort.
 - Permission: the picker stages a choice and "Use this mode" applies it, because native radios fire change while arrow
@@ -378,8 +378,8 @@ Spec: `docs/design/ux-review-run-start-pre.md` (H1-H3, M1-M8). Contract: `StartR
   settings row, focus lands in the live composer textarea after Start.
 - `ui/Popover` places itself again when its content resizes (a ResizeObserver while open, only when the panel's
   offsetWidth / offsetHeight differ from the last placement, so it cannot loop): the start model picker grew past the
-  window after its catalog loaded. Focus moves into the panel in a requestAnimationFrame after placement, to the checked
-  radio (`input[type=radio]:checked`) else the first control, retried for a few frames, and a control the content already
+  window after its catalog loaded. Focus moves into the panel in a requestAnimationFrame after placement, to a search input
+  (`input[type=search]`) if present, else the checked radio (`input[type=radio]:checked`), else the first control, retried for a few frames, and a control the content already
   focused (the model picker's search box) is kept. Cause of the old "Enter leaves focus on the chip": on a popover's
   very first open the focus call ran inside the `toggle` event task, before the panel was rendered as an open popover, and
   was silently dropped (later opens worked, keys did not matter). This applies to every Popover user; no other screen's
@@ -391,7 +391,7 @@ Spec: `docs/design/ux-review-run-start-pre.md` (H1-H3, M1-M8). Contract: `StartR
   note. A result for another run of the chain (`result.run.id !== run.id`) says "This conversation continued
   elsewhere..." and never claims the mode changed. Start page: a staged mode resets when the project's own mode changes,
   and Start confirms a staged widening that was not confirmed against the project's current mode (declining restores
-  the draft with no error banner). Permissive options in the list carry the hidden ShieldAlert icon (`run-permission-option-icon`);
+  the draft with no error banner). Permissive options in the list carry the hidden icon (ShieldAlert, ShieldOff for bypass) (`run-permission-option-icon`);
   "Use this mode" is guarded so a double click opens one dialog.
 - The start model default always uses the project's connection: `Role.connection` is ignored on the root
   (`defaults.ts` `roleConnection`, `Role.connection` doc, main `runManager` / `claude.ts`), so a stale value on the root
