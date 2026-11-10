@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -74,8 +74,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
     }
   }
 })
-import { ClaudeSession, SPAWN_LINK_WAIT_MS } from './claude'
-import { CONTEXT_PACK_HEADING } from './contextPack'
+import { ClaudeSession, READ_PATHS_PER_AGENT, SPAWN_LINK_WAIT_MS, STOPPED_REPORT_DENIAL, TOOL_USE_BY_TASK_MAX } from './claude'
+import { CONTEXT_PACK_HEADING, CONTEXT_PACK_NOT_READ } from './contextPack'
 import { WAITING_NOTE } from './waitingNote'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { DelegationGate, RuntimeContext } from './types'
@@ -119,13 +119,12 @@ function gateMock() {
   } satisfies DelegationGate
 }
 
-async function start(over: Partial<RuntimeContext> = {}) {
+async function start(over: Partial<RuntimeContext> = {}, rs: Role[] = roles()) {
   const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-split-')))
   dirs.push(dir)
   mkdirSync(join(dir, 'src'))
   writeFileSync(join(dir, 'src', 'contract.ts'), 'export interface Contract { id: string }\n')
   writeFileSync(join(dir, 'src', 'other.ts'), 'export const other = 2\n')
-  const rs = roles()
   const ctx = fakeCtx({ project: project({ path: dir, roles: rs, isolateWriters: false }), roles: rs, run: runSummary(), autoContinue: false, ...over })
   const before = sdk.queries.length
   const session = new ClaudeSession(ctx)
@@ -162,6 +161,20 @@ const taskStarted = (q: Fake, agentId: string, tu: string, type: string) =>
 /** The report's task_notification: tool_use_id = its Agent call, handback 'send' and handback_report (check 12). */
 const notified = (q: Fake, agentId: string, tu: string, text: string, status = 'completed') =>
   q.emit({ type: 'system', subtype: 'task_notification', task_id: agentId, tool_use_id: tu, status, output_file: '', summary: 'Harness note', handback: 'send', handback_report: { text }, session_id: 's', uuid: `n-${agentId}` })
+/** A successful Read (its PostToolUse: the CLI ran it) by the root, or by `agentId`; `file` relative to `cwd`. */
+const read = (q: Fake, file: string, cwd: string, agentId?: string): Promise<HookOut> =>
+  hooksOf(q, 'PostToolUse')({
+    ...base(cwd),
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Read',
+    tool_input: { file_path: file },
+    tool_response: { type: 'text', file: { filePath: file, content: 'x', numLines: 1, startLine: 1, totalLines: 1 } },
+    tool_use_id: `read-${Math.random()}`,
+    ...(agentId ? { agent_id: agentId, agent_type: 'engineer' } : { agent_type: 'lead' })
+  }, 'x', {})
+/** Any tool call's PreToolUse by `agentId`. */
+const pre = (q: Fake, agentId: string, tool: string, input: Record<string, unknown>, type = 'engineer'): Promise<HookOut> =>
+  hooksOf(q, 'PreToolUse')({ ...base(), hook_event_name: 'PreToolUse', tool_name: tool, tool_input: input, tool_use_id: `${tool}-${Math.random()}`, agent_id: agentId, agent_type: type }, 'x', {})
 const init = (q: Fake, n: number) => q.emit({ type: 'system', subtype: 'init', model: 'claude-opus', session_id: 's', claude_code_version: 'x', uuid: `i-${n}` })
 const resultMsg = (q: Fake, n: number) =>
   q.emit({ type: 'result', subtype: 'success', result: 'still running', total_cost_usd: 0, modelUsage: {}, usage: {}, is_error: false, session_id: 's', uuid: `r-${n}` })
@@ -224,6 +237,8 @@ describe('Claude: the waiting note (split-execution 3.6) on a background launch'
 describe('Claude: context pack from the brief (split-execution 3.2)', () => {
   it('reads the Files: line without rewriting the call, delivers the block at SubagentStart and tells the lead at launch', async () => {
     const { ctx, q, dir } = await start()
+    // Only files the lead itself read with Read are inlined.
+    await read(q, join(dir, 'src', 'contract.ts'), dir)
     const brief = 'Build module A against the contract.\nFiles: src/contract.ts, /etc/hosts, missing.ts'
     // The call is well-formed: the line stays in the brief and the hook returns {} (no classifier request).
     expect(await spawn(q, 't1', { ...wellFormed.engineer, prompt: brief, run_in_background: true }, dir)).toEqual({})
@@ -244,6 +259,8 @@ describe('Claude: context pack from the brief (split-execution 3.2)', () => {
 
   it('parallel spawns of one role: each start gets its own pack, whatever the order of starts and links', async () => {
     const { q, dir } = await start()
+    await read(q, 'src/contract.ts', dir)
+    await read(q, 'src/other.ts', dir)
     await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: src/contract.ts', run_in_background: true }, dir)
     await spawn(q, 't2', { ...wellFormed.engineer, name: 'eng-2', prompt: 'B\nFiles: src/other.ts', run_in_background: true }, dir)
     const s1 = subStart(q, 'a1', 'engineer')
@@ -258,6 +275,7 @@ describe('Claude: context pack from the brief (split-execution 3.2)', () => {
 
   it('a foreground spawn hears about its pack with the report; a start that cannot be linked is reported as not inlined', async () => {
     const { ctx, q, dir } = await start()
+    await read(q, join(dir, 'src', 'contract.ts'), dir)
     await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: src/contract.ts', run_in_background: false }, dir)
     await started(ctx, q, 'a1', 't1', 'engineer')
     expect((await subStart(q, 'a1', 'engineer')).hookSpecificOutput.additionalContext).toContain('File: src/contract.ts')
@@ -290,6 +308,70 @@ describe('Claude: context pack from the brief (split-execution 3.2)', () => {
     await spawn(p.q, 't1', { ...wellFormed.engineer, prompt: 'Files are in src/.' }, p.dir)
     await started(p.ctx, p.q, 'a1', 't1', 'engineer')
     expect(await subStart(p.q, 'a1', 'engineer')).toEqual({})
+  })
+})
+
+describe('Claude: the pack holds only what the lead read, from the folders the harness knows (second security pass)', () => {
+  it('E: a file the lead did not read (a Read the CLI denied never reaches PostToolUse), or that another agent read, is not inlined', async () => {
+    const { ctx, q, dir } = await start()
+    // The CLI's own rules (e.g. Read(./.env) in .claude/settings.json) deny the lead's Read: no PostToolUse, nothing recorded.
+    writeFileSync(join(dir, '.env'), 'TOKEN=s3cret\n')
+    await read(q, 'src/contract.ts', dir)
+    // A report's Read counts for that report only.
+    await read(q, join(dir, 'src', 'other.ts'), dir, 'a-other')
+    await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: src/contract.ts, .env, src/other.ts', run_in_background: true }, dir)
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    const block = (await subStart(q, 'a1', 'engineer')).hookSpecificOutput.additionalContext as string
+    expect(block).toContain('File: src/contract.ts')
+    expect(block).not.toContain('s3cret')
+    expect(block).not.toContain('other.ts')
+    const out = (await post(q, 't1', launched('a1'))).hookSpecificOutput.additionalContext as string
+    expect(out).toContain(`.env (${CONTEXT_PACK_NOT_READ})`)
+    expect(out).toContain(`src/other.ts (${CONTEXT_PACK_NOT_READ})`)
+  })
+
+  it('E: a read through a link counts by real path; a failed Read response records nothing; the record is bounded per agent', async () => {
+    const { ctx, session, q, dir } = await start()
+    symlinkSync(join(dir, 'src', 'contract.ts'), join(dir, 'alias.ts'))
+    await read(q, 'alias.ts', dir)
+    await hooksOf(q, 'PostToolUse')({ ...base(dir), hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: 'src/other.ts' }, tool_response: { is_error: true }, tool_use_id: 'r-err', agent_type: 'lead' }, 'x', {})
+    await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: src/contract.ts, src/other.ts', run_in_background: true }, dir)
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    const block = (await subStart(q, 'a1', 'engineer')).hookSpecificOutput.additionalContext as string
+    expect(block).toContain('File: src/contract.ts')
+    expect(block).not.toContain('File: src/other.ts')
+    // Bounded: READ_PATHS_PER_AGENT newest real paths, the oldest dropped.
+    for (let i = 0; i <= READ_PATHS_PER_AGENT; i++) writeFileSync(join(dir, `f${i}.txt`), 'x')
+    for (let i = 0; i <= READ_PATHS_PER_AGENT; i++) await read(q, `f${i}.txt`, dir)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reads = (session as any).readsByAgent.get('root') as Set<string>
+    expect(reads.size).toBe(READ_PATHS_PER_AGENT)
+    expect(reads.has(join(dir, 'f0.txt'))).toBe(false)
+    expect(reads.has(join(dir, `f${READ_PATHS_PER_AGENT}.txt`))).toBe(true)
+  })
+
+  it('F: a target role without the Read tool gets no pack', async () => {
+    const rs = roles().map((r): Role => (r.slug === 'helper' ? { ...r, tools: ['Bash'] } : r))
+    const { ctx, q, dir } = await start({}, rs)
+    await read(q, 'src/contract.ts', dir)
+    await spawn(q, 't1', { ...wellFormed.helper, prompt: 'B\nFiles: src/contract.ts', run_in_background: true }, dir)
+    await started(ctx, q, 'a1', 't1', 'helper')
+    expect(await subStart(q, 'a1', 'helper')).toEqual({})
+    expect((await post(q, 't1', launched('a1'))).hookSpecificOutput.additionalContext).toContain('src/contract.ts (Helper has no Read tool)')
+  })
+
+  it('G: the hook\'s cwd resolves relative paths but is never a root', async () => {
+    const { ctx, q, dir } = await start()
+    const elsewhere = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-split-out-')))
+    dirs.push(elsewhere)
+    writeFileSync(join(elsewhere, 'notes.txt'), 'outside the run')
+    // The lead read it (a Read it was allowed), and the hook reports its cwd there: still outside the run's folders.
+    await read(q, 'notes.txt', elsewhere)
+    await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: notes.txt', run_in_background: true }, elsewhere)
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    void (await subStart(q, 'a1', 'engineer'))
+    const out = (await post(q, 't1', launched('a1'))).hookSpecificOutput.additionalContext as string
+    expect(out).toContain('notes.txt (outside the folders the report may read)')
   })
 })
 
@@ -372,6 +454,97 @@ describe('Claude: background reports that are not required (split-execution 3.3)
     expect(gate.delivered).not.toHaveBeenCalled()
     expect(onFinished).not.toHaveBeenCalled()
     expect(lastAgent(ctx, 'a1')?.activity).toBe('Interrupted')
+  })
+
+  it('I1/I2: a stopped report may not keep acting: every tool call is denied, its hand-back too, until a SendMessage resume', async () => {
+    const { ctx, session, q } = await start({ delegation: gateMock() })
+    await spawn(q, 't1', { ...wellFormed.engineer, run_in_background: true })
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    await post(q, 't1', launched('a1'))
+    expect(await pre(q, 'a1', 'Bash', { command: 'ls' })).toEqual({})
+    await session.interrupt()
+    for (const [tool, input] of [['Bash', { command: 'ls' }], ['Edit', { file_path: 'x', old_string: 'a', new_string: 'b' }], ['Read', { file_path: 'x' }], ['SubagentHandback', { message: 'late' }]] as const) {
+      expect((await pre(q, 'a1', tool, input)).hookSpecificOutput).toEqual({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: STOPPED_REPORT_DENIAL })
+    }
+    expect(lastAgent(ctx, 'a1')).toMatchObject({ state: 'done', activity: 'Interrupted' })
+    // A SendMessage resume (task_started for the known agent) makes it live again.
+    q.emit({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent', tool_use_id: 'sm-1', parent_task_id: undefined, subagent_type: 'engineer', description: 'more', session_id: 's', uuid: 'u-a1-resume' })
+    await vi.waitFor(() => expect(lastAgent(ctx, 'a1')?.state).toBe('thinking'))
+    expect(await pre(q, 'a1', 'Bash', { command: 'ls' })).toEqual({})
+  })
+
+  it('I3: a report stopped before its task_started arrived stays stopped when the late task_started comes', async () => {
+    const gate = gateMock()
+    const { ctx, session, q } = await start({ delegation: gate })
+    await spawn(q, 't1', { ...wellFormed.engineer, run_in_background: true })
+    // The launch result names the agent before its task_started was handled.
+    await post(q, 't1', launched('a1'))
+    expect(session.settlement().quiescent).toBe(false)
+    await session.interrupt()
+    expect(q.stopped).toEqual(['a1'])
+    expect(session.settlement().quiescent).toBe(true)
+    // Its SubagentStart and task_started arrive late: recorded settled, never a live report.
+    expect(await subStart(q, 'a1', 'engineer')).toEqual({})
+    taskStarted(q, 'a1', 't1', 'engineer')
+    await vi.waitFor(() => expect(gate.noteSpawn).toHaveBeenCalledWith('a1', 'root', 'r-eng'))
+    expect(lastAgent(ctx, 'a1')).toMatchObject({ state: 'done', activity: 'Interrupted' })
+    expect(gate.ended).toHaveBeenCalledWith('a1')
+    expect(session.settlement().quiescent).toBe(true)
+    expect((await pre(q, 'a1', 'Bash', { command: 'ls' })).hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(await subStop(q, 'a1', 'engineer')).toEqual({})
+    expect(lastAgent(ctx, 'a1')?.activity).toBe('Interrupted')
+    // The staffing book has it ended, not running.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((session as any).staffingBook.agents.get('a1')?.state).toBe('ended')
+  })
+
+  it('I3: a report the SubagentStart drew but whose task_started had not arrived is settled, and the late task_started keeps it so', async () => {
+    const gate = gateMock()
+    const { ctx, session, q } = await start({ delegation: gate })
+    await spawn(q, 't1', { ...wellFormed.engineer, run_in_background: true })
+    await subStart(q, 'a1', 'engineer')
+    await post(q, 't1', launched('a1'))
+    await session.interrupt()
+    taskStarted(q, 'a1', 't1', 'engineer')
+    await vi.waitFor(() => expect(gate.noteSpawn).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 10))
+    expect(lastAgent(ctx, 'a1')).toMatchObject({ state: 'done', activity: 'Interrupted' })
+    expect(gate.ended.mock.calls.filter(([id]) => id === 'a1').length).toBeGreaterThanOrEqual(1)
+    // The ledger's last word on it is ended, after the noteSpawn.
+    expect(gate.ended.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(gate.noteSpawn.mock.invocationCallOrder[0]!)
+  })
+
+  it('I4: a resumed report whose notification carries the SendMessage tool_use_id keeps its report text', async () => {
+    const { ctx, q } = await start()
+    await spawn(q, 't1', { ...wellFormed.engineer, run_in_background: true })
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    await post(q, 't1', launched('a1'))
+    await subStop(q, 'a1', 'engineer')
+    notified(q, 'a1', 't1', 'First report.')
+    await vi.waitFor(() => expect(lastAgent(ctx, 'a1')?.result).toBe('First report.'))
+    // The root messages it (a resume); the resume's task_started names the original Agent call.
+    await hooksOf(q, 'PreToolUse')({ ...base(), hook_event_name: 'PreToolUse', tool_name: 'SendMessage', tool_input: { to: 'eng-1', message: 'Also do B' }, tool_use_id: 'sm-1', agent_type: 'lead' }, 'x', {})
+    q.emit({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent', tool_use_id: 't1', subagent_type: 'engineer', description: 'more', session_id: 's', uuid: 'u-a1-resume' })
+    await vi.waitFor(() => expect(lastAgent(ctx, 'a1')?.state).toBe('thinking'))
+    // Its end is notified under the SendMessage call: still its report.
+    notified(q, 'a1', 'sm-1', 'Second report.')
+    await vi.waitFor(() => expect(lastAgent(ctx, 'a1')).toMatchObject({ state: 'done', result: 'Second report.' }))
+    // A notification under an unrelated call (its own background Bash) is still not its end.
+    q.emit({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent', tool_use_id: 't1', subagent_type: 'engineer', description: 'again', session_id: 's', uuid: 'u-a1-resume2' })
+    await vi.waitFor(() => expect(lastAgent(ctx, 'a1')?.state).toBe('thinking'))
+    q.emit({ type: 'system', subtype: 'task_notification', task_id: 'a1', tool_use_id: 'bash-call', status: 'completed', output_file: '', summary: 'sleep', session_id: 's', uuid: 'nb3' })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(lastAgent(ctx, 'a1')?.state).toBe('thinking')
+  })
+
+  it('I5: the task_started links are bounded', async () => {
+    const { session } = await start()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const s = session as any
+    for (let i = 0; i < TOOL_USE_BY_TASK_MAX + 50; i++) s.linkTask(`a${i}`, `t${i}`)
+    expect(s.toolUseByTask.size).toBe(TOOL_USE_BY_TASK_MAX)
+    expect(s.toolUseByTask.has('a0')).toBe(false)
+    expect(s.toolUseByTask.get(`a${TOOL_USE_BY_TASK_MAX + 49}`)).toBe(`t${TOOL_USE_BY_TASK_MAX + 49}`)
   })
 
   it('the session end settles a live background report', async () => {

@@ -113,22 +113,41 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   too: no existence oracle); `checkSelfControlDenial('Read', ...)` on the path as written and on its real path
   (unavailable protected paths refuse every file); the real path (`realpathSync.native`) inside the project folder, the
   lead's or the report's working folder, or the run's allowed or reference folders (`contextPackRoots`,
-  `isInsideEither`). Then one open (`O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, each flag where defined, so a FIFO never
-  blocks the main process), `fstat` of the handle a regular file within the cap, `realpath` again equal to the checked
-  real path, `stat` of that path the same dev and ino as the handle, the handle not a protected file under another
-  name (dev and ino against each protected path and, when `nlink > 1`, the files under protected folders, a bounded walk
-  that fails closed), and only then a bounded read from the handle, always closed. A swap between the checks and the
-  open (a link to an outside or control file, a linked parent folder, a FIFO) is skipped as "unreadable" or "not a
-  file". Trust-restricted and setup-like runs get none (`contextPackRefusal`). Every
+  `isInsideEither`). Then one open (`O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY`, each flag where defined, so a FIFO
+  never blocks the main process; on macOS `O_NOFOLLOW_ANY` 0x20000000 in place of `O_NOFOLLOW`, defined in
+  `contextPackOpenFlags` since Node lacks it: a link in any component of the checked real path refuses the open; the
+  two together give EINVAL and `O_NOFOLLOW_ANY` alone refuses a final link with ELOOP, both checked with node on
+  darwin 25), on Linux `/proc/self/fd/<fd>` read back equal to the real path (`handlePointsAt`, an unreadable /proc
+  fails closed; unit-tested with a mocked readlink only, no Linux run), `fstat` of the handle a regular file within the
+  cap, `realpath` again equal to the checked real path, `stat` of that path the same dev and ino as the handle (bigint
+  stats), the handle's dev and ino not in the protected set (`protectedFileKeys`, collected once per pack build before
+  the first file and compared for EVERY file, any link count: each protected path, every file under a protected folder,
+  walked once per folder whatever its spellings, and the data folder's entries the gate protects by name prefix,
+  `vault.json*` / `secrets.json*` from `vaultPrefixProtections`, so `.reset-*`, `.corrupt-*`, `.tmp` hard links count;
+  past 5,000 entries every file gets the neutral "OrgAI could not check it against its control files"), and only then a
+  bounded read from the handle, always closed. A swap between the checks and the open (a link to an outside or control
+  file, a linked parent folder, a parent that is a link at the open, a folder at the re-resolve and a link at the stat,
+  a control file renamed in, a FIFO) is skipped as "unreadable", "not a file" or as a control file (2026-11-10 second
+  security pass; the three-moment parent swap is a unit test that inlines `<data>/codex/auth.json` with neither fix
+  and is refused with either one alone, checked on macOS; Windows has only the dev/ino checks, not run there). The
+  `File:` line drops control, U+0085, U+2028, U+2029 and bidi characters, and inlined text gets a zero-width space after
+  each `</` before a letter (the heading says so), so no file line can close a wrapper tag of the hook context.
+  Trust-restricted and setup-like runs get none (`contextPackRefusal`). Every
   file left out is named with its reason in the tool result (`contextPackResultLine`). A bridged report gets no pack
   (the result says so); `delegate_agent` takes no `files`. Without `files` nothing changes. spawn_report's definition
   grew 126 chars, then the security pass's `maxItems` and wording (Codex team-root budget 20,050 unchanged,
   `toolDefinitionSize.test.ts`). Claude (2026-11-10): the Agent tool is
   the SDK's own and a rewrite of a well-formed spawn costs a classifier request, so the lead ends the brief with a
   `Files: a, b` line (`briefFiles`: the last non-empty line, label in any case, comma separated, quotes and backticks
-  dropped; a path cannot hold a comma). The spawn hook reads it at PreToolUse after every denial (call unchanged; the
-  line stays in the brief) with the same checks, from the hook's cwd, roots = project, that cwd, the parent's checkout
-  (`agentCwd`: the report's worktree is cut from it), allowed and reference folders, plus `blockMaxChars` =
+  dropped; a path cannot hold a comma; since the second pass the line must be the very last one, not inside a code
+  fence left open above it and not continuing a block quote; no prompt change). The spawn hook reads it at PreToolUse
+  after every denial (call unchanged; the line stays in the brief) with the same checks, relative paths from the hook's
+  cwd, which is never a root: roots = project, the caller's checkout as the harness tracks it (`agentCwd`: the report's
+  worktree is cut from it), allowed and reference folders. Claude inlines ONLY files the spawning agent itself read with
+  Read this session (`readPaths`; real paths from each `Read` PostToolUse, 500 per agent, oldest dropped; else "not read
+  by you in this run"): the CLI enforces `.claude/settings.json` and managed-policy Read deny/ask rules the harness does
+  not see, and a Read they stopped never reaches PostToolUse (from the hooks docs and sdk.d.ts, where failures and
+  denials have their own events, not checked live). A target role without the Read tool gets no pack. Plus `blockMaxChars` =
   `CLAUDE_HOOK_CONTEXT_INLINE_MAX` (10,000: the CLI keeps hook context inline only up to that, above it the model gets a
   2,000-character preview and a file path; read from the SDK 0.3.318 CLI bundle, `bve`/`kHe=1e4`, not checked live).
   The block goes out as the report's `SubagentStart` `additionalContext` (sdk-facts check 13). The start is linked to
@@ -169,9 +188,16 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   background report is settled at once (done, "Interrupted", ledger `ended`, staffing row closed, not integrated) and
   `stopTask` is sent; OrgAI does not declare `perTaskStopAffordance`, so per sdk.d.ts the CLI's interrupt kills
   background tasks anyway (not checked live). A later SubagentStop, handback or notification of a stopped report
-  changes nothing; a SendMessage resume makes it live again. Session end settles them ("Stopped: the session ended").
+  changes nothing, and PreToolUse denies every tool call of a stopped report (`STOPPED_REPORT_DENIAL`, its hand-back
+  included) so it cannot keep acting while shown as stopped; a SendMessage resume (task_started for a known agent) makes
+  it live again. A report stopped before its first task_started was handled (named by the launch result, or drawn by
+  SubagentStart) is kept in `stoppedBeforeStart`: the late task_started records it settled (ledger noteSpawn then
+  `ended`, staffing book ended), never live. A task_notification also ends an activation under any id the agent was
+  spawned or resumed under (its Agent call, a resume's task_started id, a SendMessage addressed to it,
+  `reportEndIds`), so a resumed report that notifies under the SendMessage call keeps its text (that shape is not seen
+  live; handled in case). `toolUseByTask` keeps the newest 1,000 links. Session end settles them ("Stopped: the session ended").
   Not checked live: an interrupt or a killed task after which the CLI still resumes the root by itself; the stop
-  reaching a report that is mid-tool; a lab run.
+  reaching a report that is mid-tool; a lab run. The second-pass items are unit tests in `claudeSplit.test.ts` only.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls
