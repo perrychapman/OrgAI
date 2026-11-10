@@ -283,11 +283,14 @@ slot and nobody on it), the critical path's length against the run's, time to fi
   to the first unbound ready or in-progress step naming that role and applies its tier and effort; a spawn with no
   matching step uses the resolver's default. A pick made directly on the spawn call is honoured the same way.
 - A pure module `runtime/staffing.ts`:
-  `resolveStaffing({ role, requested, goal, onCriticalPath, profile, tierModels, planGuard, adapterEfforts })`
-  returns `{ tier, model, effort, source, note }`. Order: the requested value, else the profile's default (4.5),
-  else the rubric's default for the role; clamp to the role's bounds; plan guard; the nearest effort the adapter
-  supports; the nearest lower tier the connection has a model for. `source` is 'orchestrator', 'profile', 'role',
-  'clamped', 'plan-guard' or 'escalated'. The spawn's result states the tier and effort actually used.
+  `resolveStaffing({ role, project, parentTier, requested, profile, tierModels, adapterEfforts, planGuard,
+  escalatedFrom })` returns `{ mode, tier, model, effort, source, note, overrides }`. Order: the requested value,
+  else the profile's default (4.5), else the role's own tier and effort, so a run in which the orchestrator states
+  no pick behaves as today; clamp to the role's bounds (an effort ceiling of `high` when the chart sets none);
+  escalation by one step; plan guard; the nearest lower tier the connection has a model for; the nearest effort the
+  adapter supports. `source` is 'orchestrator', 'profile', 'role', 'clamped', 'plan-guard' or 'escalated'. The goal
+  and the critical path are the orchestrator's to weigh (the rubric) and the profile's (4.5); the resolver does not
+  take them. The spawn's result states the tier and effort actually used.
 - Mechanics. Claude: the gate sets `model` and `effort` on the spawn through `updatedInput`. The model it writes is
   the resolved tier's alias (top `fable`, deep `opus`, everyday `sonnet`, fast `haiku`), never a model id: the SDK
   rejects ids there. On a proxy connection the alias already resolves to the connection's model for that tier
@@ -320,8 +323,9 @@ slot and nobody on it), the critical path's length against the run's, time to fi
 
 - `Project.reviewPolicy?: 'always' | 'risk' | 'never'`, default `risk`. (Not `review`: `teamReview` and
   `reviewMerges` already mean other things.) Under `risk` the root asks for review when a role prompt or the brief
-  demands it, the change touches paths the project marks sensitive, the diff is large, or verification failed once.
-  Required reports always win.
+  demands it, the change touches sensitive or security-relevant code, the diff is large, or verification failed
+  once. Required reports always win. The policy is one sentence in the root prompt, written with the rubric; there
+  is no project list of sensitive paths.
 - Verification runs once per integrated result, by a fast-tier "run the checks" step that starts as soon as the
   result lands, beside any review. The lead reads the evidence; it does not re-run it.
 - A reviewer's findings go back to the agent that wrote the code (a message to a live report, or one new spawn),
@@ -389,11 +393,15 @@ Measured in Phase 0 (`scripts/measure-prompt-size.mjs`, token-free; the baseline
 
 - `RoleStaffing`, `Role.staffing?`; `ReviewPolicy`, `Project.reviewPolicy?`; `StaffingGoal`,
   `Project.staffingGoal?`; `Project.staffing?: 'auto' | 'fixed'` (`fixed` restores today's behaviour exactly);
-  `StartRunInput.goal?`.
+  `RunOverrides.goal?`, carried like `strictDelegation` (socket and in-process clients set it; the desktop start
+  handler drops overrides today, so a desktop per-run goal is part of phase 5).
 - `PlanStep.after?`, `PlanStep.paths?`, `PlanStep.staff?`.
-- `StaffingAssignment { agentId?; stepId?; roleId; tier; model; effort?; source; note? }`;
-  `RunStaffing { goal; assignments }` on `RunRecord`, written through `RuntimeContext.updateStaffing` (RunManager
-  stores, persists, broadcasts), event `staffing.updated`.
+- `StaffingAssignment { agentId?; stepId?; roleId; tier?; model; effort?; source; note?; at }`;
+  `RunStaffing { goal; assignments }` on `RunRecord` (at most 200 assignments, newest kept), written through
+  `RuntimeContext.updateStaffing` (RunManager cleans, stores, persists, broadcasts), event `staffing.updated`;
+  `RuntimeContext.staffingGoal`. A continuation keeps the goal and starts a new staffing record. Normalizers and
+  effective values (`cleanPlanStepGraph`, `cleanRunStaffing`, `effectiveRoleStaffing`, `staffingGoalOf`,
+  `reviewPolicyOf`, tier and effort ordering) live in `defaults.ts`. Landed in `75dc5423`.
 - `RunEfficiency { reports; firstSpawnMs; reportSumMs; reportBusyMs; maxParallel; tailMs }` on the run's usage
   (built in Phase 0, derived in `runUsage.ts`); `readyIdleMs?` joins it with the plan graph.
 - Nudge kind `'ready'`. Tools: `delegate_agent.background`; `spawn_report.tier` and `.effort`.
@@ -476,7 +484,9 @@ Targets:
    prompt; `readySteps` and the ready lines; mock; Claude gate (aliases, the plan guard on the same path, the tier variables on the Anthropic
    connection behind a smoke check); Codex spawn parameters; the `ready` nudge; background `delegate_agent`; team
    files and the gate rule. Reviewer pass on team files and anything that can raise spend.
-3. **Review policy.** `reviewPolicy`, verification once per integrated result, findings back to the author.
+3. **Review policy.** The policy sentence ships with the rubric in phase 2. What is left here is checked against
+   the phase 2 lab rerun: verification once per integrated result and findings going back to the author, as prompt
+   rules first, as mechanics only if the rerun shows the lead still redoing the work.
 4. **Profile.** `staffingProfile.ts`, the resolver default, the staffing brief.
 5. **Surfaces.** Run view, TUI, CLI `--goal`, Team tab, usage; e2e selectors in the same change (`runs.mjs`,
    `team.mjs`, `team-files.mjs`, `usage.mjs`, `cli-tui.mjs`, `cli-exec.mjs`).
