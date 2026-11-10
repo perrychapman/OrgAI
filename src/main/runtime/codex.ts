@@ -301,6 +301,8 @@ class CodexSession implements RuntimeSession {
   private limited = false
   private ending = false
   /** Bridged reports started through spawn_report and still working: harness agent id -> who they report to. */
+  /** Epoch ms the newest bridged report finished (bridged reports are not in `agents`); bookkeeping for the continuation wait. */
+  private lastBridgedEndedAt?: number
   private bridgedLive = new Map<string, { handle: string; roleSlug: string; connectionName: string; parentId: string }>()
   private ended = false
   private launch: LaunchConfig = { config: [], env: {}, summary: [], skipped: [] }
@@ -392,6 +394,11 @@ class CodexSession implements RuntimeSession {
       updatePlan: (plan) => ctx.updatePlan(plan),
       // Bridged reports are not threads of this session but still count as working reports.
       liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size,
+      lastReportEndedAt: () => {
+        let last = this.lastBridgedEndedAt
+        for (const a of this.agents.values()) if (a.id !== ROOT_AGENT_ID && a.endedAt !== undefined && (last === undefined || a.endedAt > last)) last = a.endedAt
+        return last
+      },
       pendingInteractions: () => ctx.pendingInteractions(),
       rateLimited: () => this.limited,
       stopping: () => this.ending || this.restarting,
@@ -1824,6 +1831,7 @@ class CodexSession implements RuntimeSession {
   private bridgedFinished(r: BridgeSpawnResult, roleName: string): void {
     const live = this.bridgedLive.get(r.agentId)
     this.bridgedLive.delete(r.agentId)
+    this.lastBridgedEndedAt = Date.now()
     this.net.finish(r.agentId)
     this.noteActivity('report')
     if (this.ending) return

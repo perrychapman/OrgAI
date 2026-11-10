@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlanStep, RunPlan } from '@shared/types'
 import {
   ContinuationDriver,
+  continuationWaitMs,
   SET_PLAN_NUDGE,
   SET_PLAN_SUMMARY,
   continueNudgeText,
@@ -577,5 +578,140 @@ describe('ContinuationDriver turn-generation settlement (cli-spec 6.2(2))', () =
     expect(d.isSettledForTurn(3)).toBe(true)
     await vi.advanceTimersByTimeAsync(3000)
     expect(host.nudges).toHaveLength(1)
+  })
+})
+
+describe('continuationWaitMs', () => {
+  const base = { delayMs: 1500, liveReports: 0, now: 100_000, known: true }
+  it('waits the full delay when the host does not report report end times', () => {
+    expect(continuationWaitMs({ ...base, known: false })).toBe(1500)
+    expect(continuationWaitMs({ ...base, known: false, lastReportEndedAt: 100_000 })).toBe(1500)
+  })
+  it('waits 0 when no report ever ended', () => {
+    expect(continuationWaitMs({ ...base })).toBe(0)
+  })
+  it('waits 0 when the newest report ended at least delayMs ago (boundary included)', () => {
+    expect(continuationWaitMs({ ...base, lastReportEndedAt: 100_000 - 1500 })).toBe(0)
+    expect(continuationWaitMs({ ...base, lastReportEndedAt: 100_000 - 9000 })).toBe(0)
+  })
+  it('waits the remainder of the window after a recent report', () => {
+    expect(continuationWaitMs({ ...base, lastReportEndedAt: 100_000 - 400 })).toBe(1100)
+    expect(continuationWaitMs({ ...base, lastReportEndedAt: 100_000 - 1499 })).toBe(1)
+  })
+  it('waits the full delay when a report ended this very moment', () => {
+    expect(continuationWaitMs({ ...base, lastReportEndedAt: 100_000 })).toBe(1500)
+  })
+  it('waits the full delay with live reports, even when none ended', () => {
+    expect(continuationWaitMs({ ...base, liveReports: 1 })).toBe(1500)
+    expect(continuationWaitMs({ ...base, liveReports: 2, lastReportEndedAt: 1 })).toBe(1500)
+  })
+  it('waits the full delay when the clock went backwards (end time in the future)', () => {
+    expect(continuationWaitMs({ ...base, lastReportEndedAt: 100_001 })).toBe(1500)
+    expect(continuationWaitMs({ ...base, lastReportEndedAt: 500_000 })).toBe(1500)
+  })
+  it('keeps a host delay of 0 at 0', () => {
+    expect(continuationWaitMs({ ...base, delayMs: 0 })).toBe(0)
+    expect(continuationWaitMs({ ...base, delayMs: 0, liveReports: 3 })).toBe(0)
+    expect(continuationWaitMs({ ...base, delayMs: 0, lastReportEndedAt: 100_001 })).toBe(0)
+    expect(continuationWaitMs({ ...base, delayMs: 0, known: false })).toBe(0)
+  })
+})
+
+describe('ContinuationDriver wait after the last report', () => {
+  let current: RunPlan | undefined
+  let nudges: string[]
+  let live = 0
+  let host: ContinuationHost
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    current = plan()
+    nudges = []
+    live = 0
+    host = {
+      kind: 'work',
+      autoContinue: true,
+      maxAutoContinues: 5,
+      delayMs: 1500,
+      getPlan: () => current,
+      updatePlan: async (p: RunPlan) => {
+        current = p
+      },
+      liveReports: () => live,
+      lastReportEndedAt: () => undefined,
+      pendingInteractions: () => 0,
+      rateLimited: () => false,
+      stopping: () => false,
+      orchestratorBusy: () => false,
+      nudge: (text) => nudges.push(text),
+      log: () => undefined,
+      tellUser: () => undefined
+    }
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('a host without lastReportEndedAt still waits the full delay', async () => {
+    const { lastReportEndedAt: _omit, ...legacy } = host
+    const d = new ContinuationDriver(legacy)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1499)
+    expect(nudges).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(nudges).toHaveLength(1)
+  })
+
+  it('no report ever ended and none live: evaluates on the next timer tick and delivers a due nudge', async () => {
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    expect(nudges).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(nudges).toHaveLength(1)
+  })
+
+  it('a report that ended 400 ms ago leaves only the rest of the window', async () => {
+    host.lastReportEndedAt = () => Date.now() - 400
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1099)
+    expect(nudges).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(nudges).toHaveLength(1)
+  })
+
+  it('live reports keep the full delay', async () => {
+    live = 1
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1499)
+    expect(d.isSettledForTurn(1)).toBe(false)
+    live = 0
+    await vi.advanceTimersByTimeAsync(1)
+    expect(nudges).toHaveLength(1)
+  })
+
+  it('is unsettled until the zero-delay evaluation ran, settled after it when no nudge was sent', async () => {
+    current = plan({ status: 'done' })
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    expect(d.isSettledForTurn(1)).toBe(false)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(d.isSettledForTurn(1)).toBe(true)
+    expect(nudges).toHaveLength(0)
+  })
+
+  it('userMessage, hold and dispose before the zero-delay tick still cancel it', async () => {
+    for (const cancel of ['userMessage', 'hold', 'dispose'] as const) {
+      const d = new ContinuationDriver(host)
+      d.turnEnded(1)
+      d[cancel]()
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(nudges, cancel).toHaveLength(0)
+      // userMessage unsettles; hold and dispose settle a turn end that was still waiting (as before this change).
+      expect(d.isSettledForTurn(1), cancel).toBe(cancel !== 'userMessage')
+    }
   })
 })

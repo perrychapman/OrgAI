@@ -585,7 +585,8 @@ describe('mock adapter assistants scripts', () => {
   }
 
   it('quick run: list_projects once, one answer naming the count, then idle; a follow-up gets a short reply', async () => {
-    const ctx = fakeCtx({ run: runSummary({ projectId: 'quick', quick }), listProjects: () => [peek('a'), peek('b')] })
+    // autoContinue off: this test is about the quick-run script, not continuation (which no longer waits 1.5 s first).
+    const ctx = fakeCtx({ run: runSummary({ projectId: 'quick', quick }), autoContinue: false, listProjects: () => [peek('a'), peek('b')] })
     const session = await runToIdle(ctx, 'thanks')
     expect(toolNames(ctx)).toEqual(['list_projects'])
     expect(texts(ctx)).toEqual(['I can see 2 OrgAI projects. Tell me what you would like to do.', 'Mock reply to: thanks'])
@@ -1492,7 +1493,8 @@ describe('mock text step partials', () => {
   const idle = (events: RunEvent[]): boolean => events.some((e) => e.type === 'run.status' && e.status === 'idle')
 
   const run = async (steps: MockStep[], delayMs = 0): Promise<RunEvent[]> => {
-    const ctx = fakeCtx()
+    // autoContinue off: these tests are about text steps, not continuation nudges.
+    const ctx = fakeCtx({ autoContinue: false })
     const session = await new MockAdapter({ script: { delayMs, work: steps } }).start(ctx)
     await vi.waitFor(() => expect(idle(ctx.events)).toBe(true), { timeout: 3000 })
     await session.stop()
