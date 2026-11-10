@@ -1,66 +1,95 @@
 # Orchestration efficiency: adaptive staffing and parallel execution
 
-Status: draft 2, decisions settled 2026-11-09: the owner accepted every recommendation in section 6 ("i agree with all
-your recomendations"). NO code written; implementation has not been requested yet.
+Status: draft 3, 2026-11-10. Decisions settled 2026-11-09: the owner accepted every recommendation in section 6 ("i
+agree with all your recomendations") and asked for execution. Phase 0 (measure) is done and changed the plan: the
+unforced baseline is already near native, so the ranking was redone (1.5) and the automatic one-assistant shape was
+dropped (4.1). Built so far on `feat/orchestration-efficiency`: `RunUsage.efficiency`, the prompt-size and SDK smoke
+scripts, and the continuation wait fix.
 
 Base: `origin/dev` at `aad24c38` (PR #41, required delegation). Every code fact below was read from that commit with
-`git show`, not from the local `dev` checkout, which is 310 commits behind it and lacks the delegation runtime. Draft 1
-was written against the stale checkout; this draft replaces it.
+`git show`, not from the local `dev` checkout, which is 310 commits behind it and lacks the delegation runtime.
 
-Goal: a work run costs and takes about what a native Claude Code or Codex session would for the same task, and beats
-it where the task can be split. Today the team, each role's model and each role's effort are fixed when the org chart
-is written, and nothing makes the orchestrator start independent work together. This spec makes four things a per-run
-decision, taken from what the project is and what this run asks for:
+Goal: a work run costs and takes about what a native Claude Code or Codex session would for the same task, beats it
+where the task can be split, and stops paying 2x when a project mandates its team. Today each role's model and effort
+are fixed when the org chart is written, a mandated team runs one agent after another, and a lead left to itself
+uses no team at all. This spec makes four things a per-run decision, taken from what the project is and what this
+run asks for:
 
-1. **how many agents** work on it (one assistant, the lead alone, one report, or a pipeline),
+1. **how many agents** work on it (the lead alone, a fan-out of reports, or a pipeline),
 2. **what runs at the same time** (everything that can),
 3. **which tier** each assignment runs on (Haiku / Sonnet / Opus on Anthropic, the connection's tiers elsewhere),
 4. **how much effort** each assignment gets.
 
 ## 1. Evidence
 
-Source: `~/orca/projects/orgai-performance-lab` (reports, run event logs and driver scripts, read 2026-11-09). All
-runs used OrgAI's Codex adapter at `7a988037`, which `origin/dev` contains.
+Source: `~/orca/projects/orgai-performance-lab` (reports, run event logs and driver scripts). Every OrgAI run used
+the Codex adapter. Costs are retail-equivalent.
 
-### 1.1 Native CLI against OrgAI
+### 1.1 Baseline: OrgAI with nothing forced (`baseline-20261110T051332Z`)
 
-One run per arm, sequential, fresh homes, retail-equivalent cost. Exploratory pilots, not qualified benchmarks.
+OrgAI at `aad24c38`, the default chart (`defaultRoles`: orchestrator on Sol, implementer and reviewer on Terra,
+researcher on Luna), no required reports, no scripted prompt, product defaults. Three runs per cell, medians; the
+dashboard has one run per OrgAI arm and its native cells are the earlier pilot's single runs. Every run passed every
+check (40 hidden tests, 58 hidden tests, 26 browser checks).
 
-| Task (report) | Codex (Sol, medium) | Claude Code (Opus, medium) | OrgAI | OrgAI time vs Codex / Claude Code | OrgAI cost vs Codex / Claude Code |
+| Task | Codex (Sol, medium) | Claude Code (Opus, medium) | OrgAI team, unforced | OrgAI single assistant |
+|---|---|---|---|---|
+| Ledger repair | 55.8 s, $0.045 | 42.4 s, $0.167 | 58.1 s, $0.085 | 47.3 s, $0.069 |
+| Inventory service | 138.5 s, $0.120 | 207.2 s, $0.850 | 97.7 s, $0.116 | 93.4 s, $0.093 |
+| Dashboard from scratch | 455.9 s, $0.332 | 521.4 s, $1.817 | 512.0 s, $0.394 | 580.0 s, $0.409 |
+
+- **The lead never delegated.** In all seven unforced team runs the orchestrator did the whole task itself on Sol,
+  in one turn, with a plan and no nudge: no report was spawned, although its role prompt says "Delegate
+  implementation, review and testing to your specialist reports". (The ledger task text says not to delegate
+  unless a team is configured; the other two say nothing about it.)
+- **Unforced OrgAI is not 2x slower.** Against native Codex it took 0.7x to 1.1x the time at 1.0x to 1.9x the cost.
+  The 2x of the pilots (1.2) is the price of a mandated pipeline, not of the harness.
+- **Effort is confounded.** The Codex adapter sends an effort only when a role sets low, medium or high. The default
+  chart sets none, and Codex then ran every call at `low` (relay metering), against medium for the native Codex arm.
+  The time ratios therefore flatter OrgAI until the effort-matched arms report (`baseline2`, running). What this
+  does establish: low effort passed every check on all three tasks.
+- **A team root working alone costs little more than the single assistant**: 1.23x the time on the ledger, 1.05x
+  on the inventory, 0.88x on the dashboard. On the small task the difference is the plan tools' round trips (7
+  requests against 6) and the 1.5 s continuation wait.
+- **Input per call**: Codex 15.4k tokens, single assistant 19.1k, team root 23.4k (ledger medians). The first call
+  carries 7.4k more than native Codex for the team root and 3.5k for the single assistant, which matches the
+  token-free measurement in 4.6.
+- **Run end**: 66 to 76 ms from the last model response to `finished` for the single assistant, about 1,575 ms for
+  the team root (the continuation wait; since removed for runs without reports, 4.6).
+- The run title is one more call per run. On Codex it carries 10.9k input tokens, Codex's own base prompt. In the
+  lab it ran on Sol because the driver passed no fast model; in the app it goes to the fast tier.
+- Nothing was learned about worktrees: with isolation on, no writer was spawned.
+
+### 1.2 Pilots: the team mandated (`native-vs-orgai-pilot-20261109`, `complex-pilot-20261109T092758Z`, `dashboard-pilot-20261109T173008Z`)
+
+One run per arm, OrgAI at `7a988037`. The drivers (`.tmp/*-orgai-pilot.mjs`) set `requiredReports` to every report,
+`strictDelegation: true`, a lead prompt that scripts the sequence ("Spawn engineer once to implement and test. After
+its report, spawn reviewer once ... inspect the final diff, repair findings, and run tests before ending") and a task
+suffix "Delegate and require both reports", with `isolateWriters: false`, `autoContinue: false`,
+`continuationDelayMs: 0`, at most 2 or 3 concurrent reports and a relay limit of 3 requests in flight. Effort was
+injected by the driver at the protocol level.
+
+| Task | Codex (Sol, medium) | Claude Code (Opus, medium) | OrgAI, team mandated | Time vs Codex / Claude Code | Cost vs Codex / Claude Code |
 |---|---|---|---|---|---|
-| Ledger repair, 40 hidden tests (`native-vs-orgai-pilot-20261109`) | 53 s, $0.040, 5 calls | 38 s, $0.138, 6 calls | 132 s, $0.359, 20 calls | 2.5x / 3.5x | 9.0x / 2.6x |
-| Inventory service, 58 hidden tests (`complex-pilot-20261109T092758Z`) | 171 s, $0.107 | 201 s, $0.832 | 497 s, $0.194 | 2.9x / 2.5x | 1.8x / 0.23x |
-| Dashboard from scratch, 26 browser checks (`dashboard-pilot-20261109T173008Z`) | 456 s, $0.332 | 521 s, $1.82 | 1093 s, $0.562 | 2.4x / 2.1x | 1.7x / 0.31x |
+| Ledger repair | 53 s, $0.040 | 38 s, $0.138 | 132 s, $0.359, 20 calls | 2.5x / 3.5x | 9.0x / 2.6x |
+| Inventory service | 171 s, $0.107 | 201 s, $0.832 | 497 s, $0.194 | 2.9x / 2.5x | 1.8x / 0.23x |
+| Dashboard from scratch | 456 s, $0.332 | 521 s, $1.82 | 1093 s, $0.562 | 2.4x / 2.1x | 1.7x / 0.31x |
 
-Every arm passed every task. On the dashboard the first grader scored 24 / 25 / 26; after its audit all three scored
-26 of 26. One non-blind visual review scored Claude Code 21, Codex 20, OrgAI 19 of 25. So OrgAI bought no measured
-quality with the extra time. Its dashboard run also ended `delegation-incomplete` (three native `send_message`
-attempts were interrupted; that overhead is in its time).
+Teams: ledger = lead Sol, engineer Opus, reviewer Sol, all medium. Inventory = lead Sol medium, engineer and
+reviewer Luna xhigh. Dashboard = lead Sol xhigh, data / frontend / qa Luna medium. Every arm passed every task; on
+the dashboard all three scored 26 of 26 after the grader's audit, and one non-blind visual review ranked OrgAI last
+(Claude Code 21, Codex 20, OrgAI 19 of 25). The mandated team bought no measured quality. The dashboard run also
+ended `delegation-incomplete` (three native `send_message` attempts were interrupted).
 
-OrgAI teams: ledger = lead Sol, engineer Opus, reviewer Sol, all medium. Inventory = lead Sol medium, engineer and
-reviewer Luna xhigh. Dashboard = lead Sol xhigh, data / frontend / qa Luna medium. Luna costs a twentieth of Sol per
-token, which is why OrgAI is cheaper than Claude Code on two tasks while being slower than both.
+Put beside 1.1: the same harness, on the same tasks, takes 58 / 98 / 512 s when the lead works alone and 132 / 497
+/ 1093 s when the pipeline is mandated. A project that mandates its team (required reports, strict delegation, or a
+role prompt that insists) paid 2.1x to 5.1x for it in these pilots (other teams and efforts than the default chart,
+so indicative). `baseline2` reruns this on the default chart with required
+reports and nothing scripted.
 
-### 1.2 The OrgAI arm was told to use the whole team, in order
+### 1.3 Where the seconds went in the mandated runs
 
-The driver scripts (`.tmp/*-orgai-pilot.mjs`) set `requiredReports` to every report, `strictDelegation: true`, a lead
-prompt that scripts the sequence ("Spawn engineer once to implement and test. After its report, spawn reviewer once
-... inspect the final diff, repair findings, and run tests before ending") and a task suffix "Delegate and require
-both reports". They also set `isolateWriters: false`, `autoContinue: false`, `continuationDelayMs: 0`, at most 2 or 3
-concurrent reports, and a relay limit of 3 requests in flight. Effort was injected by the driver at the protocol
-level, not by OrgAI.
-
-So these pilots measure a mandated lead, implementer, reviewer, lead pipeline with fixed models, and say nothing
-about whether OrgAI would have chosen it. That is still the right thing to fix: the default chart
-(`defaults.ts` `defaultRoles`: "Delegate implementation, review and testing to your specialist reports instead of
-doing everything yourself ... verify the whole") and the Architect's guidance produce the same pipeline on real
-projects. But worktrees, nudges and the continuation delay contributed nothing to the measured gap, because they
-were off.
-
-### 1.3 Where the seconds went
-
-Derived from each run's `orgai/events.jsonl` (run status changes, thread starts, agent state changes), seconds from
-run start.
+Derived from each pilot run's `orgai/events.jsonl`, seconds from run start.
 
 | Phase | Ledger (131 s) | Inventory (496 s) | Dashboard (1091 s) |
 |---|---|---|---|
@@ -72,15 +101,13 @@ run start.
 | **Time after the implementation existed** | **79 s, 60%** | **168 s, 34%** | **615 s, 56%** |
 | Lead active in total | 63 s, 48% | 75 s, 15% | 544 s, 50% |
 
-- Ledger: the implementation was complete at 52 s, inside the native range (38 to 53 s). The Opus engineer took 36 s
-  alone, about what Claude Code took for the whole task. The harness is not the slow part; the pipeline is.
-- Inventory: the engineer alone, on Luna at xhigh, took 308 s. Codex finished the whole task in 171 s on Sol at
-  medium. The cheap tier at high effort sat on the only path there was.
-- Dashboard: the two builders ran together, but one took 144 s and the other 422 s, so the split saved nothing: the
-  build ended at 476 s, when both native arms had already finished everything. QA was written and run only after
-  the build, and the lead (xhigh) was active for half the run.
+- Ledger: the implementation was complete at 52 s, inside the native range. The pipeline after it is the slow part.
+- Inventory: the engineer alone, on Luna at xhigh, took 308 s; the unforced lead did the whole task on Sol at low in
+  98 s. The cheap tier at high effort sat on the only path there was.
+- Dashboard: the two builders ran together, but one took 144 s and the other 422 s, so the split saved nothing. QA
+  was written and run only after the build, and the lead (xhigh) was active for half the run.
 
-### 1.4 Shape, model and effort inside OrgAI
+### 1.4 Shape, model and effort inside OrgAI (earlier screens)
 
 | Comparison (report) | Result |
 |---|---|
@@ -88,26 +115,30 @@ run start.
 | Team size, one episode (`scenario-screen-20261108T190810Z`) | Solo 31 s; pair 38 s; lead and three 49 s; hierarchy 79 s (out of budget); swarm 112 s (out of budget). All answers correct. |
 | Effort, same four-agent team (`model-effort-pilot-20261108T182044Z`) | Specialists at medium 53 s; at xhigh 74 s; lead at xhigh too 84 s. All correct. |
 
-The six solo trials also show the fixed cost of a run: 5.4 to 6.0 s of each (runs of 20 to 56 s) is outside any model
-call, about 1.6 s before the first request and 4.0 s after the last.
+### 1.5 What follows (ranking redone at the Phase 0 gate)
 
-### 1.5 What follows, ranked by observed seconds
+The first ranking put a solo shape near the top. The baseline removes it: the harness is not the problem, the
+mandated pipeline is, and left alone the lead uses no team at all.
 
-1. **The tail.** Review, QA and the lead re-checking and integrating take 34 to 60% of the run, after the work
-   exists, one after another.
+1. **A mandated pipeline runs one agent after another and spends a third to more than half of the run after the
+   work exists** (1.3). This is where the 2x is. It is addressed by running everything that can run together (4.2),
+   reviewing by risk and verifying once (4.4), and it applies to every project that requires reports.
 2. **The critical path is staffed without regard to time.** A slow tier or a high effort on the longest step sets
-   the run's length; xhigh added 40 to 60% with no change in correctness.
-3. **The team is bigger than the task.** In the same harness, one agent is about as fast as the native CLI and a
-   cheap solo run passed everything at 6% of the cost.
-4. **Parallelism is unused or badly cut.** Two pilots were strictly serial; the third split the work 144 s against
-   422 s and wrote its checks only after the build.
-5. **Lead time.** 16 to 54 s before anyone starts; the lead active for up to half the run.
-6. **Fixed cost.** About 6 s per run, and 1.4x to 4.4x the native input tokens per call (ledger: Codex 14.4k,
-   Claude Code 5.8k, OrgAI lead 20.6k, OrgAI Opus engineer 25.5k).
+   the run's length; xhigh added 40 to 60% with no change in correctness, and low passed everything in the baseline.
+   Addressed by staffing each assignment (4.3).
+3. **Left alone, the lead never delegates, so work that splits gets no speedup.** The dashboard took the lone lead
+   512 s, against 456 s for native Codex; the reports that could have built it in parallel were never started. When
+   delegation does happen it is cut badly (144 s against 422 s). Addressed by the sizing rule (4.1) and the plan
+   graph with ready lines (4.2). The goal is delegation exactly when it pays.
+4. **A team root's fixed overhead on small work**: the plan tools' round trips, the continuation wait (fixed), and
+   7.4k more input tokens on every call, most of it tool definitions (4.6). It is the 1.9x cost on the ledger.
+5. **Not built: a separate one-assistant shape chosen automatically.** A team root working alone is already within
+   1.05x to 1.23x of the single assistant, and item 4 closes most of what is left. Triage, `soloRunProject` and
+   `escalate_to_team` are dropped; the single assistant stays what it is, the user's explicit choice.
 
-Not established by any of this: the cost of worktree isolation, nudges and the continuation delay (off in the lab),
-anything about the Claude adapter (the lab drives only Codex), and how today's runtime behaves when the team is not
-forced. Phase 0 measures all three.
+Not established yet: effort-matched numbers and a mandated team on the default chart (`baseline2`), anything about
+the Claude adapter (the lab drives only Codex; whether its lead delegates unforced is unknown), and the cost of
+worktree isolation.
 
 ## 2. Current behaviour (origin/dev, read 2026-11-09)
 
@@ -173,35 +204,28 @@ forced. Phase 0 measures all three.
 
 ### 4.1 Right-size the run
 
-**Before the session: one assistant or the team.** A pure module `runtime/triage.ts` returns
-`RunTriage { shape: 'solo' | 'team'; tier; rootEffort; reason; source }` for a work run of a stored project started
-without an explicit choice.
+**The team is sized inside the run, by the lead.** A harness paragraph for the root, additive to its role prompt
+and yielding to it ("unless your instructions, the brief or required reports say otherwise"):
 
-- Order: the user's choice (`--team`, composer) wins; a continuation keeps its chain's shape; rules that force
-  `team` (the root has required reports or the run is strict; an engagement project; another work run is live in the
-  same repository and the project isolates writers); otherwise one fast-tier one-shot through
-  `RuntimeAdapter.complete` (the path run titles use, `src/main/ai/runTitle.ts`) with the task text, project kind
-  and role names, answered with one word and raced against 3 s. Timeout, error or an unparseable answer: `team`.
-- `solo` gets its own builder, `soloRunProject`, not `singleRunProject`: the same union of tools and grants, a
-  work prompt (do the task, verify, report what changed), the tier triage picked capped by the root's tier, run
-  messaging as the project has it, plan optional, usage kind `work`. Its edits land in the project checkout without
-  a worktree, as a team root's own edits do today.
-- Way back up: `escalate_to_team({ reason, notes })`. RunManager ends the turn and continues the same session chain
-  as a team run with the notes as hidden context, marked as data. Once per chain.
-- Never for setup, quick, trust-restricted or assistant runs.
-- **Measured, and over the line: triage ships with rules only** (D3). Five haiku one-shots with the options
-  `RuntimeAdapter.complete` uses took 2.1 / 2.5 / 3.3 s (min / median / max), 1.2 s of it starting the process and
-  the handshake (smoke check 7). The one-shot is not built. `triage.ts` keeps the order above without it: with no
-  rule forcing `team` and no explicit choice the shape is `team`, and the in-team sizing below carries small
-  tasks. `solo` is reached by the user's choice and, from Phase 4, by a rule over the project profile. Not
-  measured: the same call on the Codex adapter, where the app-server may already be running.
+- Do the work yourself when it is one contained piece and you hold the tools. This is what the lead does today on
+  every task, and on small and medium work it is the fastest shape there is (1.1).
+- Hand work out when it splits into independent pieces that are each worth more than a couple of minutes of an
+  agent's time, when a piece needs a role's tools, skills or connections that you lack, or when a rule demands it.
+  Then start every piece in one message (4.2). Splitting pays only when the longest piece is clearly shorter than
+  the whole; a lone report doing the entire task while you wait is slower than doing it yourself and is right only
+  under the `cost` goal, on a cheaper tier.
+- Ask for review by risk, not by habit (4.4).
 
-**Inside a team run: three sizes.** A harness paragraph for the root, additive to its role prompt and yielding to
-it: "unless your instructions, the brief or required reports say otherwise" a contained change is done by the lead
-itself when it holds the tools; a well-specified piece of work goes to one report with no separate review; the full
-pipeline is for work that is large, risky or splittable. The root learns the task by reading the code, which the
-triage call cannot, so this is where most right-sizing happens. `defaultRoles` and the Architect guidance in
-`setup.ts` get the same wording for new projects; stored charts keep their text.
+`defaultRoles` and the Architect guidance in `setup.ts` get the same wording for new projects, in place of "Delegate
+implementation, review and testing to your specialist reports instead of doing everything yourself"; stored charts
+keep their text.
+
+**Not built: choosing one assistant before the session.** Drafts 1 and 2 had a `triage.ts` that picked `solo` or
+`team` up front, a `soloRunProject` builder and an `escalate_to_team` tool. Phase 0 measured both halves of the
+case for it and neither holds: the unforced team root already works alone and is within 1.05x to 1.23x of the
+single assistant (1.1), and the one-shot classifier it needed takes 2.1 / 2.5 / 3.3 s (min / median / max of five
+haiku calls with `RuntimeAdapter.complete`'s options, 1.2 s of it starting the process; smoke check 7), above the
+1.5 s line decision D3 set. `RunTeam 'single'` stays as it is, chosen by the user.
 
 ### 4.2 Parallel by default
 
@@ -286,7 +310,7 @@ slot and nobody on it), the critical path's length against the run's, time to fi
 - Escalation: a step whose result fails verification or comes back unresolved may be retried one step up in tier or
   in effort, at most twice, never past the ceiling. xhigh and max are reached only this way or on a `fixed` role.
   `top` is never picked automatically.
-- The root: tier from the chart, effort from triage (medium unless the task is ambiguous or the role is `fixed`).
+- The root: tier and effort from the chart. On Claude the effort is applied for the first time (section 2).
 - Goal: `StaffingGoal = 'balanced' | 'speed' | 'cost'` on the project, overridable per run. `speed` treats every
   step as on the critical path; `cost` treats none as.
 
@@ -339,41 +363,45 @@ Measured in Phase 0 (`scripts/measure-prompt-size.mjs`, token-free; the baseline
   `REPORT_HANDBACK_GRACE_MS` (1.5 s after a report finishes) stays; no lab run has measured it.
 - **Run start.** OrgAI's own share is about 0.2 s (version probe, app-server start and handshake, thread start).
   The other 1.5 s of the earlier figure was the lab driver loading. Nothing to cut.
-- Plan: a team root may skip `set_plan` when it does the work itself or hands out one step; `nextNudge` stops
-  sending `SET_PLAN_NUDGE` when the first turn ended with the work delivered and nobody running.
-- Worktrees and the continuation delay were off in the lab. They are measured in Phase 0 and left alone here.
+- **Plan round trips.** On the ledger the team root made one request more than the single assistant, a turn spent
+  on the plan. The root is told to send `set_plan` in the same message as its first working tool calls and
+  `complete_plan` with its last, never a turn that only touches the plan. When a plan is required does not change:
+  unattended continuation depends on it. Whether the models batch them is checked in the phase 1 lab rerun.
+- **Run title.** One more call per run; on Codex it carries Codex's 10.9k-token base prompt. It already goes to
+  the fast tier in the app. Left alone.
+- Worktrees: not measured yet (no writer was spawned in the baseline); `baseline2` has an isolated arm.
 
 ### 4.7 What the user sees
 
 - Run view and TUI: each agent row shows tier and effort with the reason on expand ("everyday / medium: chosen by
   the orchestrator", "fast: capped by the role"). The plan pane shows ready, running and waiting-on for each step;
-  the run strip shows the shape, why, and how many agents are working now.
-- Composer: "Team: Automatic / One assistant / Whole team", default Automatic. CLI: `--team auto | single | full`
-  (`default` stays a synonym of `full`), `--goal balanced | speed | cost`.
+  the run strip shows how many agents are working now and how many steps are ready.
+- CLI: `--goal balanced | speed | cost`. The team choice in the composer and `--team` stay as they are.
 - Team tab, role editor: "Model and effort: Automatic up to <tier> / <effort>" or "Always <model> / <effort>".
 - Team files: `staffing` on a role, `reviewPolicy` and `staffingGoal` on the project. The gate treats a raised
   ceiling as "May spend more", like a raised effort today; lowering or switching to automatic needs no card.
-- Usage: time to first spawn, overlap and tail beside the existing efficiency signals; cost by tier; solo and team
-  counts.
+- Usage: time to first spawn, overlap and tail beside the existing efficiency signals; cost by tier; runs the lead
+  did alone against runs with reports.
 
 ## 5. Contract (a "Run staffing" section in `src/shared/types.ts`)
 
 - `RoleStaffing`, `Role.staffing?`; `ReviewPolicy`, `Project.reviewPolicy?`; `StaffingGoal`,
-  `Project.staffingGoal?`; `Project.staffing?: 'auto' | 'fixed'` (`fixed` restores today's behaviour exactly).
-- `RunShape = 'solo' | 'team'`, `RunTriage`; `StartRunInput.team` widens to `'auto' | 'single' | 'full'`;
+  `Project.staffingGoal?`; `Project.staffing?: 'auto' | 'fixed'` (`fixed` restores today's behaviour exactly);
   `StartRunInput.goal?`.
 - `PlanStep.after?`, `PlanStep.paths?`, `PlanStep.staff?`.
 - `StaffingAssignment { agentId?; stepId?; roleId; tier; model; effort?; source; note? }`;
-  `RunStaffing { shape; goal; triage?; assignments }` on `RunRecord`, written through
-  `RuntimeContext.updateStaffing` (RunManager stores, persists, broadcasts), event `staffing.updated`.
-- `RunEfficiency { firstSpawnMs?; overlapRatio?; readyIdleMs?; tailMs?; criticalPathMs? }` on the run's usage.
-- Nudge kind `'ready'`. Tools: `escalate_to_team`; `delegate_agent.background`; `spawn_report.tier` and `.effort`.
+  `RunStaffing { goal; assignments }` on `RunRecord`, written through `RuntimeContext.updateStaffing` (RunManager
+  stores, persists, broadcasts), event `staffing.updated`.
+- `RunEfficiency { reports; firstSpawnMs; reportSumMs; reportBusyMs; maxParallel; tailMs }` on the run's usage
+  (built in Phase 0, derived in `runUsage.ts`); `readyIdleMs?` joins it with the plan graph.
+- Nudge kind `'ready'`. Tools: `delegate_agent.background`; `spawn_report.tier` and `.effort`.
 - `StaffingProfile` stays in main; the Team tab gets a read-only summary.
 - All structured-clone safe. Coexists with `RunRecord.delegation`: the ledger says whether obligations were met,
   staffing says who was chosen and why.
+- Not in the contract any more: `RunShape`, `RunTriage`, a wider `StartRunInput.team`, `escalate_to_team` (4.1).
 
-Files: new `runtime/triage.ts`, `runtime/staffing.ts`, `store/staffingProfile.ts`, each with tests beside it;
-changes in `continuation.ts` (`readySteps`, the `ready` nudge), `harnessTools.ts`, `prompts.ts`, `claude.ts` and
+Files: new `runtime/staffing.ts` and `store/staffingProfile.ts`, each with tests beside it; changes in
+`continuation.ts` (`readySteps`, the `ready` nudge), `harnessTools.ts`, `prompts.ts`, `claude.ts` and
 `codexAgents.ts` / `codex.ts` (mechanics only), `mock.ts`, `runManager.ts`, `defaults.ts`, `setup.ts`, team files
 (`doc.ts`, `parse.ts`, `serialize.ts`, `gate.ts`), renderer and TUI. Hot files (`types.ts`, `runManager.ts`,
 `defaults.ts`) take one claim at a time, so the contract lands first, alone and complete.
@@ -394,59 +422,69 @@ The "Decided" column is what this spec builds. The last column records what was 
 | D8. Learning from history | On, per project, local file | Off: rubric only |
 | D9. Top tier | Never automatic | Allowed on a second escalation: better odds on the hardest step, least predictable spend |
 
+**After Phase 0.** D3 and D4 concerned the automatic one-assistant shape. D3's own condition was met (median 2.5 s,
+above 1.5 s), which left "rules only"; the baseline then showed there is nothing for those rules to win, because
+the lead already works alone when nothing forces a team (1.1, 4.1). The shape is not built, so D3 and D4 have no
+effect. This follows the gate rule of phase 0 below and was not a new question to the owner; it can be revisited
+if `baseline2` or the Claude arm shows a team root that does not behave this way. D1, D2 and D5 to D9 stand.
+
 ## 7. Acceptance
 
-The targets below stand as proposed. They were set before the real baseline (arm 4) exists, so they are revisited
-once, at the Phase 0 gate, and then frozen.
+Revisited once, here, at the Phase 0 gate, and frozen when `baseline2` has filled in the two baselines marked
+below. Lab runs cost real tokens and run once per phase gate; at least 3 repeats per cell on the ledger and the
+inventory, 1 on the dashboard, plus one task that splits into independent modules (to be added to the lab).
 
-Arms, at least 3 repeats each, on the three tasks above, one trivial task and one that splits into independent
-modules:
+Arms:
 
 1. native Codex; 2. native Claude Code;
-3. OrgAI forced (today's driver config), kept for continuity;
-4. OrgAI adaptive on `origin/dev` as it is: a neutral default chart, no required reports, no scripted prompt. This
-   is the real baseline and does not exist yet;
-5. OrgAI single assistant on the native arm's model: the harness's own overhead;
-6. OrgAI with this spec.
+3. OrgAI with the team mandated: the default chart, required reports for implementer and reviewer, nothing
+   scripted (`baseline2`'s `orgai-required`). The pilots of 1.2 stay as the historical record;
+4. OrgAI unforced on `origin/dev` as it was at `aad24c38` (1.1), and the same at medium effort (`baseline2`);
+5. OrgAI single assistant, at the native arm's model and effort (`baseline2`): the harness's own overhead;
+6. OrgAI with this spec, unforced; 7. OrgAI with this spec, team mandated as in arm 3.
 
-The adaptive arms run with the relay's in-flight limit at the project's concurrency (it is 3 today, which caps any
-fan-out) and with writer isolation on in one variant. A Claude-adapter arm is added before any Claude number counts.
+Targets:
 
-Targets for arm 6 against the native arm on the same model:
-
-- trivial and small tasks: wall time and cost within 1.25x;
-- medium: wall time within 1.3x, cost within 1.25x of the cheaper native arm;
-- splittable: wall time at or below the faster native arm (stretch 0.8x), overlap ratio at least 1.5, cost within
-  1.25x of the cheaper native arm;
-- no task loses pass rate against arm 4; tail under 25% of the run; ready-idle under 5%;
-- a report's input tokens per call within 1.5x of the native CLI on the same model.
-
-Lab runs cost real tokens and run once per phase gate.
+- **Unforced, small and medium tasks (arm 6 against native Codex at the same model and effort):** wall time within
+  1.15x, cost within 1.25x; the lead still works alone on them (no report spawned on the ledger or the inventory).
+- **Unforced, work that splits (arm 6 on the dashboard and the module task):** wall time at or below the faster
+  native arm, overlap ratio (`reportSumMs / reportBusyMs`) at least 1.5 when it delegates, cost within 1.25x of the
+  cheaper native arm.
+- **Team mandated (arm 7 against arm 3):** wall time at most 0.7x and cost no higher; tail (`tailMs` over the run)
+  under 35%; every required receipt still valid.
+- **Fixed overhead:** first-call input tokens within 4k of native Codex for a team root (7.4k today) and within 2k
+  for a report; a run with no report ends within 150 ms of its last model response.
+- **Quality:** no task loses pass rate against arm 4 or arm 3.
+- A Claude-adapter arm is added before any Claude number counts.
 
 ## 8. Phases
 
-0. **Measure.** `RunEfficiency` derived from events RunManager already has; arms 4 and 5; raise the relay limit;
-   repeats; the input-token split (prompt, tool schemas, messages); the 4 s at run end; worktree and merge time.
-   Gate: a baseline table replaces 1.1 to 1.4. If arm 4 is already near native, the ranking in 1.5 is redone before
-   anything else is built.
-1. **Prompt-only changes, no contract.** The three-sizes paragraph; the parallel rules (4.2); the tier and effort
-   rubric with the instruction to set both on each spawn (Claude accepts them today; Codex follows in Phase 2);
-   root effort; default chart and Architect wording; the prompt diet. Gate: lab rerun.
-2. **Contract, plan graph and per-spawn staffing.** Types and defaults; `staffing.ts`; `readySteps` and the ready
-   lines; mock; SDK smoke scripts (model and effort through `updatedInput`, several foreground spawns in one
-   message); Claude gate; Codex spawn parameters; the `ready` nudge; background `delegate_agent`; team files and the
-   gate rule. Reviewer pass on team files and anything that can raise spend.
-3. **Run shape and review policy.** Triage latency measured first; `triage.ts`; `soloRunProject`;
-   `escalate_to_team`; `reviewPolicy`; optional plan for short work.
+0. **Measure. Done 2026-11-10.** `RunUsage.efficiency` (`runUsage.ts`); `scripts/measure-prompt-size.mjs`;
+   `scripts/smoke-staffing.mjs` and the 0.3.318 facts; the unforced baseline (1.1); where run start and run end go
+   (4.6), with the continuation wait fixed. The gate rule applied: the unforced arm was already near native, so the
+   ranking in 1.5 was redone and the solo shape dropped. `baseline2` (effort-matched arms, the mandated default
+   chart, isolation, a Claude-adapter arm if it can be driven headless) runs beside phase 1.
+1. **Prompts and fixed overhead, no contract.** The sizing rule (4.1) and the parallel rules (4.2) in the root
+   prompt; default chart and Architect wording; the tool-definition diet with its budget test (4.6); plan calls
+   batched with work (4.6); the root's effort applied on Claude through `Options.effort`, with an explicit effort
+   on every report so nothing inherits it by accident. The tier and effort rubric waits for phase 2: without the
+   resolver's clamp an instruction to set a model on each spawn could spend above the chart. Gate: lab rerun of
+   arms 6 and 7 on the phase 1 commit, when `baseline2` has freed the lab.
+2. **Contract, plan graph and per-spawn staffing.** Types and defaults; `staffing.ts`; the rubric in the root
+   prompt; `readySteps` and the ready lines; mock; Claude gate (aliases, the plan guard on the same path, the tier variables on the Anthropic
+   connection behind a smoke check); Codex spawn parameters; the `ready` nudge; background `delegate_agent`; team
+   files and the gate rule. Reviewer pass on team files and anything that can raise spend.
+3. **Review policy.** `reviewPolicy`, verification once per integrated result, findings back to the author.
 4. **Profile.** `staffingProfile.ts`, the resolver default, the staffing brief.
-5. **Surfaces.** Run view, TUI, composer, CLI flags, Team tab, usage; e2e selectors in the same change (`runs.mjs`,
+5. **Surfaces.** Run view, TUI, CLI `--goal`, Team tab, usage; e2e selectors in the same change (`runs.mjs`,
    `team.mjs`, `team-files.mjs`, `usage.mjs`, `cli-tui.mjs`, `cli-exec.mjs`).
-6. **Gate.** The full comparison against section 7; `docs/agent-notes/core-runtime.md`, `sdk-facts.md` (now
-   0.3.318) and `.orgai/ARCHITECTURE.md`.
+6. **Gate.** The full comparison against section 7; `docs/agent-notes/core-runtime.md`, `sdk-facts.md` and
+   `.orgai/ARCHITECTURE.md`.
 
-Each phase lands on dev behind `Project.staffing` after the local gate (typecheck, the whole unit suite, build, the
-e2e scripts for the area). Work starts from `origin/dev` in its own worktree, not the local `dev` checkout, which is
-behind and carries uncommitted project-instances work that must not be disturbed.
+Each phase lands on dev behind `Project.staffing` where it changes behaviour for stored projects, after the local
+gate (typecheck, the whole unit suite, build, the e2e scripts for the area). Work starts from `origin/dev` in its
+own worktree, not the local `dev` checkout, which is behind and carries uncommitted project-instances work that must
+not be disturbed.
 
 ## 9. Executing this spec
 
@@ -458,21 +496,26 @@ time in their own worktrees, by the rules of 4.2:
 | Work package | Model | Effort | Runs beside |
 |---|---|---|---|
 | Contract in `types.ts` / `defaults.ts` (all of section 5 at once) | Opus | high | nothing: hot files |
-| `staffing.ts` and `triage.ts` with tests | Opus | high | everything after the contract |
-| Claude spawn gate, smoke scripts, background `delegate_agent` | Opus | medium | Codex, mock, plan tools |
-| `escalate_to_team` and the chain continuation in `runManager.ts` | Opus | medium | nothing else in `runManager.ts` |
-| Root prompt paragraphs and the prompt diet (wording changes behaviour) | Opus | medium | adapters |
-| Reviewer pass: team files gate, spend ceilings, triage input handling | Opus | high | the next package |
-| Phase 0 metrics; Codex spawn parameters; mock; `readySteps`, ready lines and the nudge; `staffingProfile.ts`; team files | Sonnet | medium | each other |
-| Renderer, TUI, CLI flags, usage; lab arms and comparison scripts | Sonnet | medium | each other |
+| `staffing.ts` with tests | Opus | high | everything after the contract |
+| Claude spawn gate, root effort, smoke scripts, background `delegate_agent` | Opus | medium | Codex, mock, plan tools |
+| Root prompt paragraphs, default chart and Architect wording (wording changes behaviour) | Opus | medium | adapters, tool definitions |
+| Tool-definition diet and its budget test | Opus | medium | prompts, adapters |
+| Reviewer pass: team files gate, spend ceilings | Opus | high | the next package |
+| Lab campaigns and comparison scripts | Opus | medium | everything |
+| Phase 0 metrics; Codex spawn parameters; mock; `readySteps`, ready lines and the nudge; `staffingProfile.ts`; team files; review policy | Sonnet | medium | each other |
+| Renderer, TUI, CLI flags, usage | Sonnet | medium | each other |
 | e2e selectors, fixtures, agent notes, ARCHITECTURE.md, mechanical renames | Haiku | low | everything |
 
 A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonnet to Opus, or one effort level).
 
 ## 10. Risks and open items
 
-- The evidence is small: one run per arm for 1.1 and 1.3, and a forced team. Phase 0 exists to replace it.
-- A wrong `solo` on a large task is bounded by `escalate_to_team`; measured as escalations per 100 solo runs.
+- The evidence is Codex-only and small: three runs per cell, one on the dashboard, one run per arm for the mandated
+  pilots. Whether the Claude adapter's lead also works alone when nothing forces a team is unknown.
+- The sizing rule could make the lead delegate small work it does well alone today. The unforced targets in
+  section 7 require the ledger and the inventory to stay one-agent runs.
+- Asking for parallel fan-out does not make a split good. The dashboard pilot split 144 s against 422 s. The
+  "longest piece" rule and the profile's history are the mitigation; overlap and tail are measured per run.
 - An under-powered pick that fails and retries can cost more than starting higher. The profile learns this; until
   it has data the rubric keeps implementation on everyday / medium.
 - More parallel writers mean more merge conflicts. `paths` and the overlap warning are the mitigation; conflicts per
@@ -481,16 +524,15 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
   it is untested against a real limit.
 - Verified by `scripts/smoke-staffing.mjs` (one run each, haiku and sonnet, Max login): aliases and effort through
   `updatedInput`, foreground spawns in one message running together, root effort through `Options.effort`. Still
-  unverified: whether the root batches its spawns into one message without being told to in capitals (the parallel
-  rules of 4.2 depend on it; the Phase 1 lab rerun shows it), and all of it on the Codex adapter.
-- Codex effort stops at high in OrgAI. The lab drivers sent xhigh at the protocol level and it was applied, so the
-  limit is OrgAI's; lifting it is a small follow-up and automatic staffing does not need it.
-- The solo assistant holds the union of every role's tools and grants, as the single assistant does today. A
-  project that keeps a dangerous tool on one narrow role should set `Project.staffing` to `fixed` or pick the whole
-  team; the Team tab says so beside the Automatic choice.
-- The triage call sends the task text to the fast-tier model of the run's own connection and nowhere else. Its
-  answer is one of two words; anything else means `team`.
+  unverified: whether the root batches its spawns, or its plan calls, into one message without being told to in
+  capitals (the phase 1 lab rerun shows it), the tier variables on a subscription login, and all of it on Codex.
+- Effort on Codex: an unset effort runs at `low` and OrgAI sends nothing above high. The lab drivers sent xhigh at
+  the protocol level and it was applied, so the limit is OrgAI's; lifting it is a small follow-up and automatic
+  staffing does not need it. Applying the root's effort on Claude changes what an effort-less report gets unless
+  every spawn carries one, which is why phase 1 sets it explicitly.
 - Tier changes between spawns do not share a prompt cache; the profile's cost medians show whether mixed tiers on
   small steps save anything on a given connection.
-- Stored role prompts that say "delegate everything" still win over the three-sizes paragraph. A Team review
-  recommendation to relax them is a follow-up, not part of this spec.
+- Stored role prompts that say "delegate everything" still win over the sizing rule. A Team review recommendation
+  to relax them is a follow-up, not part of this spec.
+- Shorter tool descriptions can make a rarely used configuration tool fail its first call. The detail moves into
+  the validation error it returns, and the budget test keeps the saving.
