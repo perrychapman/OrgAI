@@ -22,18 +22,16 @@ const jiti = require('jiti').createJiti(import.meta.url, { fsCache: false, alias
 const load = (rel) => jiti.import(join(root, rel))
 const asJson = process.argv.includes('--json')
 
-const { newProject, singleRunProject } = await load('src/shared/defaults.ts')
 const P = await load('src/main/runtime/prompts.ts')
 const { harnessToolsFor } = await load('src/main/runtime/harnessTools.ts')
 const { buildAgents } = await load('src/main/runtime/claude.ts')
 const { CodexAdapter } = await load('src/main/runtime/codex.ts')
-const { jsonSchemaOf } = await load('src/main/runtime/codexProtocol.ts')
+const S = await load('src/main/runtime/toolDefinitionSize.ts')
 const { obligationsFor } = await load('src/main/runtime/delegation.ts')
 const { projectKindOf } = await load('src/shared/defaults.ts')
 
 const approxTokens = (chars) => Math.round(chars / 4)
-const ARCH = 'docs/ARCHITECTURE.md'
-const BRIEF = 'Build a small web app for tracking tasks.'
+const BRIEF = S.MEASURE_BRIEF
 
 // ---------- prompt segmentation ----------
 // The totals are always the real builder's output. To name the paragraphs we look for the text each exported paragraph
@@ -105,15 +103,8 @@ function segment(prompt, cands) {
 
 // ---------- cases ----------
 const BASE_ROLES = ['orchestrator', 'implementer', 'reviewer', 'researcher']
-function makeCase(slug, { isolation, arch }) {
-  const base = newProject({ name: 'Measure', path: '/measure', brief: BRIEF })
-  const stored = { ...base, isolateWriters: isolation, ...(arch ? { setup: { kind: 'existing', state: 'done', architecturePath: ARCH } } : {}) }
-  if (slug === 'single') {
-    const project = { ...singleRunProject(stored), isolateWriters: false }
-    return { project, roleSlug: project.roles[0].slug, team: 'single', isolation: false }
-  }
-  return { project: stored, roleSlug: slug, team: undefined, isolation }
-}
+// The default code project and the measured role (toolDefinitionSize.ts, shared with the tool budget test).
+const makeCase = (slug, opts) => S.measureCase(slug, opts)
 const variants = [
   { id: 'iso+arch', isolation: true, arch: true },
   { id: 'noiso+arch', isolation: false, arch: true },
@@ -124,22 +115,7 @@ for (const slug of BASE_ROLES) for (const v of variants) caseList.push({ slug, v
 caseList.push({ slug: 'single', variant: 'arch', isolation: false, arch: true }, { slug: 'single', variant: 'noarch', isolation: false, arch: false })
 const label = (c) => `${c.slug === 'orchestrator' ? 'team root (orchestrator)' : c.slug === 'implementer' ? 'writing report (implementer)' : c.slug === 'single' ? 'single assistant' : c.slug} [${c.variant}]`
 
-// A RuntimeContext with no-op round-trips (the same fixture shape as testHelpers.fakeCtx, without vitest).
-function ctxFor(project, team, dir) {
-  const p = { ...project, path: dir }
-  let plan
-  const noop = async () => {}
-  return {
-    run: { id: 'run-1', projectId: p.id, kind: 'work', prompt: 'Do it', status: 'starting', startedAt: 0, totalCostUsd: 0, ...(team ? { team } : {}) },
-    project: p, roles: p.roles, prompt: 'Do it', autoContinue: false,
-    emit: () => {},
-    requestPermission: async () => ({ behavior: 'allow' }), requestProposal: async () => ({ behavior: 'approve' }),
-    requestMergeReview: async () => ({ behavior: 'merge' }), completeSetup: noop, requestQuestion: async () => ({ selected: [] }),
-    noteArchitectureUpdated: noop, rateLimited: () => {}, getPlan: () => plan, updatePlan: async (next) => { plan = next },
-    pendingInteractions: () => 0, mcpServers: () => [], resolvedMcpServers: async () => [], plugins: () => [],
-    searchMcpRegistry: async () => ({ entries: [] }), requestMcpInstall: async () => ({ approved: true, scope: 'run' })
-  }
-}
+const ctxFor = (project, team, dir) => S.measureCtx(project, team, dir)
 
 // ---------- Claude ----------
 function claudeCase(c) {
@@ -152,8 +128,8 @@ function claudeCase(c) {
   const isRoot = role.reportsTo === null
   const flags = { isSetup: false, isolation, ...(team ? { team } : {}) }
   const parts = segment(def.prompt, candidates(role, ctx.roles, project, flags))
-  const given = harness.filter((t) => isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners'))
-  const tools = given.map((t) => ({ name: `mcp__orgai__${t.name}`, chars: JSON.stringify({ name: `mcp__orgai__${t.name}`, description: t.description, inputSchema: jsonSchemaOf(t.inputSchema) }).length, descriptionChars: t.description.length }))
+  const given = S.harnessToolsForRole(harness, role, isRoot)
+  const tools = given.map((t) => ({ name: `mcp__orgai__${t.name}`, chars: S.claudeToolDefinitionChars(t), descriptionChars: t.description.length }))
   const agentDesc = isRoot ? Object.values(agents).filter((a) => a !== def).reduce((n, a) => n + a.description.length, 0) + ctx.roles.filter((r) => r.reportsTo !== null).reduce((n, r) => n + r.slug.length, 0) : 0
   return finish('claude', c, { promptChars: def.prompt.length, parts, tools, agentDescChars: agentDesc })
 }

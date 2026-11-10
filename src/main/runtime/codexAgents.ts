@@ -4,7 +4,8 @@ import { z } from 'zod'
 import type { AgentInstance, AgentMessage, Role } from '@shared/types'
 import { BRIDGE_BRIEF_MAX_CHARS } from '@shared/types'
 import { newId } from '@shared/defaults'
-import { dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
+import { codexToolName, dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
+import type { HarnessTool } from './harnessTools'
 import { NETWORK_TOOLS, canonicalNetworkTool } from './codexEvents'
 import { HandleNamer, mapSendMessage, messageTranscriptText, resolveRecipient, spawnHandle } from './network'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL } from './prompts'
@@ -30,21 +31,21 @@ import { scrubControlEnv } from './childEnv'
 export { canonicalNetworkTool }
 
 export const spawnArgs = z.object({
-  role: z.string().min(1).describe('The slug of the role to delegate to, exactly as listed in your instructions'),
-  brief: z.string().min(1).describe('A complete, self-contained brief for the report: goal, context, constraints, what to report back'),
-  name: z.string().optional().describe('Optional handle for the report (letters, digits, - _ .); default role-1, role-2, ...'),
-  description: z.string().optional().describe('Three to six words naming the task, shown on the org chart')
+  role: z.string().min(1).describe("The report's role slug"),
+  brief: z.string().min(1).describe('Self-contained: goal, context, constraints, what to report back'),
+  name: z.string().optional().describe('Handle; default role-1, role-2, ...'),
+  description: z.string().optional().describe('Three to six words for the org chart')
 })
 export const messageArgs = z.object({
-  to: z.string().min(1).describe('Handle of a running agent (such as implementer-2), or "main" for the orchestrator'),
-  message: z.string().min(1).describe('The message. Brief and specific.'),
-  summary: z.string().optional().describe('Optional five word preview')
+  to: z.string().min(1).describe('A running agent\'s handle (e.g. implementer-2) or "main"'),
+  message: z.string().min(1),
+  summary: z.string().optional().describe('Five-word preview')
 })
 export const listArgs = z.object({})
 
 export const SPAWN_TOOL_DESCRIPTION =
-  'Delegate work to a report in your org chart. Returns at once with the report\'s handle; the report works in the background and its final report arrives later as a message from the harness. Use message_agent to follow up with a running report.'
-export const MESSAGE_TOOL_DESCRIPTION = 'Send a message to another running agent by handle, or to the orchestrator as "main". It reads the message at its next step.'
+  "Delegate work to a report. Returns at once with its handle; the report's final answer arrives later as a harness message. Follow up with message_agent."
+export const MESSAGE_TOOL_DESCRIPTION = 'Send a brief message to a running agent by handle, or to the orchestrator as "main"; it reads it at its next step.'
 export const LIST_TOOL_DESCRIPTION = 'List the agents in this run with their handles, roles and states.'
 
 /** The network tools an agent of this role gets (root = the root role). */
@@ -64,6 +65,19 @@ export function networkToolSpecs(names: string[]): DynamicToolSpec[] {
     [NETWORK_TOOLS.list]: { description: LIST_TOOL_DESCRIPTION, inputSchema: listArgs }
   }
   return names.filter((n) => defs[n]).map((name) => dynamicToolSpec({ name, ...defs[name] }))
+}
+
+/**
+ * The dynamic tools a Codex thread of this role gets: the harness tools its audience allows (the root gets every one)
+ * and its network tools. CodexAdapter sends these on thread/start; the tool-size budget test measures the same list.
+ */
+export function codexToolsFor(harness: readonly HarnessTool[], role: Role, isRoot: boolean, opts: { setupLike: boolean }): { specs: DynamicToolSpec[]; names: string[] } {
+  const given = harness.filter((t) => isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners'))
+  const network = networkToolNames(role, opts)
+  return {
+    specs: [...given.map(dynamicToolSpec), ...networkToolSpecs(network)],
+    names: [...given.map((t) => codexToolName(t.name)), ...network]
+  }
 }
 
 /** Extra developer instructions that map the shared prompts' Claude tool names onto the Codex tool names. */
