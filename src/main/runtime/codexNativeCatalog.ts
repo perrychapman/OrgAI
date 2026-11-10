@@ -28,7 +28,7 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { trackChildProcess } from '../host/shutdown'
 import type { CodexBinary } from './codexBinary'
 
@@ -176,6 +176,12 @@ export interface NativeCatalogInput {
    * override (see the header). Empty: Codex's default model, which comes from the catalog.
    */
   models?: readonly string[]
+  /**
+   * The Codex home OrgAI assigns for its connections (codexHomeDir(dataDir)). The file is written only when
+   * env.CODEX_HOME resolves to this path: an inherited CODEX_HOME (the user's own ~/.codex) never gets one. Missing:
+   * no override.
+   */
+  expectedHome?: string
   run?: CatalogDumpRunner
   fs?: CatalogFs
   now?: () => number
@@ -203,11 +209,56 @@ const slugsByFile = new Map<string, Set<string>>()
 const SLUGS_BY_FILE_MAX = 16
 /** Keys whose catalog had nothing to change (no file is written for them): not dumped again in this process. */
 const unchangedKeys = new Set<string>()
+/** Catalog files Codex refused to start with (rejectNativeCatalog): never offered again in this process. */
+const rejectedFiles = new Set<string>()
 
-/** Forget the in-process slug memory (tests: a new process reads the slugs back from the file). */
+/** Forget the in-process memory (tests: a new process validates files again and has rejected none). */
 export function clearNativeCatalogMemory(): void {
   slugsByFile.clear()
   unchangedKeys.clear()
+  rejectedFiles.clear()
+}
+
+/**
+ * Codex did not start with this catalog (the app-server exited or failed its handshake with model_catalog_json set):
+ * the file is deleted (best effort) and never offered again in this process.
+ */
+export function rejectNativeCatalog(path: string, fs: CatalogFs = nodeCatalogFs): void {
+  rejectedFiles.add(path)
+  try {
+    fs.remove(path)
+  } catch {
+    // best effort: the rejected set keeps it out either way
+  }
+}
+
+/**
+ * The model slugs of a catalog file when it has the shape catalogWithoutNativeAgents writes (an object with a `models`
+ * array of objects, no multi_agent_version string other than "v1"); undefined for anything else.
+ */
+export function validCatalogSlugs(text: string): string[] | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+  const models = (parsed as Record<string, unknown>).models
+  if (!Array.isArray(models) || !models.length) return undefined
+  if (models.some((m) => !m || typeof m !== 'object' || Array.isArray(m))) return undefined
+  const list = models as Record<string, unknown>[]
+  if (list.some((m) => typeof m[MULTI_AGENT_FIELD] === 'string' && m[MULTI_AGENT_FIELD] !== NATIVE_OFF_MULTI_AGENT_VERSION)) return undefined
+  return slugsOf(list)
+}
+
+/** Same folder by resolved path (realpath when it exists; case-insensitive on Windows). */
+function samePath(a: string, b: string, fs: CatalogFs): boolean {
+  const norm = (p: string): string => {
+    const r = resolve(fs.realpath(resolve(p)))
+    return process.platform === 'win32' ? r.toLowerCase() : r
+  }
+  return norm(a) === norm(b)
 }
 
 function rememberSlugs(file: string, slugs: readonly string[]): Set<string> {
@@ -240,8 +291,10 @@ export async function nativeAgentsCatalogConfig(input: NativeCatalogInput): Prom
   const fail = (reason: string): NativeCatalogResult => ({ status: 'failed', config: [], reason, ms: Date.now() - t0 })
   try {
     const home = input.env.CODEX_HOME?.trim()
-    // Never write into the user's own ~/.codex: without OrgAI's CODEX_HOME there is no override.
+    // Never write into the user's own ~/.codex: only OrgAI's own Codex home gets a catalog file.
     if (!home) return fail('no OrgAI Codex home (CODEX_HOME) is set')
+    if (!input.expectedHome?.trim()) return fail("OrgAI's Codex home is not known to the adapter")
+    if (!samePath(home, input.expectedHome, fs)) return fail("CODEX_HOME is not OrgAI's own Codex home")
     const real = fs.realpath(input.binary.path)
     const st = fs.stat(real)
     if (!st) return fail(`${input.binary.path} was not found`)
@@ -257,21 +310,26 @@ export async function nativeAgentsCatalogConfig(input: NativeCatalogInput): Prom
       return s && s.size > 0 && now() - s.mtimeMs < CATALOG_MAX_AGE_MS ? f : undefined
     }
     const models = input.models ?? []
-    const slugsFor = (file: string) => (): Set<string> | undefined => {
+    /** The slugs of a file this process wrote or validated; a file not seen yet is parsed and checked once. */
+    const validated = (file: string): Set<string> | undefined => {
       const known = slugsByFile.get(file)
       if (known) return known
       try {
-        const parsed = JSON.parse(fs.read(file)) as { models?: unknown }
-        if (!Array.isArray(parsed.models)) return undefined
-        return rememberSlugs(file, slugsOf(parsed.models.filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')))
+        const slugs = validCatalogSlugs(fs.read(file))
+        return slugs ? rememberSlugs(file, slugs) : undefined
       } catch {
         return undefined
       }
     }
-    const finish = (r: NativeCatalogResult): NativeCatalogResult => gate({ ...r, ms: Date.now() - t0 } as NativeCatalogResult, models, r.status === 'written' || r.status === 'cached' ? slugsFor(r.path) : () => undefined, t0)
+    const finish = (r: NativeCatalogResult): NativeCatalogResult => {
+      if ((r.status === 'written' || r.status === 'cached') && rejectedFiles.has(r.path)) return fail('Codex did not start with this catalog earlier in this process')
+      return gate({ ...r, ms: Date.now() - t0 } as NativeCatalogResult, models, r.status === 'written' || r.status === 'cached' ? () => validated(r.path) : () => undefined, t0)
+    }
     const before = keyOf()
     const hit = cachedFor(before)
-    if (hit) return finish({ status: 'cached', config: [modelCatalogEntry(hit)], path: hit, ms: 0 })
+    if (rejectedFiles.has(fileOf(before))) return fail('Codex did not start with this catalog earlier in this process')
+    // A file on disk is reused only once it parses to the shape this module writes (a truncated or edited one is regenerated).
+    if (hit && validated(hit)) return finish({ status: 'cached', config: [modelCatalogEntry(hit)], path: hit, ms: 0 })
     if (unchangedKeys.has(before)) return { status: 'unchanged', config: [], ms: Date.now() - t0 }
     const running = inflight.get(before)
     if (running) return finish(await running)
