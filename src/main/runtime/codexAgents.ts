@@ -21,7 +21,7 @@ import { scrubControlEnv } from './childEnv'
  * logic, and codex.ts supplies the host that talks to the app-server.
  *
  * Dynamic tools exposed to the model (names are what the model calls):
- *   spawn_report   {role, brief, name?, description?}  roles with canSpawn
+ *   spawn_report   {role, brief, name?, description?, tier?, effort?, files?}  roles with canSpawn (files: contextPack.ts)
  *   message_agent  {to, message, summary?}             roles with canSpawn or the SendMessage tool
  *   list_team      {}                                  roles with canSpawn or the ListAgents tool
  * (Before the rename these were spawn_agent, send_message and list_agents, which collided with Codex's built-in multi-agent
@@ -36,7 +36,8 @@ export const spawnArgs = z.object({
   name: z.string().optional().describe('Handle; default role-1, role-2, ...'),
   description: z.string().optional().describe('Three to six words for the org chart'),
   tier: z.enum(MODEL_TIERS as [ModelTier, ...ModelTier[]]).optional().describe('Model tier; wins over the plan step'),
-  effort: z.enum(EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort; wins over the plan step')
+  effort: z.enum(EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort; wins over the plan step'),
+  files: z.array(z.string()).max(8).optional().describe('Up to 8 files in folders this run may read, inlined (24k chars each, 60k total)')
 })
 export const messageArgs = z.object({
   to: z.string().min(1).describe('A running agent\'s handle (e.g. implementer-2) or "main"'),
@@ -265,6 +266,16 @@ export class CodexAgentNetwork {
     }
   }
 
+  /** Spawned agents of `parentId` still working (parked ones included), oldest first. */
+  liveChildren(parentId: string): string[] {
+    return [...this.members.values()].filter((m) => m.live && m.parentId === parentId).map((m) => m.id)
+  }
+
+  /** Every spawned agent still working (parked ones included). */
+  liveIds(): Set<string> {
+    return new Set([...this.members.values()].filter((m) => m.live).map((m) => m.id))
+  }
+
   /** Ids of the spawned agents, oldest first. */
   ids(): string[] {
     return [...this.members.keys()]
@@ -280,13 +291,20 @@ export interface SpawnRequest extends SpawnPlan {
   callId: string
   /** The tier and / or effort stated on the spawn_report call (run staffing); the host resolves them, bridged hosts ignore them. */
   onCall?: { tier?: ModelTier; effort?: Effort }
+  /** Context pack (split-execution 3.2): paths the lead read, inlined by the host into the first message (contextPack.ts). */
+  files?: string[]
 }
 
 /** What the session provides to the network's tool handlers. */
 export interface NetworkHost {
   agents(): Iterable<AgentInstance>
   /** Create the thread (and worktree), register the agent and start its first turn. Throws an Error with a model-readable message. */
-  spawn(req: SpawnRequest): Promise<{ staffing?: string; note?: string } | void>
+  spawn(req: SpawnRequest): Promise<{ staffing?: string; note?: string; pack?: string } | void>
+  /**
+   * After a successful spawn by `callerId` of `roleId`: one more line for the result (the one-report-and-waiting note,
+   * waitingNote.ts), or undefined. Never a refusal.
+   */
+  afterSpawn?(callerId: string, roleId: string): string | undefined
   /** Hand `text` to the agent: steer its running turn, or start one. */
   deliver(toAgentId: string, text: string): Promise<void>
   /** Draw the message on the canvas and keep a copy in the sender's transcript. */
@@ -380,8 +398,9 @@ export async function callNetworkTool(
           return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
         }
         // The host already moved the reservation to the harness's agent id (CodexAgentNetwork.adopt) when the child started.
+        const unpacked = parsed.data.files?.length ? ` The files you named were not inlined: it runs in its own session on ${bridged.connectionName}; put what it needs in the brief.` : ''
         return {
-          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.${parsed.data.tier || parsed.data.effort ? ' It keeps its chart tier and effort; the tier and effort you gave were ignored.' : ''}`,
+          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.${parsed.data.tier || parsed.data.effort ? ' It keeps its chart tier and effort; the tier and effort you gave were ignored.' : ''}${unpacked}${afterSpawnLine(host, callerId, check.role.id)}`,
           success: true
         }
       }
@@ -390,16 +409,19 @@ export async function callNetworkTool(
       if (parsed.data.effort) onCall.effort = parsed.data.effort
       let staffing: string | undefined
       let note: string | undefined
+      let pack: string | undefined
       try {
-        const started = await host.spawn({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId, ...(onCall.tier || onCall.effort ? { onCall } : {}) })
+        const files = parsed.data.files
+        const started = await host.spawn({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId, ...(onCall.tier || onCall.effort ? { onCall } : {}), ...(files?.length ? { files } : {}) })
         staffing = started?.staffing
         note = started?.note
+        pack = started?.pack
       } catch (e) {
         net.abort(check.id)
         return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
       }
       return {
-        text: `Spawned ${check.handle} (${check.role.slug})${staffing ? ` on ${staffing}` : ''}. It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.${note ? ` ${note}` : ''}`,
+        text: `Spawned ${check.handle} (${check.role.slug})${staffing ? ` on ${staffing}` : ''}. It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.${note ? ` ${note}` : ''}${pack ? ` ${pack}` : ''}${afterSpawnLine(host, callerId, check.role.id)}`,
         success: true
       }
     }
@@ -410,6 +432,16 @@ export async function callNetworkTool(
 }
 
 export { resolveRecipient }
+
+/** host.afterSpawn's line with a leading space, or ''. A throw is ignored: the spawn already happened. */
+function afterSpawnLine(host: NetworkHost, callerId: string, roleId: string): string {
+  try {
+    const line = host.afterSpawn?.(callerId, roleId)
+    return line ? ` ${line}` : ''
+  } catch {
+    return ''
+  }
+}
 
 // ---------- report delivery ----------
 

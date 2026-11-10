@@ -2526,6 +2526,18 @@ export interface RunEfficiency {
    * nothing computes it yet (computeRunEfficiency leaves it out); cleanRunEfficiency keeps a stored finite value >= 0.
    */
   readyIdleMs?: number
+  /**
+   * Run end (or now while live) minus the end of the last direct report to finish, ms. Unlike tailMs it counts from the
+   * LAST report, so it is the lead's handover time after all the reports are in. Optional: absent on runs saved before
+   * it existed; cleanRunEfficiency keeps a stored finite value >= 0.
+   */
+  afterLastReportMs?: number
+  /**
+   * Median over the direct reports that wrote a file of (time of the report's first file-writing tool use, i.e. a
+   * transcript tool_use named Edit, Write, MultiEdit or NotebookEdit, minus the report's startedAt), ms. Reports that
+   * never wrote are left out; absent when none did, when the transcript was not available, and on older runs.
+   */
+  reportStartMs?: number
 }
 
 /** RunUsage.noResultAgents cap per run. */

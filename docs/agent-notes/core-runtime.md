@@ -80,6 +80,16 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   decision 2026-11-10, no lab run on that wording). The team listing says how ("To hand work out, use the Agent tool"), not that the lead must;
   required reports keep "You must delegate to ...". Sizes are pinned in `prompts.test.ts`. Lab-checked on the root of
   the default chart only; a mid-level lead and a setup root get the new listing line with no live run behind it.
+  Split execution (split-execution 3.2-3.4, unit tests only, no lab run): criteria go "in each brief" (`spawnFiles`
+  adds the files clause: `true` "pass the files you read as files" from codex.ts and mock `rolePromptFor`, `'brief'`
+  "end it with a line "Files: <path>, <path>" naming files you read" from claude.ts `buildAgents`, +32 characters; each
+  only when `contextPackRefusal` is undefined); "keep a piece yourself" only with `workBesideReports` (default
+  `!spawnCallFields`; Claude's `buildAgents` passes true since 2026-11-10, and with it the root's `spawnCallText` adds
+  "run_in_background: true while you keep a piece" (+48, or "..., else true while you keep a piece" beside the
+  foreground field, +34) when a listed report is not marked foreground; never for a mid-level lead, a bridged child
+  root, quick or single runs); the integrated result is checked once; writing leaf reports of team work runs get
+  `REPORT_CHECKS_TEXT`. The Claude root grew 233 characters (`scripts/measure-prompt-size.mjs`, iso+arch 10,857 to
+  11,090), the Codex root 35.
 - Staffing profile wiring (2026-11-10, spec 4.5, D8): `store/staffingProfile.ts` holds the lifecycle helpers.
   `staffingProfileApplies(summary, project)` = kind 'work', not quick, not Ask (`team: 'single'`), no buildWorkspace,
   not a virtual project, `staffingModeOf` 'auto'. Read: RunManager reads `<data>/staffing/<projectId>.json` once at
@@ -92,6 +102,129 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   entries carry `runId` and `mergeProfile` replaces a run's earlier entries, so a second merge cannot double count.
   A failed write logs one warning (step and errno code, no path) and never fails the end. Unit tests only
   (staffingProfile, runManagerStaffing, mock, claude, claudeKnowledge, codexStaffing); no live run.
+  Cost line (2026-11-10, split-execution 3.5): `rootStaffingBrief` appends `staffingCostLine(profile)` (what a report
+  costs here and the piece size worth handing out; medians from `profileTiming` once 3 runs carry them, else 30 s / 20 s)
+  when the root has reports (a role with `reportsTo` set). It now goes out with an empty or missing profile (the history
+  line still needs one) and never on a `bridgedChild`. Unit tests only (staffingProfile, codex); no lab run.
+- Context pack on spawn (2026-11-10, split-execution 3.2; `runtime/contextPack.ts`): Codex `spawn_report` and the mock
+  spawn step take `files` (files inside the folders this run may read; the harness does not check that the lead read
+  them). At spawn time the host reads them and appends them to the report's first message under
+  `CONTEXT_PACK_HEADING`, one fence per file with its path (the transcript keeps the brief only). Limits: the first 8
+  entries (the Codex schema says `maxItems: 8`; extra entries from other callers collapse into one "and N more" line),
+  24,000 characters per file, 60,000 in total, UTF-8 text with no NUL byte. Checks per file: not a network path
+  (`isNetworkPath`); the path as written (absolute, lexically normalized) inside a folder before any file system call,
+  so an outside path reads "outside" whether it exists or not (a missing file behind a linked folder that leads outside
+  too: no existence oracle); `checkSelfControlDenial('Read', ...)` on the path as written and on its real path
+  (unavailable protected paths refuse every file); the real path (`realpathSync.native`) inside the project folder, the
+  lead's or the report's working folder, or the run's allowed or reference folders (`contextPackRoots`,
+  `isInsideEither`). Then one open (`O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY`, each flag where defined, so a FIFO
+  never blocks the main process; on macOS `O_NOFOLLOW_ANY` 0x20000000 in place of `O_NOFOLLOW`, defined in
+  `contextPackOpenFlags` since Node lacks it: a link in any component of the checked real path refuses the open; the
+  two together give EINVAL and `O_NOFOLLOW_ANY` alone refuses a final link with ELOOP, both checked with node on
+  darwin 25), on Linux `/proc/self/fd/<fd>` read back equal to the real path (`handlePointsAt`, an unreadable /proc
+  fails closed; unit-tested with a mocked readlink only, no Linux run), `fstat` of the handle a regular file within the
+  cap, `realpath` again equal to the checked real path, `stat` of that path the same dev and ino as the handle (bigint
+  stats), the handle's dev and ino not a protected file (`protectedFileKeys`), and only then a bounded read from the
+  handle, always closed. Protected set (third pass, 2026-11-10): the SHALLOW set (each protected path, the data
+  folder's entries the gate protects by name prefix, `vault.json*` / `secrets.json*` from `vaultPrefixProtections`, so
+  `.reset-*`, `.corrupt-*`, `.tmp` hard links count, and the TOP LEVEL of each protected folder, e.g. `codex/auth.json`;
+  each folder listed once whatever its spellings; bound 20,000 entries) is collected once per pack build before the
+  first file and checked for every file. With the handle's path pinned (macOS `O_NOFOLLOW_ANY`, Linux /proc) the gate on
+  the real path covers every path into a protected folder, so the DEEP walk (every file below them, bound 200,000) runs
+  only when the handle has more than one link, once per build. Without pinning (Windows) the deep set is checked for
+  every file and walked once per run (`deepCache`, kept by the Codex and mock sessions). Past a bound every file gets the
+  neutral "OrgAI could not check it against its control files". The second pass walked everything for every pack with
+  a 5,000 bound: `<data>/codex` (a session file per Codex thread, 8,802 entries on the reviewer's machine) turned the
+  pack off on both adapters; a unit test now has 6,000 entries below `codex/` and an ordinary file still inlined. A swap between the checks and the open (a link to an outside or control
+  file, a linked parent folder, a parent that is a link at the open, a folder at the re-resolve and a link at the stat,
+  a control file renamed in, a FIFO) is skipped as "unreadable", "not a file" or as a control file (2026-11-10 second
+  security pass; the three-moment parent swap is a unit test that inlines `<data>/codex/auth.json` with neither fix
+  and is refused with either one alone, checked on macOS; Windows has only the dev/ino checks, not run there). The
+  `File:` line drops control, U+0085, U+2028, U+2029 and bidi characters, and inlined text gets a zero-width space after
+  each `</` before a letter, white space between allowed (the heading says so), so no file line can close a wrapper tag
+  of the hook context.
+  Trust-restricted and setup-like runs get none (`contextPackRefusal`). Every
+  file left out is named with its reason in the tool result (`contextPackResultLine`). A bridged report gets no pack
+  (the result says so); `delegate_agent` takes no `files`. Without `files` nothing changes. spawn_report's definition
+  grew 126 chars, then the security pass's `maxItems` and wording (Codex team-root budget 20,050 unchanged,
+  `toolDefinitionSize.test.ts`). Claude (2026-11-10): the Agent tool is
+  the SDK's own and a rewrite of a well-formed spawn costs a classifier request, so the lead ends the brief with a
+  `Files: a, b` line (`briefFiles`: the last non-empty line, label in any case, comma separated, quotes and backticks
+  dropped; a path cannot hold a comma; since the second pass the line must be the very last one, not inside a code
+  fence left open above it (``` and ~~~ are separate fences, CommonMark closing rules) and not continuing a block
+  quote; no prompt change). The spawn hook reads it at PreToolUse
+  after every denial (call unchanged; the line stays in the brief), relative paths resolved lexically from the hook's
+  cwd, which is never a root: roots = project, the caller's checkout as the harness tracks it (`agentCwd`: the report's
+  worktree is cut from it), allowed and reference folders. Since the third pass Claude reads NO file at spawn: the pack
+  is built from the TEXT the spawning agent's own complete Reads returned (`buildContextPackFromTexts`,
+  `ReadTextStore`). At each `Read` PostToolUse the session keeps `tool_response.file.content` when the response shows
+  the whole file (`completeReadText`: `type: 'text'`, `startLine` 1, `numLines` equal to `totalLines`, no
+  `truncatedByTokenCap`), keyed by the path as written resolved lexically against the hook's cwd and by its real path
+  at that moment; only texts within 24,000 characters, at most 100 entries and 1,500,000 characters per agent and 200
+  agents, oldest dropped; an agent's store is dropped when it ends (SubagentStop, its notification, a harness stop).
+  Checks per named file: a path, not a network path, protected paths available, the path as written and the recorded
+  real path lexically inside the roots, `checkSelfControlDenial` on both, a kept complete Read (else "not read in full by
+  you in this run"), not listed twice; then the same caps, block cap, shown path and `</` neutralisation. So a link
+  flipped after the CLI's own Read deny/ask check, a file changed after the Read and Windows (no handle pinning) cannot
+  put in text the lead's Read did not return; the CLI enforces `.claude/settings.json` and managed-policy Read deny/ask
+  rules the harness does not see, and a Read they stopped never reaches PostToolUse (from the hooks docs and sdk.d.ts,
+  where failures and denials have their own events, not checked live). Response shape: from `sdk-tools.d.ts`
+  `FileReadOutput` and the SDK 0.3.318 CLI bundle (`strings` on the darwin-arm64 binary): `content` is the file's raw
+  text (CRLF read as LF, a BOM dropped); the `cat -n` style line numbers are added only when the result is rendered for
+  the model (`U6e`), so the hook sees raw text; the PostToolUse `tool_response` is the tool's output object (as the Agent
+  call's `async_launched` object in check 12). Not checked live for Read. A target role without the Read tool gets no
+  pack. Plus `blockMaxChars` =
+  `CLAUDE_HOOK_CONTEXT_INLINE_MAX` (10,000: the CLI keeps hook context inline only up to that, above it the model gets a
+  2,000-character preview and a file path; read from the SDK 0.3.318 CLI bundle, `bve`/`kHe=1e4`, not checked live).
+  The block goes out as the report's `SubagentStart` `additionalContext` (sdk-facts check 13). The start is linked to
+  its spawn by task_started (agent id -> Agent `tool_use_id`, exact for parallel spawns of one role); stream messages
+  and hooks reach the session unordered, so the hook waits up to `SPAWN_LINK_WAIT_MS` (2 s) for the link, only while a
+  pack for that role is pending. The lead reads `contextPackResultLine` in the Agent call's `PostToolUse` additional
+  context (beside a receipt or staffing note): at launch for a background spawn, with the report for a foreground one
+  (late, but it still says which files the report had to read itself); a pack that never reached a start is listed as
+  not inlined. A refused spawn (`is_error` result) drops its pack. Unit tests only (contextPack with swap tests through
+  wrapped `openSync`, `realpathSync.native`, `statSync` and `readlinkSync`, POSIX only for links and FIFOs;
+  codexContextPack, mockContextPack, claudeSplit); no live run, `reportStartMs` not measured yet.
+- One report and a waiting lead (2026-11-10, split-execution 3.6; `runtime/waitingNote.ts`, pure `waitingNote`): after
+  a successful spawn by the run's root (not a bridged child's root) that leaves exactly one of the root's reports
+  running, for a role that is not one of the root's required reports (`obligationsFor`), with an active plan that has a
+  ready step (`readySteps`) and no `in_progress` step without a running report bound to it (staffing rows), the spawn
+  result gets `WAITING_NOTE`. Never a refusal, at most once per run, never on setup-like, Chat (quick) or single runs.
+  The ready-step condition is an addition to the spec: with nothing ready, waiting is all the lead can do. Codex
+  (`afterSpawn` on the NetworkHost, also on a bridged spawn_report) and the mock (a harness system row on the parent and
+  `spawnNotes`). Claude (2026-11-10, `claude.ts` `waitingNoteFor`): the Agent call's `PostToolUse` additional context,
+  only on a background launch (`async_launched`, sdk-facts check 14): a foreground spawn's PostToolUse fires when the
+  report is back, when the note is pointless. The new report counts as running and bound to its plan step even before
+  its task_started or staffing row is handled. Unit tests only (waitingNote, codexContextPack, mockContextPack,
+  claudeSplit).
+- Background reports on Claude (2026-11-10, split-execution 3.3; `claude.ts`, unit tests `claudeSplit.test.ts`): on SDK
+  0.3.318 the Agent tool's `run_in_background` defaults to true (sdk.d.ts; sdk-facts "Subagents run in the background by
+  default"), and the spawn hook forces `false` only on a receipt-bearing spawn (`receiptBearingSpawn`: one of the
+  caller's required reports, or a role with required reports of its own), because its receipt rides the completed
+  Agent call's PostToolUse. Those are the reports `spawnCallParts` marks "foreground". Any other spawn keeps what the
+  model wrote. The session tracks a background report from its `async_launched` PostToolUse (agent id from task_started,
+  else the result's `agentId`) in `backgroundReports`: its row, step binding, worktree tracking and integration
+  (`SubagentStop`), report text (the SubagentHandback PostToolUse, else `handback_report.text` of its notification) work
+  as for a foreground report. A `task_notification` ends a report only under its own Agent `tool_use_id` (a worker's
+  own Bash notifies under its Bash call); it marks the ledger receipt delivered (`DelegationGate.delivered`). While a
+  background report is live the root is idle ("Waiting on reports…"), `liveReports` counts it (no continue nudge; the
+  ready nudge may fire, D7; no MCP restart), and `settlement().quiescent` is false (a bridged child or an exec run
+  cannot end); after it ends with the root idle, quiescent stays false until the CLI resumes the root (its next init),
+  at most `BACKGROUND_HANDBACK_WAIT_MS` (30 s). `complete_plan` is not refused while a background report runs (as on
+  Codex); the exec outcome still waits for working reports. Interrupt: like an interrupted Codex thread, each live
+  background report is settled at once (done, "Interrupted", ledger `ended`, staffing row closed, not integrated) and
+  `stopTask` is sent; OrgAI does not declare `perTaskStopAffordance`, so per sdk.d.ts the CLI's interrupt kills
+  background tasks anyway (not checked live). A later SubagentStop, handback or notification of a stopped report
+  changes nothing, and PreToolUse denies every tool call of a stopped report (`STOPPED_REPORT_DENIAL`, its hand-back
+  included) so it cannot keep acting while shown as stopped; a SendMessage resume (task_started for a known agent) makes
+  it live again. A report stopped before its first task_started was handled (named by the launch result, or drawn by
+  SubagentStart) is kept in `stoppedBeforeStart`: the late task_started records it settled (ledger noteSpawn then
+  `ended`, staffing book ended), never live. A task_notification also ends an activation under any id the agent was
+  spawned or resumed under (its Agent call, a resume's task_started id, a SendMessage addressed to it,
+  `reportEndIds`), so a resumed report that notifies under the SendMessage call keeps its text (that shape is not seen
+  live; handled in case). `toolUseByTask` keeps the newest 1,000 links. Session end settles them ("Stopped: the session ended").
+  Not checked live: an interrupt or a killed task after which the CLI still resumes the root by itself; the stop
+  reaching a report that is mid-tool; a lab run. The second-pass items are unit tests in `claudeSplit.test.ts` only.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls
@@ -136,7 +269,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   or a proxy reports.
   - `RunUsage.efficiency` (2026-11-09, `RunEfficiency` in types.ts; orchestration-efficiency.md 4.2): derived by
     `computeRunEfficiency` (runUsage.ts) from the root's direct reports' `startedAt` / `endedAt`, nothing tracked at
-    runtime: reports, firstSpawnMs, reportSumMs, reportBusyMs (union), maxParallel, tailMs (after the first wave). Absent
+    runtime: reports, firstSpawnMs, reportSumMs, reportBusyMs (union), maxParallel, tailMs (after the first wave), afterLastReportMs (run end minus the last report's end) and reportStartMs
+    (median over reports of first Edit/Write/MultiEdit/NotebookEdit `tool_use` in the transcript minus the report's start; Codex
+    fileChange is already normalized to Edit/Write; `RunUsageInputs.transcript`, passed by RunManager.currentUsage; reports that
+    never wrote are left out; absent without a transcript). Both optional, cleaned like readyIdleMs. The staffing profile
+    entries carry both (`profileTiming` gives per-project `medianReportStartMs` / `medianAfterLastReportMs`; not in the brief
+    text) and the Usage Efficiency panel shows "After the last report" beside Tail. Absent
     without a direct report; `cleanRunEfficiency` drops a malformed stored value whole (`normalizeRunRecord`,
     `cleanStoredUsage`); `sumRunUsage` never sums it. Verified by unit tests only (runUsage.test.ts, incl. the
     dashboard run of spec 1.3); no live run has checked it.

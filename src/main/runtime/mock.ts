@@ -39,6 +39,8 @@ import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
 import { StaffingBook } from './staffingBook'
 import { recordStaffing } from './staffing'
+import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
+import { waitingNote, waitingNoteExcluded } from './waitingNote'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -173,7 +175,7 @@ export type MockStep =
       onDeny?: string
     }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
-  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Run staffing: the tier and effort stated on the spawn call itself. */ tier?: ModelTier; effort?: Effort; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
+  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Run staffing: the tier and effort stated on the spawn call itself. */ tier?: ModelTier; effort?: Effort; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string; /** Context pack (contextPack.ts): paths the lead read, inlined into the report's first message. */ files?: string[] }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
   | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
@@ -1986,7 +1988,9 @@ export class MockSession implements RuntimeSession {
       ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}),
       ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}),
       ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
-      ...(this.ctx.bridgedChild ? { bridged: true } : {})
+      ...(this.ctx.bridgedChild ? { bridged: true } : {}),
+      // The mock's spawn step takes `files` like Codex spawn_report; only where a pack can be inlined.
+      ...(contextPackRefusal(this.ctx.run, this.isSetup) ? {} : { spawnFiles: true })
     })
   }
 
@@ -2644,8 +2648,60 @@ export class MockSession implements RuntimeSession {
     this.transcript(step.id, { kind: 'user', text: brief })
     // After the upsert, so the row lands on the report (like Codex); the block stays out of its transcript entry.
     this.promptKnowledgeBriefs.push({ agentId: step.id, brief: this.ctx.knowledgeBrief?.() })
-    this.deliveredMessages.push({ agentId: step.id, text: withSpawnKnowledge(brief, spawnKnowledge(this.ctx, brief, step.id, (m) => this.log('warn', m))) })
+    // Context pack (split-execution 3.2), as on Codex: the same read checks, the block appended to the first message.
+    const pack = step.files?.length ? this.contextPackFor(step.files) : undefined
+    const first = withSpawnKnowledge(brief, spawnKnowledge(this.ctx, brief, step.id, (m) => this.log('warn', m)))
+    this.deliveredMessages.push({ agentId: step.id, text: pack ? withContextPack(first, pack) : first })
+    // What Codex's spawn_report result would carry (the mock's spawn has no result until the report finishes): the pack
+    // line and the one-report-and-waiting note, as harness rows on the spawning agent and in spawnNotes.
+    const notes = [pack ? contextPackResultLine(pack) : '', role ? (this.waitingNoteFor(parentId, role.id) ?? '') : ''].filter(Boolean)
+    for (const text of notes) {
+      this.spawnNotes.push({ agentId: parentId, reportId: step.id, text })
+      this.transcript(parentId, { kind: 'system', text }, { source: 'harness' })
+    }
     if (role) await this.skillStep(step.id, role)
+  }
+
+  /** The spawn results' extra lines (context pack, waiting note) in order, for tests. */
+  readonly spawnNotes: { agentId: string; reportId: string; text: string }[] = []
+
+  /** Set once the one-report-and-waiting note was given (at most once per run). */
+  private waitingNoteShown = false
+
+  /** The one-report-and-waiting note (waitingNote.ts) for a spawn by `callerId`, as on Codex. */
+  private waitingNoteFor(callerId: string, roleId: string): string | undefined {
+    const live = (a: AgentInstance): boolean => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error'
+    const running = [...this.agents.values()].filter(live)
+    const note = waitingNote({
+      callerIsRoot: callerId === ROOT_AGENT_ID && !this.ctx.bridgedChild,
+      callerRunningReports: running.filter((a) => a.parentId === callerId).length,
+      spawnedRoleId: roleId,
+      requiredRoleIds: obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)[this.root.id] ?? [],
+      plan: this.ctx.getPlan(),
+      assignments: this.ctx.getStaffing()?.assignments ?? [],
+      runningAgentIds: new Set(running.map((a) => a.id)),
+      shown: this.waitingNoteShown,
+      excludedRun: waitingNoteExcluded(this.ctx.run, this.isSetup)
+    })
+    if (note) this.waitingNoteShown = true
+    return note
+  }
+
+  /** The run's deep protected set for the context pack where handles are not pinned (Windows): walked once per run. */
+  private packDeepCache: ProtectedDeepCache = {}
+
+  /** The context pack for a mock spawn: the lead and the report work in the project folder. */
+  private contextPackFor(files: string[]): ContextPack {
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    const cwd = this.ctx.project.path
+    return buildContextPack(files, {
+      callerCwd: cwd,
+      readRoots: contextPackRoots(this.ctx, [cwd]),
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
+      refuseAll: contextPackRefusal(this.ctx.run, this.isSetup),
+      deepCache: this.packDeepCache
+    })
   }
 
   /** Skill ids already loaded by an agent (once per agent). */

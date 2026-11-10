@@ -59,6 +59,8 @@ import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { StaffingBook } from './staffingBook'
 import { recordStaffing } from './staffing'
+import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
+import { waitingNote, waitingNoteExcluded } from './waitingNote'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
 import { dirname, isAbsolute, join } from 'node:path'
@@ -867,7 +869,8 @@ class CodexSession implements RuntimeSession {
     const engagementDocument = this.ctx.engagementDocument?.()
     // Constant for the run (RunManager computes it once), so every thread's instructions carry the same index.
     const knowledgeBrief = this.ctx.knowledgeBrief?.()
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}), ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}), ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags() })
+    // spawnFiles: spawn_report takes `files` (contextPack.ts); only where a pack can be inlined (contextPackRefusal).
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}), ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}), ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags(), ...(contextPackRefusal(this.ctx.run, isSetup) ? {} : { spawnFiles: true }) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan'), nativeRule: !this.nativeAgentsOff })
     const parts = [base]
@@ -1998,7 +2001,46 @@ class CodexSession implements RuntimeSession {
       return b ? { connectionName: b.connectionName } : undefined
     },
     spawnBridged: (req) => this.spawnBridged(req),
-    bridgedAgents: () => this.bridgedLive.values()
+    bridgedAgents: () => this.bridgedLive.values(),
+    afterSpawn: (callerId, roleId) => this.waitingNoteFor(callerId, roleId)
+  }
+
+  /** Set once the one-report-and-waiting note was given (at most once per run). */
+  private waitingNoteShown = false
+
+  /** The one-report-and-waiting note (waitingNote.ts, split-execution 3.6) for a spawn by `callerId`, at most once per run. */
+  private waitingNoteFor(callerId: string, roleId: string): string | undefined {
+    const strict = this.ctx.run.overrides?.strictDelegation === true
+    const note = waitingNote({
+      callerIsRoot: callerId === ROOT_AGENT_ID && !this.ctx.bridgedChild,
+      callerRunningReports: this.net.liveChildren(callerId).length,
+      spawnedRoleId: roleId,
+      requiredRoleIds: obligationsFor(this.ctx.roles, strict)[this.root.id] ?? [],
+      plan: this.ctx.getPlan(),
+      assignments: this.ctx.getStaffing()?.assignments ?? [],
+      runningAgentIds: this.net.liveIds(),
+      shown: this.waitingNoteShown,
+      excludedRun: waitingNoteExcluded(this.ctx.run, this.setupLike)
+    })
+    if (note) this.waitingNoteShown = true
+    return note
+  }
+
+  /** The run's deep protected set for the context pack where handles are not pinned (Windows): walked once per run. */
+  private packDeepCache: ProtectedDeepCache = {}
+
+  /** The context pack for a spawn (contextPack.ts, split-execution 3.2): read checks as a Read by the report would pass. */
+  private contextPackFor(files: string[] | undefined, callerCwd: string, reportCwd: string): ContextPack {
+    if (!files?.length) return { files: [], skipped: [] }
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    return buildContextPack(files, {
+      callerCwd,
+      readRoots: contextPackRoots(this.ctx, [callerCwd, reportCwd]),
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
+      refuseAll: contextPackRefusal(this.ctx.run, this.setupLike),
+      deepCache: this.packDeepCache
+    })
   }
 
   /** The run's bridged roles (RuntimeContext.bridge, read at call time); none in a bridged child or when unreadable. */
@@ -2110,7 +2152,7 @@ class CodexSession implements RuntimeSession {
     this.deliverTo(parentId, text, { transcript: false }).catch((e) => this.log('warn', `Could not deliver a held report to ${this.agents.get(parentId)?.handle ?? parentId}: ${(e as Error).message}`))
   }
 
-  private async spawnChild(req: SpawnRequest): Promise<{ staffing?: string; note?: string }> {
+  private async spawnChild(req: SpawnRequest): Promise<{ staffing?: string; note?: string; pack?: string }> {
     const parent = this.agents.get(req.parentId)
     const parentRole = this.net.roleOf(req.parentId) ?? this.root
     // Run staffing: bind to the plan step and resolve tier / effort before anything is created (cancelled below on failure).
@@ -2125,9 +2167,10 @@ class CodexSession implements RuntimeSession {
     const { resolved } = decision
     const staffedModel = resolved.tierChanged && validModelId(resolved.model) ? resolved.model : undefined
     const staffedEffort = resolved.effortChanged ? resolved.effort : undefined
+    let pack: ContextPack | undefined
     try {
       // `started` runs only once the first message was accepted, so a spawn that did not start leaves no row and no attempt.
-      await this.spawnChildNow(req, parent, parentRole, { model: staffedModel, effort: staffedEffort }, () => {
+      pack = await this.spawnChildNow(req, parent, parentRole, { model: staffedModel, effort: staffedEffort }, () => {
         const row = this.staffing.started(req.id, req.id, Date.now())
         if (row) recordStaffing(this.ctx, row).catch((e: Error) => this.log('warn', `Could not record the staffing of ${req.handle}: ${e.message}`))
       })
@@ -2138,7 +2181,9 @@ class CodexSession implements RuntimeSession {
       throw e
     }
     const ignored = resolved.mode === 'fixed' && (req.onCall?.tier || req.onCall?.effort)
+    const packLine = pack ? contextPackResultLine(pack) : ''
     return {
+      ...(packLine ? { pack: packLine } : {}),
       ...(resolved.mode === 'auto' ? { staffing: decision.label } : {}),
       ...(ignored ? { note: `It runs on its configured model and effort; the ${req.onCall?.tier && req.onCall?.effort ? 'tier and effort' : req.onCall?.tier ? 'tier' : 'effort'} you gave ${req.onCall?.tier && req.onCall?.effort ? 'were' : 'was'} ignored.` } : {})
     }
@@ -2150,7 +2195,7 @@ class CodexSession implements RuntimeSession {
     parentRole: Role,
     staffed: { model?: string; effort?: string },
     onStarted: () => void
-  ): Promise<void> {
+  ): Promise<ContextPack> {
     // Writing reports get their own worktree when their parent is the orchestrator or is itself isolated.
     const parentWt = req.parentId === ROOT_AGENT_ID ? undefined : this.integrator.worktreeOf(req.parentId)
     const parentIsolated = req.parentId === ROOT_AGENT_ID || !!parentWt
@@ -2194,8 +2239,11 @@ class CodexSession implements RuntimeSession {
       const effort = staffed.effort ? { effort: staffed.effort } : req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
       // After newAgent, so the "Added N known items" row lands on the report; the block stays out of its transcript entry.
       const knownItems = spawnKnowledge(this.ctx, req.brief, req.id, (m) => this.log('warn', m))
-      await this.sendToThread(started.threadId, childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), undefined, effort)
+      // Context pack: the lead's paths resolve against its own working folder; the block stays out of the transcript entry.
+      const pack = this.contextPackFor(req.files, parentWt?.path ?? this.ctx.project.path, cwd)
+      await this.sendToThread(started.threadId, withContextPack(childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), pack), undefined, effort)
       onStarted()
+      return pack
     } catch (e) {
       if (this.agents.delete(req.id)) this.emit({ type: 'agent.remove', runId: this.ctx.run.id, agentId: req.id })
       const gate = this.ctx.delegation

@@ -16,6 +16,7 @@ import type {
   RunUsageRow,
   SkillUseCount,
   TokenUsage,
+  TranscriptEntry,
   UsageCostCoverage,
   UsageOverview,
   UsageOverviewConnection,
@@ -105,6 +106,8 @@ export interface RunUsageInputs {
   skills?: readonly SkillUseCount[]
   /** Knowledge graph reads served (RunManager's tally). Missing or all zero = RunUsage.knowledge stays unset. */
   knowledge?: KnowledgeServedUsage
+  /** The run's transcript, for RunEfficiency.reportStartMs (first file-writing tool use per report). Missing = that field stays unset. */
+  transcript?: readonly TranscriptEntry[]
 }
 
 /**
@@ -126,7 +129,7 @@ export function cleanKnowledgeUsage(x: unknown): KnowledgeServedUsage | undefine
 
 /**
  * A RunEfficiency from untrusted data (a persisted record): every required field a finite number >= 0 (reports and
- * maxParallel whole, reports >= 1), else the whole value is absent. The optional readyIdleMs is kept only as a finite
+ * maxParallel whole, reports >= 1), else the whole value is absent. The optional readyIdleMs, afterLastReportMs and reportStartMs are each kept only as a finite
  * number >= 0 (else that field alone is dropped). Never throws.
  */
 export function cleanRunEfficiency(x: unknown): RunEfficiency | undefined {
@@ -140,6 +143,10 @@ export function cleanRunEfficiency(x: unknown): RunEfficiency | undefined {
   }
   const idle = o.readyIdleMs
   if (typeof idle === 'number' && Number.isFinite(idle) && idle >= 0) out.readyIdleMs = idle
+  for (const k of ['afterLastReportMs', 'reportStartMs'] as const) {
+    const v = o[k]
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = v
+  }
   const e = out as RunEfficiency
   return e.reports >= 1 ? e : undefined
 }
@@ -148,13 +155,18 @@ export function cleanRunEfficiency(x: unknown): RunEfficiency | undefined {
  * Timing of the root's direct reports from the agents' own timestamps (nothing is tracked for it). undefined when no
  * direct report started. A live report (no endedAt) counts to `now`; the run ends at summary.endedAt ?? now.
  */
-export function computeRunEfficiency(summary: RunSummary, agents: readonly AgentInstance[], now: number): RunEfficiency | undefined {
+export function computeRunEfficiency(
+  summary: RunSummary,
+  agents: readonly AgentInstance[],
+  now: number,
+  transcript?: readonly TranscriptEntry[]
+): RunEfficiency | undefined {
   const root = agents.find((a) => a.parentId === null)
   if (!root) return undefined
   const num = (n: unknown, d: number): number => (typeof n === 'number' && Number.isFinite(n) ? n : d)
   const iv = agents
     .filter((a) => a.parentId === root.id && Number.isFinite(a.startedAt))
-    .map((a) => ({ s: a.startedAt, e: Math.max(a.startedAt, num(a.endedAt, now)) }))
+    .map((a) => ({ id: a.id, s: a.startedAt, e: Math.max(a.startedAt, num(a.endedAt, now)) }))
     .sort((a, b) => a.s - b.s || a.e - b.e)
   if (iv.length === 0) return undefined
   const runEnd = num(summary.endedAt, now)
@@ -181,14 +193,40 @@ export function computeRunEfficiency(summary: RunSummary, agents: readonly Agent
   const firstEnd = Math.min(...iv.map((x) => x.e))
   const waveEnd = Math.max(...iv.filter((x, i) => i === 0 || x.s < firstEnd).map((x) => x.e))
   const ms = (n: number): number => (Number.isFinite(n) && n > 0 ? n : 0)
-  return {
+  const lastEnd = Math.max(...iv.map((x) => x.e))
+  const out: RunEfficiency = {
     reports: iv.length,
     firstSpawnMs: ms(iv[0]!.s - num(summary.startedAt, iv[0]!.s)),
     reportSumMs: ms(iv.reduce((n, x) => n + (x.e - x.s), 0)),
     reportBusyMs: ms(busy),
     maxParallel,
-    tailMs: ms(runEnd - waveEnd)
+    tailMs: ms(runEnd - waveEnd),
+    afterLastReportMs: ms(runEnd - lastEnd)
   }
+  const start = medianReportStartMs(iv, transcript)
+  if (start !== undefined) out.reportStartMs = start
+  return out
+}
+
+/** Tools whose use means the agent is writing files (the normalized names: the Codex adapter maps fileChange to Edit or Write). */
+export const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+/**
+ * Median over the reports that wrote a file of (their first write tool_use `at` minus their start), ms. A write before
+ * the start (clock skew) counts as 0. undefined when no transcript or no report wrote.
+ */
+function medianReportStartMs(reports: readonly { id: string; s: number }[], transcript: readonly TranscriptEntry[] | undefined): number | undefined {
+  if (!transcript || transcript.length === 0) return undefined
+  const first = new Map<string, number>()
+  for (const t of transcript) {
+    if (t.block.kind !== 'tool_use' || !FILE_WRITE_TOOLS.has(t.block.name) || !Number.isFinite(t.at)) continue
+    const cur = first.get(t.agentId)
+    if (cur === undefined || t.at < cur) first.set(t.agentId, t.at)
+  }
+  const vals = reports.flatMap((r) => (first.has(r.id) ? [Math.max(0, first.get(r.id)! - r.s)] : [])).sort((a, b) => a - b)
+  if (vals.length === 0) return undefined
+  const mid = vals.length >> 1
+  return vals.length % 2 ? vals[mid]! : (vals[mid - 1]! + vals[mid]!) / 2
 }
 
 /**
@@ -398,7 +436,7 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   if (skills.length) usage.skills = skills
   const knowledge = cleanKnowledgeUsage(inputs.knowledge)
   if (knowledge) usage.knowledge = knowledge
-  const efficiency = computeRunEfficiency(summary, agents, now)
+  const efficiency = computeRunEfficiency(summary, agents, now, inputs.transcript)
   if (efficiency) usage.efficiency = efficiency
   return usage
 }
@@ -523,7 +561,7 @@ export function normalizeRunRecord(input: RunRecord, now: number = Date.now()): 
   }
   let summary = record.summary
   if (!summary.usage) {
-    const base = computeRunUsage(summary, Object.values(agents), { nudges: record.plan?.autoContinues ?? 0, waitingMs: 0, limitHoldMs: 0, idleMs: 0, now: summary.endedAt ?? now })
+    const base = computeRunUsage(summary, Object.values(agents), { nudges: record.plan?.autoContinues ?? 0, waitingMs: 0, limitHoldMs: 0, idleMs: 0, now: summary.endedAt ?? now, transcript: record.transcript })
     const cost = summary.totalCostUsd > 0 ? summary.totalCostUsd : 0
     const isLegacy = base.legacy === true || Object.keys(agents).length === 0
     const usage: RunUsage = { ...base, updatedAt: now }

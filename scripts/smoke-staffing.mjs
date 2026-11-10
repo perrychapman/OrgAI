@@ -7,9 +7,21 @@
 // Check 11 (nested 'inherit': does a grandchild defined with model 'inherit' run on the main thread's model or on its
 // spawning subagent's?) is never in the default set: `11` is one live session (sonnet root, haiku child, the grandchild
 // says one word), `11stub` is ZERO SPEND against a local Messages stub that records the model of every request.
+// Checks 12-14 (docs/design/split-execution.md 3.3 and 3.6) are never in the default set; each is ONE live haiku session
+// in permission mode 'auto' with no PreToolUse rewrite, a streaming input kept open until the report has come back, and
+// the CLI's debug log (options.debugFile) searched for auto mode classifier requests:
+//   12  background report hand-back: the model writes run_in_background true, then makes one Bash call of its own.
+//   13  SubagentStart hookSpecificOutput.additionalContext: does the subagent see the marker; is it a spawn rewrite?
+//   14  PostToolUse additionalContext on a BACKGROUND Agent call (async_launched): does the root see the line?
+// Checks 15-16 (context pack from the lead's Read, src/main/runtime/contextPack.ts completeReadText) are never in the
+// default set; each is ONE live haiku session in permission mode 'default' in its own temp project. completeReadText is
+// imported from the TypeScript source through jiti (the '@shared' alias as in vitest.config.ts):
+//   15  Read PostToolUse payload: whole, offset/limit, a 3000-line file Read paginates, and a subagent's Read.
+//   16  a Read denied by a project deny rule (settingSources ['project'], as claudeSettingSources gives) and a Read of
+//       a missing file: which hooks fire, what tool_response holds, does completeReadText reject it.
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -67,7 +79,7 @@ const workerDef = (extra = {}) => ({ description: 'Runs one command', prompt: 'Y
 
 // Discover model ids (token-free: supportedModels is the initialize response). Not needed by the stub check alone.
 let models = []
-if ([...want].some((w) => w !== '11stub')) {
+if ([...want].some((w) => /^(\d|10|11)$/.test(w))) {
   const abort = new AbortController(); let resolveNever
   const never = { [Symbol.asyncIterator]() { return { next: () => new Promise((r) => { resolveNever = r }) } } }
   const q = query({ prompt: never, options: { cwd: dir, settingSources: [], abortController: abort, tools: [] } })
@@ -248,6 +260,178 @@ if (want.has('11')) {
   const models = (xs) => [...new Set(xs.map((a) => a.model))]
   const g = models(grandMsgs)
   verdict('11 nested inherit (live)', authFail(ev) || !g.length ? 'INCONCLUSIVE' : g.every((m) => /sonnet/i.test(m ?? '')) ? 'PASS (main thread)' : g.every((m) => /haiku/i.test(m ?? '')) ? 'PASS (parent)' : 'MIXED', `root=${ev.init?.model}; mid (pinned haiku) messages on ${JSON.stringify(models(midMsgs))}; grandchild (model 'inherit') messages on ${JSON.stringify(g)}; modelUsage=${JSON.stringify(ev.result?.models)}; cost=${ev.result?.cost}; error=${ev.error ?? 'none'}`)
+}
+// ---------- checks 12-14: background reports and hook context (auto mode, no PreToolUse rewrite) ----------
+// One session each. The env keeps only the login (like smoke-automode-classifier.mjs --live), so a parent Claude Code
+// session's variables do not leak in. Every hook below logs and returns {} unless the check supplies an output.
+const liveEnv = () => {
+  const keep = ['PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'SHELL', 'HOME', 'CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']
+  return { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => keep.includes(k))), CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '2' }
+}
+const short = (v, n = 200) => { const s = typeof v === 'string' ? v : JSON.stringify(v); return s !== undefined && s.length > n ? `${s.slice(0, n)}...` : s }
+const AUTO_HOOKS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification', 'Stop', 'SubagentStart', 'SubagentStop', 'TaskCreated', 'TaskCompleted', 'PermissionRequest', 'PermissionDenied']
+// `extra` overrides query options (cwd, settingSources, permissionMode); `closeOnResult` ends the input at the first
+// result (no background work to wait for). Every hook input is also kept whole in `raw`.
+async function runAuto(label, prompt, agents, hookOut = {}, { closeOnResult = false, ...extra } = {}) {
+  sessions++
+  console.log(`--- ${label}`)
+  const t0 = Date.now(); const stamp = () => Date.now() - t0
+  const log = []; const add = (kind, data) => { const e = { t: stamp(), kind, ...data }; log.push(e); console.log(JSON.stringify(e)) }
+  const debugFile = join(dir, `debug-${label.split(' ')[0]}.log`)
+  let canUse = 0, reportBack = closeOnResult, closeInput, error
+  const raw = []
+  const closed = new Promise((r) => { closeInput = r })
+  const hooks = Object.fromEntries(AUTO_HOOKS.map((name) => [name, [{ hooks: [async (i) => {
+    raw.push({ t: stamp(), name, input: i })
+    const rest = Object.fromEntries(Object.entries(i).filter(([k]) => !['session_id', 'transcript_path', 'cwd', 'hook_event_name', 'permission_mode', 'agent_transcript_path'].includes(k)))
+    add(`hook:${name}`, Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, short(v, /last_assistant_message|tool_response/.test(k) ? 500 : 200)])))
+    const out = hookOut[name]?.(i)
+    if (out) add('hook-returned', { name, out })
+    return out ?? {}
+  }] }]]))
+  const input = (async function* () {
+    yield { type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null, session_id: '' }
+    await closed // keep the session open so a background report can come back and resume the root
+  })()
+  const abortController = new AbortController()
+  const timer = setTimeout(() => { add('timeout', {}); abortController.abort() }, 150_000)
+  const results = []
+  try {
+    for await (const msg of query({ prompt: input, options: { cwd: dir, settingSources: [], env: liveEnv(), debugFile, abortController, maxTurns: 12, permissionMode: 'auto', model: 'haiku', agent: 'lead', agents, hooks, ...extra,
+      canUseTool: async (tool, toolInput, o) => { canUse++; add('canUseTool', { tool, agent: o?.agentID }); return { behavior: 'allow', updatedInput: toolInput } } } })) {
+      const who = msg.parent_tool_use_id ? 'child' : 'root'
+      if (msg.type === 'system' && msg.subtype === 'init') add('init', { model: msg.model, permissionMode: msg.permissionMode })
+      else if (msg.type === 'system') {
+        add(`system:${msg.subtype}`, { task_id: msg.task_id, tool_use_id: msg.tool_use_id, status: msg.status, summary: short(msg.summary), handback: msg.handback, handback_report: short(msg.handback_report, 300), keys: Object.keys(msg).join(',') })
+        if (msg.subtype === 'task_notification') reportBack = true
+      } else if (msg.type === 'assistant') add(`assistant:${who}`, { ptu: msg.parent_tool_use_id ?? undefined, blocks: msg.message.content.map((b) => b.type === 'tool_use' ? `tool_use:${b.name}:${b.id}:${short(b.input, 200)}` : b.type === 'text' ? `text:${short(b.text, 400)}` : b.type) })
+      else if (msg.type === 'user') {
+        const c = msg.message.content
+        const extra = Object.keys(msg).filter((k) => !['type', 'message', 'parent_tool_use_id', 'session_id', 'uuid'].includes(k))
+        add(`user:${who}`, { extra: extra.length ? extra.map((k) => `${k}=${short(msg[k], k === 'tool_result_meta' ? 400 : 80)}`).join(' ') : undefined, content: Array.isArray(c) ? c.map((b) => b.type === 'tool_result' ? `tool_result:${b.tool_use_id}:${short(b.content, 500)}` : b.type === 'text' ? `text:${short(b.text, 500)}` : b.type) : `string:${short(c, 500)}` })
+      } else if (msg.type === 'result') {
+        results.push(msg)
+        add('result', { subtype: msg.subtype, cost: msg.total_cost_usd, text: short(msg.result, 300) })
+        if (reportBack) closeInput()
+      } else add(`msg:${msg.type}`, { subtype: msg.subtype })
+    }
+  } catch (e) { error = String(e.message ?? e); add('error', { error }) }
+  clearTimeout(timer); closeInput()
+  const lines = existsSync(debugFile) ? readFileSync(debugFile, 'utf8').split('\n') : []
+  const classifierLines = lines.filter((l) => /classifier|auto-mode|auto_mode|safeguard|\[Stall\]/i.test(l)).map((l) => l.replace(/(token|key|authorization)[=:]\s*\S+/gi, '$1=<redacted>').slice(0, 300))
+  const started = lines.filter((l) => /classifier_request_started/.test(l)).map((l) => l.match(/tool=(\S+)/)?.[1] ?? '?')
+  console.log(`debug log: ${lines.length} lines; classifier lines:`); for (const l of classifierLines) console.log('  ', l)
+  // total_cost_usd is cumulative per session (each result repeats the running total); the classifier is not in it.
+  const cost = Math.max(0, ...results.map((r) => r.total_cost_usd ?? 0))
+  return { log, raw, canUse, started, classifierLines, cost, error, debugLines: lines.length }
+}
+const firstOf = (r, kind, pred = () => true) => r.log.find((e) => e.kind === kind && pred(e))
+const allOf = (r, kind, pred = () => true) => r.log.filter((e) => e.kind === kind && pred(e))
+const has = (e, s) => !!e && (typeof e === 'string' ? e : JSON.stringify(e)).includes(s)
+const classifierSummary = (r) => `classifier_request_started=${r.started.length} ${JSON.stringify(r.started)}; server-classifier rewrite lines=${r.classifierLines.filter((l) => /rewrote/.test(l)).length}; canUseTool calls=${r.canUse}; PermissionRequest hooks=${allOf(r, 'hook:PermissionRequest').length}; debug lines=${r.debugLines}`
+if (want.has('12')) {
+  const agents = {
+    lead: { description: 'Lead', prompt: 'You are the lead. Follow the user\'s steps exactly, in order.', tools: ['Agent', 'Bash'], model: 'haiku' },
+    worker: { description: 'Slow worker', prompt: 'Run the Bash command `sleep 12` once. Then report exactly this text and nothing else: REPORT-12 the answer is 42', tools: ['Bash'], model: 'haiku' }
+  }
+  const p = 'Do these steps in order. (1) Spawn the agent "worker" with the Agent tool: subagent_type "worker", run_in_background true, prompt "Go.". (2) Right after the Agent call returns, without waiting for the worker, run the Bash command `echo root-was-free` yourself. (3) When the worker\'s report reaches you, reply with its text verbatim and stop.'
+  const r = await runAuto('12 background report hand-back', p, agents)
+  const pre = firstOf(r, 'hook:PreToolUse', (e) => e.tool_name === 'Agent' && !e.agent_id)
+  const agentUse = firstOf(r, 'assistant:root', (e) => e.blocks.some((b) => b.startsWith('tool_use:Agent:')))
+  const agentId = agentUse?.blocks.find((b) => b.startsWith('tool_use:Agent:'))?.split(':')[2]
+  const agentResult = firstOf(r, 'user:root', (e) => e.content.some?.((c) => typeof c === 'string' && c.startsWith(`tool_result:${agentId}`)))
+  const rootBash = firstOf(r, 'hook:PreToolUse', (e) => e.tool_name === 'Bash' && !e.agent_id)
+  const stop = firstOf(r, 'hook:SubagentStop')
+  const hb = firstOf(r, 'hook:PostToolUse', (e) => e.tool_name === 'SubagentHandback')
+  const note = firstOf(r, 'system:task_notification', (e) => e.tool_use_id === agentId) // a child's own Bash can be a background task too
+  const resumed = allOf(r, 'init', (e) => note && e.t > note.t).map((e) => e.t)
+  const arrivals = r.log.filter((e) => e.kind.startsWith('user:root') && e !== agentResult && has(e, 'REPORT-12')).map((e) => `${e.kind}@${e.t}${e.extra ? `(${e.extra})` : ''}`)
+  const finalText = r.log.filter((e) => e.kind === 'result').map((e) => e.text).join(' | ')
+  verdict('12 background report hand-back', r.error || !agentResult ? 'INCONCLUSIVE' : 'OBSERVED', `model wrote run_in_background=${has(pre?.tool_input, '"run_in_background":true')}; Agent tool_result at ${agentResult?.t}ms: ${short(agentResult?.content, 260)}; SubagentStart at ${firstOf(r, 'hook:SubagentStart')?.t}ms; root's own Bash PreToolUse at ${rootBash?.t}ms (worker SubagentStop at ${stop?.t}ms -> root free while report ran=${rootBash && stop ? rootBash.t < stop.t : 'n/a'}); SubagentHandback PostToolUse at ${hb?.t}ms carries REPORT-12=${has(hb, 'REPORT-12')}; SubagentStop last_assistant_message carries REPORT-12=${has(stop?.last_assistant_message, 'REPORT-12')}; task_notification at ${note?.t}ms handback=${note?.handback} report carries REPORT-12=${has(note, 'REPORT-12')}; root-side SDK messages carrying REPORT-12 after launch=${JSON.stringify(arrivals)}; root re-init (resume) at ${JSON.stringify(resumed)}ms; root PostToolUse for Agent count=${allOf(r, 'hook:PostToolUse', (e) => e.tool_name === 'Agent' && !e.agent_id).length}; results=${allOf(r, 'result').length}; final text(s)=${short(finalText, 200)}; ${classifierSummary(r)}; cost=${r.cost}; error=${r.error ?? 'none'}`)
+}
+if (want.has('13')) {
+  const agents = {
+    lead: { description: 'Lead', prompt: 'You are the lead. Use the Agent tool exactly as instructed, then answer.', tools: ['Agent'], model: 'haiku' },
+    worker: { description: 'Reports context markers', prompt: 'If anything in your context (system prompt, task, or any added context) contains a line starting with MARKER-, your report is that line quoted verbatim. If there is none, your report is exactly: NO MARKER.', tools: [], model: 'haiku' }
+  }
+  const p = 'Spawn the agent "worker" with the Agent tool: subagent_type "worker", run_in_background false, prompt "Report as your instructions say.". Then reply with its report verbatim.'
+  const r = await runAuto('13 SubagentStart additionalContext', p, agents, { SubagentStart: () => ({ hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: 'MARKER-13 violet-anchor-7' } }) })
+  const seenBy = r.log.filter((e) => has(e, 'violet-anchor-7') && !['hook-returned'].includes(e.kind)).map((e) => `${e.kind}@${e.t}`)
+  const childSaw = r.log.some((e) => ['hook:PreToolUse', 'hook:PostToolUse', 'hook:SubagentStop', 'system:task_notification', 'assistant:child'].includes(e.kind) && (e.agent_id || e.kind.startsWith('system') || e.kind === 'assistant:child') && has(e, 'violet-anchor-7'))
+  verdict('13 SubagentStart additionalContext', r.error || !firstOf(r, 'hook:SubagentStart') ? 'INCONCLUSIVE' : childSaw ? 'PASS (subagent saw it)' : 'FAIL (subagent did not report it)', `marker 'MARKER-13 violet-anchor-7' returned from SubagentStart; entries carrying the marker after the hook=${JSON.stringify(seenBy)}; worker report: handback=${short(firstOf(r, 'hook:PreToolUse', (e) => e.tool_name === 'SubagentHandback')?.tool_input, 160)} last_assistant_message=${short(firstOf(r, 'hook:SubagentStop')?.last_assistant_message, 160)}; ${classifierSummary(r)}; cost=${r.cost}; error=${r.error ?? 'none'}`)
+}
+if (want.has('14')) {
+  const agents = {
+    lead: { description: 'Lead', prompt: 'You are the lead. Follow the user\'s steps exactly, in order.', tools: ['Agent'], model: 'haiku' },
+    worker: { description: 'Says ok', prompt: 'Your report is exactly: ok', tools: [], model: 'haiku' }
+  }
+  const p = 'Do these steps in order. (1) Spawn the agent "worker" with the Agent tool: subagent_type "worker", run_in_background true, prompt "Go.". (2) As soon as the Agent call returns, before the worker reports, write one message that quotes verbatim every line starting with MARKER- that came with that Agent tool result, or says NO MARKER. (3) When the worker\'s report reaches you, reply "done".'
+  const r = await runAuto('14 PostToolUse additionalContext on a background Agent call', p, agents, { PostToolUse: (i) => (i.tool_name === 'Agent' && !i.agent_id ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'MARKER-14 teal-kite-3' } } : undefined) })
+  const post = firstOf(r, 'hook:PostToolUse', (e) => e.tool_name === 'Agent' && !e.agent_id)
+  const said = allOf(r, 'assistant:root', (e) => has(e, 'teal-kite-3')).map((e) => e.t)
+  const stop = firstOf(r, 'hook:SubagentStop'); const note = firstOf(r, 'system:task_notification')
+  const elsewhere = r.log.filter((e) => has(e, 'teal-kite-3') && !['hook-returned', 'assistant:root', 'result'].includes(e.kind)).map((e) => `${e.kind}@${e.t}`)
+  verdict('14 PostToolUse additionalContext on a background Agent call', r.error || !post ? 'INCONCLUSIVE' : said.length ? 'PASS (root saw it)' : 'FAIL', `root Agent PostToolUse at ${post?.t}ms, tool_response=${short(post?.tool_response, 200)}; worker SubagentStop at ${stop?.t}ms, task_notification at ${note?.t}ms; root assistant text with the marker at ${JSON.stringify(said)}ms; marker also seen in ${JSON.stringify(elsewhere)}; ${classifierSummary(r)}; cost=${r.cost}; error=${r.error ?? 'none'}`)
+}
+// ---------- checks 15-16: the Read hook payload the context pack is built from ----------
+const loadCompleteReadText = async () => {
+  try {
+    const { createJiti } = await import('jiti')
+    const root = new URL('..', import.meta.url).pathname
+    const jiti = createJiti(root, { alias: { '@shared': join(root, 'src/shared') } })
+    return { fn: (await jiti.import(join(root, 'src/main/runtime/contextPack.ts'))).completeReadText, how: 'imported (jiti)' }
+  } catch (e) {
+    // Fallback: the rule restated (keep equal to contextPack.ts).
+    const fn = (r) => { if (!r || typeof r !== 'object' || r.type !== 'text' || !r.file || typeof r.file !== 'object') return undefined; const f = r.file; if (typeof f.content !== 'string' || typeof f.numLines !== 'number' || typeof f.totalLines !== 'number') return undefined; if (f.startLine !== 1 || f.numLines !== f.totalLines || (f.truncatedByTokenCap !== undefined && f.truncatedByTokenCap !== false)) return undefined; return f.content }
+    return { fn, how: `restated inline (import failed: ${e.message})` }
+  }
+}
+// Field names and types of a tool_response; for a string `content` its length, first 80 characters and whether its
+// lines carry `cat -n` style number prefixes.
+const shape = (v, depth = 0) => {
+  if (v === null || typeof v !== 'object') return typeof v
+  if (Array.isArray(v)) return `array(${v.length})${v.length ? `[${shape(v[0], depth + 1)}]` : ''}`
+  return `{ ${Object.entries(v).map(([k, x]) => `${k}: ${k === 'content' && typeof x === 'string' ? `string(len ${x.length}, numbered ${/^\s*\d+(\t|→)/m.test(x)}, first80 ${JSON.stringify(x.slice(0, 80))})` : typeof x === 'number' || typeof x === 'boolean' ? `${typeof x} ${x}` : typeof x === 'string' ? `string ${JSON.stringify(x.slice(0, 120))}` : shape(x, depth + 1)}`).join(', ')} }`
+}
+const readHooks = (r) => r.raw.filter((h) => h.input.tool_name === 'Read' || h.name === 'PermissionDenied')
+const showReads = (r, crt, files = {}) => readHooks(r).map((h) => {
+  const i = h.input
+  const resp = i.tool_response
+  const verdictText = h.name === 'PostToolUse' ? (() => { const t = crt(resp); return t === undefined ? 'rejected' : `accepted (len ${t.length}, equals the file on disk: ${files[i.tool_input?.file_path] === undefined ? 'n/a' : t === files[i.tool_input.file_path]})` })() : '-'
+  return `${h.name}@${h.t} agent_id=${i.agent_id ?? 'none'} agent_type=${i.agent_type ?? 'none'} input=${JSON.stringify(i.tool_input)}${'tool_response' in i ? ` tool_response=${shape(resp)}` : ''}${'error' in i ? ` error=${short(i.error, 300)}` : ''}${'reason' in i ? ` reason=${short(i.reason, 300)}` : ''} completeReadText=${verdictText}`
+})
+if (want.has('15')) {
+  const { fn: crt, how } = await loadCompleteReadText()
+  const proj = join(dir, 'p15'); mkdirSync(proj)
+  const small = 'alpha\nbeta\ngamma\ndelta\nepsilon\n'
+  const other = 'one\ntwo\nthree\n'
+  const big = Array.from({ length: 3000 }, (_, k) => `line ${k + 1}`).join('\n') + '\n'
+  const files = { [join(proj, 'small.txt')]: small, [join(proj, 'other.txt')]: other, [join(proj, 'big.txt')]: big }
+  for (const [f, t] of Object.entries(files)) writeFileSync(f, t)
+  const agents = {
+    lead: { description: 'Lead', prompt: 'You are the lead. Follow the user\'s steps exactly, in order, one tool call per step.', tools: ['Read', 'Agent'], model: 'haiku' },
+    worker: { description: 'Reads one file', prompt: 'Read the file you are given with the Read tool (no offset, no limit), then reply with its first word.', tools: ['Read'], model: 'haiku' }
+  }
+  const p = `Do these steps in order, one tool call each. (1) Read ${join(proj, 'small.txt')} with the Read tool, no offset and no limit. (2) Read ${join(proj, 'small.txt')} again with offset 2 and limit 2. (3) Read ${join(proj, 'big.txt')} with no offset and no limit. (4) Spawn the agent "worker" with the Agent tool: subagent_type "worker", run_in_background false, prompt "Read ${join(proj, 'other.txt')}". Then reply "done".`
+  const r = await runAuto('15 Read PostToolUse payload', p, agents, {}, { cwd: proj, permissionMode: 'default', closeOnResult: true })
+  const lines = showReads(r, crt, files)
+  for (const l of lines) console.log('  READ', l)
+  const posts = readHooks(r).filter((h) => h.name === 'PostToolUse')
+  verdict('15 Read PostToolUse payload', r.error || posts.length < 3 ? 'INCONCLUSIVE' : 'OBSERVED', `completeReadText ${how}; Read hooks: ${lines.join(' || ')}; cost=${r.cost}; error=${r.error ?? 'none'}`)
+}
+if (want.has('16')) {
+  const { fn: crt, how } = await loadCompleteReadText()
+  const proj = join(dir, 'p16'); mkdirSync(join(proj, '.claude'), { recursive: true })
+  writeFileSync(join(proj, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(./secret.env)'] } }))
+  const files = { [join(proj, 'secret.env')]: 'TOKEN=not-a-real-secret\n', [join(proj, 'notes.md')]: '# Notes\nhello\n' }
+  for (const [f, t] of Object.entries(files)) writeFileSync(f, t)
+  const agents = { lead: { description: 'Lead', prompt: 'You are the lead. Follow the user\'s steps exactly, in order, one tool call per step, even when a step fails.', tools: ['Read'], model: 'haiku' } }
+  const p = `Do these steps in order, one Read tool call each, and continue even if a step fails. (1) Read ${join(proj, 'secret.env')}. (2) Read ${join(proj, 'notes.md')}. (3) Read ${join(proj, 'missing.txt')}. Then reply "done".`
+  const r = await runAuto('16 denied and failed Read', p, agents, {}, { cwd: proj, permissionMode: 'default', settingSources: ['project'], closeOnResult: true })
+  const lines = showReads(r, crt, files)
+  for (const l of lines) console.log('  READ', l)
+  const results16 = allOf(r, 'user:root').map((e) => short(e.content, 220))
+  verdict('16 denied and failed Read', r.error || !lines.length ? 'INCONCLUSIVE' : 'OBSERVED', `completeReadText ${how}; Read hooks: ${lines.join(' || ')}; root tool_results: ${results16.join(' || ')}; canUseTool calls=${r.canUse}; cost=${r.cost}; error=${r.error ?? 'none'}`)
 }
 console.log(`\n=== SUMMARY (${sessions} model sessions)`)
 for (const r of results) console.log(`${r.v.padEnd(12)} ${r.id}`)
