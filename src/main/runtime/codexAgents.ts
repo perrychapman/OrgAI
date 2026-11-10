@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { z } from 'zod'
-import type { AgentInstance, AgentMessage, Role } from '@shared/types'
-import { BRIDGE_BRIEF_MAX_CHARS } from '@shared/types'
+import type { AgentInstance, AgentMessage, Effort, ModelTier, Role } from '@shared/types'
+import { BRIDGE_BRIEF_MAX_CHARS, EFFORTS, MODEL_TIERS } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { codexToolName, dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
 import type { HarnessTool } from './harnessTools'
@@ -34,7 +34,9 @@ export const spawnArgs = z.object({
   role: z.string().min(1).describe("The report's role slug"),
   brief: z.string().min(1).describe('Self-contained: goal, context, constraints, what to report back'),
   name: z.string().optional().describe('Handle; default role-1, role-2, ...'),
-  description: z.string().optional().describe('Three to six words for the org chart')
+  description: z.string().optional().describe('Three to six words for the org chart'),
+  tier: z.enum(MODEL_TIERS as [ModelTier, ...ModelTier[]]).optional().describe('Model tier; wins over the plan step'),
+  effort: z.enum(EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort; wins over the plan step')
 })
 export const messageArgs = z.object({
   to: z.string().min(1).describe('A running agent\'s handle (e.g. implementer-2) or "main"'),
@@ -264,13 +266,15 @@ export interface SpawnRequest extends SpawnPlan {
   description?: string
   /** The dynamic tool call id that spawned it (AgentInstance.spawnToolUseId). */
   callId: string
+  /** The tier and / or effort stated on the spawn_report call (run staffing); the host resolves them, bridged hosts ignore them. */
+  onCall?: { tier?: ModelTier; effort?: Effort }
 }
 
 /** What the session provides to the network's tool handlers. */
 export interface NetworkHost {
   agents(): Iterable<AgentInstance>
   /** Create the thread (and worktree), register the agent and start its first turn. Throws an Error with a model-readable message. */
-  spawn(req: SpawnRequest): Promise<void>
+  spawn(req: SpawnRequest): Promise<{ staffing?: string } | void>
   /** Hand `text` to the agent: steer its running turn, or start one. */
   deliver(toAgentId: string, text: string): Promise<void>
   /** Draw the message on the canvas and keep a copy in the sender's transcript. */
@@ -365,18 +369,23 @@ export async function callNetworkTool(
         }
         // The host already moved the reservation to the harness's agent id (CodexAgentNetwork.adopt) when the child started.
         return {
-          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.`,
+          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.${parsed.data.tier || parsed.data.effort ? ' It keeps its chart tier and effort; the tier and effort you gave were ignored.' : ''}`,
           success: true
         }
       }
+      const onCall: { tier?: ModelTier; effort?: Effort } = {}
+      if (parsed.data.tier) onCall.tier = parsed.data.tier
+      if (parsed.data.effort) onCall.effort = parsed.data.effort
+      let staffing: string | undefined
       try {
-        await host.spawn({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId })
+        const started = await host.spawn({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId, ...(onCall.tier || onCall.effort ? { onCall } : {}) })
+        staffing = started?.staffing
       } catch (e) {
         net.abort(check.id)
         return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
       }
       return {
-        text: `Spawned ${check.handle} (${check.role.slug}). It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.`,
+        text: `Spawned ${check.handle} (${check.role.slug})${staffing ? ` on ${staffing}` : ''}. It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.`,
         success: true
       }
     }

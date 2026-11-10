@@ -21,9 +21,15 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  *   writing report     unchanged (no plan tools)
  * Bounds rose to the next 50 above the new figure (about 0.3% to 1.5% headroom). The fields earn their place because
  * the ready lines and the ready nudge need them to let the root start independent steps together.
+ *
+ * spawn_report tier and effort (Codex only; the Claude Agent tool is the SDK's own; orchestration-efficiency 4.3): +247 chars,
+ * two enums with a few words each, so the orchestrator can state a pick on the call itself, which wins over its plan step.
+ *   team root          Codex 19,641 -> 19,888 (Claude unchanged)
+ *   writing report, single assistant: unchanged (no spawn_report)
+ * The Codex team-root bound rose to 19,950 (about 0.3% headroom).
  */
 const BUDGET: Record<string, { claude: number; codex: number }> = {
-  orchestrator: { claude: 17_800, codex: 19_700 },
+  orchestrator: { claude: 17_800, codex: 19_950 },
   implementer: { claude: 6_200, codex: 6_725 },
   single: { claude: 10_300, codex: 10_850 }
 }
