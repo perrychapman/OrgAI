@@ -125,6 +125,21 @@ try {
   check(j.r.code === 0 && j.v?.recommendations?.projectId === project.id && Array.isArray(j.v.recommendations.recommendations), 'org recommend under mock', show(j.r))
   r = await at(['org', 'review'])
   check(r.code === 0, 'org review shows the last review', show(r))
+  // ---------- org draft --from --apply (CLI parity 3.3: a printed draft is kept) ----------
+  {
+    const cur = await jsonOf(['org', 'show'])
+    const base = cur.v?.roles?.[0]
+    const mk = (id, extra = {}) => ({ ...base, id, slug: id, name: id.toUpperCase(), reportsTo: null, ...extra })
+    const draftFile = path.join(path.dirname(repo), `cliorg-draft-${process.pid}.json`)
+    fs.writeFileSync(draftFile, JSON.stringify({ draft: { roles: [mk('draftlead', { canSpawn: true }), mk('draftdev', { reportsTo: 'draftlead' })], rationale: 'e2e' } }))
+    r = await at(['org', 'draft', '--from', draftFile, '--apply'])
+    check(r.code === 2 && r.err.includes('--yes'), 'org draft --from --apply without --yes and without a terminal is exit 2', show(r))
+    j = await jsonOf(['org', 'draft', '--from', draftFile, '--apply', '--yes'])
+    check(j.r.code === 0 && j.v?.applied === true && Array.isArray(j.v.previousRoles) && j.v.previousRoles.length > 0, 'org draft --from --apply --yes saves and returns previousRoles', show(j.r))
+    j = await jsonOf(['org', 'show'])
+    check(j.v?.roles?.map((x) => x.slug).sort().join(',') === 'draftdev,draftlead', 'the drafted chart replaced the chart', show(j.r))
+    fs.rmSync(draftFile, { force: true })
+  }
 } catch (e) {
   check(false, 'cli-org ran to the end', e?.stack ?? String(e))
 } finally {
