@@ -270,3 +270,7 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   `[mock:delegation-ok|fix|skip|claim]`. Known limits in the spec's section 10 (bridged sessions, continued runs, held-branch
   persistence across sessions). Unit-tested; live: Claude SDK facts (sdk-facts.md) and the Codex native-agent probe
   (connections-mcp.md).
+
+## Desktop per-run goal
+
+`HostDispatcher.checkRunOverrides` (`src/main/host/dispatcher.ts`) used to drop every override on the desktop surface. It now keeps only a valid `overrides.goal` for `runs:start` (a bad value is refused as bad_request by `startRunArgs`) and passes it with `allowWidening: false`; permission mode, budget, strict delegation and the rest are still dropped. `runs:continue` and `runs:startQuick` still drop all overrides from the desktop (a continuation keeps the run's goal through `continuedOverrides`). Checked by unit tests only (`dispatcherExec.test.ts`).

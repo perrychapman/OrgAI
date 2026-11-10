@@ -422,8 +422,8 @@ export function decisionOpts(ctx: InvokeContext, input: { expectedRevision?: num
 }
 
 /**
- * Headless run overrides at the RPC boundary (cli-spec 2 item 2, 6.2(1)). The desktop surface never sets them (the
- * renderer has no such field), so they are dropped there. From a socket / inproc client every widening field needs the
+ * Headless run overrides at the RPC boundary (cli-spec 2 item 2, 6.2(1)). The desktop surface may set only `goal`; the
+ * rest are dropped there. From a socket / inproc client every widening field needs the
  * 'configure' scope ('operate', the channel's own scope, may only narrow): without it the call is refused as
  * scope_denied naming the fields. `allowWidening` tells RunManager whether a widening value may apply.
  */
@@ -432,7 +432,9 @@ export function checkRunOverrides(
   project: Project,
   overrides: RunOverrides | undefined
 ): { overrides?: RunOverrides; allowWidening: boolean } {
-  if (ctx.surface === 'desktop' || !overrides) return { allowWidening: false }
+  if (!overrides) return { allowWidening: false }
+  // The desktop sets only the run goal (it never widens: picks stay inside the roles' ceilings); every other override is dropped.
+  if (ctx.surface === 'desktop') return overrides.goal ? { overrides: { goal: overrides.goal }, allowWidening: false } : { allowWidening: false }
   const configure = !!ctx.grantedScopes?.includes('configure')
   if (!configure) {
     const widening = overridesWidening(project, overrides)

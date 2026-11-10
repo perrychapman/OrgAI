@@ -10,7 +10,7 @@ import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
 import type { KnowledgeFocusRequest } from '../lib/knowledge'
 import { forgetPreviewCache, mergeOutput } from '../lib/outputs'
-import type { OutputsChangedEvent, RunOutput } from '@shared/types'
+import type { OutputsChangedEvent, RunOutput, StaffingGoal } from '@shared/types'
 import { addRecalled, cleanRecalledEvent, type RecalledEvent } from '../lib/runKnowledge'
 import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
@@ -519,7 +519,7 @@ interface AppState {
   applyTemplate(projectId: string, template: Pick<OrgTemplateInfo, 'id' | 'name'>): Promise<void>
 
   /** `team: 'single'` starts an Ask run (one assistant, conversation layout). */
-  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam }): Promise<void>
+  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam; goal?: StaffingGoal }): Promise<void>
   /** Start an Architect session for the selected project. */
   startSetup(instruction?: string): Promise<void>
   /** Start the MCP assistant run (kind 'mcp-assist') for the selected project and show it. */
@@ -1775,7 +1775,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       prompt,
       scaffold: opts?.scaffold,
       images: opts?.images,
-      ...(opts?.team === 'single' ? { team: 'single' as const } : {})
+      ...(opts?.team === 'single' ? { team: 'single' as const } : {}),
+      ...(opts?.goal ? { overrides: { goal: opts.goal } } : {})
     })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
