@@ -43,6 +43,14 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     worktree. Adapters pass `bridgedRoles`, `bridgeVia` and `bridged` to buildRolePrompt and never give a bridged role
     a native AgentDefinition or spawn.
   - Mock marker: `[mock:bridged]`.
+  - `delegate_agent` `background: true` (orchestration-efficiency 4.2, 2026-11-10): the tool answers with the handle once
+    the child exists and hands the result (`bridgedResultText`) to `HarnessToolHooks.backgroundDelegation.ended`; the
+    adapter (Claude, mock) counts it as a live report (`liveReports`, `lastReportEndedAt`, `settlement().quiescent`)
+    and delivers it as a harness message (Claude `notifyOrchestrator`). It runs in the foreground, with "Ran in the
+    foreground (<reason>)." first, for a non-root or unconfirmed caller, a required delegation (`receiptBearingSpawn`)
+    or no hook. A child the harness stopped (`BridgeSpawnResult.stopped`: interrupt or run end) or a result while held
+    waits for the user's next message (heldNotices); nothing is delivered once the session is ending. Mock marker
+    `[mock:bridged-bg]`.
   - Verified by unit tests, fakes and the mock only; nothing live.
 - Proxy connections (2026-11-06; ARCHITECTURE.md "Proxy connections"): the single LiteLLM connection became `AppSettings.proxies` (`ProxyConnection`, kind 'litellm' | 'openai-compatible', at most 20); older text in this file that says `connections.litellm` / `'litellm'` means "a proxy" now (the migrated original keeps id 'litellm' and its key). Use `connectionIds(settings)`, `connectionRecord` / `proxyOf`, `connectionName`, `isBuiltinConnectionId` (never `=== 'litellm'`); `CONNECTION_IDS` is built-ins only. IPC `connections:createProxy` / `removeProxy`, CLI `orgai connections proxy ...`, event `connections.changed`, mock host `mock-proxy.example.com` (key `mock-bad-key` is refused). Never put a real proxy host or key in code, tests or docs. Unit-tested only; the renderer still shows each proxy with the old LiteLLM card (compile fixes only) until the UI pass.
 - Default connection: `projects:create` passes `ConnectionService.prepareNewProject` to `ProjectStore.create`. A new

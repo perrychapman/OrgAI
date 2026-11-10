@@ -15,7 +15,7 @@ import { PROPOSAL_TOOLS } from '@shared/setup'
 import { revisedRoleModel, toRoles, type DraftModelContext } from '../ai/draft'
 import { mergeOrgChart, type OrgMergeResult } from '../setup/orgMerge'
 import { sameDefinition, specFromRegistry, validateLibraryEntry, validateSpec, type RegistryChoice } from '../mcp/validate'
-import { ROOT_AGENT_ID, isSetupLikeRun, type RunMessageOutcome, type RunSkill, type RuntimeContext } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnInput, type BridgeSpawnResult, type RunMessageOutcome, type RunSkill, type RuntimeContext } from './types'
 import { pendingWorktrees } from './worktrees'
 import { PLAN_TOOLS, agentSlots, finishedCount, pathOverlaps, readyLine, readyReports, remainingSteps } from './continuation'
 import { EFFORTS, MODEL_TIERS, type PlanStepStaff } from '@shared/types'
@@ -64,6 +64,40 @@ export interface HarnessToolHooks {
    * mock: at once). Missing hook or a rejection = the change applies from the next run, and the tool says so.
    */
   configChanged?(change: ConfigChange): Promise<ConfigChangeResult>
+  /**
+   * delegate_agent with `background: true` (Claude, mock; Codex starts bridged reports through spawn_report). Missing =
+   * such a call runs in the foreground and its result says so.
+   */
+  backgroundDelegation?: BackgroundDelegationHooks
+}
+
+/** A bridged report delegate_agent started in the background. */
+export interface BackgroundReport {
+  agentId: string
+  handle: string
+  roleName: string
+  /** The agent it reports to (ROOT_AGENT_ID for the orchestrator). */
+  parentAgentId: string
+}
+
+/**
+ * What the adapter supplies so delegate_agent can run a bridged report in the background while the tool stays
+ * adapter-free: when it may, the live-report bookkeeping and the delivery of the result.
+ */
+export interface BackgroundDelegationHooks {
+  /**
+   * Why this call must run in the foreground (a few words: a required delegation, a caller the adapter cannot deliver a
+   * harness message to), or undefined when it may run in the background.
+   */
+  blocker(caller: HarnessToolCaller, roleId: string): string | undefined
+  /** The child exists: it counts as a live report from now until `ended` (continuation, ctx.liveReports, settlement). */
+  started(report: BackgroundReport): void
+  /**
+   * The child ended (finished, failed or stopped); called once, after `started`. `text` is bridgedResultText, what the
+   * blocking form returns. The adapter delivers it as a harness message, keeps it for the user's next message while the
+   * run is held or when the harness stopped the child (`result.stopped`), and drops it once the session is ending.
+   */
+  ended(report: BackgroundReport, result: BridgeSpawnResult, text: string): void
 }
 
 /** What changed in the run's project (ConfigChange for HarnessToolHooks.configChanged). */
@@ -2694,14 +2728,15 @@ export const delegateAgentTool = defineTool({
   name: BRIDGE_HARNESS_TOOLS.delegate,
   audience: 'spawners',
   description:
-    'Delegate work to a report that runs on another connection (marked "runs on ..." in your list of specialists). It runs in its own session and this call returns its final report when it is done. Use it only for those roles; spawn every other role the usual way.',
+    'Delegate work to a report that runs on another connection (marked "runs on ..." in your list of specialists). It runs in its own session and this call returns its final report when it is done, or at once with background: true (the report then arrives as a harness message). Use it only for those roles; spawn every other role the usual way.',
   inputSchema: z.object({
     role: z.string().describe("The report's role slug, exactly as listed"),
     brief: z.string().describe('A complete, self-contained brief: the report sees nothing else of this conversation'),
     name: z.string().optional().describe('Optional handle for the report (default <slug>-<n>)'),
-    description: z.string().optional().describe('Optional one line describing the task')
+    description: z.string().optional().describe('Optional one line describing the task'),
+    background: z.boolean().optional().describe('Return at once and keep working; the report arrives later')
   }),
-  async handler(ctx, args, _hooks, caller) {
+  async handler(ctx, args, hooks, caller) {
     if (!ctx.bridge) return 'REFUSED: no report in this run runs on another connection.'
     const want = typeof args.role === 'string' ? args.role.trim() : ''
     const roles = ctx.bridge.roles()
@@ -2719,21 +2754,76 @@ export const delegateAgentTool = defineTool({
       if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name)) return 'REFUSED: name may hold only letters, digits, ".", "_" and "-" (at most 64).'
     }
     const description = typeof args.description === 'string' ? args.description.replace(/\s+/g, ' ').trim().slice(0, 200) : ''
+    const input: BridgeSpawnInput = {
+      role: hit.roleId,
+      brief,
+      ...(name ? { name } : {}),
+      ...(description ? { description } : {}),
+      ...(caller.agentId ? { parentAgentId: caller.agentId } : {}),
+      ...(caller.roleId ? { parentRoleId: caller.roleId } : {})
+    }
+    // background: true runs it beside the caller's other work unless the adapter says it must block (required reports,
+    // a caller it cannot deliver to) or has no way to deliver the result later; the result then says why it blocked.
+    let foreground: string | undefined
+    if (args.background === true) {
+      const bg = hooks.backgroundDelegation
+      foreground = bg ? bg.blocker(caller, hit.roleId) : 'this session cannot deliver it later'
+      if (bg && !foreground) return delegateInBackground(ctx.bridge, bg, input, hit.name, caller.agentId ?? ROOT_AGENT_ID)
+    }
     try {
-      const r = await ctx.bridge.spawn({
-        role: hit.roleId,
-        brief,
-        ...(name ? { name } : {}),
-        ...(description ? { description } : {}),
-        ...(caller.agentId ? { parentAgentId: caller.agentId } : {}),
-        ...(caller.roleId ? { parentRoleId: caller.roleId } : {})
-      })
-      return bridgedResultText(r, hit.name)
+      const r = await ctx.bridge.spawn(input)
+      const text = bridgedResultText(r, hit.name)
+      return foreground ? `Ran in the foreground (${foreground}).\n${text}` : text
     } catch (e) {
       return refused(e)
     }
   }
 })
+
+/**
+ * delegate_agent with background: true: start the child and answer as soon as it exists (onStarted) with its handle;
+ * its result goes to `bg.ended` (fenced by bridgedResultText) for the adapter to deliver. A refusal before the child
+ * exists is returned like the blocking form's. A rejection after it started is delivered as a failure.
+ */
+function delegateInBackground(bridge: NonNullable<RuntimeContext['bridge']>, bg: BackgroundDelegationHooks, input: BridgeSpawnInput, roleName: string, parentAgentId: string): Promise<string> {
+  return new Promise<string>((resolve) => {
+    let report: BackgroundReport | undefined
+    let ended = false
+    const adopt = (info: { agentId: string; handle: string }): BackgroundReport => {
+      if (report) return report
+      const r: BackgroundReport = { agentId: info.agentId, handle: info.handle, roleName, parentAgentId }
+      report = r
+      bg.started(r)
+      resolve(
+        `Started ${datum(r.handle, 80)} (${datum(roleName, 80)}) in the background. Its final report will arrive as a harness message; carry on with other work or end your turn, and do not poll for it.`
+      )
+      return r
+    }
+    const end = (r: BackgroundReport, result: BridgeSpawnResult): void => {
+      if (ended) return
+      ended = true
+      try {
+        bg.ended(r, result, bridgedResultText(result, roleName))
+      } catch {
+        // The adapter's delivery must never become an unhandled rejection.
+      }
+    }
+    let pending: Promise<BridgeSpawnResult>
+    try {
+      pending = bridge.spawn({ ...input, onStarted: (info) => void adopt(info) })
+    } catch (e) {
+      resolve(refused(e))
+      return
+    }
+    pending.then(
+      (result) => end(adopt(result), result),
+      (e: unknown) => {
+        if (!report) resolve(refused(e))
+        else end(report, { agentId: report.agentId, handle: report.handle, ok: false, text: (e as Error)?.message ?? String(e) })
+      }
+    )
+  })
+}
 
 /**
  * Single-agent work runs (ctx.run.team 'single'): plan tools, ask_user, permission requests, the skill library reads

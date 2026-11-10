@@ -735,6 +735,8 @@ export interface BridgeSpawnResult {
   handle: string
   text: string
   ok: boolean
+  /** Set when the harness stopped the child (an interrupt or the run's end, BridgedSessions.stopAll), not the child itself. */
+  stopped?: boolean
 }
 
 /** RuntimeContext.skillCatalog: what list_skill_library reports. */

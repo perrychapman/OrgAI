@@ -554,6 +554,17 @@ describe('bridged reports', () => {
     expect(bridgedReportMark('Acme proxy')).toContain('Acme proxy')
   })
 
+  it('tells only the root (delegate_agent adapters) it can pass background: true, once', () => {
+    const clause = 'Pass background: true to delegate_agent to keep working while that report runs; its report arrives as a harness message.'
+    const root = buildRolePrompt(lead, roles, project(), { ...flags, bridgedRoles })
+    expect(root.split(clause).length - 1).toBe(1)
+    expect(buildRolePrompt(lead, roles, project(), { ...flags, bridgedRoles, bridgeVia: 'spawn' })).not.toContain('background: true')
+    expect(buildRolePrompt(lead, roles, project(), flags)).not.toContain('background: true')
+    // A mid-level lead's call would run in the foreground, so its prompt does not offer it.
+    const midLead = { ...lead, reportsTo: 'r-boss' }
+    expect(buildRolePrompt(midLead, roles, project(), { ...flags, bridgedRoles })).not.toContain('background: true')
+  })
+
   it('gives the root of a bridged child session a report prompt without unattended or org-change text', () => {
     const child = { ...lead, canSpawn: false, spawnable: [] as string[] }
     const text = buildRolePrompt(child, [child], project(), { ...flags, bridged: true })

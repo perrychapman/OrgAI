@@ -610,7 +610,7 @@ export class BridgedSessions {
         () => {}
       )
     }
-    child.resolve({ agentId: child.agentId, handle: child.handle, text: cutResult(redactText(text, secrets)), ok })
+    child.resolve({ agentId: child.agentId, handle: child.handle, text: cutResult(redactText(text, secrets)), ok, ...(outcome === 'stopped' ? { stopped: true } : {}) })
   }
 
   /** Stop every child. Their spawns resolve `ok: false` "Stopped: <reason>". Waits for the sessions to end (bounded). */
