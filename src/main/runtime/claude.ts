@@ -2,9 +2,9 @@ import { randomBytes } from 'node:crypto'
 import { startClaudeToolGateway, type ClaudeToolGateway } from './claudeToolGateway'
 import { obligationsFor } from './delegation'
 import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
-import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
+import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { validModelId } from '../connections/codexAccount'
 import {
   createSdkMcpServer,
@@ -331,6 +331,16 @@ export const BACKGROUND_HANDBACK_WAIT_MS = 30_000
  * before it, but stream messages and hook calls reach the session unordered. The hook waits this long for the link.
  */
 export const SPAWN_LINK_WAIT_MS = 2000
+/** PreToolUse denial for any tool call of a background report the harness stopped (interrupt, session end). */
+export const STOPPED_REPORT_DENIAL = 'OrgAI stopped this report (the run was interrupted or its session ended). Stop now; do not call more tools.'
+/** Context pack on Claude: the real paths each agent read with Read that are kept (newest; the oldest is dropped). */
+export const READ_PATHS_PER_AGENT = 500
+/** Agents whose reads are kept (the agent seen least recently is dropped). */
+const READ_PATH_AGENTS_MAX = 200
+/** task_started links (agent id -> Agent tool_use id) kept for SubagentStart; the oldest is dropped. */
+export const TOOL_USE_BY_TASK_MAX = 1000
+/** tool_use ids, per agent, a task_notification may end that agent's activation under (its spawn, its resumes). */
+const REPORT_END_IDS_PER_AGENT = 20
 /** How long addMcpServer polls mcpServerStatus for the new server's tool names. */
 const MCP_STATUS_WAIT_MS = 5000
 /** If the old query has not ended this long after its input closed for a restart, it is closed. */
@@ -1476,8 +1486,23 @@ export class ClaudeSession implements RuntimeSession {
    * their task_notification (matched by that tool_use_id) or until the harness stops them (interrupt, session end).
    */
   private backgroundReports = new Map<string, string>()
-  /** Background reports the harness settled itself (interrupt, session end): a later stop or notification changes nothing. */
+  /**
+   * Background reports the harness settled itself (interrupt, session end): every tool call they make is denied, and a
+   * later stop, hand-back or notification changes nothing, until a SendMessage resume (task_started) makes one live.
+   */
   private stoppedBackground = new Set<string>()
+  /**
+   * Background reports the harness stopped before their first task_started was handled: agent id -> the activity they
+   * were settled with. Their late task_started records them settled, never as a live report.
+   */
+  private stoppedBeforeStart = new Map<string, string>()
+  /** Context pack on Claude: agent id -> the real paths it read with the Read tool (READ_PATHS_PER_AGENT newest). */
+  private readsByAgent = new Map<string, Set<string>>()
+  /**
+   * agent id -> the tool_use ids a task_notification may end it under besides its row's spawnToolUseId: its Agent call
+   * and each resume's (the resume's task_started and the SendMessage calls addressed to it).
+   */
+  private reportEndIds = new Map<string, Set<string>>()
   /** A background report ended while the orchestrator was idle; cleared by the turn the CLI resumes it with. */
   private backgroundHandBackSince?: number
   /** The one-report-and-waiting note was given (waitingNote.ts, at most once per run). */
@@ -1748,7 +1773,17 @@ export class ClaudeSession implements RuntimeSession {
   private settleBackground(agentId: string, activity: string): void {
     this.backgroundReports.delete(agentId)
     const a = this.agents.get(agentId)
-    if (!a || a.state === 'done' || a.state === 'error') return
+    // Its first task_started has not been handled yet (the launch result named it, or SubagentStart drew it): that late
+    // task_started must record it settled, not start a live report (the ledger and staffing book do not know it yet).
+    if (!this.gateKnown.has(agentId)) {
+      if (this.stoppedBeforeStart.size >= 100) this.stoppedBeforeStart.delete(this.stoppedBeforeStart.keys().next().value!)
+      this.stoppedBeforeStart.set(agentId, activity)
+    }
+    if (!a) {
+      this.stoppedBackground.add(agentId)
+      return
+    }
+    if (a.state === 'done' || a.state === 'error') return
     this.stoppedBackground.add(agentId)
     this.ctx.delegation?.ended(agentId)
     this.staffingBook.ended(agentId, { failed: false })
@@ -1784,6 +1819,18 @@ export class ClaudeSession implements RuntimeSession {
     this.log('info', `${activity}: ${ids.length} background report${ids.length === 1 ? '' : 's'} stopped before reporting.`)
   }
 
+  /** Remember `toolUseId` as one a task_notification may end `agentId` under (bounded per agent and in all). */
+  private noteReportEndId(agentId: string, toolUseId: string): void {
+    let ids = this.reportEndIds.get(agentId)
+    if (!ids) {
+      if (this.reportEndIds.size >= TOOL_USE_BY_TASK_MAX) this.reportEndIds.delete(this.reportEndIds.keys().next().value!)
+      ids = new Set()
+      this.reportEndIds.set(agentId, ids)
+    }
+    if (ids.size >= REPORT_END_IDS_PER_AGENT) ids.delete(ids.values().next().value!)
+    ids.add(toolUseId)
+  }
+
   /** The spawn's Agent tool_use id for `agentId` once its task_started is handled, or undefined after `ms`. */
   private waitTaskStarted(agentId: string, ms: number): Promise<string | undefined> {
     const known = this.toolUseByTask.get(agentId)
@@ -1807,6 +1854,9 @@ export class ClaudeSession implements RuntimeSession {
 
   /** task_started linked `agentId` to its Agent call: remember it and wake the SubagentStart hooks waiting for it. */
   private linkTask(agentId: string, toolUseId: string): void {
+    // Bounded: the newest links are kept (a SubagentStart follows its task_started within moments).
+    this.toolUseByTask.delete(agentId)
+    if (this.toolUseByTask.size >= TOOL_USE_BY_TASK_MAX) this.toolUseByTask.delete(this.toolUseByTask.keys().next().value!)
     this.toolUseByTask.set(agentId, toolUseId)
     const waiters = this.taskStartWaiters.get(agentId)
     this.taskStartWaiters.delete(agentId)
@@ -1814,19 +1864,52 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /**
-   * Context pack (split-execution 3.2) for a spawn whose brief ends with a `Files:` line: the same checks and limits as
-   * Codex (contextPack.ts), plus the CLI's inline limit for hook context, read now (spawn time) from the lead's working
-   * folder; the report's start is its parent's checkout (its own worktree is cut from it). Kept until SubagentStart.
+   * A successful Read by `agentId` (its PostToolUse: the CLI ran it, so no deny or ask rule of its own stopped it):
+   * remember the real path of the file it named, for the context pack (only files the lead itself read are inlined).
+   * Relative paths resolve against `cwd`. At most READ_PATHS_PER_AGENT per agent, the oldest dropped.
    */
-  private preparePack(toolUseId: string, agentType: string, files: string[], callerCwd: string, reportCwd: string): void {
+  private noteRead(agentId: string, toolInput: unknown, response: unknown, cwd: string): void {
+    if (response === null || typeof response !== 'object' || (response as { is_error?: unknown }).is_error === true) return
+    const fp = toolInput && typeof toolInput === 'object' ? (toolInput as { file_path?: unknown }).file_path : undefined
+    if (typeof fp !== 'string' || !fp || fp.includes('\0')) return
+    let real: string
+    try {
+      real = realpathSync.native(isAbsolute(fp) ? fp : resolve(cwd, fp))
+    } catch {
+      return
+    }
+    let set = this.readsByAgent.get(agentId)
+    if (set) this.readsByAgent.delete(agentId)
+    else {
+      set = new Set()
+      if (this.readsByAgent.size >= READ_PATH_AGENTS_MAX) this.readsByAgent.delete(this.readsByAgent.keys().next().value!)
+    }
+    this.readsByAgent.set(agentId, set)
+    set.delete(real)
+    if (set.size >= READ_PATHS_PER_AGENT) set.delete(set.values().next().value!)
+    set.add(real)
+  }
+
+  /**
+   * Context pack (split-execution 3.2) for a spawn whose brief ends with a `Files:` line: the same checks and limits as
+   * Codex (contextPack.ts), plus the CLI's inline limit for hook context and, on Claude, only files the spawning agent
+   * itself read with Read this session (the CLI's own Read deny and ask rules, project settings and managed policy, are
+   * unknown to the harness; a file they stopped was never read). Read now (spawn time). Relative paths resolve from the
+   * hook's cwd (`relativeFrom`), never a root: the roots are the folders the harness knows (the project, the caller's
+   * working folder as the harness tracks it, where the report starts and its worktree is cut from, allowed and
+   * reference folders). A role without the Read tool gets no pack. Kept until SubagentStart.
+   */
+  private preparePack(toolUseId: string, target: Role, files: string[], relativeFrom: string, callerId: string): void {
     const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    const agentType = target.slug
     const pack = buildContextPack(files, {
-      callerCwd,
-      readRoots: contextPackRoots(this.ctx, [callerCwd, reportCwd]),
+      callerCwd: relativeFrom,
+      readRoots: contextPackRoots(this.ctx, [this.agentCwd(callerId)]),
       protectedPaths: paths,
       pathsUnavailable: unavailable,
-      refuseAll: contextPackRefusal(this.ctx.run, this.isSetup),
-      blockMaxChars: CLAUDE_HOOK_CONTEXT_INLINE_MAX
+      refuseAll: contextPackRefusal(this.ctx.run, this.isSetup) ?? (target.tools.includes('Read') ? undefined : `${target.name} has no Read tool`),
+      blockMaxChars: CLAUDE_HOOK_CONTEXT_INLINE_MAX,
+      readPaths: this.readsByAgent.get(callerId) ?? new Set()
     })
     let settle: (ok: boolean) => void = () => {}
     const done = new Promise<boolean>((resolve) => (settle = resolve))
@@ -2161,9 +2244,11 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** An agent called SendMessage: draw it on the canvas and keep a copy in the sender's transcript. */
-  private onAgentMessage(fromId: string, toolInput: Record<string, unknown>): void {
+  private onAgentMessage(fromId: string, toolInput: Record<string, unknown>, toolUseId?: string): void {
     const m = mapSendMessage(fromId, toolInput, this.agents.values())
     if (!m) return
+    // A SendMessage to a finished report resumes it; its activation's notification may come under this call.
+    if (toolUseId && m.to && m.to !== ROOT_ID && this.agents.has(m.to)) this.noteReportEndId(m.to, toolUseId)
     this.emit({ type: 'agent.message', runId: this.ctx.run.id, ...m })
     this.transcript(fromId, { kind: 'system', text: messageTranscriptText(m) })
   }
@@ -2664,6 +2749,11 @@ export class ClaudeSession implements RuntimeSession {
       const selfCwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.agentCwd(agentId)
       const selfDenial = this.selfControlDenial(agentId, input.tool_name, input.tool_input, selfCwd)
       if (selfDenial) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: selfDenial } }
+      // A background report the harness stopped (interrupt, session end) is settled and shown as stopped: it may not keep
+      // acting, whatever the tool (its hand-back included), until a SendMessage resume makes it live again.
+      if (input.agent_id && this.stoppedBackground.has(input.agent_id)) {
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: STOPPED_REPORT_DENIAL } }
+      }
       // Build sessions never write their own .claude settings (hooks, rules): denied before any allow rule or hook-allow path.
       const configDenial = buildConfigWriteDenial(this.ctx.run, input.tool_name, input.tool_input)
       if (configDenial) {
@@ -2727,7 +2817,7 @@ export class ClaudeSession implements RuntimeSession {
       // SubagentStop, and a block at SubagentStop after it is ignored (the agent ends anyway). So a report with missing
       // required reports is told here, provisionally, and its handback denied; SubagentStop records the verdict. Only a
       // subagent has a handback contract: the root's call (no agent_id) is left to the CLI, which refuses it.
-      if (input.tool_name === HANDBACK_TOOL && input.agent_id && !this.stoppedBackground.has(input.agent_id)) {
+      if (input.tool_name === HANDBACK_TOOL && input.agent_id) {
         const reason = this.handbackDenial(input.agent_id, input.agent_type, input.tool_input)
         if (reason) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
       }
@@ -2809,7 +2899,7 @@ export class ClaudeSession implements RuntimeSession {
           // Context pack (split-execution 3.2): files named on the brief's last line (`Files: a, b`) are read now and
           // reach the report through its SubagentStart hook's additional context; the call itself is not changed.
           const named = briefFiles(brief)
-          if (named.length) this.preparePack(input.tool_use_id, requested, named, hookCwd, this.agentCwd(agentId))
+          if (named.length) this.preparePack(input.tool_use_id, target, named, hookCwd, agentId)
         } else if ('model' in toolInput && !(typeof toolInput.model === 'string' && SPAWN_MODEL_ALIASES.has(toolInput.model))) drop.add('model')
         // Known items named in the brief go beside it. The new agent's id is unknown until task_started and the block
         // must be in this input, so no id is passed: no dedupe, and the row lands on the root (RuntimeContext.knowledgeContext).
@@ -2833,7 +2923,7 @@ export class ClaudeSession implements RuntimeSession {
       // The first tool call from an isolated agent reveals its real worktree path.
       this.integrator.reportCwd(agentId, input.cwd)
 
-      if (input.tool_name === MESSAGE_TOOL) this.onAgentMessage(agentId, toolInput)
+      if (input.tool_name === MESSAGE_TOOL) this.onAgentMessage(agentId, toolInput, input.tool_use_id)
 
       // Proposal tools block on the user, so the node shows "waiting" until they decide; plan tools return at once.
       const harness = input.tool_name.startsWith(ORGAI_TOOL_PREFIX)
@@ -2923,8 +3013,11 @@ export class ClaudeSession implements RuntimeSession {
           void this.ctx.noteArchitectureUpdated().catch((e) => this.log('warn', `Could not record the architecture update: ${(e as Error).message}`))
         }
       }
+      // Context pack (Claude): the files an agent read with Read, so the pack inlines only those (contextPack readPaths).
+      if (input.tool_name === 'Read') this.noteRead(agentId, input.tool_input, input.tool_response, typeof input.cwd === 'string' && input.cwd ? input.cwd : this.agentCwd(agentId))
       // A subagent's report delivered through SubagentHandback is its report text at SubagentStop (this hook runs first).
-      if (input.tool_name === HANDBACK_TOOL && input.agent_id && handbackDelivered(input.tool_response)) {
+      // A stopped report's hand-back is denied at PreToolUse; should one still run, it is not its report.
+      if (input.tool_name === HANDBACK_TOOL && input.agent_id && !this.stoppedBackground.has(input.agent_id) && handbackDelivered(input.tool_response)) {
         const message = ((input.tool_input ?? {}) as { message?: unknown }).message
         if (typeof message === 'string') this.noteHandback(input.agent_id, message)
       }
@@ -2969,6 +3062,8 @@ export class ClaudeSession implements RuntimeSession {
     // arrives first and carries task_id (= agent_id), tool_use_id and subagent_type.
     const subagentStart: HookCallback = async (raw) => {
       const input = raw as SubagentStartHookInput
+      // A report the harness stopped before it started stays settled: no live row, no pack.
+      if (this.stoppedBackground.has(input.agent_id)) return {}
       const role = this.rolesBySlug.get(input.agent_type)
       const existing = this.agents.get(input.agent_id)
       if (!existing) this.noteActivity('subagent')
@@ -4205,6 +4300,8 @@ export class ClaudeSession implements RuntimeSession {
             this.taskByToolUse.set(msg.tool_use_id, msg.task_id)
             // The SubagentStart hook may be waiting for this link (context pack).
             this.linkTask(msg.task_id, msg.tool_use_id)
+            // Its spawn's, or a resume's, notification ends this activation under this id.
+            this.noteReportEndId(msg.task_id, msg.tool_use_id)
           }
           // Run staffing: the spawn decided under this Agent call started; its row is recorded once.
           if (msg.tool_use_id) this.staffingStarted(msg.tool_use_id, msg.task_id)
@@ -4243,6 +4340,21 @@ export class ClaudeSession implements RuntimeSession {
           if (!this.gateKnown.has(msg.task_id)) {
             this.gateKnown.add(msg.task_id)
             if (role) this.ctx.delegation?.noteSpawn(msg.task_id, parentId ?? ROOT_ID, role.id)
+            // Stopped by the harness before this first task_started arrived: recorded settled, never a live report.
+            const stoppedAs = this.stoppedBeforeStart.get(msg.task_id)
+            if (stoppedAs !== undefined) {
+              this.stoppedBeforeStart.delete(msg.task_id)
+              this.stoppedBackground.add(msg.task_id)
+              this.ctx.delegation?.ended(msg.task_id)
+              this.staffingBook.ended(msg.task_id, { failed: false })
+              const a = this.agents.get(msg.task_id)
+              if (a) {
+                a.state = 'done'
+                a.activity = stoppedAs
+                a.endedAt ??= Date.now()
+                this.upsert(a)
+              }
+            }
           } else {
             // A resume (SendMessage to a finished subagent): a delegation-held branch is active again; the gate is asked at its next stop.
             // A background report the harness stopped is a live agent again too.
@@ -4265,7 +4377,10 @@ export class ClaudeSession implements RuntimeSession {
           // A notification is a report's end only under its own Agent call: a report's own background Bash notifies too,
           // under that Bash call's tool_use_id (sdk-facts check 12).
           const candidate = this.agents.get(msg.task_id)
-          const a = candidate && !(msg.tool_use_id && candidate.spawnToolUseId && msg.tool_use_id !== candidate.spawnToolUseId) ? candidate : undefined
+          // Its own: no id, its row's spawn id, or an id it was spawned or resumed under (a SendMessage resume may notify
+          // under the SendMessage call, so its report text is kept).
+          const own = !msg.tool_use_id || !candidate?.spawnToolUseId || msg.tool_use_id === candidate.spawnToolUseId || !!this.reportEndIds.get(msg.task_id)?.has(msg.tool_use_id)
+          const a = candidate && own ? candidate : undefined
           const hb = msg as { handback?: unknown; handback_report?: { text?: unknown } }
           const notified = typeof hb.handback_report?.text === 'string' && hb.handback_report.text ? hb.handback_report.text : undefined
           const background = a && msg.tool_use_id && this.backgroundReports.get(a.id) === msg.tool_use_id
