@@ -3,7 +3,7 @@ import type { AgentInstance, RunRecord, RunSummary, RunUsage, TokenUsage } from 
 import { runSummary } from './testHelpers'
 import { agentProducedNothing } from '@shared/defaults'
 import { priceAgentUsage } from './pricing'
-import { IntervalTimer, addTokens, bucketOf, buildUsageStats, cleanKnowledgeUsage, computeRunUsage, countUsage, emptyAgentUsage, legacySummaryUsage, mergeCosts, normalizeRunRecord, setModelTokens, sumRunUsage, usageFromLegacyAgent, usageOf } from './runUsage'
+import { IntervalTimer, addTokens, bucketOf, buildUsageStats, cleanKnowledgeUsage, cleanRunEfficiency, computeRunEfficiency, computeRunUsage, countUsage, emptyAgentUsage, legacySummaryUsage, mergeCosts, normalizeRunRecord, setModelTokens, sumRunUsage, usageFromLegacyAgent, usageOf } from './runUsage'
 
 const tok = (input = 0, output = 0, cacheRead = 0, cacheWrite = 0): TokenUsage => ({ input, output, cacheRead, cacheWrite })
 
@@ -426,3 +426,62 @@ describe('RunUsage.knowledge', () => {
   })
 })
 
+
+describe('computeRunEfficiency', () => {
+  const run = (endedAt?: number): RunSummary => ({ ...runSummary(), startedAt: 0, endedAt })
+  const rep = (id: string, startedAt: number, endedAt?: number, parentId = 'root'): AgentInstance => agent({ id, parentId, startedAt, endedAt })
+  const root = agent({ id: 'root', parentId: null, startedAt: 0 })
+
+  it('is undefined without a direct report', () => {
+    expect(computeRunEfficiency(run(5000), [root], 9000)).toBeUndefined()
+    expect(computeRunEfficiency(run(5000), [], 9000)).toBeUndefined()
+  })
+
+  it('describes one report', () => {
+    expect(computeRunEfficiency(run(1000), [root, rep('a', 100, 600)], 9000)).toEqual({ reports: 1, firstSpawnMs: 100, reportSumMs: 500, reportBusyMs: 500, maxParallel: 1, tailMs: 400 })
+  })
+
+  it('has overlap 1 and a tail of everything after the first report for reports in sequence', () => {
+    const e = computeRunEfficiency(run(1000), [root, rep('a', 100, 300), rep('b', 400, 900)], 9000)!
+    expect(e).toMatchObject({ reports: 2, reportSumMs: 700, reportBusyMs: 700, maxParallel: 1, tailMs: 700 })
+  })
+
+  it('reproduces the dashboard run of spec 1.3', () => {
+    const agents = [root, rep('a', 54_000, 198_000), rep('b', 54_000, 476_000), rep('c', 604_000, 873_000)]
+    expect(computeRunEfficiency(run(1_091_000), agents, 2_000_000)).toEqual({ reports: 3, firstSpawnMs: 54_000, reportSumMs: 835_000, reportBusyMs: 691_000, maxParallel: 2, tailMs: 615_000 })
+  })
+
+  it('ignores grandchildren', () => {
+    const agents = [root, rep('a', 100, 500), rep('g', 150, 450, 'a')]
+    expect(computeRunEfficiency(run(1000), agents, 9000)).toMatchObject({ reports: 1, reportSumMs: 400, maxParallel: 1 })
+  })
+
+  it('counts a live report to now and never goes negative', () => {
+    const e = computeRunEfficiency(run(undefined), [root, rep('a', 100)], 700)!
+    expect(e).toMatchObject({ reportSumMs: 600, reportBusyMs: 600, tailMs: 0 })
+    expect(computeRunEfficiency(run(300), [root, rep('a', 100, 500)], 9000)!.tailMs).toBe(0)
+  })
+
+  it('drops garbage persisted values whole and keeps a valid one', () => {
+    const ok = { reports: 2, firstSpawnMs: 1, reportSumMs: 5, reportBusyMs: 4, maxParallel: 2, tailMs: 0 }
+    expect(cleanRunEfficiency(ok)).toEqual(ok)
+    for (const bad of [null, 'x', [], { ...ok, tailMs: -1 }, { ...ok, reportSumMs: NaN }, { ...ok, maxParallel: Infinity }, { ...ok, reports: '2' }, { ...ok, reports: 0 }, { reports: 1 }]) {
+      expect(cleanRunEfficiency(bad)).toBeUndefined()
+    }
+    const rec = (efficiency: unknown): RunRecord => {
+      const s = { ...runSummary(), endedAt: 5000 }
+      const r = { summary: { ...s, usage: { ...computeRunUsage(s, [], inputs()), efficiency } }, agents: {}, events: [] } as unknown as RunRecord
+      return normalizeRunRecord(r, 6000)
+    }
+    expect(rec({ ...ok, tailMs: -5 }).summary.usage!.efficiency).toBeUndefined()
+    expect(rec(ok).summary.usage!.efficiency).toEqual(ok)
+  })
+
+  it('is carried by computeRunUsage and not summed', () => {
+    const s = { ...runSummary(), startedAt: 0, endedAt: 1000 }
+    const u = computeRunUsage(s, [root, rep('a', 100, 600)], inputs())
+    expect(u.efficiency).toMatchObject({ reports: 1, tailMs: 400 })
+    expect(computeRunUsage(s, [root], inputs()).efficiency).toBeUndefined()
+    expect(sumRunUsage([u, u], 1).efficiency).toBeUndefined()
+  })
+})

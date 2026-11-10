@@ -91,6 +91,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   from the builtin table with no provider cost, and the default script's `mock-report-2` is unpriced and returns
   nothing. Verified by unit tests and the mock only; no live run has checked the builtin ids or which model id the CLI
   or a proxy reports.
+  - `RunUsage.efficiency` (2026-11-09, `RunEfficiency` in types.ts; orchestration-efficiency.md 4.2): derived by
+    `computeRunEfficiency` (runUsage.ts) from the root's direct reports' `startedAt` / `endedAt`, nothing tracked at
+    runtime: reports, firstSpawnMs, reportSumMs, reportBusyMs (union), maxParallel, tailMs (after the first wave). Absent
+    without a direct report; `cleanRunEfficiency` drops a malformed stored value whole (`normalizeRunRecord`,
+    `cleanStoredUsage`); `sumRunUsage` never sums it. Verified by unit tests only (runUsage.test.ts, incl. the
+    dashboard run of spec 1.3); no live run has checked it.
   - App-wide overview (2026-11-07, main only; ARCHITECTURE.md Shared contracts "App-wide usage overview"):
     `runs:usageOverview` / `runs:usageOverviewCsv` (read scope; preload `runs.usageOverview / usageOverviewCsv`, query
     optional) cover every project, the virtual assistant ones and a removed project's leftover runs
