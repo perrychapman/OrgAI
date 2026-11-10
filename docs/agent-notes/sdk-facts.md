@@ -270,3 +270,32 @@ not be in it, and none was logged). Inputs to split-execution.md 3.2, 3.3 and 3.
 - Not observed: whether the server-side judgment of a model-written `run_in_background: true` differs from a
   foreground one (only the absence of a local request is visible); the classifier's own usage; a background report
   that ends with plain text instead of `SubagentHandback`, or in permission mode `default` (no handback tool there).
+
+## Read hook payload and denied reads, verified by `scripts/smoke-staffing.mjs` 15-16 (2026-11-10)
+
+SDK 0.3.318, Max login, haiku root (`Options.agent = 'lead'`), permission mode `default`, each check in its own temp
+project, one run each (about $0.0073 and $0.0015). `completeReadText` was imported from `contextPack.ts` through jiti
+and run on every captured `tool_response`. Inputs to "Context pack on spawn" (core-runtime.md).
+
+- Read `PostToolUse` payload (check 15): verified. `tool_response` is `{ type: 'text', file: { filePath, content,
+  numLines, startLine, totalLines } }` (strings and numbers; `filePath` the absolute path as written). `content` is the
+  raw file text, equal to the file on disk byte for byte (LF file, no BOM; CRLF and BOM were not tested), with no line
+  number prefixes; the `cat -n` style numbers (`1\talpha`) appear only in the model-facing `tool_result`. `numLines`
+  and `totalLines` count the empty line after a final newline (a five-line file with a trailing newline: 6). Whole read
+  of the small file: `startLine` 1, `numLines` 6 = `totalLines` 6, accepted. The same file with `offset` 2, `limit` 2:
+  `startLine` 2, `numLines` 2, `totalLines` 6, `content` `"beta\ngamma"`, rejected. A 3,000-line file (28,893
+  characters) read without offset or limit was NOT paginated: `numLines` = `totalLines` = 3001, the whole text,
+  accepted (there was no 2,000-line default here). `truncatedByTokenCap` was absent in all four responses; a read large
+  enough to hit the token cap was not run (unverified: whether such a page has `numLines` < `totalLines` as well; the
+  typings say the flag marks it). A subagent's Read carries `agent_id` and its `agent_type` in `PreToolUse` and
+  `PostToolUse`; the root's carries no `agent_id` (`agent_type` = the root agent's name). Side observation: the
+  model-facing tool results in this session carried extra text that the hook's `content` did not (the model said it
+  asked to create a claude.ai document and ignored it); its source was not captured.
+- Denied and failed reads (check 16): verified. With `.claude/settings.json` `{"permissions":{"deny":["Read(./secret.env)"]}}`
+  and `settingSources: ['project']`, the Read of `secret.env` fired NO hook at all (no `PreToolUse`, `PostToolUse`,
+  `PostToolUseFailure` or `PermissionDenied`); the model got `<tool_use_error>File is in a directory that is denied by
+  your permission settings.</tool_use_error>` (`tool_result_meta.permission_decision` `{ decision: 'reject', source:
+  'config', reason_type: 'rule' }`). A Read of a missing file fired `PreToolUse` then `PostToolUseFailure` (`error`
+  "File does not exist. Note: your current working directory is ...", `is_interrupt` false, no `tool_response`) and
+  no `PostToolUse`. So `completeReadText` never sees either, and a denied or failed Read cannot enter the store. The
+  following allowed Read (`notes.md`) had the normal shape and was accepted.
