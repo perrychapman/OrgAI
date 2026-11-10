@@ -614,7 +614,8 @@ export const MOCK_STAFFING_REPORTS = ['mock-staffed-1', 'mock-staffed-2'] as con
 
 /**
  * The [mock:staffing] turn: set_plan with two steps that carry `staff` (the first asks `first` for a fast / low pick, the
- * second asks `second` for top / max, which the chart's ceiling clamps), then one spawn per step; each step is marked done when its report finishes.
+ * second asks `second` for top / max, which the chart's ceiling clamps), then one spawn per step; each step is marked done when its report
+ * finishes and the plan is completed.
  */
 export function staffingSteps(firstSlug: string, secondSlug: string): MockStep[] {
   const [a, b] = MOCK_STAFFING_REPORTS
@@ -634,6 +635,8 @@ export function staffingSteps(firstSlug: string, secondSlug: string): MockStep[]
     { type: 'planUpdate', steps: [{ id: 'p1', status: 'done' }] },
     { type: 'finish', id: b, result: 'Hard part done.' },
     { type: 'planUpdate', steps: [{ id: 'p2', status: 'done' }] },
+    // Completed, so the run ends here instead of being nudged to finish the plan until the continue limit.
+    { type: 'planComplete', summary: 'Both steps are done.' },
     { type: 'text', text: 'Both steps are done.' }
   ]
 }
