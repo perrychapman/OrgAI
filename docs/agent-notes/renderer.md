@@ -1,5 +1,37 @@
 # Renderer (general)
 
+## Unified proxy setup (2026-11-10)
+
+`AddProxyDialog` has one setup without a Kind selector. New records use
+`openai-compatible` with `litellmFeatures: false`; `proxy-litellm-features` is the
+optional native **Use LiteLLM reporting** checkbox in both Add and edit. Its hint
+explains that the key is sent to reporting endpoints and figures may be unavailable.
+`ProxyCard` derives the saved choice from `litellmFeatures ?? (kind === 'litellm')`,
+saves the flag independently, and preserves id, kind and credentials. Base and
+OpenAI endpoint defaults and origin-change key removal retain their existing
+contract. Labels distinguish Proxy base URL, OpenAI base URL and the model-list
+endpoint. Invalid submits focus the first invalid field. Proxy badges say Proxy;
+Model prices uses actual check results, and usage visibility uses the reporting
+capability with legacy fallback rather than kind alone. No motion was added.
+
+Before-walk: a live root mock build showed the forced LiteLLM default promising
+prices/spend before a test returned neither. Adding a mock proxy listed nine
+mixed-family models, focused its heading and exposed the existing encrypted key
+controls. Partial keyboard checks confirmed Name autofocus and Escape restoring
+Add proxy. Only light at approximately 1024x615 and dark at approximately 1600x960
+were viewed before implementation; those are not the full supported-size matrix.
+
+Source verification: 45 focused tests passed across proxyForm, proxyChecks,
+connectionLabel and usage; changed connections/multi-provider e2e scripts passed
+syntax checks, and diff whitespace checks passed. Reviewer-2 approved all eleven
+changed source/test files and the final label/legacy edit additions with no
+actionable findings or Critical/High blockers. The e2e additions cover generic
+default off, keyboard opt-in, and editing a legacy proxy while retaining id/kind/key.
+At UI-lane handoff, execution of those e2e checks, combined typecheck/build and the
+after-walk (all exact size/theme combinations, keyboard, logged-out state) await
+integration with the runtime contract in the root tree. No live provider, paid
+test, screen-reader speech, zoom/reflow or measured performance claim was verified.
+
 Shell, layout, primitives, motion, canvas (fold, themes), run view and run chains, dashboard, settings pages, application menu, cost UI, proxy and multi-provider UI, proposal cards, org change sessions. Moved out of CLAUDE.md on 2026-11-07; see CLAUDE.md for the index.
 
 - Pocket Office (2026-11-08, `docs/design/pocket-office.md`): the existing Canvas style popover and Settings Canvas section select Graph/Pocket Office and Color (default)/Neutral/Green. Presentation changes keep graph pattern/layout/lines/node style/tint/minimap; graph preset picking explicitly restores Graph. `theme.ts` applies presentation/palette attributes and canvases consume `useCanvasOptions()`. Team shows real editable roles, the settings preview labels four example agents and is inert, and Live keeps decisions, inspectors, all loaded finished/prior agents, session/parent labels and a direct earlier-session loader. `lib/office/agentView.ts` reuses `nodeActivity` so a report without a result never becomes a successful “Reported back” outcome; runtime states remain internal to sprites while visible statuses use the shared words.
