@@ -736,6 +736,10 @@ large or verification failed once; else verify and finish". No lab run was made 
 called a reviewer for its own work; P2c did not yet have the rule that the lead's own tests are never handed out,
 so the two effects are not separated.
 
+**Narrowed once more by the owner, 2026-11-10** (on the recommendation in `split-execution.md` section 8): a large
+diff counts only when no report checked it ("a large diff was checked by no report"). A rule, the brief, sensitive
+code and a failed verification still call for review whoever did the work.
+
 ## 7. Acceptance
 
 Revisited at the Phase 0 gate and once more when `baseline2` reported (1.1a), which filled in the baselines and
