@@ -63,7 +63,7 @@ describe('what waits for approval, end to end (read-only)', () => {
     expect(t.code, t.err).toBe(0)
     expect(t.out).toContain('Approvals app: 1 change waits for approval')
     expect(t.out).toMatch(/Reviewer.*Bash/)
-    expect(t.out).toContain('Approving is done in the OrgAI desktop app for now: a terminal cannot yet prove that a person, not an agent, is answering.')
+    expect(t.out).toContain('Approving is not available in the terminal yet: a terminal cannot yet prove that a person, not an agent, is answering.')
     const j = await run(['team', 'files', 'status'], 'json')
     const list = JSON.parse(j.out).teamFiles as TeamFilesStatus[]
     expect(list.map((s) => s.projectId)).toEqual([project.id])
@@ -74,7 +74,7 @@ describe('what waits for approval, end to end (read-only)', () => {
     for (const args of [['team', 'files', 'approve', '--yes'], ['team', 'files', 'reject'], ['projects', 'trust', 'allow']]) {
       const r = await run(args)
       expect(r.code, args.join(' ')).toBe(2)
-      expect(r.err).toContain('desktop app')
+      expect(r.err).toContain('in the terminal')
     }
     const t = await run(['team', 'files', 'status'], 'json')
     expect((JSON.parse(t.out).teamFiles as TeamFilesStatus[])[0].state).toBe('pending')

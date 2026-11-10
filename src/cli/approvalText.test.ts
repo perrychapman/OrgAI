@@ -109,14 +109,14 @@ describe('team files text', () => {
 
   it('the approve-shaped commands say approving is not in the terminal, where it is, and why', () => {
     expect(NO_APPROVE_COMMAND).toContain('a terminal cannot yet prove that a person, not an agent, is answering')
-    expect(NO_APPROVE_COMMAND).toContain('desktop app')
+    expect(NO_APPROVE_COMMAND).toContain('in the terminal')
     expect(NO_APPROVE_COMMAND).not.toContain('/approvals')
   })
 
   it('the run-start line: only while changes wait for this project', () => {
     const s = status()
     expect(pendingTeamFilesLine([s], 'p1')).toBe(
-      'Team files: 3 team-file changes wait for approval; runs use the last approved team. Review: orgai team files status (approving is done in the OrgAI desktop app for now).'
+      'Team files: 3 team-file changes wait for approval; runs use the last approved team. Review: orgai team files status (approving is not available in the terminal yet).'
     )
     expect(pendingTeamFilesLine([s], 'p2')).toBeUndefined()
     expect(pendingTeamFilesLine([status({ state: 'in-sync', changes: [] })], 'p1')).toBeUndefined()

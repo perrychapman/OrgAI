@@ -123,7 +123,7 @@ describe('read-only /approvals in the shell', () => {
     let f = app.frame()
     expect(f).toContain('Team files of Demo: 1 change waits for approval')
     expect(f).toContain('Reviewer gains Bash. (New tools)')
-    expect(f).toContain('Approving is done in the OrgAI desktop app for now')
+    expect(f).toContain('Approving is not available in the terminal yet')
     await app.typed('a')
     await app.send(named('escape'))
     f = app.frame()

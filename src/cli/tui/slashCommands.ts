@@ -338,7 +338,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     name: 'approvals',
     aliases: ['team-files', 'trust'],
-    summary: 'Read the team-file changes and folder config that wait for approval (approving is in the desktop app)',
+    summary: 'Read the team-file changes and folder config that wait for approval (read-only: approving is not available in the terminal yet)',
     run: (ctx) => guarded(ctx, () => runApprovals(ctx))
   },
   {

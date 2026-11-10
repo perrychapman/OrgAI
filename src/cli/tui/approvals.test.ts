@@ -46,7 +46,7 @@ describe('read-only /approvals', () => {
     expect(text).toContain('Undo brings back:')
     expect(text).toContain('- Reviewer loses Write.')
     const last = text.split('\n').pop()
-    expect(last).toBe('Approving is done in the OrgAI desktop app for now: a terminal cannot yet prove that a person, not an agent, is answering.')
+    expect(last).toBe('Approving is not available in the terminal yet: a terminal cannot yet prove that a person, not an agent, is answering.')
     // Nothing in it offers a key to decide.
     expect(text).not.toMatch(/type .* to approve|press a/i)
   })

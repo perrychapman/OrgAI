@@ -179,7 +179,7 @@ describe('team files (cli-parity 3.4)', () => {
       expect(client.callsOf('teamFiles:listAttention')).toHaveLength(1)
       expect(f.out()).toContain('App: 1 change waits for approval')
       expect(f.out()).toContain('- May spend more: Lead may use the deep tier.')
-      expect(f.out()).toContain('done in the OrgAI desktop app for now')
+      expect(f.out()).toContain('not available in the terminal yet')
     }
   })
 
@@ -188,13 +188,13 @@ describe('team files (cli-parity 3.4)', () => {
     expect(await runTeam(f.ctx, ['files', 'status'])).toBe(0)
     const j = JSON.parse(f.out())
     expect(j.teamFiles[0].digest).toBe('ab'.repeat(32))
-    expect(j.approve).toMatch(/desktop app/)
+    expect(j.approve).toMatch(/in the terminal/)
     const empty = setup({ 'teamFiles:listAttention': () => [] })
     expect(await runTeam(empty.f.ctx, ['files'])).toBe(0)
     expect(empty.f.out()).toContain('No team-file changes wait for approval.')
   })
 
-  it('approve / reject / undo / commit / enable decide nothing: exit 2 naming the desktop app, no host started, --yes or not', async () => {
+  it('approve / reject / undo / commit / enable decide nothing: exit 2 saying why, no host started, --yes or not', async () => {
     for (const sub of ['approve', 'reject', 'undo', 'commit', 'enable']) {
       for (const extra of [[], ['--yes'], ['p1', '--output-format', 'json']]) {
         const { f, client } = setup({})
@@ -206,7 +206,7 @@ describe('team files (cli-parity 3.4)', () => {
         }
         expect(err, sub).toBeInstanceOf(CliError)
         expect((err as CliError).exitCode).toBe(2)
-        expect((err as CliError).message).toMatch(/desktop app/)
+        expect((err as CliError).message).toMatch(/in the terminal/)
         expect(f.inprocCalls, sub).toHaveLength(0)
         expect(client.calls, sub).toEqual([])
       }

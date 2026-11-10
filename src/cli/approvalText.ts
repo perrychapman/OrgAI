@@ -19,10 +19,10 @@ const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n =
 /** Why approving is not offered in a terminal (cli-parity 3.4 as built). */
 export const NOT_IN_TERMINAL_WHY = 'a terminal cannot yet prove that a person, not an agent, is answering'
 /** Said wherever a pending change is reported. */
-export const APPROVE_WHERE = `Approving is done in the OrgAI desktop app for now: ${NOT_IN_TERMINAL_WHY}.`
-export const TRUST_WHERE = `Allowing a folder's own config is done in the OrgAI desktop app for now: ${NOT_IN_TERMINAL_WHY}.`
+export const APPROVE_WHERE = `Approving is not available in the terminal yet: ${NOT_IN_TERMINAL_WHY}.`
+export const TRUST_WHERE = `Allowing a folder's own config is not available in the terminal yet: ${NOT_IN_TERMINAL_WHY}.`
 /** Printed by the approve-shaped subcommands (team files approve|reject|undo|commit|enable, projects trust allow|deny). */
-export const NO_APPROVE_COMMAND = `Approving, rejecting, undoing or committing team-file changes, and allowing a folder's own config, are not done in the terminal: ${NOT_IN_TERMINAL_WHY}. This is done in the OrgAI desktop app for now. To see what waits: orgai team files status, orgai projects trust show.`
+export const NO_APPROVE_COMMAND = `Approving, rejecting, undoing or committing team-file changes, and allowing a folder's own config, are not done in the terminal: ${NOT_IN_TERMINAL_WHY}. To change the team from here, use orgai team role add, set, rm or move, which save directly. To see what waits: orgai team files status, orgai projects trust show.`
 
 export const shortDigest = (d: string | undefined): string => (d ? d.slice(0, 12) : 'none')
 
@@ -102,7 +102,7 @@ export function pendingTeamFilesLine(statuses: readonly TeamFilesStatus[], proje
   const problem = mine.some((s) => s.state === 'problem')
   const what = n ? `${plural(n, 'team-file change')} ${n === 1 ? 'waits' : 'wait'} for approval` : 'the team files have a problem'
   const where = projectId === undefined ? ` (${mine.map((s) => visibleLine(s.projectName)).join(', ')})` : ''
-  return `Team files: ${what}${problem && n ? ' (and a file has a problem)' : ''}${where}; runs use the last approved team. Review: orgai team files status (approving is done in the OrgAI desktop app for now).`
+  return `Team files: ${what}${problem && n ? ' (and a file has a problem)' : ''}${where}; runs use the last approved team. Review: orgai team files status (approving is not available in the terminal yet).`
 }
 
 // ---------- folder config trust ----------

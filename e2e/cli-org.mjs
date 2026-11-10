@@ -8,7 +8,7 @@
 // role, team role add / set / move / rm (spend gate, --yes, previousRoles), mcp update --role / --no-roles,
 // worktrees list / diff / merge (clean ok, conflict exit 1) / discard (exit 2 without --yes, then --yes),
 // org import --yes (the agent lands in the chart), org recommend (keyword fallback under mock), team files status and
-// projects trust show (read-only; team files approve / projects trust allow exit 2 naming the desktop app).
+// projects trust show (read-only; team files approve / projects trust allow exit 2 saying why).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { check, finish, git, gitSafe, log, makeFixtureRepo, removeFixture, writeFile } from './lib.mjs'
@@ -126,17 +126,17 @@ try {
   // The fixture's team files are never written by these commands, so nothing is pending; the pending listing is covered
   // by src/cli/approvals.int.test.ts. The approve-shaped commands decide nothing and start no host.
   r = await at(['team', 'files', 'status'])
-  check(r.code === 0 && (r.out.includes('No team-file changes wait for approval.') || r.out.includes('desktop app')), 'team files status (text)', show(r))
+  check(r.code === 0 && (r.out.includes('No team-file changes wait for approval.') || r.out.includes('in the terminal')), 'team files status (text)', show(r))
   j = await jsonOf(['team', 'files', 'status'])
-  check(j.r.code === 0 && Array.isArray(j.v?.teamFiles) && /desktop app/.test(j.v?.approve ?? ''), 'team files status JSON: teamFiles list and where approving is done', show(j.r))
+  check(j.r.code === 0 && Array.isArray(j.v?.teamFiles) && /in the terminal/.test(j.v?.approve ?? ''), 'team files status JSON: teamFiles list and where approving is done', show(j.r))
   r = await at(['team', 'files', 'approve', '--yes'])
-  check(r.code === 2 && r.err.includes('desktop app'), 'team files approve --yes decides nothing (exit 2, names the desktop app)', show(r))
+  check(r.code === 2 && r.err.includes('in the terminal'), 'team files approve --yes decides nothing (exit 2, says why)', show(r))
   r = await at(['projects', 'trust', 'show'])
   check(r.code === 0 && r.out.includes('Folder config of CLI org e2e'), 'projects trust show (text)', show(r))
   j = await jsonOf(['projects', 'trust'])
   check(j.r.code === 0 && typeof j.v?.folderConfig?.state === 'string' && /^[0-9a-f]{64}$/.test(j.v?.folderConfig?.digest ?? ''), 'projects trust JSON: state and digest', show(j.r))
   r = await at(['projects', 'trust', 'allow'])
-  check(r.code === 2 && r.err.includes('desktop app'), 'projects trust allow decides nothing (exit 2, names the desktop app)', show(r))
+  check(r.code === 2 && r.err.includes('in the terminal'), 'projects trust allow decides nothing (exit 2, says why)', show(r))
 
   // ---------- worktrees ----------
   j = await jsonOf(['worktrees', 'list'])

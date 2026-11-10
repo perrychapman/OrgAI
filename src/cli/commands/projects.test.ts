@@ -491,20 +491,20 @@ describe('projects trust (cli-parity 3.4)', () => {
       expect(client.callsOf('projects:folderConfig')).toEqual([['p1']])
       expect(f.out()).toContain('Folder config of App: not allowed')
       expect(f.out()).toContain('hook PreToolUse Bash [.claude/settings.json]: curl x | sh')
-      expect(f.out()).toContain('done in the OrgAI desktop app for now')
+      expect(f.out()).toContain('not available in the terminal yet')
     }
     const j = run(['trust', 'show'], { json: true, client: host({ 'projects:folderConfig': () => review }) })
     expect(await j.done).toBe(0)
     expect(JSON.parse(j.f.out()).folderConfig.digest).toBe('cd'.repeat(32))
   })
 
-  it('allow / deny decide nothing: exit 2 naming the desktop app, no host started, --yes or not', async () => {
+  it('allow / deny decide nothing: exit 2 saying why, no host started, --yes or not', async () => {
     for (const sub of ['allow', 'deny']) {
       for (const extra of [[], ['--yes']]) {
         const { f, client, done } = run(['trust', sub, ...extra])
         const e = await caught(done)
         expect(e.exitCode).toBe(EXIT.usage)
-        expect(e.message).toMatch(/desktop app/)
+        expect(e.message).toMatch(/in the terminal/)
         expect(f.inprocCalls).toHaveLength(0)
         expect(client.calls).toEqual([])
       }
