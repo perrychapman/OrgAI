@@ -1,6 +1,7 @@
 import type { PlanStep, Project, ProjectKind, Role, RunKind, RunPlan, RunSummary } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 import { effectiveSubagentLimits } from '@shared/defaults'
+import { pathOverlaps, readySteps, type PathOverlap } from '@shared/planGraph'
 
 /**
  * Unattended execution, vendor-neutral. The orchestrator keeps a plan with the harness's plan tools
@@ -52,105 +53,8 @@ export function finishedCount(plan: RunPlan): number {
   return plan.steps.length - remainingSteps(plan).length
 }
 
-/** A path as compared for overlap: '/'-separated, no leading './', no repeated or trailing slashes. '.' = the whole project. */
-function normalizePlanPath(p: string): string {
-  const parts = p.trim().replace(/\\/g, '/').split('/').filter((x) => x !== '' && x !== '.')
-  return parts.length ? parts.join('/') : '.'
-}
-
-/** The path both name when they overlap (equal, or one a folder prefix of the other: the folder), else undefined. */
-function overlapOf(a: string, b: string): string | undefined {
-  const x = normalizePlanPath(a)
-  const y = normalizePlanPath(b)
-  if (x === y) return x
-  if (x === '.') return y === '.' ? '.' : x
-  if (y === '.') return y
-  if (y.startsWith(`${x}/`)) return x
-  if (x.startsWith(`${y}/`)) return y
-  return undefined
-}
-
-/** Indexes of the steps each step transitively waits for (follows `after`; ids that name no step are ignored). */
-function ancestorSets(plan: RunPlan): Set<number>[] {
-  const index = new Map<string, number>()
-  plan.steps.forEach((s, i) => {
-    if (!index.has(s.id)) index.set(s.id, i)
-  })
-  const direct = plan.steps.map((s) => (s.after ?? []).map((id) => index.get(id)).filter((j): j is number => j !== undefined))
-  return plan.steps.map((_, i) => {
-    const seen = new Set<number>()
-    const stack = [...direct[i]]
-    while (stack.length) {
-      const j = stack.pop() as number
-      if (seen.has(j) || j === i) continue
-      seen.add(j)
-      stack.push(...direct[j])
-    }
-    return seen
-  })
-}
-
-export interface PathOverlap {
-  /** The step earlier in plan order, which goes first. */
-  first: string
-  /** The later step, which waits for `first`. */
-  second: string
-  /** The path both name (the folder when one is inside the other). */
-  path: string
-}
-
-const finished = (s: PlanStep): boolean => s.status === 'done' || s.status === 'skipped'
-
-/**
- * Pairs of unfinished steps that could run together (neither waits for the other, directly or through other steps) and
- * whose `paths` overlap: equal after normalising separators and trailing slashes, or one a folder prefix of the other.
- * The later step in plan order is treated as ordered after the earlier one (readySteps). Pure.
- */
-export function pathOverlaps(plan: RunPlan): PathOverlap[] {
-  const anc = ancestorSets(plan)
-  const out: PathOverlap[] = []
-  for (let j = 1; j < plan.steps.length; j++) {
-    const b = plan.steps[j]
-    if (finished(b) || !b.paths?.length) continue
-    for (let i = 0; i < j; i++) {
-      const a = plan.steps[i]
-      if (finished(a) || !a.paths?.length || anc[j].has(i) || anc[i].has(j)) continue
-      const hit = firstOverlap(a.paths, b.paths)
-      if (hit !== undefined) out.push({ first: a.id, second: b.id, path: hit })
-    }
-  }
-  return out
-}
-
-function firstOverlap(as: readonly string[], bs: readonly string[]): string | undefined {
-  for (const x of as) for (const y of bs) {
-    const hit = overlapOf(x, y)
-    if (hit !== undefined) return hit
-  }
-  return undefined
-}
-
-/**
- * Steps that can start now: `pending` with every `after` step done or skipped (no `after` = ready). Two steps that could
- * run together and share a path are ordered by plan order: the later one is not ready until the earlier is done or
- * skipped. Pure.
- */
-export function readySteps(plan: RunPlan): PlanStep[] {
-  const done = new Set(plan.steps.filter(finished).map((s) => s.id))
-  const byId = new Map(plan.steps.map((s) => [s.id, s]))
-  const waitingOnPath = new Map<string, Set<string>>()
-  for (const o of pathOverlaps(plan)) {
-    const set = waitingOnPath.get(o.second) ?? new Set<string>()
-    set.add(o.first)
-    waitingOnPath.set(o.second, set)
-  }
-  return plan.steps.filter((s) => {
-    if (s.status !== 'pending') return false
-    if ((s.after ?? []).some((id) => byId.has(id) && !done.has(id))) return false
-    for (const first of waitingOnPath.get(s.id) ?? []) if (!done.has(first)) return false
-    return true
-  })
-}
+export { pathOverlaps, readySteps }
+export type { PathOverlap }
 
 /** Ready steps that name a report (`staff.role` set) other than the caller's own role (`ownRoles`: its slug and name). */
 export function readyReports(plan: RunPlan, ownRoles: readonly string[] = []): PlanStep[] {

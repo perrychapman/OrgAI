@@ -1,40 +1,32 @@
 /**
  * Running, ready and waiting for the steps of a plan that uses the graph (`after`, `paths`, `staff`). Pure.
- * A pending step is ready when every step it waits for that exists is done or skipped; an id that is not in the plan
- * is ignored. The host's `readySteps` also orders steps that share a path; the TUI does not see that and ignores it.
- * No traversal happens, so a dependency cycle cannot hang: the steps in it just keep waiting on each other.
+ * The definition lives in src/shared/planGraph.ts, shared with the host and the desktop app: a pending step is ready when
+ * every step it waits for that exists is done or skipped, and of two parallel steps that share a path the later one
+ * waits for the earlier, so the TUI counts the same ready steps the host will start. A cycle cannot hang: its steps
+ * just keep waiting on each other.
  */
 import type { PlanStepStatus } from '../../shared/types'
+import { planUsesGraph, stepViews, type GraphStepLike } from '../../shared/planGraph'
 
-export interface GraphStep {
-  id: string
-  status: PlanStepStatus
-  after?: readonly string[]
-  paths?: readonly string[]
-  staff?: unknown
-}
+export type GraphStep = GraphStepLike & { status: PlanStepStatus }
 
 export type StepFlow = { state: 'running' } | { state: 'ready' } | { state: 'waiting'; on: string[] }
 
 /** Whether any step uses the graph; other plans render as they always did. */
 export function usesGraph(steps: readonly GraphStep[]): boolean {
-  return steps.some((s) => (s.after?.length ?? 0) > 0 || (s.paths?.length ?? 0) > 0 || !!s.staff)
+  return planUsesGraph(steps)
 }
 
 /** Flow of each open step (in progress or pending) by step id; done, skipped and blocked steps have none. */
 export function stepFlows(steps: readonly GraphStep[]): Map<string, StepFlow> {
-  const byId = new Map(steps.map((s) => [s.id, s]))
+  const views = stepViews({ steps })
   const out = new Map<string, StepFlow>()
-  for (const s of steps) {
-    if (s.status === 'in_progress') out.set(s.id, { state: 'running' })
-    else if (s.status === 'pending') {
-      const on = [...new Set(s.after ?? [])].filter((id) => {
-        const d = byId.get(id)
-        return !!d && d.status !== 'done' && d.status !== 'skipped'
-      })
-      out.set(s.id, on.length > 0 ? { state: 'waiting', on } : { state: 'ready' })
-    }
-  }
+  steps.forEach((s, i) => {
+    const v = views[i]
+    if (v.state === 'running') out.set(s.id, { state: 'running' })
+    else if (v.state === 'ready') out.set(s.id, { state: 'ready' })
+    else if (v.state === 'waiting') out.set(s.id, { state: 'waiting', on: v.waitingOn })
+  })
   return out
 }
 

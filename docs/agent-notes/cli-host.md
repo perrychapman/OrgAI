@@ -269,9 +269,7 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     three). Text mode prints one line per staffed report from `staffing.updated`, once per assignment that has an
     `agentId`: `engineer-1 on everyday / medium (chosen by the orchestrator)`; json and stream-json are unchanged.
   - `src/cli/staffingText.ts` holds the pure words (label, reason from `source` and `note`, newest assignment per agent);
-    `src/cli/tui/planGraph.ts` holds running / ready / waiting for graph plans. Ready here is `after` only (done or
-    skipped; a missing id is ignored; no traversal, so a cycle just waits); the host's `readySteps` also orders steps
-    that share a path, which the TUI does not model, so its ready count can be higher than the host's.
+    `src/cli/tui/planGraph.ts` is a thin view over `src/shared/planGraph.ts`, the one ready / waiting definition shared with the host (`readySteps`) and the desktop app: ready = pending, every existing `after` done or skipped, and of two parallel steps sharing a path the later waits for the earlier, so the TUI ready count matches the host's.
   - TUI: agent rows end with the staffing text (dim) only when the whole row fits with it; the inspector has a
     `staffing` fact line; the plan pane adds running / ready / waiting-on (two titles, then "and N more") and the step's
     pick for plans where any step has `after`, `paths` or `staff`; the status bar adds "N working" and "N ready" (first

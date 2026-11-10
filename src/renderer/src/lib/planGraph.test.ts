@@ -21,9 +21,9 @@ describe('stepViews', () => {
     expect(v[3].waitingOn).toEqual(['p2', 'p3'])
     expect(readyStepIds(p)).toEqual(['p3', 'p7'])
   })
-  it('ignores a reference to a missing step and to itself', () => {
-    const v = stepViews(plan([step('p1', { after: ['nope', 'p1'] })]))
-    expect(v[0]).toEqual({ state: 'ready', waitingOn: [] })
+  it('ignores a reference to a missing step; a step that names itself waits for itself, as the host does', () => {
+    expect(stepViews(plan([step('p1', { after: ['nope'] })]))[0]).toEqual({ state: 'ready', waitingOn: [] })
+    expect(stepViews(plan([step('p1', { after: ['nope', 'p1'] })]))[0]).toEqual({ state: 'waiting', waitingOn: ['p1'] })
   })
   it('does not hang or throw on a cycle, and nothing in it is ready', () => {
     const p = plan([step('p1', { after: ['p2'] }), step('p2', { after: ['p3'] }), step('p3', { after: ['p1'] }), step('p4')])
@@ -41,9 +41,9 @@ describe('stepViews', () => {
     const chained = plan([step('p1', { paths: ['src'] }), step('p2', { paths: ['src'], after: ['p1'] })])
     expect(stepViews(chained)[1].waitingOn).toEqual(['p1'])
   })
-  it('handles an empty plan and duplicate ids', () => {
+  it('handles an empty plan and duplicate ids (the second p1 names itself, so it waits, as in the host)', () => {
     expect(stepViews(plan([]))).toEqual([])
-    expect(stepViews(plan([step('p1'), step('p1', { after: ['p1'] })])).map((x) => x.state)).toEqual(['ready', 'ready'])
+    expect(stepViews(plan([step('p1'), step('p1', { after: ['p1'] })])).map((x) => x.state)).toEqual(['ready', 'waiting'])
   })
 })
 

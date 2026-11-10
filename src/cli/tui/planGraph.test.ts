@@ -37,6 +37,22 @@ describe('stepFlows', () => {
   })
 })
 
+describe('stepFlows path rule', () => {
+  const sp = (id: string, paths: string[], over: Partial<GraphStep> = {}): GraphStep => ({ id, status: 'pending', paths, ...over })
+  it('makes the later of two parallel steps that share a path wait for the earlier, like the host', () => {
+    const steps = [sp('p1', ['src/a']), sp('p2', ['./src/a/b.ts']), sp('p3', ['docs'])]
+    const f = stepFlows(steps)
+    expect(f.get('p1')).toEqual({ state: 'ready' })
+    expect(f.get('p2')).toEqual({ state: 'waiting', on: ['p1'] })
+    expect(f.get('p3')).toEqual({ state: 'ready' })
+    expect(readyCount(steps)).toBe(2)
+  })
+  it('does not order a step after its own ancestor, and frees the later step once the earlier is done', () => {
+    expect(stepFlows([sp('p1', ['src']), sp('p2', ['src'], { after: ['p1'] })]).get('p2')).toEqual({ state: 'waiting', on: ['p1'] })
+    expect(stepFlows([sp('p1', ['src'], { status: 'done' }), sp('p2', ['src'])]).get('p2')).toEqual({ state: 'ready' })
+  })
+})
+
 describe('namesText', () => {
   it('names at most two, then the rest', () => {
     expect(namesText(['A'])).toBe('A')
