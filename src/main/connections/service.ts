@@ -291,6 +291,11 @@ export class ConnectionService {
     return this.allIds().flatMap((id) => this.catalogFor(id))
   }
 
+  /** The last background discovery failure of a connection (ConnectionInfo.modelsError), or undefined. */
+  modelsErrorFor(id: ConnectionId): string | undefined {
+    return this.modelsErrors[id]
+  }
+
   /** The catalog of one connection, or of every enabled connection. */
   models(query?: ModelsQuery): ProviderModel[] {
     if (query?.connection !== undefined) this.need(query.connection)

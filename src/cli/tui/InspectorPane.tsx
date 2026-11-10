@@ -70,7 +70,10 @@ export function inspectorFacts(v: InspectorView, env: TuiEnv, width?: number): s
   const sep = ` ${g.bullet} `
   const out: string[][] = []
   const stats: string[] = []
-  if (v.model) stats.push(`model ${v.model}`)
+  // Every model the agent used (usage.models), not only the first; the connection when the run spans several.
+  const on = v.connection ? ` on ${v.connection}` : ''
+  if (v.models && v.models.length > 1) stats.push(`models ${v.models.join(', ')}${on}`)
+  else if (v.model) stats.push(`model ${v.model}${on}`)
   if (v.wall) stats.push(v.wall)
   if (v.tokensIn !== undefined && v.tokensOut !== undefined) stats.push(`${v.tokensIn} in / ${v.tokensOut} out`)
   if (v.cost) stats.push(v.cost)
@@ -78,9 +81,9 @@ export function inspectorFacts(v: InspectorView, env: TuiEnv, width?: number): s
   if (v.toolCalls !== undefined) stats.push(`${v.toolCalls} tool call${v.toolCalls === 1 ? '' : 's'}`)
   if (stats.length > 0) out.push([stats.join(sep)])
   if (v.staffing) {
+    // The label already names the model ("everyday (claude-sonnet-5-5) / medium").
     const st = v.staffing
-    const model = !v.model || v.model !== st.model ? `${sep}model ${st.model}` : ''
-    out.push([`staffing ${st.label}${sep}${st.reason}${st.model ? model : ''}`])
+    out.push([`staffing ${st.label}${sep}${st.reason}`])
   }
   if (v.activity || v.waiting > 0) {
     const act = v.activity || 'Waiting for you'

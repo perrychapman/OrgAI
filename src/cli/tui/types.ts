@@ -42,9 +42,11 @@ import type {
   CardKind,
   DecidedBy,
   DecisionOutcome,
+  Effort,
   HostKind,
   McpInstallRequest,
   MergeReview,
+  ModelTier,
   PendingCards,
   PermissionRequest,
   PermissionRuleRequest,
@@ -213,8 +215,18 @@ export interface OrgTreeRow {
   msgIn?: PeerCount[]
   /** A message to or from this agent in the last TUI_TRAFFIC_MS. */
   traffic?: boolean
-  /** Resolved staffing from the newest assignment for this agent ("everyday / medium"), sanitized. Dropped first when narrow. */
+  /**
+   * Resolved staffing from the newest assignment for this agent, without the model id ("everyday / medium"),
+   * sanitized. With `model` the row reads "everyday (claude-sonnet-5-5) / medium"; the id is cut first when narrow,
+   * then the whole text goes.
+   */
   staffing?: string
+  /** The newest assignment's tier and effort, so the row can rebuild the label around a cut model id. */
+  staffingPick?: { tier?: ModelTier; effort?: Effort }
+  /** The model this agent runs on (the assignment's model, else its live model), sanitized. */
+  model?: string
+  /** The connection the agent ran on, only when the run spans more than one connection. Sanitized. */
+  connection?: string
 }
 
 /** One peer of an agent's message traffic: its sanitized label and how many messages. */
@@ -241,6 +253,10 @@ export interface InspectorView {
   state: AgentState
   stateWord: string
   model?: string
+  /** Every model the agent used (usage.models plus its live model), when more than one. */
+  models?: string[]
+  /** The connection it ran on, when the run spans more than one. */
+  connection?: string
   wall?: string
   tokensIn?: string
   tokensOut?: string
@@ -343,6 +359,8 @@ export interface StatusSummary {
   statusWord?: string
   tone?: Tone
   costText?: string
+  /** The followed run's root model now (run.model / RunSummary.modelSelection, else the root agent's model). */
+  rootModel?: string
   needsYou: number
   liveRuns: number
   /** Agents working now and steps ready to start; only set (above zero) for runs with staffing data or a graph plan. */

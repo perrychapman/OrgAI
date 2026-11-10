@@ -274,3 +274,15 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `staffing` fact line; the plan pane adds running / ready / waiting-on (two titles, then "and N more") and the step's
     pick for plans where any step has `after`, `paths` or `staff`; the status bar adds "N working" and "N ready" (first
     segments to give way) for runs with staffing data or a graph plan. All run text goes through `safeLine`.
+- Seeing models (cli-parity 3.1, first two bullets; unit-tested, no live run): at a work run's start (not mock, not
+  setup-like) RunManager emits `runModelLogs` (`src/main/runtime/runModels.ts`): one `info` "Models: deep = <id>,
+  everyday = <id> (Anthropic); fast = <id> (OpenAI)" from the roles' `model` / `tier` on each role's connection, and
+  at most one `warn` "Model check: ..." for a tier on an older family member (`compareModelIds`: numeric tokens are
+  the version, the rest the family; dates, `[1m]`, provider prefixes set aside; cannot tell = no warning), on a
+  catalog entry whose `source` is not `discovered`, or on a connection with `modelsError` (RunManagerOptions
+  `modelsError`, ConnectionService `modelsErrorFor`). `exec` text prints warn / error logs and the Models line
+  (`execLogLine`, also from the snapshot's `logs`); the TUI makes the Models line a notice. `staffingLabel` reads
+  "everyday (claude-sonnet-5-5) / medium"; tree rows carry `model` / `staffingPick` / `connection` (the last only when
+  the run spans several connections) and `fitModelText` cuts the id first, then drops it, then the text. The
+  inspector lists every `usage.models` entry; the status bar and `runs show` (`Model:`) show the root's live model
+  (`run.model` now sets `summary.modelSelection` in `state.ts`).

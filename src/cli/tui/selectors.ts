@@ -18,7 +18,7 @@ import { commandSummary, isCompoundCommand } from './streamRows'
 import { roleRepresentatives, withTeamRows } from './teamRows'
 import { agentIdentityTone } from './identity'
 import { safe, safeLine } from '../output'
-import { latestByAgent, latestForStep, staffingLabel, staffingReason, stepRanText } from '../staffingText'
+import { latestByAgent, latestForStep, liveModelOf, modelsUsedBy, rootModelOf, runConnections, staffingLabel, staffingReason, stepRanText } from '../staffingText'
 import { readyCount, stepFlows, usesGraph } from './planGraph'
 import { isWorkingAgentState } from './activity'
 import { agentLabel, imageLabel, mediaLabel, pendingItems, resultPartsLabel, statusViewOf, toolNamesOf } from '../render'
@@ -432,9 +432,20 @@ export function orgTreeRows(s: TuiState, opts: OrgTreeOptions = {}): OrgTreeRow[
   const waiting = cardsByAgent(s)
   const paletteRoles = s.project?.roles ?? []
   const staffed = latestByAgent(run.staffing)
+  const multi = runConnections(run.summary, run.agents).length > 0
   let own: OrgTreeRow[] = treeOf(run, 0, false, false, options, waiting, trafficByAgent(run, opts.now ?? Date.now())).map(row => {
-    const pick = staffed.get(row.id)
-    return { ...row, identityTone: agentIdentityTone(paletteRoles, run.agents[row.id]), ...(pick && row.kind !== 'group' ? { staffing: staffingLabel(pick) } : {}) }
+    const agent = run.agents[row.id]
+    const pick = row.kind !== 'group' ? staffed.get(row.id) : undefined
+    // Model per agent (cli-parity 3.1): the assignment's model, else the live one; the label keeps tier and effort apart so the row can cut the id first.
+    const model = row.kind === 'group' || !agent ? '' : pick?.model ? safeLine(pick.model) : liveModelOf(agent)
+    const on = multi && agent && row.kind !== 'group' ? safeLine(agent.connection ?? run.summary.connection ?? '') : ''
+    return {
+      ...row,
+      identityTone: agentIdentityTone(paletteRoles, agent),
+      ...(pick ? { staffing: staffingLabel({ tier: pick.tier, model: '', effort: pick.effort }), staffingPick: { ...(pick.tier ? { tier: pick.tier } : {}), ...(pick.effort ? { effort: pick.effort } : {}) } } : {}),
+      ...(model ? { model } : {}),
+      ...(on ? { connection: on } : {})
+    }
   })
   if (opts.rootId !== undefined && run.agents[opts.rootId]) return own
   own = withTeamRows(own, roles, agents, run.summary.id)
@@ -610,7 +621,9 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
   const outTokens = u ? u.tokens.output : a.outputTokens
   const spent = promptTokens > 0 || outTokens > 0
   const cost = costView(agentCostInput(a))
-  const model = safeLine(a.model ?? u?.models?.[0]?.model ?? '')
+  const model = liveModelOf(a)
+  const used = modelsUsedBy(a)
+  const on = runConnections(run.summary, run.agents).length > 0 ? safeLine(a.connection ?? run.summary.connection ?? '') : ''
   const end = a.endedAt ?? now
   const traffic = trafficByAgent(run, now).get(agentId)
   const wt = a.worktree
@@ -623,6 +636,8 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
     state: a.state,
     stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
     ...(model ? { model } : {}),
+    ...(used.length > 1 ? { models: used } : {}),
+    ...(on ? { connection: on } : {}),
     ...(a.startedAt > 0 && end >= a.startedAt ? { wall: formatDuration(end - a.startedAt) } : {}),
     ...(spent ? { tokensIn: formatTokens(promptTokens), tokensOut: formatTokens(outTokens) } : {}),
     ...(cost.empty ? {} : { cost: cost.text }),
@@ -753,10 +768,12 @@ export function statusSummary(s: TuiState): StatusSummary {
   // A failed root turn leaves the run idle (it takes another message): say so instead of a plain Idle (issue #29 M5).
   const root = Object.values(run.agents).find((a) => a.parentId === null)
   const failedTurn = run.summary.status === 'idle' && root?.state === 'error'
+  const rootModel = rootModelOf(run.summary, run.agents)
   return {
     ...out,
     runTag: runTagOf(s, run.summary.id),
     runTitle: safeLine(runName(run.summary)),
+    ...(rootModel ? { rootModel } : {}),
     statusWord: failedTurn ? `${statusText(view)} · last turn failed` : statusText(view),
     tone: failedTurn ? 'danger' : (RUN_TONE[view.tone] ?? 'dim'),
     costText: cost.text

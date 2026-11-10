@@ -16,7 +16,8 @@
  *   settings (overridesWidening).
  * - The run's chain is followed (runs:subscribe, followChains) until a `run.finalized` for a followed run; the exit
  *   code is EXEC_OUTCOME_EXIT_CODE[outcome]. A snapshot that already carries summary.execOutcome ends at once.
- * - Output: text prints transcript rows and status words, then `<outcome> · <status> · <cost>`;
+ * - Output: text prints transcript rows, status words, run `log` events of level warn / error and the run-start
+ *   `Models:` info line (execLogLine), then `<outcome> · <status> · <cost>`;
  *   json prints one document at the end; stream-json prints every event, then a `result` line.
  * - SIGINT / SIGTERM: the first calls runs:stop on the newest followed run and waits up to 10 s for run.finalized,
  *   then exits 130 / 143; a second signal exits at once.
@@ -407,6 +408,19 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
   })
 }
 
+/**
+ * The text line for a run `log` event, or null when exec does not print it: every warn and error, and of the info
+ * logs only the run-start "Models: ..." line (cli-parity 3.1). Sanitized to one line.
+ */
+export function execLogLine(level: string, message: string, st: ReturnType<typeof styleFor>): string | null {
+  const text = safeLine(message)
+  if (!text) return null
+  if (level === 'warn') return `${st.yellow('Warning:')} ${text}`
+  if (level === 'error') return `${st.red('Error:')} ${text}`
+  if (level === 'info' && text.startsWith('Models: ')) return `${st.dim('Models:')} ${text.slice('Models: '.length)}`
+  return null
+}
+
 // ---------- Following ----------
 
 interface RunState {
@@ -497,6 +511,16 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
   let nextIndex = 1
   const printed = new Set<string>()
   const staffed = new Set<string>()
+  /** Log lines already printed (a resync snapshot carries the record's logs again). */
+  const logged = new Set<string>()
+  const printLog = (runId: string, level: string, message: string): void => {
+    if (json) return
+    const line = execLogLine(level, message, st)
+    const key = `${runId}:${level}:${message}`
+    if (line === null || logged.has(key)) return
+    logged.add(key)
+    printText(ctx, `${st.dim(tagOf(runId))} ${line}`)
+  }
   let lastActive: RunRecord | undefined
 
   const tagOf = (runId: string): string => {
@@ -615,6 +639,9 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
       case 'plan.updated':
         if (!json) printText(ctx, `${st.dim(tagOf(runId))} ${planUpdateLine(ev.plan)}`)
         return
+      case 'log':
+        printLog(runId, ev.level, ev.message)
+        return
       case 'staffing.updated':
         // One line per staffed report, once; json and stream-json carry the raw event instead.
         if (!json) {
@@ -665,6 +692,7 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
       const s = stateOf(active.summary.id, active.summary)
       s.agents = { ...active.agents }
       // Every row the run wrote so far (it started a moment ago); a resync prints only what was missed.
+      for (const l of active.logs ?? []) printLog(active.summary.id, l.level, l.message)
       for (const e of active.transcript) printEntry(active.summary.id, e)
       if (firstTime) printCards(active.summary.id, snap.pendingCards?.[active.summary.id])
     }
