@@ -1,15 +1,17 @@
 # Orchestration efficiency: adaptive staffing and parallel execution
 
-Status: draft 5, 2026-11-10. Decisions settled 2026-11-09: the owner accepted every recommendation in section 6 ("i
-agree with all your recomendations") and asked for execution. Phase 0 (measure) is done and changed the plan twice:
-the unforced baseline looked near native, so the ranking was redone (1.5) and the automatic one-assistant shape was
-dropped (4.1); the second campaign (1.1a) then showed that the near-parity was an effort mismatch, that Codex's own
-sub-agent rule stops the lead from delegating at all, and that the Claude adapter's lead delegates unprompted.
-Phases 1, 2, 4 and 5 are built on `feat/orchestration-efficiency` (section 8). The phase 1 lab rerun reported
-(1.1b): on Claude the lead now does small work alone, at 0.65x the time and 0.28x the cost of the base build, and
-the rerun found two defects outside the original plan that decide the mandated arm on Claude (a report's text is
-lost on SDK 0.3.318, so every required report counts as empty; each spawn pays for a permission check on the
-root's model).
+Status: executed, 2026-11-10 (design at draft 5). Decisions settled 2026-11-09: the owner accepted every
+recommendation in section 6 ("i agree with all your recomendations") and asked for execution. Phases 0 to 6 are
+done on `feat/orchestration-efficiency` (section 8); phase 3 closed without new mechanics. Phase 0 (measure)
+changed the plan twice: the unforced baseline looked near native, so the ranking was redone (1.5) and the automatic
+one-assistant shape was dropped (4.1); the second campaign (1.1a) then showed that the near-parity was an effort
+mismatch, that Codex's own sub-agent rule stops the lead from delegating at all, and that the Claude adapter's lead
+delegates unprompted. The phase 1 rerun (1.1b) found two defects outside the plan that decided the mandated arm on
+Claude (a report's text lost on SDK 0.3.318; a second permission check on every spawn the harness rewrites); both
+are fixed. The phase 6 comparison (1.1c, standing in section 7): a mandated team now completes in every run on
+both adapters, at a fifth of its earlier cost on Claude; a lead that keeps the work is at or near native on Codex
+and ahead of native on Claude from medium tasks up; not reached are a split that beats native, the mandated
+targets on a one-minute task, and the tail target. D5 (review by risk) shipped narrower than decided (section 6).
 
 Base: `origin/dev` at `aad24c38` (PR #41, required delegation). Every code fact below was read from that commit with
 `git show`, not from the local `dev` checkout, which is 310 commits behind it and lacks the delegation runtime.
@@ -161,6 +163,114 @@ Codex adapter at medium effort, P1 only (3 / 3 / 1 runs), against native Codex a
   that touch no OrgAI path. Each costs a round trip. It fails closed by design and is not changed here (section 10).
 - Effort: every root, report and title call on Claude carried medium on both builds.
 
+### 1.1c Phase 6 comparison (`phase2-20261110T093906Z`, reruns `phase2d-20261110T105108Z` and `phase2e-20261110T113308Z`)
+
+Builds: P2 is `377d4e55` (phases 1, 2, 4 and 5 with the two fixes of 1.1b); P2c is `26241714` (P2 plus the Codex
+start fix below); P2d (`40f7fc67`) and P2e (`69e8602e`) each reword the sizing rule once (below). The main campaign
+ran the Claude-adapter cells on P2 and the Codex-adapter cells on P2c: 23 trials, every one passed its hidden
+tests, $7.85. A fourth task joined the lab for the split target: "freight", four modules behind a fixed contract,
+41 hidden tests. Everything ran at medium effort; the root is Opus on Claude and the deep tier on Codex, reports
+are Sonnet and the everyday tier.
+
+Native references: Claude Code ledger 42.4 s $0.167, inventory 207.2 s $0.850, modules 83.5 s $0.376; Codex ledger
+55.8 s $0.045, inventory 138.5 s $0.120, dashboard 455.9 s $0.332, modules 109.9 s $0.074.
+
+| Claude adapter, P2 (runs) | Median | Against Claude Code (time, cost) | What ran |
+|---|---|---|---|
+| Ledger, unforced (3) | 52.2 s, $0.238 | 1.23x, 1.43x | the lead alone, 3 of 3 |
+| Inventory, unforced (2) | 142.5 s, $0.641 | 0.69x, 0.75x | the lead alone, 2 of 2 |
+| Modules, unforced (1) | 72.8 s, $0.370 | 0.87x, 0.99x | the lead alone |
+| Ledger, required reports (2) | 91.6 s, $0.435 | 2.16x, 2.60x | completed; implementer then reviewer, once each |
+| Inventory, required reports (1) | 263.1 s, $0.889 | 1.27x, 1.05x | completed; implementer then reviewer, once each |
+
+| Codex adapter, P2c (runs) | Median | Against native Codex (time, cost) | What ran |
+|---|---|---|---|
+| Ledger, unforced (3) | 61.1 s, $0.077 | 1.09x, 1.72x | the lead alone, 3 of 3 |
+| Inventory, unforced (3) | 275.3 s, $0.369 | 1.99x, 3.09x | an implementer and a reviewer in 3 of 3 |
+| Dashboard, unforced (1) | 814.1 s, $0.729 | 1.79x, 2.20x | an implementer on a slice, then a reviewer |
+| Modules, unforced (1) | 146.2 s, $0.166 | 1.33x, 2.25x | one implementer for all four modules |
+| Ledger, required reports (2) | 94.4 s, $0.138 | 1.69x, 3.07x | completed |
+| Inventory, required reports (1) | 198.4 s, $0.243 | 1.43x, 2.03x | completed |
+| Dashboard, required reports (1) | 703.6 s, $0.579 | 1.54x, 1.74x | completed |
+
+- **A mandated team now completes.** All 7 mandated runs ended `completed` with every required receipt valid
+  (2 of 7 at baseline on Codex, none on Claude before the report-text fix). On Claude each receipt carries the
+  report's text (2.1k to 3.5k characters), the pair ran once, each run's log ends "Spawns: 2, rewritten by the
+  harness: 0" and no second check request was sent. The mandated ledger on Claude went from 128.2 s and $2.06 at P1
+  to 91.6 s and $0.435 (0.71x, 0.21x).
+- **A small mandated task stays above the target.** Two reports cost a fixed 40 to 50 s (start, read the brief
+  and the code, report back) on a task the lead finishes alone in 50 to 60 s: ledger 2.16x / 2.60x on Claude,
+  1.69x / 3.07x on Codex. The ratio falls as the task grows: inventory 1.27x / 1.05x on Claude and 1.43x / 2.03x
+  on Codex, dashboard 1.54x / 1.74x on Codex.
+- **The tail target is missed in every mandated run** (37% to 89% of the run comes after the first wave of
+  reports). On the chart tested the reviewer needs the implementer's result, so the two required reports cannot
+  overlap and the review is always tail. On the dashboard the number says something else: the implementer got a
+  55 s slice (filters, export, the dialog), the lead built the rest itself and sent the reviewer at 463 s, so most
+  of the "tail" is the lead's own building.
+- **On Claude the lead works alone when nothing forces a team** (6 of 6), and that is faster and cheaper than
+  Claude Code on the two larger tasks. The ledger stays at 1.23x and 1.43x: about 10 s more, and 11 to 13
+  requests against 6. One to four of them per run follow a shell command refused by the self-control gate (the
+  false refusals of 1.1b), each a wasted round trip; no report was spawned and no second check was sent.
+- **No parallel fan-out on Claude.** The lead never split, including on the module task, where doing all four
+  modules alone took 72.8 s against 83.5 s native. The overlap target was not exercised there.
+- **On Codex, switching off the native tools exposed a different lead.** With Codex's own "do not spawn
+  sub-agents" rule gone the lead still does the ledger alone, but on the inventory it handed out work in 3 of 3
+  runs: it made the fix itself and at the same time gave an implementer "focused regression tests" for that fix,
+  then sent a reviewer because work had been handed out, then went round again on the findings. 1.99x the time and
+  3.09x the cost of native, where P1 was at 1.07x and 1.13x with the lead alone. The module task went to one
+  implementer while the lead waited (the case the sizing rule names as slower than doing it alone).
+- **Starting several Codex app-servers at once could silently undo the native-tools switch.** All app-servers of
+  a run share one `CODEX_HOME`, and concurrent starts race on Codex's sqlite state ("failed to initialize sqlite
+  state runtime"). OrgAI treated any failed start as "this Codex rejects the catalog override", dropped the
+  override for the whole process and deleted the catalog file another server had been launched with. In the lab's
+  stub the override was lost in 14 of 15 runs and 7 failed. Fixed in P2c: one start at a time per home (a lock
+  with a 60 s ceiling), a failed start no longer deletes the file, and the override is only given up for the
+  process when a start without it works and the error names the catalog. After the fix: 15 of 15 kept the
+  override, no start errors, start time 293 ms against 297 ms serialized. Every Codex run in the campaign had the
+  override active.
+- **Fixed overhead.** Codex: a team root's first call is 15.4k to 16.7k input tokens, 3.9k above native (target
+  4k); a report's is 10.5k to 11.1k, below a native session's; a run ends 70 to 90 ms after its last response.
+  Claude: root first call 20.9k to 22.5k, a report 7.7k to 10.0k, run end 150 to 190 ms (target 150). A response
+  that touches only the plan still happens about once per run on both adapters.
+
+**The two rewording passes.** The Codex inventory result was traced to the sizing paragraph, which opened with the
+split test and listed tests and review as things to run beside the work: a lead that had decided to keep the work
+still found "pieces" to hand out. P2d put the decision in order (the sizing rule decides first; work kept is done
+alone; the parallel, contract and review sentences apply to handed-out work) and limited review by risk to
+handed-out work. P2e made the split test apply to "what the brief asks for", added "Tests and checks of your own
+work are part of it, never pieces to hand out", and changed the team listing from "Delegate to them with the Agent
+tool" to "To hand work out, use the Agent tool" (required reports keep their unconditional line). Each pass was
+rerun once on a subset (12 trials, $3.89; then 11 trials, $2.98; every trial passed its hidden tests):
+
+| Cell (runs on P2 or P2c; the reruns have 1 unless noted) | P2 / P2c | P2d | P2e |
+|---|---|---|---|
+| Codex inventory, unforced (3, 3, 3) | 275.3 s, $0.369; handed out in 3 of 3 | 214.0 s, $0.276; handed out in 3 of 3, reviewer in 2 | 153.9 s, $0.125; alone in 2 of 3 |
+| Codex ledger, unforced (3) | 61.1 s, $0.077 | 67.0 s, $0.081 | 60.3 s, $0.079 |
+| Codex dashboard, unforced | 814.1 s, $0.729 | 521.7 s, $0.518 | 686.2 s, $0.559 |
+| Codex modules, unforced | 146.2 s, $0.166; one implementer does all four | 117.8 s, $0.221; three implementers together | 128.4 s, $0.149; the lead and one implementer side by side |
+| Codex ledger, required (2) | 94.4 s, $0.138 | 90.8 s, $0.130 | 98.1 s, $0.113 |
+| Codex inventory, required | 198.4 s, $0.243 | 308.4 s, $0.384 | 239.5 s, $0.260 |
+| Claude ledger, required (2) | 91.6 s, $0.435 | 103.1 s, $0.423 | 95.8 s, $0.404 |
+| Claude ledger, unforced (3) | 52.2 s, $0.238 | 51.8 s, $0.247 | 68.8 s, $0.319 |
+| Claude inventory, unforced (2) | 142.5 s, $0.641 | 178.6 s, $0.787 | 155.3 s, $0.698 |
+| Claude modules, unforced | 72.8 s, $0.370 | 65.2 s, $0.336 | not run (budget guard) |
+
+- **The Codex inventory is back to the lead's own work**: on P2e the median is 1.11x the time and 1.05x the cost
+  of native (P1, with the lead alone: 1.07x and 1.13x). Two of the three runs had no report. In the third the lead
+  gave an implementer one slice of the fix (validation) and worked beside it for 32 s. No run on P2e handed out
+  tests of the lead's own change, and none called a reviewer.
+- **Nothing else moved outside its run-to-run spread.** Claude stayed alone in every unforced run on every build,
+  and every mandated run on every build completed with valid receipts and, on Claude, no rewritten spawn. The slow
+  Claude ledger run on P2e (68.8 s) is seven self-control gate refusals in one run, not a report.
+- **Splitting is not settled.** On the module task the Codex lead used one implementer for everything, then three
+  at once (117.8 s, 1.07x native, overlap 2.61, the only run in the comparison with reports overlapping that
+  much), then one beside itself; on the dashboard an implementer got a slice each time and the run took 814, 522
+  and 686 s against 456 s native. No split run reached the native time.
+- **Findings going back through the reports is the slow path.** On the mandated Codex inventory the reviewer ran
+  once on P2c (198 s), three times with a second implementer on P2d (308 s) and twice on P2e (240 s).
+
+Lab spend for the comparison: $14.73 of a $20 cap (7.85 + 3.89 + 2.98).
+
 ### 1.2 Pilots: the team mandated (`native-vs-orgai-pilot-20261109`, `complex-pilot-20261109T092758Z`, `dashboard-pilot-20261109T173008Z`)
 
 One run per arm, OrgAI at `7a988037`. The drivers (`.tmp/*-orgai-pilot.mjs`) set `requiredReports` to every report,
@@ -247,6 +357,12 @@ Not established yet: a mandated pipeline that actually runs on the default chart
 native tools off, Claude needs the report text, both built since), whether the lead now splits work that splits,
 and the cost of worktree isolation. These are the phase 6 comparison.
 
+After the phase 6 comparison (1.1c): the mandated pipeline runs and completes on the default chart on both
+adapters, and on Claude it costs a fifth of what it did; a lead that keeps contained work to itself is at or near
+native on Codex and ahead of native on Claude from the inventory's size upward; the lead does not yet split work
+that splits in a way that beats native, and a mandated team on a one-minute task still costs about twice the
+native run. Worktree isolation was not measured.
+
 ## 2. Current behaviour (origin/dev, read 2026-11-09)
 
 - **Model and effort are per role and fixed.** `Role.tier`, `Role.model`, `Role.effort` (`src/shared/types.ts`).
@@ -324,6 +440,15 @@ and yielding to it ("unless your instructions, the brief or required reports say
   the whole; a lone report doing the entire task while you wait is slower than doing it yourself and is right only
   under the `cost` goal, on a cheaper tier.
 - Ask for review by risk, not by habit (4.4).
+
+As built after phase 6 (1.1c) the paragraph reads in decision order. The sizing sentence comes first and decides
+whether anything goes out at all; the split test applies to "what the brief asks for"; "Tests and checks of your
+own work are part of it, never pieces to hand out"; the parallel, contract and review sentences then speak only of
+handed-out work, and the staffing instruction opens "give each step you hand out (the rule above decides if any)".
+The team listing says how to hand work out ("To hand work out, use the Agent tool, passing subagent_type exactly
+as written") where it used to say "Delegate to them"; a role with required reports keeps its unconditional "You
+must delegate to ..." line. The earlier order, split test first with tests and review listed as things to run
+beside the work, made the Codex lead hand out tests of its own change on a task it had decided to keep.
 
 `defaultRoles` and the Architect guidance in `setup.ts` get the same wording for new projects, in place of "Delegate
 implementation, review and testing to your specialist reports instead of doing everything yourself"; stored charts
@@ -466,6 +591,11 @@ slot and nobody on it), the critical path's length against the run's, time to fi
 - A reviewer's findings go back to the agent that wrote the code (a message to a live report, or one new spawn),
   not to the lead to repair by hand.
 
+After phase 6: under `risk` the conditions about the change (sensitive code, a large diff, a failed verification)
+apply to handed-out work, and the lead's own work is reviewed only when a rule or the brief demands it; the
+sentence ends "else verify and finish". `always` is unchanged and still covers the lead's own work. The last two
+bullets above are not built (section 8, phase 3).
+
 ### 4.5 Project profile
 
 `<data>/staffing/<projectId>.json`, written by RunManager at run end from what it already holds: the plan (steps,
@@ -593,6 +723,13 @@ the lead already works alone when nothing forces a team (1.1, 4.1). The shape is
 effect. This follows the gate rule of phase 0 below and was not a new question to the owner; it can be revisited
 if `baseline2` or the Claude arm shows a team root that does not behave this way. D1, D2 and D5 to D9 stand.
 
+**After Phase 6.** D5 is narrower than decided. "By risk" was written for any change; as shipped, the risk
+conditions apply to work the lead handed out, and work the lead did itself is reviewed only when a rule or the
+brief asks for it (4.4, 1.1c). The reason is measured: a lead that had done the work alone still called a reviewer
+for it, and on Codex that review round was most of a 2x. A project that wants every change reviewed sets
+`reviewPolicy: 'always'`; restoring the wider default is a one-sentence change in `reviewPolicyText`. This is the
+owner's to reverse.
+
 ## 7. Acceptance
 
 Revisited at the Phase 0 gate and once more when `baseline2` reported (1.1a), which filled in the baselines and
@@ -642,6 +779,29 @@ Standing after phase 1 (1.1b; the targets are judged on the phase 6 comparison, 
 | Root first call within 4k of native | about 5k above | not comparable (no native count) |
 | Run end within 150 ms | 60 to 80 ms | 130 to 180 ms |
 
+Standing after phase 6 (1.1c). Ratios are against the same adapter's native arm; where the rewording changed a
+cell, the last rerun (P2e) is given beside the main campaign:
+
+| Target | Codex adapter | Claude adapter |
+|---|---|---|
+| Small and medium: time within 1.15x | ledger 1.09x, met; inventory 1.99x on P2c, 1.11x on P2e, met there | ledger 1.23x, not met; inventory 0.69x, met |
+| Small and medium: cost within 1.25x | ledger 1.72x, not met; inventory 3.09x on P2c, 1.05x on P2e, met there | ledger 1.43x, not met; inventory 0.75x, met |
+| The lead works alone on them | ledger 5 of 5; inventory 0 of 3 on P2c, 2 of 3 on P2e, not met | 9 of 9 over all builds, met |
+| Work that splits: at or below native | not met: dashboard 1.79x, 1.14x, 1.51x; modules 1.33x, 1.07x, 1.17x (P2c, P2d, P2e) | modules 0.87x and 0.78x without splitting; no dashboard run |
+| Work that splits: overlap at least 1.5 when it delegates | once (modules on P2d, 2.61); 1.0 in the other five split runs | never delegated |
+| Work that splits: cost within 1.25x | not met: 1.6x to 3.0x | modules 0.99x and 0.89x |
+| Mandated: every run completes, receipts valid | 4 of 4, and 4 of 4 in the reruns, met | 3 of 3, and 2 of 2 in the reruns, met |
+| Mandated: time at most 1.5x, cost at most 2x | ledger 1.69x / 3.07x, not met; inventory 1.43x / 2.03x; dashboard 1.54x / 1.74x | ledger 2.16x / 2.60x, not met; inventory 1.27x / 1.05x, met |
+| Mandated: tail under 35% | not met, 37% to 89% | not met, 39% to 66% |
+| Mandated: required reports that do not need each other overlap | not exercised: the reviewer needs the implementer's result | not exercised |
+| Root first call within 4k of native, a report within 2k | 3.9k above, met; a report is below native, met | no native count to compare (20.9k to 22.5k; a report 7.7k to 10.0k) |
+| Run end within 150 ms | 70 to 90 ms, met | 150 to 190 ms, not met |
+| Quality: no task loses pass rate | every trial passed its hidden tests (46 of 46 over the three campaigns) | same |
+
+In short: the mandated arm went from never completing to always completing, and the lead's own work is at or near
+native on Codex and at or ahead of it on Claude except on the smallest task. Not reached: a split that beats
+native, the mandated targets on a one-minute task, and the tail target as written (section 10).
+
 ## 8. Phases
 
 0. **Measure. Done 2026-11-10.** `RunUsage.efficiency` (`runUsage.ts`); `scripts/measure-prompt-size.mjs`;
@@ -663,15 +823,22 @@ Standing after phase 1 (1.1b; the targets are judged on the phase 6 comparison, 
    (added after `baseline2`). Reviewer pass on team files and anything that can raise spend. Gate: lab rerun of
    arms 6 and 7 on both adapters, run once as the phase 6 comparison, after the two fixes of 1.1b (a report's text
    on Claude, spawns that need no rewrite) so the mandated arm is measured on a build where it can complete.
-3. **Review policy.** The policy sentence ships with the rubric in phase 2. What is left here is checked against
-   the phase 2 lab rerun: verification once per integrated result and findings going back to the author, as prompt
-   rules first, as mechanics only if the rerun shows the lead still redoing the work.
+   Added at that gate: a spawn's plan step is marked running when its report starts and kept running while the
+   report works; Codex app-servers start one at a time per home (1.1c).
+3. **Review policy. Closed without new mechanics.** The policy sentence shipped with the rubric in phase 2 and
+   was narrowed at the phase 6 gate to handed-out work (4.4). The condition for building more was a lead that
+   redoes its reports' work, and the comparison did not show one: in the mandated runs on Claude the lead applied
+   the reviewer's small finding itself, verified once and finished. Verification once per result and findings
+   going back to the author are therefore not built. The one run where findings did go back through the reports
+   (Codex, inventory, required, on P2d: implementer and reviewer two to three times each) took 308 s against
+   198 s for the run where the lead fixed the finding itself.
 4. **Profile. Built.** `staffingProfile.ts`, the resolver default, the staffing brief; written at run end and read
    at run start by RunManager, never on quick, Ask, setup, build or fixed-staffing runs.
 5. **Surfaces. Built.** Run view, TUI, CLI `--goal`, Team tab, usage, the New run page's goal; e2e selectors in
    the same change (`runs.mjs`, `team.mjs`, `team-files.mjs`, `usage.mjs`, `cli-tui.mjs`, `cli-exec.mjs`).
-6. **Gate.** The full comparison against section 7; `docs/agent-notes/core-runtime.md`, `sdk-facts.md` and
-   `.orgai/ARCHITECTURE.md`.
+6. **Gate. Done 2026-11-10.** The full comparison against section 7 is 1.1c, with the standing in section 7;
+   two rewording passes of the sizing rule came out of it. `docs/agent-notes/core-runtime.md`, `sdk-facts.md`,
+   `permissions.md`, `connections-mcp.md` and `.orgai/ARCHITECTURE.md` carry the facts.
 
 Each phase lands on dev behind `Project.staffing` where it changes behaviour for stored projects, after the local
 gate (typecheck, the whole unit suite, build, the e2e scripts for the area). Work starts from `origin/dev` in its
@@ -702,10 +869,27 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
 
 ## 10. Risks and open items
 
-- The evidence is small: three runs per cell, one on the dashboard, one run per arm for the mandated pilots, and
-  one run per build for the Claude adapter's inventory and mandated cells (1.1b).
-- The self-control gate's false refusals on the Claude adapter (1.1b) cost a round trip each and are not addressed
-  here: the gate fails closed on purpose, and loosening what it can parse is a security change with its own review.
+- The evidence is small: at most three runs per cell, one on the dashboard and the module task, and each rewording
+  pass was checked by one rerun of a subset (1.1c). The spread inside one cell is as large as some differences
+  read between cells (Claude ledger, unforced: 47 to 69 s over five runs).
+- The self-control gate's false refusals are the largest avoidable cost left on a small Claude run: one to four
+  per unforced ledger run on P2 and seven in one run on P2e (68.8 s against a 52 s median), each a wasted round
+  trip, and the lead retries with variations. They are not addressed here: the gate fails closed on purpose, and
+  changing what it accepts is a security change with its own review. A case for that review: with no protected
+  path involved, `commandRunsOrgaiCli` returns true for `python3 -c "import ledger; E=[dict(id='t',revision=2,
+  account='x',cents=-3,status='posted')]; print(ledger.balances(dict(x=0,z=5),E))"`, which names nothing of
+  OrgAI's; each of its two statements alone passes.
+- A mandated team on a small task has a fixed cost that staffing cannot remove: two reports take 40 to 50 s
+  between them to start, read and report on a task the lead finishes in under a minute (1.1c). The 1.5x and 2x
+  targets are met from the inventory's size upward on Claude and nearly on Codex. Making a required report
+  cheaper on trivial work means changing what "required" promises, which is the owner's decision and not part of
+  this spec.
+- `tailMs` counts everything after the first wave of reports. It reads as handover cost only when the lead waits
+  for its reports; a lead that builds beside a small slice shows a long "tail" that is its own work (the
+  dashboard, 1.1c). The tail target should be restated on time after the last report before it is used again.
+- The team listing no longer says "Delegate to them". That line reaches every role with reports, and only the
+  root of the default chart has lab runs behind it: a mid-level lead or a setup root whose own prompt does not
+  tell it to delegate may now do more itself.
 - The spawn check under `auto` is a safety check. This work stops triggering a second copy of it by not
   rewriting well-formed spawns; it does not remove it, and answering `allow` for a spawn from the hook (which
   would) is the owner's decision, not taken here. A lead that ignores the guidance still pays for the rewrite, a
@@ -713,11 +897,16 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
   local check's tokens are in no usage figure OrgAI shows.
 - Switching off Codex's native multi-agent tools rests on a debug command (`codex debug models`) and a catalog
   field name, checked on Codex 0.167 only. It fails open, and then the prompt sentence is all that stands against
-  Codex's rule; whether that sentence is enough is unmeasured.
-- The sizing rule could make the lead delegate small work it does well alone today. The unforced targets in
-  section 7 require the ledger and the inventory to stay one-agent runs.
-- Asking for parallel fan-out does not make a split good. The dashboard pilot split 144 s against 422 s. The
-  "longest piece" rule and the profile's history are the mitigation; overlap and tail are measured per run.
+  Codex's rule; whether that sentence is enough is unmeasured. With the tools off the lead is readier to delegate
+  than a native session, and the sizing wording alone holds it back; that wording was tuned on four tasks.
+- The sizing rule could make the lead delegate small work it does well alone today. It did, on Codex, once the
+  native tools were off (1.1c); two rewordings brought the inventory back to 2 of 3 runs alone and to native's
+  time and cost on the median. That is three runs on one task. A different model, a different task or a later
+  edit of the paragraph can bring it back, which is why its sentences and sizes are pinned in `prompts.test.ts`.
+- Asking for parallel fan-out does not make a split good. The dashboard pilot split 144 s against 422 s. In the
+  comparison the Codex lead split the module task three different ways in three runs and the Claude lead never
+  split; no split run beat native. The "longest piece" rule and the profile's history are the mitigation; overlap
+  and tail are measured per run. This is the part of the goal the work has not delivered.
 - An under-powered pick that fails and retries can cost more than starting higher. The profile learns this; until
   it has data the rubric keeps implementation on everyday / medium.
 - More parallel writers mean more merge conflicts. `paths` and the overlap warning are the mitigation; conflicts per
@@ -725,10 +914,10 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
 - Parallel fan-out against a subscription or a rate-limited key can stall. The width rule in 4.2 is the mitigation;
   it is untested against a real limit.
 - Verified by `scripts/smoke-staffing.mjs` (one run each, haiku and sonnet, Max login): aliases and effort through
-  `updatedInput`, foreground spawns in one message running together, root effort through `Options.effort`. Still
-  unverified: whether the root batches its spawns into one message (the phase 1 rerun had one run with reports;
-  its second pair ran together, its first did not), the tier variables on a subscription login, and all of it on
-  Codex. Plan calls: batched on Codex, not on Claude (1.1b).
+  `updatedInput`, foreground spawns in one message running together, root effort through `Options.effort`. Seen
+  once in the lab on Codex: three reports started together (modules on P2d, 1.1c). Still unverified: whether a
+  Claude root batches its spawns into one message when it does split (it never split in the comparison), and the
+  tier variables on a subscription login. Plan calls: about one plan-only response per run on both adapters.
 - Effort on Codex: an unset effort runs at `low` and OrgAI sends nothing above high. The lab drivers sent xhigh at
   the protocol level and it was applied, so the limit is OrgAI's; lifting it is a small follow-up and automatic
   staffing does not need it. Applying the root's effort on Claude changes what an effort-less report gets unless

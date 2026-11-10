@@ -64,11 +64,22 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   fields `PlanStep.after / paths / staff`, `Role.staffing`, `Project.staffing / staffingGoal / reviewPolicy` and
   `RunEfficiency.readyIdleMs` exist; stored values are cleaned on read (ProjectStore `sanitizeRoleModels` /
   `withCleanAllowedDirectories`; `normalizeRunRecord` runs `cleanPlanStepGraph` and `cleanRunStaffing` on stored
-  records, also on `get()` of a live run). Nothing writes staffing yet, the plan tools do not call `cleanPlanStepGraph`
-  yet, and nothing computes `readyIdleMs`. The renderer store and TUI keep the latest `staffing` on the run; exec,
-  logs and notifications ignore the event. Checked by unit tests only (`src/shared/staffing.test.ts`,
-  `runManagerStaffing.test.ts`, `staffingGoalOverride.test.ts`, projects, runUsage, bridge, TUI state and renderer
-  store tests); no live run.
+  records, also on `get()` of a live run). Rows are written by the adapters at spawn time through `recordStaffing(ctx,
+  row)` in `runtime/staffing.ts` (Claude's spawn hook, Codex `spawn_report`, the mock), which also marks the row's plan
+  step `in_progress` when it is still `pending`; `set_plan` / `update_plan` run `cleanPlanStepGraph` and keep such a
+  step `in_progress` while its report works (`boundStepIds`, "kept in_progress (a report is working on it)"). Nothing
+  computes `readyIdleMs` yet. The renderer store and TUI keep the latest `staffing` on the run; exec, logs and
+  notifications ignore the event. Unit tests (`src/shared/staffing.test.ts`, `runManagerStaffing.test.ts`,
+  `staffingGoalOverride.test.ts`, projects, runUsage, bridge, TUI state and renderer store tests) and the lab runs of
+  2026-11-10 (spec 1.1c: rows on both adapters, source `orchestrator` and, on Codex, `clamped`).
+- When the lead hands work out (2026-11-10, spec 4.1, 4.4, 1.1c; `prompts.ts` `teamSizingText`, `reviewPolicyText`,
+  `reportsText`): the root's sizing paragraph is in decision order and its wording was changed twice on lab evidence,
+  so read 1.1c before touching it. The sizing sentence decides first; the split test applies to "what the brief asks
+  for"; "Tests and checks of your own work are part of it, never pieces to hand out"; the parallel, contract and
+  review sentences speak only of handed-out work; review by risk covers the lead's own work only when a rule or the
+  brief demands it. The team listing says how ("To hand work out, use the Agent tool"), not that the lead must;
+  required reports keep "You must delegate to ...". Sizes are pinned in `prompts.test.ts`. Lab-checked on the root of
+  the default chart only; a mid-level lead and a setup root get the new listing line with no live run behind it.
 - Staffing profile wiring (2026-11-10, spec 4.5, D8): `store/staffingProfile.ts` holds the lifecycle helpers.
   `staffingProfileApplies(summary, project)` = kind 'work', not quick, not Ask (`team: 'single'`), no buildWorkspace,
   not a virtual project, `staffingModeOf` 'auto'. Read: RunManager reads `<data>/staffing/<projectId>.json` once at
