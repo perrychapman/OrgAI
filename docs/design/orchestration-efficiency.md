@@ -347,16 +347,26 @@ slot and nobody on it), the critical path's length against the run's, time to fi
   `tierModels` name; when a tier is mapped to another id the session gets the same variables, and a Phase 2 smoke
   check confirms they apply on a subscription login before that case is switched on (until then such a role keeps
   its definition's model). The plan guard's steer moves to the same path, which fixes its failure on a tier mapped
-  to a full id. A `fixed` role on a concrete model keeps its definition's model and gets no `model` at spawn. The root's effort goes on `Options.effort` when the session is
-  built; because a report without an effort inherits that value, the gate writes an effort on every spawn. Codex:
+  to a full id. A `fixed` role on a concrete model keeps its definition's model and gets no `model` at spawn. A
+  `fixed` role, and every role of a `fixed` project, runs at its configured model and effort: an alias or an effort
+  the orchestrator puts on the spawn call is dropped (it passed through before this work, so a fixed project could
+  run a report above its chart), and only the plan guard may change the model. An automatic `inherit` role always
+  gets its resolved tier's alias, because the SDK's typings disagree on whether `inherit` means the main model or
+  the parent's. The root's effort goes on `Options.effort` when the session is built; because a report without an
+  effort would take the CLI's per-model default or a project settings file's value, an automatic role always gets
+  an explicit effort (the resolved one, else medium, never above its ceiling). Codex:
   `spawn_report` gains optional `tier` and `effort`; the thread starts on the resolved model and each message
   carries the resolved effort. A bridged role keeps its chart's tier and effort in phase 2: its child session is
   built by RunManager on another connection, and a pick would have to cross `bridge.spawn`. Mock implements the
   whole path.
 - Bookkeeping shared by the three adapters is `runtime/staffingBook.ts`, pure like the resolver: which plan step a
   spawn belongs to, the tier its parent resolved to (the ceiling of an `inherit` role), and retries. A spawn for a
-  step that is still open after its earlier attempt ended is a retry and goes one step up; a spawn while an
-  attempt is live shares the step (fan-out) and its pick. The adapters keep only the mechanics.
+  step that is still open after its earlier attempt failed is a retry and goes one step up, at most twice per step
+  id whatever edits the step's title or role get. After an attempt that ended without failure the next spawn is a
+  plain new attempt: raising it is the orchestrator's call, on the spawn or on the step (the review of 2026-11-10
+  found that any ended attempt counted, so a report that succeeded on a step not yet marked done raised the next
+  one). A spawn while an attempt is live shares the step (fan-out) and its pick. The adapters keep only the
+  mechanics.
 - The rubric (about eight lines in the root prompt, and an explicit instruction to set model and effort on every
   spawn, which the SDK tool otherwise discourages):
   - fast: search, mechanical edits, running checks, summaries;
@@ -445,7 +455,8 @@ Measured in Phase 0 (`scripts/measure-prompt-size.mjs`, token-free; the baseline
 ## 5. Contract (a "Run staffing" section in `src/shared/types.ts`)
 
 - `RoleStaffing`, `Role.staffing?`; `ReviewPolicy`, `Project.reviewPolicy?`; `StaffingGoal`,
-  `Project.staffingGoal?`; `Project.staffing?: 'auto' | 'fixed'` (`fixed` restores today's behaviour exactly);
+  `Project.staffingGoal?`; `Project.staffing?: 'auto' | 'fixed'` (`fixed` runs every role at its configured model
+  and effort, as before this work, except that a model or effort on the spawn call no longer passes through; 4.3);
   `RunOverrides.goal?`, carried like `strictDelegation` (socket and in-process clients set it; the desktop start
   handler drops overrides today, so a desktop per-run goal is part of phase 5).
 - `PlanStep.after?`, `PlanStep.paths?`, `PlanStep.staff?`.
