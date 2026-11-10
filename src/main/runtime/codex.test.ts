@@ -240,6 +240,115 @@ describe('CodexAdapter session', () => {
     await session.stop()
     await expect(session.switchModel!({ model: 'gpt-next' })).rejects.toThrow('not live')
   })
+  describe('live permission mode (setPermissionMode)', () => {
+    const idleRoot = async (s: FakeServer) => {
+      s.push('turn/completed', turnDone('th-1', 'tu-1'))
+      await vi.waitFor(() => expect(session!.settlement!().rootIdle).toBe(true))
+    }
+    const spawnEngineer = (s: FakeServer, callId: string) =>
+      s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId, namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
+
+    it('refuses while the root is in a turn, then applies from the argument and the next root turn/start carries the policy', async () => {
+      const { adapter, servers } = setup()
+      const ctx = ctxFor({ autoContinue: false })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await expect(session.setPermissionMode!('dontAsk')).rejects.toThrow('when a turn starts')
+      await idleRoot(s)
+      // ctx.project still holds 'default' (RunManager sets it after a widening answers); the adapter reads `mode`.
+      await expect(session.setPermissionMode!('dontAsk')).resolves.toBe(true)
+      expect(ctx.project.permissionMode).toBe('default')
+      expect(s.of('thread/start')).toHaveLength(1)
+      await session.send('Go on')
+      // The root (no write tools) stays read-only, so only the approval policy moves.
+      const params = s.turnStarts('th-1').at(-1).params
+      expect(params).toMatchObject({ approvalPolicy: 'never' })
+      expect(params).not.toHaveProperty('sandboxPolicy')
+      // Sent once: the following turn carries no override.
+      s.push('turn/completed', turnDone('th-1', 'tu-2'))
+      await vi.waitFor(() => expect(session!.settlement!().rootIdle).toBe(true))
+      await session.send('Again')
+      expect(s.turnStarts('th-1').at(-1).params).not.toHaveProperty('approvalPolicy')
+    })
+
+    it('counts a report inside a turn as unchanged on a narrowing, moves it on its next turn, and a later spawn starts in the new mode', async () => {
+      const { adapter, servers } = setup()
+      const ctx = ctxFor({ autoContinue: false })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await spawnEngineer(s, 'c-1')
+      await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
+      await idleRoot(s)
+      // A narrowing: RunManager sets ctx.project first.
+      ctx.project = { ...ctx.project, permissionMode: 'plan' }
+      await expect(session.setPermissionMode!('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+      // The engineer's turn ends; its next turn/start carries plan's read-only sandbox and 'never'.
+      s.push('turn/completed', turnDone('th-2', 'tu-2'))
+      await (session as unknown as { sendToThread(id: string, text: string): Promise<void> }).sendToThread('th-2', 'More')
+      expect(s.turnStarts('th-2').at(-1).params).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+      // A report spawned now starts with the new policy.
+      await session.send('Spawn another')
+      await spawnEngineer(s, 'c-2')
+      expect(s.of('thread/start')).toHaveLength(3)
+      expect(s.of('thread/start')[2]!.params).toMatchObject({ approvalPolicy: 'never', sandbox: 'read-only' })
+    })
+
+    it('a widening leaves no report wider: plain true', async () => {
+      const { adapter, servers } = setup()
+      const ctx = ctxFor({ autoContinue: false })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await spawnEngineer(s, 'c-1')
+      await idleRoot(s)
+      await expect(session.setPermissionMode!('acceptEdits')).resolves.toBe(true)
+    })
+
+    it('refuses modes the run would not honour: a quick run, bypass with reference folders, setup-like runs and bridged children', async () => {
+      const quick = { folder: dir, team: 'single' as const, allowEdits: false, gitRepo: false }
+      const q = setup()
+      session = await q.adapter.start(ctxFor({ autoContinue: false, run: runSummary({ projectId: 'quick', quick }), roles: [role({ id: 'q', slug: 'assistant', canSpawn: false })] }))
+      await vi.waitFor(() => expect(q.servers[0]!.turnStarts('th-1')).toHaveLength(1))
+      await idleRoot(q.servers[0]!)
+      for (const m of ['acceptEdits', 'auto', 'bypassPermissions'] as const) await expect(session.setPermissionMode!(m)).rejects.toThrow('asks before each change')
+      await expect(session.setPermissionMode!('plan')).resolves.toBe(true)
+      await session.stop()
+      await expect(session.setPermissionMode!('plan')).rejects.toThrow('not live')
+
+      const r = setup()
+      session = await r.adapter.start(ctxFor({ autoContinue: false, referenceDirectories: () => [join(dir, 'ref')] }))
+      await vi.waitFor(() => expect(r.servers[0]!.turnStarts('th-1')).toHaveLength(1))
+      await idleRoot(r.servers[0]!)
+      await expect(session.setPermissionMode!('bypassPermissions')).rejects.toThrow('Reference folders')
+      await session.stop()
+
+      const st = setup()
+      session = await st.adapter.start(ctxFor({ autoContinue: false, run: runSummary({ kind: 'setup' }) }))
+      await expect(session.setPermissionMode!('plan')).rejects.toThrow('keeps its own permission mode')
+      await session.stop()
+
+      const b = setup()
+      session = await b.adapter.start(ctxFor({ autoContinue: false, bridgedChild: { agentId: 'b1', parentAgentId: ROOT_AGENT_ID, roleId: 'r1' } }))
+      await expect(session.setPermissionMode!('plan')).rejects.toThrow('Only the run root')
+    })
+
+    it('a narrowing below acceptEdits clears a session accept-edits grant; auto keeps it', async () => {
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor({ autoContinue: false }))
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await idleRoot(s)
+      const flag = session as unknown as { sessionAcceptEdits: boolean }
+      flag.sessionAcceptEdits = true
+      await session.setPermissionMode!('auto')
+      expect(flag.sessionAcceptEdits).toBe(true)
+      await session.setPermissionMode!('default')
+      expect(flag.sessionAcceptEdits).toBe(false)
+    })
+  })
+
   const events = (ctx: ReturnType<typeof fakeCtx>, type: RunEvent['type']) => ctx.events.filter((e) => e.type === type)
   const systemEntries = (ctx: ReturnType<typeof fakeCtx>) =>
     ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'system' ? [{ ...e.entry, block: e.entry.block }] : []))

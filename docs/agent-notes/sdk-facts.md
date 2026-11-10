@@ -214,3 +214,22 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   (min / median / max); median 1226 ms to the `init` message (process spawn and handshake) and 2019 ms to the first
   assistant message, so roughly half is process start and half model time. Above the 1.5 s median line in the
   design, so triage as a model call does not meet it on this machine.
+
+## Live permission mode change (typings only, 2026-11-10; NOT verified live)
+
+Read from the installed typings, no smoke run (no tokens spent). Used by `setPermissionMode` in claude.ts / codex.ts.
+
+- Claude Agent SDK 0.3.318, `sdk.d.ts` interface `Query`: `setPermissionMode(mode: PermissionMode): Promise<void>`, "Change the
+  permission mode for the current session. Only available in streaming input mode." OrgAI always uses streaming input.
+  `Options.allowDangerouslySkipPermissions` "Must be set to true when using permissionMode: 'bypassPermissions'" and is
+  an `Options` field fixed when the query is built, so OrgAI never switches a query to bypass that was built without it.
+  `AgentDefinition.permissionMode` exists; OrgAI sets none, so Task reports inherit the session mode. Unverified: how the
+  CLI answers bypass on a query built without the flag, and whether a Task report already running picks up a new mode
+  (OrgAI counts such reports as unchanged).
+- Codex app-server (@openai/codex 0.166.0, `codex app-server generate-ts`, stable and `--experimental`, token-free):
+  `v2/TurnStartParams.ts` `approvalPolicy`, `approvalsReviewer`, `sandboxPolicy` (a `SandboxPolicy` object, not the
+  mode string) hold "for this turn and subsequent turns". `v2/TurnSettingsUpdateParams.ts` (`turn/settings/update`) changes
+  only reviewer, model, effort, summary and service tier of a running turn, and `thread/settings/update` appears only in the
+  `--experimental` output. So a running turn keeps its sandbox and approval policy; the change reaches each thread at its
+  next `turn/start`. The `workspaceWrite` object OrgAI sends (writable roots, `networkAccess: false`, temp folders not
+  excluded) assumes Codex's documented defaults; unverified live.

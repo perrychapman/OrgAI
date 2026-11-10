@@ -29,7 +29,7 @@ import {
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, ModelTier, PluginSpec, Project, RunSummary, Role, RunEvent, StaffingAssignment, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
-import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
+import type { PermissionDecision, PermissionMode, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingModeOf, tierForModel } from '@shared/defaults'
 import { CLAUDE_TIER_ALIAS, recordStaffing, roleModelTier } from './staffing'
@@ -42,7 +42,7 @@ import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, sugges
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
 import { costFromPrice, priceFor } from './pricing'
-import { projectBudgetUsd } from './runOverrides'
+import { canNarrowPermissionMode, projectBudgetUsd } from './runOverrides'
 import { countUsage, setModelTokens } from './runUsage'
 import { requireClaudeExecutable } from './claudeBinary'
 import { PartialText } from './claudePartial'
@@ -867,18 +867,23 @@ function setupRunCanWrite(ctx: RuntimeContext): boolean {
 /**
  * Permission mode of a run. Setup-like runs normally never edit and run in acceptEdits (or auto); a setup-like run whose
  * role holds Edit/Write/Bash (allowBuild MCP assistant) and every quick run keep the project's mode ('default'), so each
- * call asks. Nothing here upgrades a quick or build run to auto or acceptEdits.
+ * call asks. Nothing here upgrades a quick or build run to auto or acceptEdits. `mode` defaults to the project's; a live
+ * switch (setPermissionMode) passes the requested one, because RunManager sets ctx.project only after a widening applied.
  */
-export function claudePermissionMode(ctx: RuntimeContext): Options['permissionMode'] {
-  const mode = ctx.project.permissionMode
+export function claudePermissionMode(ctx: RuntimeContext, mode: PermissionMode = ctx.project.permissionMode): Options['permissionMode'] {
   const askOnly = (): Options['permissionMode'] => (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode)
   if (isTrustRestrictedRun(ctx.run)) return askOnly()
   if (isSetupLikeRun(ctx.run.kind)) return setupRunCanWrite(ctx) ? askOnly() : mode === 'auto' ? 'auto' : 'acceptEdits'
   return mode
 }
 
-export function claudeAllowsBypass(ctx: RuntimeContext): boolean {
-  return !isSetupLikeRun(ctx.run.kind) && !isTrustRestrictedRun(ctx.run) && ctx.project.permissionMode === 'bypassPermissions'
+export function claudeAllowsBypass(ctx: RuntimeContext, mode: PermissionMode = ctx.project.permissionMode): boolean {
+  return !isSetupLikeRun(ctx.run.kind) && !isTrustRestrictedRun(ctx.run) && mode === 'bypassPermissions'
+}
+
+/** True when a report that started under `spawned` (every mode that may have been in force then) is no wider than `mode`. */
+export function reportWithin(spawned: readonly PermissionMode[] | undefined, mode: PermissionMode): boolean {
+  return !!spawned && spawned.length > 0 && spawned.every((m) => canNarrowPermissionMode(mode, m))
 }
 
 /**
@@ -1421,6 +1426,14 @@ export class ClaudeSession implements RuntimeSession {
   private pausedEnd = false
   /** The current query has emitted its init message. */
   private queryInitSeen = false
+  /** The current query was built with allowDangerouslySkipPermissions (fixed for its life; a live switch cannot add it). */
+  private queryBypass = false
+  /** The mode the root session last applied live (setPermissionMode); undefined = the start-time mode from ctx.project. */
+  private liveMode?: PermissionMode
+  /** A card granted a setMode acceptEdits for this session (the CLI's session mode moved with it). */
+  private acceptEditsGranted = false
+  /** Report agent id -> every permission mode that may have been in force when it started (a live switch compares these). */
+  private reportModes = new Map<string, PermissionMode[]>()
   /**
    * Every message the current query may have read before its init (review N2): what was queued when it started plus
    * everything pushed since. A restarted query that dies before init may have read some of them; recoverRestart
@@ -1595,6 +1608,46 @@ export class ClaudeSession implements RuntimeSession {
     }
   }
 
+  /**
+   * Live permission mode switch (RuntimeSession.setPermissionMode; RunManager.setPermissionMode is the only caller).
+   * Everything is derived from `mode`: RunManager sets ctx.project before this call only for a narrowing. The root's
+   * query gets the mapped mode through Query.setPermissionMode (SDK 0.3.318 sdk.d.ts, `Query.setPermissionMode(mode)`,
+   * streaming input only), which is the session's mode, so Task reports started from now on inherit it (buildAgents
+   * sets no per-agent permissionMode). Whether a Task report already running picks it up is not documented, so a live
+   * report that started under a wider mode is counted in `reportsUnchanged` (never a plain true). Bridged reports are
+   * separate sessions RunManager tracks (BridgedSessions); they are not counted here. Bypass is honoured only where
+   * claudeAllowsBypass honours it and only when this query was built with allowDangerouslySkipPermissions. Open cards
+   * and session rules are untouched; the CLI's session mode (a card's accept-edits grant included) is replaced.
+   */
+  async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
+    if (this.ctx.bridgedChild) throw new Error('Only the run root can change the permission mode.')
+    if (isSetupLikeRun(this.ctx.run.kind)) throw new Error('This run keeps its own permission mode.')
+    if (this.ending || this.abort.signal.aborted || !this.q) throw new Error('This session is not live. The mode will apply when the run continues.')
+    if (!this.queryInitSeen || this.restarting || this.nextQuery) throw new Error('The session is starting or restarting. Try again in a moment.')
+    const mapped = claudePermissionMode(this.ctx, mode)
+    if (mapped !== mode) throw new Error('This run asks before each change, so it cannot use that permission mode.')
+    if (mode === 'bypassPermissions') {
+      if (!claudeAllowsBypass(this.ctx, mode)) throw new Error('This run cannot use Bypass permissions.')
+      if (!this.queryBypass) throw new Error('This session started without Bypass permissions, so it applies from the next session. End the session, then choose it before you continue.')
+    }
+    try {
+      await this.q.setPermissionMode(mapped)
+    } catch (e) {
+      // The raw text stays in the run log (redacted); the user sees a plain reason.
+      this.log('warn', `The CLI refused the permission mode change: ${redactSecrets(String((e as Error)?.message ?? e), this.secrets)}`)
+      throw new Error('The session could not change its permission mode now.')
+    }
+    this.liveMode = mode
+    // The CLI's session mode is the new one now; a card's earlier accept-edits grant went with the old mode.
+    this.acceptEditsGranted = false
+    let reportsUnchanged = 0
+    for (const a of this.agents.values()) {
+      if (a.id === ROOT_ID || a.state === 'done' || a.state === 'error') continue
+      if (!reportWithin(this.reportModes.get(a.id), mode)) reportsUnchanged += 1
+    }
+    return reportsUnchanged ? { applied: true, reportsUnchanged } : true
+  }
+
   /** Headless exec settlement view (cli-spec 6.2(2)). */
   settlement(): SessionSettlement {
     const root = this.agents.get(ROOT_ID)
@@ -1718,9 +1771,21 @@ export class ClaudeSession implements RuntimeSession {
         startedAt: Date.now(),
         ...init
       }
+      if (id !== ROOT_ID) this.reportModes.set(id, this.modesInForce())
       this.upsert(a)
     }
     return a
+  }
+
+  /**
+   * Every permission mode that may be in force for a report starting now: the run's mode as RunManager holds it, the
+   * mode last applied live (RunManager sets ctx.project after a widening answers) and a session accept-edits grant.
+   */
+  private modesInForce(): PermissionMode[] {
+    const modes = new Set<PermissionMode>([this.ctx.project.permissionMode])
+    if (this.liveMode) modes.add(this.liveMode)
+    if (this.acceptEditsGranted) modes.add('acceptEdits')
+    return [...modes]
   }
 
   private setState(id: string, state: AgentInstance['state'], activity?: string): void {
@@ -3394,6 +3459,7 @@ export class ClaudeSession implements RuntimeSession {
     if (next.plugin !== undefined) this.skillPlugin = next.plugin ?? undefined
     this.queryGrants = this.optionGrants.get(next.options)
     this.liveGrants = this.queryGrants
+    this.queryBypass = next.options.allowDangerouslySkipPermissions === true
     this.q = query({ prompt: this.input, options: next.options })
     this.noteActivity('restart')
     const config = next.config
@@ -3722,6 +3788,8 @@ export class ClaudeSession implements RuntimeSession {
     for (const r of allowRuleStrings(granted)) this.sessionRules.add(r)
     // Shell rules stay in sessionRules (the hook's allow path, kept across a restarted query) and never reach the CLI (H1).
     const updates = toSdkSessionUpdates(granted)
+    // The CLI's session mode moves with a setMode update: reports started from now on may run in accept-edits.
+    if (updates.some((u) => u.type === 'setMode' && u.mode === 'acceptEdits')) this.acceptEditsGranted = true
     return {
       behavior: 'allow',
       updatedInput: input,
@@ -3762,6 +3830,7 @@ export class ClaudeSession implements RuntimeSession {
       this.harnessServer = harnessServerOf(first)
       this.queryGrants = this.optionGrants.get(first)
       this.liveGrants = this.queryGrants
+      this.queryBypass = first.allowDangerouslySkipPermissions === true
       this.q = query({ prompt: this.input, options: first })
       for (;;) {
         try {
