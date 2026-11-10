@@ -1874,10 +1874,11 @@ class CodexSession implements RuntimeSession {
       ...(req.parentId !== ROOT_AGENT_ID ? { parentAgentId: req.parentId } : {}),
       ...(req.onCall ? { onCall: req.onCall } : {})
     })
-    const staffed = decision.resolved.overrides
-    const chartTier = req.role.tier ?? settingTier(req.role.model)
-    const staffedModel = staffed && decision.resolved.tier !== chartTier && validModelId(decision.resolved.model) ? decision.resolved.model : undefined
-    const staffedEffort = staffed ? decision.resolved.effort : undefined
+    // The model only when the tier changed, the effort only when the effort changed: an effort-only pick keeps the
+    // model the role would run on anyway (its own, or its parent's when it inherits).
+    const { resolved } = decision
+    const staffedModel = resolved.tierChanged && validModelId(resolved.model) ? resolved.model : undefined
+    const staffedEffort = resolved.effortChanged ? resolved.effort : undefined
     let staffingStarted = false
     try {
       await this.spawnChildNow(req, parent, parentRole, { model: staffedModel, effort: staffedEffort }, () => {
@@ -1892,7 +1893,7 @@ class CodexSession implements RuntimeSession {
       this.staffedModel.delete(req.id)
       throw e
     }
-    return decision.resolved.mode === 'auto' ? { staffing: decision.label } : {}
+    return resolved.mode === 'auto' ? { staffing: decision.label } : {}
   }
 
   private async spawnChildNow(

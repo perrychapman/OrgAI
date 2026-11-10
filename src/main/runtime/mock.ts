@@ -2610,8 +2610,8 @@ export class MockSession implements RuntimeSession {
     // Run staffing: bind to the plan step and resolve before the report exists; apply only an override.
     const onCall = step.tier || step.effort ? { ...(step.tier ? { tier: step.tier } : {}), ...(step.effort ? { effort: step.effort } : {}) } : undefined
     const decision = role ? this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(onCall ? { onCall } : {}) }) : undefined
-    const staffedModel = decision?.resolved.overrides && decision.resolved.model && decision.resolved.model !== 'inherit' ? decision.resolved.model : undefined
-    if (decision?.resolved.overrides) this.staffed.set(step.id, { ...(staffedModel ? { model: staffedModel } : {}), ...(decision.resolved.effort ? { effort: decision.resolved.effort } : {}) })
+    const staffedModel = decision?.resolved.tierChanged && decision.resolved.model && decision.resolved.model !== 'inherit' ? decision.resolved.model : undefined
+    if (decision?.resolved.overrides) this.staffed.set(step.id, { ...(staffedModel ? { model: staffedModel } : {}), ...(decision.resolved.effortChanged && decision.resolved.effort ? { effort: decision.resolved.effort } : {}) })
     else this.staffed.delete(step.id)
     const agentParent = resolveParent(this.agents, step.id, parentId, ROOT_AGENT_ID)
     this.upsert({
