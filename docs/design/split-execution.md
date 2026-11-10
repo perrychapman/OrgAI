@@ -102,6 +102,12 @@ the median `reportStartMs` and the median time after the last report, and the st
 "Here a report produces nothing for about N s and a fan-out adds about M s at the end; split when the pieces you
 hand out are each well above that." Without history the line uses the defaults measured in 3.1.
 
+As built (2026-11-10, `staffingCostLine` in `store/staffingProfile.ts`, unit tests only, no lab run): the line is
+"Here a report writes nothing for about 30 s and a fan-out adds about 20 s at the end: hand out a piece only if it
+takes you well over a minute and a half, and do the rest yourself." (defaults; project medians rounded to 5 s once
+3 runs carry them; threshold max(60 s, 2 x (start + after)) rounded to 30 s, in words; at most 190 characters),
+appended to the root's hidden staffing brief, which now goes out on a new project too.
+
 ### 3.6 One report and a waiting lead
 
 When a spawn leaves exactly one report running and the plan has no step the lead itself is working on, the spawn

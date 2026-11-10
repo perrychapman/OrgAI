@@ -263,7 +263,9 @@ describe('CodexAdapter session', () => {
     const toolNames = start.dynamicTools.map((t: { name: string }) => t.name)
     expect(toolNames).toEqual(expect.arrayContaining(['set_plan', 'orgai_update_plan', 'ask_user', 'spawn_report', 'message_agent', 'list_team']))
     expect(toolNames).not.toContain('update_plan')
-    expect(s.turnStarts('th-1')[0].params.input).toEqual([{ type: 'text', text: 'Build the thing', text_elements: [] }])
+    // The prompt, then the hidden staffing brief: a new project's root with reports gets the cost line with its defaults.
+    expect(s.turnStarts('th-1')[0].params.input).toEqual([{ type: 'text', text: expect.stringMatching(/^Build the thing\n\n---\n/), text_elements: [] }])
+    expect(s.turnStarts('th-1')[0].params.input[0].text).toContain('a report writes nothing for about 30 s')
     expect(ctx.events).toContainEqual({ type: 'run.status', runId: 'run-1', status: 'running', sessionId: 'th-1' })
     expect(lastAgent(ctx, 'root')).toMatchObject({ roleSlug: 'lead', model: 'gpt-test', state: 'thinking' })
   })
@@ -538,7 +540,8 @@ describe('CodexAdapter session', () => {
       session = await adapter.start(ctx)
       const s = servers[0]!
       await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-      expect(inputText(s.turnStarts('th-1')[0]!)).toBe(RESUME_TEXT)
+      // No knowledge block (only the staffing brief's hidden context follows the text).
+      expect(inputText(s.turnStarts('th-1')[0]!).startsWith(RESUME_TEXT)).toBe(true)
       expect(knowledgeContext).not.toHaveBeenCalled()
 
       await session.receive!({ fromRunId: 'r2', fromProjectName: 'Other', fromPrompt: 'x', text: 'Acme is on fire' })
