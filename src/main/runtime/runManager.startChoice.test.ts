@@ -6,6 +6,7 @@ import type { AppSettings, McpServerSpec, PermissionMode, Project, ProviderId, P
 import { PERMISSION_MODES, PERMISSION_MODE_OPTIONS, QUICK_PROJECT_ID } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import { RunManager, checkStartChoice, checkStartEffort, type RunManagerOptions } from './runManager'
+import { canNarrowPermissionMode } from './runOverrides'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
@@ -810,13 +811,101 @@ describe('bridged children on a narrowing (coordinator High)', () => {
     const narrowed = await r.m.setPermissionMode({ runId: run.id, mode: 'plan' })
     expect(narrowed).toMatchObject({ applied: true, reportsUnchanged: 2, reason: '2 running reports keep the earlier mode until they finish.' })
     expect(liveWiderThan).toHaveBeenCalledWith('plan')
-    // A widening never asks (children narrower than the new mode are not a safety gap).
+    // A widening asks too (M2) and the child count is 0 here, so a plain applied.
     liveWiderThan.mockClear()
     const widened = await r.m.setPermissionMode({ runId: run.id, mode: 'bypassPermissions' })
     expect(widened.applied).toBe(true)
-    expect(liveWiderThan).not.toHaveBeenCalled()
+    expect(widened.reportsUnchanged).toBeUndefined()
+    expect(liveWiderThan).toHaveBeenCalledWith('bypassPermissions')
+    expect(liveWiderThan.mock.results.at(-1)?.value).toBe(0)
     delete active.bridge
     await r.m.stopAll()
+  })
+
+  it('M2: a change the matrix cannot compare (Don\'t ask to Default) still reports a child that runs wider than the new mode', async () => {
+    const r = rig()
+    r.control.setMode = vi.fn(async () => true)
+    const run = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'auto' } })
+    const active = r.runsMap().get(run.id) as { bridge?: unknown }
+    // A bridged child that started in Auto, counted the way BridgedSessions.liveWiderThan does.
+    const liveWiderThan = vi.fn((mode: PermissionMode) => (mode !== 'auto' && canNarrowPermissionMode('auto', mode) ? 1 : 0))
+    active.bridge = { liveWiderThan, hasActive: () => true }
+    expect(await r.m.setPermissionMode({ runId: run.id, mode: 'dontAsk' })).toMatchObject({ applied: true, reportsUnchanged: 1 })
+    // dontAsk -> default is not a narrowing in the matrix; the child still runs Auto, wider than Default.
+    expect(canNarrowPermissionMode('dontAsk', 'default')).toBe(false)
+    const toDefault = await r.m.setPermissionMode({ runId: run.id, mode: 'default' })
+    expect(toDefault).toMatchObject({ applied: true, reportsUnchanged: 1, reason: '1 running report keeps the earlier mode until it finishes.' })
+    expect(logsOf(run.id, 'info').at(-1)).toContain('1 running report keeps the earlier mode until it finishes.')
+    delete active.bridge
+    await r.m.stopAll()
+  })
+})
+
+describe('L1: the doubly raced refusal', () => {
+  it('re-derives before one broadcast and carries the adapter and bridged counts', async () => {
+    const r = rig()
+    const modeEventCount = (): number => events.filter((e) => e.type === 'run.permissionMode').length
+    let afterLastCall = 0
+    r.control.setMode = vi.fn(async () => {
+      r.ctx().acceptEditsGranted!()
+      afterLastCall = modeEventCount()
+      return { applied: true as const, reportsUnchanged: 2 }
+    })
+    const run = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'bypassPermissions' } })
+    const active = r.runsMap().get(run.id) as { bridge?: unknown }
+    active.bridge = { liveWiderThan: vi.fn(() => 1), hasActive: () => true }
+    const result = await r.m.setPermissionMode({ runId: run.id, mode: 'plan' })
+    expect(result).toMatchObject({ applied: false, reportsUnchanged: 3 })
+    expect(result.reason).toContain('Choose the mode again.')
+    expect(result.reason).toContain('3 running reports keep the earlier mode until they finish.')
+    // After the last session call the refusal sends exactly one snapshot, already re-derived: own mode plan, chosen, accept edits on top.
+    const sent = events.filter((e) => e.type === 'run.permissionMode').slice(afterLastCall)
+    expect(sent).toEqual([{ type: 'run.permissionMode', runId: run.id, permissionMode: 'plan', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' }])
+    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(r.store.get(run.id)).toMatchObject({ permissionMode: 'plan', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' })
+    delete active.bridge
+    await r.m.stopAll()
+  })
+})
+
+describe('L3: a project change that narrows the run to Plan / Don\'t ask drops the accept-edits overlay', () => {
+  const grantThenSave = async (savedMode: PermissionMode, userChoice?: { permissionMode: PermissionMode }) => {
+    const project: Project = { ...team(), permissionMode: 'default' }
+    const saveProjectPermissions = vi.fn((): Project => ({ ...project, permissionMode: savedMode }))
+    const r = rig({ saveProjectPermissions } as Partial<RunManagerOptions>)
+    const run = await r.m.start({ project, prompt: 'go', ...(userChoice ? { userChoice } : {}) })
+    r.ctx().acceptEditsGranted!()
+    return { r, run }
+  }
+
+  it('Plan from the project: the overlay goes, ctx.project and the summary say Plan, one warning is logged', async () => {
+    const { r, run } = await grantThenSave('plan')
+    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(r.ctx().acceptEditsForProject!()).toBe(false)
+    expect(r.ctx().project.permissionMode).toBe('plan')
+    expect(r.m.summary(run.id)?.sessionPermissionMode).toBeUndefined()
+    expect(r.m.summary(run.id)?.permissionMode).toBe('plan')
+    expect(events.filter((e) => e.type === 'run.permissionMode' && e.runId === run.id).at(-1)).toEqual({ type: 'run.permissionMode', runId: run.id, permissionMode: 'plan' })
+    expect(logsOf(run.id, 'warn').filter((m) => m.startsWith('The project mode is now'))).toHaveLength(1)
+    await r.m.stopAll()
+  })
+
+  it('Don\'t ask from the project drops it too; a project change to Default keeps the overlay; a mode the user chose is not moved by the project', async () => {
+    const dont = await grantThenSave('dontAsk')
+    dont.r.ctx().acceptEditsForProject!()
+    expect(dont.r.ctx().project.permissionMode).toBe('dontAsk')
+    expect(dont.r.m.summary(dont.run.id)?.sessionPermissionMode).toBeUndefined()
+    await dont.r.m.stopAll()
+    const same = await grantThenSave('default')
+    same.r.ctx().acceptEditsForProject!()
+    expect(same.r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(same.r.m.summary(same.run.id)?.sessionPermissionMode).toBe('acceptEdits')
+    await same.r.m.stopAll()
+    const chosen = await grantThenSave('plan', { permissionMode: 'dontAsk' })
+    chosen.r.ctx().acceptEditsForProject!()
+    expect(chosen.r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(chosen.r.m.summary(chosen.run.id)).toMatchObject({ permissionMode: 'dontAsk', sessionPermissionMode: 'acceptEdits' })
+    await chosen.r.m.stopAll()
   })
 })
 

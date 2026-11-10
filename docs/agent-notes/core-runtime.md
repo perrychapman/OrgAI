@@ -334,7 +334,7 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   A live run needs the optional `RuntimeSession.setPermissionMode` (runtime/types.ts), which derives its mapping from the
   `mode` argument. Calls are serialized per run (`ActiveRun.permissionModeChanging`; a second call is refused with a plain
   reason). A narrowing is put on `ctx.project` before the session call, a widening only after it applied (review L3). The
-  session answers true, `{ applied: true, reportsUnchanged: n }` (n live reports keep their earlier mode until they finish;
+  session answers true, `{ applied: true, reportsUnchanged: n }` (n reports may still run wider: Claude counts finished, resumable reports too, Codex threads only until their turn ends;
   the result carries `reportsUnchanged` and the info line and `reason` say so; it must not answer plain true then), or
   false / throw. On a refusal chosenMode goes back and `ctx.project` is re-derived from the live project
   (`ActiveRun.liveProject`, so an approval that landed during the await is kept) and the summary follows; a thrown message
@@ -352,14 +352,29 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   bypassPermissions (H1). A grant that lands while a change to a mode below acceptEdits awaits (`ActiveRun.modeGen`,
   bumped on every grant) makes RunManager send the change once more; if a grant lands again, the answer is
   applied: false ("An "accept edits" permission was granted during the change"), with the session's mode recorded as
-  the new choice under the overlay, never the earlier choice. Every change to the three fields on a live run is broadcast
+  the new choice under the overlay, never the earlier choice (the one exception to "a refusal changes nothing": the
+  session really runs `mode`; RunManager re-derives first, broadcasts one snapshot, and the result carries the adapter's
+  and the bridged `reportsUnchanged`, also in `reason`). Every change to the three fields on a live run is broadcast
   as `run.permissionMode` (a RunManager-only snapshot event; an adapter's is dropped). The renderer does not consume it
   yet.
-- Bridged children keep the mode they started in (their project is a snapshot; they never take a live change). On an
-  applied narrowing, RunManager adds `BridgedSessions.liveWiderThan(mode)` (live children whose start mode is wider,
-  an unknown one included, or whose own "accept edits" grant is wider than `mode`) to `reportsUnchanged`, so a narrowing never answers a plain applied while a wider bridged child runs.
+- Bridged children keep their native session's start mode (their project is a snapshot; they never take a live change).
+  On every applied change (not only a matrix narrowing: modes the matrix cannot compare, such as Don't ask to Default,
+  still leave an Auto child wider), RunManager adds `BridgedSessions.liveWiderThan(mode)` (live children whose start mode
+  is wider, an unknown one included, or whose own "accept edits" grant is wider than `mode`; 0 when none) to
+  `reportsUnchanged`, so a change never answers a plain applied while a wider bridged child runs. A child's
+  `ctx.project.permissionMode` is a getter that follows the parent's current mode when that is Plan or Don't ask and
+  narrows the child's start mode (so the adapters' plan / dontAsk accept-edits drop check sees the parent's mode); it is
+  never wider than the start mode, and the native child session itself is unchanged. If a child's `acceptEditsGranted`
+  hook fires while the parent is in Plan / Don't ask, a warning line is logged on the parent run.
+- An approved project change (`setLive`, e.g. a project "accept edits" save returning a narrower mode) that narrows the
+  run's own mode to Plan / Don't ask drops the "accept edits" overlay (`acceptEditsGrant`), so `ctx.project` and the
+  summary say Plan and new Codex threads / a restarted Claude query start there. A mode the user chose for the run
+  (`chosenMode`) is not moved by the project, so its overlay stays. Remaining gap: the live native session is not told
+  (`session.setPermissionMode` is not called from setLive, which runs inside the adapter's own hook calls); its grant
+  ends at the next restart or when the user chooses the mode again, and a warning line says so.
 - Checked by unit tests only: `runtime/runManager.startChoice.test.ts` (fake recording adapter: cases are named by
-  finding), `runtime/bridge.test.ts` (liveWiderThan, a child's grant counted and never forwarded), `host/argsRunChoice.test.ts`,
-  `host/dispatcherRunChoice.test.ts`, `store/runs.test.ts`. Adapters calling `acceptEditsGranted` and dropping their
-  session grant on a narrowing are contract only until the Adapter Engineer lands them. Whether the Claude SDK or Codex app-server can change a live session's mode is unverified
-  (sdk-facts.md does not record it).
+  finding), `runtime/bridge.test.ts` (liveWiderThan, a child's grant counted and never forwarded, the child's project
+  following the parent down), `host/argsRunChoice.test.ts`, `host/dispatcherRunChoice.test.ts`, `store/runs.test.ts`.
+  The adapters call `acceptEditsGranted` and drop their session grant on an applied mode below acceptEdits; their live
+  mode change is checked with fake SDK / app-server events (`claude.test.ts`, `codex.test.ts`) and is typings-only for
+  the real Claude SDK (`sdk-facts.md`, "Live permission mode change"): live behaviour is unverified.

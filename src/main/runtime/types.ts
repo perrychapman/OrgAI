@@ -787,8 +787,10 @@ export interface RuntimeSession {
    * as `mode` says. Bridged children are separate sessions: RunManager adds their live count to reportsUnchanged on a
    * narrowing, so the adapter counts only its own native reports.
    * Answers: true = applied everywhere (no live report stays wider than `mode`). `{ applied: true, reportsUnchanged: n }`
-   * = applied to the root and future agents while n live reports keep their earlier mode until they finish (the adapter
-   * must not answer plain true while a live report stays wider than `mode`). false (or throw) = refused, e.g. the
+   * = applied to the root and future agents while n native reports may still run wider than `mode` (the adapter must not
+   * answer plain true then). What counts differs: Claude counts every report, finished (resumable) ones and approved spawns
+   * not yet started included, unless all modes it may run under are no wider; a Codex thread counts only until its turn
+   * ends (its next turn/start carries the new policy). false (or throw) = refused, e.g. the
    * provider cannot switch now; a thrown message is only logged, never shown. Missing = this session cannot switch live
    * (RunManager answers applied: false and changes nothing).
    */

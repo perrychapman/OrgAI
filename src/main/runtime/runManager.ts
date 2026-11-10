@@ -1420,9 +1420,10 @@ export class RunManager {
    * Re-derive ctx.project from the run's live project (chosenMode and the grant overlay included), record the run's own
    * mode (recordedRunPermissionMode) and the overlay (sessionPermissionMode) on the summary, and when any of the three
    * mode fields moved, save the summary and broadcast run.permissionMode. `ctx` defaults to active.ctx (setLive passes
-   * its own, the same object once the run started).
+   * its own, the same object once the run started). `force` saves and broadcasts even when the three fields did not
+   * move since this call began (the caller changed permissionModeChosen itself first): one snapshot, after re-deriving.
    */
-  private rederiveRunMode(active: ActiveRun, ctx: RuntimeContext | undefined = active.ctx): void {
+  private rederiveRunMode(active: ActiveRun, ctx: RuntimeContext | undefined = active.ctx, force = false): void {
     if (!ctx) return
     const live = active.liveProject?.()
     const own = live ? this.runOwnProject(active, live).permissionMode : (active.chosenMode ?? ctx.project.permissionMode)
@@ -1434,7 +1435,7 @@ export class RunManager {
     else delete s.permissionMode
     if (ctx.project.permissionMode === 'acceptEdits' && own !== 'acceptEdits' && recorded !== undefined) s.sessionPermissionMode = 'acceptEdits'
     else delete s.sessionPermissionMode
-    if (`${s.permissionMode}|${s.permissionModeChosen}|${s.sessionPermissionMode}` === before) return
+    if (!force && `${s.permissionMode}|${s.permissionModeChosen}|${s.sessionPermissionMode}` === before) return
     this.store.upsert(s)
     this.broadcastRunMode(active)
   }
@@ -2093,7 +2094,8 @@ export class RunManager {
       const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems): void => {
         // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
         const next: Project = { ...live }
-        const overlay = <K extends keyof Project>(key: K): void => {
+        const ownBefore = this.runOwnProject(active, live).permissionMode
+        const overlay =<K extends keyof Project>(key: K): void => {
           if (saved[key] === undefined) delete next[key]
           else next[key] = saved[key]
         }
@@ -2135,6 +2137,21 @@ export class RunManager {
         else if (settle === 'folders') overlay('allowedDirectories')
         else overlay('permissionMode')
         live = noFolderWrites({ ...next, path: live.path })
+        // Review L3: an approved project change that narrows the run's own mode to Plan or Don't ask takes the "accept
+        // edits" overlay with it (otherwise new Codex threads and a restarted Claude query would start in acceptEdits
+        // under a project that now says Plan). Only a change of the run's own mode counts: a mode the user chose for the
+        // run (chosenMode) is not moved by the project, so its overlay stays. The live native session is NOT told
+        // (session.setPermissionMode is not called from here: setLive runs inside the adapter's own permission / hook
+        // calls, where a call back into the session could wait on itself); the session's grant ends at its next restart
+        // or when the user chooses the mode again.
+        if (active.acceptEditsGrant) {
+          const ownAfter = this.runOwnProject(active, live).permissionMode
+          if ((ownAfter === 'plan' || ownAfter === 'dontAsk') && ownAfter !== ownBefore && canNarrowPermissionMode(ownBefore, ownAfter)) {
+            delete active.acceptEditsGrant
+            const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === ownAfter)?.label ?? ownAfter
+            emit({ type: 'log', runId: summary.id, level: 'warn', message: `The project mode is now ${label}. An "accept edits" permission granted earlier may still apply to the running session until it restarts or you choose the mode again.` })
+          }
+        }
         // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
         // RunSummary.permissionMode follows: an approved project change (acceptEdits for project) moves it.
         this.rederiveRunMode(active, ctx)
@@ -4977,7 +4994,10 @@ export class RunManager {
   /**
    * runs:setPermissionMode (desktop only; the desktop handler is the only caller, so no peer, harness tool or agent can
    * reach it). Contract: SetRunPermissionModeInput / SetRunPermissionModeResult. The desktop user owns the run, so
-   * narrowing and widening are treated alike; everything else is checked here. Nothing changes on a refusal.
+   * narrowing and widening are treated alike; everything else is checked here. A refusal changes nothing, with one
+   * exception: when the session applied `mode` twice and an "accept edits" grant landed after each, the session really
+   * runs `mode` under the grant, so chosenMode, permissionModeChosen and the overlay record that (applied: false, with the
+   * reports-unchanged count).
    */
   async setPermissionMode(input: SetRunPermissionModeInput): Promise<SetRunPermissionModeResult> {
     this.refuseWhileQuitting()
@@ -5049,10 +5069,17 @@ export class RunManager {
         active.chosenMode = mode
         active.acceptEditsGrant = true
         active.summary.permissionModeChosen = true
-        this.store.upsert(active.summary)
-        this.broadcastRunMode(active)
-        this.rederiveRunMode(active)
-        return { run: this.summary(run.id) ?? run, applied: false, reason: 'An "accept edits" permission was granted during the change. Choose the mode again.' }
+        // Re-derive first, then one broadcast (forced: permissionModeChosen moved before the derivation).
+        this.rederiveRunMode(active, active.ctx, true)
+        // The session did apply `mode`, so the reports it could not change are counted like on an applied change.
+        reportsUnchanged += active.bridge?.liveWiderThan(mode) ?? 0
+        const note = reportsUnchanged ? reportsUnchangedText(reportsUnchanged) : ''
+        return {
+          run: this.summary(run.id) ?? run,
+          applied: false,
+          reason: `An "accept edits" permission was granted during the change. Choose the mode again.${note ? ` ${note}` : ''}`,
+          ...(reportsUnchanged ? { reportsUnchanged } : {})
+        }
       }
       if (!applied) {
         // Back to the earlier choice (unless something else replaced ours meanwhile) and the earlier grant (a grant that
@@ -5074,8 +5101,10 @@ export class RunManager {
         this.broadcastRunMode(active)
       }
       this.rederiveRunMode(active)
-      // Bridged children are separate sessions that keep the mode they started in (they never take this change).
-      if (narrows) reportsUnchanged += active.bridge?.liveWiderThan(mode) ?? 0
+      // Bridged children are separate sessions that keep the mode they started in (they never take this change). Counted
+      // on every change, not only on a matrix narrowing: modes the matrix cannot compare (dontAsk to default) still leave
+      // a child wider than `mode` (liveWiderThan is 0 when none is).
+      reportsUnchanged += active.bridge?.liveWiderThan(mode) ?? 0
       const updated = this.summary(run.id) ?? run
       const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === mode)?.label ?? mode
       const note = reportsUnchanged ? reportsUnchangedText(reportsUnchanged) : ''

@@ -669,3 +669,69 @@ describe('BridgedSessions.liveWiderThan (permission mode narrowing)', () => {
     expect(r.b.liveWiderThan('plan')).toBe(0)
   })
 })
+
+describe('BridgedSessions child project follows a parent narrowed to Plan / Don\'t ask (M3)', () => {
+  const setParentMode = (r: Rig, mode: Project['permissionMode']): void => {
+    r.parent.project = { ...r.parent.project, permissionMode: mode }
+  }
+
+  it('reads the parent\'s Plan or Don\'t ask on every check, never a wider mode than the child started in', async () => {
+    const r = rig({ project: { permissionMode: 'default' } })
+    const a = r.b.spawn({ role: 'oa', brief: 'one', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    const project = r.codex.sessions[0]!.ctx.project
+    expect(project.permissionMode).toBe('default')
+    setParentMode(r, 'plan')
+    expect(project.permissionMode).toBe('plan')
+    setParentMode(r, 'dontAsk')
+    expect(project.permissionMode).toBe('dontAsk')
+    // The parent widening again (or moving to a mode that is not Plan / Don't ask) never widens or changes the child.
+    setParentMode(r, 'acceptEdits')
+    expect(project.permissionMode).toBe('default')
+    setParentMode(r, 'bypassPermissions')
+    expect(project.permissionMode).toBe('default')
+    // The copy an adapter makes reads the value at that moment; the other fields are intact.
+    setParentMode(r, 'plan')
+    expect({ ...project }.permissionMode).toBe('plan')
+    expect(project.isolateWriters).toBe(false)
+    // The native child session is unchanged, so it is still counted.
+    expect(r.b.liveWiderThan('plan')).toBe(1)
+    await r.b.stopAll('done')
+    await a
+  })
+
+  it('does not move a child that started in Plan to Don\'t ask (they do not compare), and narrows an acceptEdits child', async () => {
+    const plan = rig({ project: { permissionMode: 'plan' } })
+    const p = plan.b.spawn({ role: 'oa', brief: 'one', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    setParentMode(plan, 'dontAsk')
+    expect(plan.codex.sessions[0]!.ctx.project.permissionMode).toBe('plan')
+    await plan.b.stopAll('done')
+    await p
+    const edits = rig({ project: { permissionMode: 'acceptEdits' } })
+    const e = edits.b.spawn({ role: 'oa', brief: 'one', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    setParentMode(edits, 'dontAsk')
+    expect(edits.codex.sessions[0]!.ctx.project.permissionMode).toBe('dontAsk')
+    await edits.b.stopAll('done')
+    await e
+  })
+
+  it('warns on the parent run when a child turns on accept edits while the parent is in Plan or Don\'t ask, and not otherwise', async () => {
+    const parentGrant = vi.fn()
+    const r = rig({ project: { permissionMode: 'default' }, parent: { acceptEditsGranted: parentGrant } })
+    const a = r.b.spawn({ role: 'oa', brief: 'one', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    const warns = (): string[] => r.events.flatMap((e) => (e.type === 'log' && e.level === 'warn' && e.message.includes('Accept edits') ? [e.message] : []))
+    r.codex.sessions[0]!.ctx.acceptEditsGranted!()
+    expect(warns()).toEqual([])
+    setParentMode(r, 'plan')
+    r.codex.sessions[0]!.ctx.acceptEditsGranted!()
+    expect(warns()).toHaveLength(1)
+    expect(warns()[0]).toContain('Plan')
+    expect(r.events.some((e) => e.type === 'log' && e.runId === r.parent.run.id && e.level === 'warn')).toBe(true)
+    expect(parentGrant).not.toHaveBeenCalled()
+    await r.b.stopAll('done')
+    await a
+  })
+})
