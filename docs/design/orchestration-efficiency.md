@@ -147,10 +147,15 @@ Codex adapter at medium effort, P1 only (3 / 3 / 1 runs), against native Codex a
   adapter reads a report from, is empty: every receipt has `reportChars` 0, every report's `result` is empty in the
   run view, and nothing can count as a first pass in the profile (4.5). Present on the base commit too. Fixed in
   the adapter (4.6).
-- **Every spawn on Claude pays for a permission check on the root's model.** Under `auto` (the product default)
-  each `Agent` call was followed by one request with no tools, 48.8k to 57.2k input tokens, on Opus: $0.38 to
-  $0.46 and 1 to 2.5 s per spawn, $1.56 of the $2.06 mandated run. Claude Code documents a check of the delegated
-  task before a subagent starts, and names Sonnet as its default model (4.6).
+- **Every spawn on Claude pays for a second safety check, and in the lab it ran on the root's model.** Under
+  `auto` (the product default) each `Agent` call was followed by one request with no tools, 48.8k to 57.2k input
+  tokens, on Opus: $0.38 to $0.46 and 1 to 2.5 s per spawn, $1.56 of the $2.06 mandated run. The cause is OrgAI's
+  own spawn hook: the API already returns a verdict on the `Agent` call inside the model's response, and when the
+  hook changes the call (a generated name, a worktree, a model, an effort) Claude Code discards that verdict and
+  asks again itself. The 48k tokens are the check's own system prompt. Its model is the server's choice on a
+  first-party login (Sonnet 5), then `CLAUDE_CODE_AUTO_MODE_MODEL`, then the Sonnet alias, then the root's model;
+  the lab relay rejects Sonnet 5, so it fell through to Opus there. The request is missing from `modelUsage` and
+  `total_cost_usd`, so OrgAI's own cost figures do not show it (`docs/agent-notes/permissions.md`, 4.6).
 - **The self-control gate refused 1 to 3 shell commands per run** in 7 of the 10 Claude-adapter trials on both
   builds: "could not check" on long `python3 -c` one-liners, and twice "may not invoke the OrgAI CLI" on one-liners
   that touch no OrgAI path. Each costs a round trip. It fails closed by design and is not changed here (section 10).
@@ -412,13 +417,16 @@ slot and nobody on it), the critical path's length against the run's, time to fi
   `fixed` role, and every role of a `fixed` project, runs at its configured model and effort: an alias or an effort
   the orchestrator puts on the spawn call is dropped (it passed through before this work, so a fixed project could
   run a report above its chart), and only the plan guard may change the model. An automatic `inherit` role
-  gets its resolved tier's alias when it is spawned by a report, because the SDK's typings disagree on whether
-  `inherit` there means the main model or the parent's. Spawned by the root on the root's own tier it gets none
-  (both readings give the root's model, and a root pinned to an exact id keeps it). No alias is ever written that
+  gets its resolved tier's alias when it is spawned by a report. In a nested spawn `inherit` means the spawning
+  report's model (`scripts/smoke-staffing.mjs` check 11, one live run); the alias is written anyway, so the row and
+  the model do not depend on that. Spawned by the root on the root's own tier it gets none (a root pinned to an
+  exact id keeps it). No alias is ever written that
   the connection cannot resolve: on a proxy that maps no model for the tier the definition's model stands. The
   staffing row records what was sent (the model the alias resolves to, else the definition's). The root's effort goes on `Options.effort` when the session is built; because a report without an
-  effort would take the CLI's per-model default or a project settings file's value, an automatic role always gets
-  an explicit effort (the resolved one, else medium, never above its ceiling). Codex:
+  effort would take the CLI's per-model default or a project settings file's value, an automatic role always has
+  an explicit effort, never above its ceiling: its definition carries the one an unrequested spawn resolves to (the
+  role's own, else medium), and the spawn call is changed only when a pick, the profile or a retry moves it. A call
+  that already says what would run is left exactly as written (4.6, the spawn check). Codex:
   `spawn_report` gains optional `tier` and `effort`; the thread starts on the resolved model and each message
   carries the resolved effort. A bridged role keeps its chart's tier and effort in phase 2: its child session is
   built by RunManager on another connection, and a pick would have to cross `bridge.spawn`. Mock implements the
@@ -505,11 +513,16 @@ Measured in Phase 0 (`scripts/measure-prompt-size.mjs`, token-free; the baseline
   `SubagentHandback` tool and `SubagentStop` then carries no last message. The adapter takes the report from the
   handback call, so receipts, the run view's report text and the profile's first-pass count have it again. Without
   this a required report can never be valid and a mandated run repeats every report once and still fails.
-- **The spawn check under `auto` (found by the phase 1 rerun).** Claude Code checks the delegated task before a
-  subagent starts; under OrgAI that request ran on the root's model with about 50k input tokens. The check stays:
-  the spawn hook does not answer `allow` for it. What is being established is which model it runs on and whether
-  `CLAUDE_CODE_AUTO_MODE_MODEL` moves it to the connection's everyday tier, the default the documentation names.
-  The more a run fans out, the more this matters.
+- **The spawn check under `auto` (found by the phase 1 rerun).** The API judges an `Agent` call as part of the
+  model's response. Claude Code repeats that check locally, with a 48k-token prompt of its own, only when a hook
+  hands back a changed call, and OrgAI's spawn hook changed nearly every call: it added a name, a worktree, a
+  model and an effort. The check stays and the hook never answers `allow` for a spawn. What changes is that a
+  well-formed spawn no longer needs rewriting: the lead is told to write the name, tier, effort, worktree and
+  foreground flag itself, role definitions carry their default effort, and the hook returns nothing when the call
+  already says what would run. The rewrite remains for a missing value and for a request above a ceiling, and the
+  run logs how many spawns were rewritten and why. Setting `CLAUDE_CODE_AUTO_MODE_MODEL` was tried and does not
+  help: Claude Code refuses the current Sonnet and Opus ids as the check's model. The more a run fans out, the
+  more this matters.
 - **Run title.** One more call per run; on Codex it carries Codex's 10.9k-token base prompt. It already goes to
   the fast tier in the app. Left alone.
 - Worktrees: not measured yet (no writer was spawned in the baseline); `baseline2` has an isolated arm.
@@ -648,7 +661,7 @@ Standing after phase 1 (1.1b; the targets are judged on the phase 6 comparison, 
    files and the gate rule; the shared `staffingBook.ts`; Codex's native multi-agent tools switched off at launch
    (added after `baseline2`). Reviewer pass on team files and anything that can raise spend. Gate: lab rerun of
    arms 6 and 7 on both adapters, run once as the phase 6 comparison, after the two fixes of 1.1b (a report's text
-   on Claude, the spawn check's model) so the mandated arm is measured on a build where it can complete.
+   on Claude, spawns that need no rewrite) so the mandated arm is measured on a build where it can complete.
 3. **Review policy.** The policy sentence ships with the rubric in phase 2. What is left here is checked against
    the phase 2 lab rerun: verification once per integrated result and findings going back to the author, as prompt
    rules first, as mechanics only if the rerun shows the lead still redoing the work.
@@ -692,9 +705,11 @@ A package that fails its gate once is retried one step up (Haiku to Sonnet, Sonn
   one run per build for the Claude adapter's inventory and mandated cells (1.1b).
 - The self-control gate's false refusals on the Claude adapter (1.1b) cost a round trip each and are not addressed
   here: the gate fails closed on purpose, and loosening what it can parse is a security change with its own review.
-- The spawn check under `auto` is a safety check. This work may move it to the tier the documentation names as its
-  default; it does not remove it, and answering `allow` for a spawn from the hook (which would) is the owner's
-  decision, not taken here.
+- The spawn check under `auto` is a safety check. This work stops triggering a second copy of it by not
+  rewriting well-formed spawns; it does not remove it, and answering `allow` for a spawn from the hook (which
+  would) is the owner's decision, not taken here. A lead that ignores the guidance still pays for the rewrite, a
+  spawn whose brief names known items is still rewritten (the knowledge block goes into its prompt), and the
+  local check's tokens are in no usage figure OrgAI shows.
 - Switching off Codex's native multi-agent tools rests on a debug command (`codex debug models`) and a catalog
   field name, checked on Codex 0.167 only. It fails open, and then the prompt sentence is all that stands against
   Codex's rule; whether that sentence is enough is unmeasured.
