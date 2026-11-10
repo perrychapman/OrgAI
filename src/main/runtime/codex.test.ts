@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
 import { CodexAdapter, codexFolderTrust, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
+import { CodexRpcError } from './codexAppServer'
 import { folderTrustEntry } from './codexProtocol'
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
@@ -143,6 +144,50 @@ describe('CodexAdapter session', () => {
   })
 
   const ctxFor = (over: Partial<RuntimeContext> = {}) => fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, ...over })
+  it('scrubs gateway credentials from native events and public RPC errors, and closes the proxy listener', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ connection: { connection: 'litellm', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'fake-key', openaiBaseUrl: 'http://proxy/v1' }, autoContinue: false })
+    session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers).toHaveLength(1))
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const base = JSON.parse(s.options.config!.find(line => line.startsWith('model_providers.orgai.base_url='))!.split('=').slice(1).join('=')) as string
+    const token = new URL(base).pathname.slice(1)
+    expect(base).toMatch(/^http:\/\/127\.0\.0\.1:/)
+    s.push('turn/completed', turnDone('th-1', 'tu-1', 'completed'))
+    await vi.waitFor(() => expect(session!.settlement!().rootIdle).toBe(true))
+    s.overrides['turn/start'] = () => { throw new CodexRpcError('turn/start', { code: 123, message: `request failed ${base}/responses token ${token}`, data: { url: base, secret: token } }) }
+    try { await session.send('retry'); expect.fail('expected rejection') }
+    catch (error) {
+      expect(error).toBeInstanceOf(CodexRpcError)
+      const rpc = error as CodexRpcError
+      expect(rpc.error.code).toBe(123)
+      expect(JSON.stringify(rpc.error) + rpc.message).not.toContain(token)
+    }
+    s.push('turn/completed', { threadId: 'th-1', turn: { id: 'tu-secret', status: 'failed', items: [], error: { message: `error ${base}/responses token ${token}` } } })
+    const serialized = JSON.stringify(ctx.events)
+    expect(serialized).not.toContain(token)
+    expect(serialized).not.toContain(base)
+    expect(serialized).toContain('[redacted]')
+    await session.stop()
+    await expect(fetch(base + '/responses', { method: 'POST', body: '{}' })).rejects.toThrow()
+  })
+  it('surfaces the installed metadata fallback warning once without changing the exact model id', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ roles: [role({ id: 'lead', slug: 'lead', model: 'us.openai.gpt-6.1-terra' })], autoContinue: false })
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const warning = 'Unknown model us.openai.gpt-6.1-terra is used. This will use fallback model metadata.'
+    s.options.onStderr!(warning)
+    s.options.onStderr!(warning)
+    s.options.onStderr!('Model metadata for `us.openai.gpt-6.1-terra` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.')
+    const logs = ctx.events.flatMap(e => e.type === 'log' ? [e.message] : [])
+    expect(logs.filter(line => line.includes(warning))).toHaveLength(1)
+    expect(logs.filter(line => line.includes('model_catalog_json'))).toHaveLength(1)
+    expect(s.of('thread/start')[0]!.params.model).toBe('us.openai.gpt-6.1-terra')
+    expect(ctx.events.some(e => e.type === 'run.status' && e.status === 'error')).toBe(false)
+  })
   it('forwards MCP media parts and native imageView fallback from the app-server', async () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor({ autoContinue: false })
@@ -1484,6 +1529,7 @@ describe('CodexAdapter session', () => {
     const price = { inputPerToken: 1e-6, outputPerToken: 1e-5, cacheReadPerToken: 1e-7 }
     const ctx = ctxFor({ connection: { connection: 'litellm', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'k', openaiBaseUrl: 'http://localhost:4000/v1', env: { CODEX_HOME: '/data/codex' }, pricing: { 'gpt-test': price } } })
     session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers).toHaveLength(1))
     const s = servers[0]
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
     s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 200 }, last: {}, modelContextWindow: null } })
@@ -1501,6 +1547,7 @@ describe('CodexAdapter session', () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor({ connection: { connection: 'proxy-0a1b2c3d', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'fake-key', openaiBaseUrl: 'https://gateway.example.com/v1', env: { CODEX_HOME: '/data/codex' } } })
     session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers).toHaveLength(1))
     const s = servers[0]
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
     s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 0 }, last: {}, modelContextWindow: null } })
@@ -1513,6 +1560,7 @@ describe('CodexAdapter session', () => {
     const price = { inputPerToken: 1e-6, outputPerToken: 1e-5 }
     const ctx = ctxFor({ connection: { connection: 'proxy-0a1b2c3d', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'fake-key', openaiBaseUrl: 'https://gateway.example.com/v1', env: { CODEX_HOME: '/data/codex' }, pricing: { 'gpt-test': price } } })
     session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers).toHaveLength(1))
     const s = servers[0]
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
     s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 100, cachedInputTokens: 0 }, last: {}, modelContextWindow: null } })
@@ -1682,6 +1730,7 @@ describe('CodexAdapter session', () => {
       ]
     })
     session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers).toHaveLength(1))
     const s = servers[0]
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
     expect(s.options.config).toContain('mcp_servers.gh.command="npx"')
