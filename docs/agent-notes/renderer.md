@@ -1,5 +1,11 @@
 # Renderer (general)
 
+- Generic proxy setup postwalk (2026-11-10, root `ae8cde39`): UX checked 1024x640 and 1600x1000 in dark/light;
+  dialog fits without overflow, reporting checkbox works by keyboard, invalid submission focuses the field,
+  opt-in mock proxy adds nine models, and legacy id/kind/key/reporting survive edits. Generic/error/logout QA
+  remains pending at this runtime handback; the orchestrator owns final integrated e2e results. No live proxy or
+  screen-reader speech was verified.
+
 Shell, layout, primitives, motion, canvas (fold, themes), run view and run chains, dashboard, settings pages, application menu, cost UI, proxy and multi-provider UI, proposal cards, org change sessions. Moved out of CLAUDE.md on 2026-11-07; see CLAUDE.md for the index.
 
 - Pocket Office (2026-11-08, `docs/design/pocket-office.md`): the existing Canvas style popover and Settings Canvas section select Graph/Pocket Office and Color (default)/Neutral/Green. Presentation changes keep graph pattern/layout/lines/node style/tint/minimap; graph preset picking explicitly restores Graph. `theme.ts` applies presentation/palette attributes and canvases consume `useCanvasOptions()`. Team shows real editable roles, the settings preview labels four example agents and is inert, and Live keeps decisions, inspectors, all loaded finished/prior agents, session/parent labels and a direct earlier-session loader. `lib/office/agentView.ts` reuses `nodeActivity` so a report without a result never becomes a successful “Reported back” outcome; runtime states remain internal to sprites while visible statuses use the shared words.

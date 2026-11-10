@@ -92,6 +92,10 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
 - Proxy reporting uses optional `litellmFeatures` with legacy kind fallback; dotted AWS ids remain exact and unknown
   metadata stays unknown. Connection/catalog/settings/IPC unit tests cover these contracts; live proxy behavior is
   unverified. See `docs/agent-notes/connections-mcp.md` for installed Codex warning evidence and limitations.
+- Proxy adapters bound provider tool names to 64 characters at the HTTP boundary and restore canonical SDK names
+  for permissions and routing. Fake-provider tests and an installed Codex app-server against loopback fake MCP/
+  Responses endpoints verify original-tool dispatch and replay; live LiteLLM/Bedrock remains unverified. Details:
+  `docs/agent-notes/connections-mcp.md`.
 
 - Transcript returned media uses optional ordered `tool_result.parts` plus its existing text `content` fallback, and standalone `kind: 'media'` assistant blocks. Never fetch provider URLs or open provider paths to render media. Runtime normalization, image-store round trips, host omission and provider handoff are unit tested; adapter event mappings use fake SDK events. Live provider behavior is unverified; details and bounds are in `.orgai/ARCHITECTURE.md` Shared contracts.
 
