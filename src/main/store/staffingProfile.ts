@@ -305,6 +305,61 @@ export function staffingBrief(
   return used === 0 ? '' : line
 }
 
+/** Runs with a timing figure needed before the cost line quotes the project's median instead of the default. */
+export const COST_LINE_MIN_RUNS = 3
+/** Default report start (agent start to first write) when the project has too little history (split-execution 1). */
+export const COST_LINE_DEFAULT_START_MS = 30_000
+/** Default time after the last report when the project has too little history. */
+export const COST_LINE_DEFAULT_AFTER_LAST_MS = 20_000
+/** Longest cost line. */
+export const COST_LINE_MAX_CHARS = 190
+/** Figures above this are quoted as this (a wedged run should not make the line absurd). */
+const COST_LINE_FIGURE_CAP_MS = 300_000
+
+/** Number of runs (distinct runId; an entry without one counts singly) that carry the figure. */
+function runsWith(profile: StaffingProfile, key: 'reportStartMs' | 'afterLastReportMs'): number {
+  const runs = new Set<string>()
+  let loose = 0
+  for (const e of profile.entries) {
+    if (!finiteNonNeg(e[key])) continue
+    if (e.runId) runs.add(e.runId)
+    else loose++
+  }
+  return runs.size + loose
+}
+
+const NUMBER_WORDS = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten']
+
+/** A whole number of half minutes (>= 1 min) in plain words: "a minute", "a minute and a half", "two minutes". */
+function minutesInWords(halfMinutes: number): string {
+  const whole = Math.floor(halfMinutes / 2)
+  const half = halfMinutes % 2 === 1
+  if (whole === 1) return half ? 'a minute and a half' : 'a minute'
+  return `${whole <= 10 ? NUMBER_WORDS[whole] : String(whole)}${half ? ' and a half' : ''} minutes`
+}
+
+/**
+ * The cost line of the root's staffing brief (split-execution 3.5): what a report costs in this project, and the piece
+ * size below which the lead should do the work itself. Each figure is the project's median (profileTiming) rounded to
+ * 5 s when at least COST_LINE_MIN_RUNS runs carry it, else the default (30 s to a report's first write, 20 s after the
+ * last report). Threshold = max(60 s, 2 x (start + after)) rounded to 30 s, in words. One sentence, at most
+ * COST_LINE_MAX_CHARS. Pure.
+ */
+export function staffingCostLine(profile: StaffingProfile): string {
+  const t = profileTiming(profile)
+  const pick = (median: number | undefined, key: 'reportStartMs' | 'afterLastReportMs', fallback: number): number => {
+    const raw = median !== undefined && runsWith(profile, key) >= COST_LINE_MIN_RUNS ? median : fallback
+    return Math.max(5_000, Math.round(Math.min(raw, COST_LINE_FIGURE_CAP_MS) / 5_000) * 5_000)
+  }
+  const start = pick(t.medianReportStartMs, 'reportStartMs', COST_LINE_DEFAULT_START_MS)
+  const after = pick(t.medianAfterLastReportMs, 'afterLastReportMs', COST_LINE_DEFAULT_AFTER_LAST_MS)
+  const halfMinutes = Math.max(2, Math.round((2 * (start + after)) / 30_000))
+  return (
+    `Here a report writes nothing for about ${start / 1000} s and a fan-out adds about ${after / 1000} s at the end: ` +
+    `hand out a piece only if it takes you well over ${minutesInWords(halfMinutes)}, and do the rest yourself.`
+  )
+}
+
 // ---------- file I/O ----------
 
 /** `<data>/staffing/<projectId>.json`, or undefined when the id is not a plain id. */
@@ -464,21 +519,24 @@ export function staffingProfileDep(
 }
 
 /**
- * The staffing brief for the root's first message, or '': only on a team work run of an automatic-staffing project
- * with a profile, and not when the run resumes a provider session that already had it. One line, marked as data.
+ * The staffing brief for the root's first message, or '': only on a team work run of an automatic-staffing project,
+ * not on a bridged child session, and not when the run resumes a provider session that already had it. The history
+ * line (marked as data) needs a profile; the cost line (staffingCostLine) needs a root with reports and goes out with
+ * its defaults when the profile is missing or empty (a new project).
  */
-export function rootStaffingBrief(ctx: Pick<RuntimeContext, 'staffingProfile' | 'project' | 'run' | 'roles' | 'resumeSessionId'>): string {
-  if (ctx.resumeSessionId || !staffingProfileApplies(ctx.run, ctx.project)) return ''
-  const profile = ctx.staffingProfile?.()
-  if (!profile || profile.entries.length === 0) return ''
-  return staffingBrief(profile, ctx.roles)
+export function rootStaffingBrief(ctx: Pick<RuntimeContext, 'staffingProfile' | 'project' | 'run' | 'roles' | 'resumeSessionId' | 'bridgedChild'>): string {
+  if (ctx.resumeSessionId || ctx.bridgedChild || !staffingProfileApplies(ctx.run, ctx.project)) return ''
+  const profile = ctx.staffingProfile?.() ?? emptyStaffingProfile()
+  const history = profile.entries.length ? staffingBrief(profile, ctx.roles) : ''
+  const cost = ctx.roles.some((r) => r.reportsTo !== null) ? staffingCostLine(profile) : ''
+  return [history, cost].filter(Boolean).join(' ')
 }
 
 /**
  * The first-message context with the staffing brief appended to the harness's hidden context (never the transcript, never
  * the system prompt). Pass the result to knowledgeDelivery.firstMessageHiddenContext in place of the context.
  */
-export function withRootStaffingBrief<C extends Pick<RuntimeContext, 'staffingProfile' | 'project' | 'run' | 'roles' | 'resumeSessionId' | 'hiddenContext' | 'prompt' | 'knowledgeContext'>>(
+export function withRootStaffingBrief<C extends Pick<RuntimeContext, 'staffingProfile' | 'project' | 'run' | 'roles' | 'resumeSessionId' | 'bridgedChild' | 'hiddenContext' | 'prompt' | 'knowledgeContext'>>(
   ctx: C
 ): Pick<RuntimeContext, 'hiddenContext' | 'prompt' | 'knowledgeContext'> {
   const brief = rootStaffingBrief(ctx)

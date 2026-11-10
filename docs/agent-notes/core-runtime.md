@@ -102,6 +102,10 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   entries carry `runId` and `mergeProfile` replaces a run's earlier entries, so a second merge cannot double count.
   A failed write logs one warning (step and errno code, no path) and never fails the end. Unit tests only
   (staffingProfile, runManagerStaffing, mock, claude, claudeKnowledge, codexStaffing); no live run.
+  Cost line (2026-11-10, split-execution 3.5): `rootStaffingBrief` appends `staffingCostLine(profile)` (what a report
+  costs here and the piece size worth handing out; medians from `profileTiming` once 3 runs carry them, else 30 s / 20 s)
+  when the root has reports (a role with `reportsTo` set). It now goes out with an empty or missing profile (the history
+  line still needs one) and never on a `bridgedChild`. Unit tests only (staffingProfile, codex); no lab run.
 - Context pack on spawn (2026-11-10, split-execution 3.2; `runtime/contextPack.ts`): Codex `spawn_report` and the mock
   spawn step take `files` (files inside the folders this run may read; the harness does not check that the lead read
   them). At spawn time the host reads them and appends them to the report's first message under
