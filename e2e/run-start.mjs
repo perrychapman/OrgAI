@@ -511,8 +511,11 @@ try {
     let v = await openRunWindow(refuse)
     await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
     await chooseMode(v, 'plan')
-    await v.locator(T('run-permission-error')).waitFor({ state: 'visible', timeout: 8000 }).catch(() => {})
-    check((await text(v, T('run-permission-error'))).includes('This provider applies a new permission mode from the next session.'), '8 (merged mock) [mock:mode-refuse] shows its message in run-permission-error', await text(v, T('run-permission-error')))
+    // RunManager logs the adapter's own message and shows a fixed reason (review L2), as a refusal or as applied: false.
+    const REFUSED = 'The session could not change its permission mode now.'
+    await v.waitForFunction((want) => ['run-permission-error', 'run-permission-note'].some((id) => (document.querySelector(`[data-testid=${id}]`)?.textContent ?? '').includes(want)), REFUSED, { timeout: 8000 }).catch(() => {})
+    const refusedText = `${await text(v, T('run-permission-error'))} | ${await text(v, T('run-permission-note'))}`
+    check(refusedText.includes(REFUSED), '8 (merged mock) [mock:mode-refuse] shows the fixed refusal reason by the permission chip', refusedText)
     check((await text(v, T('run-permission-current'))) === MODE_NAME.default && (await getRun(refuse.id)).summary.permissionMode === 'default', '8 (merged mock) a refused change keeps the old mode on the chip and in runs.get')
     await v.screenshot({ path: 'e2e/shots/run-start-mode-refused.png' })
     await page.evaluate((id) => window.orgai.runs.stop(id), refuse.id)
@@ -521,8 +524,9 @@ try {
     v = await openRunWindow(unchanged)
     await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
     await chooseMode(v, 'plan')
-    await v.waitForFunction(() => /keep the earlier mode until they finish/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
-    check((await text(v, T('run-permission-note'))).includes('keep the earlier mode until they finish'), '8 (merged mock) [mock:mode-reports-unchanged] says running reports keep the earlier mode', await text(v, T('run-permission-note')))
+    // Singular for one report: "1 running report keeps the earlier mode until it finishes."
+    await v.waitForFunction(() => /keeps? the earlier mode until (they|it) finish/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+    check(/keeps? the earlier mode until (they|it) finish/.test(await text(v, T('run-permission-note'))),'8 (merged mock) [mock:mode-reports-unchanged] says running reports keep the earlier mode', await text(v, T('run-permission-note')))
     await page.evaluate((id) => window.orgai.runs.stop(id), unchanged.id)
   })
 } catch (error) {
