@@ -68,6 +68,15 @@ describe('buildRolePrompt', () => {
     expect(text).not.toContain('own git worktree')
   })
 
+  it('the listing says how to hand work out, not that it must; required reports keep their unconditional line', () => {
+    const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: false })
+    expect(text).toContain('You lead the following specialists. To hand work out, use the Agent tool, passing subagent_type exactly as written:\n')
+    expect(text).not.toContain('Delegate to them')
+    const mandated = [{ ...lead, requiredReports: [eng.id] }, ...roles.slice(1)]
+    const root = buildRolePrompt(mandated[0]!, mandated, project({ roles: mandated }), { isSetup: false, isolation: false, strictDelegation: true })
+    expect(root).toMatch(/\nYou must delegate to engineer( and reviewer)? and wait for their reports before you finish; the harness checks the run's record and will not accept your report without them\./)
+  })
+
   it('tells the root and canSpawn leads to reach for MCP servers, never reports, never setup runs', () => {
     const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: false })
     expect(text).toContain('call list_mcp_servers')
@@ -607,16 +616,16 @@ describe('team sizing paragraph', () => {
 
   it('stays within its budget (the numbers are pinned so growth is deliberate)', () => {
     // Review policy 'risk' (the default) carries the longest review sentence.
-    // Phase 6 decision order (kept work stays alone, side work only for handed-out work): +78 on every variant.
-    expect(teamSizingText({ isolation: false }).length).toBe(1231)
-    expect(teamSizingText({ isolation: true }).length).toBe(1193)
-    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1435)
-    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1397)
-    expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1110)
-    expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1087)
+    // Phase 6 decision order (kept work stays alone, side work only for handed-out work): +78, then +22 (own-work tests) on every variant.
+    expect(teamSizingText({ isolation: false }).length).toBe(1253)
+    expect(teamSizingText({ isolation: true }).length).toBe(1215)
+    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1457)
+    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1419)
+    expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1132)
+    expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1109)
     for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
       const t = teamSizingText({ required, isolation, review })
-      expect(t.length).toBeLessThanOrEqual(1450)
+      expect(t.length).toBeLessThanOrEqual(1475)
       expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
     }
   })
@@ -639,8 +648,9 @@ describe('team sizing paragraph', () => {
   })
 
   describe('decision order (Phase 6 lab: no invented side work on a task the lead keeps)', () => {
-    const kept = 'do the work yourself, its tests and checks included, when it is one contained piece and you hold the tools.'
-    const noInvent = 'Invent no extra tests or docs to hand out.'
+    const kept = 'do the work yourself when it is one contained piece and you hold the tools.'
+    const splitWhat = 'Hand work out when what the brief asks for splits into independent pieces'
+    const noInvent = 'Tests and checks of your own work are part of it, never pieces to hand out.'
     const contract = 'Once interface and acceptance criteria are set, start tests and checks of handed-out work beside it.'
     const requiredLine = "Required reports still go out: start together those that do not need each other's result;"
     const parallel = [
@@ -653,8 +663,11 @@ describe('team sizing paragraph', () => {
       for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
         const t = teamSizingText({ required, isolation, review })
         expect(t.startsWith(`Unless your instructions, the brief or required reports say otherwise, ${kept} `)).toBe(true)
-        // The kept-work rule and the no-invention rule come before anything about splitting, contracts or review.
-        expect(t.indexOf(noInvent)).toBeGreaterThan(t.indexOf(kept))
+        // The kept-work rule, the split test on what the brief asks for and the own-work rule come before anything about
+        // splitting, contracts or review.
+        expect(t.indexOf(splitWhat)).toBeGreaterThan(t.indexOf(kept))
+        expect(t.indexOf(noInvent)).toBeGreaterThan(t.indexOf(splitWhat))
+        expect(t).not.toContain('Invent no extra')
         for (const later of [contract, reviewPolicyText(review), ...parallel]) expect(t.indexOf(later)).toBeGreaterThan(t.indexOf(noInvent))
         expect(t).toContain(contract)
         expect(t).not.toContain('docs beside the implementation')
@@ -688,7 +701,22 @@ describe('team sizing paragraph', () => {
         buildRolePrompt(lead, roles, project(), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } }),
         buildRolePrompt(lead, roles, project(), { ...flags, isSetup: true })
       ]
-      for (const text of others) for (const s of [kept, noInvent, contract, reviewPolicyText('risk'), 'the rule above decides if any']) expect(text).not.toContain(s)
+      for (const text of others) for (const s of [kept, splitWhat, noInvent, contract, reviewPolicyText('risk'), 'the rule above decides if any']) expect(text).not.toContain(s)
+    })
+
+    it('tests and checks of the lead\'s own work are part of it: present for every policy on a team root, absent for reports, quick, setup and single-assistant runs', () => {
+      for (const reviewPolicy of ['risk', 'always', 'never'] as const) {
+        for (const isolation of [false, true]) {
+          const root = buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, isolation })
+          expect(root.split(noInvent)).toHaveLength(2)
+        }
+        for (const text of [
+          buildRolePrompt(eng, roles, project({ reviewPolicy }), flags),
+          buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, quick: { folder: '/w', team: 'default', allowEdits: true, gitRepo: true } }),
+          buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, isSetup: true }),
+          buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, team: 'single' })
+        ]) expect(text).not.toContain(noInvent)
+      }
     })
   })
 

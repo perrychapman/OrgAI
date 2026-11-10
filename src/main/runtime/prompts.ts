@@ -223,7 +223,7 @@ export function reportsText(
     return b ? bridgedReportMark(b.connectionName, via) : (limits[r.slug] ?? '')
   }
   return (
-    `You lead the following specialists. Delegate to them with the Agent tool, passing subagent_type exactly as written:\n` +
+    `You lead the following specialists. To hand work out, use the Agent tool, passing subagent_type exactly as written:\n` +
     reports.map((r) => `- ${r.slug}${mark(r)}: ${r.description}`).join('\n') +
     (background && via === 'delegate_agent' && reports.some((r) => bridged?.some((b) => b.roleId === r.id))
       ? `\nPass background: true to ${BRIDGE_HARNESS_TOOLS.delegate} to keep working while that report runs; its report arrives as a harness message.`
@@ -240,19 +240,20 @@ export function reportsText(
  * For the root of a team work run that has reports (not setup-like, quick, single or bridged-child runs): when to do the
  * work itself, when to hand it out, and how to run what it hands out together (docs/design/orchestration-efficiency.md
  * 4.1, 4.2). It yields to the role prompt, the brief and required delegation: with required reports it governs only how
- * they run. Decision order: the sizing rule first says whether work goes out at all; work kept is done alone, its tests
- * and checks included; the parallel, contract and risk-review rules apply to handed-out work (Phase 6 lab: the Codex
- * lead otherwise invented test and review steps for reports on a task it did alone). `required`: the role has required reports (obligationsFor). `isolation`: writers get worktrees; without
+ * they run. Decision order: the sizing rule first says whether work goes out at all, splitting only what the brief asks
+ * for; tests and checks of the lead's own work are part of that work, never a piece of their own; the parallel, contract
+ * and risk-review rules apply to handed-out work (Phase 6 lab: the Codex lead otherwise handed out tests and review of
+ * its own change on a task it did alone). `required`: the role has required reports (obligationsFor). `isolation`: writers get worktrees; without
  * it, writers that run together are told to keep to disjoint files (with it, orchestratorIsolationText says why it is safe).
  * `review`: the project's review policy (reviewPolicyOf, default 'risk'); its sentence (reviewPolicyText) is the
  * paragraph's only review rule, shown whatever the staffing mode.
  */
 export function teamSizingText(opts: { required?: boolean; isolation?: boolean; review?: ReviewPolicy } = {}): string {
   return (
-    'Unless your instructions, the brief or required reports say otherwise, do the work yourself, its tests and checks included, when it is one contained piece and you hold the tools. ' +
-    "Hand work out when it splits into independent pieces of more than a couple of minutes each, needs a report's tools, skills or connections, or a rule demands it; " +
+    'Unless your instructions, the brief or required reports say otherwise, do the work yourself when it is one contained piece and you hold the tools. ' +
+    "Hand work out when what the brief asks for splits into independent pieces of more than a couple of minutes each, needs a report's tools, skills or connections, or a rule demands it; " +
     'one report doing it all while you wait is slower than doing it alone. ' +
-    'Invent no extra tests or docs to hand out. ' +
+    'Tests and checks of your own work are part of it, never pieces to hand out. ' +
     (opts.required ? "Required reports still go out: start together those that do not need each other's result; start one that needs another's result as soon as that result lands, only handing it over; do not redo their work. " : '') +
     'Cut the longest piece first; a split leaving one piece nearly as long as the whole saves nothing. ' +
     'Run several instances of a role on disjoint scopes. ' +
