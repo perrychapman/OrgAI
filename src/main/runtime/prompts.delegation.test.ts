@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildRolePrompt, reportsText } from './prompts'
+import { buildRolePrompt, reportsText, teamSizingText } from './prompts'
 import { project, role } from './testHelpers'
 
 const roles = [
@@ -37,5 +37,26 @@ describe('required delegation prompts', () => {
   it('reportsText names the required slugs only when given', () => {
     expect(reportsText([roles[1]])).not.toContain('You must delegate')
     expect(reportsText([roles[1]], [], 'delegate_agent', ['mgr'])).toContain('You must delegate to mgr and wait')
+  })
+
+  it('the team sizing paragraph comes with the required-reports text and never replaces it', () => {
+    const strict = prompt('lead', { strictDelegation: true })
+    expect(strict).toContain('You must delegate to mgr and wait for their reports before you finish')
+    expect(strict).toContain(teamSizingText({ required: true, isolation: false }))
+    expect(strict).toContain("start together those that do not need each other's result")
+    expect(strict).toContain("start one that needs another's result as soon as that result lands, only handing it over")
+    expect(strict).toContain('do not redo their work')
+    expect(strict).not.toContain('start them together')
+    expect(strict.indexOf('You must delegate to mgr')).toBeLessThan(strict.indexOf('Required reports still go out'))
+    // A root whose own role names required reports gets the same.
+    const chart = roles.map((r) => (r.slug === 'lead' ? { ...r, requiredReports: ['r-mgr'] } : r))
+    const own = buildRolePrompt(chart[0], chart, project({ roles: chart }), flags)
+    expect(own).toContain('You must delegate to mgr and wait')
+    expect(own).toContain('Required reports still go out')
+    // Without obligations the root gets the plain variant; a lead below the root with obligations gets none.
+    expect(prompt('lead')).toContain(teamSizingText({ isolation: false }))
+    expect(prompt('lead')).not.toContain('Required reports still go out')
+    expect(prompt('mgr')).not.toContain('Required reports still go out')
+    expect(prompt('mgr')).toContain('You must delegate to policy and evidence')
   })
 })
