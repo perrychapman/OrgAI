@@ -324,8 +324,9 @@
   padding: var(--space-6) var(--space-4);
   background: var(--canvas-bg);
 }
+/* Wide enough that the composer, with its settings chips, is the heaviest thing on the page (UX review M3). */
 .new-run-inner {
-  width: min(100%, calc(var(--space-16) * 10));
+  width: min(100%, calc(var(--space-16) * 12));
   margin: auto;
   display: flex;
   flex-direction: column;
@@ -346,6 +347,11 @@
   .new-run-inner > .empty-state .empty-state-glyph {
     display: none;
   }
+}
+/* The one-sentence lead stays on one or two even lines. */
+.new-run-inner > .empty-state .empty-state-desc {
+  max-width: 56ch;
+  text-wrap: balance;
 }
 .new-run-intro {
   text-align: center;

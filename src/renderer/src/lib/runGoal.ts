@@ -2,7 +2,8 @@ import type { Project, StaffingGoal } from '@shared/types'
 import { STAFFING_GOALS } from '@shared/types'
 import { staffingGoalOf, staffingModeOf } from '@shared/defaults'
 
-export const GOAL_LABEL: Record<StaffingGoal, string> = { balanced: 'Balanced', speed: 'Speed', cost: 'Cost' }
+/** Names read as what the run is optimised for: "Optimise for Faster". */
+export const GOAL_LABEL: Record<StaffingGoal, string> = { balanced: 'Balanced', speed: 'Faster', cost: 'Cheaper' }
 
 /** One line per goal, in plain words (docs/design/orchestration-efficiency.md 4.3). */
 export const GOAL_HELP: Record<StaffingGoal, string> = {
