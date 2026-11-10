@@ -120,18 +120,25 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   darwin 25), on Linux `/proc/self/fd/<fd>` read back equal to the real path (`handlePointsAt`, an unreadable /proc
   fails closed; unit-tested with a mocked readlink only, no Linux run), `fstat` of the handle a regular file within the
   cap, `realpath` again equal to the checked real path, `stat` of that path the same dev and ino as the handle (bigint
-  stats), the handle's dev and ino not in the protected set (`protectedFileKeys`, collected once per pack build before
-  the first file and compared for EVERY file, any link count: each protected path, every file under a protected folder,
-  walked once per folder whatever its spellings, and the data folder's entries the gate protects by name prefix,
-  `vault.json*` / `secrets.json*` from `vaultPrefixProtections`, so `.reset-*`, `.corrupt-*`, `.tmp` hard links count;
-  past 5,000 entries every file gets the neutral "OrgAI could not check it against its control files"), and only then a
-  bounded read from the handle, always closed. A swap between the checks and the open (a link to an outside or control
+  stats), the handle's dev and ino not a protected file (`protectedFileKeys`), and only then a bounded read from the
+  handle, always closed. Protected set (third pass, 2026-11-10): the SHALLOW set (each protected path, the data
+  folder's entries the gate protects by name prefix, `vault.json*` / `secrets.json*` from `vaultPrefixProtections`, so
+  `.reset-*`, `.corrupt-*`, `.tmp` hard links count, and the TOP LEVEL of each protected folder, e.g. `codex/auth.json`;
+  each folder listed once whatever its spellings; bound 20,000 entries) is collected once per pack build before the
+  first file and checked for every file. With the handle's path pinned (macOS `O_NOFOLLOW_ANY`, Linux /proc) the gate on
+  the real path covers every path into a protected folder, so the DEEP walk (every file below them, bound 200,000) runs
+  only when the handle has more than one link, once per build. Without pinning (Windows) the deep set is checked for
+  every file and walked once per run (`deepCache`, kept by the Codex and mock sessions). Past a bound every file gets the
+  neutral "OrgAI could not check it against its control files". The second pass walked everything for every pack with
+  a 5,000 bound: `<data>/codex` (a session file per Codex thread, 8,802 entries on the reviewer's machine) turned the
+  pack off on both adapters; a unit test now has 6,000 entries below `codex/` and an ordinary file still inlined. A swap between the checks and the open (a link to an outside or control
   file, a linked parent folder, a parent that is a link at the open, a folder at the re-resolve and a link at the stat,
   a control file renamed in, a FIFO) is skipped as "unreadable", "not a file" or as a control file (2026-11-10 second
   security pass; the three-moment parent swap is a unit test that inlines `<data>/codex/auth.json` with neither fix
   and is refused with either one alone, checked on macOS; Windows has only the dev/ino checks, not run there). The
   `File:` line drops control, U+0085, U+2028, U+2029 and bidi characters, and inlined text gets a zero-width space after
-  each `</` before a letter (the heading says so), so no file line can close a wrapper tag of the hook context.
+  each `</` before a letter, white space between allowed (the heading says so), so no file line can close a wrapper tag
+  of the hook context.
   Trust-restricted and setup-like runs get none (`contextPackRefusal`). Every
   file left out is named with its reason in the tool result (`contextPackResultLine`). A bridged report gets no pack
   (the result says so); `delegate_agent` takes no `files`. Without `files` nothing changes. spawn_report's definition
@@ -140,14 +147,29 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   the SDK's own and a rewrite of a well-formed spawn costs a classifier request, so the lead ends the brief with a
   `Files: a, b` line (`briefFiles`: the last non-empty line, label in any case, comma separated, quotes and backticks
   dropped; a path cannot hold a comma; since the second pass the line must be the very last one, not inside a code
-  fence left open above it and not continuing a block quote; no prompt change). The spawn hook reads it at PreToolUse
-  after every denial (call unchanged; the line stays in the brief) with the same checks, relative paths from the hook's
+  fence left open above it (``` and ~~~ are separate fences, CommonMark closing rules) and not continuing a block
+  quote; no prompt change). The spawn hook reads it at PreToolUse
+  after every denial (call unchanged; the line stays in the brief), relative paths resolved lexically from the hook's
   cwd, which is never a root: roots = project, the caller's checkout as the harness tracks it (`agentCwd`: the report's
-  worktree is cut from it), allowed and reference folders. Claude inlines ONLY files the spawning agent itself read with
-  Read this session (`readPaths`; real paths from each `Read` PostToolUse, 500 per agent, oldest dropped; else "not read
-  by you in this run"): the CLI enforces `.claude/settings.json` and managed-policy Read deny/ask rules the harness does
-  not see, and a Read they stopped never reaches PostToolUse (from the hooks docs and sdk.d.ts, where failures and
-  denials have their own events, not checked live). A target role without the Read tool gets no pack. Plus `blockMaxChars` =
+  worktree is cut from it), allowed and reference folders. Since the third pass Claude reads NO file at spawn: the pack
+  is built from the TEXT the spawning agent's own complete Reads returned (`buildContextPackFromTexts`,
+  `ReadTextStore`). At each `Read` PostToolUse the session keeps `tool_response.file.content` when the response shows
+  the whole file (`completeReadText`: `type: 'text'`, `startLine` 1, `numLines` equal to `totalLines`, no
+  `truncatedByTokenCap`), keyed by the path as written resolved lexically against the hook's cwd and by its real path
+  at that moment; only texts within 24,000 characters, at most 100 entries and 1,500,000 characters per agent and 200
+  agents, oldest dropped; an agent's store is dropped when it ends (SubagentStop, its notification, a harness stop).
+  Checks per named file: a path, not a network path, protected paths available, the path as written and the recorded
+  real path lexically inside the roots, `checkSelfControlDenial` on both, a kept complete Read (else "not read in full by
+  you in this run"), not listed twice; then the same caps, block cap, shown path and `</` neutralisation. So a link
+  flipped after the CLI's own Read deny/ask check, a file changed after the Read and Windows (no handle pinning) cannot
+  put in text the lead's Read did not return; the CLI enforces `.claude/settings.json` and managed-policy Read deny/ask
+  rules the harness does not see, and a Read they stopped never reaches PostToolUse (from the hooks docs and sdk.d.ts,
+  where failures and denials have their own events, not checked live). Response shape: from `sdk-tools.d.ts`
+  `FileReadOutput` and the SDK 0.3.318 CLI bundle (`strings` on the darwin-arm64 binary): `content` is the file's raw
+  text (CRLF read as LF, a BOM dropped); the `cat -n` style line numbers are added only when the result is rendered for
+  the model (`U6e`), so the hook sees raw text; the PostToolUse `tool_response` is the tool's output object (as the Agent
+  call's `async_launched` object in check 12). Not checked live for Read. A target role without the Read tool gets no
+  pack. Plus `blockMaxChars` =
   `CLAUDE_HOOK_CONTEXT_INLINE_MAX` (10,000: the CLI keeps hook context inline only up to that, above it the model gets a
   2,000-character preview and a file path; read from the SDK 0.3.318 CLI bundle, `bve`/`kHe=1e4`, not checked live).
   The block goes out as the report's `SubagentStart` `additionalContext` (sdk-facts check 13). The start is linked to
@@ -156,7 +178,8 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   pack for that role is pending. The lead reads `contextPackResultLine` in the Agent call's `PostToolUse` additional
   context (beside a receipt or staffing note): at launch for a background spawn, with the report for a foreground one
   (late, but it still says which files the report had to read itself); a pack that never reached a start is listed as
-  not inlined. A refused spawn (`is_error` result) drops its pack. Unit tests only (contextPack with swap tests through a wrapped `openSync`, POSIX only for links and FIFOs;
+  not inlined. A refused spawn (`is_error` result) drops its pack. Unit tests only (contextPack with swap tests through
+  wrapped `openSync`, `realpathSync.native`, `statSync` and `readlinkSync`, POSIX only for links and FIFOs;
   codexContextPack, mockContextPack, claudeSplit); no live run, `reportStartMs` not measured yet.
 - One report and a waiting lead (2026-11-10, split-execution 3.6; `runtime/waitingNote.ts`, pure `waitingNote`): after
   a successful spawn by the run's root (not a bridged child's root) that leaves exactly one of the root's reports

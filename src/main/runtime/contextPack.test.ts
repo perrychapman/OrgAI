@@ -14,6 +14,13 @@ import {
   handlePointsAt,
   neutralizeClosingTags,
   protectedFileKeys,
+  buildContextPackFromTexts,
+  completeReadText,
+  CONTEXT_PACK_NOT_READ_IN_FULL,
+  PROTECTED_SHALLOW_MAX,
+  READ_TEXT_STORE_LIMITS,
+  ReadTextStore,
+  type ProtectedDeepCache,
   buildContextPack,
   contextPackBlock,
   contextPackRefusal,
@@ -351,24 +358,68 @@ describe('context pack', () => {
     expect(pack.files.map((f) => f.path)).toEqual(['notes.md'])
   })
 
-  it.skipIf(!posix)('C: each protected folder is walked once whatever its spellings; past the bound the reason is neutral', () => {
+  it.skipIf(!posix)('C: each protected folder is listed once whatever its spellings; past the bound the reason is neutral', () => {
     const data = join(base, 'data')
     mkdirSync(join(data, 'run'), { recursive: true })
     writeFileSync(join(data, 'secrets.json'), '{}')
-    // 3,000 files under run: walked under both spellings (a linked data folder: lexical and canonical) it would pass 5,000.
+    // 3,000 files under run: listed under both spellings (a linked data folder: lexical and canonical) it would pass 5,000.
     for (let i = 0; i < 3000; i++) writeFileSync(join(data, 'run', `f${i}`), '')
     symlinkSync(data, join(base, 'data-link'), 'dir')
     const spelled = controlProtectedPaths(join(base, 'data-link'))
     expect(spelled).toContain(join(base, 'data-link', 'run'))
     expect(spelled).toContain(join(data, 'run'))
-    const keys = protectedFileKeys(spelled)
-    expect(keys).not.toBeNull()
-    expect(keys!.size).toBe(3001)
+    for (const deep of [false, true]) {
+      const keys = protectedFileKeys(spelled, process.platform, deep, 5_000)
+      expect(keys).not.toBeNull()
+      expect(keys!.size).toBe(3001)
+    }
     // Past the bound: nothing is inlined, and the reason does not call the file a control file.
-    for (let i = 3000; i < 5100; i++) writeFileSync(join(data, 'run', `f${i}`), '')
-    expect(protectedFileKeys(spelled)).toBeNull()
+    expect(protectedFileKeys(spelled, process.platform, false, 2_000)).toBeNull()
+    for (let i = 3000; i < PROTECTED_SHALLOW_MAX + 10; i++) writeFileSync(join(data, 'run', `f${i}`), '')
     const pack = buildContextPack(['src/a.ts'], opts({ protectedPaths: spelled }))
     expect(pack.skipped).toEqual([{ path: 'src/a.ts', reason: 'OrgAI could not check it against its control files' }])
+  }, 30_000)
+
+  it.skipIf(!posix)('1: a protected folder with more than 5,000 entries below its top level leaves an ordinary single-link file inlined; a hard link into it is still refused', () => {
+    const data = join(base, 'data')
+    mkdirSync(join(data, 'codex', 'sessions', '2026', '11'), { recursive: true })
+    writeFileSync(join(data, 'secrets.json'), '{}')
+    writeFileSync(join(data, 'codex', 'auth.json'), '{"token":"t0ken"}')
+    // A Codex home: a session file per thread, below the top level.
+    for (let i = 0; i < 6_000; i++) writeFileSync(join(data, 'codex', 'sessions', '2026', '11', `rollout-${i}.jsonl`), '{}')
+    const protectedPaths = controlProtectedPaths(data)
+    // The shallow set is small: the top level only.
+    expect(protectedFileKeys(protectedPaths, process.platform, false)!.size).toBeLessThan(10)
+    // A hard link to a session file (two links: the deep walk runs) and an ordinary hard-linked project file.
+    linkSync(join(data, 'codex', 'sessions', '2026', '11', 'rollout-17.jsonl'), join(proj, 'session.json'))
+    writeFileSync(join(proj, 'shared.txt'), 'shared')
+    linkSync(join(proj, 'shared.txt'), join(base, 'shared-elsewhere.txt'))
+    const pack = buildContextPack(['src/a.ts', 'session.json', 'shared.txt'], opts({ protectedPaths }))
+    expect(pack.files.map((f) => f.path)).toEqual(['src/a.ts', 'shared.txt'])
+    expect(pack.skipped).toEqual([{ path: 'session.json', reason: "OrgAI's control files are never shared" }])
+    // The top level stays in the set for every file: codex/auth.json moved in during a build is refused.
+    writeFileSync(join(proj, 'moved.json'), '{}')
+    hooks.beforeOpen = (path) => renameSync(join(data, 'codex', 'auth.json'), path)
+    expect(buildContextPack(['moved.json'], opts({ protectedPaths })).skipped).toEqual([{ path: 'moved.json', reason: "OrgAI's control files are never shared" }])
+  }, 30_000)
+
+  it('1: without handle pinning (Windows rules) the deep set is checked for every file and walked once per run', () => {
+    const data = join(base, 'data')
+    mkdirSync(join(data, 'codex', 'sessions'), { recursive: true })
+    writeFileSync(join(data, 'secrets.json'), '{}')
+    writeFileSync(join(data, 'codex', 'sessions', 'rollout-1.jsonl'), '{"s":"s3cret"}')
+    writeFileSync(join(proj, 'moved.jsonl'), '{}')
+    const protectedPaths = controlProtectedPaths(data)
+    const deepCache: ProtectedDeepCache = {}
+    // A file deep in a protected folder, moved in between the checks and the open, with one link: only the deep set knows it.
+    hooks.beforeOpen = (path) => renameSync(join(data, 'codex', 'sessions', 'rollout-1.jsonl'), path)
+    const pack = buildContextPack(['moved.jsonl'], opts({ protectedPaths, deepCache, platform: 'win32' }))
+    expect(pack.skipped).toEqual([{ path: 'moved.jsonl', reason: "OrgAI's control files are never shared" }])
+    const walked = deepCache.keys
+    expect(walked).toBeInstanceOf(Set)
+    // The next pack of the run reuses the walk.
+    expect(buildContextPack(['src/a.ts'], opts({ protectedPaths, deepCache, platform: 'win32' })).files).toHaveLength(1)
+    expect(deepCache.keys).toBe(walked)
   })
 
   it('D: the File: line drops line separators and bidi controls; a closing tag inside the text gets a zero-width space', () => {
@@ -380,18 +431,101 @@ describe('context pack', () => {
     expect(block).toContain('File: odd.txt\n')
     expect(block).not.toContain('</system-reminder>')
     expect(block).toContain('</\u200bsystem-reminder>')
-    // Only `</` before a letter changes.
-    expect(neutralizeClosingTags('</ x </1 a</B')).toBe('</ x </1 a</\u200bB')
+    // Only `</` before a letter (white space between allowed) changes.
+    expect(neutralizeClosingTags('</ x </1 a</B </\n\tdiv </ ')).toBe('</\u200b x </1 a</\u200bB </\u200b\n\tdiv </ ')
     expect(CONTEXT_PACK_HEADING).toContain('zero-width space')
     // A refusal line is cleaned the same way.
     expect(contextPackResultLine(buildContextPack(['nope\u2028\u202e.ts'], opts()))).toContain('nope.ts (not found)')
   })
 
-  it('readPaths (Claude): only files whose real path the lead read are inlined', () => {
-    symlinkSync(join(proj, 'src', 'a.ts'), join(proj, 'alias.ts'))
-    const pack = buildContextPack(['alias.ts', 'README.md'], opts({ readPaths: new Set([join(proj, 'src', 'a.ts')]) }))
-    expect(pack.files.map((f) => f.path)).toEqual(['alias.ts'])
-    expect(pack.skipped).toEqual([{ path: 'README.md', reason: 'not read by you in this run' }])
+  it('2: from known texts (Claude): no file system read, only complete Reads, the same checks, caps and formatting', () => {
+    const data = join(base, 'data')
+    const protectedPaths = controlProtectedPaths(data)
+    const store = new ReadTextStore()
+    const a = join(proj, 'src', 'a.ts')
+    store.record('lead', [a], { text: 'as the lead saw it </script>', real: a })
+    // On disk it changed since: the pack holds what the lead's Read returned.
+    writeFileSync(a, 'changed after the read')
+    store.record('lead', [join(proj, 'big.txt')], { text: 'x'.repeat(CONTEXT_PACK_FILE_MAX_CHARS + 1), real: join(proj, 'big.txt') })
+    store.record('lead', [join(outside, 'secret.txt')], { text: 'not yours', real: join(outside, 'secret.txt') })
+    // A path inside the project whose real path (at the Read) was outside.
+    store.record('lead', [join(proj, 'via-link.txt'), join(outside, 'x.txt')], { text: 'outside', real: join(outside, 'x.txt') })
+    const pack = buildContextPackFromTexts(['src/a.ts', 'README.md', 'big.txt', join(outside, 'secret.txt'), 'via-link.txt', join(data, 'secrets.json'), './src/a.ts'], {
+      callerCwd: proj,
+      readRoots: [proj],
+      protectedPaths,
+      lookup: (abs) => store.get('lead', abs)
+    })
+    expect(pack.files).toEqual([{ path: 'src/a.ts', text: 'as the lead saw it </​script>' }])
+    expect(pack.skipped).toEqual([
+      { path: 'README.md', reason: CONTEXT_PACK_NOT_READ_IN_FULL },
+      // Never kept: over the per-file cap.
+      { path: 'big.txt', reason: CONTEXT_PACK_NOT_READ_IN_FULL },
+      { path: join(outside, 'secret.txt'), reason: 'outside the folders the report may read' },
+      { path: 'via-link.txt', reason: 'outside the folders the report may read' },
+      { path: join(data, 'secrets.json'), reason: 'outside the folders the report may read' },
+      { path: './src/a.ts', reason: 'listed twice' }
+    ])
+    // The gate on the path, with the data folder inside the project; unavailable paths and refuseAll as before.
+    const inData = join(proj, 'data')
+    const pp = controlProtectedPaths(inData)
+    store.record('lead', [join(inData, 'secrets.json')], { text: '{"k":"s3cret"}', real: join(inData, 'secrets.json') })
+    const base2 = { callerCwd: proj, readRoots: [proj], protectedPaths: pp, lookup: (x: string) => store.get('lead', x) }
+    expect(buildContextPackFromTexts(['data/secrets.json'], base2).skipped).toEqual([{ path: 'data/secrets.json', reason: "OrgAI's control files are never shared" }])
+    // A kept read whose recorded real path is a control file (a link flipped onto it) is refused by the gate too.
+    store.record('lead', [join(proj, 'flip.txt'), join(inData, 'secrets.json')], { text: 'notes', real: join(inData, 'secrets.json') })
+    expect(buildContextPackFromTexts(['flip.txt'], base2).skipped).toEqual([{ path: 'flip.txt', reason: "OrgAI's control files are never shared" }])
+    expect(buildContextPackFromTexts(['src/a.ts'], { ...base2, pathsUnavailable: true }).skipped[0]!.reason).toBe('OrgAI could not check it against its control files')
+    expect(buildContextPackFromTexts(['src/a.ts'], { ...base2, refuseAll: 'no' }).skipped).toEqual([{ path: 'src/a.ts', reason: 'no' }])
+    // The block cap and the file count, as buildContextPack.
+    for (let i = 0; i < 3; i++) store.record('lead', [join(proj, `m${i}.txt`)], { text: 'z'.repeat(4000), real: join(proj, `m${i}.txt`) })
+    const capped = buildContextPackFromTexts(['m0.txt', 'm1.txt', 'm2.txt'], { ...base2, blockMaxChars: CLAUDE_HOOK_CONTEXT_INLINE_MAX })
+    expect(capped.files.map((f) => f.path)).toEqual(['m0.txt', 'm1.txt'])
+    expect(capped.skipped).toEqual([{ path: 'm2.txt', reason: 'over the 10,000-character total' }])
+    const many = buildContextPackFromTexts(Array.from({ length: CONTEXT_PACK_MAX_FILES + 3 }, () => 'm0.txt'), base2)
+    expect(many.skipped.at(-1)).toEqual({ path: 'and 3 more', reason: 'not considered, over the 8-file limit' })
+  })
+
+  it('2: completeReadText keeps only a whole-file text Read', () => {
+    const file = (over: Record<string, unknown> = {}) => ({ type: 'text', file: { filePath: '/p/a.ts', content: 'a\nb\n', numLines: 3, startLine: 1, totalLines: 3, ...over } })
+    expect(completeReadText(file())).toBe('a\nb\n')
+    expect(completeReadText(file({ truncatedByTokenCap: false }))).toBe('a\nb\n')
+    // Partial: a range, a token-cap page, fewer lines than the file has.
+    expect(completeReadText(file({ startLine: 2, numLines: 2 }))).toBeUndefined()
+    expect(completeReadText(file({ numLines: 2 }))).toBeUndefined()
+    expect(completeReadText(file({ truncatedByTokenCap: true }))).toBeUndefined()
+    // Not text, or a shape that cannot show it is complete.
+    expect(completeReadText({ type: 'image', file: { base64: 'x' } })).toBeUndefined()
+    expect(completeReadText({ type: 'text', file: { content: 'a' } })).toBeUndefined()
+    expect(completeReadText('1\tconst a = 1')).toBeUndefined()
+    expect(completeReadText(null)).toBeUndefined()
+  })
+
+  it('2: ReadTextStore bounds: per-file cap, entries and characters per agent (oldest dropped), agents; a new Read replaces the old', () => {
+    const store = new ReadTextStore({ entries: 3, chars: 100, agents: 2 })
+    store.record('a', ['/p/1', '/r/1'], { text: 'one', real: '/r/1' })
+    expect(store.get('a', '/r/1')).toEqual({ text: 'one', real: '/r/1' })
+    store.record('a', ['/p/1', '/r/1'], { text: 'uno', real: '/r/1' })
+    expect(store.size('a')).toEqual({ entries: 1, chars: 3 })
+    expect(store.get('a', '/p/1')!.text).toBe('uno')
+    for (const n of [2, 3, 4]) store.record('a', [`/p/${n}`], { text: 'x', real: `/p/${n}` })
+    expect(store.get('a', '/p/1')).toBeUndefined()
+    expect(store.size('a').entries).toBe(3)
+    store.record('a', ['/p/big'], { text: 'y'.repeat(99), real: '/p/big' })
+    expect(store.size('a').chars).toBeLessThanOrEqual(100)
+    expect(store.get('a', '/p/big')!.text).toHaveLength(99)
+    // Over the per-file cap: never kept.
+    const big = new ReadTextStore()
+    big.record('a', ['/p/x'], { text: 'z'.repeat(CONTEXT_PACK_FILE_MAX_CHARS + 1), real: '/p/x' })
+    expect(big.size('a').entries).toBe(0)
+    expect(READ_TEXT_STORE_LIMITS).toEqual({ entries: 100, chars: 1_500_000, agents: 200 })
+    // Agents: the least recently recorded is dropped; forget drops one.
+    store.record('b', ['/p/b'], { text: 'b', real: '/p/b' })
+    store.record('c', ['/p/c'], { text: 'c', real: '/p/c' })
+    expect(store.size('a').entries).toBe(0)
+    store.forget('c')
+    expect(store.get('c', '/p/c')).toBeUndefined()
+    expect(store.get('b', '/p/b')!.text).toBe('b')
   })
 
   it('a trust-restricted or setup-like run gets no pack, and says why per file', () => {
@@ -435,6 +569,11 @@ describe('briefFiles (a Claude brief names its files on the last line)', () => {
     // A closed fence above it and a quote separated by a blank line are fine.
     expect(briefFiles('```\ncode\n```\nFiles: a.ts')).toEqual(['a.ts'])
     expect(briefFiles('> quote\n\nFiles: a.ts')).toEqual(['a.ts'])
+    // ``` and ~~~ are different fences: one does not close the other.
+    expect(briefFiles('```\n~~~\nFiles: a.ts')).toEqual([])
+    expect(briefFiles('~~~\n```\nFiles: a.ts')).toEqual([])
+    expect(briefFiles('````\n```\nFiles: a.ts')).toEqual([])
+    expect(briefFiles('~~~\n```\n~~~\nFiles: a.ts')).toEqual(['a.ts'])
   })
 
   it('nothing unless the last line is such a line', () => {

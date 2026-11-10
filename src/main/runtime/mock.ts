@@ -39,7 +39,7 @@ import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
 import { StaffingBook } from './staffingBook'
 import { recordStaffing } from './staffing'
-import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack } from './contextPack'
+import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
 import { waitingNote, waitingNoteExcluded } from './waitingNote'
 
 /**
@@ -2687,6 +2687,9 @@ export class MockSession implements RuntimeSession {
     return note
   }
 
+  /** The run's deep protected set for the context pack where handles are not pinned (Windows): walked once per run. */
+  private packDeepCache: ProtectedDeepCache = {}
+
   /** The context pack for a mock spawn: the lead and the report work in the project folder. */
   private contextPackFor(files: string[]): ContextPack {
     const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
@@ -2696,7 +2699,8 @@ export class MockSession implements RuntimeSession {
       readRoots: contextPackRoots(this.ctx, [cwd]),
       protectedPaths: paths,
       pathsUnavailable: unavailable,
-      refuseAll: contextPackRefusal(this.ctx.run, this.isSetup)
+      refuseAll: contextPackRefusal(this.ctx.run, this.isSetup),
+      deepCache: this.packDeepCache
     })
   }
 

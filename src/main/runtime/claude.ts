@@ -69,7 +69,7 @@ import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from
 import { isolateClaudeEnv, scrubControlEnv } from './childEnv'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import { WorktreeIntegrator } from './integration'
-import { CLAUDE_HOOK_CONTEXT_INLINE_MAX, briefFiles, buildContextPack, contextPackBlock, contextPackRefusal, contextPackResultLine, contextPackRoots, type ContextPack } from './contextPack'
+import { CLAUDE_HOOK_CONTEXT_INLINE_MAX, ReadTextStore, briefFiles, buildContextPackFromTexts, completeReadText, contextPackBlock, contextPackRefusal, contextPackResultLine, contextPackRoots, type ContextPack } from './contextPack'
 import { waitingNote, waitingNoteExcluded } from './waitingNote'
 import { resolveParent } from './agentTree'
 import {
@@ -333,10 +333,6 @@ export const BACKGROUND_HANDBACK_WAIT_MS = 30_000
 export const SPAWN_LINK_WAIT_MS = 2000
 /** PreToolUse denial for any tool call of a background report the harness stopped (interrupt, session end). */
 export const STOPPED_REPORT_DENIAL = 'OrgAI stopped this report (the run was interrupted or its session ended). Stop now; do not call more tools.'
-/** Context pack on Claude: the real paths each agent read with Read that are kept (newest; the oldest is dropped). */
-export const READ_PATHS_PER_AGENT = 500
-/** Agents whose reads are kept (the agent seen least recently is dropped). */
-const READ_PATH_AGENTS_MAX = 200
 /** task_started links (agent id -> Agent tool_use id) kept for SubagentStart; the oldest is dropped. */
 export const TOOL_USE_BY_TASK_MAX = 1000
 /** tool_use ids, per agent, a task_notification may end that agent's activation under (its spawn, its resumes). */
@@ -1496,8 +1492,11 @@ export class ClaudeSession implements RuntimeSession {
    * were settled with. Their late task_started records them settled, never as a live report.
    */
   private stoppedBeforeStart = new Map<string, string>()
-  /** Context pack on Claude: agent id -> the real paths it read with the Read tool (READ_PATHS_PER_AGENT newest). */
-  private readsByAgent = new Map<string, Set<string>>()
+  /**
+   * Context pack on Claude: each agent's complete text Reads (contextPack.ts ReadTextStore, bounded per agent), the
+   * only source of a pack; dropped when the agent ends.
+   */
+  private readTexts = new ReadTextStore()
   /**
    * agent id -> the tool_use ids a task_notification may end it under besides its row's spawnToolUseId: its Agent call
    * and each resume's (the resume's task_started and the SendMessage calls addressed to it).
@@ -1772,6 +1771,7 @@ export class ClaudeSession implements RuntimeSession {
    */
   private settleBackground(agentId: string, activity: string): void {
     this.backgroundReports.delete(agentId)
+    this.readTexts.forget(agentId)
     const a = this.agents.get(agentId)
     // Its first task_started has not been handled yet (the launch result named it, or SubagentStart drew it): that late
     // task_started must record it settled, not start a live report (the ledger and staffing book do not know it yet).
@@ -1864,37 +1864,30 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /**
-   * A successful Read by `agentId` (its PostToolUse: the CLI ran it, so no deny or ask rule of its own stopped it):
-   * remember the real path of the file it named, for the context pack (only files the lead itself read are inlined).
-   * Relative paths resolve against `cwd`. At most READ_PATHS_PER_AGENT per agent, the oldest dropped.
+   * A Read by `agentId` reached its PostToolUse (the CLI ran it, so its own deny and ask rules let it through): when the
+   * response holds the whole file as text (completeReadText), keep that text for the context pack, keyed by the path as
+   * written resolved lexically against `cwd` and by the file's real path now. Nothing else is read from the file.
    */
   private noteRead(agentId: string, toolInput: unknown, response: unknown, cwd: string): void {
-    if (response === null || typeof response !== 'object' || (response as { is_error?: unknown }).is_error === true) return
+    const text = completeReadText(response)
+    if (text === undefined) return
     const fp = toolInput && typeof toolInput === 'object' ? (toolInput as { file_path?: unknown }).file_path : undefined
     if (typeof fp !== 'string' || !fp || fp.includes('\0')) return
-    let real: string
+    const abs = isAbsolute(fp) ? resolve(fp) : resolve(cwd, fp)
+    let real = abs
     try {
-      real = realpathSync.native(isAbsolute(fp) ? fp : resolve(cwd, fp))
+      real = realpathSync.native(abs)
     } catch {
-      return
+      /* gone already: the lexical spelling stands for it */
     }
-    let set = this.readsByAgent.get(agentId)
-    if (set) this.readsByAgent.delete(agentId)
-    else {
-      set = new Set()
-      if (this.readsByAgent.size >= READ_PATH_AGENTS_MAX) this.readsByAgent.delete(this.readsByAgent.keys().next().value!)
-    }
-    this.readsByAgent.set(agentId, set)
-    set.delete(real)
-    if (set.size >= READ_PATHS_PER_AGENT) set.delete(set.values().next().value!)
-    set.add(real)
+    this.readTexts.record(agentId, [abs, real], { text, real })
   }
 
   /**
-   * Context pack (split-execution 3.2) for a spawn whose brief ends with a `Files:` line: the same checks and limits as
-   * Codex (contextPack.ts), plus the CLI's inline limit for hook context and, on Claude, only files the spawning agent
-   * itself read with Read this session (the CLI's own Read deny and ask rules, project settings and managed policy, are
-   * unknown to the harness; a file they stopped was never read). Read now (spawn time). Relative paths resolve from the
+   * Context pack (split-execution 3.2) for a spawn whose brief ends with a `Files:` line, built now (spawn time) from
+   * the texts the spawning agent's own complete Reads returned this session (buildContextPackFromTexts: no file system
+   * read; the CLI's own Read deny and ask rules, project settings and managed policy, are unknown to the harness, and a
+   * file they stopped was never read), with Codex's limits plus the CLI's inline limit for hook context. Relative paths resolve from the
    * hook's cwd (`relativeFrom`), never a root: the roots are the folders the harness knows (the project, the caller's
    * working folder as the harness tracks it, where the report starts and its worktree is cut from, allowed and
    * reference folders). A role without the Read tool gets no pack. Kept until SubagentStart.
@@ -1902,14 +1895,14 @@ export class ClaudeSession implements RuntimeSession {
   private preparePack(toolUseId: string, target: Role, files: string[], relativeFrom: string, callerId: string): void {
     const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
     const agentType = target.slug
-    const pack = buildContextPack(files, {
+    const pack = buildContextPackFromTexts(files, {
       callerCwd: relativeFrom,
       readRoots: contextPackRoots(this.ctx, [this.agentCwd(callerId)]),
       protectedPaths: paths,
       pathsUnavailable: unavailable,
       refuseAll: contextPackRefusal(this.ctx.run, this.isSetup) ?? (target.tools.includes('Read') ? undefined : `${target.name} has no Read tool`),
       blockMaxChars: CLAUDE_HOOK_CONTEXT_INLINE_MAX,
-      readPaths: this.readsByAgent.get(callerId) ?? new Set()
+      lookup: (abs) => this.readTexts.get(callerId, abs)
     })
     let settle: (ok: boolean) => void = () => {}
     const done = new Promise<boolean>((resolve) => (settle = resolve))
@@ -3106,6 +3099,7 @@ export class ClaudeSession implements RuntimeSession {
       a.state = 'done'
       a.activity = failed ? 'Skipped required reports' : 'Reported back'
       a.endedAt = Date.now()
+      this.readTexts.forget(a.id)
       this.staffingBook.ended(a.id, { failed })
       this.partial.clear(a.id, true)
       this.upsert(a)
@@ -4408,6 +4402,7 @@ export class ClaudeSession implements RuntimeSession {
             this.handbacks.delete(a.id)
             a.result = captured ?? notified ?? a.result ?? (hb.handback === undefined ? msg.summary : undefined)
             a.endedAt = Date.now()
+            this.readTexts.forget(a.id)
             this.staffingBook.ended(a.id, { failed: msg.status === 'failed' })
             this.upsert(a)
             if (firstFinish) this.reportFinished()

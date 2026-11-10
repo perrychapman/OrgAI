@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, Role, RunPlan } from '@shared/types'
 
@@ -74,8 +74,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
     }
   }
 })
-import { ClaudeSession, READ_PATHS_PER_AGENT, SPAWN_LINK_WAIT_MS, STOPPED_REPORT_DENIAL, TOOL_USE_BY_TASK_MAX } from './claude'
-import { CONTEXT_PACK_HEADING, CONTEXT_PACK_NOT_READ } from './contextPack'
+import { ClaudeSession, SPAWN_LINK_WAIT_MS, STOPPED_REPORT_DENIAL, TOOL_USE_BY_TASK_MAX } from './claude'
+import { CONTEXT_PACK_HEADING, CONTEXT_PACK_NOT_READ_IN_FULL, READ_TEXT_STORE_LIMITS } from './contextPack'
 import { WAITING_NOTE } from './waitingNote'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { DelegationGate, RuntimeContext } from './types'
@@ -161,14 +161,22 @@ const taskStarted = (q: Fake, agentId: string, tu: string, type: string) =>
 /** The report's task_notification: tool_use_id = its Agent call, handback 'send' and handback_report (check 12). */
 const notified = (q: Fake, agentId: string, tu: string, text: string, status = 'completed') =>
   q.emit({ type: 'system', subtype: 'task_notification', task_id: agentId, tool_use_id: tu, status, output_file: '', summary: 'Harness note', handback: 'send', handback_report: { text }, session_id: 's', uuid: `n-${agentId}` })
-/** A successful Read (its PostToolUse: the CLI ran it) by the root, or by `agentId`; `file` relative to `cwd`. */
-const read = (q: Fake, file: string, cwd: string, agentId?: string): Promise<HookOut> =>
+/** A Read response as the CLI builds it (0.3.318 bundle): the raw text and its line counts; whole file unless `part`. */
+const readResponse = (file: string, content: string, part?: { startLine: number; numLines: number; totalLines: number }) => {
+  const lines = content.split('\n').length
+  return { type: 'text', file: { filePath: file, content, numLines: part?.numLines ?? lines, startLine: part?.startLine ?? 1, totalLines: part?.totalLines ?? lines } }
+}
+/**
+ * A successful Read (its PostToolUse: the CLI ran it) by the root, or by `agentId`; `file` relative to `cwd`. The
+ * response holds `content` (default: the file's text now, the whole file) unless `response` is given.
+ */
+const read = (q: Fake, file: string, cwd: string, agentId?: string, response?: unknown): Promise<HookOut> =>
   hooksOf(q, 'PostToolUse')({
     ...base(cwd),
     hook_event_name: 'PostToolUse',
     tool_name: 'Read',
     tool_input: { file_path: file },
-    tool_response: { type: 'text', file: { filePath: file, content: 'x', numLines: 1, startLine: 1, totalLines: 1 } },
+    tool_response: response ?? readResponse(file, readFileSync(resolve(cwd, file), 'utf8')),
     tool_use_id: `read-${Math.random()}`,
     ...(agentId ? { agent_id: agentId, agent_type: 'engineer' } : { agent_type: 'lead' })
   }, 'x', {})
@@ -251,7 +259,7 @@ describe('Claude: context pack from the brief (split-execution 3.2)', () => {
     const out = (await post(q, 't1', launched('a1'))).hookSpecificOutput.additionalContext as string
     expect(out).toContain('Inlined 1 file into its brief: src/contract.ts.')
     expect(out).toContain('/etc/hosts (outside the folders the report may read)')
-    expect(out).toContain('missing.ts (not found)')
+    expect(out).toContain(`missing.ts (${CONTEXT_PACK_NOT_READ_IN_FULL})`)
     // Delivered once: a resumed start of the same agent gets nothing.
     expect(await subStart(q, 'a1', 'engineer')).toEqual({})
     void ctx
@@ -326,28 +334,85 @@ describe('Claude: the pack holds only what the lead read, from the folders the h
     expect(block).not.toContain('s3cret')
     expect(block).not.toContain('other.ts')
     const out = (await post(q, 't1', launched('a1'))).hookSpecificOutput.additionalContext as string
-    expect(out).toContain(`.env (${CONTEXT_PACK_NOT_READ})`)
-    expect(out).toContain(`src/other.ts (${CONTEXT_PACK_NOT_READ})`)
+    expect(out).toContain(`.env (${CONTEXT_PACK_NOT_READ_IN_FULL})`)
+    expect(out).toContain(`src/other.ts (${CONTEXT_PACK_NOT_READ_IN_FULL})`)
   })
 
-  it('E: a read through a link counts by real path; a failed Read response records nothing; the record is bounded per agent', async () => {
-    const { ctx, session, q, dir } = await start()
+  it('E: a read through a link is found by its real path too; a failed or non-text Read records nothing', async () => {
+    const { ctx, q, dir } = await start()
     symlinkSync(join(dir, 'src', 'contract.ts'), join(dir, 'alias.ts'))
     await read(q, 'alias.ts', dir)
-    await hooksOf(q, 'PostToolUse')({ ...base(dir), hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: 'src/other.ts' }, tool_response: { is_error: true }, tool_use_id: 'r-err', agent_type: 'lead' }, 'x', {})
+    await read(q, 'src/other.ts', dir, undefined, { is_error: true })
     await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: src/contract.ts, src/other.ts', run_in_background: true }, dir)
     await started(ctx, q, 'a1', 't1', 'engineer')
     const block = (await subStart(q, 'a1', 'engineer')).hookSpecificOutput.additionalContext as string
-    expect(block).toContain('File: src/contract.ts')
+    expect(block).toContain('File: src/contract.ts\n```\nexport interface Contract')
     expect(block).not.toContain('File: src/other.ts')
-    // Bounded: READ_PATHS_PER_AGENT newest real paths, the oldest dropped.
-    for (let i = 0; i <= READ_PATHS_PER_AGENT; i++) writeFileSync(join(dir, `f${i}.txt`), 'x')
-    for (let i = 0; i <= READ_PATHS_PER_AGENT; i++) await read(q, `f${i}.txt`, dir)
+  })
+
+  it('2: a partial Read (a range, a token-cap page) is not inlined', async () => {
+    const { ctx, q, dir } = await start()
+    writeFileSync(join(dir, 'long.ts'), 'a\nb\nc\nd\n')
+    await read(q, 'long.ts', dir, undefined, readResponse('long.ts', 'b\nc', { startLine: 2, numLines: 2, totalLines: 5 }))
+    await read(q, 'src/contract.ts', dir, undefined, { ...readResponse('src/contract.ts', 'export interface'), file: { ...readResponse('src/contract.ts', 'export interface').file, truncatedByTokenCap: true } })
+    await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: long.ts, src/contract.ts', run_in_background: true }, dir)
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    expect(await subStart(q, 'a1', 'engineer')).toEqual({})
+    const out = (await post(q, 't1', launched('a1'))).hookSpecificOutput.additionalContext as string
+    expect(out).toContain(`long.ts (${CONTEXT_PACK_NOT_READ_IN_FULL})`)
+    expect(out).toContain(`src/contract.ts (${CONTEXT_PACK_NOT_READ_IN_FULL})`)
+  })
+
+  it('2: a file changed on disk after the lead\'s Read inlines what the lead saw; no file system read at spawn', async () => {
+    const { ctx, q, dir } = await start()
+    await read(q, 'src/contract.ts', dir)
+    writeFileSync(join(dir, 'src', 'contract.ts'), 'REPLACED after the read\n')
+    // Even gone from disk.
+    await read(q, 'src/other.ts', dir)
+    unlinkSync(join(dir, 'src', 'other.ts'))
+    await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: src/contract.ts, src/other.ts', run_in_background: true }, dir)
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    const block = (await subStart(q, 'a1', 'engineer')).hookSpecificOutput.additionalContext as string
+    expect(block).toContain('export interface Contract { id: string }')
+    expect(block).toContain('export const other = 2')
+    expect(block).not.toContain('REPLACED')
+  })
+
+  it('2: a link flipped between the Read and its PostToolUse cannot inline a file whose content the Read did not return', async () => {
+    const { ctx, q, dir } = await start()
+    writeFileSync(join(dir, 'notes.md'), 'plain notes\n')
+    writeFileSync(join(dir, '.env'), 'TOKEN=s3cret\n')
+    symlinkSync(join(dir, 'notes.md'), join(dir, 'link.md'))
+    // The CLI read link.md -> notes.md (its deny rule for .env checked against that); the link then flips to .env.
+    const seen = readResponse('link.md', readFileSync(join(dir, 'link.md'), 'utf8'))
+    unlinkSync(join(dir, 'link.md'))
+    symlinkSync(join(dir, '.env'), join(dir, 'link.md'))
+    await read(q, 'link.md', dir, undefined, seen)
+    await spawn(q, 't1', { ...wellFormed.engineer, prompt: 'A\nFiles: link.md, .env', run_in_background: true }, dir)
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    const block = (await subStart(q, 'a1', 'engineer')).hookSpecificOutput.additionalContext as string
+    expect(block).not.toContain('s3cret')
+    expect(block).toContain('File: link.md\n```\nplain notes')
+  })
+
+  it('2: memory bounds: entries per agent (oldest dropped); a report\'s reads are dropped when it ends', async () => {
+    const { ctx, session, q, dir } = await start()
+    for (let i = 0; i <= READ_TEXT_STORE_LIMITS.entries; i++) {
+      writeFileSync(join(dir, `f${i}.txt`), `file ${i}`)
+      await read(q, `f${i}.txt`, dir)
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const reads = (session as any).readsByAgent.get('root') as Set<string>
-    expect(reads.size).toBe(READ_PATHS_PER_AGENT)
-    expect(reads.has(join(dir, 'f0.txt'))).toBe(false)
-    expect(reads.has(join(dir, `f${READ_PATHS_PER_AGENT}.txt`))).toBe(true)
+    const store = (session as any).readTexts as { size: (a: string) => { entries: number }; get: (a: string, k: string) => unknown }
+    expect(store.size('root').entries).toBe(READ_TEXT_STORE_LIMITS.entries)
+    expect(store.get('root', join(dir, 'f0.txt'))).toBeUndefined()
+    expect(store.get('root', join(dir, `f${READ_TEXT_STORE_LIMITS.entries}.txt`))).toBeDefined()
+    // A report's own reads, gone once it ends.
+    await spawn(q, 't1', { ...wellFormed.engineer, run_in_background: false }, dir)
+    await started(ctx, q, 'a1', 't1', 'engineer')
+    await read(q, 'src/contract.ts', dir, 'a1')
+    expect(store.size('a1').entries).toBe(1)
+    await subStop(q, 'a1', 'engineer')
+    expect(store.size('a1').entries).toBe(0)
   })
 
   it('F: a target role without the Read tool gets no pack', async () => {

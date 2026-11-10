@@ -59,7 +59,7 @@ import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { StaffingBook } from './staffingBook'
 import { recordStaffing } from './staffing'
-import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack } from './contextPack'
+import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
 import { waitingNote, waitingNoteExcluded } from './waitingNote'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
@@ -2026,6 +2026,9 @@ class CodexSession implements RuntimeSession {
     return note
   }
 
+  /** The run's deep protected set for the context pack where handles are not pinned (Windows): walked once per run. */
+  private packDeepCache: ProtectedDeepCache = {}
+
   /** The context pack for a spawn (contextPack.ts, split-execution 3.2): read checks as a Read by the report would pass. */
   private contextPackFor(files: string[] | undefined, callerCwd: string, reportCwd: string): ContextPack {
     if (!files?.length) return { files: [], skipped: [] }
@@ -2035,7 +2038,8 @@ class CodexSession implements RuntimeSession {
       readRoots: contextPackRoots(this.ctx, [callerCwd, reportCwd]),
       protectedPaths: paths,
       pathsUnavailable: unavailable,
-      refuseAll: contextPackRefusal(this.ctx.run, this.setupLike)
+      refuseAll: contextPackRefusal(this.ctx.run, this.setupLike),
+      deepCache: this.packDeepCache
     })
   }
 
