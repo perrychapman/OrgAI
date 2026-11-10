@@ -143,13 +143,15 @@ worktree isolation.
 ## 2. Current behaviour (origin/dev, read 2026-11-09)
 
 - **Model and effort are per role and fixed.** `Role.tier`, `Role.model`, `Role.effort` (`src/shared/types.ts`).
-  Claude: `claude.ts` `buildAgents` writes one `AgentDefinition` per role with `model` and `effort`, and that is the
-  only place the adapter sets effort. Codex: `threadParams` takes `role.model`; effort is sent per message and only
+  Claude: `claude.ts` `buildAgents` writes one `AgentDefinition` per role with `model` and `effort`, and at
+  `aad24c38` that was the only place the adapter set effort. Codex: `threadParams` takes `role.model`; effort is sent per message and only
   for low / medium / high (`effortOptionsFor`), so a Codex role set to xhigh sends none.
-- **The root's effort is not applied on Claude today.** The root runs as `agent: root.slug`, and the SDK does not
+- **The root's effort was not applied on Claude** (fixed in phase 1, `a0d19efc`: `sessionEffort` / `reportEffort`
+  in `claude.ts`). The root runs as `agent: root.slug`, and the SDK does not
   apply an `AgentDefinition.effort` to the agent chosen by `Options.agent`: a root defined with `low` ran at the
-  default, `medium` (smoke check 5). The orchestrator's effort setting in the chart therefore does nothing on this
-  adapter. `Options.effort` does set it (check 8), and a report with no effort of its own then inherits it.
+  default, `medium` (smoke check 5). The orchestrator's effort setting in the chart therefore did nothing on this
+  adapter. `Options.effort` does set it (check 8), and a report with no effort of its own then inherits it, so the
+  fix gives such a report the default explicitly.
 - **One per-spawn override exists**: the plan guard. `claude.ts` `steerToEveryday` rewrites a spawn's `model` through
   the PreToolUse `updatedInput` with the connection's everyday model id. The SDK accepts only the four aliases
   there (below), so the steer works while that id is `sonnet`, the Anthropic default, and fails the spawn with a
