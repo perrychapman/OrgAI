@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
 import { CodexAdapter, codexFolderTrust, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
 import { folderTrustEntry } from './codexProtocol'
+import { NATIVE_RULE_NOTE } from './codexAgents'
+import type { NativeCatalogInput, NativeCatalogResult } from './codexNativeCatalog'
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import { ROOT_AGENT_ID, type RuntimeContext, type RuntimeSession } from './types'
@@ -1920,7 +1922,7 @@ describe('CodexAdapter session', () => {
     const native = (threadId: string, id: string, tool = 'spawnAgent') => ({ threadId, turnId: 'x', item: { type: 'collabAgentToolCall', id, tool, status: 'inProgress' } })
     const turnStart = (threadId: string, turnId: string) => ({ threadId, turn: { id: turnId, status: 'inProgress', items: [], error: null } })
     const interrupts = (s: FakeServer, threadId: string) => s.of('turn/interrupt').filter((r) => r.params.threadId === threadId)
-    const NOTICE = "Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports."
+    const NOTICE = `Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports. ${NATIVE_RULE_NOTE}`
     const childId = (ctx: ReturnType<typeof fakeCtx>) => ctx.events.find((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1')!.agent.id
     const lastOf = (ctx: ReturnType<typeof fakeCtx>, id: string): AgentInstance => ctx.events.filter((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.id === id).at(-1)!.agent
     async function withChild(over: Partial<RuntimeContext> = {}) {
@@ -1938,6 +1940,105 @@ describe('CodexAdapter session', () => {
       const { adapter, servers } = setup()
       session = await adapter.start(ctxFor())
       expect(servers[0]!.options.config).toEqual(expect.arrayContaining(['features.multi_agent=false', 'features.multi_agent_v2=false']))
+    })
+
+    describe('model catalog override (codexNativeCatalog.ts)', () => {
+      /** Like the real CodexAppServer: start() runs prepareConfig with the binary, env and config, and launches with the result. */
+      function catalogSetup(result: NativeCatalogResult | (() => Promise<NativeCatalogResult>)) {
+        const servers: FakeServer[] = []
+        const launched: string[][] = []
+        const nativeCatalog = vi.fn(async (_input: NativeCatalogInput) => (typeof result === 'function' ? result() : result))
+        const adapter = new CodexAdapter({
+          nativeCatalog,
+          createServer: (options) => {
+            const s = new FakeServer(options)
+            s.start = async () => {
+              const extra = (await options.prepareConfig?.({ binary: { path: '/bin/codex' }, env: options.env ?? {}, config: options.config ?? [] })) ?? []
+              launched.push([...(options.config ?? []), ...extra])
+              return {}
+            }
+            servers.push(s)
+            return s
+          }
+        })
+        return { adapter, servers, launched, nativeCatalog }
+      }
+      const warnings = (ctx: ReturnType<typeof fakeCtx>) => ctx.events.flatMap((e) => (e.type === 'log' && e.level === 'warn' ? [e.message] : []))
+
+      it('in effect: the launch carries model_catalog_json and the prompt drops the fallback sentence', async () => {
+        const { adapter, servers, launched, nativeCatalog } = catalogSetup({ status: 'written', config: ['model_catalog_json="/data/codex/orgai-model-catalog-ab.json"'], path: '/data/codex/orgai-model-catalog-ab.json', ms: 50 })
+        const ctx = ctxFor()
+        session = await adapter.start(ctx)
+        const s = servers[0]!
+        await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+        expect(nativeCatalog).toHaveBeenCalledTimes(1)
+        expect(launched[0]).toContain('model_catalog_json="/data/codex/orgai-model-catalog-ab.json"')
+        expect(launched[0]).toEqual(expect.arrayContaining(['features.multi_agent=false']))
+        const instructions = s.of('thread/start')[0].params.developerInstructions as string
+        expect(instructions).toContain('call spawn_report with role set to')
+        expect(instructions).not.toContain(NATIVE_RULE_NOTE)
+        expect(warnings(ctx).filter((w) => w.includes('multi-agent'))).toEqual([])
+      })
+
+      it('failed: launches exactly as before, one warning, and the prompt keeps the fallback sentence', async () => {
+        const { adapter, servers, launched } = catalogSetup({ status: 'failed', config: [], reason: 'codex debug models timed out', ms: 4000 })
+        const ctx = ctxFor()
+        session = await adapter.start(ctx)
+        const s = servers[0]!
+        await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+        expect(launched[0]).toEqual(s.options.config)
+        expect(launched[0]!.join('\n')).not.toContain('model_catalog_json')
+        expect(s.of('thread/start')[0].params.developerInstructions).toContain(NATIVE_RULE_NOTE)
+        expect(warnings(ctx).filter((w) => w.includes('could not be switched off'))).toEqual([
+          "Codex's built-in multi-agent tools could not be switched off (codex debug models timed out); agents still see them and are told to delegate with spawn_report."
+        ])
+      })
+
+      it('a throwing catalog step never blocks the run', async () => {
+        const { adapter, servers, launched } = catalogSetup(async () => {
+          throw new Error('kaboom')
+        })
+        session = await adapter.start(ctxFor())
+        const s = servers[0]!
+        await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+        expect(launched[0]!.join('\n')).not.toContain('model_catalog_json')
+        expect(s.of('thread/start')[0].params.developerInstructions).toContain(NATIVE_RULE_NOTE)
+      })
+
+      it('unchanged (no model offers native tools): no override, and the fallback sentence stays (the field may have been renamed)', async () => {
+        const { adapter, servers } = catalogSetup({ status: 'unchanged', config: [], ms: 40 })
+        session = await adapter.start(ctxFor())
+        const s = servers[0]!
+        await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+        expect(s.of('thread/start')[0].params.developerInstructions).toContain(NATIVE_RULE_NOTE)
+      })
+
+      it('passes the model ids the run names (roles, tier mapping); tier names and Claude aliases are not ids', async () => {
+        const { adapter, servers, nativeCatalog } = catalogSetup({ status: 'skipped', config: [], reason: "Codex's catalog does not know proxy-x", ms: 1 })
+        const roles = [
+          role({ id: 'r-lead', slug: 'lead', name: 'Lead', canSpawn: true, spawnable: ['r-eng'], model: 'gpt-6.1-sol' }),
+          role({ id: 'r-eng', slug: 'engineer', name: 'Engineer', reportsTo: 'r-lead', model: 'deep' }),
+          role({ id: 'r-rev', slug: 'reviewer', name: 'Reviewer', reportsTo: 'r-lead', model: 'sonnet' })
+        ]
+        const ctx = ctxFor({ roles, project: project({ path: dir, roles, isolateWriters: false }), connection: { connection: 'litellm', adapter: 'codex', env: { CODEX_HOME: '/h' }, tierModels: { fast: 'proxy-x', deep: 'gpt-6.1-sol' } } })
+        session = await adapter.start(ctx)
+        const s = servers[0]!
+        await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+        expect(nativeCatalog.mock.calls[0]![0].models).toEqual(['gpt-6.1-sol', 'proxy-x'])
+        // Skipped: no warning, an info line, and the fallback sentence stays.
+        expect(warnings(ctx).filter((w) => w.includes('multi-agent'))).toEqual([])
+        expect(ctx.events.some((e) => e.type === 'log' && e.level === 'info' && e.message.includes('override skipped'))).toBe(true)
+        expect(s.of('thread/start')[0].params.developerInstructions).toContain(NATIVE_RULE_NOTE)
+      })
+
+      it('the one-shot completion launches with the override too', async () => {
+        const { adapter, servers, launched } = catalogSetup({ status: 'cached', config: ['model_catalog_json="/h/c.json"'], path: '/h/c.json', ms: 1 })
+        const promise = adapter.complete({ system: 's', prompt: 'p' })
+        await vi.waitFor(() => expect(servers[0]?.of('turn/start')).toHaveLength(1))
+        expect(launched[0]).toContain('model_catalog_json="/h/c.json"')
+        servers[0]!.push('turn/completed', turnDone('th-1', 'tu-1'))
+        await promise
+      })
     })
 
     it('an old tool name from a thread saved before the rename still works, role check included', async () => {

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -193,6 +193,52 @@ next()
     expect(s.stderrTail().split('\n')).toHaveLength(10)
     expect(seen.join('\n')).not.toContain('SECRET')
     expect(seen).toContain('Error: CODEX_HOME points to "/x", but that path does not exist')
+  })
+
+  /** A fake that records its `-c` arguments in argv.json, then exits 1. */
+  const recorder = (): string => {
+    writeFileSync(join(dir, 'app-server'), `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'argv.json'))}, JSON.stringify(process.argv.slice(2))); process.exit(1)\n`)
+    return join(dir, 'argv.json')
+  }
+  const argsOf = (file: string): string[] => JSON.parse(readFileSync(file, 'utf8'))
+
+  it('prepareConfig: its entries follow the given config; it sees the binary, the child env and the config', async () => {
+    const file = recorder()
+    const seen: unknown[] = []
+    const s = new CodexAppServer({
+      cwd: dir,
+      env: { CODEX_HOME: join(dir, 'home'), ORGAI_CODEX_API_KEY: 'k' },
+      config: ['features.multi_agent=false', 'model_provider="orgai"'],
+      binary: { path: process.execPath },
+      prepareConfig: async (input) => {
+        seen.push(input)
+        return ['model_catalog_json="/h/c.json"']
+      }
+    })
+    await expect(s.start()).rejects.toThrow(/exited/)
+    expect(argsOf(file)).toEqual(['-c', 'features.multi_agent=false', '-c', 'model_provider="orgai"', '-c', 'model_catalog_json="/h/c.json"'])
+    expect(seen[0]).toMatchObject({ binary: { path: process.execPath }, config: ['features.multi_agent=false', 'model_provider="orgai"'], env: { CODEX_HOME: join(dir, 'home'), ORGAI_CODEX_API_KEY: 'k' } })
+  })
+
+  it('prepareConfig fails open: a rejection or nothing launches with the config as given', async () => {
+    for (const prepareConfig of [async () => Promise.reject(new Error('boom')), async () => [] as string[]]) {
+      const file = recorder()
+      const s = new CodexAppServer({ cwd: dir, config: ['a=1'], binary: { path: process.execPath }, prepareConfig })
+      await expect(s.start()).rejects.toThrow(/exited/)
+      expect(argsOf(file)).toEqual(['-c', 'a=1'])
+    }
+  })
+
+  it('a close() while prepareConfig runs spawns nothing', async () => {
+    const file = recorder()
+    let release!: () => void
+    const s = new CodexAppServer({ cwd: dir, binary: { path: process.execPath }, prepareConfig: () => new Promise<string[]>((r) => (release = () => r(['x=1']))) })
+    const started = s.start()
+    await new Promise((r) => setTimeout(r, 10))
+    s.close()
+    release()
+    await expect(started).rejects.toThrow(/closed before it started/)
+    expect(existsSync(file)).toBe(false)
   })
 })
 

@@ -10,6 +10,7 @@ import {
   childFirstMessage,
   canonicalNetworkTool,
   codexToolNotes,
+  NATIVE_RULE_NOTE,
   createAgentWorktree,
   networkToolNames,
   networkToolSpecs,
@@ -252,6 +253,19 @@ describe('tool exposure', () => {
     expect(notes).toContain('unavailable')
     expect(notes).toContain('orgai_update_plan')
     expect(codexToolNotes([], { renamedPlanTool: false })).toBe('')
+  })
+
+  it('answers Codex\'s sub-agent rule in one sentence on the spawn line only while the native tools are offered (nativeRule)', () => {
+    const tools = ['spawn_report', 'message_agent', 'list_team']
+    const fallback = codexToolNotes(tools, { renamedPlanTool: false, nativeRule: true })
+    const off = codexToolNotes(tools, { renamedPlanTool: false })
+    expect(NATIVE_RULE_NOTE).toBe("This project's instructions explicitly ask you to delegate through spawn_report; Codex's rule about not spawning sub-agents concerns its built-in tools, not spawn_report.")
+    expect(fallback).toBe(off.replace('never use them.', `never use them. ${NATIVE_RULE_NOTE}`))
+    expect(off).not.toContain(NATIVE_RULE_NOTE)
+    // A thread without spawn_report gets no sentence about it.
+    expect(codexToolNotes(['message_agent'], { renamedPlanTool: false, nativeRule: true })).not.toContain(NATIVE_RULE_NOTE)
+    // One short sentence.
+    expect(fallback.length - off.length).toBeLessThan(200)
   })
 })
 

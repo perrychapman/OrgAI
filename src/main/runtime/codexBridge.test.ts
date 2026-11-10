@@ -218,6 +218,72 @@ describe('Codex bridged reports', () => {
     expect(s.turnStarts('th-2')[1].params.input[0].text).toContain('Bridged report ext-a (Analyst) finished.')
   })
 
+  it('a child the harness stopped (an interrupt stops bridged reports first) waits for the user: no turn, delivered with the next message', async () => {
+    const { bridge, pending } = fakeBridge()
+    const { ctx, s } = await start({ bridge })
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'analyst', brief: 'Analyse' }))
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await new Promise((r) => setTimeout(r, 20))
+    // RunManager.interrupt: bridge.stopAll resolves the child as stopped before session.interrupt() runs.
+    pending[0]!.resolve({ agentId: 'b1', handle: 'analyst-1', text: 'Stopped: the user interrupted the run', ok: false, stopped: true })
+    await session!.interrupt()
+    await new Promise((r) => setTimeout(r, 40))
+    expect(s.turnStarts('th-1')).toHaveLength(1)
+    expect(s.of('turn/steer')).toHaveLength(0)
+    // The row shows now.
+    expect(harnessRows(ctx)).toContain('analyst-1 was stopped.')
+    await session!.send('Carry on without it')
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
+    const text = s.turnStarts('th-1')[1].params.input[0].text as string
+    expect(text).toContain('Harness: Bridged report analyst-1 (Analyst) failed.')
+    expect(text).toContain('Stopped: the user interrupted the run')
+    expect(text.indexOf('Stopped:')).toBeLessThan(text.indexOf('Carry on without it'))
+    // Delivered once.
+    await new Promise((r) => setTimeout(r, 20))
+    expect(s.turnStarts('th-1')).toHaveLength(2)
+  })
+
+  it('any bridged result landing while the run is held waits for the user; after the user spoke results flow again', async () => {
+    const { bridge, pending } = fakeBridge()
+    const { s } = await start({ bridge })
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'analyst', brief: 'One' }))
+    await s.ask('item/tool/call', call('th-1', 'c2', 'spawn_report', { role: 'analyst', brief: 'Two' }))
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await session!.interrupt()
+    pending[0]!.resolve({ agentId: 'b1', handle: 'analyst-1', text: 'Found 3 errors.', ok: true })
+    await new Promise((r) => setTimeout(r, 40))
+    expect(s.turnStarts('th-1')).toHaveLength(1)
+    await session!.send('Go on')
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
+    expect(s.turnStarts('th-1')[1].params.input[0].text).toContain('Found 3 errors.')
+    s.push('turn/completed', turnDone('th-1', 'tu-2'))
+    await new Promise((r) => setTimeout(r, 20))
+    // No longer held: the second report's result starts a turn as before.
+    pending[1]!.resolve({ agentId: 'b2', handle: 'analyst-2', text: 'Nothing else.', ok: true })
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(3))
+    expect(s.turnStarts('th-1')[2].params.input[0].text).toContain('Nothing else.')
+  })
+
+  it('a held result for a report lead (not the orchestrator) goes to that lead once the user spoke', async () => {
+    const { bridge, pending } = fakeBridge()
+    const { s } = await start({ bridge })
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'engineer', brief: 'Build' }))
+    await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
+    await s.ask('item/tool/call', call('th-2', 'c2', 'spawn_report', { role: 'analyst', brief: 'Check', name: 'ext-a' }))
+    s.push('turn/completed', turnDone('th-2', 'tu-2'))
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    pending[0]!.resolve({ agentId: 'b1', handle: 'ext-a', text: 'Stopped: the user interrupted the run', ok: false, stopped: true })
+    await session!.interrupt()
+    await new Promise((r) => setTimeout(r, 40))
+    expect(s.turnStarts('th-2')).toHaveLength(1)
+    await session!.send('Continue')
+    await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(2))
+    expect(s.turnStarts('th-2')[1].params.input[0].text).toContain('Bridged report ext-a (Analyst) failed.')
+    // The orchestrator's message is the user's alone.
+    await vi.waitFor(() => expect(s.turnStarts('th-1').length).toBeGreaterThanOrEqual(2))
+    expect(s.turnStarts('th-1').map((t) => t.params.input[0].text as string).join('\n')).not.toContain('Bridged report ext-a')
+  })
+
   it('a bridged child session: its root gets the report prompt and no root-audience tools', async () => {
     const roles = [role({ id: 'r-ext', slug: 'analyst', name: 'Analyst', tools: ['Read'], reportsTo: null })]
     const { s } = await start({ roles, bridgedChild: { agentId: 'b1', parentAgentId: ROOT_AGENT_ID, roleId: 'r-ext' }, autoContinue: false })

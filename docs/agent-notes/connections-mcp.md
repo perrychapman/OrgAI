@@ -134,6 +134,41 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     reports). OrgAI now launches with those features off, interrupts and corrects any native item (one strike per turn, third
     strike fails the agent; `--strict-delegation` fails the run) and refuses tool calls and approvals from threads it did not start. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
     (spends tokens, consent required) has not been run.
+  - **Native multi-agent tools off through the model catalog** (`codexNativeCatalog.ts`, 2026-11-10). Codex's catalog
+    (`codex debug models`) marks most models `multi_agent_version: "v2"`; for those Codex offers `spawn_agent`,
+    `send_message`, `followup_task`, `wait_agent`, `list_agents` plus a `<multi_agent_role>` and a `<multi_agent_mode>`
+    developer message ("Do not spawn sub-agents unless the user ... explicitly ask[s] ..."), which leads applied to
+    `spawn_report` (benchmark: 5 of 7 runs that required reports ended `delegation-incomplete`). `features.multi_agent(_v2)=false`
+    does not remove them for v2 models. The adapter now runs the same binary's `debug models` (adapter env, the provider
+    `-c` lines only, 4 s timeout) once per key, sets every `multi_agent_version` string other than "v1" to "v1" (every
+    other field kept), writes `<CODEX_HOME>/orgai-model-catalog-<key>.json` (OrgAI's Codex home only; no `CODEX_HOME`, no
+    override) and adds `model_catalog_json="<file>"` through `CodexAppServerOptions.prepareConfig` (after the version
+    check, before the spawn). Key: binary realpath + size + mtime, the provider lines and Codex's own
+    `models_cache.json` (size, mtime); a file older than 6 h is regenerated, other keys' files older than a day are deleted.
+    Covers the run's app-server, the MCP restart (same `createServer`) and `complete()`. Checked at a local Responses stub
+    (no tokens), codex 0.166.0 (the bundled one, through the real adapter launch path) and 0.167.0 app-servers, 2026-11-10: with the override the request has no native tool
+    definition, no `<multi_agent_*>` message and no rule sentence, still offers `spawn_report` / `message_agent` /
+    `list_team`, and is otherwise identical (same reasoning effort, same base instructions, same tools; the catalog file
+    differs from `debug models` only in that field). "v1" and `null` behaved the same in every probe; "v1" was chosen
+    because Codex's own catalog ships it. Both are re-enabled by `features.multi_agent_v2=true`, so OrgAI keeps passing
+    `=false`. Cost: first launch 18-115 ms for the dump and write, a cached launch about 0.03 ms (stats only).
+    **Side effect found and avoided:** setting `model_catalog_json` at all (even to the unmodified catalog) gives a model id
+    the catalog does not know (a proxy's own ids) a fallback base prompt with an extra ~3.8 KB "Planning" / `update_plan`
+    section. So the override is skipped (status `skipped`, one info line) when a role model or a tier-mapped model of the
+    run is not in the catalog; such ids get no native tools anyway with `features.multi_agent=false` (verified at the
+    stub). Fails open: a missing binary, a timeout, a non-zero exit, output that is not a catalog, a failed write or no
+    `CODEX_HOME` launch exactly as before, with one run warning; the role prompt then keeps one sentence on the
+    spawn_report note (`NATIVE_RULE_NOTE`: this project explicitly asks for delegation through spawn_report; Codex's rule
+    concerns its built-in tools), as does the strike notice. With the override in effect that sentence is left out.
+    Unverified: other Codex versions (a renamed field yields "unchanged": no override, the sentence stays), a real model
+    run, a ChatGPT login (whether `debug models` without `--bundled` returns the same refreshed catalog the app-server uses;
+    it was only run without a login, where it printed the bundled catalog, and with an API-key provider, where it made no
+    request to the provider), and a model switched mid-run (`switchModel`) to an id the catalog does not know.
+  - A bridged report's result never restarts a held run (2026-11-10): a child the harness stopped (`BridgeSpawnResult.stopped`,
+    RunManager stops bridged reports before the session's own interrupt) and any bridged result that lands while the
+    continuation is held are shown as a harness row at once and delivered with the user's next message (the orchestrator's
+    in front of the user's text, a report lead's to its own thread), like the Claude adapter's held notices. Unit-tested
+    (`codexBridge.test.ts`).
   - It is unverified that dynamic tools survive `thread/resume`. The adapter's MCP restart and run continuation
     assume they do.
   - The ChatGPT login (`account/login/start` with `chatgpt` / `chatgptDeviceCode`), `model/list` and

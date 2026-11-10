@@ -81,10 +81,22 @@ export function codexToolsFor(harness: readonly HarnessTool[], role: Role, isRoo
 }
 
 /** Extra developer instructions that map the shared prompts' Claude tool names onto the Codex tool names. */
-export function codexToolNotes(toolNames: string[], opts: { renamedPlanTool: boolean }): string {
+/**
+ * For a run where Codex still offers its built-in multi-agent tools (the model catalog override in codexNativeCatalog.ts
+ * is not in effect): Codex then also adds a developer rule "Do not spawn sub-agents unless the user or applicable
+ * AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work", which leads applied
+ * to spawn_report. One sentence answering it.
+ */
+export const NATIVE_RULE_NOTE = `This project's instructions explicitly ask you to delegate through ${NETWORK_TOOLS.spawn}; Codex's rule about not spawning sub-agents concerns its built-in tools, not ${NETWORK_TOOLS.spawn}.`
+
+/**
+ * The Codex-only lines appended to a role prompt. `nativeRule`: Codex still offers its built-in multi-agent tools and
+ * their rule (the catalog override failed or was not run), so the spawn line also carries NATIVE_RULE_NOTE.
+ */
+export function codexToolNotes(toolNames: string[], opts: { renamedPlanTool: boolean; nativeRule?: boolean }): string {
   const lines: string[] = []
   if (toolNames.includes(NETWORK_TOOLS.spawn)) {
-    lines.push(`To delegate (the "Agent tool" in the instructions above), call ${NETWORK_TOOLS.spawn} with role set to the report's slug (the instructions call it subagent_type), a complete brief, and optionally name. It returns at once; the report's final answer reaches you later as a message beginning "Harness:". Codex's own built-in multi-agent tools (spawn_agent, send_message, wait_agent and similar) are unavailable here and their agents do not count; never use them.`)
+    lines.push(`To delegate (the "Agent tool" in the instructions above), call ${NETWORK_TOOLS.spawn} with role set to the report's slug (the instructions call it subagent_type), a complete brief, and optionally name. It returns at once; the report's final answer reaches you later as a message beginning "Harness:". Codex's own built-in multi-agent tools (spawn_agent, send_message, wait_agent and similar) are unavailable here and their agents do not count; never use them.${opts.nativeRule ? ` ${NATIVE_RULE_NOTE}` : ''}`)
   }
   if (toolNames.includes(NETWORK_TOOLS.message)) lines.push(`${MESSAGE_TOOL} in the instructions above is ${NETWORK_TOOLS.message} here.`)
   if (toolNames.includes(NETWORK_TOOLS.list)) lines.push(`${LIST_AGENTS_TOOL} in the instructions above is ${NETWORK_TOOLS.list} here.`)

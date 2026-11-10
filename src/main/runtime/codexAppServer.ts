@@ -116,6 +116,12 @@ export interface CodexAppServerOptions {
    * except CODEX_HOME, PATH and RUST_LOG is scrubbed as well.
    */
   redact?: string[]
+  /**
+   * Extra `-c` entries decided once the binary is known (after the version check, before the spawn), with the child's
+   * environment and the `config` above: the Codex adapter's model catalog override (codexNativeCatalog.ts). A throw or
+   * a rejection adds nothing (fail open). Not called by the connection service.
+   */
+  prepareConfig?(input: { binary: CodexBinary; env: Record<string, string | undefined>; config: readonly string[] }): Promise<string[]>
 }
 
 type ServerRequestHandler = (method: string, params: unknown) => Promise<unknown>
@@ -164,7 +170,17 @@ export class CodexAppServer {
     // Codex or the MCP servers it spawns, inherited or set by the connection (cli-spec 3.4(3)).
     const env: Record<string, string | undefined> = scrubControlEnv({ ...process.env, ...this.options.env })
     if (binary.pathDir) env.PATH = `${binary.pathDir}${delimiter}${env.PATH ?? env.Path ?? ''}`
-    const args = ['app-server', ...(this.options.config ?? []).flatMap((c) => ['-c', c])]
+    const config = [...(this.options.config ?? [])]
+    if (this.options.prepareConfig) {
+      try {
+        const extra = await this.options.prepareConfig({ binary, env: { ...env }, config: [...config] })
+        if (Array.isArray(extra)) config.push(...extra.filter((c) => typeof c === 'string' && c.length > 0))
+      } catch {
+        // fail open: launch with the config as given
+      }
+      if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
+    }
+    const args = ['app-server', ...config.flatMap((c) => ['-c', c])]
     const child = spawn(binary.path, args, { cwd: this.options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     // An agent CLI: ended with the host at the shutdown's hard limit, also when the process table cannot be read (4.3).
     trackChildProcess(child, 'codex app-server')
