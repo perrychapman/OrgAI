@@ -7,36 +7,29 @@
   overflow: auto;
 }
 
-.live-model-switch {
-  padding: var(--space-1h) var(--space-3);
-  border-top: 1px solid var(--border-default);
-  background: var(--surface-1);
-  min-width: 0;
-  display: grid;
-  gap: var(--space-2);
-  color: var(--text-secondary);
-}
+.live-model-switch { display: flex; justify-content: flex-end; min-width: 0; padding: var(--space-1) var(--space-3); color: var(--text-secondary); background: var(--surface-1); }
+.live-model-switch > .popover-wrap { min-width: 0; max-width: 100%; }
+.live-model-switch__trigger { max-width: 30ch; }
+.live-model-switch__trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-model-switch__picker { width: min(440px, calc(100vw - var(--space-6))); height: min(540px, calc(100vh - var(--space-6))); max-height: calc(100vh - var(--space-6)); flex-direction: column; gap: var(--space-2); overflow: auto; }
+.live-model-switch__picker:popover-open { display: flex; }
+.live-model-switch__picker p { margin: 0; }
+.live-model-switch__list { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.live-model-switch__list fieldset { border: 0; padding: 0; margin: 0 0 var(--space-2); min-width: 0; }
+.live-model-switch__list legend { font-weight: var(--weight-medium); padding-block: var(--space-2); overflow-wrap: anywhere; }
+.live-model-switch__option { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); cursor: pointer; border-radius: var(--radius-sm); }
+.live-model-switch__option:has(input:checked) { background: var(--surface-2); }
+.live-model-switch__option:focus-within { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.live-model-switch__option > span { min-width: 0; overflow-wrap: anywhere; }
+.live-model-switch__id { display: block; color: var(--text-tertiary); font-family: var(--font-mono); font-size: var(--text-small); overflow-wrap: anywhere; }
+.live-model-switch__current { color: var(--text-secondary); overflow-wrap: anywhere; }
+.live-model-switch__footer { flex: none; display: grid; gap: var(--space-2); }
 
-.run-body:has(.frame-tray[data-compact='true']) .live-model-switch {
-  padding-block: 0;
-}
-
-.live-model-switch__summary, .live-model-switch__actions {
+.live-model-switch__actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-.live-model-switch__editor {
-  display: grid;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.live-model-switch__editor .select {
-  width: 100%;
-  min-width: 0;
 }
 
 .live-model-switch__error {
