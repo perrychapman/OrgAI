@@ -14,18 +14,19 @@ import {
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { SettingsCard } from './SettingsCard'
-import { SettingsSection } from './SettingsSection'
+import { SettingsGroup } from './SettingsSection'
 
 /**
  * Run staffing: whether the harness picks each report's tier and effort, what it optimizes for and when it asks for a
- * review. A default shows as selected while the field is unset; choosing the default clears the field.
+ * review. A default shows as selected while the field is unset; choosing the default clears the field. A group of the
+ * Limits pane's Advanced settings: the pane keeps at most two tab stops at rest (e2e/permissions.mjs).
  */
 export function StaffingSettings({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
   const uid = useId()
   const view = projectStaffingView(project)
   const row = (name: string): string => `${uid}-${name}-row`
   return (
-    <SettingsSection id="settings-section-staffing" title="Run staffing">
+    <SettingsGroup id="settings-section-staffing" title="Run staffing">
       <SettingsCard>
         <SettingRow
           id={row('staffing')}
@@ -61,6 +62,6 @@ export function StaffingSettings({ project, patch }: { project: Project; patch: 
           }
         />
       </SettingsCard>
-    </SettingsSection>
+    </SettingsGroup>
   )
 }

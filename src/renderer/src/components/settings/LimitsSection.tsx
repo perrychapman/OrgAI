@@ -124,9 +124,8 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
         )}
       </SettingsSection>
 
-      <StaffingSettings project={project} patch={patch} />
-
       <SettingsAdvanced paneKey="project-limits">
+        <StaffingSettings project={project} patch={patch} />
         <SettingsGroup title="Runs and agents">
           <SettingsCard>
             {planRows}
