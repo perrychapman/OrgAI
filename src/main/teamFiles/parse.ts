@@ -242,6 +242,8 @@ interface RoleRead {
   role?: TeamRoleDoc
   problem?: string
   keyShaped?: boolean
+  /** Things dropped from an otherwise good file, for ParsedTeam.notes. */
+  notes?: string[]
 }
 
 function readRole(slug: string, bytes: Buffer): RoleRead {
@@ -289,9 +291,19 @@ function readRole(slug: string, bytes: Buffer): RoleRead {
       if (typeof effort !== 'string' || !(EFFORT_VALUES as readonly string[]).includes(effort)) return { problem: 'The effort is not one of low, medium, high, xhigh or max.' }
       role.effort = effort as Effort
     }
-    // Staffing is advisory spend policy: anything malformed is dropped (cleanRoleStaffing), never a file problem.
-    const staffing = cleanRoleStaffing({ mode: d.staffing, minTier: d.staffing_min_tier, maxEffort: d.staffing_max_effort })
+    // Staffing is advisory spend policy: anything malformed is dropped (cleanRoleStaffing), never a file problem, and
+    // said in a note. A key with no value counts as absent.
+    const sv = (k: string): FmValue | undefined => (Object.hasOwn(d, k) && d[k] !== null ? d[k] : undefined)
+    const staffing = cleanRoleStaffing({ mode: sv('staffing'), minTier: sv('staffing_min_tier'), maxEffort: sv('staffing_max_effort') })
     if (staffing) role.staffing = staffing
+    const droppedStaffing = [
+      ...(sv('staffing') !== undefined && !staffing ? ['staffing'] : []),
+      ...(sv('staffing_min_tier') !== undefined && staffing?.minTier === undefined ? ['staffing_min_tier'] : []),
+      ...(sv('staffing_max_effort') !== undefined && staffing?.maxEffort === undefined ? ['staffing_max_effort'] : [])
+    ]
+    const notes = droppedStaffing.length
+      ? [`${slug} has ${droppedStaffing.length === 1 ? 'a staffing setting' : 'staffing settings'} that ${droppedStaffing.length === 1 ? 'is' : 'are'} not valid or not used without a staffing mode (${droppedStaffing.join(', ')}); ${droppedStaffing.length === 1 ? 'it was' : 'they were'} ignored.`]
+      : []
     const canSpawn = Object.hasOwn(d, 'canSpawn') ? d.canSpawn : false
     if (canSpawn !== null && typeof canSpawn !== 'boolean') return { problem: 'canSpawn must be true or false.' }
     role.canSpawn = canSpawn === true
@@ -304,7 +316,7 @@ function readRole(slug: string, bytes: Buffer): RoleRead {
     if (typeof color === 'string' && COLOR_RE.test(color)) role.color = color.toLowerCase()
     const p = roleDocProblem(role)
     if (p) return { problem: p }
-    return { role, keyShaped: keyShaped(norm) }
+    return { role, keyShaped: keyShaped(norm), notes }
   } catch (e) {
     return { problem: e instanceof BadFile ? e.message : 'It could not be read.' }
   }
@@ -862,6 +874,7 @@ function parseInner(allFiles: TeamFile[], opts: ParseOptions): ParsedTeam {
       continue
     }
     if (r.keyShaped) out.warnings.push({ file: file.path, message: 'It has text that looks like a key. Keys must not be committed.' })
+    if (r.notes) out.notes.push(...r.notes)
     roles.set(slug, r.role)
   }
   for (const slug of rolesHeld) {
