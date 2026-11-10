@@ -639,7 +639,8 @@ describe('bridge review fixes', () => {
 
 describe('BridgedSessions.liveWiderThan (permission mode narrowing)', () => {
   it('counts live children whose start mode is wider than the new mode, never finished ones', async () => {
-    const r = rig({ project: { permissionMode: 'acceptEdits' }, parent: { acceptEditsGranted: () => {} } })
+    const parentGrant = vi.fn()
+    const r = rig({ project: { permissionMode: 'acceptEdits' }, parent: { acceptEditsGranted: parentGrant } })
     const a = r.b.spawn({ role: 'oa', brief: 'one', parentAgentId: ROOT_AGENT_ID })
     await tick()
     expect(r.codex.sessions[0]!.ctx.project.permissionMode).toBe('acceptEdits')
@@ -647,8 +648,22 @@ describe('BridgedSessions.liveWiderThan (permission mode narrowing)', () => {
     expect(r.b.liveWiderThan('plan')).toBe(1)
     expect(r.b.liveWiderThan('acceptEdits')).toBe(0)
     expect(r.b.liveWiderThan('bypassPermissions')).toBe(0)
-    // A bridged child never gets the parent's acceptEditsGranted hook (a child's grant moves only the child).
-    expect(r.codex.sessions[0]!.ctx.acceptEditsGranted).toBeUndefined()
+    await r.b.stopAll('done')
+    await a
+    expect(r.b.liveWiderThan('plan')).toBe(0)
+  })
+
+  it('counts a child whose own "accept edits" grant is wider than the new mode, and never forwards that grant to the parent', async () => {
+    const parentGrant = vi.fn()
+    const r = rig({ project: { permissionMode: 'default' }, parent: { acceptEditsGranted: parentGrant } })
+    const a = r.b.spawn({ role: 'oa', brief: 'one', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    expect(r.b.liveWiderThan('default')).toBe(0)
+    r.codex.sessions[0]!.ctx.acceptEditsGranted!()
+    expect(parentGrant).not.toHaveBeenCalled()
+    expect(r.b.liveWiderThan('default')).toBe(1)
+    expect(r.b.liveWiderThan('plan')).toBe(1)
+    expect(r.b.liveWiderThan('acceptEdits')).toBe(0)
     await r.b.stopAll('done')
     await a
     expect(r.b.liveWiderThan('plan')).toBe(0)

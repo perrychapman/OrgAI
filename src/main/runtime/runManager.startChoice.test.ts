@@ -727,6 +727,40 @@ describe('M1: an "accept edits" allow follows the run past a narrower mode', () 
     await r.m.stopAll()
   })
 
+  it('Low 1a/1c: a grant in each attempt (the second while the flag is already set) refuses, keeping the applied mode under the overlay', async () => {
+    const r = rig()
+    const calls: PermissionMode[] = []
+    r.control.setMode = vi.fn(async (mode: PermissionMode) => {
+      calls.push(mode)
+      r.ctx().acceptEditsGranted!()
+      return true
+    })
+    const run = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'bypassPermissions' } })
+    const result = await r.m.setPermissionMode({ runId: run.id, mode: 'plan' })
+    expect(calls).toEqual(['plan', 'plan'])
+    expect(result).toMatchObject({ applied: false, reason: 'An "accept edits" permission was granted during the change. Choose the mode again.' })
+    // Never back to the wider bypassPermissions the session no longer runs in.
+    expect(r.ctx().project.permissionMode).toBe('acceptEdits')
+    expect(r.m.summary(run.id)).toMatchObject({ permissionMode: 'plan', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' })
+    await r.m.stopAll()
+  })
+
+  it('Low 1b: a change from plan to default (below acceptEdits) also resends when a grant lands', async () => {
+    const r = rig()
+    const calls: PermissionMode[] = []
+    r.control.setMode = vi.fn(async (mode: PermissionMode) => {
+      calls.push(mode)
+      if (calls.length === 1) r.ctx().acceptEditsGranted!()
+      return true
+    })
+    const run = await r.m.start({ project: team({ permissionMode: 'default' }), prompt: 'go', userChoice: { permissionMode: 'plan' } })
+    expect((await r.m.setPermissionMode({ runId: run.id, mode: 'default' })).applied).toBe(true)
+    expect(calls).toEqual(['default', 'default'])
+    expect(r.ctx().project.permissionMode).toBe('default')
+    expect(r.m.summary(run.id)?.sessionPermissionMode).toBeUndefined()
+    await r.m.stopAll()
+  })
+
   it('L-a: a refused widening keeps a grant that landed during the await', async () => {
     const r = rig()
     r.control.setMode = vi.fn(async () => {

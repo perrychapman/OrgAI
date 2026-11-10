@@ -33,7 +33,12 @@ export function canNarrowPermissionMode(projectMode: PermissionMode, overrideMod
   return from === 'any' || from.includes(projectMode)
 }
 
-const projectMaxAutoContinues = (project: Project): number => project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
+/** Modes an "accept edits" grant widens to acceptEdits: default, dontAsk and plan (auto and bypass are wider already). */
+export function overlaidByAcceptEdits(mode: PermissionMode): boolean {
+  return mode !== 'acceptEdits' && canNarrowPermissionMode('acceptEdits', mode)
+}
+
+const projectMaxAutoContinues =(project: Project): number => project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
 
 /**
  * A project's own spend cap: a stored value <= 0 (or not finite) means no cap, as it always did for desktop runs (the
