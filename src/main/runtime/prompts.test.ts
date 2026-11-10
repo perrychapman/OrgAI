@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { PLAN_BATCHING_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, spawnCallText, spawnLimitMark, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
+import { PLAN_BATCHING_TEXT, REPORT_CHECKS_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, spawnCallText, spawnLimitMark, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, type Role } from '@shared/types'
 import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText } from './prompts'
@@ -591,7 +591,7 @@ describe('bridged reports', () => {
 
 describe('team sizing paragraph', () => {
   const roles = orgChart()
-  const [lead, eng] = roles
+  const [lead, eng, rev] = roles as [Role, Role, Role]
   const flags = { isSetup: false, isolation: false }
   const opening = 'Unless your instructions, the brief or required reports say otherwise, do the work yourself'
 
@@ -618,17 +618,31 @@ describe('team sizing paragraph', () => {
     // Review policy 'risk' (the default) carries the longest review sentence.
     // Phase 6 decision order (kept work stays alone, side work only for handed-out work): +78, then +22 (own-work tests) on every variant.
     // Owner decision 2026-11-10: review by risk covers any change again, not only handed-out work (-6 on the risk variants).
-    expect(teamSizingText({ isolation: false }).length).toBe(1247)
-    expect(teamSizingText({ isolation: true }).length).toBe(1209)
-    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1451)
-    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1413)
-    expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1132)
-    expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1109)
+    // Split execution 3.2 to 3.4 (2026-11-10): +27 (interface and criteria in each brief) and +31 (checks of a piece not
+    // repeated, the integrated result checked once) everywhere; +118 (keep a piece when fanning out) where the lead can
+    // work beside its reports (the default; Codex, mock); +35 with spawnFiles. Claude today: beside false, +58.
+    expect(teamSizingText({ isolation: false }).length).toBe(1423)
+    expect(teamSizingText({ isolation: true }).length).toBe(1385)
+    expect(teamSizingText({ required: true, isolation: false }).length).toBe(1627)
+    expect(teamSizingText({ required: true, isolation: true }).length).toBe(1589)
+    expect(teamSizingText({ isolation: false, review: 'always' }).length).toBe(1308)
+    expect(teamSizingText({ isolation: false, review: 'never' }).length).toBe(1285)
+    expect(teamSizingText({ isolation: false, beside: false }).length).toBe(1305)
+    expect(teamSizingText({ isolation: true, beside: false }).length).toBe(1267)
+    expect(teamSizingText({ isolation: false, spawnFiles: true }).length).toBe(1458)
+    expect(teamSizingText({ isolation: true, spawnFiles: true }).length).toBe(1420)
     for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
-      const t = teamSizingText({ required, isolation, review })
-      expect(t.length).toBeLessThanOrEqual(1475)
-      expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
+      for (const beside of [true, false]) for (const spawnFiles of [false, true]) {
+        const t = teamSizingText({ required, isolation, review, beside, spawnFiles })
+        expect(t.length).toBeLessThanOrEqual(1670)
+        expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
+      }
     }
+    // The growth on the default chart's root (risk, no required reports) against the text before split execution.
+    const before = { iso: 1209, noIso: 1247 }
+    expect(teamSizingText({ isolation: false, beside: false }).length - before.noIso).toBeLessThanOrEqual(120)
+    expect(teamSizingText({ isolation: false, spawnFiles: true }).length - before.noIso).toBeLessThanOrEqual(220)
+    expect(teamSizingText({ isolation: true, spawnFiles: true }).length - before.iso).toBeLessThanOrEqual(220)
   })
 
   it('covers sizing, the one-message rule, the longest piece, fan-out, the contract, review by risk, idle waiting and evidence', () => {
@@ -652,7 +666,7 @@ describe('team sizing paragraph', () => {
     const kept = 'do the work yourself when it is one contained piece and you hold the tools.'
     const splitWhat = 'Hand work out when what the brief asks for splits into independent pieces'
     const noInvent = 'Tests and checks of your own work are part of it, never pieces to hand out.'
-    const contract = 'Once interface and acceptance criteria are set, start tests and checks of handed-out work beside it.'
+    const contract = 'Once interface and acceptance criteria are set, put them in each brief and start tests and checks of handed-out work beside it.'
     const requiredLine = "Required reports still go out: start together those that do not need each other's result;"
     const parallel = [
       'Cut the longest piece first',
@@ -719,6 +733,127 @@ describe('team sizing paragraph', () => {
           buildRolePrompt(lead, roles, project({ reviewPolicy }), { ...flags, team: 'single' })
         ]) expect(text).not.toContain(noInvent)
       }
+    })
+  })
+
+  describe('split execution (docs/design/split-execution.md 3.2 to 3.4)', () => {
+    const noInvent = 'Tests and checks of your own work are part of it, never pieces to hand out.'
+    const inBrief = 'Once interface and acceptance criteria are set, put them in each brief and start tests and checks of handed-out work beside it.'
+    const inBriefFiles =
+      'Once interface and acceptance criteria are set, put them in each brief, pass the files you read as files, and start tests and checks of handed-out work beside it.'
+    const filesClause = 'pass the files you read as files'
+    const keepPiece = "When you fan out, keep a piece yourself (the integration or the hardest to explain) unless all need a report's tools."
+    const waitLine = 'While reports run, do only work you kept, never work you handed out, or end your turn and wait.'
+    const integrated = 'Do not re-run checks a report ran on its piece; read its evidence and check the integrated result once.'
+    const quick = { folder: '/w', team: 'default' as const, allowEdits: true, gitRepo: true }
+
+    it('every variant: the new sentences speak of handed-out work and come after the own-work rule; the paragraph ends on the integrated check', () => {
+      for (const required of [false, true]) for (const isolation of [false, true]) for (const review of ['risk', 'always', 'never'] as const) {
+        for (const beside of [true, false]) for (const spawnFiles of [false, true]) {
+          const t = teamSizingText({ required, isolation, review, beside, spawnFiles })
+          const contract = spawnFiles ? inBriefFiles : inBrief
+          expect(t.split(contract)).toHaveLength(2)
+          expect(t.includes(filesClause)).toBe(spawnFiles)
+          expect(t.indexOf(contract)).toBeGreaterThan(t.indexOf(noInvent))
+          expect(t.includes(keepPiece)).toBe(beside)
+          if (beside) {
+            // After the review rule, right before the waiting rule it qualifies.
+            expect(t).toContain(`${reviewPolicyText(review)} ${keepPiece} ${waitLine} `)
+            expect(t.split(keepPiece)).toHaveLength(2)
+          } else expect(t).toContain(`${reviewPolicyText(review)} ${waitLine} `)
+          expect(t.endsWith(` ${waitLine} ${integrated}`)).toBe(true)
+          expect(t).not.toContain('on the same result')
+        }
+      }
+    })
+
+    it('the lead keeps a piece only where it can work beside its reports: the default, not Claude today (spawnCallFields), unless workBesideReports says so', () => {
+      const plain = buildRolePrompt(lead, roles, project(), flags)
+      expect(plain.split(keepPiece)).toHaveLength(2)
+      expect(plain).toContain(teamSizingText({ isolation: false }))
+      const claude = buildRolePrompt(lead, roles, project(), { ...flags, spawnCallFields: true })
+      expect(claude).not.toContain(keepPiece)
+      expect(claude).toContain(teamSizingText({ isolation: false, beside: false }))
+      expect(buildRolePrompt(lead, roles, project(), { ...flags, spawnCallFields: true, workBesideReports: true }).split(keepPiece)).toHaveLength(2)
+      // Flag off: exactly the sentence goes, nothing else changes.
+      const off = buildRolePrompt(lead, roles, project(), { ...flags, workBesideReports: false })
+      expect(off).toBe(plain.replace(`${keepPiece} `, ''))
+      // A mandated root fans out too.
+      const mandated = [{ ...lead, requiredReports: [eng.id] }, ...roles.slice(1)]
+      expect(buildRolePrompt(mandated[0]!, mandated, project({ roles: mandated }), { ...flags, strictDelegation: true }).split(keepPiece)).toHaveLength(2)
+    })
+
+    it('the files clause appears only with spawnFiles, on the team root, and changes nothing else', () => {
+      for (const isolation of [false, true]) {
+        const plain = buildRolePrompt(lead, roles, project(), { ...flags, isolation })
+        expect(plain).not.toContain(filesClause)
+        expect(plain.split(inBrief)).toHaveLength(2)
+        const withFiles = buildRolePrompt(lead, roles, project(), { ...flags, isolation, spawnFiles: true })
+        expect(withFiles.split(inBriefFiles)).toHaveLength(2)
+        expect(withFiles.replace(inBriefFiles, inBrief)).toBe(plain)
+      }
+    })
+
+    it('none of it reaches a report, a mid-level lead, a quick, setup, single-assistant or bridged child run, whatever the flags', () => {
+      const all = { ...flags, spawnFiles: true, workBesideReports: true }
+      const mid = { ...eng, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'] }
+      const others = [
+        buildRolePrompt(eng, roles, project(), all),
+        buildRolePrompt(mid, [lead, mid, ...roles.slice(1)], project(), all),
+        buildRolePrompt(lead, roles, project(), { ...all, team: 'single' }),
+        buildRolePrompt(lead, roles, project(), { ...all, quick }),
+        buildRolePrompt(lead, roles, project(), { ...all, isSetup: true }),
+        buildRolePrompt(lead, roles, project(), { ...all, bridged: true })
+      ]
+      for (const text of others) for (const s of ['put them in each brief', filesClause, 'When you fan out', 'check the integrated result once']) expect(text).not.toContain(s)
+      // Reports are untouched by the root's flags.
+      expect(buildRolePrompt(eng, roles, project(), all)).toBe(buildRolePrompt(eng, roles, project(), flags))
+    })
+  })
+
+  describe('a writing report checks its own piece (split-execution 3.4)', () => {
+    const noReports = 'You have no reports. Do the assigned work yourself and report back concisely when finished.'
+    const quick = { folder: '/w', team: 'default' as const, allowEdits: true, gitRepo: true }
+
+    it('a writing report of a team work run gets the sentence once, right after the no-reports line, isolated or not, mandated or not', () => {
+      expect(REPORT_CHECKS_TEXT).toBe('Before reporting, run the checks that cover your change and say what you ran and the result.')
+      for (const isolation of [false, true]) {
+        const text = buildRolePrompt(eng, roles, project(), { ...flags, isolation })
+        expect(text).toContain(`${noReports} ${REPORT_CHECKS_TEXT}\n\n`)
+        expect(text.split(REPORT_CHECKS_TEXT)).toHaveLength(2)
+      }
+      const mandated = [{ ...lead, requiredReports: [eng.id] }, ...roles.slice(1)]
+      expect(buildRolePrompt(mandated[1]!, mandated, project({ roles: mandated }), { ...flags, strictDelegation: true })).toContain(REPORT_CHECKS_TEXT)
+      // The root of a bridged child session is a report of the run: a writing one checks its piece too.
+      const child = { ...eng, reportsTo: null }
+      expect(buildRolePrompt(child, [child], project(), { ...flags, bridged: true })).toContain(REPORT_CHECKS_TEXT)
+    })
+
+    it('adds at most 110 characters to a writing report and nothing else changes', () => {
+      for (const isolation of [false, true]) {
+        const text = buildRolePrompt(eng, roles, project(), { ...flags, isolation })
+        const without = text.replace(` ${REPORT_CHECKS_TEXT}`, '')
+        expect(text.length - without.length).toBe(93)
+        expect(without).toContain(`${noReports}\n\n`)
+      }
+    })
+
+    it('never reaches a read-only report, a root, a writing lead, a quick, setup or single-assistant run', () => {
+      const writingMid = { ...eng, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-rev'] }
+      const alone = { ...eng, reportsTo: null }
+      const architect = architectRole()
+      for (const text of [
+        buildRolePrompt(rev, roles, project(), flags),
+        buildRolePrompt(lead, roles, project(), flags),
+        buildRolePrompt(alone, [alone], project(), flags),
+        buildRolePrompt(writingMid, [lead, writingMid, ...roles.slice(1)], project(), { ...flags, isolation: true }),
+        buildRolePrompt(eng, roles, project(), { ...flags, quick }),
+        buildRolePrompt(eng, roles, project(), { ...flags, isSetup: true }),
+        buildRolePrompt(alone, [alone], project(), { ...flags, team: 'single' }),
+        buildRolePrompt(architect, [architect], project(), { ...flags, isSetup: true })
+      ]) expect(text).not.toContain(REPORT_CHECKS_TEXT)
+      // The quick run's report keeps its plain line.
+      expect(buildRolePrompt(eng, roles, project(), { ...flags, quick })).toContain(`${noReports}\n\n`)
     })
   })
 
