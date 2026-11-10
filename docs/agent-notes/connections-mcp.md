@@ -33,6 +33,17 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   CLI tool calling against a non-Claude model behind the proxy, and LiteLLM serving `/v1/responses` for non-OpenAI
   models on the Codex side (`scripts/smoke-litellm.mjs` can check later, with consent).
   `ConnectionService.runConnection` builds the per-run `RunConnection` (env, API key, Codex home). Verified by unit tests.
+- Anthropic connection tier variables (run staffing, spec 4.3; `service.ts` `anthropicTierEnv`): for a project whose
+  staffing mode is automatic (`staffingModeOf(project) === 'auto'`), the Anthropic connection's run env sets
+  `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` like a proxy, for each tier it maps to a concrete model id
+  (a value that is itself an alias or tier name is skipped), so an alias the spawn hook writes means the connection's
+  model for that tier. `Project.staffing: 'fixed'` and calls without a project (one-shot helpers) set none.
+  `runConnectionFor` adds them for a bridged Claude role on the Anthropic connection under a project on another
+  connection (it passes no project there, to keep the project's auth out). Checked by unit tests (`service.test.ts`
+  "run staffing") and, for the variable itself, smoke check 10 (`scripts/smoke-staffing.mjs`, sdk-facts.md): only
+  `ANTHROPIC_DEFAULT_SONNET_MODEL` on a Max login is live-verified; the other three and an API-key login are
+  unverified. The Claude session's staffing map (`claude.ts` `claudeStaffingTierModels`) fills unmapped tiers from
+  `ANTHROPIC_BUILTIN_MODELS` on this connection, so the plan guard keeps working with `everyday` unmapped.
 - Multi-provider org charts (2026-11-07; docs/design/multi-provider.md, ARCHITECTURE.md "Multi-provider org charts (bridged reports)"):
   - `Role.connection` is read only through `roleConnection`; the root always uses the project's connection.
     `AdapterChoice.bridged` lists roles that run in a child session (runtime/bridge.ts `BridgedSessions`) on their own
