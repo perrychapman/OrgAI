@@ -180,7 +180,7 @@ async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
         record: rec
       })
       if (rec.plan) lines.push(...planLines(rec.plan, st))
-      const tree = agentTreeLines(s, rec.agents, st)
+      const tree = agentTreeLines(s, rec.agents, st, rec.staffing)
       if (tree.length > 0) lines.push(st.bold('Agents:'), ...tree)
       if (rows.total === 0) lines.push(st.dim('No transcript yet.'))
       else {

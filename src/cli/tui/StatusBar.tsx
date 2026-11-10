@@ -1,10 +1,10 @@
 /**
  * The status bar (W4-T3): one line with the project, the followed run (tag and title), its status word (from
- * statusText, via the selectors) in its tone, cost, "N need you", live run count, connection state and the read-only
+ * statusText, via the selectors) in its tone, the root's live model, cost, "N need you", live run count, connection state and the read-only
  * reason, then a fresh notice and the key hint. A screen reader gets plain words separated by commas, never glyphs.
  *
  * Fitting (issue #26): the key hint and a fresh notice are what the user needs, so the status segments give way first,
- * in this order: the run chips shrink to "R1* R2! +N" and then "+N live", the cost goes, the run title is cut at a word
+ * in this order: the run chips shrink to "R1* R2! +N" and then "+N live", the model and the cost go, the run title is cut at a word
  * boundary (then dropped). Then the hint loses items from its end, at separators, never mid-word, down to one item.
  * The project name ("where am I") is the last thing to go (issue #34). When only one of notice and hint fits, a danger / warn notice wins for its lifetime, otherwise the
  * hint. A notice is fresh for TUI_NOTICE_TTL_MS from `notice.at` (clock: props.now ?? Date.now); the bar re-renders at
@@ -103,6 +103,8 @@ function buildSegs(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'>, level: L
   if (run) out.push({ text: run })
   if (s.statusWord) out.push({ text: s.statusWord, tone: s.tone })
   else out.push({ text: 'Ready', dim: true })
+  // The root's live model (run.model): gives way together with the cost.
+  if (s.rootModel && level.cost) out.push({ text: env.screenReader ? `model ${s.rootModel}` : s.rootModel, dim: true })
   if (s.costText && level.cost) out.push({ text: s.costText, dim: true })
   // "0 need you" means nothing before there is a project or a run (onboarding, R2-L5).
   if (!compact && (s.needsYou > 0 || s.projectName || s.runTag)) out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })

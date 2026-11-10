@@ -13,7 +13,7 @@ vi.mock('./tui', () => ({
   }
 }))
 
-import { execIo, lastRootText, overridesFromFlags, runExec, runResume, UNREGISTERED_MESSAGE } from './exec'
+import { execIo, execLogLine, lastRootText, overridesFromFlags, runExec, runResume, UNREGISTERED_MESSAGE } from './exec'
 
 const p1 = project('p1', '/work/app', { name: 'App', permissionMode: 'default' } as Partial<Project>)
 const RUN = 'run_exec01'
@@ -330,7 +330,7 @@ describe('orgai exec: following and outcomes', () => {
   })
 
   it('text: one line per staffed report (every source), once, sanitized; json keeps the raw event only', async () => {
-    const asg = (agentId: string, source: StaffingSource, over: Partial<StaffingAssignment> = {}): StaffingAssignment => ({ agentId, roleId: 'engineer', tier: 'everyday', model: 'sonnet', effort: 'medium', source, at: 1, ...over })
+    const asg = (agentId: string, source: StaffingSource, over: Partial<StaffingAssignment> = {}): StaffingAssignment => ({ agentId, roleId: 'engineer', tier: 'everyday', model: 'claude-sonnet-5-5', effort: 'medium', source, at: 1, ...over })
     const sources: StaffingSource[] = ['orchestrator', 'role', 'profile', 'clamped', 'plan-guard', 'escalated']
     const assignments = sources.map((src, i) => asg(`w${i}`, src, { note: src === 'clamped' ? 'only fast\u001b[31m allowed' : undefined }))
     const h = execHost()
@@ -344,8 +344,8 @@ describe('orgai exec: following and outcomes', () => {
     expect(await done).toBe(0)
     const out = f.out()
     expect(out).not.toContain('\u001b')
-    expect(out).toContain('R1 engineer-1 on everyday / medium (chosen by the orchestrator)')
-    expect(out).toContain('engineer on everyday / medium (the role\'s setting)')
+    expect(out).toContain('R1 engineer-1 on everyday (claude-sonnet-5-5) / medium (chosen by the orchestrator)')
+    expect(out).toContain('engineer on everyday (claude-sonnet-5-5) / medium (the role\'s setting)')
     expect(out).toContain("(from this project's history)")
     expect(out).toContain('(capped by the role: only fast allowed)')
     expect(out).toContain('(moved down by the plan guard)')
@@ -360,6 +360,44 @@ describe('orgai exec: following and outcomes', () => {
     h2.push('runs:event', finalized(12, 'completed'))
     await done2
     expect(g.out()).not.toContain(' on everyday')
+  })
+
+  it('text: prints warn and error logs and the Models line, once each; other info logs and json stay quiet', async () => {
+    const h = execHost()
+    const f = live({ connect: [h] })
+    const done = runExec(f.ctx, ['do it'])
+    await subscribed(h)
+    h.push('runs:event', ev(11, { type: 'log', runId: RUN, level: 'info', message: 'Models: deep = claude-opus-5-5, everyday = claude-sonnet-5-5 (Anthropic)' }))
+    h.push('runs:event', ev(12, { type: 'log', runId: RUN, level: 'warn', message: 'Model check: deep = claude-opus-4-1 is not the newest\u001b[31m of its family. Run orgai models refresh.' }))
+    h.push('runs:event', ev(13, { type: 'log', runId: RUN, level: 'warn', message: 'Model check: deep = claude-opus-4-1 is not the newest\u001b[31m of its family. Run orgai models refresh.' }))
+    h.push('runs:event', ev(14, { type: 'log', runId: RUN, level: 'error', message: 'Could not apply proposal: nope' }))
+    h.push('runs:event', ev(15, { type: 'log', runId: RUN, level: 'info', message: 'Messaged run x.' }))
+    h.push('runs:event', finalized(16, 'completed'))
+    expect(await done).toBe(0)
+    const out = f.out()
+    expect(out).not.toContain('\u001b')
+    expect(out).toContain('R1 Models: deep = claude-opus-5-5, everyday = claude-sonnet-5-5 (Anthropic)')
+    expect(out.match(/R1 Warning: Model check: deep = claude-opus-4-1 is not the newest of its family\. Run orgai models refresh\./g)).toHaveLength(1)
+    expect(out).toContain('R1 Error: Could not apply proposal: nope')
+    expect(out).not.toContain('Messaged run x.')
+
+    const h2 = execHost()
+    const g = live({ connect: [h2], globals: { outputFormat: 'json' } })
+    const done2 = runExec(g.ctx, ['do it'])
+    await subscribed(h2)
+    h2.push('runs:event', ev(11, { type: 'log', runId: RUN, level: 'warn', message: 'careful' }))
+    h2.push('runs:event', finalized(12, 'completed'))
+    await done2
+    expect(g.out()).not.toContain('Warning: careful')
+  })
+
+  it('execLogLine keeps warn, error and the Models line only', () => {
+    const st = { bold: (x: string) => x, dim: (x: string) => x, red: (x: string) => x, green: (x: string) => x, yellow: (x: string) => x, cyan: (x: string) => x }
+    expect(execLogLine('warn', 'a\nb', st)).toBe('Warning: a b')
+    expect(execLogLine('error', 'x', st)).toBe('Error: x')
+    expect(execLogLine('info', 'Models: fast = gpt-6.1-sol (OpenAI)', st)).toBe('Models: fast = gpt-6.1-sol (OpenAI)')
+    expect(execLogLine('info', 'Plan updated', st)).toBeNull()
+    expect(execLogLine('warn', '', st)).toBeNull()
   })
 
   it('json: one document at the end with the root agent result', async () => {

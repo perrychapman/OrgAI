@@ -3,7 +3,7 @@
  * shared view models (src/shared/view): status words come only from statusText, names from runName, costs from
  * costView, decision rows from waitingItems. Untrusted strings pass through safe / safeLine before any styling.
  */
-import { RUN_KIND_LABELS, type AgentInstance, type ImageAttachment, type PendingCards, type ProjectKind, type RunEvent, type RunPlan, type RunRecord, type RunSummary, type TranscriptEntry, type TranscriptMedia, type TranscriptContentPart } from '../shared/types'
+import { RUN_KIND_LABELS, type AgentInstance, type ImageAttachment, type PendingCards, type ProjectKind, type RunEvent, type RunPlan, type RunRecord, type RunStaffing, type RunSummary, type TranscriptEntry, type TranscriptMedia, type TranscriptContentPart } from '../shared/types'
 import { costView, formatTokens, runCostInput, agentCostInput } from '../shared/view/cost'
 import { formatDateTime } from '../shared/view/dates'
 import { AGENT_LABEL_MAX, agentLabel as sharedAgentLabel } from '../shared/view/agentTree'
@@ -12,6 +12,7 @@ import { runName } from '../shared/view/runLabels'
 import { runStatus, settleEndedAgents, statusOfRun, statusText, type RunStatusView } from '../shared/view/runStatus'
 import { bareToolName, humanizeToolResult, humanizeToolUse } from '../shared/view/transcriptRows'
 import { safe, safeLine, styleStatus, type Style } from './output'
+import { agentModelText, latestByAgent, rootModelOf, runConnections } from './staffingText'
 
 // ---------- Run facts ----------
 
@@ -77,9 +78,15 @@ export function agentLabelWithRole(a: Pick<AgentInstance, 'name' | 'handle'>): s
   return role && role !== label ? `${label} (${role})` : label
 }
 
-/** The agent tree as indented lines (root first, then reports by start order). */
-export function agentTreeLines(summary: RunSummary, agents: Record<string, AgentInstance>, st: Style): string[] {
+/**
+ * The agent tree as indented lines (root first, then reports by start order). Each agent names its model (the staffing
+ * label "everyday (claude-sonnet-5-5) / medium" when `staffing` has an assignment for it, else its live model id) and,
+ * when the run spans more than one connection, the connection it ran on.
+ */
+export function agentTreeLines(summary: RunSummary, agents: Record<string, AgentInstance>, st: Style, staffing?: Pick<RunStaffing, 'assignments'>): string[] {
   const settled = settleEndedAgents(summary, agents)
+  const picks = latestByAgent(staffing)
+  const multi = runConnections(summary, settled).length > 0
   const list = Object.values(settled)
   const children = new Map<string | null, AgentInstance[]>()
   const ids = new Set(list.map((a) => a.id))
@@ -97,7 +104,10 @@ export function agentTreeLines(summary: RunSummary, agents: Record<string, Agent
     if (seen.has(a.id) || depth > 50) return
     seen.add(a.id)
     const cost = costView(agentCostInput(a))
-    const facts = [safeLine(a.activity), cost.empty ? '' : cost.text].filter(Boolean).join(' · ')
+    const model = agentModelText(a, picks.get(a.id))
+    const on = multi ? safeLine(a.connection ?? summary.connection ?? '') : ''
+    const modelText = [model, on ? `on ${on}` : ''].filter(Boolean).join(' ')
+    const facts = [modelText, safeLine(a.activity), cost.empty ? '' : cost.text].filter(Boolean).join(' · ')
     out.push(`${'  '.repeat(depth + 1)}${depth > 0 ? '└ ' : ''}${st.bold(agentLabelWithRole(a))}${facts ? st.dim(` · ${facts}`) : ''}`)
     for (const c of children.get(a.id) ?? []) walk(c, depth + 1)
   }
@@ -345,6 +355,9 @@ export function summaryLines(s: RunSummary, o: SummaryBlockOpts): string[] {
   if (o.projectName) lines.push(`  ${st.dim('Project:')} ${safeLine(o.projectName)}${o.projectPath ? st.dim(` (${safeLine(o.projectPath)})`) : ''}`)
   const when = [`Started ${formatDateTime(s.startedAt)}`, s.endedAt ? `ended ${formatDateTime(s.endedAt)}` : ''].filter(Boolean).join(', ')
   lines.push(`  ${st.dim('Kind:')} ${kindLabel(s)} · ${when}`)
+  const rootModel = rootModelOf(s, o.record?.agents)
+  const rootOn = s.modelSelection?.connection ?? s.connection
+  if (rootModel) lines.push(`  ${st.dim('Model:')} ${rootModel}${rootOn ? st.dim(` (${safeLine(rootOn)})`) : ''}`)
   if (o.chain && o.chain.count > 1) {
     lines.push(`  ${st.dim('Chain:')} session ${o.chain.index} of ${o.chain.count}${o.chain.previousTag ? ` (continues ${o.chain.previousTag})` : ''}`)
   }

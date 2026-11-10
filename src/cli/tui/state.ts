@@ -420,6 +420,8 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   switch (e.type) {
     case 'log':
       if (e.level === 'warn' || e.level === 'error') return addNotice(out, e.message, e.level === 'error' ? 'danger' : 'warn', now)
+      // The run-start models line (cli-parity 3.1) is the one info log worth a notice.
+      if (e.level === 'info' && typeof e.message === 'string' && e.message.startsWith('Models: ')) return addNotice(out, e.message, undefined, now)
       return out
     case 'project.updated':
       return out.project && e.project && out.project.id === e.project.id ? { ...out, project: e.project } : out
@@ -459,6 +461,11 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
       break
     case 'run.moved':
       run = { ...run, summary: { ...summary, projectId: e.projectId } }
+      break
+    case 'run.model':
+      // The root's live model (a model switch): the status bar and the inspector read summary.modelSelection.
+      if (!e.selection || typeof e.selection.model !== 'string' || typeof e.selection.connection !== 'string') return out
+      run = { ...run, summary: { ...summary, modelSelection: { model: e.selection.model, connection: e.selection.connection } } }
       break
     case 'agent.upsert':
       if (!e.agent || typeof e.agent.id !== 'string') return out

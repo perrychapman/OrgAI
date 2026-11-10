@@ -108,6 +108,7 @@ import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/set
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
+import { runModelLogs } from './runModels'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
 import type { DelegationGate, SelfKnowledgeHooks } from './types'
 import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
@@ -713,6 +714,8 @@ export interface RunManagerOptions {
   continuationDelayMs?: number
   /** The model catalog used to decide which adapter a proxy project runs on (adapterForProject). Default: empty. */
   catalog?: () => ProviderModel[]
+  /** The last background model-discovery failure of a connection (ConnectionInfo.modelsError), for the run-start model check. */
+  modelsError?: (connection: ConnectionId) => string | undefined
   /**
    * App settings for the built-in roles' models (setupModel, mcpAssistModel) and the connections' tier mappings.
    * Missing = the built-in roles use the 'deep' tier on the run's connection.
@@ -1688,6 +1691,11 @@ export class RunManager {
     active.emit = emit
     emit({ type: 'run.status', runId: summary.id, status: 'starting', ...(summary.surface ? { surface: summary.surface } : {}) })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
+    // cli-parity 3.1: the concrete model of each tier in use, and a warning for a stale or fallback one (runModels.ts).
+    if (kind === 'work' && choice.adapter !== 'mock') {
+      const roleOn = new Map(bridging.bridged.map((b) => [b.roleId, b.connection]))
+      for (const l of runModelLogs({ roles: project.roles, connectionOf: (id) => roleOn.get(id) ?? choice.connection, catalog: () => this.options.catalog?.() ?? [], connectionName: (id) => connectionName(id, this.options.appSettings?.()), modelsError: this.options.modelsError })) emit({ type: 'log', runId: summary.id, ...l })
+    }
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
     // Advisory title from the fast model; never awaited, never fails the run.
     // The harness's own resume message is never titled (the continued run's title is carried instead).
