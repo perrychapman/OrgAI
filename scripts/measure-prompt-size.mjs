@@ -28,7 +28,7 @@ const { buildAgents } = await load('src/main/runtime/claude.ts')
 const { CodexAdapter } = await load('src/main/runtime/codex.ts')
 const S = await load('src/main/runtime/toolDefinitionSize.ts')
 const { obligationsFor } = await load('src/main/runtime/delegation.ts')
-const { projectKindOf } = await load('src/shared/defaults.ts')
+const { projectKindOf, reviewPolicyOf, staffingModeOf } = await load('src/shared/defaults.ts')
 
 const approxTokens = (chars) => Math.round(chars / 4)
 const BRIEF = S.MEASURE_BRIEF
@@ -48,7 +48,9 @@ function candidates(role, roles, project, flags, extra = []) {
     const req = (obligationsFor(roles, flags.strictDelegation === true)[role.id] ?? []).map((id) => roles.find((r) => r.id === id)?.slug).filter(Boolean)
     add('reports list (delegation)', P.reportsText(reports, flags.bridgedRoles, flags.bridgeVia, req))
     // Whichever variant the builder used is found in the prompt; overlapping misses are skipped by segment().
-    for (const isolation of [true, false]) add('teamSizingText', P.teamSizingText({ required: req.length > 0, isolation }))
+    for (const isolation of [true, false]) add('teamSizingText', P.teamSizingText({ required: req.length > 0, isolation, review: reviewPolicyOf(project) }))
+    // Staffing 'auto' only; the goal variants extend the balanced text, so the longer ones are looked for first.
+    if (staffingModeOf(project) === 'auto') for (const goal of ['cost', 'speed', 'balanced']) add('staffingText', P.staffingText(goal))
     add('orchestratorIsolationText', P.orchestratorIsolationText())
     add('networkLeadText', P.networkLeadText(reports))
   } else add('"no reports" line', 'You have no reports. Do the assigned work yourself and report back concisely when finished.')

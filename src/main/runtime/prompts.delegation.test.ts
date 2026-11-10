@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildRolePrompt, reportsText, teamSizingText } from './prompts'
+import { buildRolePrompt, reportsText, reviewPolicyText, staffingText, teamSizingText } from './prompts'
 import { project, role } from './testHelpers'
 
 const roles = [
@@ -58,5 +58,25 @@ describe('required delegation prompts', () => {
     expect(prompt('lead')).not.toContain('Required reports still go out')
     expect(prompt('mgr')).not.toContain('Required reports still go out')
     expect(prompt('mgr')).toContain('You must delegate to policy and evidence')
+  })
+
+  it('the staffing paragraph and the review policy never displace or contradict the required-delegation text', () => {
+    const chart = roles.map((r) => (r.slug === 'lead' ? { ...r, requiredReports: ['r-mgr'] } : r))
+    for (const goal of ['balanced', 'speed', 'cost'] as const) for (const reviewPolicy of ['risk', 'always', 'never'] as const) {
+      const root = buildRolePrompt(chart[0], chart, project({ roles: chart, reviewPolicy }), { ...flags, staffingGoal: goal })
+      const must = root.indexOf('You must delegate to mgr and wait for their reports before you finish')
+      expect(must).toBeGreaterThanOrEqual(0)
+      expect(must).toBeLessThan(root.indexOf('Required reports still go out'))
+      expect(must).toBeLessThan(root.indexOf(staffingText(goal)))
+      // Required reports win over the review policy: the sizing paragraph says so before its review sentence.
+      const unless = root.indexOf('Unless your instructions, the brief or required reports say otherwise')
+      expect(unless).toBeGreaterThanOrEqual(0)
+      expect(unless).toBeLessThan(root.indexOf(reviewPolicyText(reviewPolicy)))
+    }
+    // Neither text tells the root to skip or replace a report.
+    for (const goal of ['balanced', 'speed', 'cost'] as const) expect(staffingText(goal)).not.toMatch(/do it yourself|do the work yourself|skip|instead of/i)
+    for (const policy of ['risk', 'always', 'never'] as const) expect(reviewPolicyText(policy)).not.toMatch(/required|skip/i)
+    // A lead below the root with required reports gets neither the sizing nor the staffing paragraph.
+    expect(prompt('mgr')).not.toContain(staffingText())
   })
 })

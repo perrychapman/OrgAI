@@ -1,5 +1,5 @@
-import type { Project, ProjectKind, QuickRunInfo, Role, RunTeam } from '@shared/types'
-import { projectKindOf } from '@shared/defaults'
+import type { Project, ProjectKind, QuickRunInfo, ReviewPolicy, Role, RunTeam, StaffingGoal } from '@shared/types'
+import { projectKindOf, reviewPolicyOf, staffingGoalOf, staffingModeOf } from '@shared/defaults'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, OUTPUT_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
@@ -93,6 +93,12 @@ export interface PromptFlags {
    * Adapters pass `strictDelegation: ctx.run.overrides?.strictDelegation === true`. Missing = only Role.requiredReports count.
    */
   strictDelegation?: boolean
+  /**
+   * Run staffing: the goal this run staffs for (RuntimeContext.staffingGoal, which carries the per-run override). Adapters
+   * pass `staffingGoal: ctx.staffingGoal`. Missing = staffingGoalOf(project), the project's own goal. Read only for the
+   * staffing paragraph of a team root (staffingText).
+   */
+  staffingGoal?: StaffingGoal
 }
 
 /** One line for the root of a bridged child session: its final message is what the delegating agent receives. */
@@ -144,8 +150,10 @@ export function reportsText(
  * 4.1, 4.2). It yields to the role prompt, the brief and required delegation: with required reports it governs only how
  * they run. `required`: the role has required reports (obligationsFor). `isolation`: writers get worktrees; without
  * it, writers that run together are told to keep to disjoint files (with it, orchestratorIsolationText says why it is safe).
+ * `review`: the project's review policy (reviewPolicyOf, default 'risk'); its sentence (reviewPolicyText) is the
+ * paragraph's only review rule, shown whatever the staffing mode.
  */
-export function teamSizingText(opts: { required?: boolean; isolation?: boolean } = {}): string {
+export function teamSizingText(opts: { required?: boolean; isolation?: boolean; review?: ReviewPolicy } = {}): string {
   return (
     'Unless your instructions, the brief or required reports say otherwise, do the work yourself when it is one contained piece and you hold the tools. ' +
     "Hand work out when it splits into independent pieces of more than a couple of minutes each, needs a report's tools, skills or connections, or a rule demands it; " +
@@ -156,9 +164,43 @@ export function teamSizingText(opts: { required?: boolean; isolation?: boolean }
     'Start every ready piece in one message: calls in one message run together, separate messages run in sequence. ' +
     (opts.isolation ? '' : 'Parallel writers need disjoint files. ') +
     'Once interface and acceptance criteria are set, start tests, checks and docs beside the implementation. ' +
-    'Review risky or large changes, or when a rule says so, beside the next step, not by habit. ' +
+    `${reviewPolicyText(opts.review)} ` +
     'While reports run, do only work you kept, never work you handed out, or end your turn and wait. ' +
     'Do not re-run checks a report ran on the same result; read its evidence.'
+  )
+}
+
+/**
+ * The review rule of a team root (docs/design/orchestration-efficiency.md 4.4), one sentence inside teamSizingText.
+ * Required reports win over every policy: teamSizingText opens with "unless ... required reports say otherwise".
+ */
+export function reviewPolicyText(policy: ReviewPolicy = 'risk'): string {
+  if (policy === 'always') return 'Have every change reviewed before you finish, beside the next step, not after everything.'
+  if (policy === 'never') return 'Do not ask for review unless a rule demands it; verify and finish.'
+  return 'Ask for review beside the next step only when a rule or the brief demands it, the change touches sensitive or security-relevant code, the diff is large or verification failed once; else verify and finish.'
+}
+
+/**
+ * Run staffing (docs/design/orchestration-efficiency.md 4.2, 4.3): for the root of a team work run (teamSizingText's
+ * conditions) when the project's staffing mode is 'auto'. How to staff the plan's steps (staff, after, paths), the
+ * tier and effort rubric, the longest path, escalation, and a line for the run's goal ('balanced' adds none).
+ * Tiers and efforts named here are the only automatic picks: never top, xhigh or max.
+ */
+export function staffingText(goal: StaffingGoal = 'balanced'): string {
+  const line =
+    goal === 'speed'
+      ? ' This run favours speed: treat every step as on the longest path.'
+      : goal === 'cost'
+        ? ' This run favours cost: treat no step as on the longest path; one well-specified piece may go to a single report on a cheaper tier.'
+        : ''
+  return (
+    'In the plan, give every step a report will do staff (role, tier, effort), after (steps it waits for; omit it if it can start now) and paths (files it will change); ' +
+    'the harness applies the tier and effort when you start that role, never above what the role allows. ' +
+    'Tier fast for search, mechanical edits, running checks and summaries; everyday for well-specified implementation, tests and routine review; deep for ambiguous design, cross-module change, hard debugging and security review. ' +
+    'Effort low for mechanical work, medium by default, high only where the reasoning is subtle. ' +
+    'On the longest path prefer a higher tier at lower effort to a lower tier at high effort; off it prefer the cheaper tier, it has slack. ' +
+    'If a step fails verification or comes back unresolved, retry it one step up in tier or effort, at most twice.' +
+    line
   )
 }
 
@@ -502,7 +544,11 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     const requiredSlugs = requiredIds.map((id) => roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
     parts.push(reportsText(reports, flags.bridgedRoles, flags.bridgeVia, requiredSlugs))
     // Team work-run roots only: not setup-like runs, the Chat, the single assistant or a report (a mid-level lead included).
-    if (isRoot && !isSetup && !flags.quick && flags.team !== 'single') parts.push(teamSizingText({ required: requiredSlugs.length > 0, isolation }))
+    if (isRoot && !isSetup && !flags.quick && flags.team !== 'single') {
+      parts.push(teamSizingText({ required: requiredSlugs.length > 0, isolation, review: reviewPolicyOf(project) }))
+      // Run staffing: only when the project lets the harness staff each assignment ('fixed' = roles' own model and effort).
+      if (staffingModeOf(project) === 'auto') parts.push(staffingText(flags.staffingGoal ?? staffingGoalOf(project)))
+    }
     if (isolation && isRoot) parts.push(orchestratorIsolationText())
     if (!isSetup) parts.push(networkLeadText(reports))
   } else if (!isSetup) {
