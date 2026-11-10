@@ -211,6 +211,12 @@ What the runs show beyond the targets:
   security pass only text its own Read returned in full may be inlined, so nothing was. Report start to first
   write did not change in any campaign. It is safe and inert; making it useful on Claude means crediting what the
   lead saw through other tools, which reopens the review.
+- **A narrower review rule was tried and taken out.** With the owner's agreement the risk sentence was changed to
+  count a large diff only when no report had checked it (`oe-split3`, campaign `phase6-20261110T184031Z`, 5 runs,
+  $3.05). It did not stop the reviewer on the Codex platform or dashboard runs, and it added one on the inventory,
+  which the lead had done alone without review on P5 (242 s against 129 s): the new words read as "your own large
+  diff needs a reviewer". Reverted; P5 is the build that ships. The Codex review-and-fix cycle after a split is
+  still open, and wording is not a reliable lever on it.
 - **The waiting note never fired** in any run.
 - Small samples: one run per cell, and both earlier unforced Codex platform runs were hit by provider errors.
 
