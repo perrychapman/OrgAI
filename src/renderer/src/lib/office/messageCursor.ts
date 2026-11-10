@@ -9,3 +9,8 @@ export function consumeSceneMessages(cursor: MessageCursor, runId: string | unde
   while (overlap > 0 && !cursor.seen.slice(-overlap).every((message, i) => message === messages[i])) overlap--
   return { cursor: { runId, seen: messages.slice() }, fresh: messages.slice(overlap), reset: false }
 }
+
+/** The strip log: the last `n` messages of this run, newest first. Independent of active deliveries, walks and bubbles; callers filter by present endpoints. */
+export function recentMessages(messages: readonly AgentMessage[], n = 3): AgentMessage[] {
+  return n > 0 ? messages.slice(-n).reverse() : []
+}
