@@ -581,16 +581,45 @@ describe('StaffingBook: failed versus finished attempts, and the escalation coun
     expect(efforts).not.toContain('max')
   })
 
-  it('the escalation count lasts while the id is in the plan and goes with the step', () => {
-    const { replace, runOnce } = setup([stepLow()])
-    runOnce({ role: ENG }, true)
-    runOnce({ role: ENG }, true)
-    runOnce({ role: ENG }, true)
-    replace([{ id: 'p2', title: 'Other', status: 'pending', staff: { role: 'engineer', effort: 'low' } }])
-    runOnce({ role: ENG }, true) // forces the book to see the plan without p1
-    replace([stepLow()]) // p1 is a new step now
-    expect(runOnce({ role: ENG }, true).resolved.effort).toBe('low')
-    expect(runOnce({ role: ENG }, true).resolved).toMatchObject({ effort: 'medium', source: 'escalated' })
+  it('RB3 dropping a step from the plan and restoring it with the same id does not reset its count', () => {
+    const other: PlanStep = { id: 'p1', title: 'Other', status: 'in_progress' }
+    const p2 = (): PlanStep => ({ id: 'p2', title: 'B', status: 'in_progress', staff: { role: 'engineer', effort: 'low' } })
+    const { book, replace, runOnce } = setup([other, p2()])
+    const e: (string | undefined)[] = []
+    for (let i = 0; i < 4; i++) e.push(runOnce({ role: ENG }, true).resolved.effort)
+    expect(e).toEqual(['low', 'medium', 'high', 'high'])
+    replace([other])
+    book.decide({ key: 'other', role: { ...ENG, slug: 'nobody', id: 'r-x' } })
+    book.cancel('other')
+    replace([other, p2()])
+    for (let i = 0; i < 3; i++) e.push(runOnce({ role: ENG }, true).resolved.effort)
+    // A restored step is a first attempt (its staff), then nothing is raised: the two escalations were already used.
+    expect(e.slice(4)).toEqual(['low', 'low', 'low'])
+  })
+
+  it('RB4 the step is judged by the attempt that ended last, not the one decided last', () => {
+    const { book } = setup([stepLow()])
+    book.decide({ key: 'x1', role: ENG })
+    book.started('x1', 'b1', 0)
+    book.decide({ key: 'x2', role: ENG })
+    book.started('x2', 'b2', 0)
+    book.ended('b2', { failed: true })
+    book.ended('b1', { failed: false })
+    const d = book.decide({ key: 'x3', role: ENG })
+    expect(d.retry).toBe(false)
+    expect(d.resolved.effort).toBe('low')
+    expect(d.resolved.source).not.toBe('escalated')
+  })
+
+  it('RB4 the other way: the attempt that ended last failed, so the next spawn is a retry', () => {
+    const { book } = setup([stepLow()])
+    book.decide({ key: 'x1', role: ENG })
+    book.started('x1', 'b1', 0)
+    book.decide({ key: 'x2', role: ENG })
+    book.started('x2', 'b2', 0)
+    book.ended('b2', { failed: false })
+    book.ended('b1', { failed: true })
+    expect(book.decide({ key: 'x3', role: ENG })).toMatchObject({ retry: true })
   })
 
   it('the escalation counts are bounded', () => {
