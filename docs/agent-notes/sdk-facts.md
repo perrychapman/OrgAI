@@ -232,7 +232,11 @@ Read from the installed typings, no smoke run (no tokens spent). Used by `setPer
 - Counting in claude.ts (`reportsUnchanged`, fake-query tests in `claude.test.ts` "ClaudeSession live permission
   mode"): a report counts unless every mode it may run under is no wider than the new one. Those modes are fixed when
   the PreToolUse hook approves the Agent call (keyed by tool_use_id, moved onto the report at task_started; an
-  approved spawn not started yet counts on its own, an `is_error` tool result drops it) and when the agent is first
+  approved spawn not started yet counts on its own, an `is_error` tool result drops it, a query restart drops every
+  unstarted one, and after `interrupt()` each one that existed then goes once its caller's turn is over: a root call at
+  the next root `result`, a report's call at a root `result` once that report is done or failed, review L4; that
+  `task_started` precedes the Agent call's result and the turn's `result` is from the smoke facts above, while what an
+  interrupt does to running background reports is unverified) and when the agent is first
   seen: the query's build-time mode (always, because of the open question above), the mode last applied live, a
   change still in flight, a card's accept-edits grant, ctx.project's mode and the parent report's modes. Finished
   reports count too, because SendMessage resumes one; a resumed report that is wider than the live mode gets a run
@@ -256,14 +260,20 @@ Read from the installed typings, no smoke run (no tokens spent). Used by `setPer
   was launched with (`sandbox_workspace_write.writable_roots` in the launch config) that `codexWritableRoots(ctx)`
   still returns now, so neither a later allowed folder nor a removed one widens it; `networkAccess: false` always, which
   narrows a user's own `network_access = true` (the only field that only narrows); the two temp switches come from
-  `config/read` (stable method, `ConfigReadResponse.config.sandbox_workspace_write`, snake_case, read once per
-  app-server with `cwd` = the project): a null section means Codex's defaults (temp folders writable), and a failed
-  read or a non-boolean value excludes the folder (narrower than any user setting). Whether `config/read` reports the
-  values the running threads were started with, and how Codex applies the object, is unverified live.
+  `config/read` (stable method, `ConfigReadResponse.config.sandbox_workspace_write`, snake_case, read right after each
+  app-server's initialize and before any thread starts, `cwd` = the project, so a config.toml edited later does not
+  count): only an explicit null section means Codex's defaults (temp folders writable); a missing key (a Codex version
+  that renamed or moved it), a failed read or a non-boolean value excludes the folder (narrower than any user setting).
+  Whether `config/read` reports the values the running threads were started with, and how Codex applies the object,
+  is unverified live.
 - Counting in codex.ts (fake app-server tests in `codex.test.ts` "live permission mode"): `policyPending` holds what
   Codex holds for a thread; a turn/start answered after another switch keeps the entry on the policy it sent so the
   next turn/start corrects it, and the thread counts under both modes meanwhile. A thread inside a turn or with a
-  turn/start in flight counts whatever its agent state; a thread with no resolvable role is counted.
+  turn/start in flight counts whatever its agent state; a thread with no resolvable role is counted. A turn/start
+  that carried an override and was rejected or timed out on OrgAI's side (30 s, `codexAppServer.ts`; Codex may still
+  have applied it) marks the thread `unknown` in `policyPending`: it counts under the sent mode and every earlier one,
+  between turns too, and its next turn/start sends all three policy fields (`fullPolicyOverride`) until one succeeds
+  (review M1). Whether Codex applies a turn/start whose answer OrgAI timed out on is unverified live.
 - Accept-edits grants: each adapter calls `RuntimeContext.acceptEditsGranted()` once per applied session / project
   grant of a setMode acceptEdits (Claude where `updatedPermissions` carries it, Codex / mock where they set
   `sessionAcceptEdits`), never on allow-once, and drops its own grant when a live change goes to default, plan or

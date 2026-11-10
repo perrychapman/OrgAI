@@ -3210,6 +3210,82 @@ describe('ClaudeSession live permission mode (fake query)', () => {
     await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
   })
 
+  it("spawns an interrupt cut before task_started stop counting once their caller's turn is over; a running report's stay (review L4)", async () => {
+    const roles = [
+      role({ id: 'r-lead', slug: 'lead', name: 'Lead', canSpawn: true, spawnable: ['r-eng', 'r-rev'] }),
+      role({ id: 'r-eng', slug: 'engineer', name: 'Engineer', canSpawn: true, spawnable: ['r-rev'], reportsTo: 'r-lead' }),
+      role({ id: 'r-rev', slug: 'reviewer', name: 'Reviewer', reportsTo: 'r-eng' })
+    ]
+    const { session, q } = await live({}, { permissionMode: 'plan', roles })
+    const wired = session as unknown as Wired & { agents: Map<string, { state: string }> }
+    await expect(session.setPermissionMode('acceptEdits')).resolves.toBe(true)
+    // A running report that can spawn, started under acceptEdits.
+    taskStarted(session, undefined, 'e1', 'engineer')
+    await session.send('Go')
+    expect((await approveSpawn(q, 'tu-root', 'engineer')).hookSpecificOutput?.permissionDecision).not.toBe('deny')
+    const nested = await preToolUse(q)({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'tu-nested', agent_id: 'e1', agent_type: 'engineer', tool_input: { prompt: 'x', subagent_type: 'reviewer' }, cwd: '/repo' }, 't', { signal: new AbortController().signal })
+    expect(nested.hookSpecificOutput?.permissionDecision).not.toBe('deny')
+    expect([...wired.spawnModes.keys()].sort()).toEqual(['tu-nested', 'tu-root'])
+    // e1 and both approved, unstarted spawns may run in acceptEdits.
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 3 })
+    // The interrupt cuts both before task_started and no is_error result comes back. Nothing goes before the turn ends.
+    await session.interrupt()
+    expect(wired.spawnModes.size).toBe(2)
+    q.emit(result)
+    // The root's turn is over: its cut spawn goes. e1 still runs, so its Agent call may still start: kept.
+    await vi.waitFor(() => expect([...wired.spawnModes.keys()]).toEqual(['tu-nested']))
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 2 })
+    // e1 ends without starting it; at the next root result the leftover goes. A spawn approved after the interrupt is
+    // not a candidate (it stays until task_started or an error result).
+    wired.agents.get('e1')!.state = 'done'
+    await session.send('Again')
+    await approveSpawn(q, 'tu-after', 'engineer')
+    q.emit(result)
+    await vi.waitFor(() => expect([...wired.spawnModes.keys()]).toEqual(['tu-after']))
+    // Without the sweep this would stay at 3 forever (e1, tu-root, tu-nested); now only e1 (finished, resumable: it
+    // started under acceptEdits). tu-after was approved under plan, so it is within.
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+  })
+
+  it('an interrupt while no root turn runs drops the root-called leftovers at once (review L4)', async () => {
+    const { session, q } = await live({}, { permissionMode: 'plan' })
+    const wired = session as unknown as Wired
+    await expect(session.setPermissionMode('acceptEdits')).resolves.toBe(true)
+    await approveSpawn(q, 'tu-left', 'engineer')
+    expect((session as unknown as { turnInFlight: boolean }).turnInFlight).toBe(false)
+    await session.interrupt()
+    expect(wired.spawnModes.size).toBe(0)
+    await expect(session.setPermissionMode('plan')).resolves.toBe(true)
+  })
+
+  it("a query restart drops approved spawns the old query never started; started reports keep counting (review L4)", async () => {
+    const servers: McpServerSpec[] = []
+    const { session, q } = await live(
+      { mcpServers: () => servers, resolvedMcpServers: async () => servers.map((spec) => ({ spec, env: {}, headers: {} })) },
+      { permissionMode: 'plan' }
+    )
+    const wired = session as unknown as Wired
+    await expect(session.setPermissionMode('acceptEdits')).resolves.toBe(true)
+    await session.send('Go')
+    await approveSpawn(q, 'tu-s', 'engineer')
+    taskStarted(session, 'tu-s', 's1', 'engineer')
+    await approveSpawn(q, 'tu-gone', 'reviewer')
+    expect([...wired.spawnModes.keys()]).toEqual(['tu-gone'])
+    // s1 reports back; tu-gone never starts and no error result comes back.
+    wired.handle({ type: 'system', subtype: 'task_notification', task_id: 's1', status: 'completed', summary: 'done', output_file: '', session_id: 'sess-pm', uuid: 'n-s1' })
+    servers.push(mcpSpec({ id: 'mcp-pg', name: 'pg', roles: ['lead'], secretEnv: [] }))
+    sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+    await (session as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(servers[0]!)
+    q.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
+    expect(wired.spawnModes.size).toBe(0)
+    const q2 = sdk.queries[1]!
+    q2.emit(init)
+    await vi.waitFor(() => expect((session as unknown as { queryInitSeen: boolean }).queryInitSeen).toBe(true))
+    // s1 started under acceptEdits and still counts; the never-started tu-gone no longer does.
+    await expect(session.setPermissionMode('plan')).resolves.toEqual({ applied: true, reportsUnchanged: 1 })
+  }, 10_000)
+
   it("a nested report inherits its parent's modes (review M1b)", async () => {
     const { session } = await live({}, { permissionMode: 'plan' })
     await expect(session.setPermissionMode('acceptEdits')).resolves.toBe(true)
