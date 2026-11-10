@@ -45,6 +45,11 @@ try {
   check(mj?.models?.every((m) => m.price === null || typeof m.price.inputPerToken === 'number'), 'every model price is a price or null (unknown)')
   const prices = await cli([...d, 'models', 'prices'], { cwd: repo })
   check(prices.code === 0 && prices.out.includes('USD per million tokens.'), 'models prices prints per-MTok rows', show(prices))
+  const mlist = await cli([...d, 'models', 'list'], { cwd: repo })
+  check(mlist.code === 0 && /SOURCE\s+CONTEXT/.test(mlist.out), 'models list text has SOURCE and CONTEXT columns', show(mlist))
+  const resolve = await cli([...d, 'models', 'resolve', '--output-format', 'json'], { cwd: repo })
+  const rj = json(resolve.out)
+  check(resolve.code === 0 && rj?.tiers?.length === 4 && Array.isArray(rj?.roles), 'models resolve json: four tiers and the roles', show(resolve))
 
   // 4. usage after one mock exec run
   const exec = await cli([...d, 'exec', '--output-format', 'json', '[mock:exec-plan] write the summary'], { cwd: repo, timeoutMs: 120_000 })
