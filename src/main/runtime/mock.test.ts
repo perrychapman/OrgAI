@@ -13,7 +13,8 @@ import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
 import { addRules } from './permissionRules'
 import { defaultRoles } from '@shared/defaults'
-import type { AgentInstance } from '@shared/types'
+import type { AgentInstance, Effort, ModelTier } from '@shared/types'
+import { staffingBrief, type StaffingProfile, type StaffingProfileEntry } from '../store/staffingProfile'
 import type { MockStep } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { z } from 'zod'
@@ -1592,5 +1593,90 @@ describe('mock [mock:staffing]', () => {
     expect(agent).toMatchObject({ agent: { model: 'claude-sonnet-4-5' } })
     for (const row of ctx.getStaffing()?.assignments ?? []) expect(row.source).toBe('role')
     await session.stop()
+  })
+})
+
+describe('mock [mock:staffing] project profile (spec 4.5)', () => {
+  const tierModels = { top: 'm-top', deep: 'm-deep', everyday: 'm-everyday', fast: 'm-fast' }
+  const passing = (roleId: string, tier: ModelTier, effort: Effort): StaffingProfileEntry[] =>
+    Array.from({ length: 5 }, (_, i) => ({ roleId, tier, effort, firstOfStep: true, passedFirstTime: true, escalated: false, at: i }))
+  /** One spawn of the implementer, optionally with an on-call pick, then it finishes. */
+  const run = async (opts: { entries: (implId: string) => StaffingProfileEntry[]; staffing?: 'fixed'; spawn?: { tier?: ModelTier; effort?: Effort } }) => {
+    const p = project({ roles: defaultRoles(), ...(opts.staffing ? { staffing: opts.staffing } : {}) })
+    const impl = p.roles.find((r) => r.slug === 'implementer')!
+    const profile: StaffingProfile = { entries: opts.entries(impl.id) }
+    const ctx = fakeCtx({ autoContinue: false, prompt: 'Build it', project: p, staffingProfile: () => profile, connection: { connection: 'anthropic', adapter: 'mock', tierModels } })
+    const work: MockStep[] = [
+      { type: 'spawn', id: 'mock-p-1', role: 'implementer', description: 'Do the part', ...(opts.spawn ?? {}) },
+      { type: 'finish', id: 'mock-p-1', result: 'Done.' },
+      { type: 'text', text: 'All done.' }
+    ]
+    const session = (await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)) as MockSession
+    const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    for (let i = 0; i < 300 && !statuses().includes('idle') && !statuses().includes('finished'); i++) await new Promise((r) => setTimeout(r, 10))
+    const rowOf = () => ctx.getStaffing()?.assignments.find((a) => a.agentId === 'mock-p-1')
+    return { ctx, session, impl, rowOf }
+  }
+
+  it('an unrequested spawn takes the profile\'s qualified cheaper cell, with source profile', async () => {
+    const { session, rowOf } = await run({ entries: (id) => passing(id, 'fast', 'low') })
+    expect(rowOf()).toMatchObject({ tier: 'fast', effort: 'low', source: 'profile' })
+    expect(session.staffedFor('mock-p-1')).toEqual({ model: 'm-fast', effort: 'low' })
+    await session.stop()
+  })
+
+  it('a profile cell above the role\'s ceiling is clamped, and xhigh / max / top cells never raise what runs', async () => {
+    const above = await run({ entries: (id) => passing(id, 'deep', 'low') })
+    expect(above.rowOf()!.tier).toBe('everyday')
+    expect(above.rowOf()).toMatchObject({ tier: 'everyday', effort: 'low', source: 'clamped' })
+    await above.session.stop()
+    const strong = await run({ entries: (id) => [...passing(id, 'everyday', 'xhigh'), ...passing(id, 'everyday', 'max'), ...passing(id, 'top', 'low')] })
+    const row = strong.rowOf()!
+    expect(row.source).toBe('role')
+    expect(row.tier).toBe('everyday')
+    expect(['xhigh', 'max']).not.toContain(row.effort)
+    await strong.session.stop()
+  })
+
+  it('the orchestrator\'s own pick wins over the profile', async () => {
+    const { session, rowOf } = await run({ entries: (id) => passing(id, 'fast', 'low'), spawn: { tier: 'everyday', effort: 'medium' } })
+    expect(rowOf()).toMatchObject({ tier: 'everyday', effort: 'medium', source: 'orchestrator' })
+    await session.stop()
+  })
+
+  it('a fixed project ignores the profile', async () => {
+    const { session, rowOf } = await run({ entries: (id) => passing(id, 'fast', 'low'), staffing: 'fixed' })
+    expect(rowOf()?.source ?? 'role').toBe('role')
+    expect(session.staffedFor('mock-p-1')).toBeUndefined()
+    await session.stop()
+  })
+
+  it('the staffing brief reaches the root\'s first message once: not the transcript, a later message or the system prompt', async () => {
+    const { ctx, session, impl } = await run({ entries: (id) => passing(id, 'fast', 'low') })
+    const brief = staffingBrief({ entries: passing(impl.id, 'fast', 'low') }, ctx.roles)
+    expect(brief).toContain('Implementer')
+    const first = session.deliveredMessages.find((m) => m.agentId === ROOT_AGENT_ID)!.text
+    expect(first.startsWith('Build it')).toBe(true)
+    expect(first).toContain(brief)
+    await session.send('One more thing')
+    await vi.waitFor(() => expect(session.deliveredMessages.filter((m) => m.agentId === ROOT_AGENT_ID).length).toBeGreaterThanOrEqual(2))
+    const later = session.deliveredMessages.filter((m) => m.agentId === ROOT_AGENT_ID).slice(1)
+    for (const m of later) expect(m.text).not.toContain('Staffing history')
+    expect(session.deliveredMessages.filter((m) => m.text.includes('Staffing history'))).toHaveLength(1)
+    expect(JSON.stringify(ctx.events)).not.toContain('Staffing history')
+    for (const r of ctx.roles) expect(session.rolePromptFor(r)).not.toContain('Staffing history')
+    await session.stop()
+  })
+
+  it('no brief for a resumed session, an Ask run or a fixed project', async () => {
+    for (const over of [{ resumeSessionId: 'mock-s' }, { run: runSummary({ team: 'single' }) }, { project: project({ roles: defaultRoles(), staffing: 'fixed' }) }] as Partial<RuntimeContext>[]) {
+      const p = over.project ?? project({ roles: defaultRoles() })
+      const impl = p.roles.find((r) => r.slug === 'implementer')!
+      const ctx = fakeCtx({ autoContinue: false, prompt: 'Build it', project: p, staffingProfile: () => ({ entries: passing(impl.id, 'fast', 'low') }), ...over })
+      const session = (await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'text', text: 'ok' }] } }).start(ctx)) as MockSession
+      await vi.waitFor(() => expect(session.deliveredMessages.length).toBeGreaterThan(0))
+      expect(session.deliveredMessages[0]!.text).not.toContain('Staffing history')
+      await session.stop()
+    }
   })
 })

@@ -134,6 +134,7 @@ import { DecisionIndex } from './decisionIndex'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+import { readStaffingProfile, recordRunInStaffingProfile, staffingProfileApplies } from '../store/staffingProfile'
 import { cleanFolderConfigTrust, folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
 
 /**
@@ -2015,7 +2016,10 @@ export class RunManager {
         : undefined
       active.bridge = bridge
       const gate = kind === 'work' && !summary.quick && summary.team !== 'single' ? this.createDelegation(active, project, choice.adapter, bridging.bridged.map((b) => b.roleId)) : undefined
+      // The project's staffing profile, read once: a snapshot for the life of the run (spec 4.5).
+      const staffingProfile = this.options.dataDir && staffingProfileApplies(summary, runProject) ? readStaffingProfile(this.options.dataDir, summary.projectId) : undefined
       const ctx: RuntimeContext = {
+        ...(staffingProfile ? { staffingProfile: () => staffingProfile } : {}),
         run: summary,
         project: runProject,
         ...(gate ? { delegation: gate } : {}),
@@ -3340,6 +3344,8 @@ export class RunManager {
       }
     }
     this.flush(active)
+    // The run's assignments go into its project's staffing profile (spec 4.5); never throws, once per run id.
+    if (active.ctx) recordRunInStaffingProfile(this.options.dataDir, active.record, active.ctx.project, (m) => log.warn(m))
     this.runs.delete(runId)
     this.store.prune(this.keepRunsFor)
   }

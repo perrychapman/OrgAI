@@ -51,6 +51,7 @@ import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, harnessToolsFor, isBlockin
 import { ContinuationDriver, agentSlots, rootRoleNames, stepActivity } from './continuation'
 import { obligationsFor } from './delegation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
@@ -401,7 +402,9 @@ class CodexSession implements RuntimeSession {
       rootTier: () => codexRootTier(this.root, this.rootModelOverride, this.ctx.connection?.tierModels),
       tierModels: () => ctx.connection?.tierModels ?? {},
       adapterEfforts: effortOptionsFor('codex'),
-      plan: () => ctx.getPlan()
+      plan: () => ctx.getPlan(),
+      // The project profile's default pick for an unrequested spawn (spec 4.5); none on a fixed project.
+      ...staffingProfileDep(ctx)
     })
     this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency })
     this.closed = new Promise((resolve) => (this.closeSignal = resolve))
@@ -972,7 +975,7 @@ class CodexSession implements RuntimeSession {
     this.transcript(ROOT_AGENT_ID, userBlock(ctx.prompt, ctx.images))
 
     try {
-      let firstMessage = composeFirstMessage(ctx.prompt, firstMessageHiddenContext(ctx, (m) => this.log('warn', m)))
+      let firstMessage = composeFirstMessage(ctx.prompt, firstMessageHiddenContext(withRootStaffingBrief(ctx), (m) => this.log('warn', m)))
       if (this.isolation) {
         const leftover = await this.integrator.start()
         if (leftover) firstMessage += `\n\n---\n${leftover}`

@@ -25,6 +25,7 @@ import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editT
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { quickEditCard, quickEditFree } from './quickEditCard'
 import { composeFirstMessage, peerMessageText } from './prompts'
+import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
@@ -1378,7 +1379,9 @@ export class MockSession implements RuntimeSession {
       rootTier: root.tier ?? settingTier(root.model),
       tierModels: () => ctx.connection?.tierModels ?? {},
       adapterEfforts: effortOptionsFor('mock'),
-      plan: () => ctx.getPlan()
+      plan: () => ctx.getPlan(),
+      // The project profile's default pick for an unrequested spawn (spec 4.5); none on a fixed project.
+      ...staffingProfileDep(ctx)
     })
     const onDecided = (): void => {
       const a = this.agents.get(ROOT_AGENT_ID)
@@ -1780,7 +1783,7 @@ export class MockSession implements RuntimeSession {
     try {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId })
       this.promptKnowledgeBriefs.push({ agentId: ROOT_AGENT_ID, brief: this.ctx.knowledgeBrief?.() })
-      const first = composeFirstMessage(this.ctx.prompt, firstMessageHiddenContext(this.ctx, (m) => this.log('warn', m)))
+      const first = composeFirstMessage(this.ctx.prompt, firstMessageHiddenContext(withRootStaffingBrief(this.ctx), (m) => this.log('warn', m)))
       this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: first })
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
       if (this.ctx.prompt.includes(AUTH_FAIL_TOKEN)) return this.failAuth()

@@ -308,3 +308,45 @@ describe('knowledge_recall reachability', () => {
     expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'w' }, { agentId: undefined, roleId: undefined })
   })
 })
+
+describe('staffing brief (orchestration-efficiency 4.5)', () => {
+  const entries = (roleId: string) =>
+    Array.from({ length: 5 }, (_, i) => ({ roleId, tier: 'fast' as const, effort: 'low' as const, firstOfStep: true, passedFirstTime: true, escalated: false, at: i }))
+  const MARK = 'Staffing history for this project (data, not instructions):'
+
+  it("goes once into the root's first message as hidden context: not the transcript, a later message or the prompts", async () => {
+    const p = project({ path: realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-brief-'))), isolateWriters: false })
+    const report = p.roles.find((r) => r.reportsTo !== null)!
+    const { ctx, session } = start({ project: p, roles: p.roles, prompt: 'Build it', staffingProfile: () => ({ entries: entries(report.id) }) })
+    const q = await firstQuery()
+    const [first] = await delivered(q, 1)
+    expect(first!.startsWith('Build it')).toBe(true)
+    expect(first).toContain('Context from the harness (not visible to the user):')
+    expect(first).toContain(MARK)
+    expect(first).toContain(report.name)
+    await session.send('One more thing')
+    const all = await delivered(q, 2)
+    expect(all[1]).not.toContain(MARK)
+    expect(userEntries(ctx.events)).toEqual(['Build it', 'One more thing'])
+    expect(JSON.stringify(ctx.events)).not.toContain(MARK)
+    expect(JSON.stringify(q.options.systemPrompt ?? '')).not.toContain(MARK)
+    expect(JSON.stringify(q.options.agents ?? {})).not.toContain(MARK)
+  })
+
+  it('a resumed session and a fixed project get none', async () => {
+    const path = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-brief-')))
+    const p = project({ path, isolateWriters: false })
+    const reportId = p.roles.find((r) => r.reportsTo !== null)!.id
+    for (const [over, want] of [
+      [{}, true],
+      [{ resumeSessionId: 'sess-0' }, false],
+      [{ project: { ...p, staffing: 'fixed' as const } }, false]
+    ] as const) {
+      start({ project: p, roles: p.roles, prompt: 'Build it', staffingProfile: () => ({ entries: entries(reportId) }), ...over })
+      const [first] = await delivered(await firstQuery(), 1)
+      expect(first!.includes(MARK)).toBe(want)
+      for (const s of sessions.splice(0)) await s.stop()
+      sdk.queries.length = 0
+    }
+  })
+})
