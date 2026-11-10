@@ -60,11 +60,11 @@ const DESKTOP = { surface: 'desktop' as const, senderId: 1 }
 const RPC: RpcInvokeContext = { surface: 'socket', grantedScopes: ['read', 'operate', 'decide', 'configure'] satisfies HostScope[] }
 
 describe('model switching dispatch', () => {
-  it('forwards the selection to the run manager', async () => {
+  it.each([DESKTOP, RPC])('forwards the guarded selection to the run manager over $surface', async (context) => {
     const switchModel = vi.fn().mockResolvedValue({ applied: true })
     const d = new HostDispatcher(services({ runs: { switchModel } as never }))
-    const input = { runId: 'run_1', model: 'model-a', connection: 'anthropic' }
-    await d.invoke(IPC.runsSwitchModel, [input], DESKTOP)
+    const input = { runId: 'run_1', expectedRunId: 'run_1', model: 'model-a', connection: 'anthropic' }
+    await d.invoke(IPC.runsSwitchModel, [input], context)
     expect(switchModel).toHaveBeenCalledWith(input)
   })
 })
