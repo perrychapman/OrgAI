@@ -1,6 +1,6 @@
 # CLI and TUI parity: everything a terminal-only user is missing
 
-Status: draft 1, 2026-11-10, in execution. Written from three read-only audits of the code at the fork's dev
+Status: executed, 2026-11-10 (section 7 says what was built and what was held back). Written as draft 1 the same day. Written from three read-only audits of the code at the fork's dev
 (`1664b49f`): project settings and connections; the team and what a role can be given; running work and seeing what
 happens. Every "missing" below was checked by searching `src/cli` and `src/main/host` for the field, event or
 channel. Nothing was run for the audits.
@@ -205,3 +205,43 @@ updated in the same change.
   own change.
 - The TUI is narrow: adding the model id to rows must not push out the state and the step.
 - The audits were code reading. A capability listed as covered may still fail in use; the e2e rows are the check.
+
+## 7. As built (2026-11-10)
+
+All phases ran on `feat/cli-parity` and were pushed to the fork's dev after each gate (typecheck, the whole unit
+suite, build, the CLI e2e scripts).
+
+| Gap | Outcome |
+|---|---|
+| B1, B2 model per agent, models used | Built: model ids on `exec`, `runs show`, the TUI tree, inspector and status bar; `usage show` by model and `--overview` |
+| B3 project staffing mode and goal | Built: `projects set --staffing`, `--staffing-goal` and the other project flags; `projects show` |
+| B4 tier mapping | Built: `connections tier` (view, set with `--dry-run`, `--reset`), `models resolve` |
+| B5 role editing | Built: `team role add|set|rm|move` and TUI `/team`; some fields are command-only (description, spawn lists, required reports, per-role connection, MCP grants) |
+| B6 team-file changes | **Partly.** Visible (`team files status`, the notice, read-only `/approvals`); approving at a terminal is NOT built (below) |
+| B7 drafted chart | Built: `org draft --apply`, `--from`; `org revise` |
+| B8 model switch | Built: `runs model`, TUI `/model` |
+| I1 compaction | Built: `agent.compacted` on both adapters, counts on every surface, a thrash guard, re-attach after a lead compaction (scripted events only, no live compaction) |
+| I2 tier resolution at run start | Built: the `Models:` line and the `Model check:` warning |
+| I3, I4 settings | Built: `orgai settings`, the project flags, `models prices set|unset`, TUI `/settings` |
+| I5 folder trust | View only (`projects trust show`); allowing is not built |
+| I6, I14 role staffing and connection in text | Built |
+| I7 logs | Built: `exec` prints warnings and errors, `runs show --logs`, TUI `/logs` |
+| I8 paused runs | TUI only (`/resume-now`, `/cancel-resume`): a run is paused inside the process that owns it, so the commands cannot reach it from another terminal |
+| I9 TUI run-start flags | Built |
+| I10 MCP role scoping | Built: `mcp update --role|--no-roles|--all-roles` |
+| I11 revise the chart | Built: `org revise` (interactive terminal only) |
+| I12 usage after a run | Built |
+| I13 outputs | Built: `outputs list|show|revise|note`, TUI `/outputs` (`revise` and `note` checked against a fake host only) |
+| I15 images | Built on `exec` and `resume --exec` |
+| I16 doctor and models list | Built |
+
+**Held back: approving at a terminal (3.4).** A gate was built and reviewed twice by an independent reviewer. Both
+times the reviewer obtained an approval that no person gave, the second time with no window and no prompt, and the
+tightened rules refused most real terminals. A terminal session cannot be told apart from one an agent drives. A
+sound design needs an OS-level confirmation and a store agents cannot write. The work is kept on the local branch
+`cp/approvals-full-gate`. Until then a terminal-only user changes the team with the role commands, which save
+directly and create no pending change; a hand-edited team file stays pending.
+
+Not verified: no run went through a real compaction with the new handling; opening `$EDITOR` from `/team`; the
+plan-window indicator in the TUI against live events; anything on Windows or Linux.
+
