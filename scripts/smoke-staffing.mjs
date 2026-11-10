@@ -3,8 +3,12 @@
 // About 14 short model sessions: checks 1-6 are one each (plus 5b), check 7 is 5 sequential one-shots, check 8 is two, check 9 is one, check 10 is three (the control makes one sonnet call). Run once, do not loop.
 // Check 7 MIRRORS buildCompletionOptions in src/main/runtime/claude.ts (importing the adapter drags in Electron),
 // minus the OrgAI env isolation (it inherits this shell's login).
-// Usage: node scripts/smoke-staffing.mjs [1 2 3 4 5 6 7 8 9 10]   (default: all; 5 also runs 5b)
+// Usage: node scripts/smoke-staffing.mjs [1 2 3 4 5 6 7 8 9 10 11]   (default: 1-10; 5 also runs 5b)
+// Check 11 (nested 'inherit': does a grandchild defined with model 'inherit' run on the main thread's model or on its
+// spawning subagent's?) is never in the default set: `11` is one live session (sonnet root, haiku child, the grandchild
+// says one word), `11stub` is ZERO SPEND against a local Messages stub that records the model of every request.
 import { query } from '@anthropic-ai/claude-agent-sdk'
+import { createServer } from 'node:http'
 import { mkdtempSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -61,9 +65,9 @@ const base = { agent: 'lead', allowedTools: ['Agent', 'Bash'], permissionMode: '
 const spawnPrompt = 'Spawn the agent "worker" with the Agent tool (subagent_type "worker", prompt "Run the Bash command `echo hi` and reply with the word done."), foreground, then reply with its answer.'
 const workerDef = (extra = {}) => ({ description: 'Runs one command', prompt: 'You run the command you are given with Bash and reply "done".', tools: ['Bash'], model: 'haiku', ...extra })
 
-// Discover model ids (token-free: supportedModels is the initialize response).
+// Discover model ids (token-free: supportedModels is the initialize response). Not needed by the stub check alone.
 let models = []
-{
+if ([...want].some((w) => w !== '11stub')) {
   const abort = new AbortController(); let resolveNever
   const never = { [Symbol.asyncIterator]() { return { next: () => new Promise((r) => { resolveNever = r }) } } }
   const q = query({ prompt: never, options: { cwd: dir, settingSources: [], abortController: abort, tools: [] } })
@@ -178,6 +182,72 @@ if (want.has('10')) {
   const c = await run('10c control, no variable; hook writes sonnet', one('wa'), { ...base, model: 'haiku', agents: defs }, hookSonnet)
   const kind = (ev) => { const m = childModels(ev); return m.length ? `${JSON.stringify(m)} -> ${m.every((x) => x === mapped) ? 'mapped id (variable applies)' : m.some((x) => /sonnet/i.test(x ?? '')) ? 'SDK sonnet (variable does not apply)' : 'other'}` : 'none observed' }
   verdict('10 ANTHROPIC_DEFAULT_SONNET_MODEL on a subscription login', [a, b, c].some(authFail) || !childModels(c).length ? 'INCONCLUSIVE' : 'PASS', `variable=${mapped}; (a) hook alias sonnet, definition without model: spawned=${a.starts.length > 0}, child model(s)=${kind(a)}, modelUsage=${JSON.stringify(a.result?.models)}; (b) definition model sonnet, no hook change: spawned=${b.starts.length > 0}, child model(s)=${kind(b)}, modelUsage=${JSON.stringify(b.result?.models)}; (c) control without variable, hook sonnet: spawned=${c.starts.length > 0}, child model(s)=${kind(c)}, modelUsage=${JSON.stringify(c.result?.models)}; errors=${a.error ?? 'none'}/${b.error ?? 'none'}/${c.error ?? 'none'}`)
+}
+// ---------- check 11: nested 'inherit' ----------
+// lead (root, sonnet) spawns `mid` (pinned haiku), which spawns `grand` (model 'inherit'). Main-thread reading: grand
+// runs on sonnet. Parent reading: grand runs on haiku. The agents are told apart by their system prompts (stub) or by
+// parent_tool_use_id chains (live, forwardSubagentText), never by the model itself.
+const MARK = { lead: 'You are the lead of check eleven.', mid: 'You are the middle agent of check eleven.', grand: 'You are the grandchild of check eleven.' }
+const nestedAgents = (root, mid) => ({
+  lead: { description: 'Lead', prompt: `${MARK.lead} Spawn the agent "mid" with the Agent tool (subagent_type "mid", run_in_background false, prompt "Spawn grand."), then reply with its answer in one word.`, tools: ['Agent'], model: root },
+  mid: { description: 'Middle agent that spawns grand', prompt: `${MARK.mid} Spawn the agent "grand" with the Agent tool (subagent_type "grand", run_in_background false, prompt "Say ok."), then reply with its answer in one word.`, tools: ['Agent'], model: mid },
+  grand: { description: 'Says ok', prompt: `${MARK.grand} Reply with the single word ok. Use no tools.`, tools: [], model: 'inherit' }
+})
+const nestedPrompt = 'Spawn the agent "mid" with the Agent tool (subagent_type "mid", run_in_background false, prompt "Spawn grand."), then reply with its answer in one word.'
+if (want.has('11stub')) {
+  const STUB = { root: 'claude-sonnet-5-5', mid: 'claude-haiku-5-5' }
+  const seen = []
+  const spawned = new Set()
+  const sse = (model, block, stop) => {
+    const ev = [['message_start', { type: 'message_start', message: { id: `msg_${Date.now()}_${seen.length}`, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }]]
+    if (block.type === 'text') {
+      ev.push(['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }], ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: block.text } }])
+    } else {
+      ev.push(['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: block.id, name: block.name, input: {} } }], ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } }])
+    }
+    ev.push(['content_block_stop', { type: 'content_block_stop', index: 0 }], ['message_delta', { type: 'message_delta', delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 5 } }], ['message_stop', { type: 'message_stop' }])
+    return ev.map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join('')
+  }
+  const server = createServer((req, res) => {
+    let raw = ''
+    req.on('data', (c) => { raw += c })
+    req.on('end', () => {
+      if (req.url.includes('count_tokens')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"input_tokens":100}'); return }
+      const body = raw ? JSON.parse(raw) : {}
+      const sys = (Array.isArray(body.system) ? body.system.map((b) => b.text ?? '').join('\n') : String(body.system ?? ''))
+      const who = Object.keys(MARK).find((k) => sys.includes(MARK[k])) ?? 'other'
+      seen.push({ who, model: body.model })
+      let block = { type: 'text', text: who === 'grand' ? 'ok' : 'done' }, stop = 'end_turn'
+      const child = { lead: 'mid', mid: 'grand' }[who]
+      if (child && !spawned.has(who)) {
+        spawned.add(who); stop = 'tool_use'
+        block = { type: 'tool_use', id: `toolu_${who}`, name: 'Agent', input: { subagent_type: child, description: `Run ${child}`, prompt: child === 'mid' ? 'Spawn grand.' : 'Say ok.', run_in_background: false } }
+      }
+      res.writeHead(200, { 'content-type': body.stream ? 'text/event-stream' : 'application/json' })
+      res.end(body.stream ? sse(body.model, block, stop) : JSON.stringify({ id: `msg_${seen.length}`, type: 'message', role: 'assistant', model: body.model, content: [block], stop_reason: stop, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 5 } }))
+    })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const keep = ['PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'SHELL']
+  const stubEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => keep.includes(k)))
+  Object.assign(stubEnv, { HOME: dir, CLAUDE_CONFIG_DIR: join(dir, 'config'), ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`, ANTHROPIC_AUTH_TOKEN: 'stub-token', CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '2' })
+  const ev = await run('11stub nested inherit (local stub, no spend)', nestedPrompt, { agent: 'lead', allowedTools: ['Agent'], permissionMode: 'dontAsk', model: STUB.root, env: stubEnv, agents: nestedAgents(STUB.root, STUB.mid) })
+  server.close()
+  const of = (w) => [...new Set(seen.filter((x) => x.who === w).map((x) => x.model))]
+  const g = of('grand')
+  verdict('11stub nested inherit', !g.length ? 'INCONCLUSIVE' : g.every((m) => m === STUB.root) ? 'PASS (main thread)' : g.every((m) => m === STUB.mid) ? 'PASS (parent)' : 'MIXED', `root requests on ${JSON.stringify(of('lead'))}, mid on ${JSON.stringify(of('mid'))}, grandchild (model 'inherit') on ${JSON.stringify(g)}; other requests ${JSON.stringify(of('other'))}; error=${ev.error ?? 'none'}`)
+}
+if (want.has('11')) {
+  // Live: one session, sonnet root, haiku child, the grandchild says one word. Child messages come through
+  // forwardSubagentText; each is attributed by its parent_tool_use_id (the Agent call that started it).
+  const ev = await run('11 nested inherit (live)', nestedPrompt, { agent: 'lead', allowedTools: ['Agent'], permissionMode: 'dontAsk', model: 'sonnet', forwardSubagentText: true, agents: nestedAgents('sonnet', 'haiku') })
+  const rootCall = ev.assistants.find((a) => a.who === 'root' && a.agentUses.some((u) => u.type === 'mid'))?.agentUses.find((u) => u.type === 'mid')?.id
+  const midMsgs = ev.assistants.filter((a) => a.ptu && a.ptu === rootCall)
+  const midCall = midMsgs.flatMap((a) => a.agentUses).find((u) => u.type === 'grand')?.id
+  const grandMsgs = ev.assistants.filter((a) => a.ptu && a.ptu === midCall)
+  const models = (xs) => [...new Set(xs.map((a) => a.model))]
+  const g = models(grandMsgs)
+  verdict('11 nested inherit (live)', authFail(ev) || !g.length ? 'INCONCLUSIVE' : g.every((m) => /sonnet/i.test(m ?? '')) ? 'PASS (main thread)' : g.every((m) => /haiku/i.test(m ?? '')) ? 'PASS (parent)' : 'MIXED', `root=${ev.init?.model}; mid (pinned haiku) messages on ${JSON.stringify(models(midMsgs))}; grandchild (model 'inherit') messages on ${JSON.stringify(g)}; modelUsage=${JSON.stringify(ev.result?.models)}; cost=${ev.result?.cost}; error=${ev.error ?? 'none'}`)
 }
 console.log(`\n=== SUMMARY (${sessions} model sessions)`)
 for (const r of results) console.log(`${r.v.padEnd(12)} ${r.id}`)

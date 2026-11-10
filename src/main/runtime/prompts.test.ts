@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { PLAN_BATCHING_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
+import { PLAN_BATCHING_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, spawnCallText, spawnLimitMark, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
-import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
+import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, type Role } from '@shared/types'
 import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText } from './prompts'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -797,5 +797,74 @@ describe('review policy sentence', () => {
     }
     // The staffing paragraph names review only as kinds of work in the rubric, never as a rule.
     expect(staffingText()).not.toMatch(/ask for review|reviewed/i)
+  })
+})
+
+describe('Agent call fields (spawnCallFields, Claude)', () => {
+  const roles = orgChart().map((r) => (r.slug === 'engineer' ? { ...r, model: 'opus', tier: 'deep' as const, effort: 'high' as const } : r))
+  const [lead, eng, rev] = roles as [Role, Role, Role]
+  const base = { isSetup: false, isolation: false, spawnCallFields: true }
+
+  it('marks each report with its limits and adds the guidance, only with the flag and only on a role with reports', () => {
+    const text = buildRolePrompt(lead, roles, project({ roles }), base)
+    expect(text).toContain('- engineer (up to opus / high): engineer description')
+    expect(text).toContain('- reviewer (up to sonnet / high): reviewer description')
+    expect(text).toContain(spawnCallText({ auto: true }))
+    expect(buildRolePrompt(lead, roles, project({ roles }), { ...base, spawnCallFields: false })).not.toContain('On every Agent call')
+    expect(buildRolePrompt(lead, roles, project({ roles }), { isSetup: false, isolation: false })).not.toContain('(up to')
+    expect(buildRolePrompt(rev, roles, project({ roles }), base)).not.toContain('On every Agent call')
+    expect(buildRolePrompt(lead, roles, project({ roles }), { ...base, isSetup: true })).not.toContain('On every Agent call')
+  })
+
+  it('a lead gets it too; worktree only under an isolated spawner, foreground only for a receipt-bearing report', () => {
+    const mid: Role = { ...rev, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng'], tools: ['Read'] }
+    const chart = [{ ...lead, spawnable: ['r-mid', 'r-rev'], requiredReports: ['r-rev'] }, mid, { ...eng, reportsTo: 'r-mid' }, rev]
+    const rootText = buildRolePrompt(chart[0]!, chart, project({ roles: chart }), { ...base, isolation: true })
+    expect(rootText).toContain('- reviewer (up to sonnet / high, foreground):')
+    expect(rootText).toContain(spawnCallText({ auto: true, foreground: true }))
+    // The mid lead does not write, so it is not isolated and its writer shares its checkout: no worktree mark.
+    const midText = buildRolePrompt(mid, chart, project({ roles: chart }), { ...base, isolation: true })
+    expect(midText).toContain('- engineer (up to opus / high):')
+    expect(midText).toContain(spawnCallText({ auto: true }))
+    const iso = buildRolePrompt(lead, roles, project({ roles }), { ...base, isolation: true })
+    expect(iso).toContain('- engineer (up to opus / high, worktree):')
+    expect(iso).toContain('isolation: "worktree" if marked worktree')
+    expect(iso).not.toContain('run_in_background')
+  })
+
+  it('a fixed role is marked fixed; a fixed project names no limits and asks for no model or effort; inherit without a tier', () => {
+    const fixed = roles.map((r) => (r.slug === 'reviewer' ? { ...r, staffing: { mode: 'fixed' as const } } : r))
+    const fr = buildRolePrompt(lead, fixed, project({ roles: fixed }), base)
+    expect(fr).toContain('- reviewer (fixed):')
+    expect(fr).toContain(spawnCallText({ auto: true, fixed: true }))
+    expect(fr).toContain('Omit model and effort for one marked fixed.')
+    expect(buildRolePrompt(lead, roles, project({ roles }), base)).not.toContain('marked fixed')
+    const fp = buildRolePrompt(lead, roles, project({ roles, staffing: 'fixed' }), base)
+    expect(fp).toContain('- reviewer: reviewer description')
+    expect(fp).toContain(spawnCallText({ auto: false }))
+    expect(spawnCallText({ auto: false })).toContain('but no model or effort')
+    expect(spawnLimitMark({ ...rev, model: 'inherit' }, {})).toBe(' (up to your tier / high)')
+    expect(spawnLimitMark({ ...rev, model: 'inherit', tier: 'fast', staffing: { mode: 'auto', maxEffort: 'low' } }, {})).toBe(' (up to haiku / low)')
+  })
+
+  it('a bridged report gets neither a mark nor (alone) the guidance', () => {
+    const bridged = [{ roleId: 'r-rev', connectionName: 'OpenAI' }, { roleId: 'r-eng', connectionName: 'OpenAI' }]
+    const text = buildRolePrompt(lead, roles, project({ roles }), { ...base, bridgedRoles: bridged })
+    expect(text).not.toContain('On every Agent call')
+    expect(text).not.toContain('(up to')
+  })
+
+  it('stays within its budget, names the aliases the Agent tool accepts and does not shout', () => {
+    const variants = [
+      spawnCallText({ auto: true }),
+      spawnCallText({ auto: true, fixed: true, worktree: true, foreground: true }),
+      spawnCallText({ auto: false, worktree: true, foreground: true })
+    ]
+    expect(variants.map((t) => t.length)).toEqual([312, 445, 288])
+    for (const t of variants) {
+      expect(t.length).toBeLessThanOrEqual(460)
+      expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
+    }
+    for (const alias of ['haiku', 'sonnet', 'opus']) expect(variants[0]).toContain(alias)
   })
 })
