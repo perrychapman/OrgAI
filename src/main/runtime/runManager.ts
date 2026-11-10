@@ -3350,13 +3350,18 @@ export class RunManager {
       const title = await generateRunTitle(adapter, { ...input, signal: abort.signal }, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
       if (!title || abort.signal.aborted) return
       const live = this.runs.get(runId) === active
-      if (!live && !this.store.get(runId)) return
+      if (!live) {
+        const stored = this.store.get(runId)
+        if (!stored) return
+        active.summary = stored
+        active.record.summary = stored
+      }
       active.summary.title = title
       this.store.upsert(active.summary)
       if (live) {
         active.emit({ type: 'run.title', runId, title })
       } else {
-        // The session already ended and its record was flushed; record.summary is active.summary, so save it again.
+        // The session already ended and its record was flushed; save the latest summary with the title.
         this.flush(active)
         logRunEvent(active.summary, { type: 'run.title', runId, title })
         this.broadcast({ type: 'run.title', runId, title })
