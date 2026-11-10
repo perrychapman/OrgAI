@@ -11,12 +11,12 @@ import { runInteractiveRun } from './interactive'
 import { mcpAuth, mcpRevoke } from './mcp/auth'
 import { mcpConnectors, mcpPresets, mcpSearch } from './mcp/connectors'
 import { mcpLibrary } from './mcp/library'
-import { mcpAdd, mcpCopy, mcpDisable, mcpEnable, mcpLink, mcpList, mcpOverrides, mcpPromote, mcpRemove, mcpSetSecret, mcpShow, mcpTest } from './mcp/servers'
+import { mcpAdd, mcpCopy, mcpDisable, mcpEnable, mcpLink, mcpList, mcpOverrides, mcpPromote, mcpRemove, mcpSetSecret, mcpShow, mcpTest, mcpUpdate } from './mcp/servers'
 
 /** Swappable in tests. */
 export const mcpDeps = { runInteractiveRun }
 
-export const MCP_USAGE = 'mcp list | show | add | remove | enable | disable | set-secret | test | link | promote | copy | overrides | auth | revoke | search | library | connectors | presets | assist'
+export const MCP_USAGE = 'mcp list | show | add | update | remove | enable | disable | set-secret | test | link | promote | copy | overrides | auth | revoke | search | library | connectors | presets | assist'
 
 export const ASSIST_NO_TTY =
   '`orgai mcp assist` needs a terminal. Without one, add servers with `orgai mcp add`, `orgai mcp connectors add` or `orgai mcp search`.'
@@ -62,6 +62,7 @@ export const runMcp: CommandFn = async (ctx, args) =>
       list: mcpList,
       show: mcpShow,
       add: mcpAdd,
+      update: mcpUpdate,
       remove: mcpRemove,
       enable: mcpEnable,
       disable: mcpDisable,

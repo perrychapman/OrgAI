@@ -4,8 +4,10 @@
  * - `team templates [list]` (read), `team templates save --name <n> [--description <d>]`, `team templates apply <id>
  *   [--mode replace|merge] [--yes]`, `team templates remove <id> [--yes]` (configure). An apply cannot be undone (the
  *   Desktop's Undo covers only its own applies); --json carries the previous chart as `previousRoles`.
- * - `team roles`, `team role <name-or-slug>` (read): the prompt is shown with every hidden character made visible
- *   (shared/view/hiddenChars showHidden), then sanitized.
+ * - `team roles`, `team role [show] <name-or-slug>` (read): the prompt is shown with every hidden character made visible
+ *   (shared/view/hiddenChars showHidden), then sanitized; the text names effort, staffing and the connection it runs on.
+ * - `team role add | set | rm | move` (configure, cli-parity 3.3): role editing over projects:get + projects:save with the
+ *   desktop's cleaning and the team files gate's spend rule (teamRoleEdit.ts).
  * - `team plugins [list]`, `team plugins add --path <dir> [--name] [--id] [--disabled] [--skip-mcp]`, `team plugins
  *   remove <id> [--yes]` (configure).
  */
@@ -19,11 +21,19 @@ import { confirm, hostCall, requireProject, runSubcommands, withHost, type Subco
 import { emit, note, safe, safeLine } from '../output'
 import { CliError, EXIT, type CommandFn } from '../types'
 import { checkArg, findRole, NO_UNDO, NO_UNDO_AFTER, onlyPositionals, projectJson, roleTierWord } from './org'
+import { connectionLabels, roleAdd, roleMove, roleRemove, roleSet, roleSummaryLines } from './teamRoleEdit'
 
 const USAGE =
-  'team templates [list] | templates save --name <name> [--description <text>] | templates apply <id> [--mode replace|merge] [--yes] | templates remove <id> [--yes] | roles | role <name-or-slug> | plugins [list] | plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp] | plugins remove <id> [--yes]'
+  'team templates [list] | templates save --name <name> [--description <text>] | templates apply <id> [--mode replace|merge] [--yes] | templates remove <id> [--yes] | roles | role <name-or-slug> | role add <name> --reports-to <role> [flags] | role set <role> [flags] | role rm <role> [--reparent-to <role>] | role move <role> --reports-to <role> | plugins [list] | plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp] | plugins remove <id> [--yes]'
 
-export const runTeam: CommandFn = (ctx, args) => runSubcommands(ctx, args, { templates: teamTemplates, roles: teamRoles, role: teamRole, plugins: teamPlugins }, USAGE)
+export const runTeam: CommandFn = (ctx, args) => runSubcommands(ctx, args, { templates: teamTemplates, roles: teamRoles, role: teamRoleRouter, plugins: teamPlugins }, USAGE)
+
+/** `team role <x>` shows a role; `team role add|set|rm|move|show` edit or show (a role named "set" is `team role show set`). */
+const ROLE_ACTIONS: Record<string, SubcommandFn> = { add: roleAdd, set: roleSet, rm: roleRemove, remove: roleRemove, move: roleMove, show: (ctx, args) => teamRole(ctx, args) }
+const teamRoleRouter: SubcommandFn = (ctx, args) => {
+  const action = args[0] !== undefined && Object.hasOwn(ROLE_ACTIONS, args[0]) ? ROLE_ACTIONS[args[0]] : undefined
+  return action ? action(ctx, args.slice(1)) : teamRole(ctx, args)
+}
 
 /** A safe one-line string with hidden characters shown as \uXXXX escapes. */
 const visible = (s: unknown): string => safeLine(showHidden(String(s ?? '')))
@@ -148,19 +158,14 @@ const teamRole: SubcommandFn = async (ctx, args) => {
     const project = await requireProject(ctx, client)
     const role = findRole(project.roles, ref)
     if (!role) throw new CliError(`No role "${safeLine(ref)}" in ${safeLine(project.name)}. List them with: orgai team roles`, EXIT.usage)
-    const nameOf = new Map(project.roles.map((r) => [r.id, r.name]))
     const skills = new Map((project.skills ?? []).map((s) => [s.id, s.name]))
-    const servers = new Map((project.mcpServers ?? []).map((s) => [s.id, s.name]))
+    const label = await connectionLabels(client)
     emit(ctx, { project: projectJson(project), role, promptHasHiddenCharacters: hasHidden(role.prompt) }, () => {
       const lines = [
         `${visible(role.name)} [${visible(role.slug)}]`,
         `  id: ${role.id}`,
-        `  model: ${safeLine(role.model)} (${safeLine(roleTierWord(role))})${role.effort ? ` · effort ${role.effort}` : ''}`,
-        `  reports to: ${role.reportsTo ? visible(nameOf.get(role.reportsTo) ?? role.reportsTo) : 'nobody (root)'}`,
-        `  spawning: ${role.canSpawn ? (role.spawnable.length ? role.spawnable.map((id) => visible(nameOf.get(id) ?? id)).join(', ') : 'allowed, none listed') : 'no'}`,
-        ...(role.requiredReports?.length ? [`  must delegate to: ${role.requiredReports.map((id) => visible(nameOf.get(id) ?? id)).join(', ')}`] : []),
-        `  tools: ${role.tools.length ? role.tools.map(visible).join(', ') : 'none'}`,
-        `  MCP grants: ${role.mcpServers?.length ? role.mcpServers.map((id) => visible(servers.get(id) ?? id)).join(', ') : 'none'}`,
+        // model, effort, staffing (in words), runs on, reports to, spawning, required reports, tools, MCP grants.
+        ...roleSummaryLines(role, project, label, visible),
         `  skills: ${role.skills?.length ? role.skills.map((id) => visible(skills.get(id) ?? id)).join(', ') : 'none'}`
       ]
       if (role.description) lines.push(`  description: ${visible(role.description)}`)
