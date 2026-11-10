@@ -1,3 +1,137 @@
+# Living office rework
+
+This section supersedes every conflicting rule below it: floors, floor paging and floor counts, "no idle loops", "no idle wandering", "no camera animations", floor-scoped messages and captions, per-viewport room packing, the 12 x 14 / 20 x 18 room sizes, and the nameplate rule. Everything not contradicted here (presentation controls, palettes, material tokens, inspector, atlas contract, focus pinning) still holds. Renderer only: no IPC, provider or shared-type change. Nothing below was run; every visual judgment is **unverified** until the Slice 6 walk.
+
+Intent: one building per team that you pan and zoom, with something always quietly happening at the desks of agents that are really working, and messages that happen at the people. Owner brief: no motion, clunky, too few assets, floors wrong (evaluation: `ux-review-pocket-office-eval.md`).
+
+## Conflicts with skills (decided here)
+
+- `motion-design` says idle, waiting, done and failed never animate and waiting is "a colour and a word". The owner asked for a living scene, so: Running loops, Needs you waves (a deliberate exception), Finished and Failed play one short one-shot then settle, Idle never loops. Word, mark and static pose still carry every state without motion.
+- "Animate only transform and opacity": walkers and bubbles use transform/opacity; the sprite flip-book swaps `background-position` of a 16 x 24 sprite (paint only, no layout). Accepted exception, unverified for cost.
+- "One rate per screen": one 120 ms tick (`--office-step-duration`); every period below is a whole number of ticks. "At most 12 elements animate": at most 12 people loop at once (see Motion).
+- `pixel-scene-themes` says avoid idle wandering: kept. Ambient life never walks, because a walk reads as a message.
+- Auto-starting motion over 5 s needs a pause (WCAG 2.2.2, my reading): add a **Pause motion** toggle. Nothing flashes above 3 Hz (fastest frame swap is 240 ms).
+
+## 1. One building, no floors
+
+- Delete floors: `Previous floor`, `Next floor`, `Floor N of M`, "across N floors", `Floor x to floor y` in captions, the `crossFloor` state and its 8 s timer, `floorCount`, `selectedFloor` paging and the floor-based `columns/rows/capacity` packing.
+- Layout input is only the team: departments, per-department slot counts, first-seen order. Never viewport width/height or zoom. Output is in tiles. Acceptance: `buildingLayout` returns deep-equal results for any stage size and zoom.
+- Rooms. Slot `s` sits at column `s % 4`, row `floor(s / 4)` (keep `DESKS_PER_ROOM` 8 and the slot maps). Size from the highest slot ever assigned in the room (tombstones count, so nobody moves when someone leaves): cols = 2 (slots 0-1), 3 (slot 2), 4 (3+); rows = 1 (slots 0-3), 2 (4-7). Width = 4 x cols + 4 tiles (12 / 16 / 20), height = 5 x rows + 5 (10 / 15). Desk module is 4 x 5 tiles at x = 2 + 4c, y = 3 + 5r from the room corner (rooms on the south side mirror the bands, not the desks); worker anchor stays desk + (0, 2).
+- Lobby = the Orchestrators (central) room, at the west end: at least 18 x 14, grown to hold its desk block plus a 6-tile social area. Furnished as reception (`desk-wide`), `meeting-table`, `sofa`, `side-table`, two `plant-tall`, `lamp`, window pair, the stage's front door in the west wall.
+- Corridor: 3 tiles tall, runs east from the lobby, length = longer of the two sides. Departments are rooms on its north and south sides, alternating N, S, N, S in first-seen order (a ref list with tombstones like the slot maps; Team view uses input order). A department over 8 agents adds rooms `Name 2`, `Name 3` in the same sequence. Room doors are 2-tile openings centred in the wall that faces the corridor; the lobby door opens east onto the corridor start.
+- A room that grows shifts later rooms on its side. Layout changes are instant; if a person is focused or selected the stage scroll is adjusted by that person's displacement so they stay under the same screen point.
+- Empty team: lobby only, no people, existing copy. One-person team: lobby only (no corridor). Settings sample: one 12 x 10 department room, no lobby or corridor, inert, static `work` pose, as now.
+- Large teams: 33 roles in 4 departments of 8 is about 58 x 33 tiles, 928 x 528 px at 1x (fits a 985 x 619 stage). Overview at 1x shows room labels (`{Department} · {n}`) and people with screen and mark cues, no nameplates (rule 5). Walls, doors, corridor stripe and prop silhouettes carry the "building" read.
+- Zoom set is **0.5, 1, 2, 3, 4** (0.5 is a 2:1 nearest-neighbour reduction with `image-rendering: pixelated`; unverified quality). Zoom out/in step the set; the readout shows `½×`, `1×` ... with `data-zoom` 0.5 and so on. Zoom keeps the stage-centre world point (or the selected person) fixed. Instant, never animated.
+- Camera. **Fit** = largest zoom where the whole building fits (min 0.5), centred. **Default view** on first measure and on run switch (not on resize): if the building fits at 2x use 2x centred; else zoom 2 (1 if the stage is under 320 px tall) with the lobby centred. Home key repeats the default view. Pan: scroll, drag on empty stage (grab cursor, pointer capture, people buttons excluded), arrow keys on the focused stage move 48 px (Shift 192). `+`/`-` zoom, `0` Fit. Building smaller than the stage is centred on the plain `--surface-0` stage; the beige tile field outside the building goes away.
+- **Find a person** (and a message row's **Show**): select, pan with native `scrollTo({ behavior: 'smooth' })` (`auto` under reduced motion or Pause) so the person plus plate is inside the stage with 24 px margin, then draw a 3 s selection ring (2 px `--focus-ring` outline, 4 px offset, the same static ring under reduced motion). Announce once via the frame live region: `Showing {name}, {room label}`.
+- Stage `aria-label`: `Office scene. Arrow keys pan, plus and minus zoom, 0 fits the building.` People buttons are tabbable in building order (lobby, then rooms in sequence, slot order) even when outside the viewport; focus scrolls them into view instantly.
+
+## 2. A living scene
+
+One clock (`useOfficeClock`): a single `requestAnimationFrame` loop that quantises to a 120 ms tick and writes frame changes straight to sprite refs, so no React re-render per tick. It runs only when mode is `live`, the document is visible, motion is not reduced or paused, the scene is mounted and at least one cue is active. Hidden, resumed, run switch and geometry change take a new baseline: nothing replays and no catch-up. Team and the Settings sample have no clock.
+
+State grammar (readable without a nameplate; "looking at the screen" = `up`, "turned to you" = `down`):
+
+| State | Pose and direction | Screen | Mark above head (16 x 16) |
+| --- | --- | --- | --- |
+| Running (starting, thinking, tool, delegating) | `work` / `type` up | `crt` / `crt-b` lit | none |
+| Idle | `idle` up | `crt-off` dark | none |
+| Needs you | `wait` / `hand` down | `crt` lit steady | `mark-wait` (question) |
+| Finished | `done` once, then `idle` down | `crt-off` | `mark-done` (check) |
+| Failed | `error` down | `crt-error` | `mark-error` (exclamation) |
+
+Marks are shape-coded (Neutral and Green drop hue). Team view: every person `idle` up, steady `crt`, no marks, no clock. Chair stays at the desk in every state; settled people stay at their desk (no departure walk; removed agents simply disappear).
+
+Ambient life, deliberately small: (a) a **glance**: a seated Running or Idle person turns to `left` or `right` for 5 ticks (600 ms) every 25 s + (hash of id mod 15 s), at most one glance in the scene at a time and at least 3 s apart, deferred during typing bursts, never while that person is in an exchange or a walk; (b) the screen flicker above. No ambient walking, no ambient bubbles, no mark ever appears except for a real state or message.
+
+Arrival: an agent first seen in a visible live scene after baseline walks in from the front door along the building route (120 ms per tile, `walk-1/2`), sits (2 ticks `idle` up) and starts its state loop. If the route is over 8 s one-way, or none exists, it starts from its room's doorway; if that fails it appears at the desk. At most 3 arrivals walk at once and share the 3-walk cap with message walks; up to 6 more queue 480 ms apart; further ones appear at the desk. Agents present at mount, run switch or resume appear settled.
+
+## 3. Motion table (T = 120 ms tick)
+
+| Cue | Trigger | Frames | Duration and step | Reduced motion or Paused |
+| --- | --- | --- | --- | --- |
+| Typing | Running, seated | `work` <-> `type` | 8 ticks (960 ms) at 2 ticks per frame, then 12 ticks held `work`; period 2.4 s, phase = hash % 20 ticks | static `work`, lit `crt` |
+| Screen flicker | Running | `crt` <-> `crt-b` | continuous, 4 ticks (480 ms) per frame | static `crt` |
+| Wave | Needs you | `wait` <-> `hand` | continuous, 4 ticks per frame | static `hand` + `mark-wait` |
+| Cheer | state becomes Finished | `done`, then `idle` down | 6 ticks (720 ms), then settled | settled `idle` + `mark-done` at once |
+| Slump | state becomes Failed | `error`, sprite +1 px y | 3 ticks (360 ms), then held | `error` + `mark-error` + `crt-error` at once |
+| Glance | ambient, see above | existing `work`/`idle` left or right | 5 ticks, every 25-40 s | none |
+| Arrival | new agent | `walk-1`/`walk-2`, then `idle` | 1 tile per tick, 2 ticks sit; capped 8 s | appears at desk |
+| Message walk | real `agent.message`, route fits | existing outbound/settle/return | 1 tile per tick, 240 ms settle, round trip <= 10 s | none (no walk) |
+| Talk mark | sender of a real message | `mark-talk` (three dots) | outbound phase, or 10 ticks (1.2 s) with no walk | same 1.2 s, static |
+| Message bubble | recipient of a real message | DOM bubble, no sprite | see section 4 | same time, static |
+| Find ring | Find / Show | DOM outline | 3 s | same, static |
+| Pan to person | Find / Show | native smooth scroll | browser default | instant |
+
+Cap: at most 12 people loop at once, chosen in this priority: Needs you, selected or focused, message participants, then Running in building order. The rest show the static equivalent (same as reduced). A focused person never walks (focus pinning is unchanged) but still loops in place. Selection, press and focus rings are instant. `data-office-cue` on each sprite is `typing | waving | glance | arriving | cheering | slumping | walking | none` and is always `none` under reduced motion or Pause.
+
+## 4. Messages at the people
+
+- Both people, one building: every `agent.message` with both ends present gets the bubble and mark, always, regardless of distance (the floor-split cause of "0 of 4 walks" is gone). The message still reaches the runtime first; visuals never gate it, old messages never replay, and the existing baseline, hidden-reset and 8 s queue-expiry rules in `scheduler.ts` stay.
+- Sender: `mark-talk` above the head. Recipient: a DOM bubble above the head (above its state mark): `{Sender}: {text}`, text trimmed to 80 characters plus `…`, `max-width` 200 px, 3-line clamp, paper-and-ink surface with a CSS tail, `pointer-events: none`, `aria-hidden` (the strip and inspector carry the full text, as now; no live announcement). Both people's nameplates show for the exchange at every zoom, inverted (ink on surface swapped) so the pair is identifiable without hue.
+- Readable time: `1500 ms + 45 ms x characters`, clamped to 6000 ms, starting at the walk's settle (or at once with no walk). Tokens `--office-bubble-base`, `--office-bubble-per-char`, `--office-bubble-max` in all three theme blocks. A newer bubble replaces an older one on the same person. At most 3 bubbles at once (the active cap); further messages go to the strip only.
+- Walks now cross rooms and the corridor on the one grid (BFS, doors open, other people's cells blocked, `clearWorkerPath` stand-off kept). If the round trip exceeds 10 s, walk only to the sender's own doorway and back (it still reads as "heading out"). If there is no route, the endpoints are pinned (focus) or the walk cap is full: no walk, bubble and mark only. No fabricated path, no teleport.
+- The message strip stays as a **log**, 48 px, newest first, last 3 messages of this run (not only active ones), no floor clause. Row: `{From} to {To} · {text}` with a button `Show {To}` (pans, rings). Empty copy unchanged: `Messages appear here as agents communicate.`
+- Reduced motion: no walk, bubble and talk mark appear at once for the same times, then vanish at once.
+
+## 5. Rooms that fit and differ
+
+Theme index = FNV-1a hash of the casefolded department name mod 6 (same name, same look in Live and Team; unverified that Live and Team names match, see Open decisions). The lobby has its own fixed look. All props use existing frames; footprints stay 2 x 2 as in the atlas.
+
+| # | Look | Floor tile | Rug (aisle strip, 2 tall) | Desk set | Far-wall slots (x = 1, 5, 9, 13) | Extras |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | Studio | `tile.00` + sparse `04-07` | `tile.18` | `desk-wide`, `crt-side`, `chair-side` | whiteboard, window, whiteboard, plant-tall | `mug` on odd slots |
+| 1 | Library | `tile.02` | `tile.17` | `desk`, `crt`, `chair` | shelf, shelf, cabinet, shelf | `lamp`, `plant-tall` corner |
+| 2 | Lab | `tile.03` | `tile.19` | `desk-wide`, `crt`, `chair` | cabinet, printer, whiteboard, cabinet | `partition` pair at far corners |
+| 3 | Lounge | `tile.00` | `tile.20` | `desk`, `crt-side`, `chair-side` | window, sofa, side-table, window | `lamp`, `plant` |
+| 4 | Ops | `tile.03` | `tile.21` | `desk-wide`, `crt-side`, `chair` | whiteboard, window, printer, cabinet | `coffee-station`, `meeting-table` if width 20 |
+| 5 | Garden | `tile.01` + dense `04-07` | `tile.22` | `desk`, `crt`, `chair-side` | window, plant-tall, window, plant-tall | `side-table`, `plant` |
+
+- Walls: `tile.08` / `tile.12` alternating along rows, `tile.09` / `tile.10` for room corners, `tile.11` for one-tile stubs, side walls as now (rotated `tile.08`). Doorway jambs use `tile.24` (left) and `tile.25` (right) in the wall row beside a 2-tile opening whose floor is `tile.43` (mat). If the jambs read as closed doors in the first contact sheet, drop them and keep the mat: no other change.
+- Corridor: `tile.01` floor with a `tile.18` runner on the middle row, a `plant-tall` or `cabinet` every 8 tiles where it borders blank wall, a `window` at the east end. Plain floor is 70% of every room; nothing blocks the door-to-aisle line or an anchor.
+- Static layer (floor, walls, rugs, static props) is drawn once per layout change into one `<canvas>` with smoothing off; sprites, desks, marks and bubbles stay DOM so buttons align. Reason: a 160 x 35-tile building is thousands of nodes at 8 Hz (unverified; DOM tiles may be acceptable).
+
+## 6. New art (generator extension only; names follow existing patterns)
+
+- Workers, 2 new poses x 4 directions x 12 silhouettes = **96 frames**, drawn procedurally in `worker()`: `worker.<silhouette>.<direction>.type` (hands on keys, one hand offset 1 px against `work`) and `worker.<silhouette>.<direction>.hand` (one arm raised above the head, the other as `wait`). Sheet width 112 -> 144 px, height unchanged 1152; all three palettes share coordinates. Poses are appended after `error` so existing coordinates do not move.
+- Props, **7 frames** appended to the props sheet: `prop.crt-b` (text lines shifted, same silhouette as `crt`), `prop.crt-off` (dark glass), `prop.crt-error` (red glass in Color, crossed glass in Neutral and Green), and 16 x 16 marks `prop.mark-wait`, `prop.mark-done`, `prop.mark-error`, `prop.mark-talk`. The marks need their own Color ramps (amber, green, red, cream); the three crt frames reuse the `crt` ramp (extend the `item in (2, 3)` rule). Props sheet 128 x 160 grows to 128 x 224 plus a 16-px mark strip; keep atlas records (`placement: tabletop` for crt frames, 2 x 2 footprint, anchors) and add them to `PROPS`.
+- No bubble sprite (bubbles are DOM), no sit pose, no walk-in frame (walks reuse `walk-1/2`).
+
+## 7. Nameplates
+
+- Zoom 0.5 and 1: no plate by default. A plate shows on hover, keyboard focus, selection, exchange participants and the Find ring (3 s). The state is in the picture (section 2) and in the accessible name.
+- Zoom 2 and above: always shown, below the feet in the aisle row, `max-width` one desk pitch (4 tiles x zoom - 4 px, as `--office-label-width`), name on line 1 with ellipsis only past about 16 characters, full name on hover/focus/`title`, with the full name in the accessible name as now. Bubbles sit above heads and plates below feet, so one person's plate and bubble never overlap; a hovered or focused plate may overlap a neighbour's plate but is raised above it and never covers a person's head.
+- Line 2: Live shows the status word (unchanged); **Team shows the department name** (`departmentName`, `Orchestrators` for the lobby) instead of `Role`, with the accessible name `{name}, {department}`; the Settings sample keeps its fixed copy. Whether Team should instead show a role title needs a new optional `OfficeAgent` field: Open decision.
+- Person target: `max(24, 16 x zoom)` wide and `max(24, 24 x zoom)` tall (24 minimum height is new for 0.5x), centred on the sprite, native `button`, same coordinates as the art. At 0.5x people are 32 px apart horizontally and 40 px vertically, so targets do not overlap.
+
+## 8. Keep, rename and remove (for `e2e/office.mjs`, `e2e/pocket-office.mjs`)
+
+- Keep: `office-scene` (`data-mode`, `data-palette`), `office-stage` (`data-width`/`data-height` now building tiles), `office-floor` (legacy name of the pannable map, no user-facing meaning), `office-zoom` (`data-zoom` may be 0.5), `office-deliveries` (`data-active`, `data-queued`), `office-caption`, `pocket-office-agent` + `data-agent-id`, `data-office-worker-id`, `data-office-agent-id`, `data-office-sprite-id`, `data-office-motion-phase`, `data-office-x/y` (building pixels, zoom-independent), `data-office-department-id`, the directory (`Find a person`) and roster buttons, `Zoom in`, `Zoom out`, `Fit`.
+- Remove: `data-floor` (scene root, stage, floor span), `data-room` on the scene root, `data-office-floor` on roster rows (replaced by `data-office-room` = room label), the `Previous floor`/`Next floor` buttons, `Floor N of M`, the `across N floors` summary text and the floor clause in captions. Tests that look up people by floor, or assert a caption floor clause, change to building coordinates.
+- Add: `data-testid="office-pause"` (`aria-pressed`), `office-bubble` (`data-office-bubble-for`), `office-mark` (`data-mark`, `data-agent-id`), `data-office-cue`, `data-office-state` (`idle|running|waiting|finished|failed`), `data-office-clock` (`running|stopped`) and `data-office-animated` (count, at most 12) on the scene, `data-office-motion-phase="arrive"`, strip row `office-show`.
+- Tokens, all three theme blocks in `tokens.css` (no literal ms in components): `--office-bubble-base: 1500ms`, `--office-bubble-per-char: 45ms`, `--office-bubble-max: 6000ms`, `--office-find-duration: 3000ms`, `--office-glance-duration: 600ms`. Reduced-motion CSS keeps both selectors (`prefers-reduced-motion` and `:root[data-reduce-motion='on']`).
+
+## 9. Build slices (S0, S1, S3 start together; S2 and S5a need S1; S4 needs S2, S3, S0; S5b needs S2, S5a; S6 last)
+
+- **S0 Art** (Designer or UI Engineer): `generate-atlas.py`, regenerated `*-color/neutral/green.png`, `atlas.json`, `provenance.json` note, review contact sheet. Accept: the 103 new names exist at identical coordinates in three palettes; a unit test lists them; contact sheet at 1x and 2x shows `type`/`hand`, crt frames and marks distinguishable in Neutral and Green.
+- **S1 Building layout (first, pure)**: new `src/renderer/src/lib/office/building.ts` + `building.test.ts` (keep `layout.ts` desk, route and appearance helpers; retire its floor packing). Accept: viewport-independent; room sizes table; first-seen order and tombstones keep every existing room and desk fixed; doors join corridor; every anchor routes from the front door; 33-role and 1-person dimensions as stated; route over the whole grid under 20 ms for 160 x 35 tiles (unverified target).
+- **S3 Cue engine (pure)**: new `lib/office/cues.ts` + test (state to pose/direction/screen/mark, tick schedule, hash phases, glance schedule, 12-cap, cheer/slump one-shots, arrival state machine). Accept: pure frame-name outputs for every state/tick, nothing outside the 5 states, same output twice, reduced returns the static equivalents.
+- **S2 Static scene and camera**: `OfficeScene.tsx` split into `OfficeBuilding.tsx` (canvas layer), `useOfficeCamera.ts` (zoom set, Fit, default view, drag, keys, Find), plus new `lib/office/themes.ts` (+ test), `office.css`, `tokens.css`, `OfficeScene.tsx` wiring only. Accept: no floor strings anywhere; nobody's `data-office-x/y` changes between 1600 x 1000 and 1024 x 640 or across zoom; default view and Fit rules; arrow/drag/wheel pan; plates per section 7; Team line 2; both themes and three palettes.
+- **S5a Message motion (pure)**: `scheduler.ts`, `motion.ts`, `messageCursor.ts` + tests. Accept: no floor logic, long-route doorway truncation, blocked and capped cases yield "no walk", bubble duration formula, old messages never replay across hidden/resume/run switch.
+- **S4 Clock and cues in the scene**: `useOfficeClock.ts`, `OfficeSprites.tsx`, marks; touches `OfficeScene.tsx` wiring. Accept: sample at 1x for 5 s shows frame changes only on Running and Needs you people; `data-office-animated` <= 12; clock `stopped` when hidden, paused, reduced, Team; no replay after resume.
+- **S5b Bubbles and strip**: `OfficeBubbles.tsx`, `OfficeStrip.tsx`, `office.css`. Accept: bubble and mark at both people for a cross-room message, text readable for the formula time, strip log with Show, full text in the inspector.
+- **S6 Verification**: `e2e/office.mjs`, `e2e/pocket-office.mjs`, mock walkthrough, notes in this file. Accept: updated ids; reduced motion run has every `data-office-cue="none"` and still shows bubbles; keyboard pass (Tab, arrows, `+`/`-`/`0`, Find, Pause); 33-role Fit and 1x overview; 1024 x 640 with a permission card open; light and dark; Color, Neutral, Green.
+
+## Open decisions and unverified
+
+- Open: whether Team second line should be a role title (needs an optional `OfficeAgent` field), and whether Live and Team department names match so the theme hash is stable across views.
+- Unverified: 0.5x legibility, door jamb tiles, `type`/`hand` frame legibility at 1x, the canvas static layer versus DOM cost, `up`-facing seated pose (the current renderer draws `down`; the atlas anchors declare `up`), tick-driven imperative updates under 12 animated people plus 3 walks, screen-reader behaviour for the Pause toggle and Find announcements.
+
+## Not in this rework
+
+Multi-storey buildings; night lighting or weather; ambient walking, visitors or invented chatter; sitting poses; sound; sprite upscaling beyond 4x; camera following a conversation automatically; a minimap; keeping the scene visible when a permission card shrinks the stage (evaluation item 8, separate layout work); the Graph presentation; any provider, IPC or shared-type change.
+
 # Pocket Office: furnished office
 
 ## Scoped presentation and Office chrome pass
