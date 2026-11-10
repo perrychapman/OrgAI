@@ -175,7 +175,7 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   instead of the everyday model id. When the spawn runs on other values than were asked (a clamp or the plan guard),
   the caller gets one line, "[OrgAI harness] <Role> was spawned on <label>.", through `PostToolUse`
   `additionalContext` on that Agent call (beside the receipt when there is one); that path is verified for foreground
-  spawns (delegation gate facts above), for a background spawn's `async_launched` result it is unverified. The row is
+  spawns (delegation gate facts above) and, since check 14 below, for a background spawn's `async_launched` result. The row is
   recorded at `task_started` (`recordStaffing`), an Agent `tool_result` with `is_error` before the agent started
   cancels the decision, and `SubagentStop` or a finishing `task_notification` calls `ended`. `Project.staffing:
   'fixed'` works like a fixed role in an automatic project: the alias and effort on the call are dropped, the report
@@ -195,7 +195,8 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   0.3.318, `forwardSubagentText`, messages attributed by `parent_tool_use_id`): root `claude-sonnet-5-5`, mid
   `claude-haiku-5-5`, grandchild `claude-haiku-5-5`. So `inherit` in a nested spawn means the spawning subagent's model.
   Only `inherit` from a definition was checked, not an Agent call that omits `model` under a definition without one.
-- `SubagentStart` additional context (Unverified, from the typings only): SDK 0.3.318 `sdk.d.ts` declares
+- `SubagentStart` additional context (superseded: verified live by check 13 in the 2026-11-10 section below; the
+  matching question remains open): SDK 0.3.318 `sdk.d.ts` declares
   `SubagentStartHookSpecificOutput { hookEventName: 'SubagentStart'; additionalContext?: string }`, and the hook input
   carries `agent_id` and `agent_type` but no Agent `tool_use_id` (its `toolUseID` argument is a hook invocation id,
   above). It could carry the spawn's knowledge block without changing the Agent input (the spawn hook's `prompt`
@@ -214,3 +215,48 @@ to `claude-sonnet-5-5`, `haiku` to `claude-haiku-5-5` (`supportedModels()` is to
   (min / median / max); median 1226 ms to the `init` message (process spawn and handshake) and 2019 ms to the first
   assistant message, so roughly half is process start and half model time. Above the 1.5 s median line in the
   design, so triage as a model call does not meet it on this machine.
+
+## Background reports and hook context, verified by `scripts/smoke-staffing.mjs` 12-14 (2026-11-10)
+
+SDK 0.3.318, Max login, haiku root (`Options.agent = 'lead'`) and haiku `worker`, permission mode `auto`, no
+`allowedTools`, no `PreToolUse` rewrite (every hook logs and returns `{}` unless named), streaming input kept open until
+the report came back, the CLI's debug log searched for `classifier_request_started` (the local classifier marker from
+permissions.md). One run each, about $0.0026 / $0.0016 / $0.0013 (`total_cost_usd`; a local classifier request would
+not be in it, and none was logged). Inputs to split-execution.md 3.2, 3.3 and 3.6.
+
+- Background report hand-back (check 12): works, and the harness has the report text. The model itself wrote
+  `run_in_background: true`. The `Agent` call returned at once (`tool_result` 1.3 s after the call, "Async agent
+  launched successfully ... You will be notified automatically when it completes"; the root's only `Agent`
+  `PostToolUse` fired then, `tool_response` `{ isAsync: true, status: 'async_launched', agentId, resolvedModel,
+  outputFile, canReadOutputFile, canContinueAgent: false }`). `SubagentStart` fired just before that `PostToolUse`.
+  The root then ran its own Bash (`echo`, 5.0 s) while the worker was in `sleep 12`, and ended its turn ("still
+  running"): `result` at 6.5 s, its `Stop` hook carrying `background_tasks: [{ id, type: 'subagent', status:
+  'running', agent_type }]`. At 20.0 s the worker called `SubagentHandback({ message })`: `PreToolUse` and
+  `PostToolUse` (with `agent_id`, `tool_input.message` = the report) -> `SubagentStop` with NO
+  `last_assistant_message` (its `background_tasks` still lists itself running) -> `task_updated` ->
+  `task_notification` (`tool_use_id` = the Agent call, `handback: 'send'`, `handback_report: { text }` = the report,
+  `summary` a harness note) -> the root resumed on its own: a new `init`, a new `prompt_id` on its hooks, and it
+  quoted the report verbatim in a second `result`. No SDK `user` message and no hook on the root carried the report: it
+  reaches the root model inside the CLI. So OrgAI reads a background report exactly as a foreground one (handback
+  `PostToolUse`, else `handback_report`), and the receipt cannot come from the Agent `tool_result`. Classifier: zero
+  `classifier_request_started`, zero `canUseTool` calls, no `PermissionRequest`; the `Agent` result's
+  `tool_result_meta.permission_decision` was `{ decision: 'accept', source: 'config', reason_type: 'classifier' }`.
+  Also seen: the worker's own `sleep` Bash became a background task of its own (`task_started` with
+  `owned_by_subagent`, `parent_task_id`, then a `task_notification` whose `tool_use_id` is that Bash call, `summary`
+  the Bash description, no `handback`), so a `task_notification` is matched to a report by its `tool_use_id`, not
+  taken as the report's end. After the input closed the CLI emitted one more `init` + empty `result`.
+- `SubagentStart` `additionalContext` (check 13): reaches the subagent. The hook returned `{ hookSpecificOutput: {
+  hookEventName: 'SubagentStart', additionalContext: 'MARKER-13 violet-anchor-7' } }`; the worker, told to quote any
+  `MARKER-` line in its context, handed back exactly that line. The text is not in the child's first SDK `user` message
+  (that carried only the Agent prompt). It does not count as a spawn rewrite: the hook runs after the spawn's permission
+  decision (debug `[Stall] tool_dispatch_start tool=Agent ... permissionDecisionMs=803` before `SubagentStart`), and
+  there was no `classifier_request_started` and no "hook rewrote" line. Foreground spawn written by the model. Still
+  open: matching a `SubagentStart` to its Agent call (the hook input has `agent_id`, not the `tool_use_id`;
+  `task_started` came 1 ms before it with both `task_id` = `agent_id` and `tool_use_id`).
+- `PostToolUse` `additionalContext` on a background `Agent` call (check 14): reaches the root. The root's `Agent`
+  `PostToolUse` fired at launch with the `async_launched` response; returning `additionalContext: 'MARKER-14
+  teal-kite-3'` (tool input untouched) made the root quote that line in the turn that followed the launch result, before
+  its resume with the report ("done"). Zero `classifier_request_started`, zero `canUseTool`.
+- Not observed: whether the server-side judgment of a model-written `run_in_background: true` differs from a
+  foreground one (only the absence of a local request is visible); the classifier's own usage; a background report
+  that ends with plain text instead of `SubagentHandback`, or in permission mode `default` (no handback tool there).
