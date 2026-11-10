@@ -17,6 +17,8 @@ import { OfficeSprites, type SpriteRefs } from './OfficeSprites'
 import { OfficeStrip } from './OfficeStrip'
 import { silhouettes, WORKER_FEET, type OfficeAgent, type OfficePalette } from './officeArt'
 import { buildPersonViews, mugOwners } from './officePeople'
+import { OfficeOffscreen, type OffscreenItem } from './OfficeOffscreen'
+import { officeState } from '../../../lib/office/cues'
 import { useOfficeCamera } from './useOfficeCamera'
 import { useOfficeClock } from './useOfficeClock'
 import { useOfficeDeliveries } from './useOfficeDeliveries'
@@ -71,7 +73,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
 
   const camera = useOfficeCamera({
     stage, area, lobby: lobby ? { x: lobby.x, y: lobby.y, width: lobby.width, height: lobby.height } : null, resetKey: runId, motionOff, selectedId, positions,
-    describe: id => { const agent = byId.get(id); const room = rooms.get(id); return agent ? `Showing ${agent.name}${room ? `, ${room}` : ''}` : null }, announce
+    describe: id => { const agent = byId.get(id); const room = rooms.get(id); return agent ? `Showing ${agent.name}${room && room !== agent.name ? `, ${room}` : ''}` : null }, announce
   })
   const deliveries = useOfficeDeliveries({ messages, mode, runId, motionOff, building, blocked, agentIds: order.map(agent => agent.id), arriving })
   // S5b: bubbles and the exchange pair come from the same deliveries; readable time from the tokens.
@@ -108,6 +110,11 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const bubbles: OfficeBubble[] = activeBubbles({ ...deliveries.scheduler, active: [...deliveries.deliveries] }, deliveries.now)
     .map(delivery => ({ id: bubbleKey(delivery), to: delivery.message.to!, from: delivery.message.from, sender: names.get(delivery.message.from) ?? delivery.message.from, text: delivery.message.text }))
   const exchangeIds = exchangeParticipants(deliveries.deliveries, deliveries.now)
+  // People a cue is happening on right now (a bubble, or Needs you); the off-screen chips name the ones outside the stage.
+  const cueItems: OffscreenItem[] = mode !== 'live' ? [] : [
+    ...order.filter(agent => officeState(agent.status) === 'waiting').map(agent => ({ id: agent.id, name: agent.name, reason: 'needs you' as const })),
+    ...bubbles.filter(bubble => byId.get(bubble.to)?.status !== 'waiting').map(bubble => ({ id: bubble.to, name: names.get(bubble.to) ?? bubble.to, reason: 'message' as const }))
+  ]
   return <section
     className="office-scene" onFocusCapture={deliveries.onFocusCapture}
     style={{ '--office-label-width': `${Math.max(96, 4 * OFFICE_TILE_PX * zoom - 4)}px` } as CSSProperties}
@@ -120,11 +127,15 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
       <span data-testid="office-zoom" data-zoom={zoom} role="img" aria-label={zoomName(zoom)}>{zoomLabel(zoom)}</span>
       <Button size="sm" onClick={camera.zoomIn}>Zoom in</Button>
       <Button size="sm" onClick={camera.fit}>Fit</Button>
-      {mode === 'live' && <Button size="sm" testId="office-pause" pressed={paused} onClick={() => setPaused(value => !value)}>Pause motion</Button>}
+      {mode === 'live' && <Button
+        size="sm" testId="office-pause" pressed={paused} onClick={() => setPaused(value => !value)}
+        inert={reduced} title={reduced ? 'Motion is already off: Reduce motion is on in Settings' : undefined}
+      >Pause motion</Button>}
+      <OfficeOffscreen stage={stage} items={cueItems} positions={positionsNow} area={area} zoom={zoom} client={client} onShow={showPerson} />
     </div>
     <div
       className="office-stage" data-testid="office-stage" data-width={building.bounds.width} data-height={building.bounds.height}
-      ref={stage} tabIndex={0} role="group" aria-label="Office scene. Arrow keys pan, plus and minus zoom, 0 fits the building." {...camera.stageProps}
+      ref={stage} tabIndex={0} role="group" aria-label="Office scene. Arrow keys pan, plus and minus zoom, 0 fits the building, Home resets the view." {...camera.stageProps}
     >
       <div className="office-map" data-testid="office-floor" style={{ width: Math.max(content.width, client.width), height: Math.max(content.height, client.height) }}>
         <div className="office-world" style={{ left: offset.x, top: offset.y, width: content.width, height: content.height }}>

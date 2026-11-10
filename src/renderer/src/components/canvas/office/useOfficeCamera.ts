@@ -8,6 +8,8 @@ import { tokenMs } from '../../../lib/useExitPresence'
 /** Room under the plate for Find and focus reveals, in CSS pixels (two plate lines plus its gap). */
 const PLATE_RESERVE = 44
 const PLATE_MIN_WIDTH = 96
+/** Room above the head for a three-line message bubble and its tail, CSS pixels. */
+const BUBBLE_RESERVE = 72
 const SPRITE = { width: 16, height: 24 }
 
 export interface OfficeCameraOptions {
@@ -170,7 +172,7 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
   const home = (): void => { touched.current = false; const view = defaultView(area, lobby, client); requestPin(view.zoom, view.focus, stageCentre(client)) }
 
   /** Content-space rectangle of a person plus plate, for reveal maths. */
-  const personRect = (id: string): Rect | null => {
+  const personRect = (id: string, above = 0): Rect | null => {
     const position = positions.get(id)
     if (!position) return null
     const origin = toContent({ area, zoom }, position)
@@ -178,7 +180,7 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
     const centre = origin.x + (SPRITE.width * zoom) / 2
     const left = Math.min(origin.x, centre - plateWidth / 2)
     const right = Math.max(origin.x + SPRITE.width * zoom, centre + plateWidth / 2)
-    const top = origin.y - 16 * zoom
+    const top = origin.y - 16 * zoom - above
     return { x: left, y: Math.max(0, top), width: right - left, height: origin.y + SPRITE.height * zoom + PLATE_RESERVE - Math.max(0, top) }
   }
 
@@ -189,7 +191,8 @@ export function useOfficeCamera(options: OfficeCameraOptions): OfficeCamera {
   }
 
   const show = (id: string): void => {
-    const rect = personRect(id)
+    // Show and Find usually follow a message: leave room for a three-line bubble above the head too.
+    const rect = personRect(id, BUBBLE_RESERVE)
     if (!rect) return
     touched.current = true
     const instant = motionOff
