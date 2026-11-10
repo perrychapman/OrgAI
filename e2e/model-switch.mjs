@@ -1,5 +1,5 @@
 // Token-free: explicit model changes and recovery retain the conversation.
-import { check, finish, launch, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { check, finish, launch, log, makeFixtureRepo, removeFixture, setReduceMotion, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const repo = makeFixtureRepo('model-switch')
@@ -22,6 +22,15 @@ async function open(run) {
   }
   if (!view) throw new Error('Run window did not open')
   await view.locator('[data-testid=live-model-change]').waitFor({ timeout: 20000 })
+  await view.evaluate(() => {
+    window.modelFocusTrace = []
+    const record = (event) => {
+      const panel = document.querySelector('[data-testid=live-model-picker]')
+      window.modelFocusTrace.push({ at: performance.now(), type: event.type, key: event.key, old: event.oldState, next: event.newState, target: event.target?.getAttribute?.('data-testid'), active: document.activeElement?.getAttribute('data-testid'), nativeOpen: panel?.matches(':popover-open'), expanded: document.querySelector('[data-testid=live-model-change]')?.getAttribute('aria-expanded'), inert: panel?.inert })
+      if (window.modelFocusTrace.length > 150) window.modelFocusTrace.shift()
+    }
+    for (const type of ['beforetoggle', 'toggle', 'focusin', 'focusout', 'keydown', 'click']) document.addEventListener(type, record, true)
+  })
 }
 async function choose(connection) {
   const before = await view.locator('[data-testid=live-model-change]').getAttribute('title')
@@ -42,6 +51,20 @@ async function choose(connection) {
   check((await view.locator('[data-testid=live-model-change]').getAttribute('title')) === before, 'pending choice does not replace applied model')
   check(await view.locator('[data-testid=live-model-pending]').isVisible(), 'pending choice is explicitly labeled')
   return next
+}
+async function rapidReopen() {
+  // One browser task guarantees Chromium coalesces the two native transitions
+  // into a single open -> open toggle. Do not wait for React's closed state.
+  await view.evaluate(async () => {
+    const panel = document.querySelector('[data-testid=live-model-picker]')
+    const toggled = new Promise((resolve) => panel.addEventListener('toggle', resolve, { once: true }))
+    panel.hidePopover()
+    const trigger = document.querySelector('[data-testid=live-model-change]')
+    trigger.focus()
+    trigger.click()
+    await toggled
+  })
+  await view.waitForFunction(() => document.activeElement?.matches('[data-testid=live-model-search]'))
 }
 try {
   const initialConnections = await page.evaluate(() => window.orgai.connections.list())
@@ -128,6 +151,20 @@ try {
       await view.keyboard.press('Escape')
       await view.locator('[data-testid=live-model-picker]').waitFor({ state: 'hidden' })
       check(await view.locator('[data-testid=live-model-change]').evaluate((el) => el === document.activeElement), 'Escape closes search picker and restores trigger')
+      for (const [width, height] of [[1024, 640], [1600, 1000]]) for (const theme of ['dark', 'light']) for (const motion of ['system', 'on']) {
+        await app.evaluate(({ BrowserWindow }, { id, width, height }) => {
+          BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes(id)).setContentSize(width, height)
+        }, { id: run.id, width, height })
+        await page.evaluate(async (theme) => { const settings = await window.orgai.settings.get(); await window.orgai.settings.set({ ...settings, appearance: { ...settings.appearance, theme } }) }, theme)
+        await setReduceMotion(page, motion)
+        await view.locator('[data-testid=live-model-change]').click()
+        await search.fill('coalesced-reopen-probe')
+        await rapidReopen()
+        check(await search.inputValue() === '', `coalesced close/reopen focuses and resets search ${width} ${theme} ${motion}`)
+        await view.keyboard.press('Escape')
+        await view.locator('[data-testid=live-model-picker]').waitFor({ state: 'hidden' })
+      }
+      await setReduceMotion(page, 'system')
       // Empty fresh catalog must not offer stale cached models, but the current id remains visible.
       await app.evaluate(({ ipcMain }) => {
         globalThis.modelCatalogOriginal = ipcMain._invokeHandlers.get('models:list')
@@ -147,26 +184,30 @@ try {
       check(await view.locator('[data-testid=live-model-choice]:checked').inputValue() !== radioBefore, 'native radio group responds to arrow keys')
       await view.locator('[data-testid=live-model-cancel]').click()
       // Dismiss and reopen while the pre-action read is pending: the captured operation must cancel.
-      await choose(primary)
-      await app.evaluate(({ ipcMain }) => {
-        const handlers = ipcMain._invokeHandlers
-        const originalGet = handlers.get('runs:get'), originalSwitch = handlers.get('runs:switchModel')
-        const gate = globalThis.modelDismissGate = { originalGet, originalSwitch, captured: false, release: null, switches: 0 }
-        handlers.set('runs:get', async (...args) => { if (!gate.captured) { gate.captured = true; await new Promise((resolve) => { gate.release = resolve }) }; return originalGet(...args) })
-        handlers.set('runs:switchModel', async (...args) => { gate.switches++; return originalSwitch(...args) })
-      })
-      await view.locator('[data-testid=live-model-apply]').click()
-      for (let i = 0; i < 50 && !await app.evaluate(() => globalThis.modelDismissGate.captured); i++) await sleep(20)
-      await view.keyboard.press('Escape')
-      await view.locator('[data-testid=live-model-picker]').waitFor({ state: 'hidden' })
-      await view.locator('[data-testid=live-model-change]').click()
-      await view.locator('[data-testid=live-model-search]').waitFor()
-      await app.evaluate(() => globalThis.modelDismissGate.release())
-      await sleep(200)
-      check(await app.evaluate(() => globalThis.modelDismissGate.switches === 0), 'dismissed pending operation never changes reopened picker selection')
-      check(await view.locator('[data-testid=live-model-error]').textContent() === '', 'dismissed operation does not overwrite reopened picker error')
-      await app.evaluate(({ ipcMain }) => { const gate = globalThis.modelDismissGate; ipcMain._invokeHandlers.set('runs:get', gate.originalGet); ipcMain._invokeHandlers.set('runs:switchModel', gate.originalSwitch) })
-      await view.locator('[data-testid=live-model-cancel]').click()
+      for (const dismissal of ['Escape', 'coalesced native close/reopen']) {
+        await choose(primary)
+        await app.evaluate(({ ipcMain }) => {
+          const handlers = ipcMain._invokeHandlers
+          const originalGet = handlers.get('runs:get'), originalSwitch = handlers.get('runs:switchModel')
+          const gate = globalThis.modelDismissGate = { originalGet, originalSwitch, captured: false, release: null, switches: 0 }
+          handlers.set('runs:get', async (...args) => { if (!gate.captured) { gate.captured = true; await new Promise((resolve) => { gate.release = resolve }) }; return originalGet(...args) })
+          handlers.set('runs:switchModel', async (...args) => { gate.switches++; return originalSwitch(...args) })
+        })
+        await view.locator('[data-testid=live-model-apply]').click()
+        for (let i = 0; i < 50 && !await app.evaluate(() => globalThis.modelDismissGate.captured); i++) await sleep(20)
+        if (dismissal === 'Escape') {
+          await view.keyboard.press('Escape')
+          await view.locator('[data-testid=live-model-picker]').waitFor({ state: 'hidden' })
+          await view.locator('[data-testid=live-model-change]').click()
+          await view.locator('[data-testid=live-model-search]').waitFor()
+        } else await rapidReopen()
+        await app.evaluate(() => globalThis.modelDismissGate.release())
+        await view.waitForFunction(() => document.querySelector('[data-testid=live-model-switch]')?.getAttribute('aria-busy') === 'false')
+        check(await app.evaluate(() => globalThis.modelDismissGate.switches === 0), `${dismissal}: dismissed pending operation never changes reopened picker selection`)
+        check(await view.locator('[data-testid=live-model-error]').textContent() === '', `${dismissal}: dismissed operation does not overwrite reopened picker error`)
+        await app.evaluate(({ ipcMain }) => { const gate = globalThis.modelDismissGate; ipcMain._invokeHandlers.set('runs:get', gate.originalGet); ipcMain._invokeHandlers.set('runs:switchModel', gate.originalSwitch) })
+        await view.locator('[data-testid=live-model-cancel]').click()
+      }
       await choose(primary)
       await page.evaluate((id) => window.orgai.runs.send({ runId: id, text: 'A long reply to interrupt. '.repeat(200) }), run.id)
       const interrupt = view.locator('[data-testid=live-model-apply]')
@@ -251,6 +292,7 @@ try {
     await page.evaluate((id) => window.orgai.runs.stop(id), successor.id)
   }
 } catch (error) {
+  if (view && !view.isClosed()) log('FOCUS TRACE', JSON.stringify(await view.evaluate(() => window.modelFocusTrace)))
   check(false, 'model switch script completes', error.stack || String(error))
   if (view && !view.isClosed()) await view.screenshot({ path: 'e2e/shots/model-switch-failure.png' }).catch(() => {})
   else await shot('failure').catch(() => {})

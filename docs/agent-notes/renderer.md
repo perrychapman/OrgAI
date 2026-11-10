@@ -1,5 +1,28 @@
 # Renderer (general)
 
+## Native popover rapid reopen (2026-11-10)
+
+Chromium can coalesce a native close/reopen into one `toggle` from open to open.
+The model-switch failure was captured with real Electron beforetoggle/toggle and
+focus tracing at the empty-catalog Escape/Enter checkpoint; React's unchanged
+open state left focus on the trigger. `Popover` now notifies closes synchronously
+from `beforetoggle` and reruns placement/focus for each delivered open event using
+an opening revision. Native listeners stay installed across consumer renders.
+`LiveModelSwitch` also reloads the fresh catalog on every open callback. Its close
+epoch still cancels ordinary dismissals and exempts deliberate confirmation.
+Motion, exit retention, CSS and native light dismiss are unchanged. The strengthened
+model-switch e2e forces coalescing in a single browser task across themes, sizes
+and reduced motion, and checks a dismissed pending read cannot switch a model.
+Typecheck, build, 48 focused picker/motion/token tests, strengthened model-switch
+e2e with normal and fresh-empty Claude configuration, and motion e2e passed.
+Reviewer approved the concrete patch after inspecting all 22 shared uses across
+18 consumers; no actionable findings or Critical/High blockers remained.
+Focused UX follow-up reran the mock model-switch matrix and inspected picker
+screenshots; it did not complete a first-time keyboard walkthrough. Canvas radio
+entry/reopen, Usage Projects-to-Kinds light dismissal and Add Service custom-dialog
+focus handoff remain root QA checks, not locally verified claims.
+Live providers, screen-reader speech, zoom and cross-platform behavior are unverified.
+
 ## Unified proxy setup (2026-11-10)
 
 `AddProxyDialog` has one setup without a Kind selector. New records use
