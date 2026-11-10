@@ -188,6 +188,13 @@ describe('near-limit everyday steering', () => {
 })
 
 describe('connection autoTiers', () => {
+  it('retains only boolean LiteLLM reporting overrides without changing legacy identity', () => {
+    for (const value of [true, false, 'true', null]) {
+      const p = normalizeSettings({ proxies: [{ id: 'litellm', name: 'P', kind: 'litellm', litellmFeatures: value }] } as never).proxies[0]
+      expect(p).toMatchObject({ id: 'litellm', kind: 'litellm' })
+      expect(p.litellmFeatures).toBe(typeof value === 'boolean' ? value : undefined)
+    }
+  })
   it('keeps known tiers once and leaves a missing list undefined', () => {
     const s = normalizeSettings({ proxies: [{ id: 'litellm', name: 'P', autoTiers: ['fast', 'fast', 'bogus', 'deep'] }] } as never)
     expect(s.proxies[0].autoTiers).toEqual(['fast', 'deep'])

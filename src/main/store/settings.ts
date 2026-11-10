@@ -91,6 +91,7 @@ type RawConnection =Partial<{
   id: unknown
   name: unknown
   kind: unknown
+  litellmFeatures: unknown
   anthropicBaseUrl: unknown
   openaiBaseUrl: unknown
   modelsUrl: unknown
@@ -202,6 +203,7 @@ export function normalizeProxies(rawProxies: unknown, rawConnections?: unknown):
       id: p.id,
       name,
       kind,
+      ...(typeof p.litellmFeatures === 'boolean' ? { litellmFeatures: p.litellmFeatures } : {}),
       anthropicBaseUrl: storedUrl(p.anthropicBaseUrl),
       ...(openaiBaseUrl ? { openaiBaseUrl } : {}),
       ...(modelsUrl ? { modelsUrl } : {}),

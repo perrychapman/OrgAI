@@ -641,6 +641,10 @@ export function proxyCreateArgs(raw: unknown): ProxyCreateInput {
     out.kind = i.kind as ProxyKind
   }
   if (i.openaiBaseUrl !== undefined) out.openaiBaseUrl = urlField(i.openaiBaseUrl, 'OpenAI address')
+  if (i.litellmFeatures !== undefined) {
+    if (typeof i.litellmFeatures !== 'boolean') throw new Error('LiteLLM reporting must be enabled or disabled.')
+    out.litellmFeatures = i.litellmFeatures
+  }
   if (i.modelsUrl !== undefined) out.modelsUrl = urlField(i.modelsUrl, 'models address')
   if (i.apiKey !== undefined) {
     if (typeof i.apiKey !== 'string') throw new Error('The API key must be text.')

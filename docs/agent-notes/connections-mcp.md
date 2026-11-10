@@ -4,6 +4,19 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
 
 ## Main
 
+- Generic proxy reporting (2026-11-10): `ProxyConnection.litellmFeatures` and create input's optional boolean
+  override the legacy immutable `kind` reporting default. Missing keeps `kind === 'litellm'`; explicit false
+  disables LiteLLM metadata and spend requests, explicit true enables those existing endpoints. Creation defaults
+  to `openai-compatible`; legacy `litellm` ids and SecretStore keys are retained. No endpoint capability probing
+  occurs without opt-in. Validated by connection service/discovery, settings normalization and IPC argument tests.
+- AWS dotted ids such as `us.openai.gpt-6.1-terra` classify as OpenAI and retain their exact catalog/request id.
+  Missing context and prices remain absent (catalog/proxy unit tests). This is separate from Codex's installed
+  0.166.0 binary warning: `Model metadata for ... not found. Defaulting to fallback metadata; this can degrade
+  performance and cause issues.` The binary exposes `model_catalog_json`, but a models list plus optional LiteLLM
+  prices/context is not a verified full Codex metadata catalog. The warning is an upstream fallback rather than
+  proof of request failure; an authoritative Codex catalog or upstream recognition is needed to remove it safely.
+  No model-id normalization or fabricated catalog is used. Live AWS requests remain unverified.
+
 - Model-agnostic defaults: every default is a tier ('top' | 'deep' | 'everyday' | 'fast', `ModelSetting`) resolved
   through the connection's `tierModels` (`defaults.ts` `modelForTier` / `resolveModelSetting`), never a vendor alias.
   The default chart, `newProject`, built-in roles (fallback 'inherit'), run titles, org chart proposals and the drafter

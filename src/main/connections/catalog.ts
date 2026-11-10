@@ -19,7 +19,7 @@ export function classifyFamily(id: string, litellmProvider?: string | null): Mod
   if ((p.includes('bedrock') || p.includes('vertex')) && claudeId) return 'claude'
   if (p === 'openai' || p === 'text-completion-openai' || p.startsWith('azure')) return 'openai'
   if (claudeId) return 'claude'
-  if (/(^|\/)(gpt|o\d|codex|chatgpt)/.test(b)) return 'openai'
+  if (/(^|[/.])(gpt|o\d|codex|chatgpt)/.test(b)) return 'openai'
   return 'other'
 }
 
@@ -42,7 +42,7 @@ export function inferTier(id: string, family: ModelFamily): ModelTier | undefine
     if (/nano/.test(b)) return 'fast'
     if (/mini/.test(b)) return 'everyday'
     if (/codex/.test(b) || /(^|-)pro($|-)/.test(b)) return 'top'
-    if (/^(gpt|o\d|chatgpt)/.test(b)) return 'deep'
+    if (/(^|\.)(gpt|o\d|chatgpt)/.test(b)) return 'deep'
     return undefined
   }
   const size = /(?:^|[^\d.])(\d+(?:\.\d+)?)b(?:$|[^a-z])/.exec(b)
