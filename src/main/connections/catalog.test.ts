@@ -79,3 +79,31 @@ describe('autoFillTierModels', () => {
     expect(autoFillTierModels({ deep: 'c', top: 'gone', everyday: 'gone2' }, models)).toEqual({ top: 'a', deep: 'c', fast: 'd' })
   })
 })
+
+describe('Claude model versions (stale tier mappings)', () => {
+  it('reads family and version from both id orders, without dates, prefixes or a context suffix', async () => {
+    const { claudeModelVersion } = await import('./catalog')
+    expect(claudeModelVersion('claude-opus-4-1-20250805')).toEqual({ family: 'opus', version: [4, 1] })
+    expect(claudeModelVersion('anthropic/claude-sonnet-4-5[1m]')).toEqual({ family: 'sonnet', version: [4, 5] })
+    expect(claudeModelVersion('claude-3-5-sonnet-20241022')).toEqual({ family: 'sonnet', version: [3, 5] })
+    expect(claudeModelVersion('claude-opus-5')).toEqual({ family: 'opus', version: [5] })
+    expect(claudeModelVersion('opus')).toBeUndefined()
+    expect(claudeModelVersion('gpt-6.1-sol')).toBeUndefined()
+  })
+
+  it('names the newest model of the same family from ids and alias targets, only when it is newer', async () => {
+    const { newerClaudeModel } = await import('./catalog')
+    const catalog = [{ id: 'opus', upstream: 'claude-opus-5-5' }, { id: 'claude-sonnet-4-6' }, { id: 'sonnet', upstream: 'claude-sonnet-5-5' }]
+    expect(newerClaudeModel('claude-opus-4-5', catalog)).toBe('claude-opus-5-5')
+    expect(newerClaudeModel('claude-3-5-sonnet-20241022', catalog)).toBe('claude-sonnet-5-5')
+    expect(newerClaudeModel('claude-opus-5-5', catalog)).toBeUndefined()
+    expect(newerClaudeModel('claude-haiku-4-5', catalog)).toBeUndefined()
+    expect(newerClaudeModel('opus', catalog)).toBeUndefined()
+  })
+
+  it('anthropicModelsToCatalog keeps an alias’s resolved model as upstream', async () => {
+    const { anthropicModelsToCatalog } = await import('./catalog')
+    const out = anthropicModelsToCatalog([{ id: 'opus', resolvedModel: 'claude-opus-5-5' }, { id: 'claude-opus-5-5', resolvedModel: 'claude-opus-5-5' }])
+    expect(out.map((m) => [m.id, m.upstream])).toEqual([['opus', 'claude-opus-5-5'], ['claude-opus-5-5', undefined]])
+  })
+})

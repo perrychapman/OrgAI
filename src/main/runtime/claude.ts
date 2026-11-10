@@ -6,6 +6,7 @@ import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } fro
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { validModelId } from '../connections/codexAccount'
+import { newerClaudeModel } from '../connections/catalog'
 import {
   createSdkMcpServer,
   query,
@@ -154,6 +155,40 @@ export function claudeStaffingTierModels(ctx: Pick<RuntimeContext, 'connection'>
   if (usesProxy(ctx)) return own
   for (const m of ANTHROPIC_BUILTIN_MODELS) if (m.tier && !own[m.tier]?.trim()) own[m.tier] = m.id
   return own
+}
+
+/**
+ * What the session's models resolve to, for one log line at run start, and what looks stale. `list` is the CLI's
+ * supportedModels() for this session (token-free; with the connection's ANTHROPIC_DEFAULT_*_MODEL variables in force it
+ * reports the forced ids). `rootModel` is what the session's init named. Warnings: an alias the variables moved onto an
+ * older model of its family than the catalog or the CLI list knows, and a role pinned to such an older id (older Claude
+ * models can have a fifth of the context window, so they compact much sooner). Pure.
+ */
+export function modelTierReport(input: {
+  list: readonly { value: string; resolvedModel?: string }[]
+  env?: Record<string, string | undefined>
+  roles: readonly Pick<Role, 'name' | 'model'>[]
+  catalog?: readonly string[]
+  rootModel?: string
+}): { line: string; warnings: string[] } {
+  const known = [...input.list.flatMap((m) => [{ id: m.value }, ...(m.resolvedModel ? [{ id: m.resolvedModel }] : [])]), ...(input.catalog ?? []).map((id) => ({ id }))]
+  const parts: string[] = []
+  const warnings: string[] = []
+  for (const alias of Object.values(CLAUDE_TIER_ALIAS)) {
+    const entry = input.list.find((m) => m.value === alias)
+    const forced = input.env?.[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`]?.trim()
+    const resolved = entry?.resolvedModel ?? forced
+    if (!resolved) continue
+    parts.push(`${alias} -> ${resolved}${forced ? ` (ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL)` : ''}`)
+    const newer = newerClaudeModel(resolved, known)
+    if (forced && newer) warnings.push(`The ${alias} alias runs on ${resolved}, older than ${newer} (set by the connection's tier mapping); older models can have a much smaller context window and compact sooner.`)
+  }
+  for (const r of input.roles) {
+    const newer = r.model ? newerClaudeModel(r.model, known) : undefined
+    if (newer) warnings.push(`${r.name} is pinned to ${r.model}, older than ${newer}; older models can have a much smaller context window and compact sooner.`)
+  }
+  const line = `Models this session resolves: ${input.rootModel ? `orchestrator ${input.rootModel}; ` : ''}${parts.join(', ') || 'no aliases listed'}.`
+  return { line, warnings }
 }
 
 /**
@@ -1305,6 +1340,10 @@ export class ClaudeSession implements RuntimeSession {
   /** Commits and merges isolated reports' branches; tells the orchestrator through notifyOrchestrator. */
   private integrator: WorktreeIntegrator
   private sessionLogged = false
+  /** The CLI is compacting the orchestrator's conversation (between status 'compacting' and its end). */
+  private rootCompacting = false
+  /** Compactions of the orchestrator's conversation in this session (compact_boundary). */
+  private compactions = 0
   /** The in-process harness MCP server; kept so setMcpServers can send it again. */
   private harnessServer?: McpSdkServerConfigWithInstance
   /** Secret values (MCP env/headers, connection tokens) redacted from logged lines. Never emitted. */
@@ -1726,6 +1765,45 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** A report finished: the SDK will hand its result to the orchestrator in a turn of its own. */
+  /** One line at run start naming the concrete model each alias resolves to, and warnings for stale ones (token-free). */
+  private async logModelTiers(rootModel: string): Promise<void> {
+    try {
+      const q = this.q as Query & { supportedModels?: () => Promise<{ value: string; resolvedModel?: string }[]> }
+      if (typeof q.supportedModels !== 'function') return
+      const list = await q.supportedModels()
+      const report = modelTierReport({ list, env: this.ctx.connection?.env, roles: this.ctx.roles, catalog: this.ctx.connection?.models, rootModel })
+      this.log('info', report.line)
+      for (const w of report.warnings) this.log('warn', w)
+    } catch (e) {
+      this.log('info', `Could not list the session's models: ${redactSecrets((e as Error)?.message ?? String(e), this.secrets).slice(0, 200)}`)
+    }
+  }
+
+  // ---------- compaction of the orchestrator's conversation ----------
+
+  /** The CLI started summarizing the orchestrator's conversation (system status 'compacting'). */
+  private onRootCompacting(): void {
+    this.rootCompacting = true
+    const root = this.agents.get(ROOT_ID)
+    if (root && root.state !== 'done' && root.state !== 'error') this.setState(ROOT_ID, 'thinking', 'Compacting the conversation…')
+  }
+
+  /** The compaction is over (system status null with compact_result). A failed one leaves the conversation as it was. */
+  private onRootCompactEnd(result: 'success' | 'failed', error?: string): void {
+    this.rootCompacting = false
+    if (result === 'failed') this.log('warn', `Compacting the orchestrator's conversation failed${error ? `: ${redactSecrets(error, this.secrets).slice(0, 300)}` : ''}.`)
+  }
+
+  /** compact_boundary: the orchestrator's conversation was replaced by a summary. */
+  private onRootCompacted(meta: { trigger: 'manual' | 'auto'; pre_tokens: number; post_tokens?: number }): void {
+    this.rootCompacting = false
+    this.compactions += 1
+    const k = (n: number): string => `${Math.round(n / 1000)}k`
+    const size = `${k(meta.pre_tokens)}${meta.post_tokens !== undefined ? ` to ${k(meta.post_tokens)}` : ''} tokens`
+    this.log('info', `Compaction ${this.compactions} of the orchestrator's conversation (${meta.trigger}): ${size}.`)
+    this.transcript(ROOT_ID, { kind: 'system', text: `The conversation was compacted (${size}).` }, { source: 'harness' })
+  }
+
   private reportFinished(): void {
     this.handBackSince = Date.now()
     this.noteActivity('report')
@@ -3080,6 +3158,9 @@ export class ClaudeSession implements RuntimeSession {
       const input = raw as SubagentStopHookInput
       // A background report the harness already stopped (interrupt, session end): settled, nothing to record.
       if (this.stoppedBackground.has(input.agent_id)) return {}
+      // The CLI's compaction summarizer runs as a nameless fork and stops like a subagent (agent_type '', never started
+      // through task_started or SubagentStart; sdk-facts "Compaction"). It is not a report.
+      if (!input.agent_type && !this.agents.has(input.agent_id)) return {}
       const a = this.ensureAgent(input.agent_id, { roleSlug: input.agent_type })
       // A repeated stop of an activation that already finished (the CLI asking it again to hand back): nothing new to record.
       if (a.state === 'done' && input.stop_hook_active) return {}
@@ -4279,6 +4360,7 @@ export class ClaudeSession implements RuntimeSession {
           if (!this.sessionLogged) {
             this.sessionLogged = true
             this.log('info', `Session ${msg.session_id} started with Claude Code ${msg.claude_code_version} (${msg.model})`)
+            void this.logModelTiers(msg.model)
           }
           this.startUsagePolling()
         } else if (msg.subtype === 'task_started') {
@@ -4362,6 +4444,13 @@ export class ClaudeSession implements RuntimeSession {
             this.ctx.delegation?.resumed(msg.task_id)
             this.setState(msg.task_id, 'thinking', 'Thinking…')
           }
+        } else if (msg.subtype === 'status') {
+          // The CLI's own compaction of the orchestrator's conversation (subagent compactions emit nothing here; sdk-facts
+          // "Compaction"): 'compacting' while the summary is written, null with compact_result when it is over.
+          if (msg.status === 'compacting') this.onRootCompacting()
+          else if (msg.compact_result) this.onRootCompactEnd(msg.compact_result, msg.compact_error)
+        } else if (msg.subtype === 'compact_boundary') {
+          this.onRootCompacted(msg.compact_metadata)
         } else if (msg.subtype === 'api_retry') {
           // SDKAPIRetryMessage carries no agent fields, so a retry counts against the root.
           const root = this.ensureAgent(ROOT_ID)
