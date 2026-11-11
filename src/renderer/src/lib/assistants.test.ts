@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { QuickRunInfo } from '@shared/types'
 import { ASSISTANT_ORDER, offersRetro, promoteNameError, canPromote, chatSummaryLine, displayProject, locationLabel, newSessionLabel, promoteName, quickFolderLabel, runKindLabel } from './assistants'
-import { assistantModeLabel, composerPlaceholder, isSingleAgentRun, offersSaveAsProject, runLayoutFor, speaksAsAssistant } from './assistants'
+import { assistantModeLabel, composerPlaceholder, hasRunSidePanel, isAssistantSession, isSingleAgentRun, offersSaveAsProject, runLayoutFor, speaksAsAssistant } from './assistants'
 
 describe('run layout', () => {
   it('single-agent runs default to the conversation', () => {
@@ -33,6 +33,33 @@ describe('offersSaveAsProject', () => {
     expect(offersSaveAsProject({ quick: quick(), projectId: 'quick' })).toBe(true)
     expect(offersSaveAsProject({ quick: quick(), projectId: 'p-123' })).toBe(false)
     expect(offersSaveAsProject({ projectId: 'quick' })).toBe(false)
+  })
+})
+
+describe('run side panel', () => {
+  it('Chat, MCP assistant and Skill assistant sessions are assistant sessions', () => {
+    expect(isAssistantSession({ kind: 'work', quick: quick(), projectId: 'quick' })).toBe(true)
+    expect(isAssistantSession({ kind: 'work', quick: quick({ team: 'default' }), projectId: 'quick' })).toBe(true)
+    expect(isAssistantSession({ kind: 'mcp-assist', projectId: 'harness' })).toBe(true)
+    expect(isAssistantSession({ kind: 'skill-assist', projectId: 'skills' })).toBe(true)
+    // Project-scoped assistant sessions are the same kinds.
+    expect(isAssistantSession({ kind: 'mcp-assist', projectId: 'p1' })).toBe(true)
+    expect(isAssistantSession({ kind: 'skill-assist', projectId: 'p1' })).toBe(true)
+  })
+  it('a Chat saved as a project, Ask, work and setup runs are not', () => {
+    expect(isAssistantSession({ kind: 'work', quick: quick(), projectId: 'p-123' })).toBe(false)
+    expect(isAssistantSession({ kind: 'work', projectId: 'p1' })).toBe(false)
+    expect(isAssistantSession({ kind: 'setup', projectId: 'p1' })).toBe(false)
+  })
+  it('the panel goes only for an assistant session in the conversation layout', () => {
+    const chat = { kind: 'work' as const, quick: quick(), projectId: 'quick' }
+    expect(hasRunSidePanel(chat, 'conversation')).toBe(false)
+    expect(hasRunSidePanel({ kind: 'mcp-assist', projectId: 'harness' }, 'conversation')).toBe(false)
+    expect(hasRunSidePanel({ kind: 'skill-assist', projectId: 'skills' }, 'conversation')).toBe(false)
+    // The canvas keeps it: a selected agent's transcript is read there.
+    expect(hasRunSidePanel(chat, 'canvas')).toBe(true)
+    expect(hasRunSidePanel({ kind: 'work', projectId: 'p1' }, 'conversation')).toBe(true)
+    expect(hasRunSidePanel({ kind: 'setup', projectId: 'p1' }, 'conversation')).toBe(true)
   })
 })
 
