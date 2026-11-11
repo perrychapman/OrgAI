@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { QuickRunInfo } from '@shared/types'
-import { resolveRunTab, runTabIds, showsKnowledgeTab, showsOutputsTab, showsPlanTab } from './runTabs'
+import { countReplies, replyArrived, resolveRunTab, runTabIds, showsKnowledgeTab, showsOutputsTab, showsPlanTab } from './runTabs'
 
 const quick: QuickRunInfo = { folder: 'C:\\work', team: 'single', allowEdits: false, gitRepo: false }
 
@@ -14,6 +14,30 @@ describe('run tabs', () => {
     expect(showsPlanTab({ kind: 'mcp-assist', hasPlan: false })).toBe(false)
     expect(showsPlanTab({ kind: 'skill-assist', hasPlan: true })).toBe(true)
     expect(showsPlanTab({ kind: 'setup', hasPlan: false })).toBe(false)
+  })
+  it('Plan in the stage strip: only with a plan, a Chat included', () => {
+    expect(showsPlanTab({ kind: 'work', hasPlan: false, stage: true })).toBe(false)
+    expect(showsPlanTab({ kind: 'work', hasPlan: true, stage: true })).toBe(true)
+    expect(showsPlanTab({ kind: 'mcp-assist', hasPlan: false, stage: true })).toBe(false)
+    expect(showsPlanTab({ kind: 'skill-assist', hasPlan: true, stage: true })).toBe(true)
+    expect(showsPlanTab({ kind: 'work', hasPlan: false, stage: false })).toBe(true)
+  })
+  it('a stored Plan selection falls back to Conversation while the stage has no plan', () => {
+    const noPlan = runTabIds({ plan: showsPlanTab({ kind: 'work', hasPlan: false, stage: true }), outputs: false, knowledge: false })
+    expect(resolveRunTab('plan', noPlan)).toBe('transcript')
+    const withPlan = runTabIds({ plan: showsPlanTab({ kind: 'work', hasPlan: true, stage: true }), outputs: false, knowledge: false })
+    expect(resolveRunTab('plan', withPlan)).toBe('plan')
+  })
+  it('counts assistant text rows only', () => {
+    expect(countReplies([{ block: { kind: 'user' } }, { block: { kind: 'text' } }, { block: { kind: 'text' }, source: 'harness' }, { block: { kind: 'thinking' } }, { block: { kind: 'text' } }])).toBe(2)
+    expect(countReplies([])).toBe(0)
+  })
+  it('a reply cue: a new text row or reaching your turn, never a shorter list or staying idle', () => {
+    expect(replyArrived({ replies: 1, idle: false }, { replies: 2, idle: false })).toBe(true)
+    expect(replyArrived({ replies: 1, idle: false }, { replies: 1, idle: true })).toBe(true)
+    expect(replyArrived({ replies: 1, idle: true }, { replies: 1, idle: true })).toBe(false)
+    expect(replyArrived({ replies: 2, idle: true }, { replies: 1, idle: true })).toBe(false)
+    expect(replyArrived({ replies: 1, idle: true }, { replies: 1, idle: false })).toBe(false)
   })
   it('Outputs and Knowledge: never for a Chat or the assistants', () => {
     expect(showsOutputsTab({ kind: 'work', projectId: 'p1' })).toBe(true)

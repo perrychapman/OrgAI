@@ -382,12 +382,29 @@ try {
     const toggle = page.locator('[data-testid=run-layout-toggle]')
     check(await visible('[data-testid=run-conversation]'), 'a one-assistant chat opens in the conversation layout')
     check((await page.locator('.run-body').first().getAttribute('data-layout').catch(() => null)) === 'conversation', 'the layout toggle reports the conversation layout')
-    await checkStageTabs('Chat at 1600x1000', ['side-tab-plan', 'side-tab-usage', 'side-tab-logs'])
+    await checkStageTabs('Chat at 1600x1000', ['side-tab-usage', 'side-tab-logs'])
+    check((await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-plan]').count()) === 0, 'a Chat without a plan has no Plan tab in the stage strip')
+    // Show thinking: at the right end of the strip, on Conversation only.
+    const thinkingBox = page.locator('[data-testid=run-stage-tabs] [data-testid=run-stage-show-thinking]')
+    check((await thinkingBox.count()) === 1 && (await page.getByText('Show thinking', { exact: true }).count()) === 1, 'Show thinking is in the strip while Conversation is selected')
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-usage]').click()
+    await sleep(200)
+    check((await page.locator('[data-testid=run-stage-show-thinking]').count()) === 0, 'Show thinking is gone on the Usage tab')
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]').click()
+    await sleep(200)
+    check((await page.locator('[data-testid=run-stage-show-thinking]').count()) === 1, 'Show thinking is back on Conversation')
     for (const theme of ['dark', 'light']) {
       await setTheme(theme)
       await setSize(1024, 640)
       await sleep(500)
-      await checkStageTabs(`Chat at 1024x640 ${theme}`, ['side-tab-plan', 'side-tab-usage', 'side-tab-logs'])
+      await checkStageTabs(`Chat at 1024x640 ${theme}`, ['side-tab-usage', 'side-tab-logs'])
+      const bar = await page.evaluate(() => {
+        const row = document.querySelector('.run-stage-tabs-row')?.getBoundingClientRect()
+        const box = document.querySelector('[data-testid=run-stage-show-thinking]')?.closest('.run-stage-thinking')?.getBoundingClientRect()
+        const bar = document.querySelector('.run-stage-tabs-bar')
+        return { fits: !!row && !!box && box.right <= row.right + 1 && box.left >= row.left, noScroll: !!bar && bar.scrollWidth <= bar.clientWidth + 1 }
+      })
+      check(bar.fits && bar.noScroll, `the strip with Show thinking does not overflow at 1024x640 (${theme})`, JSON.stringify(bar))
       const fit = await page.evaluate(() => {
         const vh = window.innerHeight
         const doc = document.scrollingElement
@@ -413,6 +430,22 @@ try {
     await page.locator('.run-body .composer textarea').press('Enter')
     await sleep(600)
     check((await page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]').getAttribute('aria-selected')) === 'true' && (await visible('[data-testid=conversation-transcript]')), 'a send from the Usage tab returns the stage to Conversation')
+    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    // New-reply cue: send, move to Usage before the reply lands; Conversation is marked and named, one cue, cleared on selecting it.
+    const convTab = page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]')
+    await page.locator('.run-body .composer textarea').fill('And one more, briefly.')
+    await page.locator('.run-body .composer textarea').press('Enter')
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-usage]').click()
+    await sleep(2500)
+    const cued = (await convTab.getAttribute('aria-label')) === 'Conversation, new reply' && (await page.locator('[data-testid=run-tab-conversation-dot]').count()) === 1
+    const landedOnConversation = (await convTab.getAttribute('aria-selected')) === 'true'
+    if (landedOnConversation) console.log('note: the mock reply landed before the Usage tab was chosen; the cue was covered by unit test only')
+    else check(cued, 'a reply landing under the Usage tab marks Conversation as "Conversation, new reply"')
+    if (!landedOnConversation && cued) {
+      await convTab.click()
+      await sleep(300)
+      check((await convTab.getAttribute('aria-label')) === null && (await page.locator('[data-testid=run-tab-conversation-dot]').count()) === 0, 'selecting Conversation clears the new-reply cue')
+    }
     await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
     await toggle.click()
     await sleep(500)

@@ -14,9 +14,30 @@ export interface RunTabFlags {
   knowledge: boolean
 }
 
-/** Plan: every work run (the orchestrator writes one), else only a run that has a plan. */
-export function showsPlanTab(i: { kind: RunSummary['kind']; hasPlan: boolean }): boolean {
-  return i.kind === 'work' || i.hasPlan
+/**
+ * Plan: every work run in the side panel (the orchestrator writes one), else only a run that has a plan. The stage
+ * strip of an assistant session (`stage`) follows the "only with a plan" rule for every kind, a Chat included.
+ */
+export function showsPlanTab(i: { kind: RunSummary['kind']; hasPlan: boolean; stage?: boolean }): boolean {
+  return (i.kind === 'work' && !i.stage) || i.hasPlan
+}
+
+/** What the new-reply cue watches: assistant text rows so far, and whether the session waits for the user. */
+export interface ReplyMark {
+  replies: number
+  idle: boolean
+}
+
+/** Assistant text rows (not the user's, not harness lines) in a transcript. */
+export function countReplies(entries: readonly { block: { kind: string }; source?: string }[]): number {
+  let n = 0
+  for (const e of entries) if (e.block.kind === 'text' && e.source !== 'harness') n++
+  return n
+}
+
+/** A reply landed, or the session reached "your turn", since `prev`. Only moves forward: a shorter list is not a reply. */
+export function replyArrived(prev: ReplyMark, next: ReplyMark): boolean {
+  return next.replies > prev.replies || (next.idle && !prev.idle)
 }
 
 /** Outputs: work runs of stored projects, never setup runs, quick runs or the assistants. */

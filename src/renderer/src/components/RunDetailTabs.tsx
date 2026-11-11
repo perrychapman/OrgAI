@@ -5,7 +5,7 @@
  * `sideTabByRun` in the store either way, so Plan buttons, navigation targets and the Usage return land in both.
  */
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Circle, CircleDot, MinusCircle, type LucideIcon } from 'lucide-react'
 import type { AgentInstance, PlanStep, RunPlan, RunStaffing } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
@@ -17,12 +17,13 @@ import { planProgress } from '../lib/layout'
 import { planHasGraph, stepViews, waitingOnText } from '../lib/planGraph'
 import { stepRanLabel } from '../lib/runStaffing'
 import { autoContinueLine } from '../lib/transcriptRows'
-import { resolveRunTab, runTabIds, showsKnowledgeTab, showsOutputsTab, showsPlanTab } from '../lib/runTabs'
+import { countReplies, replyArrived, resolveRunTab, runTabIds, showsKnowledgeTab, showsOutputsTab, showsPlanTab, type ReplyMark } from '../lib/runTabs'
 import RunKnowledge from './knowledge/RunKnowledge'
 import RunOutputs from './outputs/RunOutputs'
 import UsagePanel from './UsagePanel'
 import { Markdown } from './Markdown'
 import { Badge } from './ui/Badge'
+import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, panelDomId, tabDomId, type TabItem } from './ui/Tabs'
 
@@ -117,14 +118,20 @@ function PlanView({ plan, staffing }: { plan: RunPlan | undefined; staffing?: Ru
  * The run's tabs and the one shown. `first` names the first tab: the side panel's "Transcript" or the stage's
  * "Conversation". A stored tab the run no longer has shows as the first tab (resolveRunTab).
  */
-export function useRunTabs(runId: string, logs: readonly LogLine[], first: { label: string; testId: string }): { tabs: TabItem[]; tab: SideTab; setTab: (tab: SideTab) => void } {
+export function useRunTabs(
+  runId: string,
+  logs: readonly LogLine[],
+  first: { label: string; testId: string },
+  opts: { stage?: boolean; newReply?: boolean } = {}
+): { tabs: TabItem[]; tab: SideTab; setTab: (tab: SideTab) => void } {
+  const { stage, newReply } = opts
   const selected = useAppStore((s) => s.sideTabByRun[runId])
   const setTab = useAppStore((s) => s.setSideTab)
   const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
   const plan = useAppStore((s) => s.runs[runId]?.plan)
   const showPlan = useAppStore((s) => {
     const run = s.runs[runId]
-    return !!run && showsPlanTab({ kind: run.summary.kind, hasPlan: !!run.plan })
+    return !!run && showsPlanTab({ kind: run.summary.kind, hasPlan: !!run.plan, stage })
   })
   const showOutputs = useAppStore((s) => showsOutputsTab(s.runs[runId]?.summary))
   const showKnowledge = useAppStore((s) => {
@@ -139,7 +146,7 @@ export function useRunTabs(runId: string, logs: readonly LogLine[], first: { lab
   const errorCount = logs.filter((l) => l.level === 'error').length
   const ids = runTabIds({ plan: showPlan, outputs: showOutputs, knowledge: showKnowledge })
   const item: Record<SideTab, TabItem> = {
-    transcript: { id: 'transcript', label: first.label, testId: first.testId },
+    transcript: { id: 'transcript', label: first.label, testId: first.testId, dot: newReply, dotLabel: newReply ? 'new reply' : undefined },
     plan: { id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' },
     usage: { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
     outputs: { id: 'outputs', label: 'Outputs', count: outputsCount, countLabel: outputsCountLabel(outputsCount), countTestId: 'side-tab-outputs-count', testId: 'side-tab-outputs' },
@@ -209,13 +216,61 @@ export function RunTabBody({ runId, tab, idPrefix, agent, logs, className }: { r
  * "Conversation" shows `conversation` (the stage's own transcript, which has its own focusable scroll area, so its tab
  * panel is not a tab stop); every other tab replaces it with the same body the side panel shows.
  */
-export function RunStageTabs({ runId, agent, logs, conversation }: { runId: string; agent: AgentInstance | undefined; logs: readonly LogLine[]; conversation: ReactNode }): ReactElement {
-  const { tabs, tab, setTab } = useRunTabs(runId, logs, { label: 'Conversation', testId: 'run-tab-conversation' })
+export function RunStageTabs({
+  runId,
+  agent,
+  logs,
+  conversation,
+  thinking,
+  onReply
+}: {
+  runId: string
+  agent: AgentInstance | undefined
+  logs: readonly LogLine[]
+  conversation: ReactNode
+  /** The root agent's "Show thinking" control, shown at the right end of the strip while Conversation is selected. */
+  thinking?: { checked: boolean; onChange: (next: boolean) => void }
+  /** Called once per new-reply cue, for the view's polite announcement. */
+  onReply?: () => void
+}): ReactElement {
+  const [cue, setCue] = useState(false)
+  const selected = useAppStore((s) => s.sideTabByRun[runId])
+  const replies = useAppStore((s) => countReplies(s.runs[runId]?.transcript ?? []))
+  const idle = useAppStore((s) => s.runs[runId]?.summary.status === 'idle')
+  const { tabs, tab, setTab } = useRunTabs(runId, logs, { label: 'Conversation', testId: 'run-tab-conversation' }, { stage: true, newReply: cue })
+  // A reply that lands (or "your turn") while another tab is open marks Conversation; selecting it clears the mark.
+  const prev = useRef<{ runId: string } & ReplyMark>({ runId, replies, idle })
+  const tabNow = useRef(tab)
+  tabNow.current = tab
+  const onReplyRef = useRef(onReply)
+  onReplyRef.current = onReply
+  useEffect(() => {
+    const before = prev.current
+    prev.current = { runId, replies, idle }
+    if (before.runId !== runId) {
+      setCue(false)
+      return
+    }
+    if (replyArrived(before, { replies, idle }) && tabNow.current !== 'transcript') {
+      setCue(true)
+      onReplyRef.current?.()
+    }
+  }, [runId, replies, idle])
+  useEffect(() => {
+    if (tab === 'transcript') setCue(false)
+  }, [tab, selected])
   const idPrefix = `stage-${runId}`
   return (
     <div className="run-stage-tabs" data-testid="run-stage-tabs">
       <div className="run-stage-tabs-bar">
-        <Tabs tabs={tabs} value={tab} onChange={(id) => setTab(id as SideTab)} label="Session details" idPrefix={idPrefix} compact />
+        <div className="run-stage-tabs-row">
+          <Tabs tabs={tabs} value={tab} onChange={(id) => setTab(id as SideTab)} label="Session details" idPrefix={idPrefix} compact />
+          {thinking && tab === 'transcript' && (
+            <div className="run-stage-thinking">
+              <Checkbox checked={thinking.checked} onChange={thinking.onChange} label="Show thinking" testId="run-stage-show-thinking" />
+            </div>
+          )}
+        </div>
       </div>
       {/* The conversation stays mounted (hidden) under the other tabs: its scroll position and follow state survive. */}
       <div role="tabpanel" id={panelDomId(idPrefix, 'transcript')} aria-labelledby={tabDomId(idPrefix, 'transcript')} className="run-stage-conversation" hidden={tab !== 'transcript'}>

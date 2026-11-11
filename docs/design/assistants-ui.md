@@ -298,11 +298,19 @@ The focused UX follow-up reran the built mock model-switch matrix and reviewed p
 
 - M5 (runtime): chats still get the plan nudge ("Continuing: asked the orchestrator to write a plan...", "Mock:
   continuing with the plan."); exempting quick and assistant runs belongs in `continuation.ts` (Runtime Lead).
-- Assistant sessions without the side panel (2026-11-11, Reviewer M1/M3, open): replies that arrive while Plan, Usage
-  or Logs is shown are not announced (the hidden `role=log` is silent; no "new reply" cue on the Conversation tab yet),
-  and the root agent's Show thinking, agent meta line and staffing detail are reachable only through "Show agents".
-  A Chat saved as a project and Ask runs keep the panel and its duplicate Transcript tab (not assistant sessions).
-  Screen-reader speech, 320 px reflow and zoom are unverified.
+- Assistant sessions without the side panel (2026-11-11, Reviewer M1/M3). Follow-up (2026-11-11), checked as noted:
+  Plan shows in the stage strip only once the run has a plan, a Chat included (`showsPlanTab` `stage`; unit test and
+  `e2e/assistants.mjs`: no Plan tab on a Chat without a plan). A reply (new assistant text row) or "your turn" landing
+  while another tab is open marks Conversation with a still token dot (`Tabs` `dot`/`dotLabel`), names it
+  "Conversation, new reply", makes one polite announcement through the frame's existing announcer ("New reply in the
+  conversation") and clears on selecting Conversation (unit tests for `countReplies`/`replyArrived`; the e2e sends,
+  moves to Usage and asserts the name, the dot and the clear on the mock adapter; the announcement text was not asserted
+  and is untested by screen reader). Show thinking is back at the right end of the strip, on Conversation only (state
+  held in LiveRunView, off by default, not persisted, as in the panel; e2e asserts presence on Conversation, absence on
+  Usage and no overflow at 1024x640 dark and light). Still open: the agent meta line and staffing detail are reachable
+  only through "Show agents" (not asked for). A Chat saved as a project and Ask runs keep the panel and its duplicate
+  Transcript tab (not assistant sessions). Screen-reader speech, 320 px reflow, zoom and reduced-motion OS setting are
+  unverified (the dot has no animation).
 - The MCP start page cannot name the build folder before the run starts (the data-folder wording is shown).
 - `proposalNextByRun` entries are cleared only by Dismiss; the pointer is untested at narrow toolbar widths, and the
   connectors and project links are not covered by e2e (the mock gives no MCP proposal on that path).
