@@ -62,7 +62,7 @@ import { npmInvocation } from './build-npm-package.mjs'
 function writeRestrictedKeyFile(file, bytes) {
   fs.writeFileSync(file, bytes, { mode: 0o600 })
   if (process.platform !== 'win32') return
-  const who = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+  const who = spawnSync(path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
   const sid = /"(S-1-[0-9-]+)"\s*$/m.exec(who.stdout ?? '')?.[1]
   if (!sid) throw new Error('could not read the user SID')
   const r = spawnSync('icacls.exe', [file, '/inheritance:r', '/grant:r', `*${sid}:F`, '/remove:g', '*S-1-5-18', '*S-1-5-32-544'], { encoding: 'utf8' })

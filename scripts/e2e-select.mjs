@@ -6,7 +6,8 @@
 //   node scripts/e2e-select.mjs --full [--print | --run]
 //
 // --print (the default) prints the decision, --run also runs the chosen scripts in chain order and stops at the first
-// failure with its exit code, --full forces the whole chain. --range two|three picks `git diff base head` (pushes: base
+// failure with its exit code, --ci takes the plan from the E2E_* environment variables (ciPlan; used by ci.yml so the step
+// is one shell-neutral line), --full forces the whole chain. --range two|three picks `git diff base head` (pushes: base
 // is the last green commit) or `base...head` (pull requests, the default). Exit 2 on a malformed or empty chain. No dependencies.
 //
 // The script list is read from the e2e:free entry in package.json (the single source of truth). The table below maps a
@@ -276,11 +277,23 @@ export function changedFilesBetween(base, head, cwd = ROOT, range = 'three') {
   }
 }
 
-export function parseArgs(argv) {
+/**
+ * What the CI step does, from its environment (E2E_FULL, E2E_EVENT, E2E_BASE, E2E_LAST_GREEN, E2E_HEAD). Pure.
+ * Full when E2E_FULL is "true"; a push diffs two-dot from the last green commit; anything else diffs three-dot from the
+ * pull request base. Missing or invalid shas are left to changedFilesBetween, which turns them into the full chain.
+ */
+export function ciPlan(env) {
+  if (env.E2E_FULL === 'true') return { full: true }
+  if (env.E2E_EVENT === 'push') return { full: false, range: 'two', base: env.E2E_LAST_GREEN, head: env.E2E_HEAD }
+  return { full: false, range: 'three', base: env.E2E_BASE, head: env.E2E_HEAD }
+}
+
+export function parseArgs(argv, env = {}) {
   const o = { base: undefined, head: undefined, range: 'three', full: false, run: false, print: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if (a === '--base') o.base = argv[++i]
+    if (a === '--ci') Object.assign(o, ciPlan(env))
+    else if (a === '--base') o.base = argv[++i]
     else if (a === '--head') o.head = argv[++i]
     else if (a === '--range') {
       o.range = argv[++i]
@@ -313,7 +326,7 @@ function report(decision, allScripts) {
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2))
+  const args = parseArgs(process.argv.slice(2), process.env)
   const allScripts = loadChain()
   if (allScripts.length === 0) throw new Error('the e2e:free chain in package.json is missing or empty')
   let decision

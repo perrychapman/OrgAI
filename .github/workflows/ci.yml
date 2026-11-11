@@ -97,16 +97,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+      # Default shell on purpose (pwsh on Windows): under Git Bash GNU whoami shadows System32's and breaks the cli-* scripts.
+      # --ci reads the E2E_* variables below (see ciPlan in the script).
       - name: e2e (free, selected or full)
-        shell: bash
-        run: |
-          if [ "$E2E_FULL" = "true" ]; then
-            node scripts/e2e-select.mjs --full --run
-          elif [ "$E2E_EVENT" = "push" ]; then
-            node scripts/e2e-select.mjs --range two --base "$E2E_LAST_GREEN" --head "$E2E_HEAD" --run
-          else
-            node scripts/e2e-select.mjs --range three --base "$E2E_BASE" --head "$E2E_HEAD" --run
-          fi
+        run: node scripts/e2e-select.mjs --ci --run
         env:
           E2E_EVENT: ${{ github.event_name }}
           E2E_LAST_GREEN: ${{ steps.lastgreen.outputs.sha }}
