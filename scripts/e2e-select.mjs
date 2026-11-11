@@ -14,7 +14,7 @@
 // before broad ones. FAIL OPEN: a path no rule matches means the full chain, and so does an empty or unreadable diff.
 // When unsure whether a path is narrow, leave it out of the table.
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, readFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -333,7 +333,17 @@ function main() {
   return 0
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/** True when this file is the entry point. Real paths on both sides: a symlinked tmp dir or checkout must not make main() silently skip. */
+function isEntry() {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href
+  }
+}
+
+if (isEntry()) {
   try {
     process.exitCode = main()
   } catch (e) {
