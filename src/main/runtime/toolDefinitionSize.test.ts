@@ -27,9 +27,16 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  *   team root          Codex 19,641 -> 19,888 (Claude unchanged)
  *   writing report, single assistant: unchanged (no spawn_report)
  * The Codex team-root bound rose to 19,950 (about 0.3% headroom).
+ *
+ * spawn_report files (Codex only; context pack, split-execution 3.2): +126 chars, one optional string array whose
+ * description states the limits, so a lead can hand its report the files it already read and save the report's first
+ * round trips (a report's cold start is on the critical path of every split).
+ *   team root          Codex 19,888 -> 20,014 (Claude unchanged)
+ *   writing report, single assistant: unchanged (no spawn_report)
+ * The Codex team-root bound rose to 20,050 (about 0.2% headroom).
  */
 const BUDGET: Record<string, { claude: number; codex: number }> = {
-  orchestrator: { claude: 17_800, codex: 19_950 },
+  orchestrator: { claude: 17_800, codex: 20_050 },
   implementer: { claude: 6_200, codex: 6_725 },
   single: { claude: 10_300, codex: 10_850 }
 }

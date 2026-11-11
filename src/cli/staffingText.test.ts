@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import { STAFFING_SOURCES, type StaffingAssignment } from '../shared/types'
-import { latestByAgent, staffingLabel, staffingLine, staffingReason, stepStaffText, stepRanText, latestForStep } from './staffingText'
+import { agentModelText, cutModel, liveModelOf, modelsUsedBy, rootModelOf, runConnections, latestByAgent, staffingLabel, staffingLine, staffingReason, stepStaffText, stepRanText, latestForStep } from './staffingText'
 
 const a = (over: Partial<StaffingAssignment> = {}): StaffingAssignment => ({ agentId: 'a1', roleId: 'engineer', tier: 'everyday', model: 'sonnet', effort: 'medium', source: 'orchestrator', at: 1, ...over })
 
 describe('staffingLabel', () => {
-  it('is tier / effort, the model when there is no tier, and the tier alone without effort', () => {
-    expect(staffingLabel(a())).toBe('everyday / medium')
+  it('is tier (model) / effort, the model when there is no tier, and no effort part without effort', () => {
+    expect(staffingLabel(a())).toBe('everyday (sonnet) / medium')
+    expect(staffingLabel(a({ model: 'claude-sonnet-5-5' }))).toBe('everyday (claude-sonnet-5-5) / medium')
     expect(staffingLabel(a({ tier: undefined }))).toBe('sonnet / medium')
-    expect(staffingLabel(a({ effort: undefined }))).toBe('everyday')
+    expect(staffingLabel(a({ effort: undefined }))).toBe('everyday (sonnet)')
+    expect(staffingLabel(a({ model: '' }))).toBe('everyday / medium')
+    expect(staffingLabel(a({ model: 'everyday' }))).toBe('everyday / medium')
+  })
+  it('cuts the model id first and drops it when too little is left', () => {
+    expect(staffingLabel(a({ model: 'claude-sonnet-5-5' }), 8)).toBe('everyday (claude-…) / medium')
+    expect(staffingLabel(a({ model: 'claude-sonnet-5-5' }), 4)).toBe('everyday / medium')
+    expect(cutModel('claude-opus-5-5', 15)).toBe('claude-opus-5-5')
+    expect(cutModel('claude-opus-5-5', 7, '...')).toBe('clau...')
   })
 })
 
@@ -49,7 +58,7 @@ describe('latestByAgent', () => {
 
 describe('staffingLine and stepStaffText', () => {
   it('reads like an agent line', () => {
-    expect(staffingLine('engineer-1', a())).toBe('engineer-1 on everyday / medium (chosen by the orchestrator)')
+    expect(staffingLine('engineer-1', a())).toBe('engineer-1 on everyday (sonnet) / medium (chosen by the orchestrator)')
   })
   it('sanitizes the name and model', () => {
     const out = staffingLine('eng\u001b[2Jx', a({ tier: undefined, model: 'm\u001b[31m1' }))
@@ -76,5 +85,30 @@ describe('stepRanText', () => {
     const b = row({ stepId: 's1', at: 2 })
     expect(latestForStep({ assignments: [a, b] }, 's1')).toBe(b)
     expect(latestForStep({ assignments: [a] }, 's2')).toBeUndefined()
+  })
+})
+
+describe('model helpers', () => {
+  const usage = (...models: string[]) => ({ models: models.map((model) => ({ model })) }) as never
+  it('liveModelOf and modelsUsedBy read the agent and its usage', () => {
+    expect(liveModelOf({ model: 'claude-opus-5-5' })).toBe('claude-opus-5-5')
+    expect(liveModelOf({ usage: usage('a-1', 'b-2') })).toBe('b-2')
+    expect(liveModelOf(undefined)).toBe('')
+    expect(modelsUsedBy({ model: 'c-3', usage: usage('a-1', 'a-1', 'b\u001b[31m-2') })).toEqual(['a-1', 'b-2', 'c-3'])
+  })
+  it('agentModelText prefers the staffing label, else the live model', () => {
+    expect(agentModelText({ model: 'claude-sonnet-5-5' }, a({ model: 'claude-sonnet-5-5' }))).toBe('everyday (claude-sonnet-5-5) / medium')
+    expect(agentModelText({ model: 'claude-opus-5-5' }, undefined)).toBe('claude-opus-5-5')
+    expect(agentModelText({}, undefined)).toBe('')
+  })
+  it('rootModelOf takes the model selection first', () => {
+    const agents = { root: { parentId: null, model: 'claude-opus-5-5' }, w: { parentId: 'root', model: 'x' } }
+    expect(rootModelOf({}, agents)).toBe('claude-opus-5-5')
+    expect(rootModelOf({ modelSelection: { model: 'gpt-6.1-sol', connection: 'openai' } }, agents)).toBe('gpt-6.1-sol')
+    expect(rootModelOf({}, undefined)).toBe('')
+  })
+  it('runConnections lists connections only when there is more than one', () => {
+    expect(runConnections({ connection: 'anthropic' }, { a: {}, b: { connection: 'anthropic' } })).toEqual([])
+    expect(runConnections({ connection: 'anthropic' }, { a: {}, b: { connection: 'openai' } })).toEqual(['anthropic', 'openai'])
   })
 })

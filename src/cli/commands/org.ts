@@ -9,16 +9,22 @@
  *   says so and --json carries the previous chart (`previousRoles`) for a script to keep.
  * - `org retro <runRef>`: an Org retrospective (setup:retro) of a  finished work run; follows it in the terminal UI
  *   (it needs a terminal: the run lives only inside this orgai).
- * - `org draft "<description>"`: draft:orgChart (operate); prints the drafted roles, never saves.
+ * - `org draft "<description>"`: draft:orgChart (operate); prints the drafted roles. With --apply (or --from <file>
+ *   --apply, a draft printed earlier) it saves them through projects:save after a preview and confirmation.
+ * - `org revise "<instruction>"`: the Architect on the existing project with the instruction (setup:start), in the terminal UI.
  * - Team assistant: `org discover`, `recommend`, `review`, `apply`, `undo`, `dismiss`, `restore` (capabilities:*).
  *
  * Every untrusted string (role names, prompts, Team assistant text, paths) goes through safe / safeLine.
  */
 import { randomBytes } from 'node:crypto'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import {
   AGENT_IMPORT_SOURCES,
   isAgentImportSource,
+  isModelTier,
   isVirtualProjectId,
+  TEAM_FILES_MAX_ROLES,
   type AgentImportApplyResult,
   type AgentImportItem,
   type AgentImportMode,
@@ -32,6 +38,8 @@ import {
   type CapabilityProgressEvent,
   type CapabilityRecommendation,
   type DraftResult,
+  type HostScope,
+  type ModelTier,
   type OrgExportResult,
   type Project,
   type Role,
@@ -39,7 +47,7 @@ import {
   type TeamRecommendations,
   type TeamReview
 } from '../../shared/types'
-import { effectiveSubagentLimits, tierForModel } from '../../shared/defaults'
+import { compareTier, effectiveSubagentLimits, staffingModeOf, tierForModel } from '../../shared/defaults'
 import { servicesForRole } from '../../shared/view/roleServices'
 import { isOpenStatus } from '../../shared/view/runChains'
 import { parseFlags } from '../flags'
@@ -47,7 +55,10 @@ import { confirm, hostCall, hostError, requireProject, runSubcommands, subscribe
 import { emit, emitLine, isJsonOutput, note, printText, safe, safeLine, type Json } from '../output'
 import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
+import { effortWord, runsOnWords, staffingWords } from '../roleText'
+import { connectionLabels } from './teamRoleEdit'
 import { runInteractiveRun } from './interactive'
+import { hasTty, managedOf, worktreeRefusal } from './tui'
 
 /** Long-running Team assistant and drafting calls (discover, recommend, review, draft) wait at least this long. */
 export const LONG_CALL_TIMEOUT_MS = 10 * 60_000
@@ -56,7 +67,7 @@ export const LONG_CALL_TIMEOUT_MS = 10 * 60_000
 export const ARG_MAX_CHARS = 200
 
 const USAGE =
-  'org show | export | import [--source <id>...] [--mode merge|replace] [--yes] | retro <runRef> | draft "<description>" [--mode replace|revise] | discover [--outside] | recommend [--outside] [--role <role>] | review [--recheck [--outside] [--model]] | apply <recommendationId> [--candidate <id>] [--role <role>...] [--access read|full] | undo <undoId> | dismiss <id> [--candidate] | restore <candidateId>'
+  'org show | export | import [--source <id>...] [--mode merge|replace] [--yes] | retro <runRef> | draft "<description>" [--mode replace|revise|merge] [--apply [--yes]] | draft --from <file.json> --apply [--mode replace|merge] [--yes] | revise "<instruction>" | discover [--outside] | recommend [--outside] [--role <role>] | review [--recheck [--outside] [--model]] | apply <recommendationId> [--candidate <id>] [--role <role>...] [--access read|full] | undo <undoId> | dismiss <id> [--candidate] | restore <candidateId>'
 
 // ---------- Shared argument checks (team, worktrees and permissions import these) ----------
 
@@ -103,6 +114,7 @@ export const runOrg: CommandFn = (ctx, args) =>
       import: orgImport,
       retro: orgRetro,
       draft: orgDraft,
+      revise: orgRevise,
       discover: orgDiscover,
       recommend: orgRecommend,
       review: orgReview,
@@ -161,6 +173,7 @@ const orgShow: SubcommandFn = async (ctx, args) => {
     const rows = roleTree(roles)
     const limits = effectiveSubagentLimits(project)
     const nameOf = new Map(roles.map((r) => [r.id, r.name]))
+    const label = await connectionLabels(client)
     emit(
       ctx,
       {
@@ -179,6 +192,9 @@ const orgShow: SubcommandFn = async (ctx, args) => {
             canSpawn: role.canSpawn,
             spawnable: role.spawnable,
             requiredReports: role.requiredReports ?? [],
+            effort: role.effort ?? null,
+            staffing: staffingWords(role, project),
+            runsOn: runsOnWords(role, project, label),
             tools: role.tools,
             mcpServers: g.mcp.map((m) => m.id),
             skills: g.skills.map((s) => s.id)
@@ -192,6 +208,7 @@ const orgShow: SubcommandFn = async (ctx, args) => {
           const pad = '  '.repeat(depth + 1)
           const g = roleGrants(project, role)
           lines.push(`${pad}${safeLine(role.name)} [${safeLine(role.slug)}] · ${safeLine(roleTierWord(role))}`)
+          lines.push(`${pad}    effort ${safeLine(effortWord(role))} · ${safeLine(staffingWords(role, project))} · runs on ${safeLine(runsOnWords(role, project, label))}`)
           const spawn = role.canSpawn
             ? `spawns: ${role.spawnable.length ? role.spawnable.map((id) => safeLine(nameOf.get(id) ?? id)).join(', ') : 'none listed'}`
             : 'cannot spawn'
@@ -365,26 +382,213 @@ const orgRetro: SubcommandFn = async (ctx, args) => {
 
 // ---------- org draft ----------
 
+const DRAFT_USAGE = 'org draft "<description>" [--mode replace|revise|merge] [--apply [--yes]] | org draft --from <file.json> [--mode replace|merge] --apply [--yes]'
+/** Largest --from file read (a drafted chart is a few tens of KB). */
+export const DRAFT_FILE_MAX_BYTES = 2 * 1024 * 1024
+/** Most roles a --from chart may hold (the same bound the team files use). */
+export const DRAFT_FILE_MAX_ROLES = TEAM_FILES_MAX_ROLES
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/
+
+/**
+ * The roles of a previously printed draft (`org draft --output-format json`, or just its `draft` / `roles`), checked as
+ * untrusted input: a size and count bound, the fields a role cannot work without, unique ids and slugs, and no control
+ * characters in ids, slugs or names. The host cleans the rest when the chart is saved (projects:save). Pure.
+ */
+export function parseDraftFile(text: string): { roles: Role[]; rationale: string } {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    throw new CliError('The draft file is not valid JSON.', EXIT.usage)
+  }
+  const draft = isObj(raw) && isObj(raw.draft) ? raw.draft : raw
+  const list = Array.isArray(draft) ? draft : isObj(draft) ? draft.roles : undefined
+  if (!Array.isArray(list)) throw new CliError('The draft file holds no roles: expected the JSON that "orgai org draft --output-format json" printed.', EXIT.usage)
+  if (list.length === 0) throw new CliError('The draft file holds no roles.', EXIT.usage)
+  if (list.length > DRAFT_FILE_MAX_ROLES) throw new CliError(`The draft file holds more than ${DRAFT_FILE_MAX_ROLES} roles.`, EXIT.usage)
+  const ids = new Set<string>()
+  const slugs = new Set<string>()
+  list.forEach((r, i) => {
+    const at = `Role ${i + 1} of the draft file`
+    if (!isObj(r)) throw new CliError(`${at} is not an object.`, EXIT.usage)
+    for (const k of ['id', 'slug', 'name'] as const) {
+      const v = r[k]
+      if (typeof v !== 'string' || v.trim() === '' || v.length > ARG_MAX_CHARS || CONTROL.test(v)) throw new CliError(`${at} has no valid ${k}.`, EXIT.usage)
+    }
+    if (typeof r.prompt !== 'string') throw new CliError(`${at} has no prompt.`, EXIT.usage)
+    if (!Array.isArray(r.tools) || r.tools.some((t) => typeof t !== 'string')) throw new CliError(`${at} has no valid tools list.`, EXIT.usage)
+    if (typeof r.model !== 'string') throw new CliError(`${at} has no model.`, EXIT.usage)
+    if (r.reportsTo !== null && r.reportsTo !== undefined && typeof r.reportsTo !== 'string') throw new CliError(`${at} has an invalid reportsTo.`, EXIT.usage)
+    if (ids.has(r.id as string) || slugs.has(r.slug as string)) throw new CliError(`${at} repeats an id or slug.`, EXIT.usage)
+    ids.add(r.id as string)
+    slugs.add(r.slug as string)
+  })
+  const rationale = isObj(draft) && typeof draft.rationale === 'string' ? draft.rationale : ''
+  return { roles: list as Role[], rationale }
+}
+
+/** The chart that results from applying `drafted` over `current`: replace = the draft, merge = drafted roles replace the ones with their slug and the rest are kept. Pure. */
+export function applyDraftRoles(current: readonly Role[], drafted: readonly Role[], mode: 'replace' | 'merge'): Role[] {
+  if (mode === 'replace') return drafted.map((r) => ({ ...r }))
+  const bySlug = new Map(current.map((r) => [r.slug, r]))
+  const usedIds = new Set(current.map((r) => r.id))
+  const remap = new Map<string, string>()
+  const incoming = drafted.map((r) => {
+    const match = bySlug.get(r.slug)
+    if (match) {
+      remap.set(r.id, match.id)
+      return { ...r, id: match.id }
+    }
+    if (usedIds.has(r.id)) {
+      let n = 2
+      while (usedIds.has(`${r.id}-${n}`)) n++
+      remap.set(r.id, `${r.id}-${n}`)
+      return { ...r, id: `${r.id}-${n}` }
+    }
+    usedIds.add(r.id)
+    return { ...r }
+  })
+  const fixed = incoming.map((r) => ({
+    ...r,
+    reportsTo: r.reportsTo ? (remap.get(r.reportsTo) ?? r.reportsTo) : r.reportsTo,
+    spawnable: Array.isArray(r.spawnable) ? r.spawnable.map((id) => remap.get(id) ?? id) : r.spawnable
+  }))
+  const replaced = new Set(fixed.map((r) => r.id))
+  const kept = current.filter((r) => !replaced.has(r.id))
+  return [...kept, ...fixed]
+}
+
+/** One factual sentence when the new chart can spend more than the current one (a role above the current highest tier, or staffing newly switched on), else undefined. Pure. */
+export function spendNote(current: readonly Role[], next: readonly Role[], project: Pick<Project, 'staffing'>): string | undefined {
+  const tiers = (roles: readonly Role[]): ModelTier[] => roles.map(roleTierWord).filter((t): t is ModelTier => isModelTier(t))
+  const have = tiers(current)
+  const top = have.reduce<ModelTier | undefined>((best, t) => (best === undefined || compareTier(t, best) > 0 ? t : best), undefined)
+  const above = tiers(next).some((t) => top === undefined || compareTier(t, top) > 0)
+  const wasAuto = new Set(current.filter((r) => r.staffing?.mode === 'auto').map((r) => r.slug))
+  const staffingOn = staffingModeOf(project) !== 'fixed' && next.some((r) => r.staffing?.mode === 'auto' && !wasAuto.has(r.slug))
+  if (!above && !staffingOn) return undefined
+  return 'The new chart may spend more than the current one: it adds roles above the current highest tier or switches staffing on.'
+}
+
+function draftLines(roles: readonly Role[]): string[] {
+  return roleTree(roles).map(({ role, depth }) => `${'  '.repeat(depth + 1)}${safeLine(role.name)} [${safeLine(role.slug)}] · ${safeLine(roleTierWord(role))} · ${safeLine(role.description)}`)
+}
+
 const orgDraft: SubcommandFn = async (ctx, args) => {
-  const { values, positionals } = parseFlags(args, { mode: { type: 'string' } })
+  const { values, positionals } = parseFlags(args, {
+    mode: { type: 'string' },
+    apply: { type: 'boolean' },
+    from: { type: 'string' },
+    yes: { type: 'boolean', short: 'y' }
+  })
+  const apply = values.apply === true
   const instruction = positionals.join(' ').trim()
-  if (!instruction) throw new CliError('Describe the team to draft: orgai org draft "<description>".', EXIT.usage)
+  const from = values.from
+  if (from !== undefined) {
+    if (instruction) throw new CliError(`Use either a description or --from. Usage: orgai ${DRAFT_USAGE}`, EXIT.usage)
+    if (!apply) throw new CliError('--from only makes sense with --apply: it saves a chart drafted earlier.', EXIT.usage)
+  } else if (!instruction) throw new CliError('Describe the team to draft: orgai org draft "<description>".', EXIT.usage)
   if (instruction.length > 4000) throw new CliError('The description is longer than 4000 characters.', EXIT.usage)
-  const mode = values.mode ?? 'revise'
-  if (mode !== 'replace' && mode !== 'revise') throw new CliError('--mode must be replace or revise.', EXIT.usage)
-  return withHost(ctx, ['read', 'operate'], async (client) => {
+  const mode = values.mode
+  if (mode !== undefined && mode !== 'replace' && mode !== 'revise' && !(apply && mode === 'merge')) {
+    throw new CliError(apply ? '--mode must be replace or merge.' : '--mode must be replace or revise.', EXIT.usage)
+  }
+  if (values.yes && !apply) throw new CliError('--yes confirms --apply; there is nothing to confirm without it.', EXIT.usage)
+  // With --apply, --mode picks how the chart is saved: merge, else replace (the default). A drafted chart revises the
+  // current one unless --mode replace asks for a fresh team.
+  const applyMode: 'replace' | 'merge' = mode === 'merge' ? 'merge' : 'replace'
+  const draftMode: 'replace' | 'revise' = mode === 'replace' ? 'replace' : 'revise'
+
+  let fromDraft: { roles: Role[]; rationale: string } | undefined
+  if (from !== undefined) {
+    const file = path.resolve(ctx.cwd, checkArg('--from file', from))
+    let text: string
+    try {
+      const st = fs.statSync(file)
+      if (!st.isFile()) throw new CliError(`${safeLine(file)} is not a file.`, EXIT.usage)
+      if (st.size > DRAFT_FILE_MAX_BYTES) throw new CliError('The draft file is larger than 2 MB.', EXIT.usage)
+      text = fs.readFileSync(file, 'utf8')
+    } catch (e) {
+      if (e instanceof CliError) throw e
+      throw new CliError(`Cannot read ${safeLine(file)}.`, EXIT.usage)
+    }
+    fromDraft = parseDraftFile(text)
+  }
+
+  const scopes: HostScope[] = fromDraft ? ['read', 'configure'] : apply ? ['read', 'operate', 'configure'] : ['read', 'operate']
+  return withHost(ctx, scopes, async (client) => {
     const project = await requireProject(ctx, client)
-    const draft = await hostCall<DraftResult>(client, 'draft:orgChart', [{ projectId: project.id, instruction, mode }], { timeoutMs: LONG_CALL_TIMEOUT_MS })
-    emit(ctx, { project: projectJson(project), draft }, () => {
-      const lines = [`Drafted ${draft.roles.length} role${draft.roles.length === 1 ? '' : 's'} (not saved):`]
-      for (const { role, depth } of roleTree(draft.roles)) {
-        lines.push(`${'  '.repeat(depth + 1)}${safeLine(role.name)} [${safeLine(role.slug)}] · ${safeLine(roleTierWord(role))} · ${safeLine(role.description)}`)
-      }
-      if (draft.rationale) lines.push('', safe(draft.rationale))
-      return lines
-    })
+    const draft = fromDraft ?? (await hostCall<DraftResult>(client, 'draft:orgChart', [{ projectId: project.id, instruction, mode: draftMode }], { timeoutMs: LONG_CALL_TIMEOUT_MS }))
+    const header = (saved: boolean): string => `Drafted ${draft.roles.length} role${draft.roles.length === 1 ? '' : 's'}${saved ? '' : ' (not saved)'}:`
+    if (!apply) {
+      emit(ctx, { project: projectJson(project), draft }, () => {
+        const lines = [header(false), ...draftLines(draft.roles)]
+        if (draft.rationale) lines.push('', safe(draft.rationale))
+        return lines
+      })
+      return EXIT.ok
+    }
+
+    const fresh = (await hostCall<Project | null>(client, 'projects:get', [project.id])) ?? project
+    const next = applyDraftRoles(fresh.roles, draft.roles, applyMode)
+    const dropped = fresh.roles.filter((r) => !next.some((n) => n.id === r.id))
+    const spend = spendNote(fresh.roles, next, fresh)
+    printText(ctx, [
+      `${fromDraft ? 'Draft file' : 'Draft'} for ${safeLine(project.name)} (${applyMode}): ${draft.roles.length} role${draft.roles.length === 1 ? '' : 's'}; the chart would have ${next.length}.`,
+      ...draftLines(draft.roles),
+      ...(dropped.length ? [`Drops: ${dropped.map((r) => safeLine(r.name)).join(', ')}`] : []),
+      ...(draft.rationale ? ['', safe(draft.rationale)] : []),
+      ...(spend ? ['', spend] : [])
+    ])
+    const question = dropped.length
+      ? `Save the drafted chart and drop ${dropped.length} current role(s)? ${NO_UNDO}`
+      : `Save the drafted chart as the chart of ${safeLine(project.name)}?`
+    if (!(await confirm(ctx, question, !!values.yes))) {
+      note(ctx, 'Nothing saved.')
+      return EXIT.failure
+    }
+    const saved = await hostCall<Project>(client, 'projects:save', [{ ...fresh, roles: next }])
+    const previousRoles = fresh.roles
+    emit(
+      ctx,
+      { project: projectJson(saved), applied: true, mode: applyMode, roles: saved.roles.length, dropped: dropped.map((r) => r.id), previousRoles, ...(spend ? { spendNote: spend } : {}) },
+      () => [
+        `Saved the drafted chart; the chart now has ${saved.roles.length} role${saved.roles.length === 1 ? '' : 's'}.`,
+        `${NO_UNDO_AFTER} The previous chart had ${previousRoles.length} role${previousRoles.length === 1 ? '' : 's'}.`
+      ]
+    )
     return EXIT.ok
   })
+}
+
+// ---------- org revise ----------
+
+export const REVISE_NO_TTY_MESSAGE =
+  'orgai org revise needs a terminal: the Architect session lives inside this orgai and ends with it. From a script, use orgai org draft "<description>" --apply --yes, or revise with the Architect in the desktop app.'
+
+const orgRevise: SubcommandFn = async (ctx, args) => {
+  const { values, positionals } = parseFlags(args, { inline: { type: 'boolean' }, 'ax-screen-reader': { type: 'boolean' } })
+  const instruction = positionals.join(' ').trim()
+  if (!instruction) throw new CliError('Say what to change: orgai org revise "<instruction>".', EXIT.usage)
+  if (instruction.length > 4000) throw new CliError('The instruction is longer than 4000 characters.', EXIT.usage)
+  if (CONTROL.test(instruction.replace(/[\n\t]/g, ' '))) throw new CliError('The instruction holds control characters.', EXIT.usage)
+  const managed = managedOf(ctx)
+  if (managed) throw new CliError(worktreeRefusal(managed.mainCheckout), EXIT.usage)
+  if (!hasTty(ctx) || isJsonOutput(ctx)) throw new CliError(REVISE_NO_TTY_MESSAGE, EXIT.usage)
+  const project = await withHost(ctx, ['read'], (client) => requireProject(ctx, client))
+  return runInteractiveRun(
+    ctx,
+    {
+      channel: 'setup:start',
+      input: { projectId: project.id, instruction },
+      label: 'Architect revision',
+      noTtyMessage: REVISE_NO_TTY_MESSAGE
+    },
+    { inline: !!values.inline, screenReader: !!values['ax-screen-reader'] }
+  )
 }
 
 // ---------- Team assistant ----------

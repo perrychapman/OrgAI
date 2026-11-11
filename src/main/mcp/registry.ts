@@ -7,6 +7,7 @@ import type {
   McpRegistrySearchResult,
   McpRegistryTransport
 } from '@shared/types'
+import { cancelResponseBody, readCappedResponseText, ResponseBodyTooLargeError } from '../http/readCapped'
 
 /**
  * Client for the official MCP Registry. Everything the registry returns is untrusted data: this module only
@@ -17,6 +18,7 @@ export const REGISTRY_URL = 'https://registry.modelcontextprotocol.io/v0.1/serve
 export const REGISTRY_TIMEOUT_MS = 10_000
 export const REGISTRY_MAX_LIMIT = 50
 export const REGISTRY_DEFAULT_LIMIT = 20
+export const REGISTRY_MAX_BODY_BYTES = 2 * 1024 * 1024
 
 const MAX_NAME = 200
 const MAX_TEXT = 600
@@ -149,11 +151,15 @@ export async function searchRegistry(input: McpRegistrySearchInput, fetchImpl: t
     const err = e as Error
     throw new Error(err.name === 'TimeoutError' || err.name === 'AbortError' ? 'The MCP Registry did not answer in time.' : `The MCP Registry could not be reached: ${err.message}`)
   }
-  if (!res.ok) throw new Error(`The MCP Registry answered ${res.status}.`)
+  if (!res.ok) {
+    await cancelResponseBody(res)
+    throw new Error(`The MCP Registry answered ${res.status}.`)
+  }
   let body: unknown
   try {
-    body = await res.json()
-  } catch {
+    body = JSON.parse(await readCappedResponseText(res, REGISTRY_MAX_BODY_BYTES)) as unknown
+  } catch (e) {
+    if (e instanceof ResponseBodyTooLargeError) throw new Error('The MCP Registry response was too large.')
     throw new Error('The MCP Registry returned an unreadable response.')
   }
   return parseRegistryResponse(body)

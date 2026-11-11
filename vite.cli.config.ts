@@ -1,5 +1,5 @@
 /**
- * The CLI bundle (cli-spec 7): src/cli/index.ts -> out/cli/orgai.mjs, an ESM file plain `node` (or the packaged app's
+ * The CLI bundle (cli-spec 7): src/cli/bin.ts (which loads src/cli/index.ts as a chunk) -> out/cli/orgai.mjs, an ESM file plain `node` (or the packaged app's
  * own binary with ELECTRON_RUN_AS_NODE=1, build/bin/orgai) runs. Only src/cli/packaging.ts `isCliExternal` stays a bare
  * import: Node builtins, electron (never imported by the CLI), the Claude Agent SDK, Codex and zod (unpacked from
  * app.asar by electron-builder.yml). Every other dependency (ink, react, react/jsx-runtime, react-reconciler, ...) is
@@ -48,7 +48,8 @@ export default defineConfig({
     sourcemap: false,
     reportCompressedSize: false,
     rollupOptions: {
-      input: { orgai: resolve(root, 'src/cli/index.ts'), tui: tuiEntry },
+      // bin.ts installs inspectorSignal.ts, then loads index.ts as its own chunk (cli-parity 3.4 hardening).
+      input: { orgai: resolve(root, 'src/cli/bin.ts'), tui: tuiEntry },
       external: isCliExternal,
       output: {
         format: 'es',

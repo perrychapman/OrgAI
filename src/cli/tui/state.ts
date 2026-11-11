@@ -11,6 +11,7 @@
  * - The arrival order of decision cards (`cardArrivalSeq`): a WeakMap keyed by the card object, which this reducer
  *   never copies, so the tray can order cards by arrival across kinds and runs.
  */
+import { compactionLine } from '../../shared/view/compactionText'
 import type {
   AgentInstance,
   CardKind,
@@ -29,6 +30,7 @@ import { safeLine } from '../output'
 import { StreamSanitizers, sanitizeTty } from './sanitizeTty'
 import {
   cardKey,
+  TUI_LOGS_MAX,
   TUI_NOTICE_MAX,
   TUI_RESOLVED_MAX,
   TUI_MESSAGES_MAX,
@@ -232,6 +234,23 @@ function withoutPartial(run: TuiRun, agentId: string): TuiRun {
   return { ...run, partials }
 }
 
+type RunLogLine = NonNullable<TuiRun['logs']>[number]
+
+function withLog(run: TuiRun, line: RunLogLine): TuiRun {
+  const logs = [...(run.logs ?? []), line]
+  return { ...run, logs: logs.length > TUI_LOGS_MAX ? logs.slice(logs.length - TUI_LOGS_MAX) : logs }
+}
+
+/** The record's logs first, then kept ones the record does not have (same level and message): events that arrived after it. */
+function mergeLogs(kept: readonly RunLogLine[] | undefined, record: readonly RunLogLine[] | undefined): RunLogLine[] | undefined {
+  const rec = Array.isArray(record) ? record.filter((l) => l && typeof l.message === 'string') : []
+  const have = new Set(rec.map((l) => `${l.level}\n${l.message}`))
+  const extra = (kept ?? []).filter((l) => !have.has(`${l.level}\n${l.message}`))
+  const all = [...rec, ...extra]
+  if (all.length === 0) return undefined
+  return all.length > TUI_LOGS_MAX ? all.slice(all.length - TUI_LOGS_MAX) : all
+}
+
 function putRun(s: TuiState, run: TuiRun): TuiState {
   return { ...s, runs: { ...s.runs, [run.summary.id]: run } }
 }
@@ -359,6 +378,8 @@ export function applyRecord(s: TuiState, rec: RunRecord, opts: { omitted?: numbe
     omitted: omitted || undefined,
     recordLoaded: true
   })
+  const logs = mergeLogs(prev.logs, rec.logs)
+  if (logs) run.logs = logs
   if (!run.omitted) delete run.omitted
   let out = putRun(s, run)
   out = { ...out, runOrder: withOrder(out, [rec.summary]) }
@@ -418,19 +439,26 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   let out: TuiState = typeof p.seq === 'number' && (s.lastSeq === undefined || p.seq > s.lastSeq) ? { ...s, lastSeq: p.seq } : s
 
   switch (e.type) {
-    case 'log':
+    case 'log': {
+      // Every level is kept on the run for /logs; warnings and errors also raise a notice (it expires, the list does not).
+      if (typeof e.message === 'string' && s.runs[e.runId]) out = putRun(out, withLog(out.runs[e.runId], { at: now, level: e.level, message: e.message }))
       if (e.level === 'warn' || e.level === 'error') return addNotice(out, e.message, e.level === 'error' ? 'danger' : 'warn', now)
+      // The run-start models line (cli-parity 3.1) is the one info log worth a notice.
+      if (e.level === 'info' && typeof e.message === 'string' && e.message.startsWith('Models: ')) return addNotice(out, e.message, undefined, now)
       return out
+    }
     case 'project.updated':
       return out.project && e.project && out.project.id === e.project.id ? { ...out, project: e.project } : out
     case 'usage.status':
-      return out
+      // The plan windows (run-less report, runId ''): the status bar shows the newest.
+      return e.usage && typeof e.usage === 'object' ? { ...out, planUsage: e.usage } : out
     default:
       break
   }
 
   const existing = out.runs[e.runId]
   if (!existing && (e.type === 'agent.partial' || e.type === 'agent.remove' || e.type === 'agent.message')) return out
+  let compactedNotice: string | undefined
   let run: TuiRun = existing ?? newRun(stubSummary(out, e.runId, now))
   const summary = run.summary
 
@@ -460,6 +488,11 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     case 'run.moved':
       run = { ...run, summary: { ...summary, projectId: e.projectId } }
       break
+    case 'run.model':
+      // The root's live model (a model switch): the status bar and the inspector read summary.modelSelection.
+      if (!e.selection || typeof e.selection.model !== 'string' || typeof e.selection.connection !== 'string') return out
+      run = { ...run, summary: { ...summary, modelSelection: { model: e.selection.model, connection: e.selection.connection } } }
+      break
     case 'agent.upsert':
       if (!e.agent || typeof e.agent.id !== 'string') return out
       run = { ...run, agents: { ...run.agents, [e.agent.id]: e.agent } }
@@ -482,6 +515,15 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
       if (text === '') run = withoutPartial(run, e.agentId)
       else if (run.partials[e.agentId] === text) return out
       else run = { ...run, partials: { ...run.partials, [e.agentId]: text } }
+      break
+    }
+    case 'agent.compacted': {
+      // RunManager re-sends the agent with its count right after; counted here too so the row and notice agree at once.
+      if (typeof e.agentId !== 'string' || !e.agentId) return out
+      const a = run.agents[e.agentId]
+      const n = (a?.compactions ?? 0) + 1
+      if (a) run = { ...run, agents: { ...run.agents, [a.id]: { ...a, compactions: n } } }
+      compactedNotice = compactionLine(safeLine(a?.name ?? e.agentId), n)
       break
     }
     case 'plan.updated':
@@ -554,6 +596,7 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
 
   out = putRun(out, run)
   if (!existing || summary !== run.summary) out = { ...out, runOrder: withOrder(out, [run.summary]) }
+  if (compactedNotice) out = addNotice(out, compactedNotice, 'warn', now)
   return followSuccessors(out)
 }
 

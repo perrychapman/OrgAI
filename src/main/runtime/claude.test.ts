@@ -219,6 +219,25 @@ describe('toClaudeMcpServers', () => {
   })
 })
 
+describe('buildAgents: split execution on the root (split-execution 3.2, 3.3)', () => {
+  const keepPiece = 'When you fan out, keep a piece yourself'
+  const line = 'end it with a line "Files: <path>, <path>" naming files you read'
+  it('the root keeps a piece, may run unmarked reports in the background and names files on the brief line', () => {
+    const lead = buildAgents(fakeCtx(), [], false).lead!.prompt
+    expect(lead).toContain(keepPiece)
+    expect(lead).toContain('run_in_background: true while you keep a piece')
+    expect(lead).toContain(line)
+    expect(lead).not.toContain('pass the files you read as files')
+  })
+  it('a run that inlines no files (trust-restricted, setup-like) gets no files line; a report gets none of it', () => {
+    const restricted = buildAgents(fakeCtx({ run: runSummary({ buildWorkspace: '/w' }) }), [], false).lead!.prompt
+    expect(restricted).not.toContain(line)
+    expect(buildAgents(fakeCtx({ run: runSummary({ kind: 'setup' }) }), [], false).lead!.prompt).not.toContain(line)
+    const eng = buildAgents(fakeCtx(), [], false).engineer!.prompt
+    for (const t of [keepPiece, line, 'run_in_background']) expect(eng).not.toContain(t)
+  })
+})
+
 describe('agentMcpServerNames and buildAgents', () => {
   const p = project({ mcpServers: [fs, web, spec({ id: 'm3', name: 'off', command: 'x', enabled: false })] })
 
@@ -819,6 +838,23 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
   const attach = (s: ClaudeSession, spec: McpServerSpec) => (s as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(spec)
   const init = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] }
   const result = { type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} }
+  it('does not expose fragments when the SDK splits a secret across stderr callbacks', async () => {
+    const { ctx, session } = start([])
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const secret = 'synthetic-claude-secret-value-1234567890'
+    ;(session as unknown as { secrets: Set<string> }).secrets.add(secret)
+    const stderr = sdk.queries[0]!.options.stderr as (chunk: string) => void
+
+    stderr(`provider echoed ${secret.slice(0, 18)}`)
+    stderr(`${secret.slice(18)} after`)
+
+    const logged = ctx.events.flatMap((event) => (event.type === 'log' ? [event.message] : [])).join('\n')
+    expect(logged).toContain('***')
+    expect(logged).not.toContain(secret)
+    expect(logged).not.toContain(secret.slice(0, 18))
+    expect(logged).not.toContain(secret.slice(18))
+  })
+
   it('switches the idle root in the existing query without changing transcript or continuation state', async () => {
     const { ctx, session } = start([])
     await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))

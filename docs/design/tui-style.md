@@ -96,3 +96,10 @@ New agent-to-agent message events animate a brief sender-to-recipient courier be
 mark both participants. It lasts about 1.6 seconds, works even for idle agents, and settles to a static
 last-message label. Mounting history, switching runs, or resuming animation never replays old traffic.
 Reduced-motion, screen-reader, no-color, inline, and dumb-terminal modes retain a static message cue.
+
+`/team` and `/settings` take the body as one framed view (no frame inline or for a screen reader) and leave the status
+bar, tray and composer in place, so a live run's state stays visible. A bold title, one line per row, a message line
+for results and errors (green, red, amber) and a dim footer of keys that wraps to two lines at 80 columns. The
+selected row carries the `>` marker in the accent. Team rows give way from the right: "runs on", long staffing words,
+the model id, the effort, and only then the name. Settings rows cut the description first, then the value; read-only
+rows say so in words. Esc backs out one level; a change that may spend more, and every removal, waits for `y`.

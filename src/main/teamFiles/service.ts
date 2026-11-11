@@ -15,6 +15,7 @@ import {
   type Project,
   type ProjectPathCheck,
   type SkillSpec,
+  type TeamFileChange,
   type TeamFileProblem,
   type TeamFilesActionResult,
   type TeamFilesCommitResult,
@@ -1228,6 +1229,22 @@ export class TeamFilesService {
     this.store.writeState(id, st)
     this.bump(id)
     return this.result(id)
+  }
+
+  /**
+   * What Undo would bring back, in plain words: every difference from the team in use to the team Undo restores (roles
+   * whose tier, tools or prompt change, servers and skills that return or leave). Empty when there is nothing to undo.
+   * Read-only; never throws.
+   */
+  undoChanges(projectId: string): TeamFileChange[] {
+    try {
+      const approved = this.store.readApproved(projectId)
+      const undoDoc = this.store.readUndo(projectId)
+      if (!approved || !undoDoc) return []
+      return describeChanges(approved, undoDoc, this.linkResolver).slice(0, TEAM_FILES_LIST_MAX)
+    } catch {
+      return []
+    }
   }
 
   /** Turns team files back on after "Remove OrgAI files": writes the files from the current team. */

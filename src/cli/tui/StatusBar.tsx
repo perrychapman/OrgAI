@@ -1,10 +1,10 @@
 /**
  * The status bar (W4-T3): one line with the project, the followed run (tag and title), its status word (from
- * statusText, via the selectors) in its tone, cost, "N need you", live run count, connection state and the read-only
+ * statusText, via the selectors) in its tone, the root's live model, cost, "N need you", live run count, connection state and the read-only
  * reason, then a fresh notice and the key hint. A screen reader gets plain words separated by commas, never glyphs.
  *
  * Fitting (issue #26): the key hint and a fresh notice are what the user needs, so the status segments give way first,
- * in this order: the run chips shrink to "R1* R2! +N" and then "+N live", the cost goes, the run title is cut at a word
+ * in this order: the run chips shrink to "R1* R2! +N" and then "+N live", the model and the cost go, the run title is cut at a word
  * boundary (then dropped). Then the hint loses items from its end, at separators, never mid-word, down to one item.
  * The project name ("where am I") is the last thing to go (issue #34). When only one of notice and hint fits, a danger / warn notice wins for its lifetime, otherwise the
  * hint. A notice is fresh for TUI_NOTICE_TTL_MS from `notice.at` (clock: props.now ?? Date.now); the bar re-renders at
@@ -65,20 +65,23 @@ interface Level {
   project: boolean
   /** "N working" and "N ready": the first status segments to give way. */
   flow: boolean
+  /** The plan-window indicator ("5h 42% · 7d 18%"): the very first segment to give way. */
+  window: boolean
 }
 
 const LEVELS: readonly Level[] = [
-  { chips: 'full', cost: true, title: Infinity, project: true, flow: true },
-  { chips: 'compact', cost: true, title: Infinity, project: true, flow: false },
-  { chips: 'count', cost: true, title: Infinity, project: true, flow: false },
-  { chips: 'count', cost: false, title: Infinity, project: true, flow: false },
-  { chips: 'count', cost: false, title: 24, project: true, flow: false },
-  { chips: 'count', cost: false, title: 12, project: true, flow: false },
-  { chips: 'count', cost: false, title: 0, project: true, flow: false }
+  { chips: 'full', cost: true, title: Infinity, project: true, flow: true, window: true },
+  { chips: 'full', cost: true, title: Infinity, project: true, flow: true, window: false },
+  { chips: 'compact', cost: true, title: Infinity, project: true, flow: false, window: false },
+  { chips: 'count', cost: true, title: Infinity, project: true, flow: false, window: false },
+  { chips: 'count', cost: false, title: Infinity, project: true, flow: false, window: false },
+  { chips: 'count', cost: false, title: 24, project: true, flow: false, window: false },
+  { chips: 'count', cost: false, title: 12, project: true, flow: false, window: false },
+  { chips: 'count', cost: false, title: 0, project: true, flow: false, window: false }
 ]
 
 /** The very last resort (issue #34): only after the hint has shrunk to one item does the project name go. */
-const NO_PROJECT: Level = { chips: 'count', cost: false, title: 0, project: false, flow: false }
+const NO_PROJECT: Level = { chips: 'count', cost: false, title: 0, project: false, flow: false, window: false }
 
 /** `title` cut to `max` columns at a word boundary with an ellipsis; '' when no whole word fits. */
 function cutTitle(title: string, max: number, ellipsis: string): string {
@@ -103,7 +106,11 @@ function buildSegs(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'>, level: L
   if (run) out.push({ text: run })
   if (s.statusWord) out.push({ text: s.statusWord, tone: s.tone })
   else out.push({ text: 'Ready', dim: true })
+  // The root's live model (run.model): gives way together with the cost.
+  if (s.rootModel && level.cost) out.push({ text: env.screenReader ? `model ${s.rootModel}` : s.rootModel, dim: true })
   if (s.costText && level.cost) out.push({ text: s.costText, dim: true })
+  if (s.autoText && level.cost) out.push({ text: s.autoText, dim: true })
+  if (s.windowText && level.window) out.push({ text: env.screenReader ? `plan usage ${s.windowText}` : s.windowText, dim: true })
   // "0 need you" means nothing before there is a project or a run (onboarding, R2-L5).
   if (!compact && (s.needsYou > 0 || s.projectName || s.runTag)) out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })
   if (!compact && level.flow) {

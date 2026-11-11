@@ -112,6 +112,7 @@ import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/set
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
+import { runModelLogs } from './runModels'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
 import type { DelegationGate, SelfKnowledgeHooks } from './types'
 import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
@@ -555,6 +556,8 @@ interface ActiveRun {
   /** Bridged reports (multi-provider org charts): the child sessions of this run. Set at start when roles are bridged. */
   bridge?: BridgedSessions
   /** Agents the bridge wrapper emitted (remapped id -> the bridged role's connection); later upserts keep it. */
+  /** agent.compacted events counted per agent id (AgentInstance.compactions, set on every agent.upsert). */
+  compactions?: Map<string, number>
   bridgedAgents?: Map<string, ConnectionId>
   /** RunConnection per distinct connection of bridged roles, for pricing (never emitted, logged or persisted). */
   bridgedConnections?: RunConnection[]
@@ -752,6 +755,8 @@ export interface RunManagerOptions {
   continuationDelayMs?: number
   /** The model catalog used to decide which adapter a proxy project runs on (adapterForProject). Default: empty. */
   catalog?: () => ProviderModel[]
+  /** The last background model-discovery failure of a connection (ConnectionInfo.modelsError), for the run-start model check. */
+  modelsError?: (connection: ConnectionId) => string | undefined
   /**
    * App settings for the built-in roles' models (setupModel, mcpAssistModel) and the connections' tier mappings.
    * Missing = the built-in roles use the 'deep' tier on the run's connection.
@@ -1829,6 +1834,19 @@ export class RunManager {
       // Usage is computed by the host; an adapter's run.usage is dropped.
       if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
+      // A compaction of an agent's conversation: counted here (AgentInstance.compactions belongs to RunManager), recorded
+      // and broadcast, then the agent goes out again with its new count.
+      if (raw.type === 'agent.compacted') {
+        if (typeof raw.agentId !== 'string' || !raw.agentId) return
+        const counts = (active.compactions ??= new Map())
+        counts.set(raw.agentId, Math.min(1_000_000, (counts.get(raw.agentId) ?? 0) + 1))
+        this.recordEvent(active, raw)
+        logRunEvent(summary, raw)
+        this.broadcast(raw)
+        const known = active.record.agents[raw.agentId]
+        if (known) emit({ type: 'agent.upsert', runId: summary.id, agent: known })
+        return
+      }
       let e = raw
       // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
       // (the abort's 'finished' / 'error', a stray 'idle') never change status, execOutcome or endedBy.
@@ -1875,6 +1893,9 @@ export class RunManager {
         // Priced into a copy (never the adapter's object) before it is recorded or broadcast. The delegation display is the ledger's.
         const priced = priceAgent({ ...agent, connection: on }, pricingFor(on))
         delete priced.delegation
+        const compacted = active.compactions?.get(agent.id)
+        if (compacted) priced.compactions = compacted
+        else delete priced.compactions
         const shown = active.ledger ? this.delegationDisplay(active)[agent.id] : undefined
         e = { ...e, agent: shown ? { ...priced, delegation: shown } : priced }
       }
@@ -1943,6 +1964,11 @@ export class RunManager {
     active.emit = emit
     emit({ type: 'run.status', runId: summary.id, status: 'starting', ...(summary.surface ? { surface: summary.surface } : {}) })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
+    // cli-parity 3.1: the concrete model of each tier in use, and a warning for a stale or fallback one (runModels.ts).
+    if (kind === 'work' && choice.adapter !== 'mock') {
+      const roleOn = new Map(bridging.bridged.map((b) => [b.roleId, b.connection]))
+      for (const l of runModelLogs({ roles: project.roles, connectionOf: (id) => roleOn.get(id) ?? choice.connection, catalog: () => this.options.catalog?.() ?? [], connectionName: (id) => connectionName(id, this.options.appSettings?.()), modelsError: this.options.modelsError })) emit({ type: 'log', runId: summary.id, ...l })
+    }
     for (const line of carried?.logs ?? []) emit({ type: 'log', runId: summary.id, level: line.level, message: line.message })
     if (droppedEffort) emit({ type: 'log', runId: summary.id, level: 'warn', message: `This model does not take the ${droppedEffort} effort level, so the run uses its default effort.` })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
@@ -3109,7 +3135,8 @@ export class RunManager {
       idleMs: a.idleTimer.elapsed(now),
       now,
       skills: [...a.skillCounts.values()],
-      knowledge: a.knowledgeUsage
+      knowledge: a.knowledgeUsage,
+      transcript: a.record.transcript
     })
   }
 

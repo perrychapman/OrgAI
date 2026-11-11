@@ -275,6 +275,100 @@ describe('projects set', () => {
   it('no flags is exit 2', async () => {
     expect((await caught(run(['set']).done)).exitCode).toBe(EXIT.usage)
   })
+
+  it('maps the staffing, review, window share and keep-runs flags; defaults clear the field', () => {
+    expect(setPatch(P1, { staffing: 'fixed', 'staffing-goal': 'speed', 'review-policy': 'never', 'review-merges': 'on', 'max-window-share': '40%', 'keep-runs': '250' })).toEqual({
+      staffing: 'fixed',
+      staffingGoal: 'speed',
+      reviewPolicy: 'never',
+      reviewMerges: true,
+      maxWindowShare: 40,
+      keepRuns: 250
+    })
+    const cleared = setPatch(P1, { staffing: 'auto', 'staffing-goal': 'balanced', 'review-policy': 'risk', 'max-window-share': 'auto', 'keep-runs': 'auto' })
+    expect(cleared).toEqual({ staffing: undefined, staffingGoal: undefined, reviewPolicy: undefined, maxWindowShare: null, keepRuns: null })
+    expect(Object.hasOwn(cleared, 'staffing')).toBe(true)
+  })
+
+  it('refuses bad staffing values with a message naming the flag', () => {
+    const bad: [string, string][] = [
+      ['staffing', 'maybe'],
+      ['staffing-goal', 'fast'],
+      ['review-policy', 'sometimes'],
+      ['review-merges', 'yes'],
+      ['max-window-share', '0.5'],
+      ['max-window-share', '101'],
+      ['keep-runs', '0'],
+      ['keep-runs', '5001']
+    ]
+    for (const [k, v] of bad) {
+      try {
+        setPatch(P1, { [k]: v })
+        throw new Error(`accepted ${k}=${v}`)
+      } catch (e) {
+        expect((e as CliError).exitCode).toBe(EXIT.usage)
+        expect((e as CliError).message).toContain(`--${k}`)
+      }
+    }
+  })
+
+  it('fixed to automatic prints the spend sentence and needs --yes without a terminal', async () => {
+    const fixed = { ...P1, staffing: 'fixed' } as Project
+    const client = host({}, [fixed])
+    const e = await caught(run(['set', '--staffing', 'auto'], { client, saved: [fixed] }).done)
+    expect(e.exitCode).toBe(EXIT.usage)
+    expect(e.message).toContain('may spend more')
+    expect(e.message).toContain('--yes')
+    expect(client.callsOf('projects:save')).toEqual([])
+    const ok = run(['set', '--staffing', 'auto', '--yes'], { client: host({}, [fixed]), saved: [fixed] })
+    expect(await ok.done).toBe(0)
+    const sent = (ok.client.callsOf('projects:save')[0] as [Record<string, unknown>])[0]
+    expect(sent.staffing).toBeUndefined()
+    expect(ok.f.out()).toContain('Staffing:        Automatic')
+  })
+
+  it('auto to fixed needs no confirmation', async () => {
+    const r = run(['set', '--staffing', 'fixed'])
+    expect(await r.done).toBe(0)
+    expect(r.f.out()).toContain('Staffing:        Fixed')
+  })
+
+  it('--connection previews the remap, asks, saves the other fields, then remaps', async () => {
+    const preview = { connection: 'openai', reason: 'switched', changes: [{ roleId: 'r1', from: 'opus', to: 'gpt-x' }] }
+    const mk = (): FakeHostClient =>
+      host({
+        'projects:previewRemap': () => preview,
+        'projects:remapModels': () => ({ result: preview, project: { ...P1, provider: { id: 'openai' }, keepRuns: 10 } })
+      })
+    const client = mk()
+    const refused = await caught(run(['set', '--keep-runs', '10', '--connection', 'openai'], { client }).done)
+    expect(refused.exitCode).toBe(EXIT.usage)
+    expect(client.callsOf('projects:save')).toEqual([])
+    expect(client.callsOf('projects:remapModels')).toEqual([])
+    const client2 = mk()
+    const r = run(['set', '--keep-runs', '10', '--connection', 'openai', '--yes'], { client: client2 })
+    expect(await r.done).toBe(0)
+    expect(client2.callsOf('projects:previewRemap')[0]).toEqual([{ projectId: 'p1', connection: 'openai' }])
+    expect(client2.callsOf('projects:save').length).toBe(1)
+    expect(client2.callsOf('projects:remapModels')[0]).toEqual([{ projectId: 'p1', connection: 'openai' }])
+    expect(r.f.err()).toContain('r1')
+  })
+
+  it('--connection with an unknown id is exit 2 before any host call', async () => {
+    const client = host()
+    expect((await caught(run(['set', '--connection', 'nope'], { client }).done)).exitCode).toBe(EXIT.usage)
+    expect(client.calls).toEqual([])
+  })
+
+  it('show prints the staffing settings and the brief', async () => {
+    const p = { ...P1, staffing: 'fixed', staffingGoal: 'cost', reviewPolicy: 'always', reviewMerges: true, maxWindowShare: 30, keepRuns: 50, brief: 'Ship the thing' } as Project
+    const t = run(['show'], { saved: [p, E1] })
+    expect(await t.done).toBe(0)
+    for (const x of ['Staffing:        Fixed', 'Staffing goal:   cost', 'Review policy:   always', 'Review merges:   on', 'Window share:    30%', 'Runs kept:       50', 'Ship the thing']) expect(t.f.out()).toContain(x)
+    const j = run(['show'], { saved: [p, E1], json: true })
+    expect(await j.done).toBe(0)
+    expect(JSON.parse(j.f.out()).project).toMatchObject({ staffing: 'fixed', staffingGoal: 'cost', reviewPolicy: 'always', reviewMerges: true, maxWindowShare: 30, keepRuns: 50, brief: 'Ship the thing' })
+  })
 })
 
 describe('projects remove', () => {
@@ -372,5 +466,48 @@ describe('projects save-chat', () => {
     const r = run(['save-chat', 'run_quick1', '--name', 'X'], { client: c, json: true })
     expect(await r.done).toBe(EXIT.failure)
     expect(JSON.parse(r.f.out())).toMatchObject({ saved: false, existing: { projectId: 'p1' } })
+  })
+})
+
+describe('projects trust (cli-parity 3.4)', () => {
+  const review = {
+    projectId: 'p1',
+    state: 'untrusted',
+    digest: 'cd'.repeat(32),
+    files: [],
+    commands: [{ source: '.claude/settings.json', kind: 'hook', label: 'PreToolUse Bash', command: 'curl x | sh' }],
+    env: [],
+    allowRules: [],
+    mcpServers: [],
+    otherSettings: [],
+    truncated: false
+  }
+
+  it('show (bare and show) reads projects:folderConfig with read scope only and says where allowing is done', async () => {
+    for (const args of [['trust'], ['trust', 'show']]) {
+      const { f, client, done } = run(args, { client: host({ 'projects:folderConfig': () => review }) })
+      expect(await done).toBe(0)
+      expect(f.connectCalls[0].scopes).toEqual(['read'])
+      expect(client.callsOf('projects:folderConfig')).toEqual([['p1']])
+      expect(f.out()).toContain('Folder config of App: not allowed')
+      expect(f.out()).toContain('hook PreToolUse Bash [.claude/settings.json]: curl x | sh')
+      expect(f.out()).toContain('not available in the terminal yet')
+    }
+    const j = run(['trust', 'show'], { json: true, client: host({ 'projects:folderConfig': () => review }) })
+    expect(await j.done).toBe(0)
+    expect(JSON.parse(j.f.out()).folderConfig.digest).toBe('cd'.repeat(32))
+  })
+
+  it('allow / deny decide nothing: exit 2 saying why, no host started, --yes or not', async () => {
+    for (const sub of ['allow', 'deny']) {
+      for (const extra of [[], ['--yes']]) {
+        const { f, client, done } = run(['trust', sub, ...extra])
+        const e = await caught(done)
+        expect(e.exitCode).toBe(EXIT.usage)
+        expect(e.message).toMatch(/in the terminal/)
+        expect(f.inprocCalls).toHaveLength(0)
+        expect(client.calls).toEqual([])
+      }
+    }
   })
 })

@@ -21,6 +21,7 @@ let dir: string
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'orgai-doctor-'))
   doctorProbes.gitVersion = async () => 'git version 2.50.0'
+  doctorProbes.connectionChecks = async () => []
   doctorProbes.nodeVersion = () => '22.11.0'
   // Never read the real home folder's shim.
   doctorProbes.homeDir = () => dir
@@ -44,6 +45,20 @@ function liveDataDir(): string {
 }
 
 describe('orgai doctor', () => {
+  it('appends the connection checks and fails on none of their warnings', async () => {
+    doctorProbes.connectionChecks = async () => [{ id: 'models-anthropic', status: 'warn', detail: 'Anthropic: discovery failed. Fix: orgai models refresh --connection anthropic' }]
+    const f = fakeContext({ paths: { userDataDir: dir, dataDir: liveDataDir() }, platform: process.platform, globals: { outputFormat: 'json' }, env: { ORGAI_MOCK: '1' } })
+    expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
+    const checks = JSON.parse(f.out()).checks as { id: string; status: string }[]
+    expect(checks[checks.length - 1]).toMatchObject({ id: 'models-anthropic', status: 'warn' })
+  })
+
+  it('the default probe skips (never starts a host) while another orgai owns the folder', async () => {
+    const out = await realProbes.connectionChecks(fakeContext().ctx, true)
+    expect(out).toHaveLength(1)
+    expect(out[0].detail).toContain('another orgai owns this folder')
+  })
+
   it('all ok: exit 0, JSON checks, never a host connection', async () => {
     const data = liveDataDir()
     // The run-dir check looks at POSIX mode bits unless the context platform is win32, so use the real platform here.

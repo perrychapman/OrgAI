@@ -8,6 +8,10 @@ import type { EfficiencySignal, WastefulSort } from '../components/usage/panelPr
 import { costView, formatTokens, type CostInput } from './cost'
 import { totalTokens } from './trends'
 import { usageKindOf } from './usageOverview'
+import { effectiveWastefulSort, isLegacyRow, knownCost, median, minutesText, noResultSentence, pageCost, percentText, wastefulRuns } from '@shared/view/usageInsights'
+
+export { effectiveWastefulSort, isLegacyRow, knownCost, median, minutesText, noResultSentence, pageCost, percentText, wastefulRuns }
+export type { WastefulEntry } from '@shared/view/usageInsights'
 
 // ---------- shared helpers ----------
 
@@ -17,50 +21,12 @@ export const WASTEFUL_MORE = 25
 /** Runs of each kind the Team vs Ask comparison needs. */
 export const TEAM_ASK_MIN_RUNS = 3
 
-export const isLegacyRow = (r: Pick<UsageOverviewRow, 'legacy' | 'usage'>): boolean => !!(r.legacy || r.usage.legacy)
-
-/** Known cost of a row: priced, complete, and something was spent. Partial and unknown are left out. */
-export function knownCost(r: UsageOverviewRow): number | null {
-  const u = r.usage
-  if (u.costUsd === null || u.costPartial || u.costSource === 'unknown') return null
-  return totalTokens(u.tokens) > 0 ? u.costUsd : null
-}
-
 const cacheReportedBy = (t: TokenUsage): boolean => t.cacheRead + t.cacheWrite > 0
 const promptTokens = (t: TokenUsage): number => t.input + t.cacheRead + t.cacheWrite
 
-export function median(values: readonly number[]): number | null {
-  if (values.length === 0) return null
-  const s = [...values].sort((a, b) => a - b)
-  const mid = s.length >> 1
-  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2
-}
-
 const mean = (values: readonly number[]): number | null => (values.length === 0 ? null : values.reduce((a, b) => a + b, 0) / values.length)
 
-/** A page-precision cost string (the same words as <Cost precision="page" />). */
-export function pageCost(usd: number | null, partial = false): string {
-  if (usd === null) return 'unknown'
-  return costView({ costUsd: usd, costSource: 'computed', sourceMixed: true, ...(partial ? { costPartial: true as const } : {}) } as CostInput, { precision: 'page' }).text
-}
 
-/** 0-1 as "41%"; a real but tiny share reads "<1%", never 0%. */
-export function percentText(fraction: number): string {
-  if (!Number.isFinite(fraction)) return '—'
-  const p = fraction * 100
-  if (p > 0 && p < 1) return '<1%'
-  return `${Math.round(p)}%`
-}
-
-/** "45 s", "12 min", "1 h 20 min". */
-export function minutesText(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000))
-  if (s < 60) return `${s} s`
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m} min`
-  const h = Math.floor(m / 60)
-  return m % 60 === 0 ? `${h} h` : `${h} h ${m % 60} min`
-}
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString()} ${n === 1 ? one : many}`
 
@@ -411,124 +377,6 @@ export function sortEfficiencyRows(rows: readonly EfficiencyProjectRow[], column
     const c = typeof x === 'string' || typeof y === 'string' ? String(x).localeCompare(String(y)) : x - y
     return c * sign || a.project.localeCompare(b.project)
   })
-}
-
-// ---------- runs worth a look (6.6) ----------
-
-/** The sort in force: "cost with no result" needs noResultCostUsd on some row, else Most expensive (6.6). */
-export function effectiveWastefulSort(sort: WastefulSort, rows: readonly UsageOverviewRow[]): WastefulSort {
-  if (sort !== 'no-result') return sort
-  return rows.some((r) => r.usage.noResultCostUsd !== undefined) ? sort : 'cost'
-}
-
-export interface WastefulEntry {
-  row: UsageOverviewRow
-  /** The run's cost is not known (it sorts after the known ones, by tokens). */
-  unknownCost: boolean
-  /** The run has agents that returned nothing. */
-  noResult: boolean
-  /** The plain sentence for the active sort. */
-  why: string
-}
-
-const WHY_NAMES_MAX = 1
-
-/** "implementer-2 spent 820 tokens and produced no result" / "implementer-2 and 1 other spent 1,640 tokens ...". */
-export function noResultSentence(row: Pick<UsageOverviewRow, 'usage'>): string {
-  const u = row.usage
-  const n = u.agentsWithoutResult
-  const tokens = `${u.noResultTokens.toLocaleString()} ${u.noResultTokens === 1 ? 'token' : 'tokens'}`
-  const names = (u.noResultAgents ?? []).map((a) => a.name)
-  if (n <= 0) return 'No agent finished without a result.'
-  if (names.length === 0) return `${plural(n, 'agent')} produced no result and spent ${tokens}.`
-  const first = names.slice(0, WHY_NAMES_MAX).join(', ')
-  const others = n - Math.min(names.length, WHY_NAMES_MAX)
-  const who = others > 0 ? `${first} and ${others} other${others === 1 ? '' : 's'}` : first
-  return `${who} spent ${tokens} and produced no result`
-}
-
-interface Scored {
-  row: UsageOverviewRow
-  /** Higher sorts first. null = unknown cost (sorts after, by `tie`). */
-  score: number | null
-  tie: number
-  unknownCost: boolean
-  why: string
-}
-
-function noResultScore(r: UsageOverviewRow): Scored | null {
-  const u = r.usage
-  const failed = r.status === 'error'
-  const noResult = u.agentsWithoutResult > 0
-  if (!failed && !noResult) return null
-  // A failed run counts its whole cost; its no-result agents are inside it, so they are not added again.
-  let usd: number | null
-  let tie: number
-  if (failed) {
-    usd = u.costUsd === null || u.costSource === 'unknown' ? null : u.costUsd
-    tie = totalTokens(u.tokens)
-  } else {
-    usd = u.noResultCostUsd === undefined || u.noResultCostUsd === null ? null : u.noResultCostUsd
-    tie = u.noResultTokens
-  }
-  if (usd !== null && usd <= 0 && tie <= 0) return null
-  const why = noResult ? `${noResultSentence(r)}${failed ? '; the run failed' : ''}` : 'The run failed'
-  return { row: r, score: usd, tie, unknownCost: usd === null, why }
-}
-
-/** Cells carry short phrases without a closing full stop ("Retried 2 times"). */
-function phrase(s: string): string {
-  return s.replace(/\.+$/, '')
-}
-
-/**
- * The runs worth a look, best first, for a sort. Rows with unknown cost sort after known ones by tokens. The sort must
- * already be effective (`effectiveWastefulSort`).
- */
-export function wastefulRuns(rows: readonly UsageOverviewRow[], sort: WastefulSort): WastefulEntry[] {
-  const scored: Scored[] = []
-  for (const r of rows) {
-    const u = r.usage
-    let s: Scored | null = null
-    const tokens = totalTokens(u.tokens)
-    switch (sort) {
-      case 'no-result':
-        s = noResultScore(r)
-        break
-      case 'cost': {
-        if (tokens <= 0) break
-        const known = u.costUsd !== null && u.costSource !== 'unknown'
-        s = { row: r, score: known ? u.costUsd : null, tie: tokens, unknownCost: !known, why: known ? `Estimated ${pageCost(u.costUsd, !!u.costPartial)}.` : `Cost unknown; ${tokens.toLocaleString()} tokens.` }
-        break
-      }
-      case 'cache': {
-        if (isLegacyRow(r) || promptTokens(u.tokens) < CACHE_MIN_INPUT_TOKENS || !cacheReportedBy(u.tokens)) break
-        const rate = u.tokens.cacheRead / promptTokens(u.tokens)
-        s = { row: r, score: 1 - rate, tie: promptTokens(u.tokens), unknownCost: false, why: `Cache hit ${percentText(rate)}.` }
-        break
-      }
-      case 'retries':
-        if (u.retries > 0) s = { row: r, score: u.retries, tie: u.turns, unknownCost: false, why: u.retries === 1 ? 'Retried once.' : `Retried ${u.retries} times.` }
-        break
-      case 'nudges':
-        if (u.nudges > 0) s = { row: r, score: u.nudges, tie: u.turns, unknownCost: false, why: u.nudges === 1 ? 'Auto-continued once.' : `Auto-continued ${u.nudges} times.` }
-        break
-      case 'idle': {
-        if (isLegacyRow(r) || u.wallMs <= 0 || u.idleMs <= 0) break
-        const share = u.idleMs / u.wallMs
-        const waited = u.waitingMs >= 60_000 ? `; waited on you ${minutesText(u.waitingMs)}` : ''
-        s = { row: r, score: share, tie: u.idleMs, unknownCost: false, why: `Idle ${minutesText(u.idleMs)}, ${percentText(share)} of its time${waited}` }
-        break
-      }
-    }
-    if (s) scored.push(s)
-  }
-  scored.sort((a, b) => {
-    if ((a.score === null) !== (b.score === null)) return a.score === null ? 1 : -1
-    if (a.score !== null && b.score !== null && a.score !== b.score) return b.score - a.score
-    return b.tie - a.tie || b.row.startedAt - a.row.startedAt
-  })
-  return scored.map((s) => ({ row: s.row, unknownCost: s.unknownCost, noResult: s.row.usage.agentsWithoutResult > 0, why: phrase(s.why) }))
 }
 
 /**

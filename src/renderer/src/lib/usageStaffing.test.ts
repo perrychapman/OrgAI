@@ -69,8 +69,13 @@ describe('reportTimingSummary', () => {
     ]
     expect(reportTimingSummary(rows)).toMatchObject({ runs: 3, firstSpawnMs: 30_000, overlap: 2 })
   })
+  it('reads the after-last-report share of the wall time, and leaves older runs out', () => {
+    const rows = [row({ wallMs: 100_000, efficiency: eff({ afterLastReportMs: 10_000 }) }), row({ wallMs: 100_000, efficiency: eff({ afterLastReportMs: 30_000 }) }), row({ wallMs: 100_000, efficiency: eff() })]
+    expect(reportTimingSummary(rows).afterLastShare).toBeCloseTo(0.2)
+    expect(reportTimingSummary([rows[2]!]).afterLastShare).toBeNull()
+  })
   it('is empty without report runs', () => {
-    expect(reportTimingSummary([row(), row()])).toEqual({ runs: 0, firstSpawnMs: null, overlap: null, tailShare: null })
+    expect(reportTimingSummary([row(), row()])).toEqual({ runs: 0, firstSpawnMs: null, overlap: null, tailShare: null, afterLastShare: null })
   })
   it('skips a run that cannot give a signal in that signal only', () => {
     const s = reportTimingSummary([row({ efficiency: eff({ reportBusyMs: 0 }) }), row({ efficiency: eff({ reportSumMs: 80_000, reportBusyMs: 40_000 }) })])

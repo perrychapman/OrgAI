@@ -66,7 +66,7 @@ import { proxySecretKey, type SecretStore } from '../store/secrets'
 import type { SettingsStore } from '../store/settings'
 import type { AdapterModelInfo, RunConnection } from '../runtime/types'
 import { anthropicStatus } from './anthropicAuth'
-import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, suggestTierModels, tierFromDescription } from './catalog'
+import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, newerClaudeModel, suggestTierModels, tierFromDescription } from './catalog'
 import { cancelLogin, listModels, validModelId, MODEL_TEXT_MAX, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
 import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMSpend, fetchProxyModels, normalizeBaseUrl } from './litellm'
@@ -289,6 +289,11 @@ export class ConnectionService {
   /** Every connection's catalog, for adapterForProject. */
   catalog(): ProviderModel[] {
     return this.allIds().flatMap((id) => this.catalogFor(id))
+  }
+
+  /** The last background discovery failure of a connection (ConnectionInfo.modelsError), or undefined. */
+  modelsErrorFor(id: ConnectionId): string | undefined {
+    return this.modelsErrors[id]
   }
 
   /** The catalog of one connection, or of every enabled connection. */
@@ -1167,6 +1172,9 @@ export class ConnectionService {
 
   // ---------- per-run model access ----------
 
+  /** Stale tier mappings already logged by anthropicTierEnv (`VAR=id`), so each is said once per process. */
+  private staleTierWarned = new Set<string>()
+
   runConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
     const built = { ...this.buildRunConnection(project, choice), name: connectionName(choice.connection, this.deps.settings.get()) }
     if (choice.adapter === 'mock') return built
@@ -1205,10 +1213,25 @@ export class ConnectionService {
   private anthropicTierEnv(): Record<string, string> {
     const t = this.record('anthropic')?.tierModels ?? {}
     const env: Record<string, string> = {}
+    const catalog = this.catalogFor('anthropic')
     const set = (name: string, value: string | undefined): void => {
       const v = value?.trim()
       // Also an alias with a context suffix ("sonnet[1m]"): mapping an alias to itself would not resolve.
-      if (v && settingTier(v.replace(/\[[^\]]*\]$/, '')) === undefined) env[name] = v
+      if (!v || settingTier(v.replace(/\[[^\]]*\]$/, '')) !== undefined) return
+      // Never force an alias onto an older model of its family than the CLI serves for it (or than the catalog lists):
+      // the variable moves every spawn, the 'default' model and an alias root onto that id, and an older Claude model
+      // can have a fifth of the context window (claude-opus-4-5: 200k, compacting at 167k; claude-opus-5-5: 1M). The
+      // alias then resolves natively. Fixed by changing the tier mapping in Settings > Connections.
+      const newer = newerClaudeModel(v, catalog)
+      if (newer) {
+        const key = `${name}=${v}`
+        if (!this.staleTierWarned.has(key)) {
+          this.staleTierWarned.add(key)
+          ;(this.deps.logInfo ?? ((m) => console.info(m)))(`Anthropic tier mapping names ${v}, older than ${newer}; ${name} is not set, so the alias runs on the CLI's own current model.`)
+        }
+        return
+      }
+      env[name] = v
     }
     set('ANTHROPIC_DEFAULT_FABLE_MODEL', t.top)
     set('ANTHROPIC_DEFAULT_OPUS_MODEL', t.deep)

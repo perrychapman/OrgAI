@@ -12,6 +12,10 @@
  */
 import {
   VIRTUAL_PROJECT_IDS,
+  type AppSettings,
+  type ConnectionInfo,
+  type FolderConfigReview,
+  type TeamFilesStatus,
   type CardKind,
   type DecisionOutcome,
   type HostKind,
@@ -19,8 +23,11 @@ import {
   type Project,
   type ProjectCreateInput,
   type ProjectPathCheck,
+  type ProviderModel,
+  type RunOverrides,
   type RunRecord,
   type RunSummary,
+  type RunOutput,
   type RunTeam,
   type WorktreeDiff
 } from '../../shared/types'
@@ -30,7 +37,11 @@ import { RunStream, type RunStreamTimers } from '../client/runStream'
 import { safeLine } from '../output'
 import { recordWithoutImages } from '../render'
 import { CliError, EXIT, type CliContext, type ConnectResult, type HostCallError, type HostClient, type InprocHostHandle } from '../types'
+import { overridesNeedConfigure } from '../commands/exec'
+import { loadModelCatalog, switchRunModel } from '../modelSwitch'
 import { composerMode, offersRetro } from './selectors'
+import { approvalItems, waitingNotice, type ApprovalItem } from './approvals'
+import { projectKindOf } from '../../shared/defaults'
 import {
   addNotice,
   applyEvent,
@@ -43,8 +54,10 @@ import {
   setActiveRun,
   setComposeTarget,
   setConnection,
+  setProject,
   upsertRunSummary
 } from './state'
+import { hintStore, type TuiConfigApi } from './configApi'
 import type {
   ComposeTarget,
   DecisionCall,
@@ -108,6 +121,10 @@ class TuiConnection implements TuiHostConnection {
     return this.client.hello
   }
 
+  get userDataDir(): string {
+    return this.ctx.paths.userDataDir
+  }
+
   /** A fresh connection with the same scopes (RunStream reconnects); on success it becomes the shared client. */
   async reconnect(): Promise<ConnectResult> {
     const res = await this.ctx.connect([...TUI_SCOPES], { clientKind: 'tui', waitStartingMs: ENSURE_HOST_STARTING_WAIT_MS })
@@ -166,6 +183,15 @@ class TuiConnection implements TuiHostConnection {
   async createProject(input: ProjectCreateInput): Promise<Project> {
     return this.withConfigure((client) =>
       client.call<Project>('projects:create', [input]).catch((e: unknown) => {
+        throw hostError(e)
+      })
+    )
+  }
+
+  /** One call with 'configure' (run options that widen the project's settings; exec's Session.needConfigure). */
+  async callConfigured<T>(method: string, params: unknown[]): Promise<T> {
+    return this.withConfigure((client) =>
+      client.call<T>(method, params).catch((e: unknown) => {
         throw hostError(e)
       })
     )
@@ -439,6 +465,14 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return pid
   }
 
+  /**
+   * A call that starts or continues a run: with run options that widen the project's settings it goes through a
+   * separate 'configure' connection (as exec asks for it), else the shared one.
+   */
+  const startCall = <T>(method: string, params: unknown[], overrides: RunOverrides | undefined, project: Project | undefined): Promise<T> =>
+    overrides && conn.callConfigured && overridesNeedConfigure(project, overrides) ? conn.callConfigured<T>(method, params) : call<T>(method, params)
+  const withOverrides = (o: RunOverrides | undefined): { overrides?: RunOverrides } => (o && Object.keys(o).length ? { overrides: o } : {})
+
   /** Focus a run the host just started or continued (its summary first, so following and tags know it). */
   const adopt = async (summary: RunSummary, chain?: string[]): Promise<RunSummary> => {
     if (!summary || typeof summary.id !== 'string') throw new Error('The OrgAI host did not return the run.')
@@ -451,7 +485,60 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return summary
   }
 
+  // Read-only /approvals (read scope): every project's pending team files, and this code project's folder config.
+  const waitingItems = async (): Promise<ApprovalItem[]> => {
+    const attention = await call<TeamFilesStatus[]>('teamFiles:listAttention', [])
+    const p = state.project
+    const folderConfig = p && projectKindOf(p) === 'code' ? await call<FolderConfigReview>('projects:folderConfig', [p.id]).catch(() => undefined) : undefined
+    return approvalItems(Array.isArray(attention) ? attention : [], p ? { id: p.id, name: p.name, ...(folderConfig ? { folderConfig } : {}) } : undefined)
+  }
+
+  // /team and /settings (cli-parity 3.7): reads on the shared client, writes on a one-call 'configure' connection.
+  const write = <T>(method: string, params: unknown[]): Promise<T> => (conn.callConfigured ? conn.callConfigured<T>(method, params) : call<T>(method, params))
+  const firstOpen = conn.userDataDir ? hintStore(conn.userDataDir) : undefined
+  const config: TuiConfigApi = {
+    async project(id) {
+      const p = await call<Project | null>('projects:get', [id])
+      if (!p || typeof p !== 'object') throw new Error('That project is gone.')
+      return p
+    },
+    async saveProject(p) {
+      const saved = await write<Project>('projects:save', [p])
+      if (saved && state.project?.id === saved.id) set(setProject(state, saved))
+      return saved
+    },
+    async projects() {
+      const list = await call<Project[]>('projects:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    async connections() {
+      const list = await call<ConnectionInfo[]>('connections:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    async models(connection) {
+      const list = await call<ProviderModel[]>('models:list', connection ? [{ connection }] : [])
+      return Array.isArray(list) ? list : []
+    },
+    async settings() {
+      const s = await call<Partial<AppSettings>>('settings:get', [])
+      return s && typeof s === 'object' ? s : {}
+    },
+    setSetting: (patch) => write<Partial<AppSettings>>('settings:set', [patch]),
+    async updateConnection(connection) {
+      const info = await write<ConnectionInfo>('connections:update', [connection])
+      // The host remapped the roles on that connection: the open project follows.
+      const id = state.project?.id
+      if (id) {
+        const p = await call<Project | null>('projects:get', [id]).catch(() => null)
+        if (p && typeof p === 'object' && state.project?.id === p.id) set(setProject(state, p))
+      }
+      return info
+    },
+    ...(firstOpen ? { firstOpen } : {})
+  }
+
   const api: TuiSessionApi = {
+    config,
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener)
@@ -481,25 +568,49 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
         case 'continue': {
           const from = activeId()
           const chain = [...state.activeChain]
-          const next = await call<RunSummary>('runs:continue', [{ runId: from, text }])
+          const next = await startCall<RunSummary>('runs:continue', [{ runId: from, text, ...withOverrides(o.overrides) }], o.overrides, state.project)
           return adopt(next, chain)
         }
         case 'start': {
           const projectId = state.project?.id
           if (!projectId) throw new Error('No project is open.')
-          const next = await call<RunSummary>('runs:start', [{ projectId, prompt: text, ...(o.team ? { team: o.team } : {}) }])
+          const next = await startCall<RunSummary>('runs:start', [{ projectId, prompt: text, ...(o.team ? { team: o.team } : {}), ...withOverrides(o.overrides) }], o.overrides, state.project)
           return adopt(next)
         }
         case 'quick':
-          return api.startQuick({ prompt: text, allowEdits: false, ...(o.team ? { team: o.team } : {}) })
+          return api.startQuick({ prompt: text, allowEdits: false, ...(o.team ? { team: o.team } : {}), ...withOverrides(o.overrides) })
       }
     },
-    async startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam }) {
+    async startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam; overrides?: RunOverrides }) {
       if (typeof input.prompt !== 'string' || input.prompt.trim() === '') throw new Error('Type a message first.')
-      const next = await call<RunSummary>('runs:startQuick', [
-        { prompt: input.prompt, folder: state.folder, team: input.team ?? 'single', allowEdits: input.allowEdits === true }
-      ])
+      const next = await startCall<RunSummary>(
+        'runs:startQuick',
+        [{ prompt: input.prompt, folder: state.folder, team: input.team ?? 'single', allowEdits: input.allowEdits === true, ...withOverrides(input.overrides) }],
+        input.overrides,
+        undefined
+      )
       return adopt(next)
+    },
+    modelCatalog: () => loadModelCatalog(call),
+    approvals: {
+      list: () => waitingItems(),
+      waiting: async () => waitingNotice(await waitingItems())
+    },
+    async switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }) {
+      const runId = activeId()
+      const out = await switchRunModel(call, runId, selected, opts)
+      // The run.model event updates the status bar; the summary also carries the selection kept for the next message.
+      if (out.run?.id === runId) set(upsertRunSummary(state, out.run))
+      return out
+    },
+    async resumeNow() {
+      const from = activeId()
+      const chain = [...state.activeChain]
+      const next = await call<RunSummary>('runs:resumeNow', [from])
+      return next && next.id !== from ? adopt(next, chain) : adopt(next)
+    },
+    async cancelAutoResume() {
+      await call('runs:cancelAutoResume', [activeId()])
     },
     async interrupt() {
       await call('runs:interrupt', [activeId()])
@@ -516,6 +627,10 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     },
     async worktreeDiff(branch: string): Promise<WorktreeDiff> {
       return call<WorktreeDiff>('maintenance:diff', [{ projectId: projectIdOf(state.activeRunId), branch }])
+    },
+    async listOutputs() {
+      const list = await call<RunOutput[]>('outputs:list', [projectIdOf(state.activeRunId)])
+      return Array.isArray(list) ? list : []
     },
     async listRuns() {
       const list = await call<RunSummary[]>('runs:list', [projectIdOf()])

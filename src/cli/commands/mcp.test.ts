@@ -192,6 +192,45 @@ describe('mcp list / show / enable / remove', () => {
   })
 })
 
+describe('mcp update (role access)', () => {
+  const PR = project('p1', '/work', { name: 'Work', roles: [{ id: 'r1', slug: 'lead', name: 'Lead' }, { id: 'r2', slug: 'dev', name: 'Dev' }] } as never)
+  const upsert = (p: unknown): unknown => ({ project: PR, servers: [info((p as [{ spec: McpServerSpec }])[0].spec)] })
+  const mk = (s: McpServerSpec, o: FakeContextOptions = {}) => setup({ 'projects:list': () => [PR], 'mcp:list': () => [info(s)], 'mcp:upsert': upsert }, o)
+  const sent = (client: FakeHostClient): McpServerSpec => (client.callsOf('mcp:upsert')[0] as [{ spec: McpServerSpec }])[0].spec
+
+  it('--role takes slugs or names, comma or repeated, and sends the slugs', async () => {
+    const { client, f } = mk(spec())
+    const r = await run(f, ['update', 'github', '--role', 'lead,Dev'])
+    expect(r.code).toBe(0)
+    expect(sent(client)).toEqual({ ...spec(), roles: ['lead', 'dev'] })
+    expect(r.out).toContain('github is now available to lead, dev.')
+    const g = mk(spec())
+    expect((await run(g.f, ['update', 'github', '--role', 'dev', '--role', 'dev'])).code).toBe(0)
+    expect(sent(g.client).roles).toEqual(['dev'])
+  })
+
+  it('--no-roles sends an empty list; --all-roles drops the list; JSON has before and after', async () => {
+    const a = mk(spec({ roles: ['dev'] }), { globals: { outputFormat: 'json' } })
+    const j = JSON.parse((await run(a.f, ['update', 'github', '--no-roles'])).out)
+    expect(sent(a.client).roles).toEqual([])
+    expect(j).toMatchObject({ previousRoles: ['dev'], roles: [] })
+    const b = mk(spec({ roles: ['dev'] }))
+    expect((await run(b.f, ['update', 'github', '--all-roles'])).code).toBe(0)
+    expect('roles' in sent(b.client)).toBe(false)
+  })
+
+  it('refuses an unknown role, no choice or two choices (exit 2, nothing sent)', async () => {
+    for (const args of [['update', 'github', '--role', 'ghost'], ['update', 'github'], ['update', 'github', '--no-roles', '--all-roles'], ['update', '--no-roles']]) {
+      const { client, f } = mk(spec())
+      const r = await run(f, args)
+      expect(r.code).toBe(EXIT.usage)
+      expect(client.callsOf('mcp:upsert')).toHaveLength(0)
+    }
+    const { f } = mk(spec())
+    expect((await run(f, ['update', 'github', '--role', 'ghost'])).err).toContain('--role: no role "ghost"')
+  })
+})
+
 describe('mcp set-secret', () => {
   const answers = () => ({ 'mcp:list': () => [info(spec())], 'mcp:setSecret': () => ({ project: P, servers: [] }) })
 

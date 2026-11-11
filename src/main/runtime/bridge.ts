@@ -569,6 +569,9 @@ export class BridgedSessions {
       case 'skill.used':
         this.deps.emit({ ...e, agentId: this.mapId(child, e.agentId) })
         return
+      case 'agent.compacted':
+        this.deps.emit({ ...e, runId: parent.run.id, agentId: this.mapId(child, e.agentId) })
+        return
       case 'knowledge.recalled':
         this.deps.emit({ ...e, agentId: this.mapId(child, e.agentId) })
         return

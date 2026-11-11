@@ -118,10 +118,13 @@ export function hasAmbientSecretEnv(env: NodeJS.ProcessEnv): boolean {
 export const SECRET_ENV_IGNORED_WARNING = 'ORGAI_SECRET_* ignored: this command does not start a host'
 
 /** Commands that only read saved data and never start a host (whatever their subcommand): environment secrets mean nothing to them. */
-export const HOSTLESS_COMMANDS: ReadonlySet<string> = new Set(['status', 'runs', 'doctor', 'completions'])
+export const HOSTLESS_COMMANDS: ReadonlySet<string> = new Set(['status', 'doctor', 'completions'])
 
-/** Subcommands of other commands that only read saved data (cli-standalone-default.md 4.3; `usage show` and `secrets status` still go through a host). */
-const HOSTLESS_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = { projects: ['list', 'show'] }
+/**
+ * Subcommands of other commands that only read saved data (cli-standalone-default.md 4.3; `usage show` and `secrets
+ * status` still go through a host). `runs model` starts a host (it switches a run's model), so only list and show.
+ */
+const HOSTLESS_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = { projects: ['list', 'show'], runs: ['list', 'show'] }
 
 /** The arguments before `--`. */
 const beforeDashes = (args: readonly string[]): readonly string[] => {

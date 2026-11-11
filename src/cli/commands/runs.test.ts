@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { RunRecord, TranscriptEntry } from '../../shared/types'
 import { fakeContext, project, record, summary } from '../testing/fakeContext'
@@ -107,6 +110,25 @@ describe('orgai runs show', () => {
     expect(out).toContain('Cost: $0.42')
   })
 
+  it('prints the number of outputs the run made when it is not zero', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-runs-'))
+    try {
+      const none = fakeContext({ cwd: '/work/app', paths: { userDataDir: dir, dataDir: dir }, store: { projects: [p1], runs, records: { run_five55: rec } } })
+      expect(await runRuns(none.ctx, ['show', 'R5'])).toBe(EXIT.ok)
+      expect(none.out()).not.toContain('Outputs:')
+      mkdirSync(join(dir, 'projects', 'p1'), { recursive: true })
+      writeFileSync(join(dir, 'projects', 'p1', 'outputs.json'), JSON.stringify({ version: 2, outputs: [{ id: 'out_1', runId: 'run_five55' }, { id: 'out_2', runId: 'run_five55' }, { id: 'out_3', runId: 'run_one111' }] }))
+      const f = fakeContext({ cwd: '/work/app', paths: { userDataDir: dir, dataDir: dir }, store: { projects: [p1], runs, records: { run_five55: rec } } })
+      expect(await runRuns(f.ctx, ['show', 'R5'])).toBe(EXIT.ok)
+      expect(f.out()).toContain('Outputs: 2 (orgai outputs list --run R5)')
+      const j = fakeContext({ cwd: '/work/app', paths: { userDataDir: dir, dataDir: dir }, globals: { outputFormat: 'json' }, store: { projects: [p1], runs, records: { run_five55: rec } } })
+      expect(await runRuns(j.ctx, ['show', 'R5'])).toBe(EXIT.ok)
+      expect(JSON.parse(j.out()).outputCount).toBe(2)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('--tail limits the rows; --transcript shows all', async () => {
     const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: rec } } })
     await runRuns(f.ctx, ['show', 'run_five55', '--tail', '2'])
@@ -116,6 +138,24 @@ describe('orgai runs show', () => {
     await runRuns(g.ctx, ['show', 'run_fiv', '--transcript'])
     expect(g.out()).toContain('Transcript:')
     expect(g.out()).toContain('Look at this')
+  })
+
+  it('--logs prints the harness log (warnings and errors by default) and the auto-continue count', async () => {
+    const withLogs = { ...rec, plan: { ...rec.plan!, autoContinues: 3 }, logs: [{ at: 1000, level: 'info' as const, message: 'Models: x' }, { at: 2000, level: 'warn' as const, message: 'Slow \x1b[31mtool' }, { at: 3000, level: 'error' as const, message: 'Boom' }] }
+    const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: withLogs } } })
+    expect(await runRuns(f.ctx, ['show', 'R5', '--logs'])).toBe(EXIT.ok)
+    expect(f.out()).toContain('Auto-continues: 3 of 40')
+    expect(f.out()).toContain('Logs (warnings and errors; 2 of 3):')
+    expect(f.out()).toMatch(/WARN {3}Slow tool/)
+    expect(f.out()).toMatch(/ERROR {2}Boom/)
+    expect(f.out()).not.toContain('Models: x')
+    const g = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: withLogs } } })
+    await runRuns(g.ctx, ['show', 'R5', '--logs', '--level', 'all'])
+    expect(g.out()).toContain('Logs (all levels; 3 of 3):')
+    expect(g.out()).toContain('Models: x')
+    const h = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: withLogs } } })
+    await expect(runRuns(h.ctx, ['show', 'R5', '--logs', '--level', 'loud'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runRuns(h.ctx, ['show', 'R5', '--level', 'all'])).rejects.toMatchObject({ exitCode: EXIT.usage })
   })
 
   it('JSON omits image bytes', async () => {

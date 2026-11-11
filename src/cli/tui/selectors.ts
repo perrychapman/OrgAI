@@ -4,8 +4,9 @@
  * status from statusText (render.ts statusWordOf), names from agentLabel / runName, costs from costView, the needs-you
  * count from decisionCount (cli-spec 2 item 4).
  */
+import { compactionCount } from '../../shared/view/compactionText'
 import { DELEGATION_BADGE_SHORT, delegationBadges } from '../../shared/delegationView'
-import { VIRTUAL_PROJECT_IDS, type AgentInstance, type AgentState, type CardKind, type RunSummary, type TranscriptEntry } from '../../shared/types'
+import { VIRTUAL_PROJECT_IDS, type AgentInstance, type AgentState, type CardKind, type RunSummary, type TranscriptEntry, type UsageStatus } from '../../shared/types'
 import { agentCostInput, costView, formatDuration, formatTokens, runCostInput, sumCosts } from '../../shared/view/cost'
 import { normalizeParents } from '../../shared/view/agentTree'
 import { foldFinished, isSettledAt } from '../../shared/view/foldFinished'
@@ -18,11 +19,12 @@ import { commandSummary, isCompoundCommand } from './streamRows'
 import { roleRepresentatives, withTeamRows } from './teamRows'
 import { agentIdentityTone } from './identity'
 import { safe, safeLine } from '../output'
-import { latestByAgent, latestForStep, staffingLabel, staffingReason, stepRanText } from '../staffingText'
+import { latestByAgent, latestForStep, liveModelOf, modelsUsedBy, rootModelOf, runConnections, staffingLabel, staffingReason, stepRanText } from '../staffingText'
 import { readyCount, stepFlows, usesGraph } from './planGraph'
 import { isWorkingAgentState } from './activity'
 import { agentLabel, imageLabel, mediaLabel, pendingItems, resultPartsLabel, statusViewOf, toolNamesOf } from '../render'
-import { statusText } from '../../shared/view/runStatus'
+import { autoContinueState, statusText } from '../../shared/view/runStatus'
+import { DEFAULT_MAX_AUTO_CONTINUES } from '../../shared/types'
 import { CARD_BUCKETS, cardArrivalSeq } from './state'
 import {
   cardKey,
@@ -387,7 +389,7 @@ function treeOf(
       stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
       activity,
       activityIsCompound: isCompoundCommand(a.activity) || activity !== fullActivity,
-      costText: cost.empty ? '' : cost.text,
+      costText: [cost.empty ? '' : cost.text, compactionCount(a.compactions)].filter(Boolean).join(' · '),
       isRoot: a.parentId === null,
       kind: 'agent',
       ...(roleAdds(label, role) ? {} : { roleShown: false }),
@@ -432,9 +434,20 @@ export function orgTreeRows(s: TuiState, opts: OrgTreeOptions = {}): OrgTreeRow[
   const waiting = cardsByAgent(s)
   const paletteRoles = s.project?.roles ?? []
   const staffed = latestByAgent(run.staffing)
+  const multi = runConnections(run.summary, run.agents).length > 0
   let own: OrgTreeRow[] = treeOf(run, 0, false, false, options, waiting, trafficByAgent(run, opts.now ?? Date.now())).map(row => {
-    const pick = staffed.get(row.id)
-    return { ...row, identityTone: agentIdentityTone(paletteRoles, run.agents[row.id]), ...(pick && row.kind !== 'group' ? { staffing: staffingLabel(pick) } : {}) }
+    const agent = run.agents[row.id]
+    const pick = row.kind !== 'group' ? staffed.get(row.id) : undefined
+    // Model per agent (cli-parity 3.1): the assignment's model, else the live one; the label keeps tier and effort apart so the row can cut the id first.
+    const model = row.kind === 'group' || !agent ? '' : pick?.model ? safeLine(pick.model) : liveModelOf(agent)
+    const on = multi && agent && row.kind !== 'group' ? safeLine(agent.connection ?? run.summary.connection ?? '') : ''
+    return {
+      ...row,
+      identityTone: agentIdentityTone(paletteRoles, agent),
+      ...(pick ? { staffing: staffingLabel({ tier: pick.tier, model: '', effort: pick.effort }), staffingPick: { ...(pick.tier ? { tier: pick.tier } : {}), ...(pick.effort ? { effort: pick.effort } : {}) } } : {}),
+      ...(model ? { model } : {}),
+      ...(on ? { connection: on } : {})
+    }
   })
   if (opts.rootId !== undefined && run.agents[opts.rootId]) return own
   own = withTeamRows(own, roles, agents, run.summary.id)
@@ -610,7 +623,9 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
   const outTokens = u ? u.tokens.output : a.outputTokens
   const spent = promptTokens > 0 || outTokens > 0
   const cost = costView(agentCostInput(a))
-  const model = safeLine(a.model ?? u?.models?.[0]?.model ?? '')
+  const model = liveModelOf(a)
+  const used = modelsUsedBy(a)
+  const on = runConnections(run.summary, run.agents).length > 0 ? safeLine(a.connection ?? run.summary.connection ?? '') : ''
   const end = a.endedAt ?? now
   const traffic = trafficByAgent(run, now).get(agentId)
   const wt = a.worktree
@@ -623,6 +638,8 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
     state: a.state,
     stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
     ...(model ? { model } : {}),
+    ...(used.length > 1 ? { models: used } : {}),
+    ...(on ? { connection: on } : {}),
     ...(a.startedAt > 0 && end >= a.startedAt ? { wall: formatDuration(end - a.startedAt) } : {}),
     ...(spent ? { tokensIn: formatTokens(promptTokens), tokensOut: formatTokens(outTokens) } : {}),
     ...(cost.empty ? {} : { cost: cost.text }),
@@ -726,6 +743,19 @@ export function offersRetro(summary: Pick<RunSummary, 'kind' | 'quick' | 'projec
   return summary.kind === 'work' && summary.team !== 'single' && !summary.quick && !(VIRTUAL_PROJECT_IDS as readonly string[]).includes(summary.projectId) && (summary.status === 'finished' || summary.status === 'error')
 }
 
+/** The plan windows as "5h 42% · 7d 18%" (whole percent); undefined before a report or when neither window has a figure. */
+export function windowText(u: UsageStatus | undefined): string | undefined {
+  if (!u || !u.available) return undefined
+  const parts: string[] = []
+  const pct = (w: { utilization: number | null } | undefined): string | undefined =>
+    w && typeof w.utilization === 'number' && Number.isFinite(w.utilization) ? `${Math.round(Math.min(100, Math.max(0, w.utilization)))}%` : undefined
+  const five = pct(u.windows?.fiveHour)
+  const seven = pct(u.windows?.sevenDay)
+  if (five) parts.push(`5h ${five}`)
+  if (seven) parts.push(`7d ${seven}`)
+  return parts.length > 0 ? parts.join(' · ') : undefined
+}
+
 export function statusSummary(s: TuiState): StatusSummary {
   const live = Object.values(s.runs).filter((r) => isOpenStatus(r.summary.status))
   const chips = runChips(s)
@@ -738,6 +768,8 @@ export function statusSummary(s: TuiState): StatusSummary {
     ...(s.hostKind ? { hostKind: s.hostKind } : {}),
     ...(s.readOnlyReason ? { readOnlyReason: safeLine(s.readOnlyReason) } : {})
   }
+  const windows = windowText(s.planUsage)
+  if (windows) out.windowText = windows
   const run = activeRun(s)
   if (!run) return out
   const graph = !!run.plan && Array.isArray(run.plan.steps) && usesGraph(run.plan.steps)
@@ -748,15 +780,21 @@ export function statusSummary(s: TuiState): StatusSummary {
     if (ready > 0) out.readySteps = ready
   }
   const view = statusViewOf({ summary: run.summary, plan: run.plan, agents: run.agents }, openDecisions(run) > 0, s.project)
+  if (run.plan) {
+    const auto = autoContinueState({ status: run.summary.status, plan: run.plan, autoContinue: s.project?.autoContinue, maxAutoContinues: s.project?.maxAutoContinues, kind: run.summary.kind }, DEFAULT_MAX_AUTO_CONTINUES)
+    out.autoText = s.project?.autoContinue === false ? 'auto-continue off' : `auto ${auto.count}/${auto.max}`
+  }
   const chain = chainRuns(s)
   const cost = costView(chain.length > 1 ? sumCosts(chain.map((r) => runCostInput(r.summary))) : runCostInput(run.summary))
   // A failed root turn leaves the run idle (it takes another message): say so instead of a plain Idle (issue #29 M5).
   const root = Object.values(run.agents).find((a) => a.parentId === null)
   const failedTurn = run.summary.status === 'idle' && root?.state === 'error'
+  const rootModel = rootModelOf(run.summary, run.agents)
   return {
     ...out,
     runTag: runTagOf(s, run.summary.id),
     runTitle: safeLine(runName(run.summary)),
+    ...(rootModel ? { rootModel } : {}),
     statusWord: failedTurn ? `${statusText(view)} · last turn failed` : statusText(view),
     tone: failedTurn ? 'danger' : (RUN_TONE[view.tone] ?? 'dim'),
     costText: cost.text

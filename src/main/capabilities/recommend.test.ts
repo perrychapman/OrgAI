@@ -75,6 +75,20 @@ describe('buildRecommendPrompt', () => {
     expect(prompt.match(/<\/?candidates>/g)).toHaveLength(2)
   })
 
+  it('redacts a credential before truncating the field and keeps ordinary text bounded', () => {
+    const token = `ghp_${'a'.repeat(30)}`
+    const crossing = buildRecommendPrompt({ ...project, brief: `${'x'.repeat(285)} ${token}` }, [], {}).prompt
+    const briefLine = crossing.split('\n').find((line) => line.startsWith('Brief:'))!
+    expect(briefLine).not.toContain('ghp_')
+    expect(briefLine).toContain('[redacted]')
+    expect(briefLine.slice('Brief: '.length).length).toBeLessThanOrEqual(300)
+
+    const ordinary = buildRecommendPrompt({ ...project, brief: 'ordinary '.repeat(60) }, [], {}).prompt
+    const ordinaryLine = ordinary.split('\n').find((line) => line.startsWith('Brief:'))!
+    expect(ordinaryLine.slice('Brief: '.length).length).toBeLessThanOrEqual(300)
+    expect(ordinaryLine).toContain('…')
+  })
+
   it('leaves out blocked candidates and caps the count', () => {
     const blocked = item({ id: 'cap-blocked', blockedReason: 'unpinned' })
     expect(buildRecommendPrompt(project, [blocked, code], {}).prompt).not.toContain('cap-blocked')

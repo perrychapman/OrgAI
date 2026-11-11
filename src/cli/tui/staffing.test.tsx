@@ -10,7 +10,7 @@ import { StatusBar } from './StatusBar'
 import { ESC_RE, Providers, env } from './panes/testUtil'
 import { textWidth } from './panes/text'
 import { agentDetail, orgTreeRows, planView, statusSummary } from './selectors'
-import { applyRecord, createInitialState, setActiveRun } from './state'
+import { applyEvent, applyRecord, createInitialState, setActiveRun } from './state'
 import type { OrgTreeRow, TuiState } from './types'
 
 const agent = (id: string, parentId: string | null, over: Partial<AgentInstance> = {}): AgentInstance => ({
@@ -32,8 +32,9 @@ describe('selectors', () => {
     const s = state({ staffing: { goal: 'balanced', assignments: [asg({ at: 1, effort: 'low' }), asg({ at: 2, source: 'clamped', note: 'fast is the cap\u001b[31m' })] } })
     const rows = orgTreeRows(s)
     expect(rows.find((r) => r.id === 'w1')?.staffing).toBe('everyday / medium')
+    expect(rows.find((r) => r.id === 'w1')).toMatchObject({ model: 'sonnet', staffingPick: { tier: 'everyday', effort: 'medium' } })
     expect(rows.find((r) => r.id === 'root')?.staffing).toBeUndefined()
-    expect(agentDetail(s, 'w1')?.staffing).toEqual({ label: 'everyday / medium', reason: 'capped by the role: fast is the cap', model: 'sonnet' })
+    expect(agentDetail(s, 'w1')?.staffing).toEqual({ label: 'everyday (sonnet) / medium', reason: 'capped by the role: fast is the cap', model: 'sonnet' })
     expect(agentDetail(s, 'root')).not.toHaveProperty('staffing')
     expect(orgTreeRows(state()).some((r) => 'staffing' in r)).toBe(false)
   })
@@ -94,6 +95,24 @@ describe('agent rows', () => {
     expect(text(30)).not.toContain('everyday')
     expect(without).not.toContain('everyday')
   })
+  it('names the model inside the staffing label, cuts the id first when narrow, and keeps state and step', () => {
+    const r = row({ model: 'claude-sonnet-5-5', staffingPick: { tier: 'everyday', effort: 'medium' } })
+    expect(text(100, r)).toContain(' everyday (claude-sonnet-5-5) / medium')
+    const widths = Array.from({ length: 70 }, (_, i) => i + 30)
+    const cut = widths.map((w) => text(w, r)).find((t) => /everyday \(claude-.*…\) \/ medium/.test(t))
+    expect(cut).toBeDefined()
+    const bare = widths.map((w) => text(w, r)).find((t) => t.includes('everyday / medium'))
+    expect(bare).toBeDefined()
+    for (const w of widths) {
+      const t = text(w, r)
+      expect(textWidth(t)).toBeLessThanOrEqual(w)
+      expect(t).toContain('reading')
+    }
+  })
+  it('shows a model alone without staffing, and the connection when set', () => {
+    expect(text(100, row({ staffing: undefined, model: 'claude-opus-5-5' }))).toContain(' claude-opus-5-5')
+    expect(text(100, row({ model: 'gpt-6.1-sol', staffingPick: { tier: 'fast' }, staffing: 'fast', connection: 'openai' }))).toContain(' fast (gpt-6.1-sol) on openai')
+  })
   it('renders in a pane', () => {
     const r = render(<Providers env={env()} bus={new InputBus()}><OrgTreePane width={70} height={6} focused={false} rows={[row()]} /></Providers>)
     expect(r.lastFrame()).toContain('everyday / medium')
@@ -103,9 +122,23 @@ describe('agent rows', () => {
 
 describe('inspector', () => {
   const view = (agentId = 'w1') => agentDetail(state({ staffing: { goal: 'balanced', assignments: [asg({ source: 'escalated', model: 'opus' })] } }), agentId)!
-  it('gives the reason in words and the model when it differs', () => {
+  it('gives the reason in words, with the model in the label', () => {
     const facts = inspectorFacts(view(), env())
-    expect(facts.map((f) => f[0]).find((l) => l?.startsWith('staffing'))).toMatch(/^staffing everyday \/ medium \W raised after a failed attempt \W model opus$/)
+    expect(facts.map((f) => f[0]).find((l) => l?.startsWith('staffing'))).toMatch(/^staffing everyday \(opus\) \/ medium \W raised after a failed attempt$/)
+  })
+  it('lists every model the agent used, and the connection when the run spans several', () => {
+    const usage = (models: string[]) => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, turns: 0, toolCalls: 0, models: models.map((model) => ({ model, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) })
+    const s = state({ agents: [agent('root', null, { connection: 'anthropic', model: 'claude-opus-5-5' }), agent('w1', 'root', { connection: 'openai', model: 'gpt-6.1-sol', usage: usage(['gpt-6-sol', 'gpt-6.1-sol']) as never })] })
+    const v = agentDetail(s, 'w1')!
+    expect(v.models).toEqual(['gpt-6-sol', 'gpt-6.1-sol'])
+    expect(inspectorFacts(v, env())[0]![0]).toMatch(/^models gpt-6-sol, gpt-6\.1-sol on openai/)
+    const one = agentDetail(state(), 'w1')!
+    expect(one).not.toHaveProperty('models')
+    expect(one).not.toHaveProperty('connection')
+    expect(inspectorFacts(one, env())[0]![0]).toMatch(/^model sonnet/)
+    const rows = orgTreeRows(s)
+    expect(rows.find((r) => r.id === 'w1')).toMatchObject({ model: 'gpt-6.1-sol', connection: 'openai' })
+    expect(orgTreeRows(state()).some((r) => 'connection' in r)).toBe(false)
   })
   it('adds nothing for an unstaffed agent', () => {
     expect(inspectorFacts(view('root'), env()).some((f) => f[0]?.startsWith('staffing'))).toBe(false)
@@ -153,6 +186,19 @@ describe('plan pane and status bar', () => {
     r.unmount()
     return f
   }
+  it('the status bar shows the root model, and the selector follows run.model', () => {
+    expect(bar({ rootModel: 'claude-opus-5-5', costText: '$0.10' })).toContain('Running · claude-opus-5-5 · $0.10')
+    const s = state({ agents: [agent('root', null, { model: 'claude-opus-5-5' })] })
+    expect(statusSummary(s).rootModel).toBe('claude-opus-5-5')
+    const switched = applyEvent(s, { event: { type: 'run.model', runId: 'r1', selection: { model: 'gpt-6.1-sol', connection: 'openai' } } } as never)
+    expect(statusSummary(switched).rootModel).toBe('gpt-6.1-sol')
+  })
+  it('the run-start Models line becomes a notice', () => {
+    const s = applyEvent(state(), { event: { type: 'log', runId: 'r1', level: 'info', message: 'Models: deep = claude-opus-5-5 (Anthropic)' } } as never)
+    expect(s.notices.at(-1)?.text).toBe('Models: deep = claude-opus-5-5 (Anthropic)')
+    const quiet = applyEvent(state(), { event: { type: 'log', runId: 'r1', level: 'info', message: 'Messaged run x.' } } as never)
+    expect(quiet.notices).toHaveLength(0)
+  })
   it('the status bar shows working and ready only when above zero, and drops them first when narrow', () => {
     expect(bar({ working: 3, readySteps: 2 })).toContain('3 working · 2 ready')
     expect(bar({ working: 0, readySteps: 0 })).not.toMatch(/working|ready/)

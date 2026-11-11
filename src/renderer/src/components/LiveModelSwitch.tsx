@@ -11,7 +11,7 @@ import { ModelPickerList, focusSearchWhenOpen, useModelCatalog } from './runSett
 import { connectionLabel } from '../lib/connectionLabel'
 import { useAppStore } from '../store/useAppStore'
 import { LIVE_MODEL_HELP_ASSISTANT, LIVE_MODEL_HELP_TEAM } from '../lib/runSettings'
-import { liveModelLabel, modelKey, modelSessionEnded, needsModelHandoff, performModelSwitch } from '../lib/liveModelSwitch'
+import { filterLiveModels, liveModelLabel, MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE, modelKey, modelSessionEnded, needsModelHandoff, performModelSwitch } from '../lib/liveModelSwitch'
 import '../styles/live-model-switch.css'
 import '../styles/run-settings.css'
 
@@ -84,7 +84,7 @@ export function LiveModelSwitch({ run, onRunChanged, className, inRow }: { run: 
           // A native modal dismisses sibling auto popovers. This deliberate transition
           // keeps the captured operation; ordinary Escape/light dismiss still cancels it.
           confirming.current = true
-          const accepted = await confirm({ title: 'End this session and switch model?', body: 'Your conversation stays here. The new session receives a transcript handoff that may omit older or oversized text. Provider session memory and session-only permissions do not transfer. Your draft stays unsent. Send when you are ready to continue.', confirmLabel: 'End session and select model', confirmTestId: 'live-model-confirm' })
+          const accepted = await confirm({ title: MODEL_HANDOFF_TITLE, body: MODEL_HANDOFF_BODY, confirmLabel: 'End session and select model', confirmTestId: 'live-model-confirm' })
           confirming.current = false
           if (!accepted) reopen()
           return accepted
