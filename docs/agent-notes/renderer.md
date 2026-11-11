@@ -89,7 +89,14 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   (`useRunTabs`, `RunTabBody`, `PlanView`), used by both TranscriptPanel (side panel) and the stage strip; the tab test
   ids (`side-tab-plan`, `-usage`, `-logs`, ...) are shared. Selection stays `sideTabByRun`; the conversation stays
   mounted (hidden) under other tabs; a send resets the tab to Conversation. Work, setup, Ask, org change runs, a Chat
-  saved as a project, and every run on the canvas keep the panel. Checked by `lib/assistants.test.ts`,
+  saved as a project, and every run on the canvas keep the panel. Follow-up: the stage strip's Plan tab needs a plan
+  (`showsPlanTab` `stage`; the side panel still gives every work run one); `RunStageTabs` marks Conversation
+  (`Tabs` `dot`/`dotLabel`, "Conversation, new reply") when a reply or "your turn" lands under another tab and calls
+  `onReply` (LiveRunView's `setArrival`, the CanvasFrame announcer); Show thinking is a strip control held by LiveRunView
+  (`TranscriptPanel` `showThinking` prop, not a store key: it never was one). Usage tab: By agent rows come from
+  `agent.upsert` immediately while `summary.usage` (Cost card, run meta) is throttled up to `USAGE_THROTTLE_MS` (1 s,
+  `runManager.ts` `refreshUsage`), so the two can differ briefly after a turn; the mock e2e shows them equal after 2.5 s.
+  Checked by `lib/assistants.test.ts`,
   `lib/runTabs.test.ts` and `e2e/assistants.mjs` (`checkStageTabs`); design notes and open items in
   `docs/design/assistants-ui.md`.
 - Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.

@@ -72,6 +72,8 @@ interface Props {
   tagRunId?: string
   /** Shown above the feed (the chain's "Load earlier sessions" row); only with `feed`. */
   lead?: ReactNode
+  /** Held by the caller when the "Show thinking" control sits outside this component (the assistant stage strip). */
+  showThinking?: boolean
 }
 
 const TOOL_ICONS: Record<ToolKind, LucideIcon> = {
@@ -321,9 +323,10 @@ function SelfHelpRowView({ row, arrive }: { row: SelfHelpRow; arrive?: boolean }
   )
 }
 
-export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead }: Props): ReactElement {
+export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead, showThinking: heldThinking }: Props): ReactElement {
   const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
-  const [showThinking, setShowThinking] = useState(false)
+  const [ownThinking, setShowThinking] = useState(false)
+  const showThinking = heldThinking ?? ownThinking
   const bottom = useRef<HTMLDivElement>(null)
   const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
   const agentAssignment = useAppStore((s) => (agent ? assignmentOf(s.runs[runId]?.staffing, agent.id) : undefined))

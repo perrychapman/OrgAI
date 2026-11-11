@@ -264,6 +264,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean | number>>({})
   // The frame's one polite line: new decisions and "Showing N agents under X" after an expand.
   const [arrival, setArrival] = useState<{ text: string; n: number } | undefined>(undefined)
+  // "Show thinking" for the stage conversation of an assistant session (no side panel to carry the control).
+  const [stageThinking, setStageThinking] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [msgNow, setMsgNow] = useState(() => Date.now())
   const [pickedDecision, setPickedDecision] = useState<string | null>(null)
@@ -1068,7 +1070,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // Walk M2 (ux-review-org-change-session-pre.md): never on a run cut off by a quit, and an org change needs an approval.
   const setupDone = setupBannerShows({ summary: run.summary,setupComplete: project.setup?.state === 'complete', cut: !!run.cutWhile, approved: approvedKinds })
   const orgChangeRun = isOrgChangeRun(run.summary)
-  const conversationFeed = <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} />
+  const conversationFeed = <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} showThinking={sidePanel ? undefined : stageThinking} />
 
   return (
     <div className="run-view">
@@ -1149,7 +1151,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameStage>
             {conversation ? (
               <div className={`conversation-stage${toggledTo === 'conversation' ? ' motion-view' : ''}`} data-testid="run-conversation">
-                {sidePanel ? conversationFeed : <RunStageTabs runId={runId} agent={rootAgent} logs={run.logs ?? []} conversation={conversationFeed} />}
+                {sidePanel ? conversationFeed : <RunStageTabs
+                    runId={runId}
+                    agent={rootAgent}
+                    logs={run.logs ?? []}
+                    conversation={conversationFeed}
+                    thinking={{ checked: stageThinking, onChange: setStageThinking }}
+                    onReply={() => setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))}
+                  />}
               </div>
             ) : options.presentation === 'pocket-office' ? (
               <OfficeScene mode="live" runId={runId} palette={options.scenePalette} controlRef={officeRef} agents={withOfficeDepartments([...agentLookup.values()].map((agent) => ({ ...officeAgentView(agent), parentId: agent.parentId, departmentContext: chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : undefined, context: [chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : 'Current session', agent.parentId ? `Reports to ${agentLookup.get(agent.parentId) ? agentLabel(agentLookup.get(agent.parentId)!) : 'lead'}` : 'Lead'].join(' · ') })))} messages={messages ?? []} selectedId={selectedAgentId ?? undefined} onSelect={selectAgent} />
