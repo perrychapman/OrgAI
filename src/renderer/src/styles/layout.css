@@ -713,6 +713,50 @@ button.run-meta-item:focus-visible {
   border-top: 1px solid var(--border-default);
   background: var(--surface-1);
 }
+/* An assistant session (Chat, MCP assistant, Skill assistant) in the conversation layout has no side panel
+   (hasRunSidePanel): one column, and the panel's tabs sit in a strip above the conversation (RunStageTabs). */
+.run-body[data-side-panel='none'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+.run-stage-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-stage-tabs-bar {
+  flex: none;
+  padding: 0 var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-default);
+}
+/* The strip lines up with the 90ch reading column under it. */
+.run-stage-tabs-bar > .tabs-list {
+  max-width: 90ch;
+  margin-inline: auto;
+}
+.run-stage-conversation {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-stage-conversation[hidden] {
+  display: none;
+}
+/* Plan, Usage and Logs in the stage: the tab panel is the only scroller, its content in the same 90ch column. */
+.run-stage-panel {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.run-stage-panel > * {
+  width: 100%;
+  max-width: 90ch;
+  margin-inline: auto;
+}
 /* In conversation mode the composer belongs to the stage column, even when the side panel is wide. */
 .run-body.run-body[data-layout='conversation'] > .canvas-frame {
   grid-row: 1;

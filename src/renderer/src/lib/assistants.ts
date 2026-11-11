@@ -154,6 +154,25 @@ export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'> & Parti
 }
 
 /**
+ * A session of one of the three conversational assistants: a Chat (a quick run still in the Chat project), an MCP
+ * assistant or a Skill assistant run (by kind, library or project scope). A Chat saved as a project, Ask runs, work,
+ * setup and org change runs are not.
+ */
+export function isAssistantSession(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'>): boolean {
+  if (summary.quick) return summary.projectId === QUICK_PROJECT_ID
+  return summary.kind === 'mcp-assist' || summary.kind === 'skill-assist'
+}
+
+/**
+ * Whether the Live view shows the run side panel. An assistant session in the conversation layout has none: its
+ * Transcript tab only repeated the stage, so the other tabs sit in a strip above the conversation instead
+ * (RunStageTabs). On the canvas the panel stays, it is where a selected agent's transcript is read.
+ */
+export function hasRunSidePanel(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'>, layout: RunLayout): boolean {
+  return !(layout === 'conversation' && isAssistantSession(summary))
+}
+
+/**
  * Whether "Save as project" is offered at all: only while the run still belongs to the Chat project. After run.moved
  * the run lives in a real project and the action is gone (its quick info stays on the summary).
  */
