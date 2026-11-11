@@ -42,7 +42,17 @@ const mainSize = async (w, h) => {
     win.setContentSize(cw, ch)
   }, [w, h])
   await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  // The height may not be granted exactly (macOS): wait until it is stable across two reads instead.
+  let last = -1
+  for (let i = 0; i < 20; i++) {
+    const cur = await page.evaluate(() => window.innerHeight)
+    if (cur === last) break
+    last = cur
+    await sleep(150)
+  }
   await sleep(250)
+  const real = await page.evaluate(() => `${window.innerWidth}x${window.innerHeight}`)
+  console.log(`viewport requested ${w}x${h}, actual ${real}`)
 }
 const setTheme = (theme) =>
   page.evaluate(async (t) => {
@@ -275,7 +285,8 @@ try {
           await page.locator(`${T(picker)} input[type=radio]`).first().waitFor({ timeout: 15_000 })
           await sleep(300)
           const box = await page.locator(T(picker)).boundingBox()
-          check(!!box && box.y >= 0 && box.y + box.height <= h && box.x >= 0 && box.x + box.width <= w, `V ${picker} is bounded by the window ${tag}`, JSON.stringify(box))
+          const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+          check(!!box && box.y >= 0 && box.y + box.height <= vp.h + 1 && box.x >= 0 && box.x + box.width <= vp.w + 1, `V ${picker} is bounded by the window ${tag}`, `${JSON.stringify(box)} viewport ${vp.w}x${vp.h}`)
           if (theme === 'dark' || w === 1024) await shot(`${picker}-${w}-${theme}`)
           await page.keyboard.press('Escape')
           await page.locator(T(picker)).waitFor({ state: 'hidden' })
