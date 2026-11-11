@@ -24,6 +24,7 @@ import { KitService } from '../kit/service'
 import { log } from '../log'
 import { MaintenanceService } from '../maintenance'
 import { TeamFilesService } from '../teamFiles/service'
+import { existingTeamFilesProtectedPaths, teamFilesProtectedPaths } from '../teamFiles/protection'
 import { harnessProject } from '../mcp/assist'
 import { McpService } from '../mcp/service'
 import { QuickRunService, projectPeeks } from '../quick/quickRuns'
@@ -442,7 +443,17 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     // Wave 7: plus the vault's key file, re-read per call (the vault may change; cli-standalone.md 8.4).
-    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles(), otherProductDataDirs: [otherProductDataDir(hostKind)] }),
+    controlProtectedPaths: () => {
+      const siblingDataDir = otherProductDataDir(hostKind)
+      const paths = controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles(), otherProductDataDirs: [siblingDataDir] })
+      // A team-files snapshot is the approval baseline. Resolve current project ids on every gate check so a new or
+      // removed project takes effect immediately, and protect both spellings for paths behind a symlinked data root.
+      paths.push(...teamFilesProtectedPaths(dataDir, projects.list().map((project) => project.id)))
+      // The sibling product's project registry is separate. Enumerate only its existing project directories so the
+      // team approval state is protected without blocking nearby project artifacts such as engagement documents.
+      paths.push(...existingTeamFilesProtectedPaths(siblingDataDir))
+      return paths
+    },
     // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
     // attachedClientCount, which leaves non-interactive CLI exec sockets out). `activity` is created further down;
     // before that (never during a run) there is nobody to count.
