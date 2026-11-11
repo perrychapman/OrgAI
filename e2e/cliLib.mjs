@@ -53,7 +53,7 @@ export function requireBuild() {
 /** Start the CLI (always --no-color); returns { child, done } where done resolves { code, signal, out, err }. */
 export function startCli(args, { cwd = APP_DIR, input, env } = {}) {
   const stdin = input === undefined ? 'ignore' : 'pipe'
-  const child = spawn(process.execPath, [CLI, '--no-color', ...args], { cwd, env: { ...ENV, ...env }, stdio: [stdin, 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, ['--disable-sigusr1', CLI, '--no-color', ...args], { cwd, env: { ...ENV, ...env }, stdio: [stdin, 'pipe', 'pipe'] })
   let out = ''
   let err = ''
   child.stdout.on('data', (d) => (out += d))

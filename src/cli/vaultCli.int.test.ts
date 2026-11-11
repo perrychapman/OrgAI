@@ -73,7 +73,7 @@ function orgai(args: string[], extra: { input?: string; env?: Record<string, str
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ORGAI_')) env[k] = v
   Object.assign(env, { ORGAI_CLI_DATA_DIR: data, ORGAI_MOCK: '1', NO_COLOR: '1', ORGAI_CLI_VAULT_KEY_FILE: join(keys, 'vault.key'), ...(extra.env ?? {}) })
   return new Promise((res) => {
-    const c = spawn(process.execPath, [bundle, ...args], { env })
+    const c = spawn(process.execPath, ['--disable-sigusr1', bundle, ...args], { env })
     let stdout = ''
     let stderr = ''
     c.stdout.on('data', (d: Buffer) => (stdout += d))

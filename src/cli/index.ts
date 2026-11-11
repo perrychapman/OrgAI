@@ -1,5 +1,6 @@
 /**
- * `orgai` CLI entry (bundled to out/cli/orgai.mjs; the build adds the `#!/usr/bin/env node` banner). Plain Node only:
+ * `orgai` CLI entry (bundled to out/cli/orgai.mjs; the build adds the hardened `#!/usr/bin/env -S node --disable-sigusr1`
+ * banner). It runs on Node only:
  * no desktop-shell import, ever. Routes over commandTable.ts (cli-spec 6.1): global flags first (flags.ts), then the
  * command. Exit codes are EXIT in types.ts; a CliError carries its own, anything else is 1.
  */
@@ -304,22 +305,27 @@ function isEntry(): boolean {
 }
 
 if (isEntry()) {
-  // Before main() builds the context (which reads process.env) and before anything can spawn.
-  scrubElectronRunAsNode(process.env)
-  process.on('unhandledRejection', (reason: unknown) => {
-    process.stderr.write(`orgai: ${safe(reason instanceof Error ? reason.message : String(reason))}\n`)
-    if (process.env.ORGAI_CLI_DEBUG === '1' && reason instanceof Error && reason.stack) process.stderr.write(`${safe(reason.stack)}\n`)
+  if (!process.execArgv.includes('--disable-sigusr1')) {
+    process.stderr.write('orgai: refusing to start without Node.js --disable-sigusr1; use the orgai launcher or run `node --disable-sigusr1 out/cli/orgai.mjs`.\n')
     process.exitCode = EXIT.failure
-    // Let pending output drain, then end: a rejection nobody handled leaves the process in an unknown state.
-    process.stdout.write('', () => process.exit(EXIT.failure))
-  })
-  main().then(
-    (code) => {
-      process.exitCode = code
-    },
-    (e: unknown) => {
-      process.stderr.write(`orgai: ${safe(e instanceof Error ? e.message : String(e))}\n`)
+  } else {
+    // Before main() builds the context (which reads process.env) and before anything can spawn.
+    scrubElectronRunAsNode(process.env)
+    process.on('unhandledRejection', (reason: unknown) => {
+      process.stderr.write(`orgai: ${safe(reason instanceof Error ? reason.message : String(reason))}\n`)
+      if (process.env.ORGAI_CLI_DEBUG === '1' && reason instanceof Error && reason.stack) process.stderr.write(`${safe(reason.stack)}\n`)
       process.exitCode = EXIT.failure
-    }
-  )
+      // Let pending output drain, then end: a rejection nobody handled leaves the process in an unknown state.
+      process.stdout.write('', () => process.exit(EXIT.failure))
+    })
+    main().then(
+      (code) => {
+        process.exitCode = code
+      },
+      (e: unknown) => {
+        process.stderr.write(`orgai: ${safe(e instanceof Error ? e.message : String(e))}\n`)
+        process.exitCode = EXIT.failure
+      }
+    )
+  }
 }

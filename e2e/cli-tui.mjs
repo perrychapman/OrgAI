@@ -155,7 +155,7 @@ const baseEnv = (script) => {
 
 /** A plain (non-pty) CLI process; done resolves { code, out, err }. */
 function start(args, { cwd, env = baseEnv(SCRIPTS.simple), onOut } = {}) {
-  const child = spawn(process.execPath, [CLI, '--no-color', ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, ['--disable-sigusr1', CLI, '--no-color', ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
   let out = ''
   let err = ''
   child.stdout.on('data', (d) => {
@@ -194,7 +194,7 @@ async function until(what, fn, ms = 30_000, every = 150) {
 
 /** Start a TUI on the pty. */
 function tui(args, { cols, rows, script = SCRIPTS.simple, cwd }) {
-  return spawnTui([process.execPath, CLI, '--no-color', ...args], { cols, rows, cwd, env: baseEnv(script) })
+  return spawnTui([process.execPath, '--disable-sigusr1', CLI, '--no-color', ...args], { cols, rows, cwd, env: baseEnv(script) })
 }
 /** Type text one key at a time (a multi-byte chunk could look like a paste to a heuristic parser). */
 async function type(t, text) {
