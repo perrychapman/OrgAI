@@ -1,6 +1,10 @@
 # Checks every push to main or dev (docs-only pushes, docs/** and Markdown, are skipped) and every pull request into
 # main or dev (always runs). Free: no smoke scripts and no token-spending e2e (setup, history and worktree need the
 # user's consent and never run here).
+# e2e scope (owner decision 2026-11-10, scripts/e2e-select.mjs): the full e2e:free chain runs for pull requests into main,
+# pushes to main, the nightly schedule (against dev) and manual dispatch; pushes and pull requests to dev run only the
+# scripts of the changed area plus a smoke set. Any doubt (unmapped path, shared file, missing base commit) runs everything.
+# The pack and npm jobs are skipped on the nightly run: every push to dev already ran them.
 name: CI
 
 on:
@@ -11,9 +15,14 @@ on:
       - '**.md'
   pull_request:
     branches: [main, dev]
+  schedule:
+    # 03:17 UTC every night. A scheduled workflow runs from the default branch's copy of this file, so the jobs check out dev.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The nightly and manual runs get their own groups so they never cancel (or are cancelled by) a push run of the same ref.
+  group: ci-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && format('manual-{0}', github.run_id) || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -44,6 +53,11 @@ jobs:
       GIT_COMMITTER_EMAIL: ci@orgai.local
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Scheduled runs start on main's copy of the workflow but test dev. Empty ref: the event's own ref.
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
+          # The e2e selector diffs two commits; without history it falls back to the full chain.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -60,9 +74,21 @@ jobs:
           ORGAI_REQUIRE_NODE_HOST_INT: '1'
           # The CLI ignores ORGAI_DATA_DIR; this keeps a stray CLI run off the runner's profile.
           ORGAI_CLI_DATA_DIR: ${{ runner.temp }}/orgai-cli-data
-      - name: e2e (free)
-        run: npm run e2e:free
+      # Full chain: schedule, workflow_dispatch, a pull request into main, a push to main. Anything else: the selected
+      # scripts (scripts/e2e-select.mjs prints the decision and the reason per changed file). Event values reach the
+      # script only through env.
+      - name: e2e (free, selected or full)
+        shell: bash
+        run: |
+          if [ "$E2E_FULL" = "true" ]; then
+            node scripts/e2e-select.mjs --full --run
+          else
+            node scripts/e2e-select.mjs --base "$E2E_BASE" --head "$E2E_HEAD" --run
+          fi
         env:
+          E2E_FULL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+          E2E_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          E2E_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           # The e2e scripts ignore this and give each script its own temp data dir (E2E_DATA_DIR overrides); this only keeps
           # any stray launch off the runner's profile. The desktop app reads ORGAI_DATA_DIR, the CLI only
           # ORGAI_CLI_DATA_DIR, so both are set.
@@ -82,6 +108,7 @@ jobs:
 
   pack:
     name: pack (${{ matrix.os }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -115,6 +142,7 @@ jobs:
   # with NPM_SHRINKWRAP 'full' step 1 fails (every platform's Claude runtime is installed; step 1b then skips).
   npm:
     name: npm (${{ matrix.os }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
