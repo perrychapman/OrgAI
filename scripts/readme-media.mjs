@@ -65,6 +65,11 @@ function repo(name, title) {
   return dir
 }
 
+// The mock script file is read per run; `{}` means the default. The office scene writes its own and restores this.
+const MOCK_SCRIPT = path.join(ROOT, 'mock-script.json')
+fs.writeFileSync(MOCK_SCRIPT, '{}')
+process.env.ORGAI_MOCK_SCRIPT = MOCK_SCRIPT
+
 const { app, page } = await launch({ shotPrefix: 'readme-media' })
 page.setDefaultTimeout(15_000)
 
@@ -286,6 +291,20 @@ async function submitCode(form, setup) {
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 120_000 })
 }
 
+async function ensureProject(name, title) {
+  await gotoProjects(page)
+  if (await findProject(page, name)) return
+  const form = await createCode(name, repo(name, title))
+  await submitCode(form, false)
+}
+async function setCanvasPresentation(presentation) {
+  await page.evaluate(async (p) => {
+    const { dataDir: _d, appVersion: _v, ...s } = await window.orgai.settings.get()
+    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, canvas: { ...s.appearance.canvas, presentation: p, scenePalette: 'color' } } })
+  }, presentation)
+  await sleep(500)
+}
+
 // ---------- Scenes ----------
 
 const scenes = {
@@ -346,7 +365,7 @@ const scenes = {
     // The chart the Architect proposed, in the Team editor.
     await click(page.getByRole('button', { name: 'Open Team' }))
     await page.locator('.editor [data-testid=team-panel-tabs]').waitFor()
-    await hold(1400)
+    await hold(800)
     const frames = await rec.stop()
     log('setup cards:', kinds.join(', '))
     await saveGif('setup', frames)
@@ -468,6 +487,70 @@ const scenes = {
     await page.locator('[data-testid=project-tile]').first().waitFor()
     await sleep(1500)
     await still('dashboard')
+  },
+
+  // Office: a mock run in the Pocket Office presentation; reports walk in, work, and message each other.
+  async office() {
+    const NAME = 'acme-portal'
+    await ensureProject(NAME, 'Acme Portal')
+    await setCanvasPresentation('pocket-office')
+    await setSize(1600, 1000)
+    const script = {
+      delayMs: 500,
+      work: [
+        { type: 'spawn', id: 'office-a', name: 'office-a', description: 'Review the portal API' },
+        { type: 'spawn', id: 'office-b', name: 'office-b', description: 'Check the tests' },
+        { type: 'wait', ms: 1500 },
+        { type: 'message', to: 'office-a', text: 'Please review the portal API before we ship it.' },
+        { type: 'wait', ms: 3000 },
+        { type: 'message', from: 'office-a', to: 'root', text: 'On it.' },
+        { type: 'wait', ms: 1500 },
+        { type: 'message', to: 'office-b', text: 'Run the full test suite' },
+        { type: 'wait', ms: 120_000 }
+      ]
+    }
+    fs.writeFileSync(MOCK_SCRIPT, JSON.stringify(script))
+    try {
+      await openLive()
+      await installCursor()
+      const rec = recorder()
+      rec.start()
+      await hold(600)
+      await startRunTyped('Review the portal and check its tests.')
+      await page.locator('[data-testid=office-scene]').first().waitFor({ timeout: 20_000 })
+      await page.locator('[data-testid=office-bubble]').first().waitFor({ timeout: 40_000 })
+      await hold(3200)
+      const frames = await rec.stop()
+      await saveGif('office', frames)
+    } finally {
+      await page.evaluate(async () => {
+        for (const r of await window.orgai.runs.listLive()) await window.orgai.runs.stop(r.id).catch(() => {})
+      })
+      fs.writeFileSync(MOCK_SCRIPT, '{}')
+      await setCanvasPresentation('graph')
+      await setSize(WIN_W, WIN_H)
+    }
+  },
+
+  // Run settings: the Model, Effort, Permission and Goal chips above the composer, with the Permission picker open.
+  async 'run-settings'() {
+    const NAME = 'acme-portal'
+    await ensureProject(NAME, 'Acme Portal')
+    await openProject(page, NAME)
+    await openLive()
+    if (!(await page.locator('.new-run').count())) {
+      await page.keyboard.press('Control+t')
+      await page.locator('.new-run').waitFor()
+    }
+    await page.locator('[data-testid=run-settings]').first().waitFor()
+    await page.locator('.composer textarea').fill('Add pagination to the invoices list')
+    await sleep(800)
+    await page.locator('[data-testid=run-permission-change]').click()
+    await page.locator('[data-testid=run-permission-picker]').waitFor({ state: 'visible' })
+    await sleep(600)
+    await still('run-settings')
+    await page.keyboard.press('Escape')
+    await page.locator('.composer textarea').fill('')
   }
 }
 
