@@ -51,10 +51,14 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   feature passes the local gate (typecheck, the whole unit suite, build, only the e2e scripts for the area changed,
   the Reviewer where required), the orchestrator pushes dev to origin (`git push origin dev`) before the next step;
   reports never push. The full e2e:free chain is not run locally (owner decision 2026-11-05, it duplicated CI) but
-  runs in CI on windows-latest and macos-15 for pull requests into main, pushes to main, a nightly run against dev and manual
-  dispatch. Pushes and pull requests to dev run only the scripts of the changed area plus a smoke set (layout, runs,
-  cli-readonly), picked by `scripts/e2e-select.mjs`, which runs everything when a path is unmapped or shared (owner
-  decision 2026-11-10; unverified until the first push). A red CI run is a blocker, triaged and fixed at
+  runs in CI on windows-latest and macos-15 for pull requests into main, pushes to main and manual dispatch (and, once
+  this ci.yml is on main, a nightly schedule against dev: scheduled workflows run from the default branch, and GitHub
+  disables schedules on a public repo after 60 days of inactivity). Pull requests and pushes to dev run only the scripts
+  of the changed area plus a smoke set (layout, runs, cli-readonly), picked by `scripts/e2e-select.mjs`, which runs
+  everything when a path is unmapped or shared. A push to dev is diffed against the head of the last successful CI push
+  run on dev (so cancelled or red runs keep their area); a bundled-docs-only push is skipped by `paths-ignore`, so the
+  self-help mapping for README.md and docs/design/*.md fires only on PRs (owner decision 2026-11-10; unverified until the
+  first push). A red CI run is a blocker, triaged and fixed at
   once, and other runs do not push on top of a red dev except to fix it. Never push `main` directly (release PRs only).
   Work tracking: GitHub issues are the tracker (CONTRIBUTING.md "Work tracking"). Before starting, list open
   `status: in progress` issues and read the newest `orgai-claim` block of each; hot files (types.ts, ipc.ts,

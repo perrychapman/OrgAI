@@ -164,7 +164,69 @@ test('git refs are validated before they reach git', () => {
 })
 
 test('arguments', () => {
-  assert.deepEqual(parseArgs(['--base', 'a', '--head', 'b', '--run']), { base: 'a', head: 'b', full: false, run: true, print: false })
+  assert.deepEqual(parseArgs(['--base', 'a', '--head', 'b', '--run']), { base: 'a', head: 'b', range: 'three', full: false, run: true, print: false })
+  assert.equal(parseArgs(['--range', 'two']).range, 'two')
+  assert.throws(() => parseArgs(['--range', 'four']))
   assert.equal(parseArgs(['--full']).full, true)
   assert.throws(() => parseArgs(['--bogus']))
+})
+
+test('a push base that is not an ancestor, or not fetched, gives null (full)', () => {
+  // a sha that is not in this repository at all
+  assert.equal(changedFilesBetween('1234567890abcdef1234567890abcdef12345678', 'abcdef1234567890abcdef1234567890abcdef12', ROOT, 'two'), null)
+})
+
+test('the chain parser is strict and the real chain parses', () => {
+  assert.throws(() => parseChain({ scripts: { 'e2e:free': 'node e2e/a.mjs && FOO=1 node e2e/b.mjs' } }), /not "node e2e/)
+  assert.throws(() => parseChain({ scripts: { 'e2e:free': 'node e2e/a.mjs && npm test' } }))
+  assert.throws(() => parseChain({ scripts: { 'e2e:free': 'node e2e/a.mjs || node e2e/b.mjs' } }))
+  assert.throws(() => parseChain({ scripts: { 'e2e:free': 'node e2e/a.mjs && node e2e/b.mjs --flag' } }))
+  assert.deepEqual(parseChain({ scripts: { 'e2e:free': 'node e2e/a.mjs&&node e2e/b.mjs' } }), ['a', 'b'])
+  assert.deepEqual(parseChain({ scripts: {} }), [])
+})
+
+test('the CLI exits non-zero on an empty chain', async () => {
+  const { mkdtempSync, writeFileSync, mkdirSync, copyFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { spawnSync } = await import('node:child_process')
+  const dir = mkdtempSync(join(tmpdir(), 'e2e-select-'))
+  mkdirSync(join(dir, 'scripts'))
+  copyFileSync(join(ROOT, 'scripts', 'e2e-select.mjs'), join(dir, 'scripts', 'e2e-select.mjs'))
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { 'e2e:free': '' } }))
+  const r = spawnSync(process.execPath, [join(dir, 'scripts', 'e2e-select.mjs'), '--full'], { encoding: 'utf8' })
+  assert.equal(r.status, 2)
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { 'e2e:free': 'node e2e/a.mjs && echo hi' } }))
+  assert.equal(spawnSync(process.execPath, [join(dir, 'scripts', 'e2e-select.mjs'), '--full'], { encoding: 'utf8' }).status, 2)
+})
+
+test('file names cannot forge log lines', () => {
+  const evil = 'src/x\n::warning::pwned\u001b[31m.ts'
+  const r = sel(evil)
+  const text = r.reasons.join('\n')
+  assert.equal(text.split('\n').length, r.reasons.length)
+  assert.ok(!/[\u0000-\u0009\u000b-\u001f]/.test(text))
+  assert.match(text, /\\n::warning::pwned\\u001b/)
+  assert.ok(!r.reasons.some((l) => l.startsWith('::')))
+})
+
+test('dropped and split narrow rules now fall through to full', () => {
+  for (const f of ['connectionLabel.ts', 'roleConnection.ts', 'assistantModels.ts', 'roleServicesNew.ts']) {
+    assert.equal(sel(`src/renderer/src/lib/${f}`).mode === 'full' || f === 'roleServicesNew.ts', true, f)
+  }
+  assert.equal(sel('src/renderer/src/lib/roleConnection.ts').mode, 'full')
+  assert.equal(sel('src/renderer/src/lib/assistantModels.ts').mode, 'full')
+  assert.equal(sel('src/renderer/src/lib/connectionLabel.ts').mode, 'full')
+  assert.equal(sel('src/renderer/src/lib/roleNewThing.ts').mode, 'full')
+  assert.ok(sel('src/renderer/src/lib/roleOps.ts').scripts.includes('team'))
+  assert.ok(sel('src/main/runtime/codexBinary.ts').scripts.includes('connections'))
+})
+
+test('no literal path in the table is shadowed by an earlier rule', () => {
+  const isGlob = (p) => /[*{]/.test(p)
+  for (const [i, rule] of RULES.entries()) {
+    for (const p of rule.match.filter((m) => !isGlob(m))) {
+      const first = RULES.findIndex((r) => r.match.some((m) => globToRegExp(m).test(p)))
+      assert.equal(first, i, `${p} (${rule.why}) is matched first by rule ${first}: ${RULES[first]?.why}`)
+    }
+  }
 })

@@ -6,7 +6,8 @@
 //   node scripts/e2e-select.mjs --full [--print | --run]
 //
 // --print (the default) prints the decision, --run also runs the chosen scripts in chain order and stops at the first
-// failure with its exit code, --full forces the whole chain. No dependencies.
+// failure with its exit code, --full forces the whole chain. --range two|three picks `git diff base head` (pushes: base
+// is the last green commit) or `base...head` (pull requests, the default). Exit 2 on a malformed or empty chain. No dependencies.
 //
 // The script list is read from the e2e:free entry in package.json (the single source of truth). The table below maps a
 // changed path to the scripts that exercise it. Rules are tried in order and the first match wins, so put narrow rules
@@ -78,7 +79,7 @@ export const RULES = [
 
   { match: [`${C}team/TeamFiles*`, `${C}team/useTeamFilesActions.ts`, `${L}teamFiles.ts`, `${L}teamFound.ts`, `${S}teamFiles.css`, `${S}teamFound.css`, `${C}dashboard/TeamFoundPanel.tsx`], scripts: ['team-files'], why: 'team files UI' },
   { match: [`${C}team/OrgChangePointer.tsx`, `${C}team/useOrgChange.ts`, `${L}orgChange.ts`], scripts: ['org-change'], why: 'org change sessions' },
-  { match: [`${C}team/**`, `${R}views/TeamView.tsx`, `${S}team.css`, `${L}role*.ts`, `${L}teamView.ts`, `${L}orgDiff.ts`], scripts: ['team', 'org-change', 'multi-provider'], why: 'Team tab' },
+  { match: [`${C}team/**`, `${R}views/TeamView.tsx`, `${S}team.css`, `${L}roleCapabilities.ts`, `${L}roleModels.ts`, `${L}roleOps.ts`, `${L}roleStaffing.ts`, `${L}teamView.ts`, `${L}orgDiff.ts`], scripts: ['team', 'org-change', 'multi-provider'], why: 'Team tab' },
   { match: [`${C}templates/**`, `${L}templates.ts`], scripts: ['engagement2'], why: 'team templates' },
   { match: [`${C}import/**`, `${S}import.css`, `${L}agentImport.ts`], scripts: ['import'], why: 'agent import' },
 
@@ -92,17 +93,17 @@ export const RULES = [
   { match: [`${C}outputs/**`, `${R}views/OutputsView.tsx`, `${L}output*.ts`, `${L}csvGrid.ts`, `${L}slideStage.ts`, `${L}diagram*.ts`, `${S}outputs*.css`], scripts: OUTPUTS, why: 'Outputs' },
   { match: [`${C}usage/**`, `${C}Usage*.tsx`, `${R}views/UsageView.tsx`, `${L}usage*.ts`, `${L}trends.ts`, `${L}modelPrices.ts`, `${S}usage*.css`, `${S}history-trends.css`], scripts: USAGE, why: 'Usage pages' },
   { match: [`${C}connectors/**`, `${S}connectors.css`, `${L}connector*.ts`, `${L}roleServices.ts`], scripts: ['connectors', 'presets', 'team'], why: 'Connectors' },
-  { match: [`${C}connections/**`, `${S}connections.css`, `${S}project-connection.css`, `${L}proxy*.ts`, `${L}remap.ts`, `${L}tierMapping.ts`, `${L}connectionLabel.ts`, `${L}roleConnection.ts`, `${C}Remap*.tsx`, `${C}ProviderAuthPicker.tsx`], scripts: ['connections', 'project-connection', 'multi-provider'], why: 'Connections' },
+  { match: [`${C}connections/**`, `${S}connections.css`, `${S}project-connection.css`, `${L}proxy*.ts`, `${L}remap.ts`, `${L}tierMapping.ts`, `${C}Remap*.tsx`, `${C}ProviderAuthPicker.tsx`], scripts: ['connections', 'project-connection', 'multi-provider'], why: 'Connections' },
   { match: [`${C}mcp/**`, `${C}McpInstallCard.tsx`, `${S}mcp*.css`, `${L}mcp*.ts`], scripts: ['per-project', 'presets', 'connections', 'proposals'], why: 'MCP settings and install card' },
   { match: [`${C}skills/**`, `${S}skill-library.css`, `${L}skills.ts`, `${L}skillProposal.ts`], scripts: ['skills'], why: 'Skills' },
 
   { match: [`${C}canvas/**`, `${S}canvas*.css`, `${S}flow.css`, `${S}office.css`, `${L}canvas*.ts`, `${L}office/**`], scripts: ['canvas'], why: 'canvas themes and Pocket Office' },
   { match: [`${C}AgentNode.tsx`, `${C}DoneGroupNode.tsx`, `${C}RoleNode.tsx`], scripts: ['canvas', 'runs', 'team'], why: 'canvas nodes' },
-  { match: [`${C}LiveModelSwitch.tsx`, `${S}live-model-switch.css`, `${L}liveModelSwitch.ts`, `${C}runSettings/**`, `${S}run-settings.css`, `${L}runSettings.ts`, `${L}runGoal.ts`, `${L}assistantModels.ts`], scripts: ['run-start', 'model-switch'], why: 'run settings row and live model switch' },
-  { match: [`${C}assistants/**`, `${S}assistants.css`, `${L}assistant*.ts`, `${L}selfHelpRows.ts`], scripts: ['assistants', 'self-help'], why: 'Chat, MCP and Skill assistants, self-help' },
+  { match: [`${C}LiveModelSwitch.tsx`, `${S}live-model-switch.css`, `${L}liveModelSwitch.ts`, `${C}runSettings/**`, `${S}run-settings.css`, `${L}runSettings.ts`, `${L}runGoal.ts`], scripts: ['run-start', 'model-switch'], why: 'run settings row and live model switch' },
+  { match: [`${C}assistants/**`, `${S}assistants.css`, `${L}assistantNav.ts`, `${L}assistants.ts`,`${L}selfHelpRows.ts`], scripts: ['assistants', 'self-help'], why: 'Chat, MCP and Skill assistants, self-help' },
   { match: [`${C}PermissionCard.tsx`, `${C}PermissionRulesPanel.tsx`, `${C}RuleRequestCard.tsx`, `${S}permissions.css`, `${L}chatPermissions.ts`, `${L}rulesChange.ts`, `${L}ignoredRules.ts`], scripts: ['permissions', 'folder-trust'], why: 'permission cards and rules' },
   { match: [`${C}FolderTrustNotice.tsx`, `${L}folderTrust.ts`], scripts: ['folder-trust'], why: 'folder trust notice' },
-  { match: [`${C}ProposalCard.tsx`, `${C}proposals/**`, `${S}proposals.css`, `${S}mcp-install.css`, `${L}proposalSummary.ts`, `${L}appSettingsCard.ts`], scripts: ['proposals', 'self-help'], why: 'proposal cards' },
+  { match: [`${C}ProposalCard.tsx`, `${C}proposals/**`, `${S}proposals.css`,`${L}proposalSummary.ts`, `${L}appSettingsCard.ts`], scripts: ['proposals', 'self-help'], why: 'proposal cards' },
   { match: [`${C}DecisionCard.tsx`, `${C}DecisionTray.tsx`, `${C}QuestionCard.tsx`, `${C}MergeReviewCard.tsx`, `${L}decisionTitle.ts`], scripts: ['proposals', 'permissions', 'runs'], why: 'decision cards' },
   { match: [`${L}transcriptMedia.ts`], scripts: ['transcript-media', 'runs'], why: 'transcript media' },
   { match: [`${C}TranscriptPanel.tsx`, `${S}transcript.css`, `${L}transcript*.ts`], scripts: ['runs', 'transcript-media', 'knowledge-run', 'outputs'], why: 'transcript rendering' },
@@ -111,6 +112,7 @@ export const RULES = [
   { match: [`${S}motion.css`, `${L}motion.ts`, `${L}layoutMotion.ts`], scripts: ['motion', 'layout', 'canvas', 'dashboard'], why: 'motion tokens' },
 
   // ---- main process, narrow areas ----
+  { match: ['src/main/runtime/codexBinary.ts'], scripts: ['connections', 'project-connection', 'multi-provider', 'cli-connections'], why: 'Codex binary discovery (connection status)' },
   { match: ['src/main/runtime/codex*.ts', 'src/main/runtime/fixtures/**'], scripts: [], why: 'Codex adapter: no e2e uses a real adapter; unit tests plus the smoke set (the app still launches)' },
   { match: ['src/main/runtime/folderConfigTrust.ts'], scripts: ['folder-trust'], why: 'folder config trust' },
   { match: ['src/main/runtime/modelHandoff.ts'], scripts: ['model-switch', 'runs'], why: 'model handoff' },
@@ -184,7 +186,13 @@ export function ruleFor(path) {
 export function parseChain(pkg) {
   const chain = pkg?.scripts?.['e2e:free']
   if (typeof chain !== 'string') return []
-  return [...chain.matchAll(/node e2e\/([\w.-]+)\.mjs/g)].map((m) => m[1])
+  // Strict: every `&&` segment must be exactly `node e2e/<name>.mjs`. Anything else (an env prefix, a flag, `||`, a
+  // different command) would make the parsed list differ from what `npm run e2e:free` runs, so refuse to guess.
+  return chain.split('&&').map((seg) => {
+    const m = /^node e2e\/([\w.-]+)\.mjs$/.exec(seg.trim())
+    if (!m) throw new Error(`e2e:free has a segment that is not "node e2e/<name>.mjs": ${printable(seg.trim())}`)
+    return m[1]
+  })
 }
 
 export function loadChain(root = ROOT) {
@@ -192,6 +200,13 @@ export function loadChain(root = ROOT) {
 }
 
 // ---------------------------------------------------------------- the decision
+
+/** A string safe to print: control characters (newline, ESC, ...) are escaped, so a file name cannot forge log lines or `::` workflow commands. */
+export function printable(s) {
+  return JSON.stringify(String(s))
+    .slice(1, -1)
+    .replace(/[\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
 
 /**
  * @param {{ changedFiles: string[] | null | undefined, allScripts: string[] }} input
@@ -207,23 +222,24 @@ export function selectE2e({ changedFiles, allScripts }) {
   let code = false
   for (const raw of changedFiles) {
     const file = String(raw).replace(/\\/g, '/')
+    const shown = printable(file)
     const rule = ruleFor(file)
-    if (!rule) return full(`${file}: no rule maps it to an area, so everything runs`)
+    if (!rule) return full(`${shown}: no rule maps it to an area, so everything runs`)
     if (rule.ownScript) {
-      if (!allScripts.includes(rule.ownScript)) return full(`${file}: not a script of the e2e:free chain (unknown e2e helper), so everything runs`)
+      if (!allScripts.includes(rule.ownScript)) return full(`${shown}: not a script of the e2e:free chain (unknown e2e helper), so everything runs`)
       wanted.add(rule.ownScript)
       code = true
-      reasons.push(`${file}: the script itself`)
+      reasons.push(`${shown}: the script itself`)
       continue
     }
-    if (rule.kind === 'full') return full(`${file}: ${rule.why}, so everything runs`)
+    if (rule.kind === 'full') return full(`${shown}: ${rule.why}, so everything runs`)
     if (rule.kind === 'none') {
-      reasons.push(`${file}: ${rule.why}, no e2e`)
+      reasons.push(`${shown}: ${rule.why}, no e2e`)
       continue
     }
     code = true
     for (const s of rule.scripts) wanted.add(s)
-    reasons.push(`${file}: ${rule.why} -> ${rule.scripts.length ? rule.scripts.join(', ') : 'smoke set only'}`)
+    reasons.push(`${shown}: ${rule.why} -> ${rule.scripts.length ? rule.scripts.join(', ') : 'smoke set only'}`)
   }
   if (code) {
     for (const s of SMOKE) wanted.add(s)
@@ -239,11 +255,16 @@ export function selectE2e({ changedFiles, allScripts }) {
 const SHA = /^[0-9a-f]{7,64}$/i
 
 /** Changed files between two commits, or null when anything is off (the caller then runs everything). */
-export function changedFilesBetween(base, head, cwd = ROOT) {
+export function changedFilesBetween(base, head, cwd = ROOT, range = 'three') {
   if (!SHA.test(base ?? '') || !SHA.test(head ?? '')) return null
   if (/^0+$/.test(base) || /^0+$/.test(head)) return null
   try {
-    const out = execFileSync('git', ['diff', '--name-only', '-z', '--no-renames', `${base}...${head}`, '--'], {
+    // 'two' (pushes): everything that differs between the last green commit and this one, so earlier cancelled or red
+    // pushes keep their area. The base must be an ancestor of head; otherwise (rewritten history) null means full.
+    // 'three' (pull requests): changes since the merge base.
+    if (range === 'two') execFileSync('git', ['merge-base', '--is-ancestor', base, head], { cwd, stdio: 'ignore' })
+    const spec = range === 'two' ? [base, head] : [`${base}...${head}`]
+    const out = execFileSync('git', ['diff', '--name-only', '-z', '--no-renames', ...spec, '--'], {
       cwd,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
@@ -256,15 +277,19 @@ export function changedFilesBetween(base, head, cwd = ROOT) {
 }
 
 export function parseArgs(argv) {
-  const o = { base: undefined, head: undefined, full: false, run: false, print: false }
+  const o = { base: undefined, head: undefined, range: 'three', full: false, run: false, print: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--base') o.base = argv[++i]
     else if (a === '--head') o.head = argv[++i]
+    else if (a === '--range') {
+      o.range = argv[++i]
+      if (o.range !== 'two' && o.range !== 'three') throw new Error('--range takes "two" or "three"')
+    }
     else if (a === '--full') o.full = true
     else if (a === '--run') o.run = true
     else if (a === '--print') o.print = true
-    else throw new Error(`unknown argument: ${a}`)
+    else throw new Error(`unknown argument: ${printable(a)}`)
   }
   return o
 }
@@ -290,9 +315,10 @@ function report(decision, allScripts) {
 function main() {
   const args = parseArgs(process.argv.slice(2))
   const allScripts = loadChain()
+  if (allScripts.length === 0) throw new Error('the e2e:free chain in package.json is missing or empty')
   let decision
   if (args.full) decision = { mode: 'full', scripts: [...allScripts], reasons: ['--full: the whole chain'] }
-  else decision = selectE2e({ changedFiles: changedFilesBetween(args.base, args.head), allScripts })
+  else decision = selectE2e({ changedFiles: changedFilesBetween(args.base, args.head, ROOT, args.range), allScripts })
   report(decision, allScripts)
   if (!args.run) return 0
   for (const name of decision.scripts) {
