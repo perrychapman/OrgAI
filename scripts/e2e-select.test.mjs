@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { RULES, SMOKE, changedFilesBetween, globToRegExp, loadChain, parseArgs, parseChain, selectE2e } from './e2e-select.mjs'
+import { RULES, SMOKE, ciPlan, changedFilesBetween, globToRegExp, loadChain, parseArgs, parseChain, selectE2e } from './e2e-select.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const all = loadChain()
@@ -161,6 +161,21 @@ test('git refs are validated before they reach git', () => {
   assert.equal(changedFilesBetween('0'.repeat(40), 'abc1234'), null)
   assert.equal(changedFilesBetween(undefined, undefined), null)
   assert.equal(changedFilesBetween('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef0'), null)
+})
+
+test('--ci maps the E2E_* environment to a plan', () => {
+  const sha = 'abcdef1234567890abcdef1234567890abcdef12'
+  assert.deepEqual(ciPlan({ E2E_FULL: 'true', E2E_EVENT: 'push', E2E_LAST_GREEN: sha }), { full: true })
+  assert.deepEqual(ciPlan({ E2E_FULL: 'false', E2E_EVENT: 'push', E2E_LAST_GREEN: 'g', E2E_BASE: 'b', E2E_HEAD: 'h' }), { full: false, range: 'two', base: 'g', head: 'h' })
+  assert.deepEqual(ciPlan({ E2E_FULL: 'false', E2E_EVENT: 'pull_request', E2E_LAST_GREEN: 'g', E2E_BASE: 'b', E2E_HEAD: 'h' }), { full: false, range: 'three', base: 'b', head: 'h' })
+  // missing values stay undefined; changedFilesBetween then returns null, which is the full chain
+  const o = parseArgs(['--ci', '--run'], { E2E_EVENT: 'push' })
+  assert.equal(o.range, 'two')
+  assert.equal(o.run, true)
+  assert.equal(changedFilesBetween(o.base, o.head), null)
+  assert.equal(parseArgs(['--ci'], { E2E_FULL: 'true' }).full, true)
+  // anything but the exact string "true" is not full
+  assert.equal(ciPlan({ E2E_FULL: 'TRUE' }).full, false)
 })
 
 test('arguments', () => {
