@@ -663,7 +663,19 @@ async function sectionRunsEnded(page) {
     await sleep(2000)
     await endSession(page)
   }
-  // The review runs 3 s after the last run ends; the Team tab badge shows its count.
+  const lastEndedAt = Date.now()
+  // The review runs 3 s after the LAST run ends (the debounce restarts per run). On a slow runner the first run's review
+  // can land before the second run ends, so a badge alone proves nothing: wait for a review written after the last end.
+  const projectId = (await findProject(page, NAME)).id
+  const deadline = Date.now() + 25_000
+  let reviewed = false
+  while (Date.now() < deadline && !reviewed) {
+    const r = await page.evaluate((id) => window.orgai.capabilities.lastReview(id), projectId).catch(() => null)
+    const at = r && typeof r.checkedAt === 'string' ? Date.parse(r.checkedAt) : NaN
+    reviewed = Number.isFinite(at) && at > lastEndedAt
+    if (!reviewed) await sleep(250)
+  }
+  check(reviewed, 'a review is written after the last run ended')
   await page.locator('[data-testid=team-tab-badge]').waitFor({ timeout: 20_000 })
   await sleep(500)
   await openTeam(page)
