@@ -13,6 +13,12 @@ const STATE_MARK = { waiting: 'wait', finished: 'done', failed: 'error' }
 const KEY_DIR = path.join(SHOTS_DIR, 'ux', 'pocket-office-rework')
 
 export async function checkPocketOffice({ page, name, resizeTo, setAppearance, setCanvas, noPageScroll, shot, scriptFile }) {
+  // Stress option for slow machines (CI is slower than a dev box): ORGAI_E2E_CPU_THROTTLE=4 slows the renderer four times.
+  if (Number(process.env.ORGAI_E2E_CPU_THROTTLE) > 1) {
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.ORGAI_E2E_CPU_THROTTLE) })
+    log('cpu throttle', process.env.ORGAI_E2E_CPU_THROTTLE)
+  }
   const scene = () => page.locator('[data-testid=office-scene]').first()
   const stage = () => scene().locator('[data-testid=office-stage]')
   const zoomButton = label => scene().getByRole('button', { name: label, exact: true })
@@ -790,7 +796,40 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   }
   await runReduced('app-setting', () => setAppearance({ reduceMotion: 'on' }), () => setAppearance({ reduceMotion: 'system' }))
   await runReduced('os-emulation', async () => { await setAppearance({ reduceMotion: 'system' }); await page.emulateMedia({ reducedMotion: 'reduce' }); await sleep(300) }, () => page.emulateMedia({ reducedMotion: 'no-preference' }))
+  // Hand the OS preference back only to look at it, then pin it. What the machine itself reports is not under test here and differs
+  // between machines (a CI VM can report reduce), so everything after this point runs on an explicit `no-preference`.
   await page.emulateMedia({ reducedMotion: null })
+  log('the machine reports prefers-reduced-motion: reduce =', await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches))
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await waits('motion is back on after the reduced-motion checks (OS no-preference, no Settings attribute)', () => !matchMedia('(prefers-reduced-motion: reduce)').matches && !document.documentElement.hasAttribute('data-reduce-motion'), undefined, 5000)
+
+  // ---------- A scene that mounted on a stale reduced-motion reading still starts its clock ----------
+  // The OS reading is held in state, so a change that lands between the render that read it and the effect that listens for it
+  // is lost. Simulate exactly that: every reduced-motion query reads `reduce` until something starts listening to it, then tells the truth.
+  await resizeTo(1600, 1000)
+  await setAppearance({ reduceMotion: 'system', theme: 'dark' }, { presentation: 'pocket-office', scenePalette: 'color' })
+  await page.evaluate(() => {
+    const real = window.matchMedia.bind(window)
+    window.__realMatchMedia = real
+    window.matchMedia = query => {
+      const list = real(query)
+      if (!/prefers-reduced-motion/.test(query)) return list
+      let listening = false
+      return new Proxy(list, {
+        get: (target, key) => {
+          if (key === 'matches') return listening ? target.matches : true
+          if (key === 'addEventListener') return (...args) => { listening = true; return target.addEventListener(...args) }
+          const value = Reflect.get(target, key, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        }
+      })
+    }
+  })
+  await startRun('Office stale motion')
+  await waits('a scene whose first reduced-motion reading was stale still runs its clock once its listener is attached', () => document.querySelector('[data-testid=office-scene]')?.dataset.officeClock === 'running', undefined, 8000)
+  check(await scene().locator('[data-testid=office-pause]').getAttribute('aria-disabled') === null, 'Pause motion is not inert after a stale first reading')
+  await page.evaluate(() => { window.matchMedia = window.__realMatchMedia; delete window.__realMatchMedia })
+  await endSession(page)
 
   // ---------- 1024 x 640 with a permission card open ----------
   fs.writeFileSync(scriptFile, JSON.stringify({
@@ -808,6 +847,13 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   const card = page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first()
   await card.waitFor({ timeout: 20_000 })
   await sleep(600)
+  // Name the input first: a static scene here is either reduced motion (OS, Settings or Pause) or a stopped clock, and the two need different fixes.
+  const motionInputs = () => page.evaluate(() => ({
+    osReduce: matchMedia('(prefers-reduced-motion: reduce)').matches, attr: document.documentElement.getAttribute('data-reduce-motion'), hidden: document.hidden,
+    paused: document.querySelector('[data-testid=office-scene]')?.dataset.paused ?? null, pauseInert: document.querySelector('[data-testid=office-pause]')?.getAttribute('aria-disabled') ?? null
+  }))
+  const inputs = await motionInputs()
+  check(!inputs.osReduce && inputs.attr === null && !inputs.hidden && inputs.paused === null && inputs.pauseInert === null, 'motion is on for the permission run (not reduced, paused or hidden)', JSON.stringify(inputs))
   const small = await scene().evaluate(el => {
     const stripEl = el.querySelector('.office-message-strip')
     const strip = stripEl.getBoundingClientRect()
@@ -824,7 +870,9 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
     const waiting = document.querySelector('[data-testid=office-scene] [data-office-sprite-id][data-office-state=waiting]')
     return !!waiting && document.querySelector(`[data-testid=office-mark][data-mark=wait][data-agent-id="${waiting.dataset.officeSpriteId}"]`) !== null
   }, undefined, 6000)
-  await waits('Needs you people wave once any message walk is over (cue waving)', () => !!document.querySelector('[data-testid=office-scene] [data-office-state=waiting][data-office-cue=waving]'), undefined, 15_000)
+  if (!await waits('Needs you people wave once any message walk is over (cue waving)', () => !!document.querySelector('[data-testid=office-scene] [data-office-state=waiting][data-office-cue=waving]'), undefined, 15_000)) {
+    log('clock did not start; inputs', JSON.stringify({ ...await motionInputs(), clock: await scene().getAttribute('data-office-clock') }))
+  }
   const waitingNow = await snapshot()
   check(waitingNow.clock === 'running' && marksAgree(waitingNow) && waitingNow.animated >= 1, 'the clock runs for Needs you, and marks agree', JSON.stringify(waitingNow.sprites.map(s => `${s.state}/${s.cue}`)))
   // Off-screen chips: the person who needs you is scrolled out of the stage, a chip names them in the controls row,
