@@ -176,6 +176,45 @@ test('a push base that is not an ancestor, or not fetched, gives null (full)', (
   assert.equal(changedFilesBetween('1234567890abcdef1234567890abcdef12345678', 'abcdef1234567890abcdef1234567890abcdef12', ROOT, 'two'), null)
 })
 
+test('two-dot range: ancestor base works, swapped (non-ancestor) order gives null (full)', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { execFileSync } = await import('node:child_process')
+  const dir = mkdtempSync(join(tmpdir(), 'e2e-select-git-'))
+  const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+  const git = (...a) => execFileSync('git', a, { cwd: dir, env, encoding: 'utf8' }).trim()
+  git('init', '-q')
+  writeFileSync(join(dir, 'a.txt'), '1')
+  git('add', '.')
+  git('commit', '-q', '-m', 'one')
+  const first = git('rev-parse', 'HEAD')
+  writeFileSync(join(dir, 'b.txt'), '2')
+  git('add', '.')
+  git('commit', '-q', '-m', 'two')
+  const second = git('rev-parse', 'HEAD')
+  assert.deepEqual(changedFilesBetween(first, second, dir, 'two'), ['b.txt'])
+  assert.equal(changedFilesBetween(second, first, dir, 'two'), null)
+})
+
+test('the selector still runs when started through a symlinked directory', async () => {
+  const { mkdtempSync, symlinkSync, writeFileSync, mkdirSync, copyFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { spawnSync } = await import('node:child_process')
+  const real = mkdtempSync(join(tmpdir(), 'e2e-select-real-'))
+  mkdirSync(join(real, 'scripts'))
+  copyFileSync(join(ROOT, 'scripts', 'e2e-select.mjs'), join(real, 'scripts', 'e2e-select.mjs'))
+  writeFileSync(join(real, 'package.json'), JSON.stringify({ scripts: { 'e2e:free': 'node e2e/a.mjs && node e2e/b.mjs' } }))
+  const link = join(mkdtempSync(join(tmpdir(), 'e2e-select-link-')), 'linked')
+  try {
+    symlinkSync(real, link, 'junction')
+  } catch {
+    return // symlink creation refused on this platform (Windows without rights)
+  }
+  const r = spawnSync(process.execPath, [join(link, 'scripts', 'e2e-select.mjs'), '--full', '--print'], { encoding: 'utf8' })
+  assert.equal(r.status, 0)
+  assert.match(r.stdout, /e2e selection: full, 2 of 2 scripts/)
+})
+
 test('the chain parser is strict and the real chain parses', () => {
   assert.throws(() => parseChain({ scripts: { 'e2e:free': 'node e2e/a.mjs && FOO=1 node e2e/b.mjs' } }), /not "node e2e/)
   assert.throws(() => parseChain({ scripts: { 'e2e:free': 'node e2e/a.mjs && npm test' } }))
@@ -210,9 +249,6 @@ test('file names cannot forge log lines', () => {
 })
 
 test('dropped and split narrow rules now fall through to full', () => {
-  for (const f of ['connectionLabel.ts', 'roleConnection.ts', 'assistantModels.ts', 'roleServicesNew.ts']) {
-    assert.equal(sel(`src/renderer/src/lib/${f}`).mode === 'full' || f === 'roleServicesNew.ts', true, f)
-  }
   assert.equal(sel('src/renderer/src/lib/roleConnection.ts').mode, 'full')
   assert.equal(sel('src/renderer/src/lib/assistantModels.ts').mode, 'full')
   assert.equal(sel('src/renderer/src/lib/connectionLabel.ts').mode, 'full')
