@@ -1,6 +1,5 @@
 import { useCallback, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react'
 import type { AgentMessage } from '@shared/types'
-import { useReducedMotion } from '../../../lib/canvas'
 import { buildingBlocked, buildingLayout, EMPTY_BUILDING_MEMORY, rememberTeam, type BuildingMemory } from '../../../lib/office/building'
 import { cameraArea, contentSize, mapOffset, zoomLabel, zoomName, OFFICE_TILE_PX, type Point } from '../../../lib/office/camera'
 import { assignAppearances } from '../../../lib/office/layout'
@@ -22,6 +21,7 @@ import { officeState } from '../../../lib/office/cues'
 import { useOfficeCamera } from './useOfficeCamera'
 import { useOfficeClock } from './useOfficeClock'
 import { useOfficeDeliveries } from './useOfficeDeliveries'
+import { useOfficeReducedMotion } from './useOfficeReducedMotion'
 import '../../../styles/office.css'
 
 export type { OfficeAgent } from './officeArt'
@@ -35,7 +35,7 @@ export interface OfficeSceneProps {
 /** One building per team (rework spec section 1): wiring only. Layout, camera and deliveries live in their own modules. */
 export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, selectedId, mode, runId, palette = 'color', controlRef }: OfficeSceneProps) {
   const agents = mode === 'sample' ? allAgents.slice(0, 1) : allAgents
-  const reduced = useReducedMotion()
+  const reduced = useOfficeReducedMotion()
   const announce = useFrameAnnounce()
   const [paused, setPaused] = useState(false)
   const motionOff = reduced || paused

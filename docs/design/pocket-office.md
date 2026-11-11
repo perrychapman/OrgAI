@@ -162,6 +162,10 @@ Open after the rework (outside the Office files or needing a decision):
 - F5: a later bubble that overlaps an earlier one stacks above it (below if no room); the tail then points slightly off its person. F6: room labels carry the full label in `title` (the ellipsis was already there; `scrollWidth > clientWidth` is what an ellipsis is).
 - F4 (focus after Remove role in Team) lives in `TeamView` and is not changed here.
 
+### Static scene on Windows CI (2026-11-10)
+
+CI (windows-latest, `canvas.mjs`) showed the permission-card run with every cue `none` for 15 s and the Pause button dimmed, i.e. `reduced` was true in the scene. Reduced motion has three inputs; two re-read themselves (the Settings attribute through `useHtmlAttr`, and `document.hidden` on every render), the OS reading did not: it was read once at mount and then only changed by a `change` event, so a change landing between that render and the effect that subscribes was lost for a scene that then sits still. `useOfficeReducedMotion` now reads again right after subscribing. Checked: `e2e/pocket-office.mjs` injects a stale first reading (every reduced-motion query reads `reduce` until something listens to it); the scene stayed static with the old hook (two runs) and runs its clock with the new one. The CI failure itself did not reproduce locally (CPU throttling 2x to 4x, 24 CPU burners, resizes between runs, 8 mount/reset races), so that trigger is unproven. The script also stopped handing the OS preference back to the machine (`emulateMedia(null)`, which falls back to whatever the CI VM reports) and now pins `no-preference`, logs what the machine reports, and checks the motion inputs before the permission run so a static scene names its cause.
+
 ## Not in this rework
 
 Multi-storey buildings; night lighting or weather; ambient walking, visitors or invented chatter; sitting poses; sound; sprite upscaling beyond 4x; camera following a conversation automatically; a minimap; keeping the scene visible when a permission card shrinks the stage (evaluation item 8, separate layout work); the Graph presentation; any provider, IPC or shared-type change.
