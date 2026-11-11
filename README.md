@@ -11,7 +11,7 @@ Made by [Cybrid Software LLC](https://cybridsoftware.com).
 [![Latest release](https://img.shields.io/github/v/release/perrychapman/OrgAI?label=release)](https://github.com/perrychapman/OrgAI/releases/latest)
 [![CI](https://github.com/perrychapman/OrgAI/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/perrychapman/OrgAI/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-informational)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%28untested%29-informational)
 
 [Download](#download) · [Quick start](#quick-start) · [How it works](docs/how-it-works.md) · [Contributing](CONTRIBUTING.md)
 
@@ -23,8 +23,8 @@ Made by [Cybrid Software LLC](https://cybridsoftware.com).
 
 OrgAI is a desktop app. You describe a team as an org chart (roles, prompts, tools, who may delegate to whom), give it
 a task, and the live view draws that chart as the work runs: every agent appears on the canvas the moment it is
-spawned, with its state, activity, tokens and cost. It runs on your own Claude Code login or API key, Codex (OpenAI) or
-a LiteLLM proxy. Projects, runs and settings are stored on your computer.
+spawned, with its state, activity, tokens and cost. It runs on your own Claude Code login or API key, Codex (OpenAI), or
+a LiteLLM or other OpenAI-compatible proxy. Projects, runs and settings are stored on your computer.
 
 ## Terminal workspace
 
@@ -72,9 +72,28 @@ terminal attaches; they are not a reconstructed message history.
 
 The orchestrator and every subagent show up on the canvas as they are created, attached to the agent that spawned
 them. Click an agent for its transcript, open the Plan, Usage and Logs tabs, or hide finished agents to keep a big
-run readable. The canvas has several styles, in dark and light themes.
+run readable. The canvas has several styles, in dark and light themes. Each agent shows the model tier and effort it
+runs on, and the Plan tab shows which steps are ready, waiting or running.
 
 <p align="center"><img src="docs/media/hero-light.png" alt="The same run in the light theme: an orchestrator with two implementers, one reported back and one ended without a result." width="80%"></p>
+
+Prefer something livelier? Switch the canvas presentation to **Pocket Office**: the team becomes one pixel-art building
+you pan and zoom, with the orchestrators in the lobby and each department in its own room. People who are working type
+at their desks, new agents walk in through the front door, an agent waiting on you raises a hand, and messages appear
+as bubbles at the person they are for, with a message log below the scene. Pause motion stops every animation, and
+the scene stays still when your system asks for reduced motion.
+
+<p align="center"><img src="docs/media/office.gif" alt="A run in the Pocket Office view: the orchestrator's lobby and two department rooms, reports working at their desks, a message bubble over a report, and the message log below showing the orchestrator handing work to a report and the reply." width="100%"></p>
+
+### Choose how each run runs
+
+Above the composer, a run settings row shows the model, effort, permission mode and goal for the run. Change them
+before you start, or switch the model and the permission mode while the conversation goes on (a wider permission
+mode asks you to confirm first). Switching to a model on another connection asks you to end the session first; your next
+message then carries the conversation over to the new model. The orchestrator also picks a tier and effort for each report it starts, within the limits you set
+on the chart.
+
+<p align="center"><img src="docs/media/run-settings.png" alt="The new-run page with the Model, Effort, Permission and Goal chips above the composer and the Permission picker open on its six modes." width="80%"></p>
 
 ### Set up with an Architect
 
@@ -95,7 +114,7 @@ reports to whom. Templates and team files in the repository let a team travel wi
 
 The Dashboard collects every decision waiting on you across projects, the runs in progress, last week's cost and the
 state of your connections. Approvals come as cards (allow once, for the session, or for the project), so an unattended
-run stops only when it should.
+run stops only when it should. The Usage page breaks cost and tokens down by project, run and model.
 
 <p align="center"><img src="docs/media/dashboard.png" alt="The Dashboard: two decisions waiting under Needs you, five runs, three projects and a cost summary." width="100%"></p>
 
@@ -105,6 +124,12 @@ Engagement projects (work for a client or a case, in a plain folder) have a Know
 organisations, decisions and risks as they work, and you can read, edit and retire them in a list or on a graph.
 
 <p align="center"><img src="docs/media/knowledge.gif" alt="The Knowledge tab of an engagement: the list of recorded items, then the Graph view with Acme Corp, Jane Doe, a decision and a risk." width="100%"></p>
+
+### Keep what a run produces
+
+Documents, workbooks, slide decks, diagrams and data files that agents produce appear in the project's Outputs tab
+and in the run's side panel. A revision adds a new version instead of replacing the old one, and notes you leave on an
+output are passed to the agents the next time they revise it.
 
 ### Start from a repository
 
@@ -116,7 +141,7 @@ forks it with `gh`). A repository's own agent settings stay switched off until y
 ### Chat without a project
 
 Chat is an assistant that needs no project and is read-only unless you allow edits. There are also an MCP assistant and a Skill assistant that help
-you add tools and skills to your library.
+you add tools and skills to your library; you manage both under App settings > Connectors and Skill library.
 
 <p align="center"><img src="docs/media/chat.gif" alt="The Chat assistant: a question is typed and answered, then a follow-up." width="100%"></p>
 
@@ -137,8 +162,8 @@ Get the latest build from the [Releases page](https://github.com/perrychapman/Or
 
 1. **Install** OrgAI and start it.
 2. **Connect a provider** in App settings > Connections: sign in with Claude Code (`claude` then `/login`) or add an
-   Anthropic API key, or connect OpenAI (Codex) or a LiteLLM proxy. Claude is the most exercised connection; Codex and
-   LiteLLM are implemented but have seen less live use.
+   Anthropic API key, or connect OpenAI (Codex) or a LiteLLM or OpenAI-compatible proxy. Claude is the most exercised
+   connection; Codex and proxies are implemented but have seen less live use.
 3. **Create a project**: New project, point it at a repository folder, keep "Set up with the Architect" on, approve the
    proposals, then start a run from the Live tab.
 
@@ -174,7 +199,10 @@ npx electron .       # launch the built app
 ORGAI_MOCK=1 npm run dev   # scripted mock adapter: UI work with no tokens
 ```
 
-`npm run check` runs typecheck, unit tests, build and the free end-to-end flows; none of them spend tokens.
+In PowerShell, set the variable first: `$env:ORGAI_MOCK=1; npm run dev`.
+
+`npm run check` runs typecheck, unit tests, build and the free end-to-end flows; none of them spend tokens. The full
+end-to-end chain takes a while, and CI runs it on Windows and macOS on every push to dev.
 See [docs/testing.md](docs/testing.md) for the testing guide.
 
 ## Docs and contributing

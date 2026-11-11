@@ -15,7 +15,8 @@ flows. Run `npm run build` first; the scripts use `out/` and never the dev serve
 
 ```sh
 npm run build
-npm run e2e:free           # layout + maintenance + connections
+npm run e2e:free           # the whole free chain (package.json)
+node scripts/e2e-select.mjs --base <sha> --head <sha> --print   # which scripts CI runs for a change (--run runs them, --full forces all)
 node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
 ```
 

@@ -76,7 +76,12 @@ unverified (list what no run confirmed).
 - Never run agents on a fork's PR branch before reviewing its folder config; a repository's agent settings, MCP files
   and hooks are untrusted.
 - CI (`.github/workflows/ci.yml`) runs on pushes to and pull requests into `main` and `dev`. The full `e2e:free` runs
-  in CI, not locally (owner decision 2026-11-05). Locally run typecheck, `npm test`, build and the e2e script for the
+  in CI, not locally (owner decision 2026-11-05), for pull requests into `main`, pushes to `main` and manual dispatch
+  (a nightly run against `dev` starts only once this workflow is on `main`, and GitHub disables schedules on a public
+  repo after 60 days of inactivity). Pushes and pull requests to `dev` run the e2e scripts of the changed area plus a smoke
+  set (`scripts/e2e-select.mjs`, owner decision 2026-11-10); anything unmapped or shared runs the full chain. A push to
+  `dev` is compared with the last successful push run, so earlier cancelled or red runs are still covered. Pushes that
+  change only Markdown or `docs/**` do not run CI (`paths-ignore`). Locally run typecheck, `npm test`, build and the e2e script for the
   area you changed.
 - Dependabot opens weekly grouped PRs into `dev` labelled `dependencies`. Major bumps of `@types/node` are ignored (it
   must match the Node engine and CI). Never auto-merge them.
@@ -120,7 +125,7 @@ The release workflow refuses tags that are not reachable from `main`. A manual d
 - Typecheck: `npm run typecheck`
 - Unit tests: `npm test`
 - Build: `npm run build`
-- E2E (free, needs a build): `npm run e2e:free` (CI runs the full chain)
+- E2E (free, needs a build): `npm run e2e:free` (CI runs the full chain for `main`, nightly and on dispatch; `dev` runs the selected scripts, see above)
 
 ## Tokens
 

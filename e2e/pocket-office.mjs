@@ -445,7 +445,9 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await keyShot('team-33-find')
   await waits('the Find ring goes away after three seconds', () => !document.querySelector('[data-office-found]'), undefined, 6000)
   await page.locator('[data-testid=office-role-back]').click()
-  check(await page.evaluate(() => document.activeElement?.dataset?.officeWorkerId === 'office-worker-3-6'), 'Back to office returns focus to the found person')
+  await waits('Back to office returns focus to the found person', () => document.activeElement?.dataset?.officeWorkerId === 'office-worker-3-6', undefined, 3000)
+  await settle()
+  check(await page.evaluate(() => document.activeElement?.dataset?.officeWorkerId === 'office-worker-3-6'), 'focus on the found person holds after the stage settles')
 
   // Back to the small team for the person keyboard path.
   await page.evaluate(async project => { await window.orgai.projects.save(project) }, original)
@@ -608,7 +610,10 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   check(await inStage('root'), 'Show brings the recipient inside the stage')
   await waits('the Show ring goes away', () => !document.querySelector('[data-office-found]'), undefined, 6000)
   await page.locator('[data-testid=office-agent-back]').click()
-  check(await page.evaluate(() => document.activeElement?.dataset?.officeWorkerId === 'root'), 'Back to office returns focus to the shown person')
+  // returnToOffice focuses the person in a requestAnimationFrame after clearing the selection, so wait for it, then confirm it holds.
+  await waits('Back to office returns focus to the shown person', () => document.activeElement?.dataset?.officeWorkerId === 'root', undefined, 3000)
+  await settle()
+  check(await page.evaluate(() => document.activeElement?.dataset?.officeWorkerId === 'root'), 'focus on the shown person holds after the stage settles')
   // Find a person in Live.
   await openDirectory()
   await scene().locator('button[data-office-agent-id="office-b"]').click()
