@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync as fsRealpath, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   SELF_CONTROL_DENIAL_MESSAGE,
@@ -953,8 +953,15 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
   const encode = (text: string): string => Buffer.from(text, 'utf16le').toString('base64')
 
   it('fails closed on POSIX bracket classes and shell glob ambiguity in protected names', () => {
-    const s = setup()
-    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: join(s.base, 'proj'), home: s.home, cliRoots: [] }
+    const linuxRoot = posix.join('/tmp', `orgai-scg7-posix-${process.pid}`)
+    const data = posix.join(linuxRoot, 'data')
+    const ctx: SelfControlContext = {
+      protectedPaths: [posix.join(data, 'run')],
+      cwd: posix.join(linuxRoot, 'proj'),
+      home: linuxRoot,
+      platform: 'linux',
+      cliRoots: []
+    }
     for (const command of [
       '/usr/bin/secur[[:alpha:]]ty dump-keychain',
       '/usr/bin/secur[]i]ty dump-keychain',
@@ -966,8 +973,8 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
       '~/.local/bin/orga[[:alpha:]] status',
       '~/.local/bin/orga[]i] status',
       '~/.local/bin/orga[!"()"] status',
-      `cat '${s.data}'/r[[:alpha:]]n/daemon.secret`,
-      `cat '${s.data}'/r[z-\\]u]n/daemon.secret`,
+      `cat '${data}'/r[[:alpha:]]n/daemon.secret`,
+      `cat '${data}'/r[z-\\]u]n/daemon.secret`,
       "C=']'; ~/.local/bin/orga[z-\"]\"i$C status",
       "C=']'; /usr/bin/secur[z-\"]\"i${C}ty dump-keychain",
       "bash -O extglob -c '~/.local/bin/?(o)rgai status'",
@@ -984,6 +991,17 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
     ]) {
       expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     }
+
+    const windowsData = 'C:\\security\\orgai\\data'
+    const windowsRun = win32.join(windowsData, 'run')
+    const windowsCtx: SelfControlContext = {
+      protectedPaths: [windowsRun],
+      cwd: 'C:\\work',
+      platform: 'win32',
+      shell: 'powershell',
+      cliRoots: []
+    }
+    expect(checkSelfControlDenial('PowerShell', { command: `Get-Content "${win32.join(windowsRun, 'daemon.secret')}"` }, windowsCtx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
   })
 
   describe('package runners naming the package', () => {

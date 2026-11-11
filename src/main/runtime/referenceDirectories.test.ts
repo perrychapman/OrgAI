@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   REFERENCE_EDIT_TOOLS,
@@ -259,43 +259,57 @@ describe('prefix protection (definite mode, selfControlGate.ts Wave 7)', () => {
       expect(globMayStartWith(glob, prefix), glob).toBe(true)
     }
 
-    const dir = join(root, 'security', 'orgai', 'data')
-    const protectedRun = join(dir, 'run')
+    const linuxRoot = '/tmp/orgai-reference-posix-fixture'
+    const linuxWork = posix.join(linuxRoot, 'work')
+    const dir = posix.join(linuxRoot, 'security', 'orgai', 'data')
+    const protectedRun = posix.join(dir, 'run')
     for (const pattern of ['r[[:alpha:]]n/daemon.secret', 'r[z-\\]u]n/daemon.secret']) {
-      expect(searchReaches(dir, pattern, [protectedRun], work, { platform: 'linux' }), pattern).toBe(protectedRun)
-      expect(commandControlScan(`cat '${dir}'/${pattern}`, work, [protectedRun], { platform: 'linux' })).toBe('touch')
+      expect(searchReaches(dir, pattern, [protectedRun], linuxWork, { platform: 'linux' }), pattern).toBe(protectedRun)
+      expect(commandControlScan(`cat '${dir}'/${pattern}`, linuxWork, [protectedRun], { platform: 'linux' })).toBe('touch')
     }
 
-    const cafe = join(root, 'café')
-    const cafeRun = join(cafe, 'run')
-    expect(searchReaches(root, 'caf[[:alpha:]]/run/daemon.secret', [cafeRun], work, { platform: 'linux' })).toBe(cafeRun)
-    expect(commandControlScan(`cat '${root}'/caf[[:alpha:]]/run/daemon.secret`, work, [cafeRun], { platform: 'linux' })).toBe('touch')
+    const cafe = posix.join(linuxRoot, 'café')
+    const cafeRun = posix.join(cafe, 'run')
+    expect(searchReaches(linuxRoot, 'caf[[:alpha:]]/run/daemon.secret', [cafeRun], linuxWork, { platform: 'linux' })).toBe(cafeRun)
+    expect(commandControlScan(`cat '${linuxRoot}'/caf[[:alpha:]]/run/daemon.secret`, linuxWork, [cafeRun], { platform: 'linux' })).toBe('touch')
 
-    const emojiRun = join(root, 'data😀', 'run')
-    expect(searchReaches(root, 'data[😀]/run/daemon.secret', [emojiRun], work, { platform: 'linux' })).toBe(emojiRun)
-    expect(commandControlScan(`cat '${root}'/data[😀]/run/daemon.secret`, work, [emojiRun], { platform: 'linux' })).toBe('touch')
+    const emojiRun = posix.join(linuxRoot, 'data😀', 'run')
+    expect(searchReaches(linuxRoot, 'data[😀]/run/daemon.secret', [emojiRun], linuxWork, { platform: 'linux' })).toBe(emojiRun)
+    expect(commandControlScan(`cat '${linuxRoot}'/data[😀]/run/daemon.secret`, linuxWork, [emojiRun], { platform: 'linux' })).toBe('touch')
   })
 
   it('keeps repeated ambiguous classes bounded while still refusing protected paths', () => {
+    const linuxRoot = '/tmp/orgai-reference-posix-fixture'
+    const linuxWork = posix.join(linuxRoot, 'work')
     const component = `${'[z-a]'.repeat(80)}x`
-    const protectedRun = join(root, `${'a'.repeat(80)}y`, 'run')
+    const protectedRun = posix.join(linuxRoot, `${'a'.repeat(80)}y`, 'run')
     const pattern = `${component}/run/daemon.secret`
     const started = Date.now()
-    expect(searchReaches(root, pattern, [protectedRun], work, { platform: 'linux' })).toBe(protectedRun)
-    expect(commandControlScan(`cat '${root}'/${pattern}`, work, [protectedRun], { platform: 'linux' })).toBe('touch')
+    expect(searchReaches(linuxRoot, pattern, [protectedRun], linuxWork, { platform: 'linux' })).toBe(protectedRun)
+    expect(commandControlScan(`cat '${linuxRoot}'/${pattern}`, linuxWork, [protectedRun], { platform: 'linux' })).toBe('touch')
     expect(Date.now() - started).toBeLessThan(1000)
   })
 
   it('expands bounded zsh and optional extglob path groups before scanning protected paths', () => {
-    const data = join(root, 'data')
-    const protectedRun = join(data, 'run')
+    const linuxRoot = '/tmp/orgai-reference-posix-fixture'
+    const linuxWork = posix.join(linuxRoot, 'work')
+    const data = posix.join(linuxRoot, 'data')
+    const protectedRun = posix.join(data, 'run')
     for (const command of [
-      `cat '${root}'/data/(run|x)/daemon.secret`,
-      `cat '${root}'/data/?(r)un/daemon.secret`,
-      `cat '${root}'/(data|x)/run/daemon.secret`
+      `cat '${linuxRoot}'/data/(run|x)/daemon.secret`,
+      `cat '${linuxRoot}'/data/?(r)un/daemon.secret`,
+      `cat '${linuxRoot}'/(data|x)/run/daemon.secret`
     ]) {
-      expect(commandControlScan(command, work, [protectedRun], { platform: 'linux' }), command).toBe('touch')
+      expect(commandControlScan(command, linuxWork, [protectedRun], { platform: 'linux' }), command).toBe('touch')
     }
+  })
+
+  it('resolves Windows fixtures when the win32 path model is selected', () => {
+    const data = 'C:\\security\\orgai\\data'
+    const protectedRun = win32.join(data, 'run')
+    const workdir = 'C:\\work'
+    expect(searchReaches(data, 'run/daemon.secret', [protectedRun], workdir, { platform: 'win32' })).toBe(protectedRun)
+    expect(commandControlScan(`cat "${win32.join(protectedRun, 'daemon.secret')}"`, workdir, [protectedRun], { platform: 'win32' })).toBe('touch')
   })
 
   it('bounds work on deeply nested and unmatched shell glob groups', () => {

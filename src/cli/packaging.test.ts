@@ -41,7 +41,7 @@ describe('isCliExternal', () => {
 })
 
 describe('electron-builder.yml', () => {
-  const yml = readFileSync(join(repo, 'electron-builder.yml'), 'utf8')
+  const yml = readFileSync(join(repo, 'electron-builder.yml'), 'utf8').replace(/\r\n/g, '\n')
   /** The list items under a top-level key (two-space `- ` lines until the next top-level key). */
   const topList = (key: string): string[] => {
     const lines = yml.split(/\r?\n/)
