@@ -412,6 +412,36 @@ describe('RunStore exec fields (cli-spec Wave 0)', () => {
     }
   })
 
+  it('keeps rootEffort and permissionMode only when valid, and permissionModeChosen only as true next to a mode', () => {
+    const bad = (over: Record<string, unknown>): RunSummary => run('x', over as Partial<RunSummary>)
+    const kept = normalizeCrashedRunSummary(run('ok', { status: 'finished', rootEffort: 'xhigh', permissionMode: 'plan', permissionModeChosen: true }))
+    expect(kept).toMatchObject({ rootEffort: 'xhigh', permissionMode: 'plan', permissionModeChosen: true })
+    for (const effort of ['extreme', '', 3, null, {}]) expect('rootEffort' in normalizeCrashedRunSummary(bad({ rootEffort: effort }))).toBe(false)
+    for (const mode of ['yolo', '', 1, null]) {
+      const n = normalizeCrashedRunSummary(bad({ permissionMode: mode, permissionModeChosen: true }))
+      expect('permissionMode' in n).toBe(false)
+      expect('permissionModeChosen' in n).toBe(false)
+    }
+    for (const flag of [false, 'true', 1, null]) {
+      const n = normalizeCrashedRunSummary(bad({ permissionMode: 'default', permissionModeChosen: flag }))
+      expect(n.permissionMode).toBe('default')
+      expect('permissionModeChosen' in n).toBe(false)
+    }
+    // A chosen flag with no mode at all is dropped.
+    expect('permissionModeChosen' in normalizeCrashedRunSummary(bad({ permissionModeChosen: true }))).toBe(false)
+    // A session's "accept edits" overlay never survives a load (the session is gone).
+    const overlaid = normalizeCrashedRunSummary(bad({ permissionMode: 'plan', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' }))
+    expect('sessionPermissionMode' in overlaid).toBe(false)
+    expect(overlaid).toMatchObject({ permissionMode: 'plan', permissionModeChosen: true })
+    // The store applies it on load.
+    writeIndex([bad({ id: 'persist', permissionMode: 'dontAsk', permissionModeChosen: true, rootEffort: 'low' }), bad({ id: 'junk', permissionMode: 'x', rootEffort: 'x', permissionModeChosen: true })])
+    const s = new RunStore(dataDir)
+    expect(s.get('persist')).toMatchObject({ permissionMode: 'dontAsk', permissionModeChosen: true, rootEffort: 'low' })
+    expect(s.get('junk')).not.toHaveProperty('permissionMode')
+    expect(s.get('junk')).not.toHaveProperty('rootEffort')
+    expect(s.get('junk')).not.toHaveProperty('permissionModeChosen')
+  })
+
   it('recovers a staged model selection for every supported run kind after reload', () => {
     const store = new RunStore(dataDir)
     const selection = { model: 'next-model', connection: 'custom-connection' }

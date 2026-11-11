@@ -28,6 +28,11 @@
   --office-step-duration: 120ms;
   --office-arrival-duration: 240ms;
   --office-delivery-max-duration: 10000ms;
+  --office-bubble-base: 1500ms;
+  --office-bubble-per-char: 45ms;
+  --office-bubble-max: 6000ms;
+  --office-find-duration: 3000ms;
+  --office-glance-duration: 600ms;
   --office-color-ink: #382519;
   --office-color-border: #795038;
   --office-neutral-surface: #f2f0e9;
@@ -164,6 +169,11 @@
   --office-step-duration: 120ms;
   --office-arrival-duration: 240ms;
   --office-delivery-max-duration: 10000ms;
+  --office-bubble-base: 1500ms;
+  --office-bubble-per-char: 45ms;
+  --office-bubble-max: 6000ms;
+  --office-find-duration: 3000ms;
+  --office-glance-duration: 600ms;
   --office-color-ink: #382519;
   --office-color-border: #795038;
   --office-neutral-surface: #f2f0e9;
@@ -295,6 +305,11 @@
     --office-step-duration: 120ms;
     --office-arrival-duration: 240ms;
     --office-delivery-max-duration: 10000ms;
+    --office-bubble-base: 1500ms;
+    --office-bubble-per-char: 45ms;
+    --office-bubble-max: 6000ms;
+    --office-find-duration: 3000ms;
+    --office-glance-duration: 600ms;
     --office-color-ink: #382519;
     --office-color-border: #795038;
     --office-neutral-surface: #f2f0e9;

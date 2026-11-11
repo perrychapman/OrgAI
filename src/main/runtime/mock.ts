@@ -2,10 +2,11 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { validModelId } from '../connections/codexAccount'
 import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { dirname, join } from 'node:path'
-import type { AgentInstance, ConnectionId, Effort, ModelTier, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
+import type { AgentInstance, ConnectionId, Effort, ModelTier, ImageAttachment, McpServerSpec, PermissionMode, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { cleanRequiredReports, effortOptionsFor, mcpServersForRole, newId, projectKindOf, settingTier } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
+import { PermissionModeRefusal } from './permissionModeRefusal'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo,type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
@@ -129,6 +130,8 @@ import { waitingNote, waitingNoteExcluded } from './waitingNote'
  * Model switching markers (all run kinds): [mock:model-switch] yields one root text then idle, without cards;
  * replies echo the active root model. [mock:model-switch-limit] ends the first session at a usage limit with
  * a reset 24 hours away (set autoResume off in the test); [mock:model-switch-error] ends it with a provider error.
+ * Live permission mode markers (setPermissionMode): an applied mode logs "Mock session permission mode: <mode>." (info);
+ * [mock:mode-refuse] makes it refuse, [mock:mode-reports-unchanged] makes it answer reportsUnchanged >= 1.
  * Both recovery markers yield the simple idle script when resumed, so recovery never repeats the failure.
  * [mock:media]: text/image/text tool result, unsupported audio, then a standalone assistant PNG; no files or network.
  *
@@ -723,6 +726,12 @@ export function mediaSteps(): MockStep[] {
     { type: 'text', text: 'MOCK_MEDIA_DONE' }
   ]
 }
+/** setPermissionMode refuses (throws) in a run whose prompt holds this marker. */
+export const MODE_REFUSE_TOKEN = '[mock:mode-refuse]'
+/** setPermissionMode applies but reports live reports it models as unswitchable (at least 1) in a run whose prompt holds this marker. */
+export const MODE_REPORTS_UNCHANGED_TOKEN = '[mock:mode-reports-unchanged]'
+/** The run log line the mock writes when it applies a live permission mode (e2e reads it). */
+export const mockPermissionModeLog = (mode: PermissionMode): string => `Mock session permission mode: ${mode}.`
 export const MODEL_SWITCH_LIMIT_TOKEN = '[mock:model-switch-limit]'
 export const MODEL_SWITCH_ERROR_TOKEN = '[mock:model-switch-error]'
 export const EXEC_SLOW_TOKEN = '[mock:exec-slow]'
@@ -1331,6 +1340,8 @@ export class MockSession implements RuntimeSession {
   }
   /** The enabled plugins the session would load. For tests. */
   readonly plugins: PluginSpec[] = []
+  /** Permission modes applied live through setPermissionMode, in order. For tests. */
+  readonly permissionModes: PermissionMode[] = []
   /** Which adapter and connection the run was routed to; never secrets. Undefined without ctx.connection. For tests. */
   readonly connection?: { adapter: ProviderId; connection: ConnectionId }
   /** Servers attached mid-run through the harness's addMcpServer hook, in order. For tests. */
@@ -1527,6 +1538,33 @@ export class MockSession implements RuntimeSession {
       root.model = input.model
       this.upsert(root)
     }
+  }
+
+  /**
+   * Reference live permission mode switch. The mock's own gates read ctx.project on every call, so the new mode reaches
+   * the root and every report at once (RunManager sets ctx.project before a narrowing, after an applied widening);
+   * modes are derived from `mode`. Refuses what the real adapters refuse (bridged child, setup-like, a mode a
+   * trust-restricted run would not honour, a session that is not live). A narrowing below acceptEdits clears a card's
+   * session accept-edits grant. Markers: [mock:mode-refuse] throws; [mock:mode-reports-unchanged] answers
+   * { applied: true, reportsUnchanged: max(1, live reports) }. Each applied mode is logged as mockPermissionModeLog(mode)
+   * and kept in `permissionModes`.
+   */
+  async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
+    if (this.ctx.bridgedChild) throw new PermissionModeRefusal('Only the run root can change the permission mode.')
+    if (this.isSetup) throw new PermissionModeRefusal('This run keeps its own permission mode.')
+    if (this.stopped || this.ended) throw new PermissionModeRefusal('This session is not live. The mode will apply when the run continues.')
+    if (isTrustRestrictedRun(this.ctx.run) && (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions')) {
+      throw new PermissionModeRefusal('This run asks before each change, so it cannot use that permission mode.')
+    }
+    if (this.ctx.prompt.includes(MODE_REFUSE_TOKEN)) throw new PermissionModeRefusal('This provider applies a new permission mode from the next session.')
+    if (mode === 'default' || mode === 'plan' || mode === 'dontAsk') this.sessionAcceptEdits = false
+    this.permissionModes.push(mode)
+    this.log('info', mockPermissionModeLog(mode))
+    if (this.ctx.prompt.includes(MODE_REPORTS_UNCHANGED_TOKEN)) {
+      const live = [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length
+      return { applied: true, reportsUnchanged: Math.max(1, live) }
+    }
+    return true
   }
 
   /** delegate_agent background: true blocks for a report's call (harness messages reach only the root) and a required delegation. */
@@ -2421,13 +2459,28 @@ export class MockSession implements RuntimeSession {
         for (const r of allowRuleStrings(granted ?? [])) this.sessionRules.add(r)
         for (const s of granted ?? []) {
           // A trust-restricted run stays ask-only: a session acceptEdits is never honoured there.
-          if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
+          if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.grantAcceptEdits()
           // Only folders the card may offer (never the data folder, home, a credential folder or a root).
           if (s.type === 'addDirectories') for (const d of s.directories) if (isOfferableDirectory(d, opts)) this.sessionDirs.add(d)
         }
       }
     }
     return this.toolRan(agentId, id, step, input)
+  }
+
+  /**
+   * A session / project allow's setMode acceptEdits (reference for claude.ts allowWithScope and codex.ts): edits need no
+   * card from now on and RunManager is told once (RuntimeContext.acceptEditsGranted). A card answered after the run moved
+   * to plan or dontAsk does not take the run out of it.
+   */
+  private grantAcceptEdits(): void {
+    const now = this.ctx.project.permissionMode
+    if (now === 'plan' || now === 'dontAsk') {
+      this.log('info', `Kept the run in ${now === 'plan' ? 'Plan' : "Don't ask"} mode: the permission card's mode change was not applied.`)
+      return
+    }
+    this.sessionAcceptEdits = true
+    this.ctx.acceptEditsGranted?.()
   }
 
   /** A tool call that ran: its result, then the step's `writeContent` (written for real) and `onAllow` text. */

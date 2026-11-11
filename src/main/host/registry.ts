@@ -142,6 +142,8 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'projects:applyImport', 'projects:exportOrg', 'projects:updateEngagementDocument', 'projects:saveNote',
     'projects:removeNote', 'runs:promoteQuick', 'permissions:add', 'permissions:remove', 'connections:connect',
     'connections:update', 'connections:setSecret', 'connections:createProxy', 'connections:removeProxy', 'connections:login', 'connections:cancelLogin', 'connections:logout',
+    // runs:setPermissionMode is desktop-only in its handler (dispatcher.ts); 'configure' (never 'operate') keeps it out of a default client's reach too.
+    'runs:setPermissionMode',
     'connections:setDefault', 'mcp:upsert', 'mcp:remove', 'mcp:setSecret', 'mcp:linkLibrary', 'mcp:promote', 'mcp:authorize',
     'mcp:cancelAuthorize', 'mcp:revokeAuth', 'mcp:copyFromLibrary', 'mcp:setProjectOverrides', 'mcpLibrary:upsert',
     'mcpLibrary:remove', 'mcpLibrary:setSecret', 'connectors:add', 'connectors:setToken', 'connectorPresets:upsert',

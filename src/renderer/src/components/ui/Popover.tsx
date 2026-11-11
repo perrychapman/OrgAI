@@ -58,6 +58,8 @@ export function Popover({
   const [open, setOpen] = useState(false)
   const [placed, setPlaced] = useState(false)
   const [opening, setOpening] = useState(0)
+  /** The panel size place() last measured; the ResizeObserver places again only when it differs. */
+  const placedSize = useRef<{ w: number; h: number } | null>(null)
 
   const place = useCallback(() => {
     const t = triggerRef.current
@@ -66,6 +68,7 @@ export function Popover({
     const r = t.getBoundingClientRect()
     const w = p.offsetWidth
     const h = p.offsetHeight
+    placedSize.current = { w, h }
     const vw = window.innerWidth
     const vh = window.innerHeight
     let top = placement.startsWith('top') ? r.top - h - GAP : r.bottom + GAP
@@ -117,12 +120,44 @@ export function Popover({
     if (open) place()
   }, [open, opening, place])
 
-  // Focus moves in once the panel is placed (it is visibility:hidden, hence unfocusable, until then).
+  // Content that grows after the first placement (a list that finishes loading) is placed again, so the panel never
+  // runs past the window edge. Only a real size change places again: placing on the observer's first (unchanged)
+  // report, or on a size that place() itself caused, would loop ("ResizeObserver loop completed" warnings).
+  useEffect(() => {
+    const p = panelRef.current
+    if (!open || !p || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      const last = placedSize.current
+      if (last && last.w === p.offsetWidth && last.h === p.offsetHeight) return
+      place()
+    })
+    ro.observe(p)
+    return () => ro.disconnect()
+  }, [open, place])
+
+  // Focus moves in once the panel is placed: to the checked radio when there is one, else the first control. It waits
+  // for a frame: on the first open the toggle event runs before the panel is rendered as an open popover, and focus()
+  // on its (still display:none) content is silently dropped, which left keyboard users on the trigger. A control the
+  // content already focused itself (the model picker's search box) is kept. Retried a few frames, never stolen back
+  // once the user moved focus elsewhere in the panel.
   useEffect(() => {
     const el = panelRef.current
     if (!open || !placed || !el) return
-    const first = el.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
-    ;(first ?? el).focus()
+    let frame = 0
+    let tries = 0
+    const focusIn = (): void => {
+      if (!el.matches(':popover-open')) return
+      if (el.contains(document.activeElement) && document.activeElement !== el) return
+      const target =
+        el.querySelector<HTMLElement>('input[type=search]') ??
+        el.querySelector<HTMLElement>('input[type=radio]:checked') ??
+        el.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ??
+        el
+      target.focus()
+      if (!el.contains(document.activeElement) && tries++ < 6) frame = requestAnimationFrame(focusIn)
+    }
+    frame = requestAnimationFrame(focusIn)
+    return () => cancelAnimationFrame(frame)
   }, [open, placed, opening])
 
   useEffect(() => {

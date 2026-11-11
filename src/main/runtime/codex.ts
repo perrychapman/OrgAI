@@ -1,9 +1,11 @@
 import { ordinal } from '@shared/view/compactionText'
-import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, PermissionMode, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import { canNarrowPermissionMode } from './runOverrides'
 import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, projectKindOf, settingTier } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
-import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult, type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
+import { PermissionModeRefusal } from './permissionModeRefusal'
+import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult,type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, codexStartLockKey, withCodexStartLock, type CodexAppServerOptions } from './codexAppServer'
 import { catalogStartFailure, nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
 import { startCodexToolGateway } from './codexToolGateway'
@@ -24,14 +26,19 @@ import {
   parseToolCall,
   parseTurnId,
   parseUserInputQuestions,
+  fullPolicyOverride,
+  parseWorkspaceWriteTemp,
   policyFor,
+  policyOverride,
+  TEMP_EXCLUDED,
   toolResponse,
   untilFromRateLimits,
   userInput,
   type DynamicToolSpec,
   type FolderTrustConfig,
   type LaunchConfig,
-  type PolicyChoice
+  type PolicyChoice,
+  type WorkspaceWriteTemp
 } from './codexProtocol'
 import { countUsage, setModelTokens } from './runUsage'
 import { CodexEventMapper, ThrottledPartial, fileChangeTargets, fileChanges, type CodexUpdate } from './codexEvents'
@@ -334,6 +341,11 @@ const NATIVE_AGENTS_NOTICE =
 
 /** sendToRoot's rejection when the root thread does not exist yet (already logged). */
 const ROOT_DROPPED = new Error('the root thread does not exist yet')
+/**
+ * policyPending sentinel: a turn/start that carried a policy override was rejected (or timed out on OrgAI's side), so
+ * Codex may or may not hold that policy. The thread's next turn/start sends all three policy fields (review M1).
+ */
+const POLICY_UNKNOWN = 'unknown' as const
 
 class CodexSession implements RuntimeSession {
   readonly finished: Promise<void>
@@ -382,6 +394,22 @@ class CodexSession implements RuntimeSession {
   private sessionRules: string[] = []
   /** A session (or project) grant of a setMode acceptEdits suggestion: edits inside free folders need no card. */
   private sessionAcceptEdits = false
+  /** The mode last applied live (setPermissionMode); undefined = the start-time mode from ctx.project. */
+  private liveMode?: PermissionMode
+  /**
+   * Threads whose Codex-side policy still differs from ThreadInfo.policy after a live mode switch: thread id -> the
+   * policy Codex holds. Their next turn/start carries the difference (policyOverride), then the entry goes.
+   * POLICY_UNKNOWN: an override's turn/start failed, so the next one carries the full policy (fullPolicyOverride).
+   */
+  private policyPending = new Map<string, PolicyChoice | typeof POLICY_UNKNOWN>()
+  /** Thread id -> the mode its ThreadInfo.policy was derived from by a live switch (what a turn/start override sends). */
+  private policyMode = new Map<string, PermissionMode>()
+  /** sandbox_workspace_write.writable_roots of the current app-server's launch config (a turn/start override never adds one). */
+  private launchWritableRoots: string[] = []
+  /** The effective config's workspace-write temp-folder switches (config/read right after each app-server's initialize, for turn/start overrides). */
+  private workspaceTemp?: Promise<WorkspaceWriteTemp>
+  /** Thread id -> every permission mode that may hold on Codex's side for it (a live switch compares these). */
+  private threadModes = new Map<string, PermissionMode[]>()
   /** The reference-folder policy downgrade warning was logged (once per run). */
   private warnedReferencePolicy = false
   /** Folders granted through an addDirectories suggestion for this session (also free for `cd` and edits). */
@@ -585,6 +613,159 @@ class CodexSession implements RuntimeSession {
     }
   }
 
+  /**
+   * Live permission mode switch (RuntimeSession.setPermissionMode; RunManager.setPermissionMode is the only caller).
+   * Everything is derived from `mode` (RunManager sets ctx.project before this call only for a narrowing). The
+   * app-server cannot change a running turn's sandbox or approval policy: TurnSettingsUpdateParams carries only
+   * reviewer / model / effort, and thread/settings/update is experimental-only (generate-ts of @openai/codex 0.166.0).
+   * TurnStartParams.approvalPolicy / approvalsReviewer / sandboxPolicy hold "for this turn and subsequent turns", so:
+   *   - the root must be between turns (else refused): its next turn/start carries the new policy;
+   *   - every thread's OrgAI-side policy (ThreadInfo.policy: declined approvals, accepted edits) changes at once;
+   *   - a report between turns gets the new policy on its next turn/start (covered); a report inside a turn or with a
+   *     turn/start in flight (the serialized queue) keeps what Codex holds until that turn ends, and is counted in
+   *     `reportsUnchanged` unless every mode it may run under is no wider than `mode`, whatever its agent state says;
+   *   - policyPending always holds what Codex holds: a turn/start answered after another switch leaves the entry on the
+   *     policy it sent, so the next turn/start corrects it (settlePolicy, review H1);
+   *   - a thread whose role cannot be resolved keeps its policy and is counted (review L3);
+   *   - reports spawned from now on start with the new policy (policyFor reads `mode` through ctx.project / liveMode).
+   * Bridged reports are separate sessions RunManager tracks (BridgedSessions); not counted here. Bypass is refused where
+   * policyFor would not honour it (a quick run, reference folders). A mode other than acceptEdits, auto or bypass clears
+   * a card's session accept-edits grant. Open cards stay open; session rules are untouched.
+   */
+  async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
+    if (this.ctx.bridgedChild) throw new PermissionModeRefusal('Only the run root can change the permission mode.')
+    if (this.setupLike) throw new PermissionModeRefusal('This run keeps its own permission mode.')
+    if (this.ending || this.ended || !this.rootThreadId || !this.threads.has(this.rootThreadId)) throw new PermissionModeRefusal('This session is not live. The mode will apply when the run continues.')
+    if (this.restarting || this.mcpRestartPending || this.threadStarts > 0) throw new PermissionModeRefusal('The session is starting a thread or restarting. Try again in a moment.')
+    if (isTrustRestrictedRun(this.ctx.run) && (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions')) {
+      throw new PermissionModeRefusal('This run asks before each change, so it cannot use that permission mode.')
+    }
+    if (mode === 'bypassPermissions' && this.hasReferenceFolders()) throw new PermissionModeRefusal('Reference folders keep this run asking before writes outside the project, so it cannot use Bypass permissions.')
+    if (this.activeTurn.has(this.rootThreadId) || this.queues.has(this.rootThreadId)) {
+      throw new PermissionModeRefusal('Codex applies a new permission mode when a turn starts. Interrupt the run or wait until the orchestrator is idle, then change it.')
+    }
+    let reportsUnchanged = 0
+    for (const [threadId, info] of this.threads) {
+      const role = info.agentId === ROOT_AGENT_ID ? this.root : this.net.roleOf(info.agentId)
+      // policyPending always holds what Codex holds for the thread (kept across switches until a turn/start moves it).
+      if (!this.policyPending.has(threadId)) this.policyPending.set(threadId, info.policy)
+      if (!role) {
+        // No role to derive a policy from (review L3): the thread keeps its policy on both sides, so it is counted.
+        if (info.agentId !== ROOT_AGENT_ID) reportsUnchanged += 1
+        continue
+      }
+      // A turn running or a turn/start in flight (the serialized queue) can act whatever the agent's state says. A
+      // thread whose Codex-side policy is unknown (an override's turn/start failed, review M1) keeps every mode it may
+      // hold until a turn/start succeeds.
+      const inTurn = this.activeTurn.has(threadId) || this.queues.has(threadId) || this.policyPending.get(threadId) === POLICY_UNKNOWN
+      info.policy = this.policyFor(role, mode)
+      this.policyMode.set(threadId, mode)
+      if (inTurn) {
+        // Codex keeps the old policy until this turn ends (or until a turn/start lands): the thread may run under either mode.
+        const modes = new Set([...(this.threadModes.get(threadId) ?? []), mode])
+        this.threadModes.set(threadId, [...modes])
+        if (info.agentId !== ROOT_AGENT_ID && !(this.threadModes.get(threadId) ?? []).every((m) => canNarrowPermissionMode(mode, m))) reportsUnchanged += 1
+      } else {
+        this.threadModes.set(threadId, [mode])
+      }
+    }
+    // RuntimeSession.setPermissionMode contract: a mode other than acceptEdits, auto or bypass drops the session grant.
+    if (mode !== 'acceptEdits' && mode !== 'auto' && mode !== 'bypassPermissions') this.sessionAcceptEdits = false
+    this.liveMode = mode
+    return reportsUnchanged ? { applied: true, reportsUnchanged } : true
+  }
+
+  /**
+   * After a turn/start that carried a live switch's override: Codex now holds `sent` (derived from `sentMode`) "for this
+   * turn and subsequent turns". If another switch changed ThreadInfo.policy while the request was in flight (review H1),
+   * the entry stays, now holding `sent`, so the thread's next turn/start moves it again, and the thread counts under both
+   * modes until then. Only when the thread's policy still matches what was sent does the entry go.
+   */
+  private settlePolicy(threadId: string, sent: PolicyChoice, sentMode: PermissionMode | undefined): void {
+    const now = this.threads.get(threadId)?.policy
+    if (now && Object.keys(policyOverride(sent, now, [], TEMP_EXCLUDED)).length === 0) {
+      this.policyPending.delete(threadId)
+      if (sentMode) this.threadModes.set(threadId, [sentMode])
+      return
+    }
+    this.policyPending.set(threadId, sent)
+    const modes = new Set<PermissionMode>(this.threadModes.get(threadId) ?? [])
+    if (sentMode) modes.add(sentMode)
+    if (this.liveMode) modes.add(this.liveMode)
+    this.threadModes.set(threadId, [...modes])
+  }
+
+  /**
+   * A turn/start that carried an override was rejected or timed out on OrgAI's side (review M1): Codex may have applied
+   * it anyway (a timed-out request it still processed) or not. The thread's Codex-side policy is unknown until a
+   * turn/start succeeds, so its next turn/start sends the full policy, and it counts under the sent mode as well as the
+   * modes it already had (setPermissionMode keeps them while the sentinel stands).
+   */
+  private policyUnknown(threadId: string, sentMode: PermissionMode | undefined): void {
+    this.policyPending.set(threadId, POLICY_UNKNOWN)
+    const modes = new Set<PermissionMode>(this.threadModes.get(threadId) ?? [])
+    if (sentMode) modes.add(sentMode)
+    if (this.liveMode) modes.add(this.liveMode)
+    this.threadModes.set(threadId, [...modes])
+  }
+
+  /**
+   * Writable roots for a turn/start sandboxPolicy (review L1): the launch config's roots that are still writable roots
+   * now (codexWritableRoots read live), so an override is never wider than the launch nor than the current folders.
+   */
+  private overrideWritableRoots(): string[] {
+    const live = new Set(codexWritableRoots(this.ctx))
+    return this.launchWritableRoots.filter((r) => live.has(r))
+  }
+
+  /**
+   * The effective config's workspace-write temp-folder switches, read through config/read right after the app-server's
+   * initialize (run() and the MCP restart call this once per app-server, before any thread starts, so the answer is the
+   * config the threads start with, not a config.toml edited later; review L2). Stable in generate-ts of @openai/codex
+   * 0.166.0; cwd = the project folder so project layers count. A failed or unreadable answer excludes both temp folders
+   * (parseWorkspaceWriteTemp / TEMP_EXCLUDED): never wider than the user's. Not awaited at launch: a turn/start
+   * override awaits the stored answer.
+   */
+  private readWorkspaceTempAtLaunch(server: CodexServerLike): void {
+    const cwd = this.ctx.project.path
+    const answer = server
+      .request(METHOD.configRead, { includeLayers: false, ...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}) })
+      .then(parseWorkspaceWriteTemp, (e: Error) => {
+        this.log('info', `Could not read Codex's sandbox settings (${e?.message ?? e}); a mode change keeps temp folders out of writable roots.`)
+        return TEMP_EXCLUDED
+      })
+    this.workspaceTemp = answer
+  }
+
+  /** The launch-time temp switches (readWorkspaceTempAtLaunch); TEMP_EXCLUDED when no read was made for this app-server. */
+  private readWorkspaceTemp(): Promise<WorkspaceWriteTemp> {
+    return this.workspaceTemp ?? Promise.resolve(TEMP_EXCLUDED)
+  }
+
+  /**
+   * A session / project allow's setMode acceptEdits: edits inside free folders need no card from now on, and RunManager
+   * lays acceptEdits over a narrower mode for the rest of this session (RuntimeContext.acceptEditsGranted). A card raised
+   * under a wider mode and answered after the run moved to plan or dontAsk does not take the run out of it (as claude.ts
+   * allowWithScope); the card's rules still apply. Called once per applied grant.
+   */
+  private grantAcceptEdits(): void {
+    const now = this.liveMode ?? this.ctx.project.permissionMode
+    if (now === 'plan' || now === 'dontAsk') {
+      this.log('info', `Kept the run in ${now === 'plan' ? 'Plan' : "Don't ask"} mode: the permission card's mode change was not applied.`)
+      return
+    }
+    this.sessionAcceptEdits = true
+    this.ctx.acceptEditsGranted?.()
+  }
+
+  /** Every permission mode that may hold for a thread starting now (ctx.project, the live mode, a session accept-edits grant). */
+  private modesInForce(): PermissionMode[] {
+    const modes = new Set<PermissionMode>([this.ctx.project.permissionMode])
+    if (this.liveMode) modes.add(this.liveMode)
+    if (this.sessionAcceptEdits) modes.add('acceptEdits')
+    return [...modes]
+  }
+
   /** Headless exec settlement view (cli-spec 6.2(2)). */
   settlement(): SessionSettlement {
     const root = this.agents.get(ROOT_AGENT_ID)
@@ -786,7 +967,25 @@ class CodexSession implements RuntimeSession {
         }
       }
       const staffedEffort = this.threadEffort.get(threadId)
-      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...(staffedEffort ? { effort: staffedEffort } : {}), ...extra, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
+      // A live permission mode switch reaches Codex's side here: turn/start's policy fields hold "for this turn and subsequent turns".
+      const temp = this.policyPending.has(threadId) ? await this.readWorkspaceTemp() : TEMP_EXCLUDED
+      const pending = this.policyPending.get(threadId)
+      const target = this.threads.get(threadId)?.policy
+      const sentMode = this.policyMode.get(threadId) ?? this.liveMode
+      const override = !pending || !target
+        ? {}
+        : pending === POLICY_UNKNOWN
+          ? fullPolicyOverride(target, this.overrideWritableRoots(), temp)
+          : policyOverride(pending, target, this.overrideWritableRoots(), temp)
+      let res: unknown
+      try {
+        res = await this.server.request(METHOD.turnStart, { threadId, input, ...(staffedEffort ? { effort: staffedEffort } : {}), ...extra, ...override, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
+      } catch (e) {
+        // Codex may have applied the override even though OrgAI saw a failure (a timeout): unknown until one succeeds.
+        if (Object.keys(override).length > 0) this.policyUnknown(threadId, sentMode)
+        throw e
+      }
+      if (pending && target) this.settlePolicy(threadId, target, sentMode)
       const id = parseTurnId(res)
       if (id && !this.completedTurns.has(id)) this.activeTurn.set(threadId, id)
     })
@@ -840,8 +1039,7 @@ class CodexSession implements RuntimeSession {
    * reference folders (read live; an unreadable list counts as having some) bypass and auto are downgraded so writes
    * outside the workspace still reach onFileApproval (codexProtocol.ts policyFor); one run warning says so.
    */
-  private policyFor(role: Role): PolicyChoice {
-    const mode = this.ctx.project.permissionMode
+  private policyFor(role: Role, mode: PermissionMode = this.ctx.project.permissionMode): PolicyChoice {
     const base = { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' }
     if (!this.hasReferenceFolders()) return policyFor(mode, base)
     const choice = policyFor(mode, { ...base, referenceFolders: true })
@@ -946,6 +1144,7 @@ class CodexSession implements RuntimeSession {
 
   private bindThread(threadId: string, agentId: string, policy: PolicyChoice): void {
     this.threads.set(threadId, { agentId, policy })
+    this.threadModes.set(threadId, this.modesInForce())
     this.agentThread.set(agentId, threadId)
     this.flushHeld(threadId)
     this.wakeBindWaiters()
@@ -1143,8 +1342,10 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = withoutControlEnv(ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : [])
-      const launch = this.buildLaunch(servers, { ...trustLaunchOpts(ctx), writableRoots: codexWritableRoots(ctx) })
+      const writableRoots = codexWritableRoots(ctx)
+      const launch = this.buildLaunch(servers, { ...trustLaunchOpts(ctx), writableRoots })
       this.launch = launch instanceof Promise ? await launch : launch
+      this.launchWritableRoots = writableRoots
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       await this.startServer(this.launch, (server) => {
@@ -1153,6 +1354,7 @@ class CodexSession implements RuntimeSession {
       })
       // End session during the start (the version check, the handshake): no thread, no prompt to the model.
       if (this.ending) return
+      this.readWorkspaceTempAtLaunch(this.server)
 
       const policy = this.policyFor(this.root)
       const params = this.threadParams(this.root, true, ctx.project.path)
@@ -1775,7 +1977,7 @@ class CodexSession implements RuntimeSession {
           this.sessionRules.push(...allowRuleStrings(scoped))
           const offer = this.safeMatchOptions()
           for (const s of scoped) {
-            if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
+            if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.grantAcceptEdits()
             if (s.type === 'addDirectories' && offer) {
               // Checked as written and by real path (reviewer-3 M3: a link or another case spelling of ~/.ssh).
               for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d) && isOfferableDirectory(d, offer) && offerableByRealPath(d, offer)) this.sessionDirs.push(d)
@@ -2340,9 +2542,10 @@ class CodexSession implements RuntimeSession {
     try {
       const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
       if (this.ending) return abandon()
+      const writableRoots = codexWritableRoots(this.ctx)
       const launch = await this.buildLaunch(servers, {
         ...trustLaunchOpts(this.ctx),
-        writableRoots: codexWritableRoots(this.ctx)
+        writableRoots
       })
       const old = this.server
       this.unwire()
@@ -2350,12 +2553,15 @@ class CodexSession implements RuntimeSession {
       await Promise.race([old.exited, new Promise((r) => setTimeout(r, EXIT_WAIT_MS))])
       if (this.ending) return abandon()
       this.launch = launch
+      this.launchWritableRoots = writableRoots
+      this.workspaceTemp = undefined
       await this.startServer(launch, (server) => {
         created = server
         this.server = server
         this.wire(server)
       })
       if (this.ending) return abandon()
+      this.readWorkspaceTempAtLaunch(this.server)
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)

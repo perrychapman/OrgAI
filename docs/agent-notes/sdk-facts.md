@@ -330,3 +330,67 @@ run about $0.12, subagent runs about $0.03 each), `Query.getContextUsage()` and 
   initialised on claude-opus-4-5 and sent every request there (lab relay).
 - A subagent definition with model `sonnet` under root `opus`, no variables: requests went to claude-opus-5-5 and
   claude-sonnet-5-5 (lab relay, one run).
+## Live permission mode change (typings only, 2026-11-10; NOT verified live)
+
+Read from the installed typings, no smoke run (no tokens spent). Used by `setPermissionMode` in claude.ts / codex.ts.
+
+- Claude Agent SDK 0.3.318, `sdk.d.ts` interface `Query`: `setPermissionMode(mode: PermissionMode): Promise<void>`, "Change the
+  permission mode for the current session. Only available in streaming input mode." OrgAI always uses streaming input.
+  `Options.allowDangerouslySkipPermissions` "Must be set to true when using permissionMode: 'bypassPermissions'" and is
+  an `Options` field fixed when the query is built, so OrgAI never switches a query to bypass that was built without it.
+  `AgentDefinition.permissionMode` exists; OrgAI sets none. `sdk-tools.d.ts` `AgentInput.mode` is "Deprecated; ignored.
+  Subagents inherit the parent session's permission mode"; whether a nested report's "parent session" is the root or
+  its spawning report (which may still hold an older mode) is not said, so OrgAI adds the parent report's modes.
+  Unverified: how the CLI answers bypass on a query built without the flag, whether a Task
+  report already running picks up a new mode, and whether a report spawned after `Query.setPermissionMode` inherits
+  the new session mode or the query's build-time `Options.permissionMode`.
+- Counting in claude.ts (`reportsUnchanged`, fake-query tests in `claude.test.ts` "ClaudeSession live permission
+  mode"): a report counts unless every mode it may run under is no wider than the new one. Those modes are fixed when
+  the PreToolUse hook approves the Agent call (keyed by tool_use_id, moved onto the report at task_started; an
+  approved spawn not started yet counts on its own, an `is_error` tool result drops it, a query restart drops every
+  unstarted one, and after `interrupt()` each one that existed then goes once its caller's turn is over: a root call at
+  the next root `result`, a report's call at a root `result` once that report is done or failed, review L4; that
+  `task_started` precedes the Agent call's result and the turn's `result` is from the smoke facts above, while what an
+  interrupt does to running background reports is unverified) and when the agent is first
+  seen: the query's build-time mode (always, because of the open question above), the mode last applied live, a
+  change still in flight, a card's accept-edits grant, ctx.project's mode and the parent report's modes. Finished
+  reports count too, because SendMessage resumes one; a resumed report that is wider than the live mode gets a run
+  warning. So the count over-counts on purpose, for example every report of a run built in acceptEdits counts on any
+  later narrowing below it.
+- Grants around a change (claude.ts `allowWithScope`): a card answered while the live, pending or (before any switch)
+  ctx.project mode is plan or dontAsk loses its setMode update (the rules stay) and does not call
+  `ctx.acceptEditsGranted`. A setMode acceptEdits that reaches the CLI while `Query.setPermissionMode` awaits makes the
+  adapter send the mode once more; the accept-edits flag clears only when no grant landed meanwhile. An MCP restart
+  check stands down while a change is in flight and is scheduled again after it; if the query still changed under the
+  await the change is refused. Codex and mock apply the same plan / dontAsk rule to `sessionAcceptEdits`.
+- Codex app-server (@openai/codex 0.166.0, `codex app-server generate-ts`, stable and `--experimental`, token-free):
+  `v2/TurnStartParams.ts` `approvalPolicy`, `approvalsReviewer`, `sandboxPolicy` (a `SandboxPolicy` object, not the
+  mode string) hold "for this turn and subsequent turns". `v2/TurnSettingsUpdateParams.ts` (`turn/settings/update`) changes
+  only reviewer, model, effort, summary and service tier of a running turn, and `thread/settings/update` appears only in the
+  `--experimental` output. So a running turn keeps its sandbox and approval policy; the change reaches each thread at its
+  next `turn/start`.
+- `v2/SandboxPolicy.ts` (same generate-ts, re-read 2026-11-10): every `workspaceWrite` field is required
+  (`writableRoots`, `networkAccess`, `excludeTmpdirEnvVar`, `excludeSlashTmp`), so an override cannot leave one to the
+  user's config. What OrgAI sends (`codexProtocol.ts` `sandboxPolicyFor`): `writableRoots` = the roots the app-server
+  was launched with (`sandbox_workspace_write.writable_roots` in the launch config) that `codexWritableRoots(ctx)`
+  still returns now, so neither a later allowed folder nor a removed one widens it; `networkAccess: false` always, which
+  narrows a user's own `network_access = true` (the only field that only narrows); the two temp switches come from
+  `config/read` (stable method, `ConfigReadResponse.config.sandbox_workspace_write`, snake_case, read right after each
+  app-server's initialize and before any thread starts, `cwd` = the project, so a config.toml edited later does not
+  count): only an explicit null section means Codex's defaults (temp folders writable); a missing key (a Codex version
+  that renamed or moved it), a failed read or a non-boolean value excludes the folder (narrower than any user setting).
+  Whether `config/read` reports the values the running threads were started with, and how Codex applies the object,
+  is unverified live.
+- Counting in codex.ts (fake app-server tests in `codex.test.ts` "live permission mode"): `policyPending` holds what
+  Codex holds for a thread; a turn/start answered after another switch keeps the entry on the policy it sent so the
+  next turn/start corrects it, and the thread counts under both modes meanwhile. A thread inside a turn or with a
+  turn/start in flight counts whatever its agent state; a thread with no resolvable role is counted. A turn/start
+  that carried an override and was rejected or timed out on OrgAI's side (30 s, `codexAppServer.ts`; Codex may still
+  have applied it) marks the thread `unknown` in `policyPending`: it counts under the sent mode and every earlier one,
+  between turns too, and its next turn/start sends all three policy fields (`fullPolicyOverride`) until one succeeds
+  (review M1). Whether Codex applies a turn/start whose answer OrgAI timed out on is unverified live.
+- `setPermissionMode` refusals written by OrgAI as fixed text throw `PermissionModeRefusal` (`runtime/permissionModeRefusal.ts`, `userSafe`), which RunManager may show verbatim; anything derived from an SDK / CLI error stays a plain `Error` (Claude: "could not change its permission mode now", raw text only in the redacted run log). Fake-query / fake-app-server / mock unit tests; live unverified.
+- Accept-edits grants: each adapter calls `RuntimeContext.acceptEditsGranted()` once per applied session / project
+  grant of a setMode acceptEdits (Claude where `updatedPermissions` carries it, Codex / mock where they set
+  `sessionAcceptEdits`), never on allow-once, and drops its own grant when a live change goes to default, plan or
+  dontAsk (Claude: the CLI's single session mode is replaced). Unit tests in all three adapters; live unverified.

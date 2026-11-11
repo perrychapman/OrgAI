@@ -15,8 +15,9 @@
  * option descriptions and reasons). Card fields decisions depend on (tool input, rules, option labels, MCP specs) are
  * forwarded exactly.
  */
-import type { AgentInstance, BridgedRoleChoice, ConnectionId, ProviderId, Project, Role, RunEvent, RunSummary, TranscriptEntry } from '@shared/types'
-import { BRIDGE_RESULT_MAX_CHARS } from '@shared/types'
+import type { AgentInstance, BridgedRoleChoice, ConnectionId, PermissionMode, ProviderId, Project, Role, RunEvent, RunSummary, TranscriptEntry } from '@shared/types'
+import { canNarrowPermissionMode, overlaidByAcceptEdits } from './runOverrides'
+import { BRIDGE_RESULT_MAX_CHARS, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { effectiveSubagentLimits, newId } from '@shared/defaults'
 import { HandleNamer, spawnHandle } from './network'
 import { settleAgent, isLiveAgent, type RunOutcome } from './activity'
@@ -75,6 +76,10 @@ interface Child {
   stopped?: Promise<void>
   /** The adapter.start call while it is pending (never rejects). */
   opening?: Promise<void>
+  /** The permission mode the child session started in (its ctx.project snapshot). Unknown = counted as wider. */
+  startMode?: PermissionMode
+  /** The child's adapter applied an "accept edits" grant to the child session (its own acceptEditsGranted hook). */
+  acceptEditsGranted?: true
 }
 
 /** Env names whose values are always secrets, whatever characters they have. */
@@ -181,6 +186,21 @@ export class BridgedSessions {
   activeCount(): number {
     let n = 0
     for (const c of this.children.values()) if (!c.done) n++
+    return n
+  }
+
+  /**
+   * Live children whose session runs wider than `mode` (a bridged child keeps the mode it started in plus any "accept
+   * edits" grant its own adapter applied; it never takes a runs:setPermissionMode change). A child whose start mode is
+   * unknown counts. RunManager.setPermissionMode adds this to reportsUnchanged on a narrowing.
+   */
+  liveWiderThan(mode: PermissionMode): number {
+    let n = 0
+    for (const c of this.children.values()) {
+      if (c.done) continue
+      const wider = c.startMode === undefined || (c.startMode !== mode && canNarrowPermissionMode(c.startMode, mode))
+      if (wider || (c.acceptEditsGranted && overlaidByAcceptEdits(mode))) n++
+    }
     return n
   }
 
@@ -359,6 +379,21 @@ export class BridgedSessions {
       maxConcurrentSubagents: limits.concurrency,
       provider: { ...p0.project.provider, id: child.choice.adapter }
     }
+    // The child session keeps this mode for its life (its project is a snapshot): see liveWiderThan.
+    child.startMode = project.permissionMode
+    // The adapters read ctx.project.permissionMode on every check (their plan / dontAsk "accept edits" drop included), so
+    // the child's project follows the parent when the parent is narrowed to Plan or Don't ask after the child started.
+    // Only ever narrower than the start mode: a parent mode that is not Plan / Don't ask, or that does not narrow the
+    // child's start mode, changes nothing. The child's native session is not changed (liveWiderThan still counts it).
+    const startMode = project.permissionMode
+    Object.defineProperty(project, 'permissionMode', {
+      enumerable: true,
+      configurable: true,
+      get: (): PermissionMode => {
+        const now = parentNow().project.permissionMode
+        return (now === 'plan' || now === 'dontAsk') && now !== startMode && canNarrowPermissionMode(startMode, now) ? now : startMode
+      }
+    })
     const run: RunSummary = { ...p0.run, connection: child.choice.connection }
     const ctx: RuntimeContext = {
       run,
@@ -370,6 +405,20 @@ export class BridgedSessions {
       autoContinue: false,
       maxAutoContinues: 0,
       bridgedChild: { agentId: child.agentId, parentAgentId: child.parentAgentId, roleId: child.role.id },
+      // The child's own "accept edits" grant moves only the child session: recorded here, never forwarded to the parent.
+      acceptEditsGranted: () => {
+        child.acceptEditsGranted = true
+        const parentMode = parentNow().project.permissionMode
+        if (parentMode === 'plan' || parentMode === 'dontAsk') {
+          const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === parentMode)?.label ?? parentMode
+          this.deps.emit({
+            type: 'log',
+            runId: p0.run.id,
+            level: 'warn',
+            message: `${child.handle} turned on Accept edits for its own session while this run is in ${label}. That report keeps writing under its own session until it finishes.`
+          })
+        }
+      },
       // Cards: only display text is redacted (summary, question, option descriptions, reasons). Tool input, rules, option
       // labels and the MCP spec stay exact because decisions and rule matching depend on them.
       requestPermission: (req) => {

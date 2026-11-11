@@ -169,6 +169,7 @@ const api: OrgAIApi = {
     decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input),
     resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
     switchModel: (input) => ipcRenderer.invoke(IPC.runsSwitchModel, input),
+    setPermissionMode: (input) => ipcRenderer.invoke(IPC.runsSetPermissionMode, input),
     cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId),
     listLive: () => ipcRenderer.invoke(IPC.runsListLive),
     pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId),

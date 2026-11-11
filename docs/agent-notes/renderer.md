@@ -63,10 +63,7 @@ speech, full keyboard-only task, zoom/reflow or measured performance claim was v
 
 Shell, layout, primitives, motion, canvas (fold, themes), run view and run chains, dashboard, settings pages, application menu, cost UI, proxy and multi-provider UI, proposal cards, org change sessions. Moved out of CLAUDE.md on 2026-11-07; see CLAUDE.md for the index.
 
-- Pocket Office (2026-11-08, `docs/design/pocket-office.md`): the existing Canvas style popover and Settings Canvas section select Graph/Pocket Office and Color (default)/Neutral/Green. Presentation changes keep graph pattern/layout/lines/node style/tint/minimap; graph preset picking explicitly restores Graph. `theme.ts` applies presentation/palette attributes and canvases consume `useCanvasOptions()`. Team shows real editable roles, the settings preview labels four example agents and is inert, and Live keeps decisions, inspectors, all loaded finished/prior agents, session/parent labels and a direct earlier-session loader. `lib/office/agentView.ts` reuses `nodeActivity` so a report without a result never becomes a successful “Reported back” outcome; runtime states remain internal to sprites while visible statuses use the shared words.
-- Office building: pure department grouping follows actual direct root reporting branches and descendants (including singleton, missing-parent and cycle defenses). Root agents use the central area; department rooms retain stable identity/desk slots, with at most eight desks per room and four rooms per floor. ResizeObserver adapts floor geometry, readable labels/roster remain unscaled, and obsolete walks are discarded when geometry changes. Paths use atlas furniture footprints, interaction anchors and doors/corridors. Sprite sheets use original 16px tiles, 16×24 workers and feet pivot (8,23), with depth from feet/prop metadata. The Python/Pillow generator is only for authoring.
-- Office delivery visuals consume new occurrences from the live-only capped `run.messages` array, baseline on mount/run change and preserve identical new events. One worker walks at a time; at most three active captions and twelve queued visuals are retained, queued work expires after eight seconds and bursts coalesce by endpoints. Reduced motion uses static captions; hidden/unmounted views and geometry changes discard stale catch-up. Cross-floor delivery uses a truthful static floor cue rather than an invisible walk. Captions are actual shortened message excerpts with the full available text exposed, never private thoughts. The run-scoped cursor also resets static cross-floor captions before a new run's prefilled history can be treated as new.
-- Office verification (mock data, 2026-11-08): `npm run typecheck` and `npm run build` passed on source `f8f59c03`; all 21 office helper tests passed, including connected doors/metadata obstacles, stable departments/floors, no-result parity and run-boundary occurrence baselines. `node e2e/canvas.mjs` passed on the preceding responsive scene; the focused `node e2e/office.mjs` passed on the final source with both sizes, themes and all three palettes, full-stage bounds, saved palette after reload, 33-role floor navigation, keyboard inspector/Escape, prior-session transcript, explicit cross-floor static cues with zero walking queue, new messages after reflow, caps, escaped text, reduced motion and no replay. `canvas.mjs` imports the same office checks for CI. UX rechecked full worker names, truthful no-result state and current/prior inspectors; Reviewer approved the final source and the narrow run-boundary fix with no remaining findings. Earlier fixture failures were corrected by explicitly arranging different/shared floors through the public zoom controls. The orchestrator owns the final full unit/layout gate after integration; real providers, screen-reader speech, browser zoom and 320px reflow remain unverified.
+- Pocket Office (rework 2026-11-10, spec `docs/design/pocket-office.md` "Living office rework" and its implementation notes): the Canvas style popover and Settings Canvas section pick Graph/Pocket Office and Color (default)/Neutral/Green; presentation changes keep every graph preference, and the Settings sample is one inert framed picture. Team and Live draw one building per team and no floors: a lobby for the root agents, a corridor and themed department rooms (at most eight desks each, stable slots, labels `{Department} · {n}`), with the roster optional and every person a native 24 px button aligned with the sprite. Live adds one clock (`useOfficeClock`) that drives cues (typing, waving, glance, arriving, cheering, slumping, walking) from run state, at most twelve animated people; reduced motion or the Pause motion button (`aria-disabled` under Reduce motion, visibly pressed otherwise) stops it with no replay, and so does hiding the window. Messages (`useOfficeDeliveries`, `lib/office/scheduler.ts`) show a talk mark at the sender, a distance-based walk, a bubble at the recipient for a readable time and a 48 px strip log of the last three messages with `Show {To}`; the log holds still while focus is inside the strip and catches up when it leaves. A person with a live bubble or Needs-you mark outside the stage gets a chip in the controls row (`OfficeOffscreen`) that pans to them and hands them keyboard focus without changing the stage height. The camera (`useOfficeCamera`, `lib/office/camera.ts`) has zoom steps ½, 1, 2, 3, 4 (announced once as `Zoom 300%`), Fit, arrow-key pan, `+`/`-` that keep the focused person in view, `0` and Home, drag, and Find/Show with a ring and one `Showing {name}, {room}` line (the frame announcer joins lines said within a second of each other). Code: `components/canvas/office/*` and `lib/office/*` (pure rules, unit tested beside them). Checked by the `lib/office` unit tests, `npm run build`, `e2e/office.mjs` (runs `e2e/pocket-office.mjs`, also imported by `e2e/canvas.mjs`) on the mock adapter at 1024x640 and 1600x1000 in both themes and three palettes, and the spec's mock walk; screen-reader speech, a really minimised window, macOS and Linux, and a failed non-root agent in a live run are unverified.
 
 The UI overhaul landed on native elements with container queries. Radix and react-resizable-panels are not installed,
 and the frontend-design skill is not vendored in `.claude/skills` (only `run-desktop` is there).
@@ -334,6 +331,94 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
 
 - Run staffing controls (`docs/design/orchestration-efficiency.md` 4.7; not driven in the app, unit-tested only): `lib/roleStaffing.ts` (pure) is the one place for the copy and the writes; effective values come from `effectiveRoleStaffing`, `staffingModeOf`, `staffingGoalOf`, `reviewPolicyOf`, nothing is re-derived. Role editor: `components/team/RoleStaffingControls.tsx` under the Model picker in the Model fold (`role-staffing`, `data-kind` root | exact | editable, `role-staffing-line`, `-note`, `-explain`, `role-staffing-mode`, `-min-tier`, `-max-effort`); the mode select's "Follow the project" clears `Role.staffing`, "Always" keeps no bounds, a floor or cap makes the role explicitly automatic; the root and exact-model roles get a line and a sentence but no controls. Project settings: `components/settings/StaffingSettings.tsx` is a "Run staffing" group inside the Limits pane's Advanced settings (it was a section at rest until the 2026-11-10 gate: `e2e/permissions.mjs` allows the pane two tab stops at rest) (`project-staffing`, `project-staffing-goal`, `project-review-policy`, segmented controls); choosing the default writes `undefined`. Import dialog: `import-spend` hint under Model, from the previewed `preview.roles` entry. Kit preview: `kit-role-spend` appears only when a `KitPreviewRole` carries `model` (it does not yet; `KitPreviewRole` has no model, effort or staffing, and `src/shared/types.ts` plus `main/kit/format.ts` `parseTemplate` must add them).
 
-## Run goal control (New run page)
+## Run settings row: Model, Effort, Permission, Goal (2026-11-10)
 
-`NewRunPage` shows a Balanced / Speed / Cost segmented control (`data-testid="new-run-goal"`, help line `new-run-goal-help`) for team runs of automatic-staffing projects only (`lib/runGoal.ts`). It defaults to the project's goal and `startRun` sends `overrides.goal` only when the user picked a different one. Checked by unit tests only; not run in the app.
+Spec: `docs/design/ux-review-run-start-pre.md` (H1-H3, M1-M8). Contract: `StartRunInput.modelSelection` / `effort` /
+`permissionMode`, `RunSummary.rootEffort` / `permissionMode` / `permissionModeChosen` / `sessionPermissionMode`,
+`runs:setPermissionMode` and the `run.permissionMode` event (src/shared/types.ts).
+
+- Pure rules: `lib/runSettings.ts` (+ test). Defaults are what main would run anyway (`defaultRunModel`: Team = root role
+  model on the project connection, Ask = `AppSettings.quickRunModel` through the tier mapping; `defaultRunEffort`: root
+  role effort, none for Ask). `startChoicesToSend` sends only what differs, and never an effort the model's adapter does
+  not take (`fitEffort` clamps down, the UI says so in `run-effort-fallback`). Narrowing/widening mirrors main's
+  `canNarrowPermissionMode` (a parity test loads main's module by path). `permissionModeEventPatch` /
+  `applyPermissionModePatch` read the `run.permissionMode` snapshot structurally (useAppStore replaces all three fields);
+  `modeInForce` / `modeInForceLabel` show a card's accept-edits grant ("· edits accepted this session") without changing
+  the run's own mode. `livePermissionOutcome` always shows main's reason and the running-reports count, applied or not.
+- Components: `components/runSettings/` (`RunSettingsRow` group `run-settings[data-surface=start|live]`,
+  `ModelPickerList` + `useModelCatalog` shared with `LiveModelSwitch`, `StartModelControl`, `EffortControl` /
+  `EffortReadOnly`, `PermissionModeControl`, `LivePermissionMode`, `GoalControl` / `GoalReadOnly`), styles
+  `styles/run-settings.css`. Every chip is one Tab stop with a Popover; `data-default`, and `data-tone=warning` plus a
+  ShieldAlert icon for auto and acceptEdits; bypass is the danger tone with ShieldOff.
+- Effort is a native radio `SegmentedControl` ordered least to most inside a popover (the "slider": arrow keys step,
+  every level named; a native range would hide the names). Live it is read-only: the contract has no mid-run effort.
+- Permission: the picker stages a choice and "Use this mode" applies it, because native radios fire change while arrow
+  keys pass over options (applying on change would open the bypass confirm on the way). A widening (`isWideningMode`)
+  goes through `ConfirmDialog` (`run-permission-confirm`, danger for bypass, cancel "Keep current mode"); narrowing
+  applies at once. Live outcomes: `run-permission-note` (visible, `data-tone` ok | saved | refused) plus sr-only
+  `run-permission-status`; thrown refusals in `run-permission-error`. A refusal while the run is replying offers
+  `run-permission-interrupt` ("Interrupt and change": one interrupt, bounded wait for idle, one retry; blocked by open
+  decisions or active reports like the model switch). Ended runs read "Permission: Next message: <mode>" and show the
+  mode the continuation will carry. Open permission cards are never touched. The control is hidden on setup-like and
+  assistant runs (`runPermissionModeChoices` empty); Chat shows only modes its adapter keeps.
+- Choices are per run: never written to the project, not remembered across starts; they survive a refused start
+  (Composer keeps the draft, `composer-error` shows main's text without the IPC prefix) and reset after a successful one.
+- Live row placement: a fixed bar at the top of `.live-composer-region` (`live-settings-bar`), not inside Composer's
+  `settings` slot: the slot remounts `LiveModelSwitch` when an ended assistant swaps the composer, which cancels a model
+  handoff in flight (`e2e/model-switch.mjs` caught it). Visual order is therefore chips, then "Replying to X".
+- RunMeta: `run-meta-permission[data-mode]` for every work-run mode except plain "Ask for everything risky" (auto keeps
+  `run-meta-unattended`), "(this run)" when chosen, and the session grant.
+- New run page fixes: Goal is a labelled chip ("Optimise for": Balanced / Faster / Cheaper), placeholder no longer
+  repeats the hint, Ask's duplicate line is gone, one-sentence lead, composer widened to 768 px (shared `.new-run-inner`,
+  so the Chat and instruction start pages widened too), role chips capped at 5 plus `new-run-more-roles`, label always
+  "New run" / "Ask one assistant", setup pending shows `new-run-skip-setup` "Start without setup" (secondary) and no
+  settings row, focus lands in the live composer textarea after Start.
+- `ui/Popover` places itself again when its content resizes (a ResizeObserver while open, only when the panel's
+  offsetWidth / offsetHeight differ from the last placement, so it cannot loop): the start model picker grew past the
+  window after its catalog loaded. Focus moves into the panel in a requestAnimationFrame after placement, to a search input
+  (`input[type=search]`) if present, else the checked radio (`input[type=radio]:checked`), else the first control, retried for a few frames, and a control the content already
+  focused (the model picker's search box) is kept. Cause of the old "Enter leaves focus on the chip": on a popover's
+  very first open the focus call ran inside the `toggle` event task, before the panel was rendered as an open popover, and
+  was silently dropped (later opens worked, keys did not matter). This applies to every Popover user; no other screen's
+  e2e changed.
+- Interrupt and change (`LivePermissionMode`): the note stores `covered` (the baseline the choice or its confirmation
+  was measured against) and `seen` (the mode in force when it was written). A `run.permissionMode` event that moves the
+  mode in force clears the note; if a retry would now widen (`retryNeedsConfirm`, checked before the interrupt and again
+  after the wait for the boundary) the same `ConfirmDialog` (`wideningConfirmOptions`) is shown, declining clears the
+  note. A result for another run of the chain (`result.run.id !== run.id`) says "This conversation continued
+  elsewhere..." and never claims the mode changed. Start page: a staged mode resets when the project's own mode changes,
+  and Start confirms a staged widening that was not confirmed against the project's current mode (declining restores
+  the draft with no error banner). Permissive options in the list carry the hidden icon (ShieldAlert, ShieldOff for bypass) (`run-permission-option-icon`);
+  "Use this mode" is guarded so a double click opens one dialog.
+- The start model default always uses the project's connection: `Role.connection` is ignored on the root
+  (`defaults.ts` `roleConnection`, `Role.connection` doc, main `runManager` / `claude.ts`), so a stale value on the root
+  role does not move the chip or the "same as default" test (unit-pinned in `runSettings.test.ts`).
+- RunMeta on an ended or paused run shows the chip's value (`metaPermission`: `livePermissionValue`, not what the finished
+  session ran with), prefixed `Next message:` (`data-next=true`) only when it is a pending user choice
+  (`permissionModeChosen`); the chip's prefix follows the same rule. The plain default stays hidden.
+- Tones: `permissionTone` (Bypass = danger with a ShieldOff icon on the chip, the list and RunMeta; Unattended and
+  Auto-accept edits = warning with ShieldAlert). The "Default" tag is gone from every chip (an untouched default keeps
+  its tone, only a picked change says "Changed"), which also lets the row fit on one line at 1024 and 1600. The reset link
+  is one string (`RESET_TO_DEFAULT_LABEL`, "Use default") for model and effort.
+- "Interrupt and change" is replaced by a hint while a decision is open or reports run (read from the store, so it comes
+  back when they close) and is withdrawn when the mode in force moves (retry offers only; outcome sentences stay).
+- Chat / assistants: no settings row on the Chat start page because `QuickRunInput` carries no model, effort or mode (the
+  page keeps its summary line and "Change in App settings"); the live Chat chip resolves a tier alias ("everyday") to the
+  catalog's friendly label through the connection's tier mapping and keeps the exact setting in the title; every assistant
+  start (`showStartedAssistant`) puts focus in the live reply box like a project start.
+- Popover first-open focus: reproduced with the e2e driver on the first open of every popover (Enter or Space alike); a
+  hand walk that opens one before, or waits, sees it work. Whatever the cause of the walker's difference, the new
+  rAF focus step is covered by run-start section 9 on first open.
+- Not done (L3): when a project change narrows a run to Plan / Don't ask main drops the accept-edits grant, but the native
+  session may keep accepting edits until it restarts. The `run.permissionMode` snapshot cannot say why a grant went away
+  (a user change, a project change or a session end look alike), so the renderer shows no "may still accept edits until
+  restart" suffix; it needs a contract field.
+- Checked: typecheck, renderer unit tests (runSettings 27 tests, runGoal), build, `e2e/run-start.mjs` (start page, refusal
+  with a real main refusal, widening confirm/cancel, saved-for-next-message, keyboard order and Escape, both themes and
+  sizes), model-switch, runs, layout, permissions, assistants, engagement2. Run-start sections 5, 6 and 8 (applied
+  mid-run change, `[mock:mode-refuse]`, `[mock:mode-reports-unchanged]`) needed the merged tree with the adapter's mock:
+  the orchestrator ran `e2e/run-start.mjs` on merged dev d4258a4a and all checks passed.
+  Unverified: real Codex effort fallback and Codex turn-boundary refusal, multi-connection pickers, screen-reader speech,
+  reduced motion and forced colours, 320 px reflow, the stale "Interrupt and change" path in the app (the idle mock cannot
+  stage a mid-reply refusal; the decision is unit-tested). Popover focus-in on first open is now asserted by run-start
+  section 9 (it was a NOTE).

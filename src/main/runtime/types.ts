@@ -60,7 +60,7 @@ import type {
 } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
 import type { StaffingProfile } from '../store/staffingProfile'
-import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId } from '@shared/types'
+import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId, PermissionMode } from '@shared/types'
 
 /**
  * RunManagerOptions.selfKnowledge (types.ts "Self-knowledge and self-configuration"), wired in host/bootstrap.ts.
@@ -466,10 +466,22 @@ export interface RuntimeContext {
   allowDirectories?(dirs: string[]): string[]
   /**
    * "Always allow for project" on a setMode acceptEdits suggestion: set Project.permissionMode to 'acceptEdits' only
-   * while it is 'default' (never from auto, plan, dontAsk or bypassPermissions); ctx.project follows. Returns true
-   * when it switched. Logs it. Missing on trust-restricted runs: nothing persists.
+   * while it is 'default' (never from auto, plan, dontAsk or bypassPermissions). Returns true when it switched. Logs
+   * it. ctx.project follows the saved project only on a run without a per-run mode choice (the choice is laid back
+   * over it); what keeps ctx.project in step with the provider session is acceptEditsGranted below, not this.
+   * Missing on trust-restricted runs: nothing persists.
    */
   acceptEditsForProject?(): boolean
+  /**
+   * The adapter calls this exactly where it applies a session or project allow's setMode acceptEdits suggestion to the
+   * session it runs (Claude: where it returns updatedPermissions holding a setMode acceptEdits; Codex / mock: where they
+   * set sessionAcceptEdits), and never when it falls back to an allow-once. RunManager then lays acceptEdits over a
+   * narrower mode in force (ctx.project, RunSummary.sessionPermissionMode, a run.permissionMode event) for the rest of
+   * this session; the run's own mode and what continuations carry are untouched. Set only on work runs that are not
+   * trust-restricted. A bridged child context gets a local one from bridge.ts that only marks the child (counted by
+   * BridgedSessions.liveWiderThan) and never reaches the parent, because a child's grant moves only the child session.
+   */
+  acceptEditsGranted?(): void
   /**
    * Folders never offered or granted as extra directories (addDirectories suggestions, session dirs): OrgAI's data
    * folder, both spellings. Set on every run, restricted ones included. ruleMatch.ts matchOptionsFor carries it as
@@ -760,6 +772,31 @@ export interface SkillAssistCatalog {
 export interface RuntimeSession {
   /** Change only the root model at a safe boundary; refuse without changing state when unsafe. */
   switchModel?(input: { model: string; connection?: RunConnection }): Promise<void>
+  /**
+   * Change the live session's permission mode (RunManager.setPermissionMode, desktop runs:setPermissionMode only).
+   * `mode` is already validated by RunManager (runPermissionModeChoices, never on setup-like or exec runs). The adapter
+   * derives everything from the `mode` argument (its existing mapping, Claude: claudePermissionMode /
+   * claudeAllowsBypass; Codex: its sandbox / approval mapping, applied to that mode), never from ctx.project: RunManager
+   * sets ctx.project before the call only when the mode narrows the one in force, and after an applied answer when it
+   * widens, so no call is ever allowed under a wider mode that did not take effect. On a refusal RunManager re-derives
+   * ctx.project from the live project and the earlier choice. Calls are serialized per run (a second call while one is
+   * pending is refused by RunManager). The adapter applies the mapped mode to the root session and to agents it spawns
+   * from now on. Open permission cards stay open for the user. Session rules and session folders stay; a session-scope
+   * acceptEdits grant does not: when `mode` is not acceptEdits, auto or bypassPermissions the adapter drops it (Codex /
+   * mock: sessionAcceptEdits = false; Claude: the SDK's single session mode is replaced by `mode`), so edits ask again
+   * as `mode` says. Bridged children are separate sessions: RunManager adds their live count to reportsUnchanged on a
+   * narrowing, so the adapter counts only its own native reports.
+   * Answers: true = applied everywhere (no live report stays wider than `mode`). `{ applied: true, reportsUnchanged: n }`
+   * = applied to the root and future agents while n native reports may still run wider than `mode` (the adapter must not
+   * answer plain true then). What counts differs: Claude counts every report, finished (resumable) ones and approved spawns
+   * not yet started included, unless all modes it may run under are no wider; a Codex thread counts only until its turn
+   * ends (its next turn/start carries the new policy). false (or throw) = refused, e.g. the
+   * provider cannot switch now. A thrown message is only logged, never shown, except a thrown
+   * PermissionModeRefusal (permissionModeRefusal.ts, plain path-free OrgAI-written text only, never provider / SDK / CLI
+   * text): RunManager shows its message (control characters stripped, at most 300 characters) as the reason. Missing = this session cannot switch live
+   * (RunManager answers applied: false and changes nothing).
+   */
+  setPermissionMode?(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }>
   /**
    * Send a follow-up user message to the orchestrator. `images` are already validated; `text` may be
    * empty when images are present. The user transcript block records both.

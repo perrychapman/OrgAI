@@ -20,7 +20,12 @@ import {
   parseToolCall,
   parseTurnId,
   parseUserInputQuestions,
+  fullPolicyOverride,
   policyFor,
+  parseWorkspaceWriteTemp,
+  policyOverride,
+  sandboxPolicyFor,
+  TEMP_EXCLUDED,
   tomlKey,
   tomlString,
   unwrapShellCommand,
@@ -38,6 +43,46 @@ function spec(over: Partial<McpServerSpec> & { name: string }): McpServerSpec {
 function resolved(s: McpServerSpec, env: Record<string, string> = {}, headers: Record<string, string> = {}): ResolvedMcpServer {
   return { spec: s, env, headers }
 }
+
+describe('policyOverride / sandboxPolicyFor (live permission mode, turn/start fields)', () => {
+  const work = { writes: true, setupLike: false }
+  it('sends only what differs, and clears the auto reviewer with user', () => {
+    expect(policyOverride(policyFor('default', work), policyFor('default', work), [])).toEqual({})
+    expect(policyOverride(policyFor('default', work), policyFor('dontAsk', work), [])).toEqual({ approvalPolicy: 'never' })
+    expect(policyOverride(policyFor('auto', work), policyFor('default', work), [])).toEqual({ approvalPolicy: 'untrusted', approvalsReviewer: 'user' })
+    expect(policyOverride(policyFor('default', work), policyFor('auto', work), [])).toEqual({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' })
+    expect(policyOverride(policyFor('default', work), policyFor('plan', work), [])).toEqual({ approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+    expect(policyOverride(policyFor('default', work), policyFor('bypassPermissions', work), [])).toEqual({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } })
+  })
+  it('workspace-write carries the writable roots, no network and the given temp switches; unknown temp settings exclude both', () => {
+    const codexDefaults = { excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+    expect(policyOverride(policyFor('plan', work), policyFor('default', work), ['/a', ''], codexDefaults)).toEqual({
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: ['/a'], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+    })
+    // No temp argument: unknown, so the narrowest (both temp folders excluded).
+    expect(sandboxPolicyFor('workspace-write', ['/a'])).toEqual({ type: 'workspaceWrite', writableRoots: ['/a'], networkAccess: false, ...TEMP_EXCLUDED })
+    expect(TEMP_EXCLUDED).toEqual({ excludeTmpdirEnvVar: true, excludeSlashTmp: true })
+    expect(sandboxPolicyFor('read-only', ['/a'])).toEqual({ type: 'readOnly', networkAccess: false })
+  })
+  it('fullPolicyOverride sends all three policy fields even when nothing differs (an unknown Codex-side policy, review M1)', () => {
+    expect(fullPolicyOverride(policyFor('plan', work), ['/a'])).toEqual({ approvalPolicy: 'never', approvalsReviewer: 'user', sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+    expect(fullPolicyOverride(policyFor('auto', work), ['/a'])).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandboxPolicy: { type: 'workspaceWrite', writableRoots: ['/a'], ...TEMP_EXCLUDED } })
+  })
+  it('parseWorkspaceWriteTemp reads config/read: only an explicit null section is Codex defaults, the user settings are kept, anything unreadable excludes', () => {
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: null } })).toEqual({ excludeTmpdirEnvVar: false, excludeSlashTmp: false })
+    // A missing key (renamed or moved in another Codex version) is unknown, not defaults (review L2).
+    expect(parseWorkspaceWriteTemp({ config: {} })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: undefined } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox: { workspace_write: null } } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: [] } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: { writable_roots: [], network_access: true, exclude_tmpdir_env_var: true, exclude_slash_tmp: false } } })).toEqual({ excludeTmpdirEnvVar: true, excludeSlashTmp: false })
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: { exclude_tmpdir_env_var: 'no' } } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: 'x' } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({})).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp(undefined)).toEqual(TEMP_EXCLUDED)
+  })
+})
 
 describe('policyFor (permission mode -> approval policy + sandbox)', () => {
   const work = { writes: true, setupLike: false }

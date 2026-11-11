@@ -315,8 +315,10 @@ try {
   check(!!modeBox && modeBox.height < 40, `the Team / Ask switch is one row (height ${modeBox?.height})`)
   const modeLabelCut = await page.locator('.composer-mode-label').evaluate((el) => el.scrollWidth > el.clientWidth)
   check(!modeLabelCut, 'the Ask mode label is not cut')
-  const descCut = await page.locator('[data-testid=new-run-mode-desc]').evaluate((el) => el.scrollWidth > el.clientWidth)
-  check(!descCut && /one assistant/.test(await page.locator('[data-testid=new-run-mode-desc]').innerText()), 'the Ask description is whole')
+  // The Ask page's own line (new-run-mode-desc) is gone; the lead above carries the description, the settings row sits in the composer.
+  const leadCut = await page.locator('[data-testid=new-run-ask-lead]').evaluate((el) => el.scrollWidth > el.clientWidth)
+  check(!leadCut && /one assistant/i.test(await page.locator('[data-testid=new-run-ask-lead]').innerText()), 'the Ask lead (new-run-ask-lead) is whole')
+  check((await page.locator('[data-testid=run-settings][data-surface=start]').count()) === 1 && (await page.locator('[data-testid=new-run-mode-desc]').count()) === 0, 'the Ask page shows the start settings row and no duplicate description line')
   await shot('ask-new-run')
   await page.locator('.composer textarea').fill('What does the plan say?')
   await page.locator('.composer .btn.primary').click()

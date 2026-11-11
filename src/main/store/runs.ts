@@ -4,7 +4,7 @@ import { dirname, join, relative, isAbsolute } from 'node:path'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
-import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, QUICK_PROJECT_ID, isPermissionMode, isStaffingGoal } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, QUICK_PROJECT_ID, isEffort, isPermissionMode, isStaffingGoal } from '@shared/types'
 import type {
   ExecOutcome,
   HeadlessDecisionPolicy,
@@ -114,6 +114,12 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
     delete r.endedWhile
   }
   if (r.execOutcome !== undefined && !EXEC_OUTCOMES.includes(r.execOutcome as ExecOutcome)) delete r.execOutcome
+  // Per-run choices (untrusted file): a known effort and mode only; the "chosen" flag is exactly true and needs a mode.
+  if (r.rootEffort !== undefined && !isEffort(r.rootEffort)) delete r.rootEffort
+  if (r.permissionMode !== undefined && !isPermissionMode(r.permissionMode)) delete r.permissionMode
+  if (r.permissionModeChosen !== undefined && ((r.permissionModeChosen as unknown) !== true || r.permissionMode === undefined)) delete r.permissionModeChosen
+  // A session's "accept edits" grant ended with the session: never on a loaded run.
+  delete r.sessionPermissionMode
   if (r.overrides !== undefined) {
     const overrides = cleanRunOverrides(r.overrides)
     if (overrides) r.overrides = overrides

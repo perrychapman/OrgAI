@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo, useState } from 'react'
-import type { Project, StaffingGoal } from '@shared/types'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Effort, PermissionMode, Project, StaffingGoal } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { projectConnection, projectKindOf } from '@shared/defaults'
@@ -15,12 +15,28 @@ import { Button } from './ui/Button'
 import { EmptyState } from './ui/EmptyState'
 import TeamFilesPointer from './team/TeamFilesPointer'
 import Composer from './Composer'
-import { GOAL_HELP, GOAL_OPTIONS, goalToSend, selectedGoal, showsGoalChoice } from '../lib/runGoal'
+import { goalToSend, selectedGoal, showsGoalChoice } from '../lib/runGoal'
+import { staffingGoalOf } from '@shared/defaults'
+import { EMPTY_RUN_SETTINGS, defaultRunEffort, defaultRunModel, isWideningMode, newRunPermissionChoices, startChoicesToSend, wideningConfirmOptions } from '../lib/runSettings'
+import { useConfirm } from './ui/ConfirmDialog'
+import type { RunModel } from '../lib/runSettings'
+import { useAssistantModel } from '../lib/assistantModels'
 import McpAuthNotice from './mcp/McpAuthNotice'
 import FolderTrustNotice from './FolderTrustNotice'
+import { RunSettingsRow } from './runSettings/RunSettingsRow'
+import { StartModelControl } from './runSettings/StartModelControl'
+import { EffortControl } from './runSettings/EffortControl'
+import { PermissionModeControl } from './runSettings/PermissionModeControl'
+import { GoalControl } from './runSettings/GoalControl'
+
+/** Role chips shown on the empty state; the rest are behind "+N more" (Team view). */
+const ROLE_CHIP_LIMIT = 5
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
+
+/** Thrown from onSubmit when the user declines the confirmation at Start: the draft comes back and no error is shown. */
+class DeclinedStart extends Error {}
 
 type NewRunMode = 'team' | 'ask'
 const newRunModeKey = (projectId: string): string => `orgai.newRunMode.${projectId}`
@@ -40,6 +56,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const startRun = useAppStore((s) => s.startRun)
   const startSetup = useAppStore((s) => s.startSetup)
   const openRun = useAppStore((s) => s.openRun)
+  const setView = useAppStore((s) => s.setView)
   const focusToken = useAppStore((s) => s.composerFocusToken)
   const runs = useAppStore((s) => s.runs)
   const others = useMemo(
@@ -85,10 +102,42 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
       /* storage unavailable: the choice lasts for this page only */
     }
   }
+  // Run settings for this draft only: not remembered across starts or projects, kept when a start is refused.
   const [pickedGoal, setPickedGoal] = useState<StaffingGoal | null>(null)
-  useEffect(() => setPickedGoal(null), [project.id])
+  const [pickedModel, setPickedModel] = useState<RunModel | null>(null)
+  const [pickedEffort, setPickedEffort] = useState<Effort | null>(null)
+  const [pickedMode, setPickedMode] = useState<PermissionMode | null>(null)
+  // The project mode the staged mode was chosen against (and confirmed against, when it widened).
+  const [pickedModeBaseline, setPickedModeBaseline] = useState<PermissionMode | null>(null)
+  const { confirm, dialog } = useConfirm()
+  const resetMode = (): void => {
+    setPickedMode(null)
+    setPickedModeBaseline(null)
+  }
+  const resetPicks = (): void => {
+    setPickedGoal(null)
+    setPickedModel(null)
+    setPickedEffort(null)
+    resetMode()
+  }
+  useEffect(resetPicks, [project.id])
+  // The project's own mode changed in its settings: a staged narrowing may now be a widening nobody confirmed.
+  useEffect(resetMode, [project.permissionMode])
   const showGoal = canChooseMode && showsGoalChoice(project, ask)
   const goal = selectedGoal(project, pickedGoal)
+  const quickRunModel = useAssistantModel('quickRunModel')
+  const tierModels = connections?.find((c) => c.connection.id === ownConnection)?.connection.tierModels
+  const defaultModel = useMemo(
+    () => defaultRunModel(project, { ask, quickRunModel, tierModels, catalog }),
+    [project, ask, quickRunModel, tierModels, catalog]
+  )
+  const defaultEffort = defaultRunEffort(project, ask)
+  const runAdapter = (pickedModel ?? defaultModel)?.adapter ?? null
+  const permissionChoices = useMemo(() => newRunPermissionChoices(), [])
+  const shownMode = pickedMode ?? project.permissionMode
+  // Latest values for a start whose confirm dialog stays open while the project's mode or the pick changes.
+  const modeNow = useRef({ project: project.permissionMode, picked: pickedMode })
+  modeNow.current = { project: project.permissionMode, picked: pickedMode }
   const noun = projectNoun(kind)
   const hasReferences = (project.referenceDirectories?.length ?? 0) > 0
   const askLead = `One assistant answers here as a conversation. It can use this ${noun}'s folders, services and skills, with the same permissions. No team members start.${hasReferences ? ' It can read the reference folders but not change them.' : ''}`
@@ -142,17 +191,27 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
         ) : (
           <EmptyState
             title={`Give ${rootName} something to do`}
-            description={
-              newRunLead(kind, rootName) ??
-              'Type a task below. The orchestrator plans it and delegates to its reports. Every subagent appears here the moment it is created, attached to the agent that spawned it.'
-            }
+            description={newRunLead(kind, rootName) ?? 'The orchestrator plans the task and hands parts to its team.'}
             actions={
               <ul className="role-chips" aria-label="Roles in this project">
-                {project.roles.map((r) => (
+                {project.roles.slice(0, ROLE_CHIP_LIMIT).map((r) => (
                   <li key={r.id} className="role-tag" style={{ ['--role' as string]: r.color }}>
                     {r.name}
                   </li>
                 ))}
+                {project.roles.length > ROLE_CHIP_LIMIT && (
+                  <li>
+                    <button
+                      type="button"
+                      className="link-btn"
+                      data-testid="new-run-more-roles"
+                      title={project.roles.map((r) => r.name).join(', ')}
+                      onClick={() => setView('team')}
+                    >
+                      +{project.roles.length - ROLE_CHIP_LIMIT} more
+                    </button>
+                  </li>
+                )}
               </ul>
             }
           />
@@ -169,15 +228,11 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
 
         <Composer
           draftKey={newRunDraftKey(project.id)}
-          modeLabel={
-            ask
-              ? 'Ask one assistant'
-              : others.length > 0
-                ? `New run: ${others.length} other run${others.length === 1 ? '' : 's'} keep${others.length === 1 ? 's' : ''} going`
-                : 'New run'
-          }
-          primaryLabel={ask ? 'Ask' : 'Start'}
-          placeholder={ask ? 'Ask a question or give a small task' : needsSetup ? 'Describe the task (setup is not finished)' : 'Describe the task'}
+          modeLabel={ask ? 'Ask one assistant' : 'New run'}
+          primaryLabel={ask ? 'Ask' : needsSetup ? 'Start without setup' : 'Start'}
+          primaryVariant={needsSetup ? 'secondary' : 'primary'}
+          plainPlaceholder
+          placeholder={ask ? 'Ask a question or give a small task' : 'Describe the task'}
           modeSwitch={
             canChooseMode ? (
               <span className="new-run-mode" data-testid="new-run-mode">
@@ -193,28 +248,69 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               </span>
             ) : undefined
           }
-          notices={
-            ask ? (
-              <p className="new-run-mode-desc" data-testid="new-run-mode-desc">New conversation with one assistant. No team is started.</p>
-            ) : showGoal ? (
-              <div className="new-run-goal" data-testid="new-run-goal">
-                <span className="new-run-mode">
-                  <SegmentedControl<StaffingGoal> label="Goal for this run" value={goal} options={GOAL_OPTIONS} onChange={setPickedGoal} />
-                </span>
-                <p className="new-run-mode-desc" data-testid="new-run-goal-help">
-                  {GOAL_HELP[goal]}
-                  {pickedGoal === null ? ' (the project default)' : ''}
+          settings={
+            canChooseMode ? (
+              <>
+                <RunSettingsRow surface="start">
+                  <StartModelControl picked={pickedModel} defaultModel={defaultModel} ask={ask} mockProject={project.provider.id === 'mock'} onChange={setPickedModel} />
+                  <EffortControl picked={pickedEffort} defaultEffort={defaultEffort} adapter={runAdapter} onChange={setPickedEffort} />
+                  <PermissionModeControl
+                    value={shownMode}
+                    choices={permissionChoices}
+                    baseline={project.permissionMode}
+                    isDefault={pickedMode === null}
+                    defaultMode={project.permissionMode}
+                    onChoose={(m) => {
+                      const same = m === project.permissionMode
+                      setPickedMode(same ? null : m)
+                      setPickedModeBaseline(same ? null : project.permissionMode)
+                    }}
+                  />
+                  {showGoal && <GoalControl goal={goal} isDefault={pickedGoal === null} onChange={(g) => setPickedGoal(g === staffingGoalOf(project) ? null : g)} />}
+                </RunSettingsRow>
+                <p className="run-settings-note" data-testid="run-settings-note">
+                  These choices apply to this run only. Project settings stay as they are.
                 </p>
-              </div>
+              </>
+            ) : undefined
+          }
+          notices={
+            needsSetup ? (
+              <p className="new-run-mode-desc" data-testid="new-run-skip-setup">
+                Skips the Architect: the run uses the current team and settings.
+              </p>
             ) : undefined
           }
           autoFocus
           focusToken={focusToken}
+          onFail={(err) => err instanceof DeclinedStart}
           onSubmit={async (text, images) => {
+            // A staged mode that asks less than the project's mode now and was not confirmed against it is confirmed first.
+            if (canChooseMode && pickedMode && isWideningMode(project.permissionMode, pickedMode) && pickedModeBaseline !== project.permissionMode) {
+              const accepted = await confirm(wideningConfirmOptions(project.permissionMode, pickedMode))
+              if (!accepted) {
+                resetMode()
+                throw new DeclinedStart()
+              }
+              // The confirmation covered those two values only: if either moved meanwhile, nothing is sent.
+              if (modeNow.current.project !== project.permissionMode || modeNow.current.picked !== pickedMode) throw new DeclinedStart()
+            }
             const sendGoal = goalToSend(project, ask, pickedGoal)
-            await startRun(text, { ...(images ? { images } : {}), ...(ask ? { team: 'single' as const } : {}), ...(sendGoal ? { goal: sendGoal } : {}) })
+            // Setup pending and virtual projects show no settings row, so nothing of the draft applies there.
+            const choices = canChooseMode
+              ? startChoicesToSend(
+                  { ...EMPTY_RUN_SETTINGS, model: pickedModel ? { model: pickedModel.model, connection: pickedModel.connection } : null, effort: pickedEffort, permissionMode: pickedMode },
+                  { model: defaultModel, effort: defaultEffort, permissionMode: project.permissionMode },
+                  runAdapter
+                )
+              : {}
+            await startRun(text, { ...(images ? { images } : {}), ...(ask ? { team: 'single' as const } : {}), ...(sendGoal ? { goal: sendGoal } : {}), ...choices })
+            // Started: the next draft begins from the project's defaults again. A refused start throws above and keeps every pick.
+            resetPicks()
           }}
         />
+
+        {dialog}
 
         {others.length > 0 && (
           <section className="new-run-others" aria-label="Other runs of this project">
