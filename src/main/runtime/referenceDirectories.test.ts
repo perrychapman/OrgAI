@@ -8,6 +8,7 @@ import {
   commandReferenceTouch,
   commandTouchesReference,
   editTargetOf,
+  expandShellGlobAlternatives,
   globMayStartWith,
   localDrivePathOf,
   pathAtOrUnder,
@@ -244,6 +245,66 @@ describe('prefix protection (definite mode, selfControlGate.ts Wave 7)', () => {
     for (const g of ['p*', 'x*', 'w*.json', 'vault', 'vault.js', '[!v]*', 'valut*', '?', 'vault.jsox*']) {
       expect(globMayStartWith(g, 'vault.json'), g).toBe(false)
     }
+  })
+
+  it('reads POSIX bracket classes and treats malformed or ambiguous ranges as broad matches', () => {
+    for (const [glob, prefix] of [
+      ['[[:alpha:]]', 'v'],
+      ['[]v]ault*', 'vault.json'],
+      ['[!]z]ault*', 'vault.json'],
+      ['[z-\\]v]ault*', 'vault.json'],
+      ['[!z-a]ault*', 'vault.json'],
+      ['[v', 'vault.json']
+    ]) {
+      expect(globMayStartWith(glob, prefix), glob).toBe(true)
+    }
+
+    const dir = join(root, 'security', 'orgai', 'data')
+    const protectedRun = join(dir, 'run')
+    for (const pattern of ['r[[:alpha:]]n/daemon.secret', 'r[z-\\]u]n/daemon.secret']) {
+      expect(searchReaches(dir, pattern, [protectedRun], work, { platform: 'linux' }), pattern).toBe(protectedRun)
+      expect(commandControlScan(`cat '${dir}'/${pattern}`, work, [protectedRun], { platform: 'linux' })).toBe('touch')
+    }
+
+    const cafe = join(root, 'café')
+    const cafeRun = join(cafe, 'run')
+    expect(searchReaches(root, 'caf[[:alpha:]]/run/daemon.secret', [cafeRun], work, { platform: 'linux' })).toBe(cafeRun)
+    expect(commandControlScan(`cat '${root}'/caf[[:alpha:]]/run/daemon.secret`, work, [cafeRun], { platform: 'linux' })).toBe('touch')
+
+    const emojiRun = join(root, 'data😀', 'run')
+    expect(searchReaches(root, 'data[😀]/run/daemon.secret', [emojiRun], work, { platform: 'linux' })).toBe(emojiRun)
+    expect(commandControlScan(`cat '${root}'/data[😀]/run/daemon.secret`, work, [emojiRun], { platform: 'linux' })).toBe('touch')
+  })
+
+  it('keeps repeated ambiguous classes bounded while still refusing protected paths', () => {
+    const component = `${'[z-a]'.repeat(80)}x`
+    const protectedRun = join(root, `${'a'.repeat(80)}y`, 'run')
+    const pattern = `${component}/run/daemon.secret`
+    const started = Date.now()
+    expect(searchReaches(root, pattern, [protectedRun], work, { platform: 'linux' })).toBe(protectedRun)
+    expect(commandControlScan(`cat '${root}'/${pattern}`, work, [protectedRun], { platform: 'linux' })).toBe('touch')
+    expect(Date.now() - started).toBeLessThan(1000)
+  })
+
+  it('expands bounded zsh and optional extglob path groups before scanning protected paths', () => {
+    const data = join(root, 'data')
+    const protectedRun = join(data, 'run')
+    for (const command of [
+      `cat '${root}'/data/(run|x)/daemon.secret`,
+      `cat '${root}'/data/?(r)un/daemon.secret`,
+      `cat '${root}'/(data|x)/run/daemon.secret`
+    ]) {
+      expect(commandControlScan(command, work, [protectedRun], { platform: 'linux' }), command).toBe('touch')
+    }
+  })
+
+  it('bounds work on deeply nested and unmatched shell glob groups', () => {
+    const deep = `x(a|${'('.repeat(8_000)}b${')'.repeat(8_000)})`
+    const unmatched = `x(a|${'('.repeat(16_000)}`
+    const started = Date.now()
+    expect(expandShellGlobAlternatives(deep)).toBeNull()
+    expect(expandShellGlobAlternatives(unmatched)).toBeNull()
+    expect(Date.now() - started).toBeLessThan(1000)
   })
 
   it('pathAtOrUnder / searchReaches / commandControlScan honour `prefixed`, and only in definite mode', () => {
