@@ -235,6 +235,9 @@ try {
   const status = json((await cli(['status', '--output-format', 'json'], { cwd: repo })).out)
   const projectName = status?.project?.name
   check(typeof projectName === 'string' && projectName.length > 0, 'status names the project', JSON.stringify(status)?.slice(0, 300))
+  const teamRoles = json((await cli(['team', 'roles', '--output-format', 'json'], { cwd: repo })).out)
+  const knownRole = teamRoles?.roles?.find((r) => r.reportsTo === null)?.name ?? teamRoles?.roles?.[0]?.name
+  check(typeof knownRole === 'string' && knownRole.length > 0, 'team roles names the top role', JSON.stringify(teamRoles)?.slice(0, 300))
 
   // ---------- a, b, d: full screen ----------
   {
@@ -251,6 +254,33 @@ try {
       check(true, 'a: a prompt typed in the composer starts a run')
       await t.waitFor('E2E-MARK-OMEGA', 30_000).catch(() => undefined)
       await sleep(400)
+
+      // /logs: the run's warnings and errors in a scrollable overlay (cli-parity 3.5).
+      await type(t, '/logs')
+      t.key('enter')
+      await t.waitFor(/Warnings and errors: \d+ of \d+/, 10_000)
+      check(true, 'a: /logs opens the run\'s warnings and errors with a count')
+      // The overlay is the system pager: q leaves it (escape does not).
+      await type(t, 'q')
+      await sleep(500)
+
+      // /team and /settings (cli-parity 3.7): views over the run view (the status bar stays); Esc returns to it.
+      await type(t, '/team')
+      t.key('enter')
+      await t.waitFor((s) => s.includes('Team of ') && s.includes(knownRole), 10_000)
+      check(true, 'a: /team shows a known role of the project')
+      t.key('escape')
+      // The whole run view is drawn again (a frame arrives in several reads: the overlay can be gone before the transcript is back).
+      await t.waitFor((s) => !s.includes('Team of ') && /E2E-MARK-(ALPHA|OMEGA)/.test(s), 10_000)
+      check(true, 'a: Esc leaves /team for the run view')
+      await type(t, '/settings')
+      t.key('enter')
+      await t.waitFor((s) => s.includes('Settings of ') && /Staffing mode\s+(auto|fixed)/.test(s), 10_000)
+      check(true, 'a: /settings shows a known project setting with its value')
+      t.key('escape')
+      // The whole run view is drawn again (a frame arrives in several reads: the overlay can be gone before the transcript is back).
+      await t.waitFor((s) => !s.includes('Settings of ') && /E2E-MARK-(ALPHA|OMEGA)/.test(s), 10_000)
+      check(true, 'a: Esc leaves /settings for the run view')
 
       // b. Resize.
       const splitAt = locate(t, /E2E-MARK-(ALPHA|OMEGA)/)

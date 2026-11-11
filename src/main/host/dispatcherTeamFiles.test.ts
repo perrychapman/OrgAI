@@ -1,13 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HOST_SCOPES, IPC, TEAM_FILES_IPC } from '../../shared/types'
-import type { HostScope, Project } from '../../shared/types'
+import type { HostScope, Project, TeamFilesStatus } from '../../shared/types'
 import { DEFAULT_APP_SETTINGS } from '../../shared/defaults'
 import { HostDispatcher } from './dispatcher'
 import type { RpcInvokeContext } from './types'
-import { createProject, makeComputer } from '../teamFiles/service.fixture'
+import { createProject, makeComputer, rolePath } from '../teamFiles/service.fixture'
 
 /** A service object whose every method is a no-op: only the handlers under test are driven. */
 const inert = (): never => new Proxy({}, { get: () => () => undefined }) as never
@@ -88,6 +88,28 @@ describe('team files over the socket (invokeRpc)', () => {
     for (const ch of [IPC.projectsSetFolderConfigTrust, TEAM_FILES_IPC.teamFilesApprove, TEAM_FILES_IPC.teamFilesReject, TEAM_FILES_IPC.teamFilesUndo, TEAM_FILES_IPC.teamFilesEnable, TEAM_FILES_IPC.teamFilesCommit]) {
       await expect(rpc(ch, { projectId: 'proj_x', digest: 'ab'.repeat(32), trust: true }), ch).rejects.toMatchObject({ code: 'desktop_unavailable' })
     }
+  })
+
+  it('teamFiles:listAttention (read) carries what Undo would bring back when undo is open (cli-parity 3.4, read-only)', async () => {
+    const { c, dispatcher } = setup()
+    const p = createProject(c)
+    c.svc.status(p.id)
+    const file = rolePath(c, 'reviewer')
+    const raise = (tool: string): string => {
+      writeFileSync(file, readFileSync(file, 'utf8').replace(/tools:\n/, `tools:\n  - "${tool}"\n`), 'utf8')
+      return c.svc.check(p.id).digest!
+    }
+    // Approved once (on the desktop): undo is open. Then another change waits, so the project is listed.
+    c.svc.approve({ projectId: p.id, digest: raise('Bash') })
+    raise('Write')
+    const list = (await dispatcher.invokeRpc(TEAM_FILES_IPC.teamFilesListAttention, [], socketCtx(['read']))) as TeamFilesStatus[]
+    const s = list.find((x) => x.projectId === p.id)!
+    expect(s.state).toBe('pending')
+    expect(s.undo).toBeDefined()
+    const back = s.undoChanges?.find((ch) => ch.name === 'Reviewer')
+    expect(back?.toolsAfter ?? []).not.toContain('Bash')
+    // The service's own status (what the desktop gets pushed) is unchanged.
+    expect(c.svc.check(p.id).undoChanges).toBeUndefined()
   })
 
   it('teamFiles:status needs configure and teamFiles:listAttention needs read', async () => {

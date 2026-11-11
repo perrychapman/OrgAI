@@ -40,6 +40,8 @@ import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
 import { StaffingBook } from './staffingBook'
 import { recordStaffing } from './staffing'
+import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
+import { waitingNote, waitingNoteExcluded } from './waitingNote'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -108,7 +110,8 @@ import { recordStaffing } from './staffing'
  * 'blocked'. [mock:exec-question] (execQuestionSteps): ask_user with the options "(Recommended) Keep the default" and
  * "Change it", then a text that echoes the answer ("You chose: <answer>"). [mock:turn-fail] (turnFailSteps): one text,
  * then the root turn ends failed (RootTurnEnd errorSubtype 'error_during_execution', root state 'error', run.status
- * 'idle'; the session stays open). [mock:rate-limit] (rateLimitSteps): one text, then the rateLimit step with
+ * 'idle'; the session stays open). [mock:compact] (compactSteps): a two-step plan, then three root compactions with no
+ * step finished (agent.compacted; the thrash guard stops the automatic continues). [mock:rate-limit] (rateLimitSteps): one text, then the rateLimit step with
  * untilInMs 1500 and the session ends (RunManager pauses the run). [mock:exec-slow] (execSlowSteps): about 30 text
  * steps one second apart, cut short by interrupt and stop. Every root turn end calls ctx.onRootTurnEnded before
  * run.status 'idle' (the auth-fail marker reports ok false with isAuthError, before its 'error' status).
@@ -176,7 +179,7 @@ export type MockStep =
       onDeny?: string
     }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
-  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Run staffing: the tier and effort stated on the spawn call itself. */ tier?: ModelTier; effort?: Effort; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
+  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Run staffing: the tier and effort stated on the spawn call itself. */ tier?: ModelTier; effort?: Effort; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string; /** Context pack (contextPack.ts): paths the lead read, inlined into the report's first message. */ files?: string[] }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
   | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
@@ -225,6 +228,8 @@ export type MockStep =
   | { type: 'planComplete'; summary: string }
   /** An API retry (rate limit or overload) against an agent's request; counted in usage.retries. */
   | { type: 'retry'; agent?: string }
+  /** The provider compacted an agent's conversation (agent.compacted; the continuation's thrash guard hears of it). */
+  | { type: 'compact'; agent?: string; before?: number; after?: number }
   /** Wait `ms` more before the next step (cut short by interrupt and stop). */
   | { type: 'wait'; ms: number }
   /**
@@ -694,6 +699,8 @@ export const EXEC_PLAN_TOKEN = '[mock:exec-plan]'
 export const EXEC_BLOCKED_TOKEN = '[mock:exec-blocked]'
 export const EXEC_QUESTION_TOKEN = '[mock:exec-question]'
 export const TURN_FAIL_TOKEN = '[mock:turn-fail]'
+/** [mock:compact] (compactSteps): a two-step plan, then three compactions of the root with no step finished. */
+export const COMPACT_TOKEN = '[mock:compact]'
 export const RATE_LIMIT_TOKEN = '[mock:rate-limit]'
 export const MODEL_SWITCH_TOKEN = '[mock:model-switch]'
 export const MEDIA_TOKEN = '[mock:media]'
@@ -770,6 +777,17 @@ export function execQuestionSteps(): MockStep[] {
 }
 
 /** [mock:turn-fail]: one text, then the root turn fails with error_during_execution. */
+/** [mock:compact]: the root plans two steps and compacts three times without finishing one (the thrash guard stops). */
+export function compactSteps(): MockStep[] {
+  return [
+    { type: 'plan', goal: 'Read the whole project', steps: ['Read everything', 'Change it'] },
+    { type: 'compact', before: 168_000, after: 12_000 },
+    { type: 'compact', before: 167_500, after: 14_000 },
+    { type: 'compact', before: 167_900, after: 15_000 },
+    { type: 'text', text: 'Still reading.' }
+  ]
+}
+
 export function turnFailSteps(): MockStep[] {
   return [
     { type: 'text', text: 'Starting on the request.' },
@@ -2024,7 +2042,9 @@ export class MockSession implements RuntimeSession {
       ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}),
       ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}),
       ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
-      ...(this.ctx.bridgedChild ? { bridged: true } : {})
+      ...(this.ctx.bridgedChild ? { bridged: true } : {}),
+      // The mock's spawn step takes `files` like Codex spawn_report; only where a pack can be inlined.
+      ...(contextPackRefusal(this.ctx.run, this.isSetup) ? {} : { spawnFiles: true })
     })
   }
 
@@ -2076,6 +2096,7 @@ export class MockSession implements RuntimeSession {
     if (prompt.includes(EXEC_BLOCKED_TOKEN)) return execBlockedSteps()
     if (prompt.includes(EXEC_QUESTION_TOKEN)) return execQuestionSteps()
     if (prompt.includes(TURN_FAIL_TOKEN)) return turnFailSteps()
+    if (prompt.includes(COMPACT_TOKEN)) return compactSteps()
     if (prompt.includes(RATE_LIMIT_TOKEN)) return rateLimitSteps()
     if (prompt.includes(EXEC_SLOW_TOKEN)) return execSlowSteps(this.script.delayMs)
     return null
@@ -2225,6 +2246,13 @@ export class MockSession implements RuntimeSession {
       case 'fail':
         this.turnFailure = step.subtype ?? 'error_during_execution'
         return
+      case 'compact': {
+        const a = this.ensureAgent(step.agent ?? ROOT_AGENT_ID)
+        this.log('info', `Compaction of ${a.id === ROOT_AGENT_ID ? "the orchestrator's" : `${a.name}'s`} conversation (mock).`)
+        this.emit({ type: 'agent.compacted', runId: this.ctx.run.id, agentId: a.id, at: Date.now(), trigger: 'auto', ...(step.before ? { tokensBefore: step.before } : {}), ...(step.after ? { tokensAfter: step.after } : {}) })
+        this.continuation.compacted({ agentId: a.id, name: a.name, ...(a.model ? { model: a.model } : {}), contextWindow: 200_000 })
+        return
+      }
       case 'retry': {
         const a = this.ensureAgent(step.agent ?? ROOT_AGENT_ID)
         countUsage(a, 'retries')
@@ -2697,8 +2725,60 @@ export class MockSession implements RuntimeSession {
     this.transcript(step.id, { kind: 'user', text: brief })
     // After the upsert, so the row lands on the report (like Codex); the block stays out of its transcript entry.
     this.promptKnowledgeBriefs.push({ agentId: step.id, brief: this.ctx.knowledgeBrief?.() })
-    this.deliveredMessages.push({ agentId: step.id, text: withSpawnKnowledge(brief, spawnKnowledge(this.ctx, brief, step.id, (m) => this.log('warn', m))) })
+    // Context pack (split-execution 3.2), as on Codex: the same read checks, the block appended to the first message.
+    const pack = step.files?.length ? this.contextPackFor(step.files) : undefined
+    const first = withSpawnKnowledge(brief, spawnKnowledge(this.ctx, brief, step.id, (m) => this.log('warn', m)))
+    this.deliveredMessages.push({ agentId: step.id, text: pack ? withContextPack(first, pack) : first })
+    // What Codex's spawn_report result would carry (the mock's spawn has no result until the report finishes): the pack
+    // line and the one-report-and-waiting note, as harness rows on the spawning agent and in spawnNotes.
+    const notes = [pack ? contextPackResultLine(pack) : '', role ? (this.waitingNoteFor(parentId, role.id) ?? '') : ''].filter(Boolean)
+    for (const text of notes) {
+      this.spawnNotes.push({ agentId: parentId, reportId: step.id, text })
+      this.transcript(parentId, { kind: 'system', text }, { source: 'harness' })
+    }
     if (role) await this.skillStep(step.id, role)
+  }
+
+  /** The spawn results' extra lines (context pack, waiting note) in order, for tests. */
+  readonly spawnNotes: { agentId: string; reportId: string; text: string }[] = []
+
+  /** Set once the one-report-and-waiting note was given (at most once per run). */
+  private waitingNoteShown = false
+
+  /** The one-report-and-waiting note (waitingNote.ts) for a spawn by `callerId`, as on Codex. */
+  private waitingNoteFor(callerId: string, roleId: string): string | undefined {
+    const live = (a: AgentInstance): boolean => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error'
+    const running = [...this.agents.values()].filter(live)
+    const note = waitingNote({
+      callerIsRoot: callerId === ROOT_AGENT_ID && !this.ctx.bridgedChild,
+      callerRunningReports: running.filter((a) => a.parentId === callerId).length,
+      spawnedRoleId: roleId,
+      requiredRoleIds: obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)[this.root.id] ?? [],
+      plan: this.ctx.getPlan(),
+      assignments: this.ctx.getStaffing()?.assignments ?? [],
+      runningAgentIds: new Set(running.map((a) => a.id)),
+      shown: this.waitingNoteShown,
+      excludedRun: waitingNoteExcluded(this.ctx.run, this.isSetup)
+    })
+    if (note) this.waitingNoteShown = true
+    return note
+  }
+
+  /** The run's deep protected set for the context pack where handles are not pinned (Windows): walked once per run. */
+  private packDeepCache: ProtectedDeepCache = {}
+
+  /** The context pack for a mock spawn: the lead and the report work in the project folder. */
+  private contextPackFor(files: string[]): ContextPack {
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    const cwd = this.ctx.project.path
+    return buildContextPack(files, {
+      callerCwd: cwd,
+      readRoots: contextPackRoots(this.ctx, [cwd]),
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
+      refuseAll: contextPackRefusal(this.ctx.run, this.isSetup),
+      deepCache: this.packDeepCache
+    })
   }
 
   /** Skill ids already loaded by an agent (once per agent). */

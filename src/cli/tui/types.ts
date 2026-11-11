@@ -42,9 +42,11 @@ import type {
   CardKind,
   DecidedBy,
   DecisionOutcome,
+  Effort,
   HostKind,
   McpInstallRequest,
   MergeReview,
+  ModelTier,
   PendingCards,
   PermissionRequest,
   PermissionRuleRequest,
@@ -53,11 +55,15 @@ import type {
   ProjectKind,
   ProjectPathCheck,
   Proposal,
+  ProviderModel,
   RpcHelloResult,
+  RunOverrides,
   RunPlan,
   RunStaffing,
+  UsageStatus,
   RunStatus,
   RunSummary,
+  RunOutput,
   RunTeam,
   TranscriptEntry,
   UserQuestion,
@@ -65,6 +71,9 @@ import type {
   WorktreeStatus
 } from '../../shared/types'
 import type { HostClient, InprocHostHandle } from '../types'
+import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
+import type { ApprovalsApi } from './approvals'
+import type { TuiConfigApi } from './configApi'
 
 // Re-exported for the onboarding props (Onboarding.tsx).
 export type { AgentImportSource }
@@ -90,6 +99,8 @@ export const CARD_SWAP_GUARD_MS = 750
 export const TUI_TRANSCRIPT_MAX = 5000
 /** Notices kept in state. */
 export const TUI_NOTICE_MAX = 20
+/** Log lines kept per run for /logs. */
+export const TUI_LOGS_MAX = 1000
 /** Resolved-card infos kept (for "Resolved by ..."). */
 export const TUI_RESOLVED_MAX = 50
 /** Agent-to-agent messages kept per run (counts only, never the text). */
@@ -102,7 +113,8 @@ export const TUI_TRAFFIC_MS = 10_000
 export type BufferMode = 'fullscreen' | 'inline'
 export type LayoutMode = 'split' | 'stacked'
 export type PaneId = 'tree' | 'transcript' | 'plan' | 'worktrees'
-export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector'
+/** 'config': the /team or /settings view (its own keys while it is open). */
+export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector' | 'config'
 export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running' | 'identity' | 'identityCyan' | 'identityGreen' | 'identityAmber' | 'identityPink' | 'identityBlue' | 'message' | 'code' | 'muted'
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'gone'
 
@@ -213,8 +225,18 @@ export interface OrgTreeRow {
   msgIn?: PeerCount[]
   /** A message to or from this agent in the last TUI_TRAFFIC_MS. */
   traffic?: boolean
-  /** Resolved staffing from the newest assignment for this agent ("everyday / medium"), sanitized. Dropped first when narrow. */
+  /**
+   * Resolved staffing from the newest assignment for this agent, without the model id ("everyday / medium"),
+   * sanitized. With `model` the row reads "everyday (claude-sonnet-5-5) / medium"; the id is cut first when narrow,
+   * then the whole text goes.
+   */
   staffing?: string
+  /** The newest assignment's tier and effort, so the row can rebuild the label around a cut model id. */
+  staffingPick?: { tier?: ModelTier; effort?: Effort }
+  /** The model this agent runs on (the assignment's model, else its live model), sanitized. */
+  model?: string
+  /** The connection the agent ran on, only when the run spans more than one connection. Sanitized. */
+  connection?: string
 }
 
 /** One peer of an agent's message traffic: its sanitized label and how many messages. */
@@ -241,6 +263,10 @@ export interface InspectorView {
   state: AgentState
   stateWord: string
   model?: string
+  /** Every model the agent used (usage.models plus its live model), when more than one. */
+  models?: string[]
+  /** The connection it ran on, when the run spans more than one. */
+  connection?: string
   wall?: string
   tokensIn?: string
   tokensOut?: string
@@ -343,11 +369,17 @@ export interface StatusSummary {
   statusWord?: string
   tone?: Tone
   costText?: string
+  /** The followed run's root model now (run.model / RunSummary.modelSelection, else the root agent's model). */
+  rootModel?: string
   needsYou: number
   liveRuns: number
   /** Agents working now and steps ready to start; only set (above zero) for runs with staffing data or a graph plan. */
   working?: number
   readySteps?: number
+  /** Auto-continues used and the cap ("auto 3/40"), while the followed run has a plan. */
+  autoText?: string
+  /** Plan windows, "5h 42% · 7d 18%"; the first thing to give way when narrow. */
+  windowText?: string
   /** Live runs of the project as chips (R1* R2!), oldest first. */
   runChips?: RunChip[]
   hostKind?: HostKind
@@ -431,6 +463,8 @@ export interface TuiRun {
   recordLoaded: boolean
   /** Newest TUI_MESSAGES_MAX agent.message events (TUI-local). */
   messages?: RunMessageRec[]
+  /** The run's harness log, every level, newest TUI_LOGS_MAX (record logs plus `log` events); /logs reads it. */
+  logs?: { at: number; level: 'info' | 'warn' | 'error'; message: string }[]
 }
 
 export interface TuiNotice {
@@ -461,6 +495,8 @@ export interface TuiState {
   resolved: ResolvedCardInfo[]
   cardSeq: number
   lastSeq?: number
+  /** The newest plan-window report (usage.status): the status bar's 5-hour and 7-day figures. */
+  planUsage?: UsageStatus
 }
 
 // ---------- Session ----------
@@ -476,6 +512,10 @@ export interface TuiHostConnection {
   /** Reconnects with the 'configure' scope (onboarding only). */
   createProject(input: ProjectCreateInput): Promise<Project>
   startSetup(projectId: string): Promise<RunSummary>
+  /** One call on a separate 'configure' connection (run options that widen the project's settings, as exec asks). */
+  callConfigured?<T>(method: string, params: unknown[]): Promise<T>
+  /** The CLI's user-data folder (the one-time /team and /settings hint keeps its record there). */
+  readonly userDataDir?: string
   close(opts?: { stopInproc?: boolean }): Promise<void>
 }
 
@@ -487,6 +527,10 @@ export interface OpenTuiSessionOptions {
 }
 
 export interface TuiSessionApi {
+  /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
+  approvals?: ApprovalsApi
+  /** The host calls of /team and /settings (cli-parity 3.7): the channels the commands use. */
+  config?: TuiConfigApi
   getState(): TuiState
   subscribe(listener: () => void): () => void
   readonly hostKind: HostKind
@@ -494,12 +538,23 @@ export interface TuiSessionApi {
   focusRun(runId: string): Promise<void>
   setComposeTarget(t: ComposeTarget): void
   /** Start, send or continue per the state; undefined when nothing was started. */
-  submitPrompt(text: string, opts?: { team?: RunTeam }): Promise<RunSummary | undefined>
-  startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam }): Promise<RunSummary>
+  /** `overrides` apply to a run this starts or continues (exec's run options, never execMode); a send ignores them. */
+  submitPrompt(text: string, opts?: { team?: RunTeam; overrides?: RunOverrides }): Promise<RunSummary | undefined>
+  startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam; overrides?: RunOverrides }): Promise<RunSummary>
+  /** The connected connections' model catalog (/model). */
+  modelCatalog(): Promise<ModelCatalog>
+  /** Switch the followed run's model behind the desktop's guard (modelSwitch.ts); `confirm` is asked for a handoff. */
+  switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }): Promise<SwitchOutcome>
+  /** runs:resumeNow on the followed run (paused for a usage limit); follows the resumed run. */
+  resumeNow(): Promise<RunSummary>
+  /** runs:cancelAutoResume on the followed run: it stays paused. */
+  cancelAutoResume(): Promise<void>
   interrupt(): Promise<void>
   stop(): Promise<void>
   decide(call: DecisionCall): Promise<DecisionOutcome>
   worktreeDiff(branch: string): Promise<WorktreeDiff>
+  /** outputs:list of the followed run's project (/outputs filters to the run). */
+  listOutputs(): Promise<RunOutput[]>
   listRuns(): Promise<RunSummary[]>
   /** An Org retrospective of an ended work run (setup:retro, operate scope); follows the new run. */
   startRetro(runId?: string): Promise<RunSummary>
@@ -681,9 +736,13 @@ export interface SlashContext {
   startRetro?(): Promise<void>
   /** /agent <name>: open that agent's inspector. */
   openAgent?(arg: string): void
+  /** /team and /settings: open that view over the run view (cli-parity 3.7). */
+  openConfig?(view: 'team' | 'settings'): void
   /** Hide finished agents on / off (optional: older test contexts lack it). */
   toggleFold?(): void
-  newRun(opts: { prompt?: string; team?: RunTeam }): Promise<void>
+  newRun(opts: { prompt?: string; team?: RunTeam; overrides?: RunOverrides }): Promise<void>
+  /** A short list to choose from (/model); undefined when dismissed. Optional: without it the command prints the list. */
+  pick?(title: string, options: readonly { value: string; label: string }[]): Promise<string | undefined>
   switchRun(ref: string): Promise<void>
   confirm(question: string): Promise<boolean>
   openText(title: string, text: string): Promise<void>
@@ -718,6 +777,8 @@ export interface TuiLaunch {
   runId?: string
   prompt?: string
   team?: RunTeam
+  /** Bare `orgai`'s run flags (runStartFlags.ts): for the first run this TUI starts. */
+  overrides?: RunOverrides
   resumeText?: string
   readOnlyReason?: string
   /** No project for the folder: show onboarding. */

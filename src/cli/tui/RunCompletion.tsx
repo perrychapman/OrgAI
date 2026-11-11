@@ -120,12 +120,24 @@ function checkEvidence(run: TuiState['runs'][string]): { text: string; failed: b
   return { text: `Checks: ${checks.map((check) => `${check.command} ${check.failed ? 'failed' : 'passed'}`).join('; ')}`, failed: checks.some((check) => check.failed) }
 }
 
+/** The pause notice's actions (cli-parity 3.5): resume now, and keep paused while an automatic resume is armed. */
+export function pausedActionsLine(summary: TuiState['runs'][string]['summary']): string | undefined {
+  if (summary.status !== 'paused') return undefined
+  const at = typeof summary.pausedUntil === 'number' && Number.isFinite(summary.pausedUntil) ? new Date(summary.pausedUntil) : undefined
+  const when = at ? ` at ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : ''
+  return summary.autoResume
+    ? `Resumes by itself${when} | /resume-now resumes now | /cancel-resume keeps it paused`
+    : `/resume-now resumes it now`
+}
+
 /** Pure, evidence-only completion copy for the active terminal run. */
 export function completionLines(state: TuiState): string[] {
   const active = state.activeRunId ? state.runs[state.activeRunId] : undefined
   if (!active || !TERMINAL_STATUSES.has(active.summary.status)) return []
   const result = outcomeLabel(active.summary)
   const lines = [`${result.heading}`, `Outcome: ${result.outcome}${elapsed(active.summary.startedAt, active.summary.endedAt) ? ` | Elapsed: ${elapsed(active.summary.startedAt, active.summary.endedAt)}` : ''}`]
+  const resume = pausedActionsLine(active.summary)
+  if (resume) lines.push(resume)
   const plan = planLine(active)
   if (plan) lines.push(plan)
   lines.push(changesLine(active))

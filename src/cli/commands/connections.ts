@@ -12,12 +12,24 @@
  *             [--key-env VAR | --key-stdin] [--connect]
  *   proxy edit <id> [--name N] [--anthropic-url U] [--openai-url U|none] [--models-url U|none] [--enable|--disable]
  *   proxy remove <id> [--yes]
+ *   tier <id>                             read: top / deep / everyday / fast with each model's catalog source and
+ *                                         context window; an unmapped tier shows as unmapped
+ *   tier <id> <tier>=<model> ... [--reset <tier>] [--force] [--dry-run]
+ *                                         configure (read with --dry-run): each model must be in the connection's
+ *                                         catalog (close matches listed; --force sends an id that is not); saved
+ *                                         through connections:update, whose tier change remaps the roles on that
+ *                                         connection (the host's own remap, as the desktop tier editor does); the
+ *                                         touched roles are printed. --reset puts a tier back on discovery's choice
+ *                                         (suggestTierModels, the function ConnectionService.retier uses).
  *
  * Any number of named proxies exist besides anthropic and openai; ids are 'litellm' (the migrated one) or
  * `proxy-<8 hex>`. Secrets never travel on argv and are never printed (a proxy key goes in through readSecretValue only).
  */
-import { BUILTIN_CONNECTION_IDS, PROXY_KINDS, isBuiltinConnectionId, isProxyConnection, isProxyConnectionId, type AppSettings, type ConnectionEvent, type ConnectionId, type ConnectionInfo, type ConnectionLoginMethod, type ConnectionLoginStart, type ConnectionLoginUpdate, type ConnectionStatus, type HostScope, type Project, type ProviderConnection, type ProxyConnection, type ProxyCreateInput, type ProxyKind, type ProxyRemoveResult, type RemapResult } from '../../shared/types'
+import { BUILTIN_CONNECTION_IDS, MODEL_TIERS, PROXY_KINDS, isBuiltinConnectionId, isModelTier, isProxyConnection, isProxyConnectionId, type AppSettings, type ConnectionEvent, type ConnectionId, type ConnectionInfo, type ConnectionLoginMethod, type ConnectionLoginStart, type ConnectionLoginUpdate, type ConnectionStatus, type HostScope, type ModelRef, type ModelTier, type Project, type ProviderConnection, type ProviderModel, type ProxyConnection, type ProxyCreateInput, type ProxyKind, type ProxyRemoveResult, type RemapResult } from '../../shared/types'
+import { projectConnection, roleConnection } from '../../shared/defaults'
 import { formatDateTime } from '../../shared/view/dates'
+import { suggestTierModels } from '../../main/connections/catalog'
+import { remapProject } from '../../main/connections/remap'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, isRemoteSession, readSecretValue, runSubcommands, subscribeTopics, withHost } from '../manage'
 import { emit, emitLine, isJsonOutput, printText, safeLine, styleFor, table, termWidth, warn, type Json } from '../output'
@@ -40,7 +52,7 @@ export function connectionLabel(c: ProviderConnection): string {
   return isProxyConnection(c) ? safeLine(c.name) : labelOfId(c.id)
 }
 
-const USAGE = 'connections <list|show|test|connect|login|logout|set-default|set-secret|update|proxy> [options]'
+const USAGE = 'connections <list|show|test|connect|login|logout|set-default|set-secret|update|proxy|tier> [options]'
 const PROXY_USAGE = 'connections proxy <add|edit|remove> [options]'
 
 /**
@@ -627,10 +639,293 @@ const runProxyRemove = async (ctx: CliContext, args: string[]): Promise<number> 
 const runProxy = async (ctx: CliContext, args: string[]): Promise<number> =>
   runSubcommands(ctx, args, { add: runProxyAdd, edit: runProxyEdit, remove: runProxyRemove }, PROXY_USAGE)
 
+// ---------- tier ----------
+
+type Tiers = Partial<Record<ModelTier, ModelRef>>
+
+/** A model id the CLI sends as a tier mapping: one printable line without spaces, at most 200 characters. */
+const MODEL_ID_RE = /^[!-~]{1,200}$/
+
+/** `<tier>=<model>` pairs; a tier named twice, an unknown tier or an empty model is exit 2. */
+export function parseTierPairs(positionals: readonly string[]): Tiers {
+  const out: Tiers = {}
+  for (const raw of positionals) {
+    const eq = raw.indexOf('=')
+    const tier = eq === -1 ? raw : raw.slice(0, eq)
+    const model = eq === -1 ? '' : raw.slice(eq + 1).trim()
+    if (!isModelTier(tier)) throw new CliError(`"${safeLine(raw).slice(0, 60)}" is not <tier>=<model>; the tiers are ${MODEL_TIERS.join(', ')}.`, EXIT.usage)
+    if (eq === -1 || model === '') throw new CliError(`Give the model for ${tier}: ${tier}=<model id> (or --reset ${tier}).`, EXIT.usage)
+    if (!MODEL_ID_RE.test(model)) throw new CliError(`"${safeLine(model).slice(0, 60)}" is not a model id (one word, at most 200 characters).`, EXIT.usage)
+    if (out[tier] !== undefined) throw new CliError(`${tier} is given twice.`, EXIT.usage)
+    out[tier] = model
+  }
+  return out
+}
+
+/** Levenshtein distance (short model ids only). */
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]
+    prev[0] = i
+    for (let j = 1; j <= b.length; j++) {
+      const up = prev[j]
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1))
+      diag = up
+    }
+  }
+  return prev[b.length]
+}
+
+/** Up to five catalog ids close to `wanted`: ids containing it, ids it contains, then by edit distance. */
+export function closeModelIds(wanted: string, ids: readonly string[]): string[] {
+  const w = wanted.toLowerCase()
+  const limit = Math.max(2, Math.floor(w.length / 3))
+  return ids
+    .map((id) => {
+      const l = id.toLowerCase()
+      return { id, rank: l.includes(w) ? 0 : w.includes(l) ? 1 : 2, d: editDistance(w, l) }
+    })
+    .filter((x) => x.rank < 2 || x.d <= limit)
+    .sort((a, b) => a.rank - b.rank || a.d - b.d || a.id.localeCompare(b.id))
+    .slice(0, 5)
+    .map((x) => x.id)
+}
+
+/** One tier row of `connections tier`: the mapped model with its catalog facts, or unmapped. */
+export interface TierRow {
+  tier: ModelTier
+  model: string | null
+  automatic: boolean
+  inCatalog: boolean
+  source: ProviderModel['source'] | null
+  contextWindow: number | null
+}
+
+export function tierRows(connection: ProviderConnection, catalog: readonly ProviderModel[]): TierRow[] {
+  const byId = new Map(catalog.map((m) => [m.id, m]))
+  return MODEL_TIERS.map((tier) => {
+    const model = connection.tierModels[tier]?.trim() || null
+    const m = model ? byId.get(model) : undefined
+    return { tier, model, automatic: !!model && (connection.autoTiers?.includes(tier) ?? false), inCatalog: !!m, source: m?.source ?? null, contextWindow: m?.contextWindow ?? null }
+  })
+}
+
+const contextText = (n: number | null): string => (n === null ? 'context unknown' : n >= 1_000_000 && n % 1_000_000 === 0 ? `${n / 1_000_000}M context` : n >= 1000 ? `${Math.round(n / 1000)}k context` : `${n} context`)
+
+function tierRowLines(rows: readonly TierRow[]): string[] {
+  const width = Math.max(...MODEL_TIERS.map((t) => t.length))
+  return rows.map((r) => {
+    const name = r.tier.padEnd(width)
+    if (!r.model) return `  ${name}  unmapped`
+    const facts = r.inCatalog ? [r.source ?? '', contextText(r.contextWindow)].filter(Boolean) : ['not in the catalog']
+    if (r.automatic) facts.push('automatic')
+    return `  ${name}  ${safeLine(r.model)}  (${facts.join(', ')})`
+  })
+}
+
+const tierRowJson = (r: TierRow): Json => ({ ...r })
+
+/** One role a tier change touches. */
+export interface AffectedRole {
+  projectId: string
+  projectName: string
+  roleId: string
+  roleName: string
+  tier: ModelTier
+  /** 'remapped': its model moved; 'kept': picked by hand, left on its model. */
+  outcome: 'remapped' | 'kept'
+  from: string
+  to: string
+}
+
+/**
+ * The roles on `connection` whose tier changed, with what the remap did to each (`changes`, keyed by project id; the
+ * host's projects.remapped results, or the preview). Pure; exported for tests.
+ */
+export function affectedRoles(projects: readonly Project[], connection: ConnectionId, changed: readonly ModelTier[], changes: ReadonlyMap<string, RemapResult['changes']>): AffectedRole[] {
+  const out: AffectedRole[] = []
+  for (const p of projects) {
+    const moved = changes.get(p.id) ?? []
+    for (const r of p.roles ?? []) {
+      if (!r.tier || !changed.includes(r.tier) || r.model === 'inherit' || roleConnection(r, p) !== connection) continue
+      const hit = moved.find((c) => c.roleId === r.id)
+      out.push({ projectId: p.id, projectName: p.name, roleId: r.id, roleName: r.name, tier: r.tier, outcome: hit ? 'remapped' : 'kept', from: hit?.from ?? r.model, to: hit?.to ?? r.model })
+    }
+  }
+  return out
+}
+
+function affectedLines(rows: readonly AffectedRole[], dryRun: boolean): string[] {
+  if (rows.length === 0) return ['No project role uses the changed tiers.']
+  return [
+    dryRun ? 'Roles this would touch:' : 'Roles on the changed tiers:',
+    ...rows.map((a) =>
+      a.outcome === 'remapped'
+        ? `  ${safeLine(a.projectName)} / ${safeLine(a.roleName)} (${a.tier}): ${safeLine(a.from)} -> ${safeLine(a.to)}`
+        : `  ${safeLine(a.projectName)} / ${safeLine(a.roleName)} (${a.tier}): kept ${safeLine(a.from)} (picked by hand)`
+    )
+  ]
+}
+
+/** A tier change worked out but not sent: the mapping before and after, the tiers that move, and notes. */
+export interface TierChangePlan {
+  before: Tiers
+  next: Tiers
+  changed: ModelTier[]
+  /** "  deep: a -> b" per changed tier. */
+  changeLines: string[]
+  /** Models sent although the catalog does not list them (force). */
+  forced: string[]
+  notes: string[]
+}
+
+/**
+ * `<tier>=<model>` pairs and resets on `connection` (shared by `connections tier` and the TUI's Settings view): every
+ * model is checked against the connection's catalog (a usage CliError with close matches unless `force`), a reset takes
+ * discovery's choice (tierDeps.suggest, as ConnectionService.retier does) or leaves the tier unmapped.
+ */
+export function planTierChange(connection: ProviderConnection, label: string, catalog: readonly ProviderModel[], pairs: Tiers, resets: readonly ModelTier[], force: boolean): TierChangePlan {
+  const id = connection.id
+  const ids = catalog.map((m) => m.id)
+  const known = new Set(ids)
+  const forced: string[] = []
+  for (const [tier, model] of Object.entries(pairs) as [ModelTier, string][]) {
+    if (known.has(model)) continue
+    if (force) {
+      forced.push(model)
+      continue
+    }
+    const close = closeModelIds(model, ids)
+    throw new CliError(
+      `${safeLine(model)} (${tier}) is not in ${label}'s catalog.${close.length ? ` Close matches: ${close.map(safeLine).join(', ')}.` : ''} See \`orgai models list --connection ${id}\`; --force sends it anyway.`,
+      EXIT.usage
+    )
+  }
+  const suggestion = resets.length ? tierDeps.suggest(id, [...catalog]) : {}
+  const before: Tiers = { ...connection.tierModels }
+  const next: Tiers = { ...before, ...pairs }
+  const unresolved: ModelTier[] = []
+  for (const t of resets) {
+    const want = suggestion[t]
+    if (want) next[t] = want
+    else {
+      delete next[t]
+      unresolved.push(t)
+    }
+  }
+  const changed = MODEL_TIERS.filter((t) => (next[t] ?? '') !== (before[t] ?? ''))
+  const changeLines = changed.map((t) => `  ${t}: ${safeLine(before[t] ?? 'unmapped')} -> ${safeLine(next[t] ?? 'unmapped')}`)
+  const notes = [
+    ...(forced.length ? [`Not in the catalog (sent with --force): ${forced.map(safeLine).join(', ')}.`] : []),
+    ...(unresolved.length ? [`Discovery has no model for ${unresolved.join(', ')}; ${unresolved.length === 1 ? 'it is' : 'they are'} left unmapped.`] : [])
+  ]
+  return { before, next, changed, changeLines, forced, notes }
+}
+
+/**
+ * The roles a tier change would touch, before it is sent: the same pure remap the host runs on a tier change
+ * (ConnectionService.remapConnectionProjects) over every project with a role on `connection`.
+ */
+export function previewTierChange(projects: readonly Project[], connection: ConnectionId, plan: Pick<TierChangePlan, 'before' | 'next' | 'changed'>, catalog: readonly ProviderModel[]): AffectedRole[] {
+  const list = projects.filter((p) => projectConnection(p) === connection || (p.roles ?? []).some((r) => roleConnection(r, p) === connection))
+  const changes = new Map<string, RemapResult['changes']>()
+  for (const p of list) {
+    const out = remapProject(p, { connection, tierModels: plan.next, previousTierModels: plan.before, catalog: [...catalog], reason: 'tierModels', include: (r) => roleConnection(r, p) === connection })
+    changes.set(p.id, out.result.changes)
+  }
+  return affectedRoles(list, connection, plan.changed, changes)
+}
+
+/** The lines `connections tier` prints for the touched roles (exported for the TUI). */
+export const tierAffectedLines = (rows: readonly AffectedRole[], dryRun: boolean): string[] => affectedLines(rows, dryRun)
+
+/** Swappable in tests: discovery's tier choice (main/connections/catalog.ts, what ConnectionService.retier uses). */
+export const tierDeps = { suggest: suggestTierModels }
+
+const runTier = async (ctx: CliContext, args: string[]): Promise<number> => {
+  const { values, positionals } = parseFlags(args, { reset: { type: 'string', multiple: true }, force: { type: 'boolean' }, 'dry-run': { type: 'boolean' } })
+  const id = connectionArg(positionals[0])
+  const pairs = parseTierPairs(positionals.slice(1))
+  const resets: ModelTier[] = []
+  for (const t of values.reset ?? []) {
+    if (!isModelTier(t)) throw new CliError(`--reset takes a tier: ${MODEL_TIERS.join(', ')}.`, EXIT.usage)
+    if (pairs[t] !== undefined) throw new CliError(`${t} is both set and reset.`, EXIT.usage)
+    if (!resets.includes(t)) resets.push(t)
+  }
+  const changing = Object.keys(pairs).length > 0 || resets.length > 0
+  if (!changing && (values.force || values['dry-run'])) throw new CliError('--force and --dry-run go with <tier>=<model> or --reset.', EXIT.usage)
+
+  return withHost(ctx, changing && !values['dry-run'] ? CONFIGURE : READ, async (client) => {
+    const current = (await listInfos(client)).find((i) => i.connection.id === id)
+    if (!current) throw new CliError(`The host did not list ${labelOfId(id)}.`, EXIT.failure)
+    const label = connectionLabel(current.connection)
+    const catalogRaw = await hostCall<ProviderModel[]>(client, 'models:list', [{ connection: id }])
+    const catalog = (Array.isArray(catalogRaw) ? catalogRaw : []).filter((m) => m.connection === id)
+
+    if (!changing) {
+      const rows = tierRows(current.connection, catalog)
+      emit(ctx, { connection: id, label, tiers: rows.map(tierRowJson) }, () => [`${label} (${id}) tiers:`, ...tierRowLines(rows)])
+      return EXIT.ok
+    }
+
+    const { before, next, changed, changeLines, notes } = planTierChange(current.connection, label, catalog, pairs, resets, !!values.force)
+    const changeJson = changed.map((t) => ({ tier: t, from: before[t] ?? null, to: next[t] ?? null }))
+
+    if (changed.length === 0) {
+      emit(ctx, { connection: id, label, applied: false, dryRun: !!values['dry-run'], changes: [], affected: [], notes, tiers: tierRows(current.connection, catalog).map(tierRowJson) }, () => [
+        `${label}: no tier changes.`,
+        ...notes
+      ])
+      return EXIT.ok
+    }
+
+    if (values['dry-run']) {
+      const projects = await hostCall<Project[]>(client, 'projects:list', [])
+      const affected = previewTierChange(Array.isArray(projects) ? projects : [], id, { before, next, changed }, catalog)
+      emit(ctx, { connection: id, label, applied: false, dryRun: true, changes: changeJson, affected: affected as unknown as Json[], notes }, () => [
+        `${label}: would change`,
+        ...changeLines,
+        ...affectedLines(affected, true),
+        ...notes,
+        'Nothing was saved. Run again without --dry-run to apply.'
+      ])
+      return EXIT.ok
+    }
+
+    const remaps: RemapResult[] = []
+    const off = await subscribeTopics(client, ['connections'], (_ch, payload) => {
+      const e = payload as ConnectionEvent | undefined
+      if (e?.type === 'projects.remapped' && Array.isArray(e.results)) remaps.push(...e.results.filter((r) => r.connection === id))
+    })
+    try {
+      const info = await refusable<ConnectionInfo>(client, 'connections:update', [{ ...current.connection, tierModels: next } as ProviderConnection])
+      // The remap broadcast goes out before the reply on the same socket; one more tick for safety.
+      await new Promise((r) => setTimeout(r, 20))
+      const projects = await client.call<Project[]>('projects:list', []).catch(() => [] as Project[])
+      const changes = new Map<string, RemapResult['changes']>()
+      for (const r of remaps) changes.set(r.projectId, [...(changes.get(r.projectId) ?? []), ...r.changes])
+      const affected = affectedRoles(Array.isArray(projects) ? projects : [], id, changed, changes)
+      const rows = tierRows(info.connection, catalog)
+      emit(ctx, { connection: id, label, applied: true, dryRun: false, changes: changeJson, affected: affected as unknown as Json[], remapped: remaps as unknown as Json[], notes, tiers: rows.map(tierRowJson) }, () => [
+        `${label}: tiers saved`,
+        ...changeLines,
+        ...affectedLines(affected, false),
+        ...notes,
+        `${label} (${id}) tiers:`,
+        ...tierRowLines(rows)
+      ])
+      return EXIT.ok
+    } finally {
+      off()
+    }
+  })
+}
+
 export const runConnections: CommandFn = (ctx, args) =>
   runSubcommands(
     ctx,
     args,
-    { list: runList, show: runShow, test: runTest, connect: runConnect, login: runLogin, logout: runLogout, 'set-default': runSetDefault, 'set-secret': runSetSecret, update: runUpdate, proxy: runProxy },
+    { list: runList, show: runShow, test: runTest, connect: runConnect, login: runLogin, logout: runLogout, 'set-default': runSetDefault, 'set-secret': runSetSecret, update: runUpdate, proxy: runProxy, tier: runTier },
     USAGE
   )

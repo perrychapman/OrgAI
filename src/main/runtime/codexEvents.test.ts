@@ -62,7 +62,7 @@ describe('basic turn fixture', () => {
   })
 
   it('reports cumulative tokens, never cost', () => {
-    expect(of('tokens')).toEqual([{ type: 'tokens', threadId: 'th-1', input: 1200, output: 300, cachedInput: 800 }])
+    expect(of('tokens')).toEqual([{ type: 'tokens', threadId: 'th-1', input: 1200, output: 300, cachedInput: 800, contextWindow: 258400 }])
     expect(JSON.stringify(updates)).not.toMatch(/cost/i)
   })
 
@@ -252,5 +252,14 @@ describe('native multi-agent items', () => {
     expect(m.handle('item/started', { threadId: 't', item })).toEqual([])
     expect(m.handle('item/completed', { threadId: 't', item }).map((u) => u.type)).toEqual(['log'])
     expect(m.handle('item/started', { threadId: 't', item: { ...item, id: 'n2' } }).filter((u) => u.type === 'nativeSpawn')).toHaveLength(1)
+  })
+})
+
+describe('contextCompaction (compaction investigation 2026-11-10)', () => {
+  it('a completed contextCompaction item is a compaction of that thread; its start is nothing; tokenUsage carries the window', () => {
+    const m = new CodexEventMapper()
+    expect(m.handle('item/started', { threadId: 't', item: { type: 'contextCompaction', id: 'c' } })).toEqual([])
+    expect(m.handle('item/completed', { threadId: 't', item: { type: 'contextCompaction', id: 'c' } })).toEqual([{ type: 'compacted', threadId: 't' }])
+    expect(m.handle('thread/tokenUsage/updated', { threadId: 't', tokenUsage: { total: { inputTokens: 5, outputTokens: 1, cachedInputTokens: 0 }, modelContextWindow: 258400 } })).toEqual([{ type: 'tokens', threadId: 't', input: 5, output: 1, cachedInput: 0, contextWindow: 258400 }])
   })
 })

@@ -11,6 +11,9 @@
 //    review M12).
 // 2. A `wait` decision policy is refused (exit 2): nothing but this process could answer. SIGINT to an exec process ends
 //    it 130 'interrupted' (POSIX). `resume R1 --exec --prompt more` exits 0, and `resume --exec --prompt-file` exits 0.
+// 3. Run control (cli-parity 3.5): `runs model R1` lists the selection and choices (json, exit 0); `resume R1
+//    --cancel-auto-resume` on an ended run exits 1 with the "not paused any more" hint (a pause lives only in its own
+//    orgai); `resume R1 --now` without a terminal exits 2; `--goal fastest` on bare orgai exits 2 (exec's parser).
 //
 // win32 (review H4): child.kill('SIGINT') is TerminateProcess there, so no handler would run and the exit code would
 // not be 130. The SIGINT case is skipped with a log line. The script has not been run on Windows yet.
@@ -121,6 +124,17 @@ try {
   fs.writeFileSync(promptFile, '\ufeffSay "hi" & echo not-a-command | more\n', 'utf8')
   await execCase('exec --prompt-file (quotes, & and |)', ['--team', 'single', '--prompt-file', promptFile], 0, 'completed-unplanned')
 
+  // Images: a PNG header is enough for the validator (magic bytes), a text file named .png is refused before any run starts.
+  const pngFile = path.join(DATA_DIR, 'cli-exec-shot.png')
+  fs.writeFileSync(pngFile, Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex'))
+  await execCase('exec --image (repeatable)', ['--team', 'single', '--image', pngFile, '--image', pngFile, 'Describe the picture'], 0, 'completed-unplanned')
+  const fakePng = path.join(DATA_DIR, 'cli-exec-fake.png')
+  fs.writeFileSync(fakePng, 'not an image')
+  const badImage = await cli(['exec', '--team', 'single', '--image', fakePng, 'Describe the picture'], { cwd: repo })
+  check(badImage.code === 2 && badImage.err.includes('cli-exec-fake.png') && /not a supported image/.test(badImage.err), 'exec --image with a non-image file exits 2 naming the file', show(badImage))
+  const noImage = await cli(['exec', '--team', 'single', '--image', path.join(DATA_DIR, 'missing.png'), 'x'], { cwd: repo })
+  check(noImage.code === 2 && /cannot read the file/.test(noImage.err), 'exec --image with a missing file exits 2', show(noImage))
+
   const streamed = await cli(['exec', '--output-format', 'stream-json', '--team', 'single', 'hello again'], { cwd: repo })
   const sl = lines(streamed.out)
   check(streamed.code === 0 && sl.length > 1 && sl.every((l) => l && l.schemaVersion === 1), 'stream-json: every line parses with schemaVersion', show(streamed))
@@ -148,6 +162,26 @@ try {
   check(resumed.code === 0 && json(resumed.out)?.exitCode === 0, 'resume R1 --exec --prompt more exits 0', show(resumed))
   const resumedFromFile = await cli(['resume', 'R1', '--exec', '--prompt-file', promptFile, '--output-format', 'json'], { cwd: repo })
   check(resumedFromFile.code === 0 && json(resumedFromFile.out)?.exitCode === 0, 'resume R1 --exec --prompt-file exits 0', show(resumedFromFile))
+  const resumedImage = await cli(['resume', 'R1', '--exec', '--prompt', 'and this', '--image', pngFile, '--output-format', 'json'], { cwd: repo })
+  check(resumedImage.code === 0 && json(resumedImage.out)?.exitCode === 0, 'resume R1 --exec --image exits 0', show(resumedImage))
+  const resumeNoExec = await cli(['resume', 'R1', '--image', pngFile], { cwd: repo })
+  check(resumeNoExec.code === 2 && /--image needs --exec/.test(resumeNoExec.err), 'resume --image without --exec exits 2', show(resumeNoExec))
+
+  // Run logs and the auto-continue count in runs show.
+  const logsShown = await cli(['runs', 'show', 'R1', '--logs', '--level', 'all'], { cwd: repo })
+  check(logsShown.code === 0 && /Logs \(all levels; \d+ of \d+\):/.test(logsShown.out), 'runs show --logs --level all prints the run log', show(logsShown))
+  const logsBadLevel = await cli(['runs', 'show', 'R1', '--logs', '--level', 'loud'], { cwd: repo })
+  check(logsBadLevel.code === 2 && /--level must be one of/.test(logsBadLevel.err), 'runs show --level loud exits 2', show(logsBadLevel))
+
+  // ---------- 3. Run control ----------
+  const models = await cli(['runs', 'model', 'R1', '--output-format', 'json'], { cwd: repo })
+  check(models.code === 0 && typeof json(models.out)?.runId === 'string' && Array.isArray(json(models.out)?.choices), 'runs model R1 lists the selection and the choices', show(models))
+  const cancelEnded = await cli(['resume', 'R1', '--cancel-auto-resume'], { cwd: repo })
+  check(cancelEnded.code === 1 && cancelEnded.err.includes('is not paused any more'), 'resume --cancel-auto-resume on an ended run exits 1 with the hint', show(cancelEnded))
+  const nowNoTty = await cli(['resume', 'R1', '--now'], { cwd: repo })
+  check(nowNoTty.code === 2 && nowNoTty.err.includes('needs a terminal'), 'resume --now without a terminal exits 2', show(nowNoTty))
+  const badGoal = await cli(['--goal', 'fastest', '--', 'do it'], { cwd: repo })
+  check(badGoal.code === 2 && badGoal.err.includes('--goal must be one of balanced, speed, cost.'), "bare orgai validates --goal with exec's parser", show(badGoal))
 } catch (e) {
   check(false, 'cli-exec ran to the end', e instanceof Error ? e.stack : String(e))
 } finally {

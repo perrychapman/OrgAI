@@ -3,12 +3,14 @@
  * [--tail N]` (cli-spec 6.1; cli-standalone-default.md 4.3): read from the saved files, never a host. Live runs and
  * their cards exist only inside the owning `orgai`, which has the actions in its TUI. Status words come from statusText only.
  */
-import { VIRTUAL_PROJECT_LABELS, isVirtualProjectId, type Project, type RunSummary } from '../../shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, VIRTUAL_PROJECT_LABELS, isVirtualProjectId, type Project, type RunSummary } from '../../shared/types'
 import { formatDate } from '../../shared/view/dates'
 import { chainOf } from '../../shared/view/runChains'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
-import { statusText } from '../../shared/view/runStatus'
+import { countRunOutputs } from '../outputsText'
+import { autoContinueState, statusText } from '../../shared/view/runStatus'
 import { parseFlags } from '../flags'
+import { LOG_LEVEL_WORDS, filterLogs, logLine, type LogLevelFilter } from '../logText'
 import { emit, relativeTime, safeLine, styleFor, styleStatus, table, termWidth, type Json } from '../output'
 import {
   agentTreeLines,
@@ -24,6 +26,7 @@ import {
 } from '../render'
 import { checkProjectResolution, openReadSource, resolveRunFromSource, searchableProjectIds } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
+import { runRunsModel } from './runsModel'
 
 const DEFAULT_LIMIT = 20
 const DEFAULT_TAIL = 20
@@ -41,10 +44,11 @@ export const runRuns: CommandFn = async (ctx: CliContext, args: string[]): Promi
   const [sub, ...rest] = args
   if (sub === 'list') return runsList(ctx, rest)
   if (sub === 'show') return runsShow(ctx, rest)
+  if (sub === 'model') return runRunsModel(ctx, rest)
   throw new CliError(sub ? `Unknown runs command "${sub}". ${RUNS_USAGE}` : RUNS_USAGE, EXIT.usage)
 }
 
-const RUNS_USAGE = 'Use: orgai runs list | show <runId-or-R#>'
+const RUNS_USAGE = 'Use: orgai runs list | show <runId-or-R#> | model <runId-or-R#> [<tier|model id>]'
 
 function projectName(projects: readonly Project[], id: string): string {
   if (isVirtualProjectId(id)) return VIRTUAL_PROJECT_LABELS[id]
@@ -134,8 +138,11 @@ async function runsList(ctx: CliContext, args: string[]): Promise<number> {
 }
 
 async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
-  const { values, positionals } = parseFlags(args, { transcript: { type: 'boolean' }, tail: { type: 'string' } })
-  if (positionals.length !== 1) throw new CliError('Use: orgai runs show <runId-or-R#> [--transcript] [--tail N]', EXIT.usage)
+  const { values, positionals } = parseFlags(args, { transcript: { type: 'boolean' }, tail: { type: 'string' }, logs: { type: 'boolean' }, level: { type: 'string' } })
+  if (positionals.length !== 1) throw new CliError('Use: orgai runs show <runId-or-R#> [--transcript] [--tail N] [--logs [--level warn|info|all]]', EXIT.usage)
+  if (values.level !== undefined && !values.logs) throw new CliError('--level applies with --logs.', EXIT.usage)
+  const level = (values.level ?? 'warn').toLowerCase() as LogLevelFilter
+  if (!LOG_LEVEL_WORDS.includes(level)) throw new CliError(`--level must be one of: ${LOG_LEVEL_WORDS.join(', ')}.`, EXIT.usage)
   const tail = intFlag('tail', values.tail, DEFAULT_TAIL)
   const src = await openReadSource(ctx)
   try {
@@ -155,7 +162,9 @@ async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
     const st = styleFor(ctx)
     const rows = tailRows(rec.transcript, rec.agents, st, values.transcript ? 0 : tail)
 
+    const outputCount = countRunOutputs(ctx.paths.dataDir, s.projectId, s.id)
     const value: Json = {
+      outputCount,
       hostState: src.hostState,
       liveInboxAvailable: false,
       tag,
@@ -179,8 +188,19 @@ async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
         waiting: false,
         record: rec
       })
-      if (rec.plan) lines.push(...planLines(rec.plan, st))
-      const tree = agentTreeLines(s, rec.agents, st)
+      const auto = autoContinueState({ status: s.status, plan: rec.plan, autoContinue: project?.autoContinue, maxAutoContinues: project?.maxAutoContinues, kind: s.kind }, DEFAULT_MAX_AUTO_CONTINUES)
+      if (outputCount > 0) lines.push(`  ${st.dim('Outputs:')} ${outputCount} (orgai outputs list --run ${tag})`)
+      if (rec.plan) lines.push(...planLines(rec.plan, st), `  ${st.dim('Auto-continues:')} ${auto.count} of ${auto.max}${project?.autoContinue === false ? st.dim(' (off for this project)') : ''}`)
+      if (values.logs) {
+        const shown = filterLogs(rec.logs ?? [], level)
+        lines.push(st.bold(`Logs (${level === 'warn' ? 'warnings and errors' : level === 'info' ? 'info' : 'all levels'}; ${shown.length} of ${(rec.logs ?? []).length}):`))
+        if (shown.length === 0) lines.push(st.dim('  No log lines.'))
+        for (const l of shown) {
+          const line = logLine(l)
+          lines.push(`  ${l.level === 'error' ? st.red(line) : l.level === 'warn' ? st.yellow(line) : line}`)
+        }
+      }
+      const tree = agentTreeLines(s, rec.agents, st, rec.staffing)
       if (tree.length > 0) lines.push(st.bold('Agents:'), ...tree)
       if (rows.total === 0) lines.push(st.dim('No transcript yet.'))
       else {

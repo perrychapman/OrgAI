@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { parseRegistryResponse, searchRegistry } from './registry'
+import { parseRegistryResponse, REGISTRY_MAX_BODY_BYTES, searchRegistry } from './registry'
 
 const fixture = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'registry-response.json'), 'utf8'))
 
@@ -81,5 +81,27 @@ describe('searchRegistry', () => {
         throw new Error('ECONNREFUSED')
       }) as unknown as typeof fetch)
     ).rejects.toThrow(/could not be reached/)
+  })
+
+  it('rejects a declared oversized response before parsing it', async () => {
+    const fetchImpl = (async () => new Response('{}', {
+      headers: { 'content-length': String(REGISTRY_MAX_BODY_BYTES + 1) }
+    })) as unknown as typeof fetch
+    await expect(searchRegistry({ query: 'x' }, fetchImpl)).rejects.toThrow(/response was too large/)
+  })
+
+  it('cancels a chunked oversized registry response', async () => {
+    let cancelled = false
+    const fetchImpl = (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(REGISTRY_MAX_BODY_BYTES))
+        controller.enqueue(new Uint8Array([0x20]))
+      },
+      cancel() {
+        cancelled = true
+      }
+    }))) as unknown as typeof fetch
+    await expect(searchRegistry({ query: 'x' }, fetchImpl)).rejects.toThrow(/response was too large/)
+    expect(cancelled).toBe(true)
   })
 })

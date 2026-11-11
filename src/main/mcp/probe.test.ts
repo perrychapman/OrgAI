@@ -2,7 +2,17 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
 import type { ResolvedMcpServer } from '../runtime/types'
-import { describeFetchFailure, hostOfUrl, isClosedSocketFailure, parseSse, reachabilityMessage, redact, testServer, usesWindowsShell } from './probe'
+import {
+  describeFetchFailure,
+  hostOfUrl,
+  isClosedSocketFailure,
+  MCP_PROBE_MAX_RESPONSE_BYTES,
+  parseSse,
+  reachabilityMessage,
+  redact,
+  testServer,
+  usesWindowsShell
+} from './probe'
 
 /** undici's shape: `TypeError: fetch failed` with the real reason in `cause`. */
 function fetchFailed(cause: unknown): TypeError {
@@ -55,6 +65,30 @@ describe('testServer (stdio)', () => {
     expect(r.exitCode).toBe(3)
     expect(r.stderr).toContain('boom')
     expect(r.stderr).not.toContain('hunter2-value')
+  }, 30000)
+
+  it('redacts a secret before truncating the retained stderr tail', async () => {
+    const secret = `secret-${'t'.repeat(1000)}`
+    const res = stdio('crash', { SECRET_TOKEN: secret }, ['SECRET_TOKEN'])
+    res.spec.args = ['-e', `process.stderr.write('x'.repeat(3900) + process.env.SECRET_TOKEN + process.env.SECRET_TOKEN.slice(0, 40)); process.exit(3)`]
+    const r = await testServer(res, 5000)
+    expect(r.ok).toBe(false)
+    expect(r.stderr).not.toContain(secret)
+    expect(r.stderr).not.toContain('t'.repeat(100))
+    expect(r.stderr).not.toContain(secret.slice(0, 40))
+    expect(r.stderr).toContain('[redacted]')
+  }, 30000)
+
+  it('does not split a complete secret when its first and last characters match', async () => {
+    const secret = 's-synthetic-mcp-secret-s'
+    const res = stdio('crash', { SECRET_TOKEN: secret }, ['SECRET_TOKEN'])
+    res.spec.args = ['-e', `process.stderr.write(process.env.SECRET_TOKEN); process.exit(3)`]
+    const r = await testServer(res, 5000)
+
+    expect(r.ok).toBe(false)
+    expect(r.stderr).not.toContain(secret)
+    expect(r.stderr).not.toContain(secret.slice(0, -1))
+    expect(r.stderr).toContain('[redacted]')
   }, 30000)
 
   it('times out on a silent server', async () => {
@@ -112,6 +146,15 @@ describe('testServer (http)', () => {
     expect(r.ok).toBe(false)
     expect(r.error).toContain('HTTP 403')
     expect(r.error).not.toContain('tok-123')
+  })
+
+  it('redacts an error-body secret before truncating its diagnostic text', async () => {
+    const secret = `token-${'q'.repeat(400)}`
+    const fake = (async () => new Response(`${'x'.repeat(295)}${secret} trailing`, { status: 500 })) as unknown as typeof fetch
+    const r = await testServer(http({ Authorization: `Bearer ${secret}` }), 5000, fake)
+    expect(r.ok).toBe(false)
+    expect(r.error).not.toContain(secret)
+    expect(r.error).not.toContain(secret.slice(0, 20))
   })
 
   it('turns a 401 challenge into needsAuthorization with the resource metadata URL', async () => {
@@ -316,6 +359,68 @@ describe('testServer (http)', () => {
     expect(r.error).toBe('Could not connect to mcp.example.com (ECONNREFUSED). Check your internet connection, VPN, firewall or proxy.')
     expect(calls).toEqual(['initialize'])
   })
+
+  it('rejects a declared oversized JSON response without including its body', async () => {
+    const fake = (async () => new Response('{}', {
+      headers: { 'content-length': String(MCP_PROBE_MAX_RESPONSE_BYTES + 1), 'content-type': 'application/json' }
+    })) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/byte limit/)
+    expect(r.error).not.toContain('{}')
+  })
+
+  it('cancels a chunked oversized SSE response', async () => {
+    let cancelled = false
+    const fake = (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MCP_PROBE_MAX_RESPONSE_BYTES))
+        controller.enqueue(new Uint8Array([0x20]))
+      },
+      cancel() {
+        cancelled = true
+      }
+    }), { headers: { 'content-type': 'text/event-stream' } })) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/byte limit/)
+    expect(cancelled).toBe(true)
+  })
+
+  it('keeps the HTTP error status when an oversized error body is discarded', async () => {
+    const fake = (async () => new Response('server detail', {
+      status: 500,
+      headers: { 'content-length': '999999999' }
+    })) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('HTTP 500')
+    expect(r.error).not.toContain('server detail')
+  })
+
+  it('cancels notification response bodies instead of buffering them', async () => {
+    let cancelled = false
+    const fake = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body))
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-06-18' } }))
+      }
+      if (body.method === 'notifications/initialized') {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([0x78]))
+          },
+          cancel() {
+            cancelled = true
+          }
+        }), { status: 202 })
+      }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { tools: [] } }))
+    }) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.ok).toBe(true)
+    expect(cancelled).toBe(true)
+  })
 })
 
 describe('describeFetchFailure', () => {
@@ -441,6 +546,14 @@ describe('describeFetchFailure', () => {
   it('falls back to the cause code, else the deepest cause message', () => {
     expect(describeFetchFailure(fetchFailed(coded('something odd', 'EODD')), host)).toBe('fetch failed: EODD.')
     expect(describeFetchFailure(fetchFailed(coded('outer', undefined, coded('inner detail'))), host)).toBe('fetch failed: inner detail.')
+  })
+
+  it('redacts a fallback cause secret before truncating the diagnostic detail', () => {
+    const secret = `token-${'q'.repeat(400)}`
+    const detail = `${'x'.repeat(295)}${secret} trailing`
+    const message = describeFetchFailure(fetchFailed(coded(detail)), host, undefined, [secret])
+    expect(message).not.toContain(secret)
+    expect(message).not.toContain(secret.slice(0, 20))
   })
 
   it('describes an error with a cause even when its message is not "fetch failed"', () => {

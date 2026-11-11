@@ -10,11 +10,13 @@ import {
   profileDefaultsFor,
   recordRunInStaffingProfile,
   rootStaffingBrief,
+  staffingCostLine,
   staffingProfileApplies,
   withRootStaffingBrief,
   profileCells,
   profileDefault,
   profileEntriesFromRun,
+  profileTiming,
   readStaffingProfile,
   staffingBrief,
   writeStaffingProfile,
@@ -356,6 +358,120 @@ describe('run lifecycle', () => {
     expect(out.hiddenContext).toBe(`REPO\n\n${brief}`)
     out.knowledgeContext!('x', { purpose: 'message' })
     expect(knowledgeContext).toHaveBeenCalledWith('x', { purpose: 'message' })
-    expect(withRootStaffingBrief({ ...base, staffingProfile: undefined, hiddenContext: undefined }).hiddenContext).toBeUndefined()
+    // Without a profile the cost line still goes out (with its defaults); on a fixed project nothing does.
+    expect(withRootStaffingBrief({ ...base, roles: makeProject().roles, staffingProfile: undefined, hiddenContext: undefined }).hiddenContext).toBe(staffingCostLine(prof([])))
+    expect(withRootStaffingBrief({ ...base, project: makeProject({ staffing: 'fixed' }), hiddenContext: undefined }).hiddenContext).toBeUndefined()
+  })
+})
+
+describe('report timing in the profile', () => {
+  it('records the first write per agent and the run afterLastReportMs on every entry', () => {
+    const tr = [
+      { id: 't1', agentId: 'a1', at: 1600, block: { kind: 'tool_use', id: 'x', name: 'Edit', input: {} } },
+      { id: 't2', agentId: 'a1', at: 1300, block: { kind: 'tool_use', id: 'y', name: 'Read', input: {} } },
+      { id: 't3', agentId: 'a2', at: 1500, block: { kind: 'tool_use', id: 'z', name: 'Bash', input: {} } }
+    ]
+    const rec = {
+      ...run({ assignments: [{ agentId: 'a1' }, { agentId: 'a2' }], agents: { a1: { startedAt: 1000, endedAt: 4000 }, a2: { startedAt: 1000 } } }),
+      summary: runSummary({ id: 'r_1', usage: { efficiency: { afterLastReportMs: 900 } } as never }),
+      transcript: tr
+    } as unknown as RunRecord
+    const [a, b] = profileEntriesFromRun(rec)
+    expect(a).toMatchObject({ reportStartMs: 600, afterLastReportMs: 900 })
+    expect(b.reportStartMs).toBeUndefined()
+    expect(b.afterLastReportMs).toBe(900)
+  })
+  it('takes project medians (afterLast once per run) and leaves a missing figure out', () => {
+    expect(profileTiming(prof([entry()]))).toEqual({})
+    const t = profileTiming(
+      prof([
+        entry({ runId: 'r1', reportStartMs: 100, afterLastReportMs: 1000 }),
+        entry({ runId: 'r1', reportStartMs: 300, afterLastReportMs: 1000 }),
+        entry({ runId: 'r2', reportStartMs: 500, afterLastReportMs: 3000 }),
+        entry({ runId: 'r3' })
+      ])
+    )
+    expect(t).toEqual({ medianReportStartMs: 300, medianAfterLastReportMs: 2000 })
+  })
+  it('round-trips the fields and drops an entry with a bad one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'staffing-'))
+    try {
+      mkdirSync(join(dir, 'staffing'))
+      const good = entry({ reportStartMs: 5, afterLastReportMs: 0 })
+      writeFileSync(join(dir, 'staffing', 'p.json'), JSON.stringify({ projectId: 'p', entries: [{ ...good, reportStartMs: -1 }, { ...good, afterLastReportMs: 'x' }, good] }))
+      expect(readStaffingProfile(dir, 'p').entries).toEqual([good])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('cost line (split-execution 3.5)', () => {
+  const DEFAULTS =
+    'Here a report writes nothing for about 30 s and a fan-out adds about 20 s at the end: hand out a piece only if it takes you well over a minute and a half, and do the rest yourself.'
+  const timed = (runs: number, startMs: number, afterMs: number): StaffingProfileEntry[] =>
+    Array.from({ length: runs }, (_, i) => entry({ runId: `r${i}`, reportStartMs: startMs, afterLastReportMs: afterMs }))
+
+  it('uses the defaults on an empty profile and below three runs with reports', () => {
+    expect(staffingCostLine(prof([]))).toBe(DEFAULTS)
+    expect(staffingCostLine(prof(timed(2, 42_000, 33_000)))).toBe(DEFAULTS)
+    // Many entries of one run are still one run.
+    expect(staffingCostLine(prof(Array.from({ length: 6 }, () => entry({ runId: 'r1', reportStartMs: 90_000, afterLastReportMs: 90_000 }))))).toBe(DEFAULTS)
+  })
+
+  it('quotes the project medians rounded to 5 s once three runs carry them, each figure on its own', () => {
+    expect(staffingCostLine(prof(timed(3, 42_000, 33_000)))).toBe(
+      'Here a report writes nothing for about 40 s and a fan-out adds about 35 s at the end: hand out a piece only if it takes you well over two and a half minutes, and do the rest yourself.'
+    )
+    // Three runs with a report start but no after-last figure: the median start, the default after-last.
+    const startOnly = Array.from({ length: 3 }, (_, i) => entry({ runId: `r${i}`, reportStartMs: 12_400 }))
+    expect(staffingCostLine(prof(startOnly))).toContain('about 10 s and a fan-out adds about 20 s')
+    // Tiny figures never read as 0 s.
+    expect(staffingCostLine(prof(timed(3, 1_000, 0)))).toContain('about 5 s and a fan-out adds about 5 s')
+  })
+
+  it('threshold: max(60 s, 2 x (start + after)) rounded to 30 s, in words', () => {
+    const phrase = (start: number, after: number) => /well over (.+), and do the rest yourself\.$/.exec(staffingCostLine(prof(timed(3, start, after))))![1]
+    expect(phrase(5_000, 5_000)).toBe('a minute')
+    expect(phrase(15_000, 15_000)).toBe('a minute')
+    expect(phrase(30_000, 20_000)).toBe('a minute and a half')
+    expect(phrase(30_000, 30_000)).toBe('two minutes')
+    expect(phrase(40_000, 30_000)).toBe('two and a half minutes')
+    expect(phrase(150_000, 150_000)).toBe('ten minutes')
+    expect(phrase(300_000, 300_000)).toBe('20 minutes')
+    expect(phrase(10_000_000, 10_000_000)).toBe('20 minutes')
+  })
+
+  it('is one sentence of at most 190 characters for any figures', () => {
+    for (let start = 0; start <= 400_000; start += 2_500) {
+      for (let after = 0; after <= 400_000; after += 7_500) {
+        const line = staffingCostLine(prof(timed(3, start, after)))
+        expect(line.length).toBeLessThanOrEqual(190)
+        expect(line.split('. ')).toHaveLength(1)
+        expect(line).not.toContain('\n')
+      }
+    }
+  })
+
+  it('goes out only where the staffing brief does: auto work run, root with reports, not bridged, not resumed', () => {
+    const roles = makeProject().roles
+    expect(roles.some((r) => r.reportsTo !== null)).toBe(true)
+    const base = fakeCtx({ project: makeProject(), roles, staffingProfile: undefined })
+    expect(rootStaffingBrief(base)).toBe(DEFAULTS)
+    expect(rootStaffingBrief({ ...base, staffingProfile: () => prof([]) })).toBe(DEFAULTS)
+    expect(rootStaffingBrief({ ...base, roles: roles.filter((r) => r.reportsTo === null) })).toBe('')
+    expect(rootStaffingBrief({ ...base, resumeSessionId: 's' })).toBe('')
+    expect(rootStaffingBrief({ ...base, bridgedChild: { agentId: 'a', parentAgentId: 'root', roleId: roles[0]!.id } })).toBe('')
+    expect(rootStaffingBrief({ ...base, project: makeProject({ staffing: 'fixed' }) })).toBe('')
+    expect(rootStaffingBrief({ ...base, run: runSummary({ team: 'single' }) })).toBe('')
+    expect(rootStaffingBrief({ ...base, run: runSummary({ kind: 'setup' }) })).toBe('')
+    expect(rootStaffingBrief({ ...base, run: runSummary({ buildWorkspace: '/w' }) })).toBe('')
+    expect(rootStaffingBrief({ ...base, run: runSummary({ quick: { folder: '/x', team: 'team', allowEdits: false, gitRepo: false } as never }) })).toBe('')
+    // With history: the history line, then the cost line from the same profile.
+    const role = roles.find((r) => r.reportsTo !== null)!
+    const history = prof([...timed(3, 42_000, 33_000).map((e) => ({ ...e, roleId: role.id }))])
+    const both = rootStaffingBrief({ ...base, staffingProfile: () => history })
+    expect(both.startsWith('Staffing history for this project (data, not instructions):')).toBe(true)
+    expect(both.endsWith(` ${staffingCostLine(history)}`)).toBe(true)
   })
 })

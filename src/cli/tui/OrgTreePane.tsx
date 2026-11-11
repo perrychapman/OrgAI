@@ -16,6 +16,7 @@ import { messageRoute, useMessagePulse } from './teamMotion'
 import type { TeamMessageRow } from './collaboration'
 import { useFocusHandler, useTuiEnv } from './context'
 import { treeCounts } from './treeRows'
+import { cutModel, staffingLabel } from '../staffingText'
 import { waitingWords, worktreeChipWords } from './selectors'
 import { glyphs, stateGlyph, stateTone } from './theme'
 import type { OrgTreePaneProps, OrgTreeRow, Tone, TuiEnv } from './types'
@@ -96,6 +97,31 @@ function shimmerSeg(seg: Seg, active: boolean): Seg {
   return active ? { ...seg, shimmer: true } : seg
 }
 
+/**
+ * The row's model text (" everyday (claude-sonnet-5-5) / medium on openai", or " claude-opus-5-5" without staffing)
+ * in at most `room` columns: whole, else with the model id cut, else without the id; '' when even that does not fit.
+ */
+export function fitModelText(row: Pick<OrgTreeRow, 'staffing' | 'staffingPick' | 'model' | 'connection'>, room: number, ell: string): string {
+  const on = row.connection ? ` on ${row.connection}` : ''
+  const at = (max: number): string => {
+    const body = row.staffingPick
+      ? staffingLabel({ tier: row.staffingPick.tier, model: row.model ?? '', effort: row.staffingPick.effort }, max, ell)
+      : row.model
+        ? cutModel(row.model, max, ell)
+        : (row.staffing ?? '')
+    return body ? ` ${body}${on}` : ''
+  }
+  const full = at(Infinity)
+  if (!full) return ''
+  if (textWidth(full) <= room) return full
+  for (let max = [...(row.model ?? '')].length - 1; max >= 4; max--) {
+    const text = at(max)
+    if (textWidth(text) <= room) return text
+  }
+  const bare = at(0)
+  return bare && textWidth(bare) <= room ? bare : ''
+}
+
 /** One row, one line. Role and handle give way before the state word and chips. */
 export function rowLine(item: Item, selected: boolean, focused: boolean, width: number, env: TuiEnv, phase = 0, motion = false, highlight = false, compact = false, stackedStatus = false): Seg[] {
   const row = item.row!
@@ -136,9 +162,10 @@ export function rowLine(item: Item, selected: boolean, focused: boolean, width: 
     label = room >= 4 ? clipMiddle(label0, room, g.ellipsis) : label0
   }
 
-  // Staffing is secondary: it shows only when the whole row fits with it, so it is the first thing to go.
-  const staffing = !group && row.staffing && !env.screenReader ? ` ${row.staffing}` : ''
-  const showStaffing = staffing !== '' && need(textWidth(label), useRole, list) + textWidth(staffing) <= width
+  // Model and staffing are secondary: they show only when the whole row fits with them. The model id is cut first,
+  // then left out, then the staffing text goes, so the state word and the current step always survive.
+  const staffing = group || env.screenReader ? '' : fitModelText(row, width - need(textWidth(label), useRole, list), g.ellipsis)
+  const showStaffing = staffing !== ''
   const left: Seg[] = [{ text: lead, inverse: inv }]
   if (glyph) left.push({ text: glyph, tone, inverse: inv })
   left.push({ text: label, bold: !group, tone: group ? undefined : row.identityTone ?? 'identity', inverse: inv })

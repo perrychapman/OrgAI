@@ -9,10 +9,11 @@
  * folder onboarding.
  */
 import { isOpenStatus } from '../../shared/view/runChains'
-import type { Project, RunSummary, RunTeam } from '../../shared/types'
+import type { Project, RunOverrides, RunSummary, RunTeam } from '../../shared/types'
 import { quietInproc } from '../context'
 import { parseFlags } from '../flags'
 import { liveSource, resolveRunFromSource } from '../runRef'
+import { execRunFlags, interactiveOverrides } from '../runStartFlags'
 import type { TuiHostConnection, TuiLaunch } from '../tui/types'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostCallError } from '../types'
 
@@ -70,7 +71,7 @@ export async function launchTui(ctx: CliContext, flags: TuiFlags, prepare: (conn
 }
 
 /** The folder's project, else onboarding (no run asked for). */
-export async function prepareFolder(ctx: CliContext, conn: TuiHostConnection, extra: Pick<TuiLaunch, 'prompt' | 'team'> = {}): Promise<TuiLaunch> {
+export async function prepareFolder(ctx: CliContext, conn: TuiHostConnection, extra: Pick<TuiLaunch, 'prompt' | 'team' | 'overrides'> = {}): Promise<TuiLaunch> {
   const projects = await conn.projects().catch((e: unknown) => {
     throw hostFailure(e)
   })
@@ -143,15 +144,17 @@ export const runTuiCommand: CommandFn = async (ctx, args) => {
  * without a prompt this prints `help()` (today's behaviour); a prompt without a terminal is exit 2 pointing at exec.
  * Before `--`, a prompt must contain whitespace (one bare word is a mistyped command).
  */
-export function parseDefaultTuiArgs(args: string[]): { flags: TuiFlags; prompt: string; team?: RunTeam } {
+export function parseDefaultTuiArgs(args: string[]): { flags: TuiFlags; prompt: string; team?: RunTeam; overrides?: RunOverrides } {
   const dashed = args.includes('--')
-  const { values, positionals } = parseFlags(args, { ...TUI_FLAGS, team: { type: 'string' } })
+  const { values, positionals } = parseFlags(args, { ...execRunFlags(), ...TUI_FLAGS, team: { type: 'string' } })
+  // Exec's run flags for the first run (cli-parity 3.5), validated by exec's own parser; headless-only ones are refused.
+  const overrides = interactiveOverrides(values as Record<string, unknown>)
   const team = values.team
   if (team !== undefined && team !== 'default' && team !== 'single') throw usage('--team must be one of default, single.')
   const prompt = positionals.join(' ')
   if (!dashed && prompt && !/\s/.test(prompt.trim())) throw usage(`Unknown command '${prompt}'. ${PROMPT_HINT}`)
   if (team !== undefined && !prompt.trim()) throw usage('--team applies to a prompt: orgai --team single -- "<prompt>"')
-  return { flags: flagsOf(values), prompt, ...(team ? { team: team as RunTeam } : {}) }
+  return { flags: flagsOf(values), prompt, ...(team ? { team: team as RunTeam } : {}), ...(overrides ? { overrides } : {}) }
 }
 
 /**
@@ -164,7 +167,7 @@ export function defaultTuiPrintsHelp(io: Pick<CliContext['io'], 'stdinIsTTY' | '
 }
 
 export async function runDefaultTui(ctx: CliContext, args: string[], opts: { help?: () => string } = {}): Promise<number> {
-  const { flags, prompt, team } = parseDefaultTuiArgs(args)
+  const { flags, prompt, team, overrides } = parseDefaultTuiArgs(args)
   if (!hasTty(ctx)) {
     if (!prompt.trim()) {
       if (opts.help) ctx.io.stdout.write(`${opts.help()}\n`)
@@ -173,7 +176,7 @@ export async function runDefaultTui(ctx: CliContext, args: string[], opts: { hel
     throw usage(PROMPT_NO_TTY_MESSAGE)
   }
   refuseManaged(ctx)
-  const extra: Pick<TuiLaunch, 'prompt' | 'team'> = prompt.trim() ? { prompt, ...(team ? { team } : {}) } : {}
+  const extra: Pick<TuiLaunch, 'prompt' | 'team' | 'overrides'> = { ...(prompt.trim() ? { prompt, ...(team ? { team } : {}) } : {}), ...(overrides ? { overrides } : {}) }
   return launchTui(ctx, flags, (conn) => prepareFolder(ctx, conn, extra))
 }
 

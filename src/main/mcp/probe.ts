@@ -6,6 +6,8 @@ import { scrubControlEnv } from '../runtime/childEnv'
 import { parseWwwAuthenticate, redactOAuth } from './oauth'
 import { system32Path } from '../host/systemBinaries'
 import { systemCertTrust, type CertTrustState } from '../systemCerts'
+import { cancelResponseBody, readCappedResponseText } from '../http/readCapped'
+import { StreamingSecretRedactor } from '../runtime/streamRedactor'
 
 /**
  * Starts an MCP server (or connects to it) just far enough to list its tools: initialize, initialized
@@ -16,6 +18,8 @@ export const PROTOCOL_VERSION = '2025-06-18'
 const CLIENT_INFO = { name: 'orgai', version: '1.0.0' }
 const STDERR_TAIL = 2000
 const MAX_PAGES = 10
+export const MCP_PROBE_MAX_RESPONSE_BYTES = 1024 * 1024
+const MCP_PROBE_MAX_ERROR_BYTES = 16 * 1024
 
 interface RpcClient {
   request(method: string, params?: unknown): Promise<unknown>
@@ -45,6 +49,11 @@ export function redact(text: string, secrets: string[]): string {
   let out = text
   for (const s of secrets) out = out.split(s).join('[redacted]')
   return redactOAuth(out, secrets)
+}
+
+/** Redact before truncating so a secret that crosses the retained-tail boundary is still removed in full. */
+export function redactStderrTail(text: string, secrets: string[]): string {
+  return redact(text, secrets).slice(-STDERR_TAIL).trim()
 }
 
 /** How many `cause` links below the thrown error are read. */
@@ -130,7 +139,12 @@ export function isClosedSocketFailure(e: unknown): boolean {
  * own message. `host` names the server; the caller still redacts the result. A sentence that already starts with
  * "Could not" needs no "Could not reach the server:" prefix (see `reachabilityMessage`).
  */
-export function describeFetchFailure(e: unknown, host = 'the server', trust: CertTrustState = systemCertTrust()): string | null {
+export function describeFetchFailure(
+  e: unknown,
+  host = 'the server',
+  trust: CertTrustState = systemCertTrust(),
+  secrets: string[] = []
+): string | null {
   if (!e || typeof e !== 'object') return null
   const chain = causeChain(e)
   const top = chain[0]
@@ -151,7 +165,7 @@ export function describeFetchFailure(e: unknown, host = 'the server', trust: Cer
     if (code && ANSWER_TIMEOUT_CODES.has(code)) return `${host} did not answer in time (${code}).`
   }
   const detail = causes.map((c) => c.code).find((c) => c) ?? [...causes].reverse().map((c) => c.message).find((m) => m && m !== 'fetch failed')
-  return `fetch failed: ${(detail ?? 'no further detail').slice(0, FALLBACK_DETAIL_MAX)}.`
+  return `fetch failed: ${redact(detail ?? 'no further detail', secrets).slice(0, FALLBACK_DETAIL_MAX)}.`
 }
 
 /** The test's error text for a described network failure: one "Could not" at the front, never two. */
@@ -205,6 +219,8 @@ class StdioClient implements RpcClient {
   private pending = new Map<number, { resolve(v: unknown): void; reject(e: Error): void }>()
   private buffer = ''
   private stderr = ''
+  private stderrRedactor = new StreamingSecretRedactor('[redacted]')
+  private stderrFinalized = false
   private dead?: Error
   /** Set when the process exited: its code, or null on a signal. */
   exitCode?: number | null
@@ -228,9 +244,7 @@ class StdioClient implements RpcClient {
     this.child.stdout!.setEncoding('utf8')
     this.child.stderr!.setEncoding('utf8')
     this.child.stdout!.on('data', (d: string) => this.onData(d))
-    this.child.stderr!.on('data', (d: string) => {
-      this.stderr = (this.stderr + d).slice(-STDERR_TAIL * 2)
-    })
+    this.child.stderr!.on('data', (d: string) => this.captureStderr(d))
     this.child.stdin!.on('error', () => {})
     this.child.on('error', (e) => this.fail(new Error(`Could not start "${command}": ${e.message}`)))
     this.child.on('exit', (code, signal) => {
@@ -269,7 +283,19 @@ class StdioClient implements RpcClient {
   }
 
   stderrTail(): string {
-    return redact(this.stderr.slice(-STDERR_TAIL).trim(), this.secrets)
+    if (!this.stderrFinalized) {
+      // A process can stop after writing only a secret prefix; the streaming redactor masks that suffix at EOF.
+      this.stderr += this.stderrRedactor.push('', this.secrets, true)
+      this.stderrFinalized = true
+    }
+    return redactStderrTail(this.stderr, this.secrets)
+  }
+
+  /** Retain only a bounded redacted tail, keeping a possible secret prefix between child-process chunks. */
+  private captureStderr(chunk: string): void {
+    if (this.stderrFinalized) return
+    const safe = this.stderrRedactor.push(chunk, this.secrets)
+    this.stderr = (this.stderr + safe).slice(-STDERR_TAIL * 2)
   }
 
   private write(obj: unknown): void {
@@ -365,15 +391,15 @@ class HttpClient implements RpcClient {
     const session = res.headers.get('mcp-session-id')
     if (session) this.session = session
     if (res.status === 401) {
-      await res.text().catch(() => '')
+      await cancelResponseBody(res)
       throw new AuthRequiredError(res.headers.get('www-authenticate') ?? '')
     }
     if (!res.ok) {
-      const text = (await res.text().catch(() => '')).slice(0, 300)
+      const text = redact(await readCappedResponseText(res, MCP_PROBE_MAX_ERROR_BYTES).catch(() => ''), secretValues(this.resolved)).slice(0, 300)
       throw new Error(`HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}${text ? `: ${text}` : ''}`)
     }
     const type = res.headers.get('content-type') ?? ''
-    const text = await res.text()
+    const text = await readCappedResponseText(res, MCP_PROBE_MAX_RESPONSE_BYTES)
     let msg: { result?: unknown; error?: { message?: string } } | null
     if (type.includes('text/event-stream')) msg = parseSse(text, id)
     else {
@@ -394,18 +420,19 @@ class HttpClient implements RpcClient {
 
   async notify(method: string, params?: unknown): Promise<void> {
     const res = await this.post({ jsonrpc: '2.0', method, ...(params !== undefined ? { params } : {}) })
-    await res.text().catch(() => '')
+    await cancelResponseBody(res)
   }
 
   async close(): Promise<void> {
     if (!this.session) return
     try {
-      await this.fetchImpl(this.resolved.spec.url!, {
+      const res = await this.fetchImpl(this.resolved.spec.url!, {
         method: 'DELETE',
         headers: { ...this.resolved.headers, 'Mcp-Session-Id': this.session },
         redirect: 'error',
         signal: AbortSignal.timeout(2000)
       })
+      await cancelResponseBody(res)
     } catch {
       /* best effort */
     }
@@ -465,7 +492,7 @@ export async function testServer(resolved: ResolvedMcpServer, timeoutMs = 20_000
     }
     // A fetch may throw a non-Error (a string, null): the test still answers { ok: false } with what was thrown.
     const raw = e instanceof Error ? e.message : String(e)
-    const described = spec.transport === 'stdio' ? null : describeFetchFailure(e, hostOfUrl(spec.url))
+    const described = spec.transport === 'stdio' ? null : describeFetchFailure(e, hostOfUrl(spec.url), undefined, secrets)
     let message = redact(described ? reachabilityMessage(described) : raw, secrets)
     const tail = stdio?.stderrTail()
     if (tail) message += `\n${tail}`

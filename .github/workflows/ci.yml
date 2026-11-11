@@ -43,6 +43,21 @@ env:
   NPM_SHRINKWRAP: none
 
 jobs:
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high --ignore-scripts
+
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -59,13 +74,14 @@ jobs:
       GIT_COMMITTER_NAME: OrgAI CI
       GIT_COMMITTER_EMAIL: ci@orgai.local
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
         with:
+          persist-credentials: false
           # Scheduled runs start on main's copy of the workflow but test dev. Empty ref: the event's own ref.
           ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
           # The e2e selector diffs two commits; without history it falls back to the full chain.
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
         with:
           node-version: 22
           cache: npm
@@ -117,7 +133,7 @@ jobs:
           ORGAI_WINDOW_LARGER_THAN_SCREEN: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: Upload e2e screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4
         with:
           name: e2e-shots-${{ runner.os }}
           path: e2e/shots/**
@@ -137,8 +153,10 @@ jobs:
       # Unsigned: never look for a signing identity on the runner.
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
         with:
           node-version: 22
           cache: npm
@@ -173,8 +191,10 @@ jobs:
       GIT_COMMITTER_NAME: OrgAI CI
       GIT_COMMITTER_EMAIL: ci@orgai.local
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
         with:
           node-version: 22
           cache: npm

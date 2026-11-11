@@ -473,6 +473,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     buildProject: (summary) => harnessProjectFor(summary, connections.effectiveSettings(), dataDir, mockAdapter),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
+    modelsError: (id) => connections.modelsErrorFor(id),
     appSettings: () => settings.get(),
     communityPrices: () => communityPrices.get(),
     resolveConnection: (project, choice) => connections.runConnection(project, choice),

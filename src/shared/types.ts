@@ -2526,6 +2526,18 @@ export interface RunEfficiency {
    * nothing computes it yet (computeRunEfficiency leaves it out); cleanRunEfficiency keeps a stored finite value >= 0.
    */
   readyIdleMs?: number
+  /**
+   * Run end (or now while live) minus the end of the last direct report to finish, ms. Unlike tailMs it counts from the
+   * LAST report, so it is the lead's handover time after all the reports are in. Optional: absent on runs saved before
+   * it existed; cleanRunEfficiency keeps a stored finite value >= 0.
+   */
+  afterLastReportMs?: number
+  /**
+   * Median over the direct reports that wrote a file of (time of the report's first file-writing tool use, i.e. a
+   * transcript tool_use named Edit, Write, MultiEdit or NotebookEdit, minus the report's startedAt), ms. Reports that
+   * never wrote are left out; absent when none did, when the transcript was not available, and on older runs.
+   */
+  reportStartMs?: number
 }
 
 /** RunUsage.noResultAgents cap per run. */
@@ -2912,6 +2924,11 @@ export interface AgentInstance {
    * first usage report.
    */
   usage?: AgentUsage
+  /**
+   * Times the provider compacted this agent's conversation (agent.compacted). Owned by RunManager, which counts the
+   * events and sets it on every agent.upsert (an adapter's own value is replaced). Absent = none.
+   */
+  compactions?: number
   startedAt: number
   endedAt?: number
   /** Last text the agent produced (truncated for the node card). */
@@ -3887,6 +3904,12 @@ export type RunEvent =
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }
   /** Text the agent is streaming right now; '' clears it once the completed message lands. Never persisted. */
   | { type: 'agent.partial'; runId: string; agentId: string; text: string }
+  /**
+   * The provider compacted an agent's conversation (Claude: compact_boundary, the orchestrator only; Codex: a
+   * contextCompaction item on the agent's thread). Token sizes when the provider said them. RunManager counts it into
+   * AgentInstance.compactions and re-sends the agent.
+   */
+  | { type: 'agent.compacted'; runId: string; agentId: string; at: number; trigger?: 'auto' | 'manual'; tokensBefore?: number; tokensAfter?: number }
   | { type: 'permission.request'; runId: string; request: PermissionRequest }
   /**
    * The card is answered or gone. `cancelled`: the run ended (finished, stopped, failed or paused) before the
@@ -8070,6 +8093,11 @@ export interface TeamFilesStatus {
   undo?: TeamFilesUndoInfo
   /** The last Undo that ran: which files it rewrote. */
   lastUndo?: TeamFilesUndoInfo
+  /**
+   * teamFiles:listAttention only, with `undo`: what Undo would bring back, as every difference from the team in use to the
+   * team Undo restores (TeamFilesService.undoChanges). Read-only; the terminal shows it.
+   */
+  undoChanges?: TeamFileChange[]
 }
 
 /** teamFiles:approve and teamFiles:reject input. A digest other than the current one is refused ("Review them again."). */

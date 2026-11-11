@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentInstance, RunRecord, RunSummary, RunUsage, TokenUsage } from '@shared/types'
+import type { AgentInstance, RunRecord, RunSummary, RunUsage, TokenUsage, TranscriptEntry } from '@shared/types'
 import { runSummary } from './testHelpers'
 import { agentProducedNothing } from '@shared/defaults'
 import { priceAgentUsage } from './pricing'
@@ -467,7 +467,7 @@ describe('computeRunEfficiency', () => {
   })
 
   it('describes one report', () => {
-    expect(computeRunEfficiency(run(1000), [root, rep('a', 100, 600)], 9000)).toEqual({ reports: 1, firstSpawnMs: 100, reportSumMs: 500, reportBusyMs: 500, maxParallel: 1, tailMs: 400 })
+    expect(computeRunEfficiency(run(1000), [root, rep('a', 100, 600)], 9000)).toEqual({ reports: 1, firstSpawnMs: 100, reportSumMs: 500, reportBusyMs: 500, maxParallel: 1, tailMs: 400, afterLastReportMs: 400 })
   })
 
   it('has overlap 1 and a tail of everything after the first report for reports in sequence', () => {
@@ -477,7 +477,31 @@ describe('computeRunEfficiency', () => {
 
   it('reproduces the dashboard run of spec 1.3', () => {
     const agents = [root, rep('a', 54_000, 198_000), rep('b', 54_000, 476_000), rep('c', 604_000, 873_000)]
-    expect(computeRunEfficiency(run(1_091_000), agents, 2_000_000)).toEqual({ reports: 3, firstSpawnMs: 54_000, reportSumMs: 835_000, reportBusyMs: 691_000, maxParallel: 2, tailMs: 615_000 })
+    expect(computeRunEfficiency(run(1_091_000), agents, 2_000_000)).toEqual({ reports: 3, firstSpawnMs: 54_000, reportSumMs: 835_000, reportBusyMs: 691_000, maxParallel: 2, tailMs: 615_000, afterLastReportMs: 218_000 })
+  })
+
+  it('measures after the last report from the last end, not the first wave', () => {
+    const e = computeRunEfficiency(run(1000), [root, rep('a', 100, 300), rep('b', 400, 900)], 9000)!
+    expect(e.tailMs).toBe(700)
+    expect(e.afterLastReportMs).toBe(100)
+    expect(computeRunEfficiency(run(undefined), [root, rep('a', 100)], 700)!.afterLastReportMs).toBe(0)
+  })
+
+  it('takes reportStartMs as the median first file write of the reports from the transcript', () => {
+    const tu = (agentId: string, at: number, name: string): TranscriptEntry => ({ id: `${agentId}${at}`, agentId, at, block: { kind: 'tool_use', id: `${agentId}${at}`, name, input: {} } })
+    const agents = [root, rep('a', 100, 900), rep('b', 200, 900), rep('c', 300, 900)]
+    const tr = [tu('a', 150, 'Read'), tu('a', 400, 'Edit'), tu('a', 300, 'Write'), tu('b', 700, 'MultiEdit'), tu('root', 50, 'Write'), tu('c', 400, 'Grep')]
+    // a: 300-100 = 200, b: 700-200 = 500, c never wrote, root is not a report.
+    expect(computeRunEfficiency(run(1000), agents, 9000, tr)!.reportStartMs).toBe(350)
+    expect(computeRunEfficiency(run(1000), agents, 9000, [tu('c', 400, 'Grep')])!.reportStartMs).toBeUndefined()
+    expect(computeRunEfficiency(run(1000), agents, 9000)!.reportStartMs).toBeUndefined()
+  })
+
+  it('cleans the optional afterLastReportMs and reportStartMs like readyIdleMs', () => {
+    const ok = { reports: 2, firstSpawnMs: 1, reportSumMs: 5, reportBusyMs: 4, maxParallel: 2, tailMs: 0 }
+    expect(cleanRunEfficiency({ ...ok, afterLastReportMs: 7, reportStartMs: 0 })).toEqual({ ...ok, afterLastReportMs: 7, reportStartMs: 0 })
+    expect(cleanRunEfficiency({ ...ok, afterLastReportMs: -1, reportStartMs: NaN })).toEqual(ok)
+    expect(cleanRunEfficiency({ ...ok, afterLastReportMs: '7' })).toEqual(ok)
   })
 
   it('ignores grandchildren', () => {

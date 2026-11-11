@@ -274,3 +274,78 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `staffing` fact line; the plan pane adds running / ready / waiting-on (two titles, then "and N more") and the step's
     pick for plans where any step has `after`, `paths` or `staff`; the status bar adds "N working" and "N ready" (first
     segments to give way) for runs with staffing data or a graph plan. All run text goes through `safeLine`.
+- Seeing models (cli-parity 3.1, first two bullets; unit-tested, no live run): at a work run's start (not mock, not
+  setup-like) RunManager emits `runModelLogs` (`src/main/runtime/runModels.ts`): one `info` "Models: deep = <id>,
+  everyday = <id> (Anthropic); fast = <id> (OpenAI)" from the roles' `model` / `tier` on each role's connection, and
+  at most one `warn` "Model check: ..." for a tier on an older family member (`compareModelIds`: numeric tokens are
+  the version, the rest the family; dates, `[1m]`, provider prefixes set aside; cannot tell = no warning), on a
+  catalog entry whose `source` is not `discovered`, or on a connection with `modelsError` (RunManagerOptions
+  `modelsError`, ConnectionService `modelsErrorFor`). `exec` text prints warn / error logs and the Models line
+  (`execLogLine`, also from the snapshot's `logs`); the TUI makes the Models line a notice. `staffingLabel` reads
+  "everyday (claude-sonnet-5-5) / medium"; tree rows carry `model` / `staffingPick` / `connection` (the last only when
+  the run spans several connections) and `fitModelText` cuts the id first, then drops it, then the text. The
+  inspector lists every `usage.models` entry; the status bar and `runs show` (`Model:`) show the root's live model
+  (`run.model` now sets `summary.modelSelection` in `state.ts`).
+- Run control (cli-parity 3.5, branch cp/runControl, 2026-11-10; unit and ink tests only, nothing live, e2e rows added
+  but not run). The live model switch's guard (`performModelSwitch`, `modelSwitchBlock`, `needsModelHandoff`, the
+  handoff wording) moved to `src/shared/liveModelSwitch.ts`; the renderer's `lib/liveModelSwitch.ts` re-exports it.
+  `src/cli/modelSwitch.ts` loads the connected connections' catalog, resolves a tier (the run connection's
+  `tierModels` via `modelForTier`) or id, and switches through the shared guard (a host request for a transcript
+  handoff is retried once after confirming). `orgai runs model <run> [<tier|id>] [--connection] [--yes]`
+  (`commands/runsModel.ts`; `runs list|show` stay hostless, `runs model` starts a host) and TUI `/model` (a pick
+  overlay without an argument). `orgai resume <run> --now` (`commands/resumeActions.ts`: runs:resumeNow in the TUI's
+  prepare, then the TUI follows the resumed run) and `--cancel-auto-resume` (one-shot). A pause exists only inside the
+  orgai that ran the run (a new host's boot normalization ends it), so from another terminal both answer "Run is not
+  paused" plus a hint to `orgai resume <run>`; inside the TUI `/resume-now` and `/cancel-resume` act on the followed
+  paused run, whose completion block (now also shown for paused runs) names them. Run flags: `/new` and `/ask` take
+  `--goal`, `--permission-mode`, `--strict-delegation`; bare `orgai` takes exec's run-shaping flags for the first run
+  (`runStartFlags.ts`, validated by exec's `overridesFromFlags`, `execMode` dropped; headless-only flags are refused).
+  `session.ts` sends `overrides` on start, continue and quick; widening ones go through a one-call 'configure'
+  connection (`callConfigured`), as exec asks for 'configure'.
+- Approvals at the terminal (cli-parity 3.4 and principle 4, branch cp/approvals, 2026-11-10; read-only as built; unit,
+  ink and in-process integration tests, e2e rows in `e2e/cli-org.mjs` not run). What ships:
+  - `orgai team files [status]` (read scope, `teamFiles:listAttention`): each pending change with the gate's summary,
+    "May spend more: ..." first, tools gained, MCP target, secrets, reach, git's view of who wrote it (OrgAI records no
+    author) and, when undo is open, what Undo would bring back (`TeamFilesStatus.undoChanges`, filled by the
+    listAttention handler from `TeamFilesService.undoChanges`; the service's own status and the desktop push do not
+    carry it). `orgai projects trust [show]` (read scope, `projects:folderConfig`). Both with `--output-format json`.
+  - `exec` and `resume --exec` print one stderr line (text mode) before the run while the project's team files wait
+    (`approvalText.ts` `pendingTeamFilesLine`); the TUI shows a notice on open.
+  - TUI `/approvals` (aliases team-files, trust) is read-only: a text overlay with every waiting item in full (the same
+    words, prompts before and after, what Undo would bring back, a folder's own config) ending with "Approving is done in
+    the OrgAI desktop app for now: a terminal cannot yet prove that a person, not an agent, is answering."
+  - `orgai team files approve|reject|undo|commit|enable` and `orgai projects trust allow|deny` decide nothing: they say
+    so, exit 2 and start no host, whatever flags follow.
+  - No new channel or scope: the registry is unchanged; the desktop's team files decisions and
+    `projects:setFolderConfigTrust` stay `desktop_only`.
+  - The CLI starts Node with the inspector signal disabled (`src/cli/inspectorSignal.ts`; `src/cli/bin.ts` is the
+    bundle's entry and loads it before the rest of the CLI, which comes in as its own chunk; `npm run cli` also passes
+    `--disable-sigusr1`; `inspectorSignal.test.ts`).
+  - Why approving was held: an approval path at the terminal was built and reviewed twice. Both independent reviews
+    found that a terminal session cannot be told apart from one an agent drives, so an agent could approve its own change.
+    Approving from a terminal needs a confirmation from the operating system that an agent cannot produce, and a record of
+    what was approved that agents cannot write. That work is preserved on the local branch `cp/approvals-full-gate`.
+  - Known gap: the desktop app keeps its own data folder, so approving there does not clear a pending change of a project
+    in the CLI's data folder; a terminal-only user can see such a change but not clear it today.
+- TUI Team and Settings views (cli-parity 3.7, branch cp/tuiPanes, 2026-11-10; unit and ink tests only, nothing live, e2e
+  rows in `e2e/cli-tui.mjs` added but not run). `/team` (`TeamView.tsx`, words in `teamModel.ts`) shows the project's SAVED
+  roles as a tree (roleTree): name, tier with the id it resolves to (models.ts `resolveRole`), effort, staffing in words,
+  "on <connection>" when it differs; rows drop runs-on, then long staffing words, then the model id, then effort before
+  the name is cut. Enter opens the details (`roleSummaryLines`, resolved model, prompt preview). Keys m model, e effort,
+  s staffing (then bounds for automatic), t tools, r reparent, n rename, p prompt, a add under, x remove (picks who takes
+  its reports). Every edit re-reads the project and goes through the commands' planners, now exported from
+  `commands/teamRoleEdit.ts` (`planRoleSet`, `planRoleAdd`, `planRoleMove`, `planRoleRemove`, `spendQuestion`; the
+  commands call the same functions), then projects:save; a "May spend more" plan and every removal wait for `y`. The
+  prompt opens $VISUAL / $EDITOR through `editTextIn` (shared with `team role set --edit`, synchronous, inside
+  `suspendForChild` / `resumeFromChild`, resume 50 ms after the editor exits); a terminal without those names
+  `orgai team role set <slug> --edit`. `/settings` (`SettingsView.tsx`, rows in `settingsModel.ts`): Project rows through
+  `projects set`'s `setPatch` and `staffingSpendSentence`, the permission mode through `permissions mode`'s
+  `permissionModeArg`; Tiers of the project's connection through `connections tier`'s `planTierChange` and
+  `previewTierChange` (now exported; the touched roles are listed before `y`), then connections:update; App rows through
+  `orgai settings`' `SETTING_KEYS` / `parseSettingValue`, then settings:set. The project's connection row is read-only.
+  Host calls: `TuiSessionApi.config` (`configApi.ts`), reads on the shared client, writes on a one-call 'configure'
+  connection (`callConfigured`); a save updates the session's project. Mid-run: the host lets a project be saved while a
+  run is live and RunManager keeps the live run's roles as they started, so a save during a live run says it applies from
+  the next run. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
+  backs out one level. The first time a terminal opens a project it shows one notice naming /team and /settings
+  (`<userDataDir>/tui-hints.json`, `hintStore`).

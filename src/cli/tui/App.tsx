@@ -7,7 +7,7 @@
 import { Box, Text } from 'ink'
 import { basename } from 'node:path'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import type { Project, ProjectPathCheck, RunStatus, RunSummary } from '../../shared/types'
+import type { Project, ProjectPathCheck, RunOverrides, RunStatus, RunSummary, RunTeam } from '../../shared/types'
 import { nextSettleAt, settleTimerDelay } from '../../shared/view/foldFinished'
 import { isOpenStatus } from '../../shared/view/runChains'
 import { statusOfRun, statusText } from '../../shared/view/runStatus'
@@ -23,6 +23,10 @@ import { cardDetailLines } from './decisions'
 import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
 import { InspectorPane } from './InspectorPane'
+import { CONFIG_HINT } from './configApi'
+import { SettingsView } from './SettingsView'
+import { TeamView } from './TeamView'
+import { editTextIn } from '../commands/teamRoleEdit'
 import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
 import { Onboarding, type OnboardingChoice } from './Onboarding'
 import { OrgTreePane } from './OrgTreePane'
@@ -114,6 +118,10 @@ type Overlay =
   | { kind: 'confirm'; question: string; resolve(yes: boolean): void }
   | { kind: 'text'; title: string; lines: string[]; offset: number; /** The composer's keys: a printable key closes it and is typed into the composer. */ passThrough?: boolean }
   | { kind: 'runs'; rows: RunPickRow[]; sel: number }
+  /** A short list (/model): Enter picks, Esc dismisses (undefined). */
+  | { kind: 'pick'; title: string; options: readonly { value: string; label: string }[]; sel: number; resolve(value: string | undefined): void }
+  /** /team or /settings (cli-parity 3.7): the view takes the body and its own keys; Esc backs out to the run view. */
+  | { kind: 'config'; view: 'team' | 'settings' }
 
 const isOpen = (status: RunStatus | undefined): boolean => status !== undefined && isOpenStatus(status)
 const isWorking = (status: RunStatus | undefined): boolean => status === 'starting' || status === 'running'
@@ -273,10 +281,11 @@ export function setupCompletedSince(project: Pick<Project, 'setup'> | undefined,
  * (openTuiSession's default pick), so aim the composer at a new run first, as /new does; else the prompt would go to
  * that run as a message (runs:send) and `--team` would be dropped.
  */
-export function startLaunchRun(session: TuiSessionApi, launch: Pick<TuiLaunch, 'prompt' | 'team'>): void {
+export function startLaunchRun(session: TuiSessionApi, launch: Pick<TuiLaunch, 'prompt' | 'team' | 'overrides'>): void {
   if (!launch.prompt) return
   session.setComposeTarget('new')
-  session.submitPrompt(launch.prompt, launch.team ? { team: launch.team } : undefined).catch((e: unknown) => session.notify(errText(e), 'danger'))
+  const opts = { ...(launch.team ? { team: launch.team } : {}), ...(launch.overrides ? { overrides: launch.overrides } : {}) }
+  session.submitPrompt(launch.prompt, Object.keys(opts).length ? opts : undefined).catch((e: unknown) => session.notify(errText(e), 'danger'))
 }
 
 /** Live runs on an in-process host by its own count (working, waiting, held, paused with a resume due); undefined when unknown. */
@@ -362,6 +371,11 @@ export function App(props: AppProps) {
   const lastCtrlC = useRef<number | undefined>(undefined)
   const exiting = useRef(false)
   const started = useRef(false)
+  /**
+   * Options for the next run the composer starts: /new or /ask without a prompt (team, run flags), and bare `orgai`'s run
+   * flags for the first run. Taken by the next start; any other submit drops them.
+   */
+  const pendingStart = useRef<{ team?: RunTeam; overrides?: RunOverrides } | undefined>(launch.overrides && !launch.prompt ? { overrides: launch.overrides } : undefined)
   // exitWhenEnded / stopOnQuit (Wave 5): who ended the launched run, and the setup state it started from.
   const endedHere = useRef<EndedHere | undefined>(undefined)
   const setupAtLaunch = useRef(launch.project?.setup?.state === 'complete' ? launch.project.setup.completedAt : undefined)
@@ -652,6 +666,28 @@ export function App(props: AppProps) {
       })
   }, [session, notify, doExit, label, conn])
 
+  // A pick replaced by another overlay answers undefined (dismissed), like a confirm answers "no".
+  const pendingPick = useRef<((value: string | undefined) => void) | undefined>(undefined)
+  const pick = useCallback(
+    (title: string, options: readonly { value: string; label: string }[]): Promise<string | undefined> =>
+      new Promise<string | undefined>((resolve) => {
+        pendingPick.current?.(undefined)
+        pendingPick.current = resolve
+        setOverlay({ kind: 'pick', title, options, sel: 0, resolve: (value) => {
+          if (pendingPick.current === resolve) pendingPick.current = undefined
+          resolve(value)
+        } })
+      }),
+    []
+  )
+  useEffect(
+    () => () => {
+      pendingPick.current?.(undefined)
+      pendingPick.current = undefined
+    },
+    []
+  )
+
   // A confirm that is replaced by another (or still open at unmount) answers "no", so no caller waits forever.
   const pendingConfirm = useRef<((yes: boolean) => void) | undefined>(undefined)
   const confirm = useCallback(
@@ -723,6 +759,23 @@ export function App(props: AppProps) {
     [processEnv, terminal, notify]
   )
 
+  // The Team view's prompt editor: $VISUAL / $EDITOR on the terminal, as `orgai team role set --edit` opens it. The
+  // terminal is handed over the way the pager gets it (signals held); the editor runs synchronously so no event loop
+  // turn reads the keys it is given, and the terminal comes back a moment after it exits, once any signal it raised
+  // was seen while it still owned the screen. No suspend support (tests, a stub terminal): the view names the command.
+  const editText = useMemo(() => {
+    if (!terminal.suspendForChild || !terminal.resumeFromChild) return undefined
+    return async (initial: string): Promise<string> => {
+      terminal.suspendForChild?.()
+      try {
+        return editTextIn(processEnv, process.platform, initial)
+      } finally {
+        await new Promise((r) => setTimeout(r, 50))
+        terminal.resumeFromChild?.()
+      }
+    }
+  }, [terminal, processEnv])
+
   // ---------- Sessions and runs ----------
 
   const switchSession = useCallback(
@@ -744,14 +797,19 @@ export function App(props: AppProps) {
     (text: string) => {
       // "Type the prompt for the new run." and the like are answered by sending.
       dismissNotices()
+      const startOpts = pendingStart.current
+      pendingStart.current = undefined
       if (mode === 'quick' && quickEdits !== undefined) {
+        const team = startOpts?.team ?? launch.team
         session
-          .startQuick({ prompt: text, allowEdits: quickEdits, ...(launch.team ? { team: launch.team } : {}) })
+          .startQuick({ prompt: text, allowEdits: quickEdits, ...(team ? { team } : {}), ...(startOpts?.overrides ? { overrides: startOpts.overrides } : {}) })
           .then(() => setQuickEdits(undefined))
           .catch((e: unknown) => notify(errText(e), 'danger'))
         return
       }
-      session.submitPrompt(text).catch((e: unknown) => notify(errText(e), 'danger'))
+      const starts = mode === 'start' || mode === 'quick'
+      const sent = starts && startOpts ? session.submitPrompt(text, startOpts) : session.submitPrompt(text)
+      sent.catch((e: unknown) => notify(errText(e), 'danger'))
     },
     [mode, quickEdits, session, launch.team, notify, dismissNotices]
   )
@@ -764,7 +822,7 @@ export function App(props: AppProps) {
         setOnboarding(false)
         setFocusState('composer')
         if (launch.prompt) {
-          session.startQuick({ prompt: launch.prompt, allowEdits: choice.allowEdits, ...(launch.team ? { team: launch.team } : {}) }).catch((e: unknown) => notify(errText(e), 'danger'))
+          session.startQuick({ prompt: launch.prompt, allowEdits: choice.allowEdits, ...(launch.team ? { team: launch.team } : {}), ...(launch.overrides ? { overrides: launch.overrides } : {}) }).catch((e: unknown) => notify(errText(e), 'danger'))
         } else {
           setQuickEdits(choice.allowEdits)
           notify(choice.allowEdits ? 'Quick run: edits allowed, each still asks. Type the first message.' : 'Quick run: read-only start, an edit or command asks. Type the first message.')
@@ -815,9 +873,30 @@ export function App(props: AppProps) {
         .finally(() => setCheckingFolder(false))
       return
     }
+    // cli-parity 3.4: say on open when team files or this folder's config wait for approval (/approvals reads them).
+    session.approvals
+      ?.waiting()
+      .then((text) => {
+        if (text) notify(sanitizeTty(text), 'warn')
+      })
+      .catch(() => undefined)
     if (launch.prompt) startLaunchRun(session, launch)
     else if (launch.resumeText) session.submitPrompt(launch.resumeText).catch((e: unknown) => notify(errText(e), 'danger'))
   }, [launch, conn, session, notify])
+
+  // cli-parity 3.7: the first time this terminal opens a project, say once where its team and settings are.
+  const hintedProject = useRef<string | undefined>(undefined)
+  const openProjectId = state.project?.id
+  useEffect(() => {
+    if (onboarding || !openProjectId || hintedProject.current === openProjectId || state.readOnlyReason !== undefined) return
+    hintedProject.current = openProjectId
+    session.config
+      ?.firstOpen?.(openProjectId)
+      .then((first) => {
+        if (first) notify(CONFIG_HINT)
+      })
+      .catch(() => undefined)
+  }, [onboarding, openProjectId, session, notify, state.readOnlyReason])
 
   // exitWhenEnded: leave once the launched chain's newest member is no longer open; a setup run is ended here once its
   // project's setup completed and it is idle with no open card.
@@ -976,6 +1055,18 @@ export function App(props: AppProps) {
     toggleFocusMode,
     openRuns: openRunsPicker,
     startRetro: () => startRetro(),
+    openConfig: (view) => {
+      const st = session.getState()
+      if (!st.project) {
+        notify('Open a project folder first: /team and /settings show a project.', 'warn')
+        return
+      }
+      if (!session.config) {
+        notify(`/${view} is not available here.`, 'warn')
+        return
+      }
+      setOverlay({ kind: 'config', view })
+    },
     openAgent: (arg) => {
       const st = session.getState()
       const agents = st.activeRunId ? Object.values(st.runs[st.activeRunId]?.agents ?? {}) : []
@@ -988,15 +1079,19 @@ export function App(props: AppProps) {
       if (!hit) notify(`No agent "${sanitizeTty(arg).slice(0, 64)}" in this run.`, 'warn')
       else openInspector(hit.id)
     },
-    newRun: async ({ prompt, team }) => {
+    newRun: async ({ prompt, team, overrides }) => {
       session.setComposeTarget('new')
+      const opts = { ...(team ? { team } : {}), ...(overrides ? { overrides } : {}) }
       if (prompt && prompt.trim()) {
-        await session.submitPrompt(prompt, team ? { team } : undefined)
+        pendingStart.current = undefined
+        await session.submitPrompt(prompt, Object.keys(opts).length ? opts : undefined)
         return
       }
+      pendingStart.current = Object.keys(opts).length ? opts : undefined
       setFocusState('composer')
       notify('Type the prompt for the new run.')
     },
+    pick,
     switchRun: async (ref) => {
       const id = runForRef(session.getState(), ref)
       if (!id) {
@@ -1038,7 +1133,13 @@ export function App(props: AppProps) {
   }
 
   const overlayKey = (e: InputEvent): void => {
-    if (!overlay || e.type !== 'key') return
+    if (!overlay) return
+    // The view handles its own keys (and pastes, for a typed value); Esc backs out one level, the last one closes it.
+    if (overlay.kind === 'config') {
+      bus.dispatch(e, 'config')
+      return
+    }
+    if (e.type !== 'key') return
     if (overlay.kind === 'runs') {
       const n = overlay.rows.length
       const row = overlay.rows[overlay.sel]
@@ -1074,6 +1175,22 @@ export function App(props: AppProps) {
           .focusRun(row.id)
           .then(() => startRetro(row.id, row.summary))
           .catch((err: unknown) => notify(errText(err), 'danger'))
+      }
+      return
+    }
+    if (overlay.kind === 'pick') {
+      const n = overlay.options.length
+      const ch = e.name === 'char' && !e.ctrl && !e.alt ? e.ch : undefined
+      if (named(e, 'escape') || ctrl(e, 'c') || ch === 'q') {
+        setOverlay(undefined)
+        overlay.resolve(undefined)
+      } else if (named(e, 'down') || ch === 'j') setOverlay({ ...overlay, sel: Math.min(n - 1, overlay.sel + 1) })
+      else if (named(e, 'up') || ch === 'k') setOverlay({ ...overlay, sel: Math.max(0, overlay.sel - 1) })
+      else if (named(e, 'home')) setOverlay({ ...overlay, sel: 0 })
+      else if (named(e, 'end')) setOverlay({ ...overlay, sel: n - 1 })
+      else if (named(e, 'enter') && overlay.options[overlay.sel]) {
+        setOverlay(undefined)
+        overlay.resolve(overlay.options[overlay.sel].value)
       }
       return
     }
@@ -1286,11 +1403,12 @@ export function App(props: AppProps) {
     // The focused pane's own keys sit on a dim line at its bottom, so a long status line can never cut them off.
     const hint = focus === box.pane && box.height >= 6 ? paneHint(box.pane, box.pane === 'tree' ? rowKind : 'agent', 5, box.width, listSep) : ''
     const node = paneBody(box, hint ? box.height - 1 : box.height)
-    if (!hint) return node
+    // Always the same wrapper, focused or not: a pane is never remounted by a focus change, so the transcript keeps
+    // its scroll position and follow state when focus moves to the composer (and on to /team or /settings).
     return (
       <Box key={box.pane} flexDirection="column" width={box.width} height={box.height}>
         {node}
-        <PaneLines width={box.width} height={1} lines={[{ key: 'hint', segs: cutSegs([{ text: hint, dim: true }], box.width, env) }]} env={env} />
+        {hint ? <PaneLines width={box.width} height={1} lines={[{ key: 'hint', segs: cutSegs([{ text: hint, dim: true }], box.width, env) }]} env={env} /> : null}
       </Box>
     )
   }
@@ -1332,7 +1450,8 @@ export function App(props: AppProps) {
       case 'transcript':
         if (welcoming) return <Welcome key="welcome" width={box.width} height={height} folder={state.folder} projectName={state.project?.name} animated={!terminal.suspended} />
         {
-          const completed = activeStatus === 'finished' || activeStatus === 'error'
+          // A paused run shows its pause notice here too, with /resume-now and /cancel-resume (cli-parity 3.5).
+          const completed = activeStatus === 'finished' || activeStatus === 'error' || activeStatus === 'paused'
           const completionHeight = completed && height >= 10 ? 5 : 0
           return <Box key="transcript" width={box.width} height={height} flexDirection="column">
             <TranscriptPane {...common} compact detailsExpanded={detailsExpanded} onToggleDetails={toggleDetails} height={height - completionHeight} mode={env.bufferMode} rows={transcript.rows} partials={partialRows(state, zoomFilter)} omitted={transcript.omitted} />
@@ -1461,8 +1580,39 @@ export function App(props: AppProps) {
   // One shared line below the input holds run state, notices and context-sensitive shortcuts.
   const status = <StatusBar compact={!inline} width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={inline || size.rows < 10 ? hints : footerHints} now={now} />
 
+  const configHeight = inline ? Math.max(8, size.rows - 5) : Math.max(3, bodyRows)
+  const liveRun = Object.values(state.runs).some((r) => isOpen(r.summary.status) && (!state.project || r.summary.projectId === state.project.id))
   const overlayNode = overlay ? (
-    overlay.kind === 'runs' ? (
+    overlay.kind === 'config' ? (
+      state.project && session.config ? (
+        overlay.view === 'team' ? (
+          <TeamView
+            key="team"
+            width={size.cols}
+            height={configHeight}
+            env={env}
+            projectId={state.project.id}
+            api={session.config}
+            liveRun={liveRun}
+            {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
+            {...(editText ? { editText } : {})}
+            onClose={() => setOverlay(undefined)}
+          />
+        ) : (
+          <SettingsView
+            key="settings"
+            width={size.cols}
+            height={configHeight}
+            env={env}
+            projectId={state.project.id}
+            api={session.config}
+            liveRun={liveRun}
+            {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
+            onClose={() => setOverlay(undefined)}
+          />
+        )
+      ) : null
+    ) : overlay.kind === 'runs' ? (
       <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, Math.min(bodyRows, overlay.rows.length + 4))}>
         <Text {...boldStyle}>Runs</Text>
         {runPickLines(overlay.rows, overlay.sel, overlayWidth, state.activeRunId, glyphs(env).ellipsis)
@@ -1475,6 +1625,22 @@ export function App(props: AppProps) {
           ))}
         <Text wrap="truncate-end" {...dimStyle}>
           {['Up / Down select', 'Enter opens', 'c continues', 'r retrospective', 'Esc closes'].join(listSep)}
+        </Text>
+      </Box>
+    ) : overlay.kind === 'pick' ? (
+      <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, Math.min(bodyRows, overlay.options.length + 4))}>
+        <Text {...boldStyle} wrap="truncate-end">{sanitizeTty(overlay.title)}</Text>
+        {overlay.options
+          .map((o, i) => `${i === overlay.sel ? '>' : ' '} ${sanitizeTty(o.label)}`)
+          .slice(Math.max(0, Math.min(overlay.sel - overlayRoom + 1, overlay.options.length - overlayRoom)))
+          .slice(0, overlayRoom)
+          .map((l, i) => (
+            <Text key={i} wrap="truncate-end" {...(l.startsWith('>') ? boldStyle : {})}>
+              {l}
+            </Text>
+          ))}
+        <Text wrap="truncate-end" {...dimStyle}>
+          {['Up / Down select', 'Enter picks', 'Esc closes'].join(listSep)}
         </Text>
       </Box>
     ) : overlay.kind === 'confirm' ? (
@@ -1533,21 +1699,23 @@ export function App(props: AppProps) {
     body = (
       <Box flexDirection="column" width={size.cols} height={size.rows}>
         <Box width={size.cols} height={bodyRows} flexShrink={0}>
-        {(!inlineConfirmation && overlayNode) || (
-          <Box flexDirection={plan.mode === 'split' ? 'row' : 'column'} flexGrow={1}>
-            {plan.mode === 'split' ? (
-              <>
-                <Box flexDirection="column">{inspectorNode ?? col(0).map(paneNode)}</Box>
-                <Box width={plan.gutter ?? 0} flexShrink={0} />
-                <Box flexDirection="column" flexGrow={1}>
-                  {col(1).map(paneNode)}
-                </Box>
-              </>
-            ) : (
-              (inspectorNode ? [inspectorNode] : panes.map(paneNode))
-            )}
-          </Box>
-        )}
+        {/* An overlay (a view, a text, a list) shows over the run view, which stays mounted but hidden (display none)
+            at the same place in the tree: the transcript keeps its scroll position and follow state, and the panes
+            their selection, so leaving the overlay returns to the run view unchanged. */}
+        {!inlineConfirmation && overlayNode}
+        <Box key="run-view" display={!inlineConfirmation && overlayNode ? 'none' : 'flex'} flexDirection={plan.mode === 'split' ? 'row' : 'column'} flexGrow={1}>
+          {plan.mode === 'split' ? (
+            <>
+              <Box flexDirection="column">{inspectorNode ?? col(0).map(paneNode)}</Box>
+              <Box width={plan.gutter ?? 0} flexShrink={0} />
+              <Box flexDirection="column" flexGrow={1}>
+                {col(1).map(paneNode)}
+              </Box>
+            </>
+          ) : (
+            (inspectorNode ? [inspectorNode] : panes.map(paneNode))
+          )}
+        </Box>
         </Box>
         {inlineConfirmation ? overlayNode : tray}
         {palette}

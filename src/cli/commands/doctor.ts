@@ -1,8 +1,10 @@
 /**
- * `orgai doctor` (cli-spec 6.1; cli-standalone-default.md 4.5): checks of the install (how this CLI runs, the orgai
- * command on PATH), the data folder and its product marker, whether another orgai owns the folder, the agent runtimes
- * and the vault custody, printed as ok / warn / fail lines (json: an array of { id, status, detail }). Hostless: it reads
- * files and never starts or talks to a host. Exit 1 when any check fails, else 0. Never prints a secret.
+ * `orgai doctor` (cli-spec 6.1; cli-standalone-default.md 4.5; cli-parity.md 3.1): checks of the install (how this CLI
+ * runs, the orgai command on PATH), the data folder and its product marker, whether another orgai owns the folder, the
+ * agent runtimes, the vault custody and the connections and model catalog (src/cli/doctor/connectionChecks.ts),
+ * printed as ok / warn / fail lines (json: an array of { id, status, detail }). It reads files; only the connection
+ * checks start (and stop) this process's own host in read scope, and never while another orgai owns the folder. Exit 1
+ * when any check fails, else 0. Never prints a secret.
  */
 import { execFile } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
@@ -15,10 +17,12 @@ import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
 import type { DaemonInfo } from '../../shared/types'
 import { readProductMarker } from '../../main/store/productMarker'
 import { installChecks } from '../doctor/installChecks'
+import { connectionChecks } from '../doctor/connectionChecks'
 import { runtimeChecks } from '../doctor/runtimeChecks'
 import { secretsChecks } from '../doctor/secretsChecks'
 import type { DoctorCheckGroup } from '../doctor/types'
 import { parseFlags } from '../flags'
+import { withHost } from '../manage'
 import { emit, safeLine, styleFor } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
 
@@ -69,6 +73,20 @@ export const doctorProbes = {
   /** Reads a text file (throws as fs does: ENOENT when missing). */
   readText: (path: string): string => readFileSync(path, 'utf8'),
   exists: (path: string): boolean => existsSync(path),
+  /**
+   * The connection and model-catalog checks: they need the host's connection records, so they start this process's own
+   * host (read scope) and stop it again, unless another orgai owns the folder (then they say so and skip).
+   */
+  connectionChecks: async (ctx: CliContext, otherOrgaiRuns: boolean): Promise<DoctorCheck[]> => {
+    let busy = otherOrgaiRuns
+    if (!busy) busy = await ctx.readStore().then((snap) => snap.hostState !== 'stopped', () => false)
+    if (busy) return [{ id: 'connections', status: 'ok', detail: 'Connections and models were not checked: another orgai owns this folder (run `orgai connections list` there)' }]
+    try {
+      return await withHost(ctx, ['read'], (client) => connectionChecks({ ctx, client }))
+    } catch (e) {
+      return [{ id: 'connections', status: 'warn', detail: `Connections and models could not be checked: ${(e as Error).message}` }]
+    }
+  },
   realpath: (path: string): string => {
     try {
       return realpathSync(path)
@@ -231,6 +249,8 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
       add('doctor', 'warn', `A check failed to run: ${(e as Error)?.message ?? String(e)}`)
     }
   }
+
+  checks.push(...(await doctorProbes.connectionChecks(ctx, daemonAlive)))
 
   const failed = checks.some((c) => c.status === 'fail')
   const warned = checks.filter((c) => c.status === 'warn').length

@@ -1,10 +1,13 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentImportItem, AgentImportPreview, CapabilityRecommendation, HostScope, Project, Role, TeamReview } from '../../shared/types'
 import { manageDeps } from '../manage'
 import { fakeContext, FakeHostClient, flush, project, rpcError, summary, record, type Answer } from '../testing/fakeContext'
 import { CliError, EXIT } from '../types'
 import * as interactive from './interactive'
-import { checkArg, roleTree, runOrg } from './org'
+import { applyDraftRoles, checkArg, parseDraftFile, roleTree, runOrg, spendNote } from './org'
 
 const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate', 'decide', 'configure'] }
 const realDeps = { ...manageDeps }
@@ -82,6 +85,8 @@ describe('org show', () => {
     expect(out).toMatch(/\n {4}DevRED.*\[dev\] · everyday/)
     expect(out).toMatch(/\n {6}Qa \[qa\]/)
     expect(out).toContain('spawns: DevRED')
+    expect(out).toMatch(/effort default · always as configured: deep at the default effort \(the top of the chart\) · runs on Anthropic \(the project's connection\)/)
+    expect(out).toMatch(/effort \S+ · automatic, .* · runs on Anthropic/)
     expect(out).toContain('MCP: github · skills: code-review')
     expect(out).toContain('Subagent limits: depth 3 (automatic), 8 at once (automatic)')
   })
@@ -365,5 +370,100 @@ describe('Team assistant', () => {
     expect(call[1]).toEqual([{ projectId: 'p1', instruction: 'a small team', mode: 'revise' }])
     expect(((call as unknown[])[2] as { timeoutMs: number }).timeoutMs).toBeGreaterThanOrEqual(600_000)
     expect(f.out()).toContain('Arch [arch]')
+  })
+})
+
+describe('org draft --apply and --from', () => {
+  const drafted = [role('arch', { tier: 'top', model: 'opus' }), role('dev', { reportsTo: 'arch' })]
+  const saveAnswer = (p: Project) => ({ 'projects:save': (a: unknown[]) => ({ ...p, ...(a[0] as object) }) }) as unknown as Record<string, Answer>
+  const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'orgdraft-'))
+
+  it('without --yes and without a terminal it previews and refuses (exit 2), saving nothing', async () => {
+    const { f, client } = setup({ 'draft:orgChart': () => ({ roles: drafted, rationale: 'Why' }), ...saveAnswer(P) })
+    expect(await exitOf(runOrg(f.ctx, ['draft', 'a', 'team', '--apply']))).toBe(2)
+    expect(f.out()).toContain('Arch [arch]')
+    expect(client.callsOf('projects:save')).toHaveLength(0)
+  })
+
+  it('--apply --yes saves the drafted chart, with previousRoles and the spend sentence in JSON', async () => {
+    const { f, client } = setup({ 'draft:orgChart': () => ({ roles: drafted, rationale: '' }), ...saveAnswer(P) }, { format: 'json' })
+    expect(await runOrg(f.ctx, ['draft', 'a', 'team', '--apply', '--yes'])).toBe(0)
+    const saved = (client.callsOf('projects:save')[0] as [Project])[0]
+    expect(saved.roles.map((r) => r.id)).toEqual(['arch', 'dev'])
+    const out = JSON.parse(f.out())
+    expect(out).toMatchObject({ applied: true, mode: 'replace', roles: 2, dropped: ['lead', 'qa'] })
+    expect(out.previousRoles.map((r: Role) => r.id)).toEqual(['lead', 'dev', 'qa'])
+    expect(out.spendNote).toMatch(/may spend more/)
+  })
+
+  it('--mode merge keeps the current roles', async () => {
+    const { f, client } = setup({ 'draft:orgChart': () => ({ roles: [role('ops')], rationale: '' }), ...saveAnswer(P) })
+    expect(await runOrg(f.ctx, ['draft', 'x', '--apply', '--yes', '--mode', 'merge'])).toBe(0)
+    expect((client.callsOf('projects:save')[0] as [Project])[0].roles.map((r) => r.id)).toEqual(['lead', 'dev', 'qa', 'ops'])
+  })
+
+  it('--from reads a printed draft, never calls draft:orgChart and saves it', async () => {
+    const dir = tmp()
+    const file = path.join(dir, 'd.json')
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, project: {}, draft: { roles: drafted, rationale: 'r' } }))
+    const { f, client } = setup(saveAnswer(P))
+    expect(await runOrg(f.ctx, ['draft', '--from', file, '--apply', '--yes'])).toBe(0)
+    expect(client.callsOf('draft:orgChart')).toHaveLength(0)
+    expect(client.callsOf('projects:save')).toHaveLength(1)
+    fs.rmSync(dir, { recursive: true })
+  })
+
+  it('--from refuses untrusted garbage and a missing --apply with exit 2', async () => {
+    const dir = tmp()
+    const file = path.join(dir, 'bad.json')
+    fs.writeFileSync(file, JSON.stringify({ roles: [{ id: 'a\x1b', slug: 's', name: 'n' }] }))
+    const { f, client } = setup(saveAnswer(P))
+    expect(await exitOf(runOrg(f.ctx, ['draft', '--from', file, '--apply', '--yes']))).toBe(2)
+    expect(await exitOf(runOrg(f.ctx, ['draft', '--from', file]))).toBe(2)
+    expect(await exitOf(runOrg(f.ctx, ['draft', '--from', path.join(dir, 'missing.json'), '--apply', '--yes']))).toBe(2)
+    expect(client.callsOf('projects:save')).toHaveLength(0)
+    fs.rmSync(dir, { recursive: true })
+  })
+
+  it('parseDraftFile accepts the printed shape, a bare roles object and an array; rejects duplicates', () => {
+    expect(parseDraftFile(JSON.stringify({ draft: { roles: drafted } })).roles).toHaveLength(2)
+    expect(parseDraftFile(JSON.stringify({ roles: drafted })).roles).toHaveLength(2)
+    expect(parseDraftFile(JSON.stringify(drafted)).roles).toHaveLength(2)
+    expect(() => parseDraftFile(JSON.stringify([drafted[0], drafted[0]]))).toThrow(/repeats/)
+    expect(() => parseDraftFile('nope')).toThrow(/valid JSON/)
+    expect(() => parseDraftFile('[]')).toThrow(/no roles/)
+  })
+
+  it('applyDraftRoles merges by slug and renames colliding ids', () => {
+    const cur = [role('a'), role('b')]
+    const out = applyDraftRoles(cur, [role('x', { slug: 'b' }), role('a', { slug: 'new', reportsTo: 'x' })], 'merge')
+    expect(out.map((r) => r.id)).toEqual(['a', 'b', 'a-2'])
+    expect(out.find((r) => r.slug === 'new')!.reportsTo).toBe('b')
+    expect(out.find((r) => r.id === 'b')!.slug).toBe('b')
+  })
+
+  it('spendNote only speaks when tiers rise or staffing is newly on', () => {
+    const cur = [role('a', { tier: 'deep' })]
+    expect(spendNote(cur, [role('a', { tier: 'everyday' })], {})).toBeUndefined()
+    expect(spendNote(cur, [role('a', { tier: 'top' })], {})).toMatch(/may spend more/)
+    expect(spendNote(cur, [role('a', { tier: 'deep', staffing: { mode: 'auto' } })], {})).toMatch(/may spend more/)
+    expect(spendNote(cur, [role('a', { tier: 'deep', staffing: { mode: 'auto' } })], { staffing: 'fixed' })).toBeUndefined()
+  })
+})
+
+describe('org revise', () => {
+  it('starts the Architect on the existing project with the instruction', async () => {
+    const { f } = setup({}, { tty: true })
+    const spy = vi.spyOn(interactive, 'runInteractiveRun').mockResolvedValue(0)
+    expect(await runOrg(f.ctx, ['revise', 'add', 'a', 'QA', 'lead'])).toBe(0)
+    expect(spy.mock.calls[0][1]).toMatchObject({ channel: 'setup:start', input: { projectId: 'p1', instruction: 'add a QA lead' } })
+  })
+
+  it('needs an instruction and a terminal (exit 2)', async () => {
+    const spy = vi.spyOn(interactive, 'runInteractiveRun').mockResolvedValue(0)
+    expect(await exitOf(runOrg(setup({}, { tty: true }).f.ctx, ['revise']))).toBe(2)
+    expect(await exitOf(runOrg(setup({}).f.ctx, ['revise', 'x']))).toBe(2)
+    expect(await exitOf(runOrg(setup({}, { tty: true, format: 'json' }).f.ctx, ['revise', 'x']))).toBe(2)
+    expect(spy).not.toHaveBeenCalled()
   })
 })
