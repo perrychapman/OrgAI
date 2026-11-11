@@ -83,6 +83,8 @@ at their desks, new agents walk in through the front door, an agent waiting on y
 as bubbles at the person they are for, with a message log below the scene. Pause motion stops every animation, and
 the scene stays still when your system asks for reduced motion.
 
+<p align="center"><img src="docs/media/office.gif" alt="A run in the Pocket Office view: the orchestrator's lobby and two department rooms, reports working at their desks, a message bubble over a report, and the message log below showing the orchestrator handing work to a report and the reply." width="100%"></p>
+
 ### Choose how each run runs
 
 Above the composer, a run settings row shows the model, effort, permission mode and goal for the run. Change them
@@ -90,6 +92,8 @@ before you start, or switch the model and the permission mode while the conversa
 mode asks you to confirm first). Switching to a model on another connection asks you to end the session first; your next
 message then carries the conversation over to the new model. The orchestrator also picks a tier and effort for each report it starts, within the limits you set
 on the chart.
+
+<p align="center"><img src="docs/media/run-settings.png" alt="The new-run page with the Model, Effort, Permission and Goal chips above the composer and the Permission picker open on its six modes." width="80%"></p>
 
 ### Set up with an Architect
 
