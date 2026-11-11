@@ -72,9 +72,24 @@ terminal attaches; they are not a reconstructed message history.
 
 The orchestrator and every subagent show up on the canvas as they are created, attached to the agent that spawned
 them. Click an agent for its transcript, open the Plan, Usage and Logs tabs, or hide finished agents to keep a big
-run readable. The canvas has several styles, in dark and light themes.
+run readable. The canvas has several styles, in dark and light themes. Each agent shows the model tier and effort it
+runs on, and the Plan tab shows which steps are ready, waiting or running.
 
 <p align="center"><img src="docs/media/hero-light.png" alt="The same run in the light theme: an orchestrator with two implementers, one reported back and one ended without a result." width="80%"></p>
+
+Prefer something livelier? Switch the canvas presentation to **Pocket Office**: the team becomes one pixel-art building
+you pan and zoom, with the orchestrators in the lobby and each department in its own room. People who are working type
+at their desks, new agents walk in through the front door, an agent waiting on you raises a hand, and messages appear
+as bubbles at the person they are for, with a message log below the scene. Pause motion stops every animation, and
+the scene stays still when your system asks for reduced motion.
+
+### Choose how each run runs
+
+Above the composer, a run settings row shows the model, effort, permission mode and goal for the run. Change them
+before you start, or switch the model and the permission mode while the conversation goes on (a wider permission
+mode asks you to confirm first). Switching to a model on another connection asks you to end the session first; your next
+message then carries the conversation over to the new model. The orchestrator also picks a tier and effort for each report it starts, within the limits you set
+on the chart.
 
 ### Set up with an Architect
 
@@ -105,6 +120,12 @@ Engagement projects (work for a client or a case, in a plain folder) have a Know
 organisations, decisions and risks as they work, and you can read, edit and retire them in a list or on a graph.
 
 <p align="center"><img src="docs/media/knowledge.gif" alt="The Knowledge tab of an engagement: the list of recorded items, then the Graph view with Acme Corp, Jane Doe, a decision and a risk." width="100%"></p>
+
+### Keep what a run produces
+
+Documents, workbooks, slide decks, diagrams and data files that agents produce appear in the project's Outputs tab
+and in the run's side panel. A revision adds a new version instead of replacing the old one, and notes you leave on an
+output are passed to the agents the next time they revise it.
 
 ### Start from a repository
 
