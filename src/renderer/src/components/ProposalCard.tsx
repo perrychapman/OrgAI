@@ -22,6 +22,7 @@ import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
 import { McpProposalBody, type SecretValues } from './proposals/McpProposalBody'
 import { SkillsProposalBody } from './proposals/SkillsProposalBody'
+import { SchedulesProposalBody, useExistingSchedules } from './proposals/SchedulesProposalBody'
 import { useMcpCurrent } from './proposals/useCurrent'
 import { ClampText } from './proposals/ClampText'
 import { clampLabel } from '../lib/clampLabel'
@@ -49,8 +50,7 @@ const APPLY_NOTE: Record<Proposal['kind'], string> = {
   // The skills card picks its own note by scope (skillsApplyNote).
   skills: 'Approving writes these skills to this project and grants them to the listed roles.',
   appSettings: 'Approving changes these app settings for every project.',
-  // PLACEHOLDER (Schedules contract landing): the renderer engineer replaces this with the schedules card body and note.
-  schedules: 'Schedule proposals are not available yet.'
+  schedules: 'Approving saves these schedules. Each one starts runs on its own at the times shown.'
 }
 
 /** Helper line of the skills card: library-only proposals write to the library, any project item writes to the project. */
@@ -93,7 +93,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
   const canSkip = isSetup && proposal.kind === 'mcpServers'
   const target = proposal.kind === 'settings' || proposal.kind === 'appSettings' ? proposal.target : undefined
   const selfHelp = proposal.kind === 'appSettings' || (proposal.kind === 'settings' && !!target)
-  const canDecline = !isSetup && (proposal.kind === 'mcpServers' || proposal.kind === 'orgChart' || proposal.kind === 'skills' || selfHelp)
+  const canDecline = !isSetup && (proposal.kind === 'mcpServers' || proposal.kind === 'orgChart' || proposal.kind === 'skills' || proposal.kind === 'schedules' || selfHelp)
   const project = useAppStore((st) => st.projects.find((p) => p.id === runSummary?.projectId))
   // A Chat proposal for another project is worded for that project's kind, never the virtual project's.
   const targetProject = useAppStore((st) => (target ? st.projects.find((p) => p.id === target.projectId) : undefined))
@@ -110,9 +110,20 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
   const mcpCurrent = useMcpCurrent({ active: !!mcp, scope, projectId: project?.id, needsLibrary, storeServers: project?.mcpServers ?? null })
   const skillCurrent = useMemo(() => ({ roles: currentRoles, skills: project?.skills ?? [] }), [currentRoles, project?.skills])
   const mcpLoading = !!mcp && mcpCurrent.status === 'loading'
+  // Stored schedules, read once for a schedules card: pause / resume / remove items name the schedule they change.
+  const existingSchedules = useExistingSchedules(proposal.kind === 'schedules')
   const foldSummary = useMemo(
-    () => (mcpLoading ? undefined : proposalFoldSummary(proposal, { roles: currentRoles, mcpServers: mcpCurrent.servers, skills: skillCurrent, projectKind: targetKind })),
-    [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading, targetKind]
+    () =>
+      mcpLoading
+        ? undefined
+        : proposalFoldSummary(proposal, {
+            roles: currentRoles,
+            mcpServers: mcpCurrent.servers,
+            skills: skillCurrent,
+            projectKind: targetKind,
+            scheduleNames: (id) => existingSchedules?.find((s) => s.id === id)?.name
+          }),
+    [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading, targetKind, existingSchedules]
   )
   const hasSecrets = !!mcp && uniqueSecretSlots(mcp).length > 0
   const effectCopy = proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator')
@@ -247,6 +258,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       {proposal.kind === 'appSettings' && <AppSettingsProposalBody payload={proposal.payload} />}
       {proposal.kind === 'mcpServers' && <McpProposalBody proposalId={proposal.id} payload={proposal.payload} current={mcpCurrent} roles={currentRoles} secretValues={secretValues} setSecret={setSecret} />}
       {proposal.kind === 'skills' && <SkillsProposalBody proposalId={proposal.id} payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
+      {proposal.kind === 'schedules' && <SchedulesProposalBody payload={proposal.payload} existing={existingSchedules} />}
       {mode !== 'idle' && (
         <div className="proposal-feedback" ref={feedbackRef}>
           <label className="proposal-note-label" htmlFor={`${noteId}-${mode}`}>

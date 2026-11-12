@@ -40,6 +40,31 @@ describe('proposalFoldSummary', () => {
     } as Proposal
     expect(proposalFoldSummary(p, ctx)).toBe('new release-notes, update mock-skill')
   })
+  it('lists schedule changes by name', () => {
+    const sched = { name: 'Nightly review', prompt: 'x', target: { kind: 'ask' }, timing: { kind: 'daily', time: '08:00' } }
+    const p = {
+      ...base,
+      kind: 'schedules',
+      payload: {
+        rationale: '',
+        items: [
+          { action: 'create', schedule: sched, summary: '', nextRuns: [] },
+          { action: 'pause', scheduleId: 's1', summary: '', nextRuns: [] },
+          { action: 'remove', scheduleId: 'gone', summary: '', nextRuns: [] }
+        ]
+      }
+    } as Proposal
+    expect(proposalFoldSummary(p, { ...ctx, scheduleNames: (id) => (id === 's1' ? 'Docs sync' : undefined) })).toBe('new Nightly review, pause Docs sync, delete a schedule')
+    expect(proposalFoldSummary(p, ctx)).toBe('new Nightly review, pause a schedule, delete a schedule')
+  })
+  it('flags hidden characters in a schedule name', () => {
+    const p = {
+      ...base,
+      kind: 'schedules',
+      payload: { rationale: '', items: [{ action: 'create', schedule: { name: 'Nightly‮ review', prompt: 'x', target: { kind: 'ask' }, timing: { kind: 'daily', time: '08:00' } }, summary: '', nextRuns: [] }] }
+    } as Proposal
+    expect(proposalFoldSummary(p, ctx)?.startsWith(HIDDEN_PREFIX)).toBe(true)
+  })
   it('settings uses the clipped title, architecture too', () => {
     expect(proposalFoldSummary({ ...base, kind: 'settings', payload: { rationale: '' } } as Proposal, ctx)).toBe('A title')
     expect(proposalFoldSummary({ ...base, title: ' ', kind: 'settings', payload: { rationale: '' } } as Proposal, ctx)).toBeUndefined()
