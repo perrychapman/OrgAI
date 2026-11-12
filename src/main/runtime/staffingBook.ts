@@ -9,7 +9,7 @@
 // from adapters. Memory is bounded by the STAFFING_BOOK_* constants below.
 
 import { compareEffort, compareTier } from '@shared/defaults'
-import type { Effort, ModelTier, PlanStep, Project, Role, RunPlan, StaffingAssignment } from '@shared/types'
+import type { Effort, ModelTier, PlanStep, Project, Role, RunPlan, StaffingAssignment, StaffingGoal } from '@shared/types'
 import { capNote, resolveStaffing, staffingAssignment, staffingLabel, staffRequestForSpawn, type ResolvedStaffing, type StaffingRequest } from './staffing'
 
 /** Retries per plan step that escalate (spec 4.3: "at most twice"). Later retries run on the last attempt's values. */
@@ -44,6 +44,8 @@ export interface StaffingBookDeps {
   plan(): RunPlan | undefined
   /** The project profile's default for a role (spec 4.5, phase 4 supplies it; absent today). */
   profile?(roleId: string): StaffingRequest | undefined
+  /** The run's staffing goal (RuntimeContext.staffingGoal over the project's), read live at each decision. Absent = balanced. */
+  goal?(): StaffingGoal | undefined
 }
 
 /** What `decide` asks for a spawn. */
@@ -234,6 +236,7 @@ export class StaffingBook {
       parentTier,
       requested,
       profile: this.deps.profile?.(role.id),
+      ...(this.deps.goal?.() ? { goal: this.deps.goal() } : {}),
       tierModels: this.deps.tierModels(),
       adapterEfforts: this.deps.adapterEfforts,
       planGuard,

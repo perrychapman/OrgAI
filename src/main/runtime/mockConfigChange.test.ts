@@ -11,8 +11,8 @@ describe('mock configChanged hook', () => {
     let skills: RunSkill[] = []
     const ctx = fakeCtx({ autoContinue: false, skills: () => skills })
     const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
-    // list_skills / load_skill are bound on every non-native work run, even with no skills at start.
-    expect(toolNames(session)).toContain(SKILL_HARNESS_TOOLS.load)
+    // list_skills / load_skill are bound only when the run has skills; a skills change re-binds them below.
+    expect(toolNames(session)).not.toContain(SKILL_HARNESS_TOOLS.load)
     await expect(session.configChanged({ mcp: { upserted: ['notes'], removed: ['old'] } })).resolves.toEqual({ availability: 'now' })
     skills = [{ id: 's1', name: 'alpha', description: 'd', dir: '/nowhere', files: [{ path: 'SKILL.md', bytes: 1 }], roleIds: ['r-lead'] }]
     await expect(session.configChanged({ skills: true })).resolves.toEqual({ availability: 'now' })
@@ -43,7 +43,8 @@ describe('[mock:config-change] script', () => {
   })
 
   it('runs every step through the work-run tools and finishes the turn', async () => {
-    const ctx = fakeCtx({ prompt: `Change the config ${CONFIG_CHANGE_TOKEN}`, autoContinue: false })
+    const skills = [{ id: 's1', name: 'alpha', description: 'd', dir: '/nowhere', files: [{ path: 'SKILL.md', bytes: 1 }], roleIds: ['r-lead'] }] as RunSkill[]
+    const ctx = fakeCtx({ prompt: `Change the config ${CONFIG_CHANGE_TOKEN}`, autoContinue: false, skills: () => skills })
     const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
     const texts = () => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === ROOT_AGENT_ID && e.entry.block.kind === 'text' ? [e.entry.block.text] : []))
     await vi.waitFor(() => expect(texts()).toContain('Config change done.'))

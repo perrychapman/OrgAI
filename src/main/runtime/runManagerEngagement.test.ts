@@ -109,6 +109,22 @@ describe('engagement runs write nothing into the folder', () => {
   })
 })
 
+describe('engagement document latch', () => {
+  it('is read once per run (a cache-stable prompt prefix); a new run reads it fresh', async () => {
+    const { m, ctxs } = rig()
+    const file = engagementDocumentFile(join(dir, 'data'), 'p1')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, 'v1', 'utf8')
+    await m.start({ project: makeProject({ id: 'p1', path: folder(), kind: 'engagement' }), prompt: 'go' })
+    expect(ctxs[0].engagementDocument?.()).toBe('v1')
+    writeFileSync(file, 'v2', 'utf8')
+    expect(ctxs[0].engagementDocument?.()).toBe('v1')
+    await m.start({ project: makeProject({ id: 'p1', path: folder(), kind: 'engagement' }), prompt: 'again' })
+    expect(ctxs[1].engagementDocument?.()).toBe('v2')
+    await m.stopAll()
+  })
+})
+
 describe('code projects are unchanged', () => {
   it('reads and writes the folder rules file, has no engagement document and keeps isolateWriters', async () => {
     const p = folder()

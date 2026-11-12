@@ -32,16 +32,28 @@ describe('harnessToolsFor: single-agent runs and engagements', () => {
 
   it('a single-agent run gets exactly the single set plus the native skill tools', () => {
     const ctx = fakeCtx({ run: runSummary({ kind: 'work', team: 'single' }) })
-    const base = [...SINGLE_TOOL_DEFS.map((d) => d.name), 'app_reference'].sort()
+    // engagement_context is for engagements only; the plan tools come without `staff` (no reports to staff).
+    const base = [...SINGLE_TOOL_DEFS.map((d) => d.name).filter((n) => n !== ENGAGEMENT_CONTEXT_TOOL), 'app_reference'].sort()
     expect(names(harnessToolsFor(ctx, {}, { nativeSkills: true }))).toEqual(base)
-    const withSkills = names(harnessToolsFor(ctx))
+    // No skills in the run: no skill tools either.
+    expect(names(harnessToolsFor(ctx))).toEqual(base)
+    const skilled = fakeCtx({ run: runSummary({ kind: 'work', team: 'single' }), skills: () => [{ id: 'sk', name: 'a', description: 'd', dir: '/x', files: [], roleIds: ['r-lead'] }] })
+    const withSkills = names(harnessToolsFor(skilled))
     expect(withSkills).toEqual([...base, 'list_skills', 'load_skill'].sort())
     for (const gone of ['list_projects', 'integrate_worktrees', 'propose_org_change', 'request_mcp_install', 'propose_mcp_servers', 'propose_skills', 'list_runs', 'message_run', 'list_mcp_servers']) {
       expect(withSkills).not.toContain(gone)
     }
-    for (const kept of ['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'request_permission_rules', 'list_skill_library', 'read_library_skill', ENGAGEMENT_CONTEXT_TOOL]) {
+    for (const kept of ['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'request_permission_rules', 'list_skill_library', 'read_library_skill']) {
       expect(withSkills).toContain(kept)
     }
+    expect(withSkills).not.toContain(ENGAGEMENT_CONTEXT_TOOL)
+    const plan = JSON.stringify(byName(harnessToolsFor(ctx), 'set_plan').inputSchema.shape.steps)
+    expect(plan).not.toContain('staff')
+    expect(Object.keys(byName(harnessToolsFor(ctx), 'update_plan').inputSchema.shape)).toEqual(['steps', 'add'])
+    const team = harnessToolsFor(fakeCtx({ run: runSummary({ kind: 'work' }) }))
+    expect(Object.keys((byName(team, 'set_plan').inputSchema.shape.steps as unknown as { element: { shape: object } }).element.shape)).toContain('staff')
+    // A single run on an engagement keeps the notes tool.
+    expect(names(harnessToolsFor(fakeCtx({ project: project({ kind: 'engagement' }), run: runSummary({ kind: 'work', team: 'single' }) }), {}, { nativeSkills: true }))).toContain(ENGAGEMENT_CONTEXT_TOOL)
   })
 
   it('engagement work runs get engagement_context in addition to the usual set; code projects do not', () => {
@@ -52,14 +64,14 @@ describe('harnessToolsFor: single-agent runs and engagements', () => {
   })
 
   it('engagement_context is for every role and does not block', () => {
-    const ctx = fakeCtx({ run: runSummary({ kind: 'work', team: 'single' }) })
+    const ctx = fakeCtx({ project: project({ kind: 'engagement' }), run: runSummary({ kind: 'work', team: 'single' }) })
     expect(byName(harnessToolsFor(ctx), ENGAGEMENT_CONTEXT_TOOL).audience).toBe('all')
     expect(isBlockingHarnessTool(ENGAGEMENT_CONTEXT_TOOL)).toBe(false)
   })
 })
 
 describe('engagement_context', () => {
-  const tool = (notes?: ReturnType<typeof notesCtx>) => byName(harnessToolsFor(fakeCtx({ run: runSummary({ team: 'single' }), ...(notes ? { engagementNotes: notes } : {}) })), ENGAGEMENT_CONTEXT_TOOL)
+  const tool = (notes?: ReturnType<typeof notesCtx>) => byName(harnessToolsFor(fakeCtx({ project: project({ kind: 'engagement' }), run: runSummary({ team: 'single' }), ...(notes ? { engagementNotes: notes } : {}) })), ENGAGEMENT_CONTEXT_TOOL)
 
   it('says so plainly without the hook', async () => {
     expect(await tool().call({})).toBe('No context notes are available in this run.')
@@ -121,7 +133,7 @@ describe('engagement_context', () => {
     const t = tool(notesCtx([], save))
     expect(await t.call({ action: 'save', title: 'Findings', text: 'Alpha owns billing.' })).toBe('Saved note n9 (Findings).')
     expect(save).toHaveBeenCalledWith({ title: 'Findings', text: 'Alpha owns billing.' }, { agentId: undefined, roleId: undefined })
-    const sub = byName(harnessToolsFor(fakeCtx({ run: runSummary({ team: 'single' }), engagementNotes: notesCtx([], save) })), ENGAGEMENT_CONTEXT_TOOL)
+    const sub = byName(harnessToolsFor(fakeCtx({ project: project({ kind: 'engagement' }), run: runSummary({ team: 'single' }), engagementNotes: notesCtx([], save) })), ENGAGEMENT_CONTEXT_TOOL)
     expect(await sub.call({ action: 'save', noteId: ' n2 ', title: 'T <b>', text: 'x' }, { agentId: 'a1', roleId: 'r-eng' })).toBe('Saved note n2 (T ‹b›).')
     expect(save).toHaveBeenLastCalledWith({ noteId: 'n2', title: 'T <b>', text: 'x' }, { agentId: 'a1', roleId: 'r-eng' })
   })

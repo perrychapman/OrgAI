@@ -63,6 +63,19 @@ describe('tier-based model defaults', () => {
     expect(p.preferEverydayNearLimit).toBeUndefined()
   })
 
+  it('keeps each report role\'s preset tier while the report default is the factory value', () => {
+    const p = newProject({ name: 'x', path: '/x', brief: '' }, DEFAULT_APP_SETTINGS)
+    const preset = defaultRoles({ connection: 'anthropic', tierModels: DEFAULT_APP_SETTINGS.connections.anthropic.tierModels })
+    expect(p.roles.map((r) => [r.tier, r.model])).toEqual(preset.map((r) => [r.tier, r.model]))
+    expect(p.roles.some((r) => r.reportsTo !== null && r.tier === 'fast')).toBe(true)
+    // a customized report default still lands on every report, and the root default on the root
+    const custom = newProject({ name: 'x', path: '/x', brief: '' }, { ...DEFAULT_APP_SETTINGS, defaultReportModel: 'fast', defaultRootModel: 'everyday' })
+    expect(custom.roles.filter((r) => r.reportsTo !== null).every((r) => r.tier === 'fast')).toBe(true)
+    expect(custom.roles.find((r) => r.reportsTo === null)?.tier).toBe('everyday')
+    const eng = newProject({ name: 'x', path: '/x', brief: '', kind: 'engagement' }, DEFAULT_APP_SETTINGS)
+    expect(eng.roles.map((r) => r.tier)).toEqual(engagementRoleTiers())
+  })
+
   it('reads the near-limit flag with the legacy field as fallback', () => {
     expect(preferEverydayNearLimit({ preferSonnetNearLimit: true })).toBe(true)
     expect(preferEverydayNearLimit({ preferEverydayNearLimit: false, preferSonnetNearLimit: true })).toBe(false)
@@ -167,6 +180,8 @@ describe('newId', () => {
     expect(newId()).not.toContain('_')
   })
 })
+
+const engagementRoleTiers = (): (string | undefined)[] => newProject({ name: 'x', path: '/x', brief: '', kind: 'engagement' }).roles.map((r) => r.tier)
 
 describe('newProject', () => {
   it('creates a project with default roles and no setup', () => {

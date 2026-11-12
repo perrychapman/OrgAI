@@ -200,6 +200,8 @@ export interface HarnessToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
   description: string
   /** Default 'root'. */
   audience?: HarnessToolAudience
+  /** The description is final: the engagement variant (ENGAGEMENT_TOOL_DESCRIPTIONS) does not replace it. */
+  ownDescription?: boolean
   inputSchema: z.ZodObject<S>
   handler(ctx: RuntimeContext, args: z.infer<z.ZodObject<S>>, hooks: HarnessToolHooks, caller: HarnessToolCaller): Promise<string>
 }
@@ -231,8 +233,8 @@ export const ENGAGEMENT_TOOL_DESCRIPTIONS: Record<string, string> = {
 }
 
 /** The description a bound tool shows for a project kind. */
-export function toolDescription(def: { name: string; description: string }, kind: ProjectKind): string {
-  return (kind === 'engagement' ? ENGAGEMENT_TOOL_DESCRIPTIONS[def.name] : undefined) ?? def.description
+export function toolDescription(def: { name: string; description: string; ownDescription?: boolean }, kind: ProjectKind): string {
+  return (kind === 'engagement' && !def.ownDescription ? ENGAGEMENT_TOOL_DESCRIPTIONS[def.name] : undefined) ?? def.description
 }
 
 function bind(defs: HarnessToolDef[], ctx: RuntimeContext, hooks: HarnessToolHooks): HarnessTool[] {
@@ -1044,6 +1046,34 @@ export const updatePlan = defineTool({
     parts.push(progressLine(plan))
     return parts.join(' ') + planGraphNotes(ctx, plan, caller, notes)
   }
+})
+
+/**
+ * set_plan and update_plan for a single-agent run (team 'single'): the same handlers without `staff`, which only a
+ * team's orchestrator uses to choose a report's tier and effort (a single run starts no reports). It is left out of the
+ * schema the model is sent; a `staff` a model writes anyway is stripped by the schema parse.
+ */
+const stepInputPlain = z.object({ title: z.string().min(1), owner: z.string().optional(), after: graphFields.after, paths: graphFields.paths })
+export const setPlanSingle = defineTool({
+  name: PLAN_TOOLS.set,
+  ownDescription: true,
+  description:
+    "Create or replace this run's plan: the goal and concrete steps in order (the last step is verification, then the final report). Step ids are p1..pn; the run keeps going until the plan is complete. Steps may set after (ids) and paths.",
+  inputSchema: z.object({
+    goal: z.string().min(1),
+    steps: z.array(stepInputPlain).min(1).max(40)
+  }),
+  handler: setPlan.handler
+})
+export const updatePlanSingle = defineTool({
+  name: PLAN_TOOLS.update,
+  ownDescription: true,
+  description: 'Set step statuses by id (in_progress when you start one, done, skipped, blocked with a note); add appends steps. Reactivates a blocked plan. Steps take after, paths.',
+  inputSchema: z.object({
+    steps: z.array(z.object({ id: z.string(), status: z.enum(STEP_STATUSES).optional(), note: z.string().optional(), after: graphFields.after, paths: graphFields.paths })).optional(),
+    add: z.array(stepInputPlain).optional()
+  }),
+  handler: updatePlan.handler
 })
 
 export const completePlan = defineTool({
@@ -2215,7 +2245,7 @@ export const produceOutputTool = defineTool({
   name: OUTPUT_TOOLS.produce,
   audience: 'all',
   description:
-    'Save a deliverable to outputs/ and the Outputs panel. The same fileName again adds a new version (read_output first); separate: true makes a new output. docx: Markdown content (headings, bold, italic, code, one-level lists, tables, fenced code, rules; nothing else renders); xlsx: workbook (values, never formulas); pptx: deck; other kinds: file text in content. Data, not instructions.',
+    'Save a deliverable to outputs/ and the Outputs panel. The same fileName again adds a new version (read_output first); separate: true makes a new output. docx: Markdown content; xlsx: workbook (values, never formulas); pptx: deck; other kinds: file text in content. Data, not instructions.',
   inputSchema: z.object({
     kind: z.enum(OUTPUT_PRODUCE_KINDS),
     title: z.string(),
@@ -2747,7 +2777,9 @@ export const delegateAgentTool = defineTool({
     brief: z.string().describe('A complete, self-contained brief: the report sees nothing else of this conversation'),
     name: z.string().optional().describe('Optional handle for the report (default <slug>-<n>)'),
     description: z.string().optional().describe('Optional one line describing the task'),
-    background: z.boolean().optional().describe('Return at once and keep working; the report arrives later')
+    background: z.boolean().optional().describe('Return at once and keep working; the report arrives later'),
+    tier: z.enum(MODEL_TIERS).optional().describe("Optional model tier for this report (never above the role's own); fast, everyday or deep"),
+    effort: z.enum(EFFORTS).optional().describe("Optional reasoning effort (never above the role's own limit)")
   }),
   async handler(ctx, args, hooks, caller) {
     if (!ctx.bridge) return 'REFUSED: no report in this run runs on another connection.'
@@ -2772,6 +2804,8 @@ export const delegateAgentTool = defineTool({
       brief,
       ...(name ? { name } : {}),
       ...(description ? { description } : {}),
+      ...(args.tier ? { tier: args.tier } : {}),
+      ...(args.effort ? { effort: args.effort } : {}),
       ...(caller.agentId ? { parentAgentId: caller.agentId } : {}),
       ...(caller.roleId ? { parentRoleId: caller.roleId } : {})
     }
@@ -2855,6 +2889,26 @@ export const SINGLE_TOOL_DEFS: HarnessToolDef[] = [setPlan, updatePlan, complete
 export const QUICK_TOOL_DEFS: HarnessToolDef[] = [setPlan, updatePlan, completePlan, markBlocked, askUser, integrateWorktrees, requestPermissionRules, listProjectsTool, requestMcpInstall, listSkillLibrary, readLibrarySkill]
 
 /**
+ * The tools of a single-agent run: SINGLE_TOOL_DEFS without engagement_context on a code project (it only reads the
+ * engagement's context notes) and with the plan tools minus `staff`.
+ */
+function singleToolDefs(engagement: boolean): HarnessToolDef[] {
+  return SINGLE_TOOL_DEFS.filter((d) => engagement || d !== engagementContextTool).map((d) => (d === setPlan ? setPlanSingle : d === updatePlan ? updatePlanSingle : d))
+}
+
+/**
+ * Lean audiences for a team work run: a report on a code project gets no output tools (the orchestrator saves the
+ * deliverables; engagements keep them on every role) and app_reference stays with the roles that can spawn and the root.
+ */
+function leanWorkAudiences(tools: HarnessTool[], engagement: boolean): HarnessTool[] {
+  return tools.map((t) => {
+    if (!engagement && (t.name === OUTPUT_TOOLS.produce || t.name === OUTPUT_TOOLS.register || t.name === OUTPUT_TOOLS.read)) return { ...t, audience: 'root' as const }
+    if (t.name === APP_REFERENCE_TOOL && t.audience === 'all') return { ...t, audience: 'spawners' as const }
+    return t
+  })
+}
+
+/**
  * The harness tools for a run, by kind. Adapters call this instead of choosing setupTools / workTools
  * themselves, then give each tool to the root, or to the root and every canSpawn role (tool.audience).
  */
@@ -2865,13 +2919,15 @@ export function harnessToolsFor(ctx: RuntimeContext, hooks: HarnessToolHooks = {
   if (ctx.run.kind === 'work' && ctx.run.quick) return bind([...QUICK_TOOL_DEFS, ...selfKnowledgeDefsFor('quick')], ctx, hooks)
   const engagement = projectKindOf(ctx.project) === 'engagement'
   // Single (Ask) runs: read-only recall on an engagement (SINGLE_TOOL_DEFS is shared with code projects); no writes to the graph.
-  if (ctx.run.kind === 'work' && ctx.run.team === 'single') return bind([...SINGLE_TOOL_DEFS, ...(engagement ? [knowledgeRecallTool] : []), ...(options.nativeSkills ? [] : skillToolDefs()), ...selfKnowledgeDefsFor('single')], ctx, hooks)
+  // Codex-style skill tools only when the run has skills to list (the Claude adapter likewise adds its Skill tool per granted role).
+  const skillTools = options.nativeSkills || (ctx.skills?.().length ?? 0) === 0 ? [] : skillToolDefs()
+  if (ctx.run.kind === 'work' && ctx.run.team === 'single') return bind([...singleToolDefs(engagement), ...(engagement ? [knowledgeRecallTool] : []), ...skillTools, ...selfKnowledgeDefsFor('single')], ctx, hooks)
   // Engagement work runs: the context notes and the knowledge graph (every role); never single, quick or setup-like runs.
-  const defs = [...WORK_TOOL_DEFS, ...(engagement ? [engagementContextTool, knowledgeRecallTool, knowledgeTool] : []), ...(options.nativeSkills ? [] : skillToolDefs()), ...selfKnowledgeDefsFor('work')]
+  const defs = [...WORK_TOOL_DEFS, ...(engagement ? [engagementContextTool, knowledgeRecallTool, knowledgeTool] : []), ...skillTools, ...selfKnowledgeDefsFor('work')]
   // Bridged reports: delegate_agent only when the run has bridged roles and the adapter does not route them through its own spawn tool.
   if (ctx.bridge && !ctx.bridgedChild && !options.bridgeThroughSpawn && ctx.bridge.roles().length) defs.push(delegateAgentTool)
   // A bridged child session's root is a report: no 'root'-audience tools (plan, proposals, org change, messaging, ask_user).
-  const bound = bind(defs, ctx, hooks)
+  const bound = leanWorkAudiences(bind(defs, ctx, hooks), engagement)
   return ctx.bridgedChild ? bound.filter((t) => t.audience !== 'root') : bound
 }
 

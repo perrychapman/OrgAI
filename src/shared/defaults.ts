@@ -1197,6 +1197,9 @@ export function newProject(input: { name: string; path: string; brief: string; s
     // (a 'switched' remap re-resolves every tiered role there).
     const ctx: TierContext = { connection: 'anthropic', tierModels: settings.connections.anthropic.tierModels }
     const roles = (kind === 'engagement' ? engagementRoles(ctx) : defaultRoles(ctx)).map((r) => {
+      // A report keeps the tier its preset gave it (researcher fast, specialist deep) while the app's report default is
+      // still the untouched factory value; a customized default applies to every report.
+      if (r.reportsTo !== null && settings.defaultReportModel === DEFAULT_APP_SETTINGS.defaultReportModel) return r
       const setting = r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel
       const resolved = resolveModelSetting(setting, ctx)
       if (!resolved) return r

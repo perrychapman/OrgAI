@@ -90,6 +90,10 @@ describe('nextNudge', () => {
 
   it('asks for a plan once, after the first completed turn without one', () => {
     expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 1 }))).toEqual({ kind: 'set-plan', text: SET_PLAN_NUDGE, summary: SET_PLAN_SUMMARY })
+    // A pure direct answer on turn 1 needs no plan; later turns and live reports are unaffected.
+    expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 1, directAnswerOnly: true }))).toEqual({ kind: 'none' })
+    expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 1, directAnswerOnly: false }))).toEqual({ kind: 'set-plan', text: SET_PLAN_NUDGE, summary: SET_PLAN_SUMMARY })
+    expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 1, directAnswerOnly: true, pendingInteractions: 1 })).kind).toBe('none')
     expect(SET_PLAN_NUDGE).toBe('Harness: before continuing, call set_plan with the goal and the concrete steps, then start on step 1.')
     expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 2 })).kind).toBe('none')
     expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 0 })).kind).toBe('none')
@@ -522,6 +526,30 @@ describe('ContinuationDriver turn-generation settlement (cli-spec 6.2(2))', () =
     await vi.advanceTimersByTimeAsync(3000)
     expect(host.nudges).toHaveLength(0)
     expect(d.turnGen).toBe(2)
+  })
+
+  it('a turn-1 pure direct answer (no tools, no reports, no cards) gets no set-plan nudge and settles', async () => {
+    current = undefined
+    host.directAnswerTurn = () => true
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(0)
+    expect(d.isSettledForTurn(1)).toBe(true)
+    expect(d.nudgeTurn1Sent).toBe(true)
+  })
+
+  it('a turn-1 answer that used tools, or a host without the signal, still gets the set-plan nudge', async () => {
+    current = undefined
+    host.directAnswerTurn = () => false
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(1)
+    delete host.directAnswerTurn
+    current = undefined
+    const d2 = new ContinuationDriver(host)
+    expect(d2.nudgeTurn1Sent).toBe(false)
   })
 
   it('nudgeTurn1Sent turns true once the set-plan nudge is sent', async () => {

@@ -542,18 +542,14 @@ describe('exec pauses: stop, cancel and manual resume (review fixes)', () => {
 })
 
 describe('exec finalizer and teardown order', () => {
-  it('a finalized run stays live until its final status is written (the title join)', async () => {
-    let resolveTitle!: (t: string) => void
-    const { m, fakes } = rig({ title: () => new Promise<string>((r) => (resolveTitle = r)) })
+  it('a finalized run settles at once: an exec run never waits on a title call', async () => {
+    const title = vi.fn(() => new Promise<string>(() => {}))
+    const { m, fakes } = rig({ title })
     const run = await m.start({ project: proj(), prompt: 'go', team: 'single', overrides: exec() })
     endTurn(fakes[0])
     await flush(100)
-    // The session ended (stop), but the finalizer waits for the title: the run still counts as live.
+    expect(title).not.toHaveBeenCalled()
     expect(fakes[0].stopCalls).toBe(1)
-    expect(m.liveRunCount()).toBe(1)
-    expect(finalized()).toHaveLength(0)
-    resolveTitle('A title')
-    await flush(100)
     expect(finalized()).toHaveLength(1)
     expect(m.summary(run.id)?.status).toBe('finished')
     expect(m.liveRunCount()).toBe(0)
@@ -667,23 +663,25 @@ describe('the finalizer', () => {
     expect(m.liveRunCount()).toBe(0)
   })
 
-  it('joins an in-flight title', async () => {
-    const title = vi.fn(
-      (input: CompletionInput) =>
-        new Promise<string>((resolve, reject) => {
-          const t = setTimeout(() => resolve('Fix the build'), 1000)
-          input.signal?.addEventListener('abort', () => {
-            clearTimeout(t)
-            reject(new Error('aborted'))
-          })
-        })
-    )
+  it('an exec run takes the first line of its prompt as its title and spends no title call', async () => {
+    const title = vi.fn(async () => 'Model title')
     const { m, fakes } = rig({ title })
-    const run = await m.start({ project: proj(), prompt: 'please fix the build', team: 'single', overrides: exec() })
+    const run = await m.start({ project: proj(), prompt: 'please fix the build\nand then the tests', team: 'single', overrides: exec() })
     endTurn(fakes[0])
-    await flush(2000)
+    await flush(200)
+    expect(title).not.toHaveBeenCalled()
+    expect(finalized()[0].summary.title).toBe('please fix the build')
+    expect(m.summary(run.id)?.title).toBe('please fix the build')
+    const long = await m.start({ project: proj(), prompt: 'x'.repeat(500), team: 'single', overrides: exec() })
+    expect((m.summary(long.id)?.title ?? '').length).toBeLessThanOrEqual(80)
+  })
+
+  it('an interactive run is still titled by the model', async () => {
+    const title = vi.fn(async () => 'Fix the build')
+    const { m } = rig({ title })
+    const run = await m.start({ project: proj(), prompt: 'please fix the build', team: 'single' })
+    await flush(200)
     expect(title).toHaveBeenCalled()
-    expect(finalized()[0].summary.title).toBe('Fix the build')
     expect(m.summary(run.id)?.title).toBe('Fix the build')
   })
 
