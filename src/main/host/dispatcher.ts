@@ -166,6 +166,7 @@ import {
   removeNote,
   removeProjectData,
   removeSkillEvaluation,
+  removeEvolutionLedger,
   retainRunProject,
   saveNote,
   updateEngagementDocument
@@ -553,6 +554,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     projects.remove(id)
     removeProjectData(settings.dataDir, id)
     removeSkillEvaluation(settings.dataDir, id)
+    removeEvolutionLedger(settings.dataDir, id)
     return { ...facts, runsRemoved: typeof removed === 'number' ? removed : facts.runsRemoved }
   })
   handle(IPC.projectsRemovePreview, (_e, input: unknown): ProjectRemoveResult => {

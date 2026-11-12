@@ -588,7 +588,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       // Only runs the engine measures count toward the limit (a stopped run or a chat must not crowd out a team run).
       for (const s of runStore.list(projectId)) {
         if (out.length >= limit) break
-        if (s.status !== 'finished' && s.status !== 'error') continue
+        // The engine's own rule (finished, failed or paused on a usage limit; not stopped or cut by quitting).
         if (!isMeasuredRun({ summary: s })) continue
         const rec = runStore.getRecord(s.id)
         if (rec) out.push(rec)

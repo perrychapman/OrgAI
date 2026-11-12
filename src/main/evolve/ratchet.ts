@@ -269,6 +269,21 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
         out.staffing = st
       }
     }
+    // Whatever the patch does to tier, model and staffing, the floor staffing enforces afterwards (effectiveRoleStaffing of
+    // the patched role) may not exceed the one it enforced before, unless the floor raise is this role's one allowed raise.
+    // A stored floor the runtime ignored (above the old tier) is otherwise switched on by any tier change that reaches it.
+    if ((out.tier !== undefined || out.staffing) && raises[0] !== 'floor') {
+      const floorAfter = (o: EvolutionRolePatch): ModelTier | undefined => effectiveRoleStaffing(applyPlan({ ...project, roles: [role] }, { rolePatches: [o] }).roles[0], project).minTier
+      const raised = (f: ModelTier | undefined): boolean => !!f && compareTier(f, effFloor ?? 'fast') > 0
+      if (raised(floorAfter(out))) {
+        const st: RoleStaffing = { ...(out.staffing ?? role.staffing ?? { mode: 'auto' }) }
+        if (effFloor) st.minTier = effFloor
+        else delete st.minTier
+        if (equal(st, role.staffing)) delete out.staffing
+        else out.staffing = st
+        trim('floor_not_raised', `${slug}: the staffing floor stays at the one enforced before (${effFloor ?? 'none'})`, slug)
+      }
+    }
     const adds: ToolName[] = []
     for (const t of Array.isArray(rawPatch.addTools) ? rawPatch.addTools : []) {
       if (!isTool(t)) {

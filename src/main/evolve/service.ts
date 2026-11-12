@@ -385,14 +385,18 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     }
     const snap = gen.snapshot
     if (!unusable) {
+      // Skill changes are undone only as far as the generation's own plan made them: a skill is removed only when the
+      // plan added one by that name, and removed skills come back only when the plan pruned skills (never today).
+      const newNames = new Set((Array.isArray(gen.plan?.newSkills) ? gen.plan.newSkills : []).map((s) => s?.name))
+      const pruned = Array.isArray(gen.plan?.pruneSkillIds) ? gen.plan.pruneSkillIds.length : 0
       for (const id of Array.isArray(snap?.addedSkillIds) ? snap.addedSkillIds : []) {
         try {
-          if (typeof id === 'string' && deps.getProject(projectId)?.skills?.some((s) => s.id === id)) deps.skills?.remove({ projectId, skillId: id })
+          if (typeof id === 'string' && deps.getProject(projectId)?.skills?.some((s) => s.id === id && newNames.has(s.name))) deps.skills?.remove({ projectId, skillId: id })
         } catch (e) {
           notes.push(`could not remove added skill: ${e instanceof Error ? e.message : String(e)}`)
         }
       }
-      for (const s of Array.isArray(snap?.prunedSkills) ? snap.prunedSkills : []) {
+      for (const s of (Array.isArray(snap?.prunedSkills) ? snap.prunedSkills : []).slice(0, pruned)) {
         try {
           if (!isObj(s) || draftProblem({ name: s.name, description: s.description, body: s.body })) throw new Error('malformed skill entry')
           const fresh = deps.getProject(projectId) ?? updated

@@ -253,6 +253,16 @@ export function removeSkillEvaluation(dataDir: string, projectId: string): boole
   return removeFileIfExists(skillEvaluationFile(dataDir, projectId))
 }
 
+/** `<data>/evolution/<projectId>.json` (the team-evolution ledger, evolve/ratchet.ts ledgerPath), or null for an unsafe id. */
+export function evolutionLedgerFile(dataDir: string, projectId: string): string | null {
+  return isSafeId(projectId) ? join(dataDir, 'evolution', `${projectId}.json`) : null
+}
+
+/** Remove a project's team-evolution ledger (its generations and snapshots) when the project is removed. */
+export function removeEvolutionLedger(dataDir: string, projectId: string): boolean {
+  return removeFileIfExists(evolutionLedgerFile(dataDir, projectId))
+}
+
 /** `<data>/projects/<projectId>/context`. */
 export function contextDir(dataDir: string, projectId: string): string {
   return join(projectDataDir(dataDir, projectId), 'context')

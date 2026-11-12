@@ -416,6 +416,21 @@ describe('skills', () => {
     expect(h.proj.skills?.map((s) => s.name)).toEqual(['old'])
     expect(h.proj.roles.find((r) => r.slug === 'dev')?.effort).toBe('high')
   })
+  it('a rollback undoes skill changes only as far as the plan made them (entries added to the snapshot later are ignored)', async () => {
+    const h = harness({ proj: withOld(), skills: true })
+    expect((await h.svc.apply({ projectId: 'p1' })).applied).toBe(true)
+    const file = join(dir, 'evolution', 'p1.json')
+    const { readFileSync, writeFileSync } = await import('node:fs')
+    const led = JSON.parse(readFileSync(file, 'utf8'))
+    led.generations[0].snapshot.prunedSkills = [{ name: 'injected', description: 'd', body: 'b', roleIds: ['r_lead'] }]
+    led.generations[0].snapshot.addedSkillIds = ['s_old']
+    writeFileSync(file, JSON.stringify(led))
+    const rb = await h.svc.rollback({ projectId: 'p1' })
+    expect(rb.rolledBack).toBe(true)
+    expect(h.skills.create).not.toHaveBeenCalled()
+    expect(h.skills.remove).not.toHaveBeenCalled()
+    expect(h.proj.skills?.map((s) => s.name)).toEqual(['old'])
+  })
   it('without a setEnabled port new skills are not applied, only reported', async () => {
     const h = harness({ proj: withOld(), skills: 'no-enable', skillFindings: never, complete: async () => ({ text: modelAnswer }) })
     const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid' })
