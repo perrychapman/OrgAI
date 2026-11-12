@@ -5,6 +5,7 @@
  */
 import { spawn } from 'node:child_process'
 import type { TranscriptEntry } from '../../shared/types'
+import { whichOnPath } from './pager'
 import { chainRuns } from './selectors'
 import { sanitizeTty } from './sanitizeTty'
 import type { TuiState } from './types'
@@ -78,6 +79,8 @@ export interface ClipboardDeps {
   write?: (s: string) => void
   platform?: NodeJS.Platform
   env?: NodeJS.ProcessEnv
+  /** Finds a program on the absolute PATH entries (tests replace it). Default whichOnPath. */
+  which?: (name: string, env: NodeJS.ProcessEnv) => string | null
   /** Runs `cmd args` with `input` on stdin; resolves true when it exited 0. */
   run?: (cmd: string, args: string[], input: string) => Promise<boolean>
 }
@@ -129,8 +132,14 @@ export async function copyToClipboard(text: string, deps: ClipboardDeps = {}): P
     via.push('terminal')
   }
   const run = deps.run ?? runWithInput
-  for (const c of clipboardCommands(deps.platform ?? process.platform, deps.env ?? process.env)) {
-    if (await run(c.cmd, c.args, text)) {
+  const env = deps.env ?? process.env
+  const which = deps.which ?? whichOnPath
+  for (const c of clipboardCommands(deps.platform ?? process.platform, env)) {
+    // An absolute path from an absolute PATH entry only: a bare name would let Windows run a clip.exe from the
+    // project folder (the current directory comes first there), and a relative PATH entry a program from the repo.
+    const file = which(c.cmd, env)
+    if (!file) continue
+    if (await run(file, c.args, text)) {
       via.push(c.cmd)
       break
     }

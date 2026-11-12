@@ -41,7 +41,7 @@ import { PaneLines, cutSegs, styleFor } from './panes/lines'
 import { runPickLines, runPickRows, type RunPickRow } from './runPick'
 import { adjacentLiveRun, agentDetail, cardsByAgent, collapseTarget, composerMode, inspectRef, offersRetro, orgTreeRows, partialRows, planView, resolveSelectedRow, runTagOf, statusSummary, subtreeIds, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
 import { usageText } from './usageText'
-import { SLASH_COMMANDS } from './slashCommands'
+import { NO_PROJECT_STAGE, SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
 import { StatusBar } from './StatusBar'
 import type { TuiTerminal } from './terminal'
@@ -1073,6 +1073,10 @@ export function App(props: AppProps) {
     const st = session.getState()
     const run = st.activeRunId ? st.runs[st.activeRunId]?.summary : undefined
     if (!run) {
+      if (!st.project) {
+        notify(NO_PROJECT_STAGE, 'warn')
+        return
+      }
       session.stage?.({ permissionMode: mode })
       notify(`The next run starts in ${mode} mode.`)
       return

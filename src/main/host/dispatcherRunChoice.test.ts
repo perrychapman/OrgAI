@@ -111,6 +111,13 @@ describe('runs:start per-run root choices', () => {
     expect(runs.start).not.toHaveBeenCalled()
   })
 
+  it('an in-process client without configure may not choose them (they can raise spend or widen the run)', async () => {
+    const { d, runs } = setup()
+    await expect(d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', effort: 'high' }], rpc(['read', 'operate'], 'inproc'))).rejects.toMatchObject({ code: 'scope_denied' })
+    await expect(d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', permissionMode: 'bypassPermissions' }], rpc(['read', 'operate'], 'inproc'))).rejects.toMatchObject({ code: 'scope_denied' })
+    expect(runs.start).not.toHaveBeenCalled()
+  })
+
   it('the in-process client (terminal UI, exec) may choose them: they reach RunManager as userChoice', async () => {
     const { d, runs } = setup()
     await d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', ...CHOICE }], rpc(ALL, 'inproc'))
@@ -138,6 +145,14 @@ describe('runs:continue and runs:resumeNow desktop flag', () => {
     await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more', exec: true }], rpc(['read', 'operate', 'configure'], 'inproc'))
     expect(runs.continueRun.mock.calls[1]).toHaveLength(4)
     expect(runs.continueRun.mock.calls[2][4]).not.toHaveProperty('desktop')
+  })
+
+  it('a plain in-process continue carries a chosen permission mode only with configure', async () => {
+    const { d, runs } = setup()
+    await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more' }], rpc(['read', 'operate', 'configure'], 'inproc'))
+    expect(runs.continueRun.mock.calls[0][4]).toEqual({ allowWidening: true })
+    await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more' }], rpc(['read', 'operate'], 'inproc'))
+    expect(runs.continueRun.mock.calls[1]).toHaveLength(4)
   })
 
   it('resumeNow passes { desktop: true } on the desktop only', async () => {

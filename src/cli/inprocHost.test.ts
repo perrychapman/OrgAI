@@ -15,7 +15,7 @@ import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../mai
 import { fakeCustody } from '../main/store/vaultTesting'
 import { VaultNotReady } from '../main/store/vaultTypes'
 import { connectHost } from './client/hostClient'
-import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, startInprocHost, type InprocHost } from './inprocHost'
+import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, memoryStreamPair, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
 import { CLI_VERSION } from './version'
 
@@ -256,5 +256,37 @@ describe('inprocHardLimitExit (cli-standalone.md 4.3)', () => {
     }
     inprocHardLimitExit(proc as unknown as Pick<NodeJS.Process, 'once' | 'exit'>, (s) => void order.push(`write:${s.trim()}`))
     expect(order).toEqual(['once:exit', 'exit:1', `write:${INPROC_HARD_LIMIT_MESSAGE}`])
+  })
+})
+
+describe('memoryStreamPair', () => {
+  const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
+  it('a writer waits while the reader is full, and goes on once the reader reads (socket-like backpressure)', async () => {
+    const [a, b] = memoryStreamPair(16)
+    b.pause()
+    let written = 0
+    a.write(Buffer.alloc(32, 1), () => written++)
+    await tick()
+    expect(written).toBe(0)
+    const got: Buffer[] = []
+    b.on('data', (c: Buffer) => got.push(c))
+    b.resume()
+    await tick()
+    await tick()
+    expect(written).toBe(1)
+    expect(Buffer.concat(got).length).toBe(32)
+    a.destroy()
+  })
+  it('a small write completes at once, and ending one side ends the other', async () => {
+    const [a, b] = memoryStreamPair()
+    let written = 0
+    const got: Buffer[] = []
+    b.on('data', (c: Buffer) => got.push(c))
+    const ended = new Promise<void>((r) => b.on('end', () => r()))
+    a.write(Buffer.from('hi'), () => written++)
+    a.end()
+    await ended
+    expect(written).toBe(1)
+    expect(Buffer.concat(got).toString()).toBe('hi')
   })
 })

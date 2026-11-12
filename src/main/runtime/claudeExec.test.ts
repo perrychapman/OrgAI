@@ -255,7 +255,19 @@ describe('ClaudeSession exec settlement (fake query)', () => {
 
   const toolTurn = { type: 'assistant', uuid: 'a-tool', parent_tool_use_id: null, message: { id: 'a-tool', model: 'm', content: [{ type: 'tool_use', id: 'tu-bash', name: 'Bash', input: { command: 'ls' } }] } }
 
-  it('turn 1 pure direct answer: no set-plan nudge, the turn settles and exec may end it completed-unplanned', async () => {
+  it('exec run: a turn-1 text-only reply still gets the set-plan nudge (an acknowledgement must not end a headless run)', async () => {
+    const { ctx, session, activity } = start({ autoContinue: true, continuationDelayMs: 10 })
+    ctx.run.overrides = { ...ctx.run.overrides, execMode: true }
+    const q = await firstQuery()
+    q.emit(init)
+    q.emit({ type: 'assistant', uuid: 'a-ack', parent_tool_use_id: null, message: { id: 'a-ack', model: 'm', content: [{ type: 'text', text: "I'll inspect the tests." }] } })
+    q.emit(result())
+    await vi.waitFor(() => expect(session.settlement().nudgeTurn1Sent).toBe(true))
+    expect(session.settlement().continuationSettled).toBe(false)
+    expect(activity).toContain('message')
+  })
+
+  it('interactive run: turn 1 pure direct answer gets no set-plan nudge and the turn settles', async () => {
     const { session, activity } = start({ autoContinue: true, continuationDelayMs: 10 })
     const q = await firstQuery()
     q.emit(init)

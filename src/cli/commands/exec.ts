@@ -23,7 +23,7 @@
  *   then exits 130 / 143; a second signal exits at once.
  * - The in-process host is stopped (force) before the command returns.
  */
-import { fstatSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { fstatSync, lstatSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { MAX_AUTO_CONTINUES_LIMIT, projectConnection } from '../../shared/defaults'
 import {
@@ -54,7 +54,7 @@ import {
   type TeamFilesStatus,
   type TranscriptEntry
 } from '../../shared/types'
-import { isOpenStatus } from '../../shared/view/runChains'
+import { newestContinuable } from '../../shared/view/runChains'
 import { runIndexMap, runTag } from '../../shared/view/runLabels'
 import { statusText } from '../../shared/view/runStatus'
 import { overridesWidening } from '../../main/runtime/runOverrides'
@@ -63,7 +63,7 @@ import { RunStream, defaultRunStreamTimers, type RunStreamTimers, type SnapshotR
 import { TUI_FLAGS, findCommand } from '../commandTable'
 import { parseFlags, type FlagSpec } from '../flags'
 import { readStdinText } from '../manage'
-import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
+import { emit, emitLine, isJsonOutput, note, printText, safe, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { staffingLine } from '../staffingText'
 import { pendingTeamFilesLine } from '../approvalText'
@@ -373,6 +373,29 @@ export class Session {
   }
 }
 
+/**
+ * Write `--output-last-message`: a temporary file beside the destination, then a rename over it, so a symlink or a hard
+ * link at the destination is replaced, never written through. An existing destination that is not a regular file (a
+ * directory, a device, a link) is refused.
+ */
+export function writeLastMessage(file: string, text: string): void {
+  let existing: ReturnType<typeof lstatSync> | undefined
+  try {
+    existing = lstatSync(file)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+  }
+  if (existing && !existing.isFile()) throw new Error(existing.isSymbolicLink() ? 'it is a symbolic link' : 'it is not a regular file')
+  const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`
+  try {
+    writeFileSync(tmp, text, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    renameSync(tmp, file)
+  } catch (e) {
+    rmSync(tmp, { force: true })
+    throw e
+  }
+}
+
 export async function openSession(ctx: CliContext, configure: boolean): Promise<Session> {
   const scopes: HostScope[] = configure ? ['read', 'operate', 'configure'] : ['read', 'operate']
   const host = await ensureHost(ctx, scopes, { interactive: false, inproc: EXEC_INPROC })
@@ -477,8 +500,8 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
     }
   }
 
-  // --evolve needs 'configure': the post-run pass changes the team.
-  const session = await openSession(ctx, create || evolve !== undefined)
+  // --evolve (the post-run pass changes the team) and --model / --effort (the run's root model and effort) need 'configure'.
+  const session = await openSession(ctx, create || evolve !== undefined || modelFlag !== undefined || effortFlag !== undefined)
   return runAndFollow(ctx, session, runOutput, async () => {
     if (quick) {
       if (overridesNeedConfigure(undefined, overrides)) await session.needConfigure()
@@ -503,8 +526,9 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
       const runs = await liveSource(session.client).runs(project.id).catch((e: unknown) => {
         throw hostFailure(e)
       })
-      const ended = runs.find((r) => !isOpenStatus(r.status))
-      if (!ended) throw usage('This project has no ended run to continue; start one with: orgai exec "<prompt>"')
+      const ended = newestContinuable(runs)
+      if (!ended) throw usage('This project has no ended work run to continue; start one with: orgai exec "<prompt>"')
+      if (!isJsonOutput(ctx) && !quiet) note(ctx, `Continuing run ${safeLine(ended.id)}${ended.title ? ` (${safeLine(ended.title)})` : ''}.`)
       await noteTeamFiles(ctx, session.client, project.id)
       return call<RunSummary>(session.client, 'runs:continue', [{ runId: ended.id, text: prompt, ...(images.length ? { images } : {}), overrides, exec: true }])
     }
@@ -577,8 +601,8 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
       runs = await src.runs(res.project.id).catch((e: unknown) => {
         throw hostFailure(e)
       })
-      const ended = runs.find((r) => !isOpenStatus(r.status))
-      if (!ended) throw usage('This project has no ended run to resume.')
+      const ended = newestContinuable(runs)
+      if (!ended) throw usage('This project has no ended work run to resume.')
       runId = ended.id
     }
     const from = runs.find((r) => r.id === runId)
@@ -742,6 +766,11 @@ export async function runAndFollow(ctx: CliContext, session: Session, output: Ru
     const key = `${runId}:${level}:${message}`
     if (line === null || logged.has(key)) return
     logged.add(key)
+    // --quiet keeps stdout for the answer: progress is dropped, a warning or error goes to stderr.
+    if (quiet) {
+      if (level === 'warn' || level === 'error') warn(ctx, `${tagOf(runId)} ${message}`)
+      return
+    }
     printText(ctx, `${st.dim(tagOf(runId))} ${line}`)
   }
   /** `runId:agentId` -> compactions seen in this stream (agent.compacted). */
@@ -823,13 +852,22 @@ export async function runAndFollow(ctx: CliContext, session: Session, output: Ru
     finalized = true
     if (stopTimer) clearTimeout(stopTimer)
     void (async () => {
-      const code = signal ? signalCode(signal) : (EXEC_OUTCOME_EXIT_CODE[outcome] ?? EXIT.failure)
+      let code = signal ? signalCode(signal) : (EXEC_OUTCOME_EXIT_CODE[outcome] ?? EXIT.failure)
       const rec =
         (await session.client.call<RunRecord | null>('runs:get', [summary.id], { timeoutMs: 60_000 }).catch(() => null)) ??
         (lastActive?.summary.id === summary.id ? lastActive : null)
       const state = runs.get(summary.id)
       const status = statusText(statusViewOf({ summary, plan: rec?.plan, agents: rec?.agents ?? state?.agents }))
       const result = lastRootText(rec)
+      // The requested file is written before anything reports success: a write that fails makes the command fail.
+      if (output.lastMessageFile) {
+        try {
+          writeLastMessage(output.lastMessageFile, result ?? '')
+        } catch (e) {
+          warn(ctx, `Could not write ${safeLine(output.lastMessageFile)}: ${safeLine(e instanceof Error ? e.message : String(e))}`)
+          if (code === EXIT.ok) code = EXIT.failure
+        }
+      }
       // Team evolution: the pass RunManager started when the run ended (never started here); a failure is reported, not fatal.
       let evolveResult: EvolvePostRunResult | null | undefined
       let evolveError: string | undefined
@@ -858,17 +896,11 @@ export async function runAndFollow(ctx: CliContext, session: Session, output: Ru
       else if (json) emit(ctx, doc, () => [])
       else if (quiet) {
         // Only the answer on stdout; how the run ended is the exit code, and a failure is said on stderr.
-        if (result) printText(ctx, result.replace(/\n+$/, ''))
+        // Sanitized like every other terminal text (no escape sequences from the model); --output-last-message keeps it raw.
+        if (result) printText(ctx, safe(result).replace(/\n+$/, ''))
         if (outcome !== 'completed' && outcome !== 'completed-unplanned') warn(ctx, `${OUTCOME_LABEL[outcome] ?? safeLine(outcome)} (${EXEC_OUTCOME_EXIT_CODE[outcome] ?? EXIT.failure})`)
       } else printText(ctx, `${st.bold(OUTCOME_LABEL[outcome] ?? safeLine(outcome))} · ${styleStatus(st, status)} · ${costText(summary)}`)
       if (output.evolve && !json && !silent) warn(ctx, evolveLine(evolveResult, evolveError))
-      if (output.lastMessageFile) {
-        try {
-          writeFileSync(output.lastMessageFile, result ?? '', 'utf8')
-        } catch (e) {
-          warn(ctx, `Could not write ${safeLine(output.lastMessageFile)}: ${safeLine(e instanceof Error ? e.message : String(e))}`)
-        }
-      }
       resolveExit(code)
     })()
   }
@@ -914,7 +946,7 @@ export async function runAndFollow(ctx: CliContext, session: Session, output: Ru
         const key = `${runId}:${ev.agentId}`
         const n = (compacted.get(key) ?? 0) + 1
         compacted.set(key, n)
-        if (!json) printText(ctx, `${st.dim(tagOf(runId))} ${safeLine(compactionLine(agentOf(runId, ev.agentId)?.name ?? ev.agentId, Math.max(n, agentOf(runId, ev.agentId)?.compactions ?? 0)))}`)
+        if (!json && !quiet) printText(ctx, `${st.dim(tagOf(runId))} ${safeLine(compactionLine(agentOf(runId, ev.agentId)?.name ?? ev.agentId, Math.max(n, agentOf(runId, ev.agentId)?.compactions ?? 0)))}`)
         return
       }
       case 'staffing.updated':

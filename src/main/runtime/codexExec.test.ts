@@ -156,7 +156,15 @@ describe('CodexSession exec settlement (fake app-server)', () => {
 
   const command = { threadId: 'th-1', turnId: 'tu-1', startedAtMs: 1, item: { type: 'commandExecution', id: 'it-c1', pluginId: null, scriptPath: null, command: 'git status', cwd: '/repo', processId: null, source: 'agent', status: 'inProgress', commandActions: [{ type: 'unknown', command: 'git status' }], aggregatedOutput: null, exitCode: null, durationMs: null } }
 
-  it('turn 1 pure direct answer: no set-plan nudge, the turn settles and exec may end it completed-unplanned', async () => {
+  it('exec run: a turn-1 text-only reply still gets the set-plan nudge (an acknowledgement must not end a headless run)', async () => {
+    const { s, ctx } = await start({ autoContinue: true })
+    ctx.run.overrides = { ...ctx.run.overrides, execMode: true }
+    s.push('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'm1', text: "I'll inspect the tests.", phase: 'final_answer' } })
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
+  })
+
+  it('interactive run: turn 1 pure direct answer gets no set-plan nudge and the turn settles', async () => {
     const { s, session: sess, activity } = await start({ autoContinue: true })
     s.push('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'm1', text: 'It is 4.', phase: 'final_answer' } })
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
