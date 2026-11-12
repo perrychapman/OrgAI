@@ -1,7 +1,7 @@
 # Parallel `orgai` sessions: design spec
 
-Status: draft 6, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-5 by GPT Astra and Gemini
-Carbon; all ten reviews BLOCKED. Resolutions are in section 14. Owner direction (2026-11-11): "mirror Claude Code / Codex":
+Status: draft 7, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-6 by GPT Astra and Gemini
+Carbon; all twelve reviews BLOCKED. Resolutions are in section 14. Owner direction (2026-11-11): "mirror Claude Code / Codex":
 any number of `orgai` processes at once, in any projects, on one CLI data folder, each terminal its own session. This
 reverses `cli-standalone-default.md` G4 ("one `orgai` host process per CLI data folder") and promotes its non-goal
 "parallel independent sessions like Claude Code" to a goal. Written against `pr/team-evolution` at b08d534f (the tip of
@@ -135,7 +135,7 @@ Protocol:
 
 - **Files are always 0 bytes.** A missing lock file is created `open(O_CREAT|O_EXCL, 0600)` and closed before SQLite
   opens it; it is never written. Before each SQLite open, `lstat` (no descriptor) must show a regular, non-link file of
-  size 0 owned by this user (POSIX), with no `-journal`/`-wal` sibling; anything else fails closed naming the path.
+  size 0 owned by this user (POSIX), with no `-journal`, `-wal` or `-shm` sibling; anything else fails closed naming the path.
   Lock files are never opened, read or closed outside SQLite (closing a raw descriptor would drop the process's POSIX
   locks on the inode, SQLite "how to corrupt" 2.2).
 - **Exclusive**: `BEGIN EXCLUSIVE`. **Shared**: `BEGIN` + `SELECT count(*) FROM sqlite_schema`. **Release**:
@@ -212,8 +212,7 @@ code).
   `upgradeHold`, 4.1), `worktree-<repo>-<branch>`, `housekeeping`.
 - **Session holds** are shared locks that never wait (they conflict only with an exclusive claim, which is a refusal):
   shared `project-<pid>` (taken when a session opens, creates, promotes into or runs in a stored project, at any point),
-  shared `repo-usage-<repo>`, shared `mcp-build-use-<entryId>-<buildId>` (held while a server of that build runs,
-  6.3). Shared `admission` is the one waiting hold, taken first at process start (4.6).
+  shared `repo-usage-<repo>`. Shared `admission` is the one waiting hold, taken first at process start (4.6).
 - **Transaction locks** wait (bounded) and are acquired in this order; several locks of one row in sorted key order.
   **Coordinators** compute the lock set they need from a read, acquire it in order, re-read and check the set is
   unchanged (else release all and retry, at most 3 times), then work; services called inside reuse the held locks and
@@ -221,6 +220,10 @@ code).
   assertion also throws on an out-of-order acquisition. **Save-hook closure**: any lock set that saves a stored
   project includes, for each such project, `team-<pid>` and (when its team files are active) `repo-<its repo>`, plus
   the `oauth-<owner>` locks of credentials the save moves; the table below is written with that closure applied.
+  **Effect discovery**: a coordinator's read includes every effect its services may cause, notably connector entries
+  a team-files or capability operation may add to or remove from the library (`connectorEntryForTeam` /
+  `connectorsAdd` / `discardConnectorEntryForTeam`, `mcp/service.ts:1743-1768`, code); if one is possible, `library`
+  is in the set. A lock-contract assertion is never caught and turned into an ordinary lookup failure.
 
 | Order | Transaction lock | Wait | Covers |
 |---|---|---|---|
@@ -250,7 +253,12 @@ coordinator retry included):
 | library skill/MCP/preset/template edit or removal with linked projects; `skills:promote`, `mcp:promote`, `persistInstall` with scope `library` (MCP install card), template save-from-project and apply | 1 → 2 (source and linked projects) → 3 (their repos) → 4 (when credentials move) → 11 → 12 |
 | setup proposal | by kind: `mcpServers`/`skills` that are not project-only 1 → 2 (target and linked projects); project-only 2; then 3 for `.orgai/`/`CLAUDE.md`, 9 (`engagement-<pid>`) for an engagement `architecture`, 10 for `settings` permission rules, 11, 12 |
 | capability apply / undo | 1 when a connector entry is added or removed → 2 (target, and linked projects on undo) → 11 → 12 |
-| team-files operation | 2 → 3 → 4 (server secrets) → 11 → 12 |
+| team-files operation (approve, reject, enable, remove, undo, overwrite, commit, `createFromFolder`, `evaluate`'s auto-apply) | 1 when a connector entry may be added or removed → 2 → 3 → 4 (server secrets) → 11 → 12 |
+| team-files read checks (`status`, `focused`, `beforeRun`, each project of `listAttention` / `checkAll`) | inspect read-only first; when a change is needed, release and run the team-files operation's coordinator |
+| project MCP server add, edit, remove; `persistInstall` with scope `project` | 2 → 3 → 4 (when credentials move or clear) → 11 → 12 |
+| `mcp:copyFromLibrary`, `mcp:linkLibrary`, `skills:linkLibrary` | 1 → 2 → 3 → 11 → 12 |
+| setup lifecycle saves (`prepare`, `complete`, `markScaffolded`, `markArchitectureUpdated`, `applyOrg`) | 2 → 3 → 9 (`engagement-<pid>` for an engagement architecture) → 12 |
+| accept edits for a project (`acceptEditsForProject` sets `permissionMode`, a team-owned field) | 2 → 3 → 12 |
 | capability apply / undo, setup proposals, kit import, evolution | as listed, with the save-hook closure |
 | project skill create, update, removal | 2 → 3 → 12 |
 | team definition import (`projects:applyImport`; the folder digest re-checked under the locks) | 2 → 3 → 12 |
@@ -258,9 +266,10 @@ coordinator retry included):
 | community price refresh (`CommunityPrices.refresh`, single flight) | 5 (`prices-refresh`) → 12 |
 | evolution commit | 2 → 3 → 12 |
 | uninstall | 2 → 3 → `repo-usage` upgrade (4.1) |
-| project removal | 2 → `project` upgrade or exclusive claim (4.1) → 3 → 7, 8, 9 → 11 → 12 |
+| project removal | 2 → `project` upgrade or exclusive claim (4.1) → claims on every chain of the project (6.3) → 3 → 7, 8, 9 → 11 → 12 |
 | OAuth refresh/revoke/authorise | 4 → 11 → 12; the config's OAuth display fields (`expiresAt`, `authorizedAt`) are patched by `SharedJsonFile.update` / `mutateProject` under 12 only (they have no team-file effects), never through `library` or `team` saves |
-| model discovery | 5 (`models-discovery`) → 6 (Codex) → 12 (`models.json`); release; then project remapping as its own coordinator 2 (affected projects) → 12 |
+| model discovery | 5 (`models-discovery`) → 6 (Codex) → 12 (`models.json`); release; then project remapping as its own coordinator 2 (affected projects) → 3 (their repos) → 12 |
+| `projects:remapModels`, `connections:update` remapping | 2 (affected projects) → 3 (their repos) → 12 |
 | plan usage | 5 → 6 (Codex) → 12 |
 | knowledge adding a note | 8 → 9 |
 | staffing record at run end | 9 (`staffing-<pid>`) |
@@ -280,20 +289,22 @@ coordinator retry included):
   stored-run writes, housekeeping) reads it first, under the claim:
   - `clean`: normal. `clean` means **writes settled and consumers released**: the owning host writes it only after
     the chain's provider processes and their descendants (from its own process table, 4.8) have exited, or after
-    handing each still-running resource user to a durable hold (an MCP build use hold, 6.3). While a descendant of
+    leaving them to a protection that outlives the chain (the epoch rule for skill and MCP build versions, 6.3). While a descendant of
     the chain lingers, the host keeps the record `open` with `lingering: [pids]` and re-checks every 5 s; if the host
     exits first, the next claimer runs the consumer check.
   - `open` (its host's claim was released without a clean settlement, so that host died): **unclean**; the consumer
     check (4.8) runs inline before anything else, whatever the run statuses say (a host can die after writing
     `finished`).
   - missing for a chain that has format-2 runs: **uncertain** (4.8).
-  - Conversion writes every migrated chain's record (4.7 step 5). A format-1 terminal status does not prove its
-    consumers stopped, so the record is `legacy-uncertain` unless the **legacy release scan** passes for the whole
-    folder: the legacy host recorded in `run/daemon.json` (if any) is dead, no process has its working directory inside
-    any of the folder's scratch folders or its projects' agent worktrees, and no process's command line names the data
-    folder or a scratch folder (`ps -A -o pid=,args=`, own user). If the scan passes, every migrated record is
-    `clean`. `legacy-uncertain` counts as uncertain (4.8); housekeeping repeats the scan and turns all of them `clean`
-    once it passes.
+  - Conversion writes every migrated chain's record (4.7 step 5) as `legacy-uncertain`: format 1 kept no evidence of
+    the processes a run started, and a scan cannot prove them gone (a shell in a project root names no OrgAI path).
+    `legacy-uncertain` counts as uncertain (4.8). The first TUI start after an upgrade asks once: "Conversations from
+    before the upgrade: confirm that no older OrgAI is still running (all its terminals and agents have stopped)." A
+    yes turns every `legacy-uncertain` record `clean`; `orgai doctor --confirm-legacy-stopped` does the same without a
+    TUI, and `--after-crash` covers a single command. A scan for known-live processes (cwd inside a scratch folder,
+    worktree or project root of the folder's projects; command lines naming a format-1 path component-wise, excluding
+    this process, live format-2 hosts and their recorded descendants; on Windows CIM `Win32_Process.CommandLine`, no
+    cwd) runs before the question and lists what it found; it only ever adds warnings, never clears.
 - **Provider session binding.** Every point that records a provider session id (`session.started`, a `run.status`
   that sets or changes `sessionId`, continuation, restart; `runManager.ts:1883-1938, 4995-4998`, code) binds it under
   the chain claim: key `sha256("<adapter>\0<sessionId>")` with `<adapter>` = `claude` or `codex` (the provider whose
@@ -301,7 +312,7 @@ coordinator retry included):
   `<key>.json.tmp-<hostId>-<random>` with `wx`, fsync, `link` to `<key>.json`, unlink the tmp; `EEXIST` → read the
   existing file: same `chainId` is success (idempotent), another `chainId` refuses the binding and ends the run with an
   error, "This provider session belongs to another conversation"). Conversion creates the bindings of migrated
-  summaries after its commit (4.7 step 7). Bindings are removed with their chain (5.2) and swept when their chain has
+  summaries before its commit (4.7 step 5). Bindings are removed with their chain (5.2) and swept when their chain has
   no summary and its claim is free (5.4).
 - **One writer per chain.** The process that starts or continues a run claims `chain-<chainId>` before it chooses what
   to start and holds it until the chain is settled in that process: the run is terminal or deliberately paused without
@@ -368,7 +379,8 @@ For `v2/` `projects.json`, `settings.json`, `skill-library.json`, `mcp-library.j
   startedAt }`, advisory) and an initial empty `control/hosts/<hostInstanceId>.children.json` **before** it can spawn
   anything (4.8). A host is live exactly when its lock is held (probe).
 - Owner-scoped resources carry the `hostInstanceId` and live under `v2/`, never the OS temp dir:
-  `v2/tmp/skills/<hostId>-*` (replacing `orgai-skills-*` in the OS temp dir; legacy names are never touched),
+  `v2/tmp/skills/<hostId>/` with one `<runId>-<random>/` folder per run, removed at run end (replacing
+  `orgai-skills-*` in the OS temp dir; legacy names are never touched),
   `v2/tmp/codex-catalog/<hostId>-<key>.json`, `v2/auth-cwd/<hostId>/`, `v2/harness-workspace/<hostId>/`,
   `.undo-<hostId>`, tmp files, logs. They are swept only when that host's lock is free **and** its consumer check
   passes (4.8).
@@ -387,7 +399,7 @@ For `v2/` `projects.json`, `settings.json`, `skill-library.json`, `mcp-library.j
 
 **Layout.**
 
-- `<dataDir>/control/`: coordination only (`locks/`, `hosts/`, `journal/`, `sessions/`). Created when first needed
+- `<dataDir>/control/`: coordination only (`locks/`, `hosts/`, `chains/`, `journal/`, `sessions/`). Created when first needed
   (also by phase 2, 12), never copied, never published, never deleted. Old code does not know it.
 - `<dataDir>/v2/`: format-2 data. It counts as committed only when `v2/FORMAT.json` (`{ format: 2, createdBy,
   manifestSha256 }`) exists and parses; it is written inside the staging folder and published with it by one rename.
@@ -440,13 +452,15 @@ anything, the desktop the same at start):
    and fails the conversion, listing the field paths, if a legacy location remains. Transcripts and logs are copied
    as history, unchanged. Paths outside the data folder are left alone. A unit test runs the exhaustive scan over
    synthetic fixtures with the free-text exclusion list, so a new operational field is caught.
-   **Legacy crash leftovers**: for chains with a non-terminal format-1 run, a cwd scan (4.8) of their scratch folders
-   and worktrees decides `clean` or `legacy-unclean` for their ownership records (4.3).
+   **Skills and builds** become version folders: `skills/<entryId>/` → `skills/<entryId>/<versionId>/`,
+   `project-skills/<pid>/<skillId>/` → `project-skills/<pid>/<skillId>/<versionId>/`, `mcp-builds/<entryId>/` →
+   `mcp-builds/<entryId>/<buildId>/`, with `versionId` / `buildId` written into `skill-library.json`, `projects.json`
+   and `mcp-library.json` (6.3).
 5. Fsync every written file and directory; write `MANIFEST.json` (path, size and SHA-256 of every regular file in
    staging except the Codex home's caches) and then `FORMAT.json`, fsync both and the staging directory; re-read and
-   validate everything. Run the legacy release scan (4.3) and write, durably, every migrated chain's ownership record
-   and provider session binding in `control/` (idempotent: same content or same `chainId` is success), so they exist
-   before the commit. Re-check the source manifest, the fence content and the mutex owner
+   validate everything. Write, durably, every migrated chain's ownership record (`legacy-uncertain`, 4.3) and provider
+   session binding in `control/` (idempotent: same content or same `chainId` is success), so they exist before the
+   commit. Re-check the source manifest, the fence content and the mutex owner
    token: any difference means an old process touched the folder: discard the staging folder and refuse ("Another
    OrgAI changed this folder during the upgrade; quit it and start again").
 6. Rename `v2.staging-<hostId>` to `v2` (it does not exist yet), fsync `<dataDir>`. This is the commit point.
@@ -469,9 +483,9 @@ The OS frees a dead host's locks, but agents, shells, git, MCP servers or Codex 
   then on every spawn and every 5 s, durable): its descendants (pid and start time) from the process-table reader
   `shutdown.ts` already uses (`ps -A -o pid=,ppid=,stat=,lstart=`; Windows CIM `Win32_Process`, code), and each live
   run's chain id, scratch folder, worktree paths and MCP build directories in use.
-- **Where it applies**: an unclean, `open` or uncertain (including `legacy-uncertain`) chain (4.3), and every
-  resource of a dead host (its worktrees,
-  owner-scoped dirs, journals, the scratch folders of its chains, MCP build use-holds it held).
+- **Where it applies**: an unclean, `open` or uncertain (including `legacy-uncertain`, cleared only by the user's
+  confirmation, 4.3) chain, and every resource of a dead host (its worktrees,
+  owner-scoped dirs, journals, the scratch folders of its chains, skill and MCP build versions it may have used).
 - **Consumer check**: the dead host's evidence file exists and is readable; none of its recorded descendants is alive
   with the same start time; and (macOS/Linux) no process has its working directory inside an affected worktree or
   scratch folder (`lsof -a -d cwd -Fn`, measured on macOS). Missing or unreadable evidence, or an ownership record that
@@ -494,38 +508,51 @@ The OS frees a dead host's locks, but agents, shells, git, MCP servers or Codex 
 - **Record**: a journaled operation writes `control/journal/ops/<opId>.json` under its locks before its first change:
   `{ op, hostId, requiredLocks, resources: [keys], steps: [{ id, kind, args, done }], state }` with `state` `active`
   → `committed`. Each step is an idempotent action (write this file version, patch these project fields, publish this
-  directory version, remove this entry) or its inverse for undo. For every resource key it touches the record is also
-  linked (`link`, parent fsynced) as `control/journal/by-resource/<key>/<opId>.json`, so an operation on any of those
-  resources finds it. Resource keys: `project-<pid>`, `library`, `mcp-build-<entryId>`, `skill-<entryId>`,
+  directory version, remove this entry) with a precondition and postcondition it can check (the identity the target
+  must have before and after: a file version, a field value, a directory's existence), and a conditional inverse.
+  For every resource key it touches an immutable **locator** `control/journal/by-resource/<key>/<opId>` (an empty file
+  whose name is the operation id) is created and its parent fsynced, so an operation on any of those resources finds
+  it; state is always read from the canonical `ops/<opId>.json`, never through a locator. Resource keys: `project-<pid>`, `library`, `mcp-build-<entryId>`, `skill-<entryId>`,
   `outputs-<pid>`, `notes-<pid>`, `templates`, `chain-<chainId>` (promotion).
-- **Durable ordering**: (1) journal and its links written and fsynced (files and directories); (2) each step's effect
-  made durable (tmp + fsync + rename + directory fsync through one shared atomic-write helper, which notes, templates
-  and every other journaled store use), then the step marked `done` in the journal (durable); (3) `state: committed`
-  (durable) only after **every** step, including the post-commit ones (companion files after `projects.json`, data
-  after the project left `projects.json`), is done; (4) links and journal unlinked, directories fsynced.
+- **Durable ordering**: (1) canonical journal written and fsynced, then its locators (files and directories
+  fsynced); (2) for each step: mark it `started` (durable), make its effect durable (tmp + fsync + rename + directory
+  fsync through one shared atomic-write helper, which notes, templates and every other journaled store use), mark it
+  `done` (durable); (3) `state: committed` (durable) only after **every** step, including the post-commit ones
+  (companion files after `projects.json`, data after the project left `projects.json`), is done; (4) locators, then
+  the canonical journal unlinked, directories fsynced. Canonical updates are tmp + rename of `ops/<opId>.json`.
 - **Recovery** never infers completion from a resource's generation. A pending journal found under a resource key:
   - its `requiredLocks` not all held by the finder: release everything, run a recovery coordinator that acquires
     `requiredLocks` in order (and, if the journal's host is dead, runs its consumer check), recover, release, restart
     the operation from the beginning;
   - `committed`: only remove it;
-  - `active`: per the operation's rule, either roll forward (redo every step not `done`, then commit) or roll back
-    (undo the `done` steps in reverse, then remove); each operation's rule says which (below), and a step whose
-    precondition no longer holds (the target changed outside the operation) stops recovery, keeps the journal as
+  - `active`: per the operation's rule. **Roll forward** (the default): for each step not `done`, check its
+    postcondition (already applied → mark done) else its precondition (→ apply, mark done), then commit. **Roll back**
+    (only where the rule says so, and only while no step past the rule's point of no return has `started`): for every
+    step that is `started` or `done`, in reverse, check its postcondition and apply the conditional inverse if it
+    holds; rollback progress is recorded (`undone`) so an interrupted rollback continues. A step whose pre- and
+    postcondition both fail (the target changed outside the operation) stops recovery, keeps the journal as
     `needs-attention`, refuses the operation and shows it in `doctor` and `/sessions`;
+  - a locator whose canonical journal is missing is removed; a canonical journal whose locators are incomplete gets
+    them re-created before anything else;
   - idempotent; never re-creates a retired chain or project (existence checked first).
   A journal can be pending while its own host is alive (the operation threw, or its finally-handler could not finish):
   the host marks it `abandoned` when it can; either way, whoever next holds `requiredLocks` recovers it.
   Housekeeping uses the same recovery coordinator.
-- **Project fields**: journaled steps patch only fields owned by `team-<pid>`; the fields that `config`-only patches may
-  change (OAuth display fields, `allowedDirectories` from `allowDirectories`, `acceptEdits` from
-  `acceptEditsForProject`, `permissionRules.ts`) are listed in `projects.ts` and are never touched by a journal, so a
-  concurrent `config`-only patch cannot invalidate a pending project journal.
+- **Project fields**: journaled steps patch only fields owned by `team-<pid>`. The only fields a `config`-only patch
+  may change are `allowedDirectories` (from `allowDirectories`) and the OAuth display sub-objects
+  (`mcpServers[i].oauth` display fields, and the same in MCP library entries); they are listed in `projects.ts`.
+  Journal steps that patch `mcpServers` or library entries merge by server or entry id and keep the live on-disk
+  `oauth` display sub-object when the credential owner is unchanged; OAuth display fields are never part of a step's
+  pre- or postcondition. `permissionMode` is team-owned (`acceptEditsForProject` takes `team-<pid>`, 4.2).
 - **Operations** (rule: F = roll forward, B = roll back), each with kill-point tests between every pair of steps, a
-  live session touching the resource before housekeeping, a host alive after a thrown error, and power-loss tests
-  (un-fsynced writes dropped after journal removal): quick promotion (B before the project is un-pended, F after);
-  MCP build install and replacement (F: publish the version, repoint the entry); MCP library entry removal (F); skill
-  library create, update and removal, project skill create, update, removal and promotion (F: publish the version,
-  repoint, update linked projects); skill proposal apply (F) and rollback (F); kit import (F); evolution apply and
+  live session touching the resource before housekeeping, a host alive after a thrown error, a crash after each
+  effect and before its `done` mark, a crash during rollback, and power-loss tests (un-fsynced writes dropped after
+  journal removal): quick promotion (F once the pending project exists; B only if no move has `started`);
+  MCP build install and replacement (F: publish the version, repoint the entry); MCP library entry removal (F); every
+  skill folder writer (F: publish a version, repoint, update linked projects): library create, update, removal,
+  `libraryAddFromFolder`, `libraryAddFromBundle`, `libraryImportForKit`, project skill create, update, removal,
+  promotion, `applyImport`, `undoImport`, `addSnapshot` (capability apply), `TeamFilesService.applyDoc`'s
+  `storeFiles` / `removeFiles`, and proposal rollback; skill proposal apply (F) and rollback (F); kit import (F); evolution apply and
   rollback (F); team-files apply (F); output version commit (F); notes (F: body, then index); templates (F: `org.json`,
   then index); project removal (F: out of `projects.json`, then data); team definition import (`projects:applyImport`,
   F).
@@ -575,13 +602,13 @@ sweeping: skip). Each row takes the locks or claims of what it touches and re-re
 |---|---|
 | journals | 4.9 recovery under the resources' locks |
 | crash settlement | 5.3 |
+| superseded skill and MCP build versions | 6.3 epoch rule, under `library` (library skills, builds) or `team-<pid>` (project skills), after journals and before host cleanup |
 | `prune(keepFor)`, orphan projects | 5.2; orphan-project removal re-reads `projects.json` and the retained list; project removal writes both in one `config` section |
 | orphan records / image dirs | entries without a summary (never live, 5.1) |
 | scratch folders `v2/quick/<chainId>/` | under the chain claim (busy: skip), ownership record classified, no summary of that chain references it |
 | owner-scoped dirs and files (4.5), `.undo-<hostId>`, `v2.staging-*` | host lock free and consumer check passes |
 | host registry, `children.json`, host lock files | host lock free and every recorded descendant gone (the only lock files ever deleted, 4.1) |
 | provider session bindings | under the binding's chain claim (busy: skip): no summary of that chain carries the session |
-| legacy release scan | 4.3; passes → every `legacy-uncertain` record `clean` |
 | quarantine of unclean chains | consumer check (4.8); passes → ownership record `clean` |
 | worktree markers | branch no longer exists |
 | logs | 6.8 |
@@ -621,8 +648,12 @@ sweeping: skip). Each row takes the locks or claims of what it touches and re-re
 
 - Every host or command that acts on a project (TUI, `exec`, `resume`, and the project-scoped management commands of
   7.1) takes `project-<pid>` shared, then re-reads `projects.json` and gives up (onboarding in the TUI, refusal
-  elsewhere) if the project is gone. Removal claims it exclusive and refuses naming the sessions; under it, journaled
-  (4.9): the project leaves `projects.json` first, then runs (5.2), secrets, skills and project data are removed.
+  elsewhere) if the project is gone. Removal claims it exclusive and refuses naming the sessions. Before anything
+  is written it claims every chain of the project (busy: refuse with exit 6, never skip), classifies each ownership
+  record, runs the consumer check (4.8) on every unclean or uncertain chain and every worktree of the project (live
+  process: refuse; uncertain or Windows: refuse with exit 6 without `--after-crash`), and keeps those claims until the
+  removal journal commits. Then, journaled (4.9): the project leaves `projects.json`, then runs (5.2), secrets,
+  skills and project data are removed.
 - Setup-like runs (setup, org change, `org evolve`, Team assistant applying team files, Chat's targeted setup
   proposals) claim `setup-<pid>`: "Setup for <project> is open in another orgai (<cwd>, pid). Finish it there first."
 - Setup's `writeArchitecture` writes under `team-<pid>` and `repo-<repo>` by tmp + rename. Permission rules take
@@ -636,26 +667,24 @@ sweeping: skip). Each row takes the locks or claims of what it touches and re-re
 - **Virtual projects** (`quick`, `harness`, `skills`, `VIRTUAL_PROJECT_IDS`, code) are reserved ids that are never in
   `projects.json` and are never removed: they take no `project-` hold and no existence check; their resources are
   chain-scoped (scratch folders, 4.3) or host-scoped (`harness-workspace`, 4.5). Promotion out of `quick` is 4.3.
-- **MCP builds are immutable versions**: `v2/mcp-builds/<entryId>/<buildId>/`; the library entry points at its current
-  `buildId` (written under `library`). **Starting a server**: resolve the entry's `buildId`; take the session hold
-  `mcp-build-use-<entryId>-<buildId>`; under it check the version's `RETIRED` marker is absent and the directory
-  exists (else release and resolve again, up to 3 times); keep the hold through startup, runtime and confirmed exit
-  of the server process (lazy starts and restarts repeat this), and list it in the host's consumer evidence.
-  **Retiring**: replacing a build adds a new version and repoints the entry; housekeeping retires an old version only
-  when no entry points at it, by taking an exclusive claim on its use lock (busy: skip; for a version a dead host
-  used, also its consumer check), writing `RETIRED` durably, deleting the directory, and releasing. A starter that
-  takes the hold afterwards sees `RETIRED` and resolves again. Removing a library entry removes it at once and leaves
-  its versions to that sweep.
-- **Skills are immutable versions too**: library skill bodies at `v2/skills/<entryId>/<versionId>/`, project skills at
-  `v2/project-skills/<pid>/<skillId>/<versionId>/`; metadata points at the current version. Every create, update,
-  removal and promotion publishes a new version and repoints under its journal (4.9); nothing is replaced in place.
-  Materialisation for a run reads one version under the session hold `skill-use-<entryId|pid-skillId>-<versionId>`
-  (same reserve/`RETIRED` protocol as MCP builds) and copies it into the run's staging folder; old versions retire
-  like MCP builds.
+- **Skill and MCP build versions.** Library skill bodies (`v2/skills/<entryId>/<versionId>/`), project skills
+  (`v2/project-skills/<pid>/<skillId>/<versionId>/`) and MCP builds (`v2/mcp-builds/<entryId>/<buildId>/`) are
+  immutable version folders; metadata points at the current version. Every writer (4.9 list) publishes a new version
+  and repoints under its journal; nothing is replaced in place. Readers (Claude staging, Codex, `load_skill`,
+  `read_library_skill`, `SkillService.read`/`readFiles`, kit export, MCP server starts and restarts) resolve the
+  current version from fresh metadata and read it directly; they take no hold.
+- **Retirement by epoch.** Repointing records `supersededAt` on the old version (in the same journal step). Housekeeping
+  deletes a version only when, under `library` (library skills, builds) or `team-<pid>` (project skills): it has a
+  `supersededAt`; no entry points at it; no pending or `needs-attention` journal names it (`by-resource` locators);
+  every live host started after `supersededAt` (so none can have resolved it; a host started before it may still use
+  it and keeps it alive until it exits); and no dead host that started before `supersededAt` has surviving recorded
+  descendants or uncertain evidence (4.8). A version that never became current (a crash between publishing and
+  repointing) is finished by its journal; one with no journal and no pointer is deleted under the same lock once it is
+  older than every live host. This needs no per-reader hold and covers every reader.
 - **Skills**: `SkillService`'s constructor no longer removes `.undo` folders (housekeeping does, 5.4); undo backups
-  live at `v2/project-skills/<pid>/.undo-<hostId>/<undoId>`. `snapshotForProposal` stages its backup in
-  `v2/tmp/skills-snap-<hostId>-<random>` (not the OS temp dir) and snapshots and restores only the locked target
-  project's skills (and the affected library entries), never other projects.
+  live at `v2/project-skills/<pid>/.undo-<hostId>/<undoId>`. With version folders, `snapshotForProposal` records the
+  current version ids of the locked target project's skills (and the affected library entries) instead of copying
+  files, and rollback repoints to them; it never touches other projects.
 - **Staffing**: `recordRunInStaffingProfile` becomes async under `staffing-<pid>`.
 - **Evolution ledger**: `readLedger` is pure on read paths (`evolve:history`, `analyze`); a corrupt ledger is set aside
   only by a writer holding `team-<pid>`.
@@ -839,9 +868,9 @@ Unit and integration (vitest, real child processes, mock adapter, no tokens):
 - Journals: kill points between every pair of file changes of each 4.9 operation; a live session touching the resource
   before housekeeping recovers inline; recovery twice is idempotent; a resource at an unexpected generation leaves the
   journal "needs attention"; a removed project's journal does not re-create it.
-- Agent workspaces: an agent reads and writes its own `v2/quick/<chainId>/`, `v2/harness-workspace/<hostId>/` and
-  `v2/tmp/skills/<hostId>-*`; the same tools against another chain's scratch folder, `control/`, `v2/vault.json` and
-  `v2/run` are denied.
+- Agent workspaces: an agent reads and writes its own `v2/quick/<chainId>/` and `v2/harness-workspace/<hostId>/`,
+  reads but cannot write its own `v2/tmp/skills/<hostId>/<runId>-<random>/`; the same tools against another chain's
+  scratch folder, another run's staged skills, `control/`, `v2/vault.json` and `v2/run` are denied.
 - Projects: `project-<pid>` shared racing `projects remove` from a TUI, an `exec`, `orgai notes` and a library
   fan-out: nothing re-created; removal with a foreign live run refused.
 - Worktrees: own-only automatic actions; nested subtree with a held descendant aborts; uninstall refused with another
@@ -874,7 +903,7 @@ Unit and integration (vitest, real child processes, mock adapter, no tokens):
   format-1 conversion (`legacy-uncertain` until the scan passes); a crash after `projects.json` is published and
   before each companion write: recovery rolls forward; a multi-resource journal (kit import) found from a project skill
   edit through its `by-resource` link; an OAuth display patch while a project journal is pending does not block its
-  recovery; an MCP starter paused after resolving V1 while V1 is replaced and retired resolves again; direct library
+  recovery; an MCP starter paused after resolving V1 while V1 is replaced keeps V1 until it exits (epoch rule); direct library
   skill edits killed between version publication, library repoint and each linked-project update, with a concurrent
   materialisation getting one complete version; two simultaneous hold upgrades and a downgrade racing a removal;
   conversion killed between the control writes and the commit rename, and after it; partial-chain prune keeps a
@@ -882,6 +911,18 @@ Unit and integration (vitest, real child processes, mock adapter, no tokens):
   run unreadable and own staged skills read-only; `ls -ledn` parsing with unparseable lines failing closed; team
   definition import and export through the recording lock layer; library skill bodies (`skills/`) present after
   conversion and a linked project skill working.
+- Draft-7 cases: team-files approval with a not-yet-installed connector (and its rollback) beside a library edit, and
+  the same through a project save hook; a canonical journal replaced after each step and recovered through every
+  locator, including a crash during locator cleanup; a crash after each promotion move and before its `done` mark,
+  and during rollback: every run kept and both summary copies restored; a legacy direct child writing in a project
+  root after its host died: conversion and repeated housekeeping keep `legacy-uncertain` until the user confirms;
+  conversion run as `orgai --data-dir <dir>` does not match itself; skill and build versions in use by a host started
+  before supersession survive housekeeping, are deleted after it exits; a newly published version not yet pointed at
+  survives housekeeping; migrated skills land in version folders; Codex runs and `read_library_skill` read a version
+  being superseded; `acceptEditsForProject` beside a pending team-files journal; OAuth display refresh during a
+  pending project journal keeps both; project removal with a busy, open or uncertain chain refuses before writing
+  anything; team-files read checks escalate to the coordinator; setup lifecycle saves through the recording lock
+  layer; project MCP server edits and `copyFromLibrary` racing a library removal.
 - Write-path inventory (section 8). `message_run` `other-session`, `list_runs` notice, setup claim, admission wait,
   registry and status JSON, per-process logs, network-FS warning (simulated `statfs`), advisory strings sanitised.
 - Removed or changed: CLI `wait: 'none'` ownership tests; `inprocHost.test.ts` "second host refused";
@@ -1097,3 +1138,27 @@ its area, the Reviewer). Hot files take one claim at a time (CLAUDE.md).
 | M4 | team definition import/export; price refresh | 4.2 |
 | L1 | stale order numbers | fixed |
 | L2 | desktop log location | 6.8 |
+
+### 14.10 Draft 6, Astra (round 6)
+
+| # | Finding | Resolution (draft 7) |
+|---|---|---|
+| 1 | team-files operations may write the library | 4.2 effect discovery; `library` in the team-files set when a connector may be added or removed; assertions never swallowed |
+| 2 | hard-linked journal indexes go stale | 4.9 immutable empty locators; state read from the canonical journal only; locator repair rules |
+| 3 | rollback skips effects done before their `done` mark | 4.9 `started` marks, pre/postconditions, conditional inverses, recorded rollback progress, roll forward by default; promotion forward once the pending project exists |
+| 4 | legacy scan marks surviving consumers clean | 4.3 every migrated chain `legacy-uncertain` until the user confirms once; the scan only adds warnings |
+| 5 | contradictions (binding timing, staged-skill test) | 4.3, 11 |
+
+### 14.11 Draft 6, Carbon (round 6)
+
+| # | Finding | Resolution (draft 7) |
+|---|---|---|
+| H1 | skill versioning: conversion, readers without holds, missing writers | 4.7 step 4 wraps skills and builds into version folders; 6.3 epoch retirement needs no reader holds (Codex, tools and kit export included); 4.9 lists every skill folder writer |
+| H2 | retirement vs publication; missing dead-host evidence | 6.3 epoch rule: only superseded versions, under `library` / `team-<pid>`, no pending journal, all live hosts newer, dead hosts without surviving or uncertain evidence; 5.4 row ordered after journals |
+| H3 | lock-set omissions (remapping, team-files connectors, project MCP servers, copy/link from library) | 4.2 rows added |
+| H4 | legacy scan self-match, Windows, stale `legacy-unclean` | 4.3 confirmation instead of auto-clear; scan excludes this process and format-2 hosts; Windows uses CIM; stale sentence removed |
+| H5 | `permissionMode` and `oauth` sub-objects across the field split | 4.2 `acceptEditsForProject` under `team-<pid>`; 4.9 field list, id merges keeping `oauth` display data |
+| H6 | project removal before chain checks | 6.3 claims every chain and runs consumer checks before writing |
+| M1 | team-files read checks and setup lifecycle saves | 4.2 rows |
+| M2 | staged skills path and permissions | 4.5, 9, 11 |
+| L1 | `control/chains`, stale step reference, `-shm` | 4.7, 4.3, 4.1 |
