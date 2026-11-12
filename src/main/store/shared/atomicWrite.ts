@@ -29,6 +29,8 @@ export function tempPathFor(file: string): string {
 export const TEMP_NAME_RE = /\.tmp-([A-Za-z0-9_-]{1,64})-[0-9a-f]{12}$/
 
 const DIR_SYNC_UNSUPPORTED = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EISDIR', 'EPERM', 'EBADF'])
+/** A directory that does not exist (any more) has nothing to sync. */
+const DIR_GONE = new Set(['ENOENT', 'ENOTDIR'])
 
 /** fsync a directory; false when the platform or file system does not support it. */
 export function fsyncDirectory(dir: string, platform: NodeJS.Platform = process.platform): boolean {
@@ -37,7 +39,8 @@ export function fsyncDirectory(dir: string, platform: NodeJS.Platform = process.
   try {
     fd = openSync(dir, 'r')
   } catch (e) {
-    if (DIR_SYNC_UNSUPPORTED.has((e as NodeJS.ErrnoException).code ?? '')) return false
+    const code = (e as NodeJS.ErrnoException).code ?? ''
+    if (DIR_SYNC_UNSUPPORTED.has(code) || DIR_GONE.has(code)) return false
     throw e
   }
   try {
