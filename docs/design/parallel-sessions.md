@@ -136,7 +136,9 @@ Protocol:
 
 - **Files are always 0 bytes.** A missing lock file is created `open(O_CREAT|O_EXCL, 0600)` and closed before SQLite
   opens it; it is never written. Before each SQLite open, `lstat` (no descriptor) must show a regular, non-link file of
-  size 0 owned by this user (POSIX), with no `-journal`, `-wal` or `-shm` sibling; anything else fails closed naming the path.
+  size 0 owned by this user (POSIX), with no `-wal` or `-shm` sibling; anything else fails closed naming the path. A
+  `-journal` sibling is expected: an exclusive hold creates one (512 bytes, zeroed header) and a crashed holder leaves
+  it; it is never hot because nothing is written, and the next holder's `ROLLBACK` removes it (measured, phase 1).
   Lock files are never opened, read or closed outside SQLite (closing a raw descriptor would drop the process's POSIX
   locks on the inode, SQLite "how to corrupt" 2.2).
 - **Exclusive**: `BEGIN EXCLUSIVE`. **Shared**: `BEGIN` + `SELECT count(*) FROM sqlite_schema`. **Release**:
