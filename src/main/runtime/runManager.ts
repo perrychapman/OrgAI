@@ -4224,7 +4224,10 @@ export class RunManager {
         const secrets = proposal.kind === 'mcpServers' && decision.secrets ? { secrets: decision.secrets } : {}
         {
           try {
-            if (proposal.kind === 'appSettings') {
+            if (proposal.kind === 'schedules') {
+              // PLACEHOLDER (Schedules contract landing): the main-process engineer applies it through ScheduleService.applyProposal.
+              throw new Error('Schedule proposals are not available yet.')
+            } else if (proposal.kind === 'appSettings') {
               // App-wide settings: Chat only, applied through the settings path (RunManagerOptions.selfKnowledge).
               if (!active.summary.quick || !this.options.selfKnowledge) throw new Error('App settings can only be changed from Chat.')
               this.options.selfKnowledge.applyAppSettings(proposal.payload)

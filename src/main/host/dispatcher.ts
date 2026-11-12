@@ -120,6 +120,7 @@ import {
   IPC,
   MCP_SCOPE_IPC,
   QUICK_PROJECT_ID,
+  SCHEDULES_IPC,
   SECRETS_IPC,
   SKILLS_PROJECT_ID,
   TEAM_FILES_IPC,
@@ -468,6 +469,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const q = appReferenceArgs(raw)
     return services.reference ? services.reference.query(q, { status: true }) : Promise.resolve({ text: 'The reference is not available in this host.' })
   })
+  // PLACEHOLDER (Schedules contract landing): the main-process engineer replaces these with ScheduleService calls. The write
+  // channels and runNow must keep refusing any surface but 'desktop' (registry scope 'configure' / 'operate' only gates params).
+  for (const channel of [SCHEDULES_IPC.schedulesList, SCHEDULES_IPC.schedulesHistory, SCHEDULES_IPC.schedulesSave, SCHEDULES_IPC.schedulesRemove, SCHEDULES_IPC.schedulesSetEnabled, SCHEDULES_IPC.schedulesRunNow]) {
+    handle(channel, () => Promise.reject(new Error('Schedules are not available yet.')))
+  }
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
    * projects:list. The Chat's display project has no roles and creates no directory.

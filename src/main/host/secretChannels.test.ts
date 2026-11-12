@@ -270,6 +270,10 @@ const NEVER_WRITES_SECRETS: Record<string, string> = {
   'outputs:revise': 'sends a message through RunManager like a user message, no secrets',
   'outputs:watch': 'polls an output file with lstat, in memory only, no secrets',
   'outputs:unwatch': 'drops an in-memory watch, no secrets',
+  'schedules:save': 'writes schedules.json (name, prompt, target, timing, limits), no secrets',
+  'schedules:remove': 'removes a schedule and its history from schedules.json, no secrets',
+  'schedules:setEnabled': 'flips a schedule in schedules.json, no secrets',
+  'schedules:runNow': 'starts a run through RunManager / QuickRunService like a user start, no secrets',
   // Runs: setup-like and virtual-project runs carry no project MCP servers (bare); run-scoped installs carry no OAuth.
   'runs:startQuick': 'quick runs are bare (no project servers to refresh)',
   'setup:start': 'setup runs are bare',
