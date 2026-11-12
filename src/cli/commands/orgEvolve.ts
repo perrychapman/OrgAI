@@ -255,7 +255,7 @@ async function applyAndPrint(ctx: CliContext, client: HostClient, project: Proje
       if (res.applied && res.generation) {
         const g = res.generation
         lines.push(`Applied ${safeLine(g.id)} as a trial: ${safeLine(g.summary)}`)
-        lines.push(`It is measured over the next ${g.evalWindowRuns} finished work run${g.evalWindowRuns === 1 ? '' : 's'}; a regression rolls it back automatically (orgai org evolve history).`)
+        lines.push(`It is measured over the next ${g.evalWindowRuns} finished work run${g.evalWindowRuns === 1 ? '' : 's'}; once they have run, the next exec --evolve run or org evolve --apply decides it, and a regression rolls it back (orgai org evolve history).`)
         lines.push(`Undo it now with: orgai org evolve rollback ${safeLine(g.id)}`)
         lines.push(res.teamFilesSynced ? 'The .orgai/ team files were updated.' : 'The .orgai/ team files were not written (team files are off for this project, or its .orgai/ folder needs attention).')
       } else lines.push(`Nothing was applied${res.reason ? `: ${safeLine(res.reason)}` : '.'}`)

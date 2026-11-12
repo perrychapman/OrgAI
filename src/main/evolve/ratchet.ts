@@ -655,7 +655,7 @@ export function restoreSnapshot(project: Project, snap: GenerationSnapshot, plan
       if (!isObj(e.pre) || !isObj(e.post)) throw new Error('an edit entry is malformed')
       const was = snap.roles.find((r) => isObj(r) && r.id === e.id)
       const now = recorded.roles.find((r) => r.id === e.id)
-      if (!was || !now) throw new Error('an edit names a role the snapshot does not hold')
+      if (!was || !now || e.slug !== was.slug) throw new Error('an edit names a role the snapshot does not hold')
       for (const k of Object.keys(e.pre)) {
         if (!(ALLOWED_FIELDS as readonly string[]).includes(k)) throw new Error(`unknown field ${k.slice(0, 20)}`)
         const f = k as PatchedField
@@ -669,8 +669,9 @@ export function restoreSnapshot(project: Project, snap: GenerationSnapshot, plan
     const roles = project.roles.map((r) => {
       const edit = snap.edits.find((e) => isObj(e) && e.id === r.id)
       if (!edit) return r
-      if (!isObj(edit.pre) || !isObj(edit.post) || edit.slug !== r.slug) throw new Error('an edit entry is malformed')
-      const patch = patches.get(r.slug)
+      if (!isObj(edit.pre) || !isObj(edit.post) || typeof edit.slug !== 'string') throw new Error('an edit entry is malformed')
+      // Matched by the role's id: a role renamed since keeps its rollback (the plan names it by its slug then).
+      const patch = patches.get(edit.slug)
       if (!patch) {
         notes.push(`${r.slug} is not part of the generation's plan`)
         return r
@@ -749,7 +750,13 @@ export function restoreSnapshot(project: Project, snap: GenerationSnapshot, plan
     if (plan.maxConcurrentSubagents !== undefined && snap.postMaxConcurrentSubagents !== snap.maxConcurrentSubagents) {
       const preMax = snap.maxConcurrentSubagents
       if (preMax !== null && !(Number.isInteger(preMax) && preMax >= 1 && preMax <= MAX_CONCURRENT_SUBAGENTS_LIMIT)) throw new Error('the concurrency limit is malformed')
-      if ((project.maxConcurrentSubagents ?? null) === snap.postMaxConcurrentSubagents) {
+      // The plan's own value must be what the generation wrote, and a rollback never raises the limit (an evolution only
+      // raises it, so the value before is below the value after).
+      if (snap.postMaxConcurrentSubagents !== plan.maxConcurrentSubagents) throw new Error('the concurrency limit does not match the plan')
+      const limitOf = (v: number | null): number => effectiveConcurrency({ maxConcurrentSubagents: v ?? undefined })
+      const raises = limitOf(preMax) > limitOf(snap.postMaxConcurrentSubagents)
+      if (raises) notes.push('kept the concurrency limit (restoring it would raise it)')
+      else if ((project.maxConcurrentSubagents ?? null) === snap.postMaxConcurrentSubagents) {
         const { maxConcurrentSubagents: _m, ...rest } = out
         out = preMax === null ? rest : { ...rest, maxConcurrentSubagents: preMax }
         restored++

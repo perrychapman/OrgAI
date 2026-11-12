@@ -672,6 +672,21 @@ describe('restoreSnapshot', () => {
     expect(r.reason).toContain('does not match the chart and plan')
     expect(r.project).toBe(applied)
   })
+  it('a rollback never raises the concurrency limit (a value before above the value after is kept as it is)', () => {
+    const raised = structuredClone(snap)
+    raised.maxConcurrentSubagents = 8 // the plan raised 4 -> 6; a "before" of 8 would raise it on rollback
+    const r = restoreSnapshot(applied, raised, gated)
+    expect(r.ok).toBe(true)
+    expect(r.project.maxConcurrentSubagents).toBe(6)
+    expect(r.notes.join(' ')).toContain('kept the concurrency limit')
+    expect(restoreSnapshot(applied, snap, gated).project.maxConcurrentSubagents).toBe(4)
+  })
+  it('a role renamed since the generation still gets its rollback (matched by id)', () => {
+    const renamed: Project = { ...applied, roles: applied.roles.map((x) => (x.slug === 'dev' ? { ...x, slug: 'implementer' } : x)) }
+    const r = restoreSnapshot(renamed, snap, gated)
+    expect(r.ok).toBe(true)
+    expect(r.project.roles.find((x) => x.slug === 'implementer')?.effort).toBe('high')
+  })
   it('a restored chart that would break the safety rules is refused whole', () => {
     const broken: Project = { ...applied, permissionMode: 'default' }
     expect(chartProblems(applied, broken).length).toBeGreaterThan(0)

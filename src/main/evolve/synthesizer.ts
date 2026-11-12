@@ -1,4 +1,5 @@
 import { MAX_CONCURRENT_SUBAGENTS_LIMIT, compareTier, effectiveRoleStaffing, settingTier, tierForModel } from '../../shared/defaults'
+import { enforcedStaffingFloor } from '../runtime/staffing'
 import { EFFORTS, MODEL_TIERS, TOOL_CATALOG } from '../../shared/types'
 import type {
   Effort,
@@ -118,7 +119,7 @@ function fromFindings(project: Project, d: TeamEvolutionDiagnosis): Build {
         } else if (tier && (tier === 'deep' || tier === 'everyday') && tierMoves(project, role)) {
           p.tier = stepTier(tier, -1)
           addReason(p, `tier ${tier} to ${p.tier}: first-pass was clean`)
-          const floor = role.staffing?.minTier
+          const floor = enforcedStaffingFloor(role, project)
           if (floor && p.tier && compareTier(floor, p.tier) > 0) p.staffing = { mode: role.staffing?.mode ?? 'auto', minTier: p.tier, ...(role.staffing?.maxEffort ? { maxEffort: role.staffing.maxEffort } : {}) }
         } else {
           b.patches.delete(role.slug)
@@ -137,7 +138,8 @@ function fromFindings(project: Project, d: TeamEvolutionDiagnosis): Build {
           break
         }
         const p = patchOf(b, role.slug)
-        const floor = role.staffing?.minTier
+        // The floor staffing enforces (the resolver's rule), not a stored one it ignores.
+        const floor = enforcedStaffingFloor(role, project)
         const auto = effectiveRoleStaffing(role, project).mode === 'auto'
         if (auto && tier !== 'fast' && (!floor || compareTier(floor, tier) < 0)) {
           const s: RoleStaffing = { mode: role.staffing?.mode ?? 'auto', minTier: tier, ...(role.staffing?.maxEffort ? { maxEffort: role.staffing.maxEffort } : {}) }
