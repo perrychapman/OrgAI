@@ -131,7 +131,7 @@ export function useRunTabs(
   const plan = useAppStore((s) => s.runs[runId]?.plan)
   const showPlan = useAppStore((s) => {
     const run = s.runs[runId]
-    return !!run && showsPlanTab({ kind: run.summary.kind, hasPlan: !!run.plan, stage })
+    return !!run && showsPlanTab({ kind: run.summary.kind, hasPlan: !!run.plan, stage, quick: run.summary.quick, team: run.summary.team })
   })
   const showOutputs = useAppStore((s) => showsOutputsTab(s.runs[runId]?.summary))
   const showKnowledge = useAppStore((s) => {

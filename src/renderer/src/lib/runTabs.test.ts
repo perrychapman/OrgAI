@@ -15,15 +15,19 @@ describe('run tabs', () => {
     expect(showsPlanTab({ kind: 'skill-assist', hasPlan: true })).toBe(true)
     expect(showsPlanTab({ kind: 'setup', hasPlan: false })).toBe(false)
   })
-  it('Plan in the stage strip: only with a plan, a Chat included', () => {
-    expect(showsPlanTab({ kind: 'work', hasPlan: false, stage: true })).toBe(false)
+  it('Plan in the stage strip: team work runs always, everything else only with a plan', () => {
+    expect(showsPlanTab({ kind: 'work', hasPlan: false, stage: true })).toBe(true)
+    expect(showsPlanTab({ kind: 'work', hasPlan: false, stage: true, team: 'single' })).toBe(false)
+    expect(showsPlanTab({ kind: 'work', hasPlan: false, stage: true, quick: { scratch: true, folder: '' } as never })).toBe(false)
+    expect(showsPlanTab({ kind: 'work', hasPlan: true, stage: true, team: 'single' })).toBe(true)
+    expect(showsPlanTab({ kind: 'setup', hasPlan: false, stage: true })).toBe(false)
     expect(showsPlanTab({ kind: 'work', hasPlan: true, stage: true })).toBe(true)
     expect(showsPlanTab({ kind: 'mcp-assist', hasPlan: false, stage: true })).toBe(false)
     expect(showsPlanTab({ kind: 'skill-assist', hasPlan: true, stage: true })).toBe(true)
     expect(showsPlanTab({ kind: 'work', hasPlan: false, stage: false })).toBe(true)
   })
   it('a stored Plan selection falls back to Conversation while the stage has no plan', () => {
-    const noPlan = runTabIds({ plan: showsPlanTab({ kind: 'work', hasPlan: false, stage: true }), outputs: false, knowledge: false })
+    const noPlan = runTabIds({ plan: showsPlanTab({ kind: 'work', hasPlan: false, stage: true, team: 'single' }), outputs: false, knowledge: false })
     expect(resolveRunTab('plan', noPlan)).toBe('transcript')
     const withPlan = runTabIds({ plan: showsPlanTab({ kind: 'work', hasPlan: true, stage: true }), outputs: false, knowledge: false })
     expect(resolveRunTab('plan', withPlan)).toBe('plan')

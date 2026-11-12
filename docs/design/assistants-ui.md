@@ -312,8 +312,8 @@ The focused UX follow-up reran the built mock model-switch matrix and reviewed p
 - M5 (runtime): chats still get the plan nudge ("Continuing: asked the orchestrator to write a plan...", "Mock:
   continuing with the plan."); exempting quick and assistant runs belongs in `continuation.ts` (Runtime Lead).
 - Assistant sessions without the side panel (2026-11-11, Reviewer M1/M3). Follow-up (2026-11-11), checked as noted:
-  Plan shows in the stage strip only once the run has a plan, a Chat included (`showsPlanTab` `stage`; unit test and
-  `e2e/assistants.mjs`: no Plan tab on a Chat without a plan). A reply (new assistant text row) or "your turn" landing
+  Plan shows in the stage strip only once the run has a plan, except team work runs (see N2 below) (`showsPlanTab`
+  `stage`; unit test and `e2e/assistants.mjs`: no Plan tab on a Chat without a plan). A reply (new assistant text row) or "your turn" landing
   while another tab is open marks Conversation with a still token dot (`Tabs` `dot`/`dotLabel`), names it
   "Conversation, new reply", makes one polite announcement through the frame's existing announcer ("New reply in the
   conversation") and clears on selecting Conversation (unit tests for `countReplies`/`replyArrived`; the e2e sends,
@@ -322,8 +322,12 @@ The focused UX follow-up reran the built mock model-switch matrix and reviewed p
   held in LiveRunView, off by default, not persisted, as in the panel; e2e asserts presence on Conversation, absence on
   Usage and no overflow at 1024x640 dark and light). Still open: the agent meta line (model, connection, tokens, worktree)
   and staffing detail are reachable only through "Show agents" (not asked for; the Usage tab has the by-agent
-  figures). The panel's "No plan yet" note for a work run without a plan is not offered in the strip (2026-11-12;
-  a blocked plan always exists, so the banner's "Show the plan" and the steps chip still land). Screen-reader speech, 320 px reflow, zoom and reduced-motion OS setting are
+  figures). Re-walk N2 (2026-11-12, fixed): the strip shows Plan with the panel's "No plan yet" note for team work
+  runs (work, not Chat/quick, not `team: 'single'`: the runs the plan guard applies to); every other kind keeps
+  "only once a plan exists" (`showsPlanTab` `quick`/`team`; unit test, `e2e/assistants.mjs`). Re-walk N1 (fixed): a
+  `SidePanel` remounted by returning from "Show conversation" with an agent selected opens as a selection would
+  (`revealOnMount`, nothing saved, the width-based auto-collapse still wins; `e2e/assistants.mjs` at 1600x1000; the
+  1280x800 case where it does not fit stays a rail by design). Screen-reader speech, 320 px reflow, zoom and reduced-motion OS setting are
   unverified (the dot has no animation).
 - The MCP start page cannot name the build folder before the run starts (the data-folder wording is shown).
 - `proposalNextByRun` entries are cleared only by Dismiss; the pointer is untested at narrow toolbar widths, and the

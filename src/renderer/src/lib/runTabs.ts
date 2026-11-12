@@ -17,11 +17,20 @@ export interface RunTabFlags {
 
 /**
  * Plan: every work run in the side panel (the orchestrator writes one), else only a run that has a plan. The stage
- * strip (`stage`) follows the "only with a plan" rule for every kind, a team work run included: before the plan exists
- * only its "No plan yet" note is missing, and RunMeta's steps chip and the blocked-plan banner both need a plan.
+ * strip (`stage`) shows it early only for team work runs (work, not Chat/quick, not single-agent: the runs the plan
+ * guard applies to), so the "No plan yet" note signals a plan is coming; every other kind needs a plan.
  */
-export function showsPlanTab(i: { kind: RunSummary['kind']; hasPlan: boolean; stage?: boolean }): boolean {
-  return (i.kind === 'work' && !i.stage) || i.hasPlan
+export function showsPlanTab(i: {
+  kind: RunSummary['kind']
+  hasPlan: boolean
+  stage?: boolean
+  quick?: RunSummary['quick']
+  team?: RunSummary['team']
+}): boolean {
+  if (i.hasPlan) return true
+  if (i.kind !== 'work') return false
+  if (!i.stage) return true
+  return !i.quick && i.team !== 'single'
 }
 
 /** What the new-reply cue watches: assistant text rows so far, and whether the session waits for the user. */

@@ -89,7 +89,9 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   first tab `run-tab-conversation`). The run detail tabs have one implementation: `lib/runTabs.ts` (pure:
   `showsPlanTab`, `showsOutputsTab`, `showsKnowledgeTab`, `runTabIds`, `resolveRunTab`) and `RunDetailTabs.tsx`
   (`useRunTabs`, `RunTabBody`, `PlanView`), used by both TranscriptPanel (side panel) and the stage strip; the tab test
-  ids (`side-tab-plan`, `-usage`, `-logs`, ...) are shared. Selection stays `sideTabByRun`; the conversation stays
+  ids (`side-tab-plan`, `-usage`, `-logs`, ...) are shared. The strip shows Plan before a plan exists only for team
+  work runs (not Chat/quick, not `team: 'single'`); returning to the canvas with an agent selected reopens the panel
+  (`SidePanel` `revealOnMount`, auto-collapse still wins). Selection stays `sideTabByRun`; the conversation stays
   mounted (hidden) under other tabs; a send resets the tab to Conversation. Every run on the canvas keeps the panel;
   Outputs and Knowledge appear in the strip by `showsOutputsTab` / `showsKnowledgeTab` (work runs of stored projects,
   engagements for Knowledge; their bodies work at stage width because `RunOutputs` falls back to its list/detail mode
