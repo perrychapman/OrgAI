@@ -1071,7 +1071,8 @@ export function App(props: AppProps) {
    */
   const setMode = async (mode: PermissionMode): Promise<void> => {
     const st = session.getState()
-    const run = st.activeRunId ? st.runs[st.activeRunId]?.summary : undefined
+    // A composer starting a new run (/new, /ask) follows no run: the mode is staged for the new one.
+    const run = st.activeRunId && st.composeTarget !== 'new' ? st.runs[st.activeRunId]?.summary : undefined
     if (!run) {
       if (!st.project) {
         notify(NO_PROJECT_STAGE, 'warn')
@@ -1092,7 +1093,8 @@ export function App(props: AppProps) {
   }
   const cycleMode = (): void => {
     const st = session.getState()
-    const run = st.activeRunId ? st.runs[st.activeRunId]?.summary : undefined
+    // A composer starting a new run (/new, /ask) follows no run: the mode is staged for the new one.
+    const run = st.activeRunId && st.composeTarget !== 'new' ? st.runs[st.activeRunId]?.summary : undefined
     if (run && st.readOnlyReason === undefined && modeChoices(st).length === 0) {
       notify('This run pins its own permission mode.', 'warn')
       return

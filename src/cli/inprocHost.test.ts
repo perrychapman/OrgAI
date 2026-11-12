@@ -277,6 +277,19 @@ describe('memoryStreamPair', () => {
     expect(Buffer.concat(got).length).toBe(32)
     a.destroy()
   })
+  it('a write parked on a full reader settles when either side is destroyed', async () => {
+    const [a, b] = memoryStreamPair(16)
+    b.pause()
+    let settled = 0
+    a.on('error', () => undefined)
+    a.write(Buffer.alloc(32, 1), () => settled++)
+    await tick()
+    expect(settled).toBe(0)
+    b.destroy()
+    await tick()
+    await tick()
+    expect(settled).toBe(1)
+  })
   it('a small write completes at once, and ending one side ends the other', async () => {
     const [a, b] = memoryStreamPair()
     let written = 0
