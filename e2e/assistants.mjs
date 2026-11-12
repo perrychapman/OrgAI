@@ -697,6 +697,7 @@ try {
     }))
     check(workShape.flag === 'none' && workShape.panels === 0 && workShape.rails === 0 && workShape.handles === 0, 'a team work run in Show conversation has no panel, rail or resize handle', JSON.stringify(workShape))
     check(workShape.tabs[0] === 'run-tab-conversation' && ['side-tab-usage', 'side-tab-outputs', 'side-tab-logs'].every((t) => workShape.tabs.includes(t)) && !workShape.tabs.includes('side-tab-knowledge') && !workShape.tabs.includes('side-tab-transcript'), 'the work run stage strip has Conversation, Usage, Outputs and Logs (no Knowledge for a code project)', JSON.stringify(workShape.tabs))
+    check(workShape.tabs.includes('side-tab-plan'), 'the work run stage strip shows Plan before a plan exists (N2)', JSON.stringify(workShape.tabs))
     await setSize(1024, 640)
     await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-outputs]').click()
     await sleep(300)
@@ -711,6 +712,8 @@ try {
     await page.locator('[data-testid=run-layout-toggle]').click()
     await sleep(500)
     check((await page.locator('.run-body').first().getAttribute('data-layout')) === 'canvas' && (await page.locator('.run-body aside.side-panel').count()) === 1 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 0, 'back on the canvas the team work run has its panel again')
+    const backPanel = await page.evaluate(() => ({ rails: document.querySelectorAll('.run-body .side-rail').length, tabs: document.querySelectorAll('.run-body aside.side-panel [role=tab]').length }))
+    check(backPanel.rails === 0 && backPanel.tabs > 0, 'back on the canvas with an agent selected the panel is open, not the rail (1600x1000)', JSON.stringify(backPanel))
     await endSession(page)
 
     // Project-scope Skill assistant from Team > Catalog > Skills: opens in that project's Live tab with a role listed.
