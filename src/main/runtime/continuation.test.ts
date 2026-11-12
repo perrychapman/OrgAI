@@ -539,6 +539,25 @@ describe('ContinuationDriver turn-generation settlement (cli-spec 6.2(2))', () =
     expect(d.nudgeTurn1Sent).toBe(true)
   })
 
+  it('after a turn-1 direct answer, the next plan-less work turn still gets the set-plan nudge', async () => {
+    current = undefined
+    let direct = true
+    host.directAnswerTurn = () => direct
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(0)
+    // The user asks for work; the orchestrator uses tools and stops without a plan.
+    d.userMessage()
+    expect(d.nudgeTurn1Sent).toBe(false)
+    direct = false
+    d.turnEnded(2)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(1)
+    expect(d.nudgeTurn1Sent).toBe(true)
+    delete host.directAnswerTurn
+  })
+
   it('a turn-1 answer that used tools, or a host without the signal, still gets the set-plan nudge', async () => {
     current = undefined
     host.directAnswerTurn = () => false

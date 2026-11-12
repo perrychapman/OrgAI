@@ -953,7 +953,7 @@ describe('staffing paragraph', () => {
     const text = buildRolePrompt(mid, midRoles, project(), flags)
     expect(text).toContain(staffingText('balanced', true))
     expect(text).not.toContain('In the plan, give each step')
-    expect(staffingText('balanced', true)).toContain('give tier and effort on the spawn call')
+    expect(staffingText('balanced', true)).toContain('set its tier and effort on the spawn call itself (on an Agent call, as the model alias for the tier')
     expect(buildRolePrompt(mid, midRoles, project({ staffing: 'fixed' }), flags)).not.toContain(staffingText('balanced', true))
   })
 

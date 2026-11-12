@@ -1646,8 +1646,10 @@ export class ClaudeSession implements RuntimeSession {
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
       liveReports: live,
+      // Interactive work runs only: a headless exec run has nobody to read a turn-1 text-only reply ("I'll look at the
+      // tests"), so it keeps the set-plan nudge rather than settling as completed-unplanned.
       directAnswerTurn: () =>
-        ctx.run.kind === 'work' && !this.isSetup && this.continuation.turnGen === 1 && this.rootToolCalls === 0 && live() === 0 && ctx.pendingInteractions() === 0 &&
+        ctx.run.kind === 'work' && !ctx.run.overrides?.execMode && !this.isSetup && this.continuation.turnGen === 1 && this.rootToolCalls === 0 && live() === 0 && ctx.pendingInteractions() === 0 &&
         (obligationsFor(ctx.roles, ctx.run.overrides?.strictDelegation === true)[this.root.id]?.length ?? 0) === 0,
       slots: () => agentSlots(ctx, live()),
       ownRoles: () => rootRoleNames(ctx.roles),

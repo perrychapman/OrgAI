@@ -541,8 +541,9 @@ class CodexSession implements RuntimeSession {
       updatePlan: (plan) => ctx.updatePlan(plan),
       // Bridged reports are not threads of this session but still count as working reports.
       liveReports: live,
+      // Interactive work runs only (see claude.ts): a headless exec run keeps the set-plan nudge.
       directAnswerTurn: () =>
-        ctx.run.kind === 'work' && !this.setupLike && this.continuation.turnGen === 1 && this.rootToolCalls === 0 && live() === 0 && ctx.pendingInteractions() === 0 &&
+        ctx.run.kind === 'work' && !ctx.run.overrides?.execMode && !this.setupLike && this.continuation.turnGen === 1 && this.rootToolCalls === 0 && live() === 0 && ctx.pendingInteractions() === 0 &&
         (obligationsFor(ctx.roles, ctx.run.overrides?.strictDelegation === true)[this.root.id]?.length ?? 0) === 0,
       slots: () => agentSlots(ctx, live()),
       ownRoles: () => rootRoleNames(ctx.roles),
@@ -961,7 +962,8 @@ class CodexSession implements RuntimeSession {
 
   /** Steer the running turn of a thread, or start a new one. */
   /**
-   * The effort a thread's first turn carries: the role's own when Codex takes it (low / medium / high); with none set,
+   * The effort a thread's first turn carries (TurnStartParams.effort holds "for this turn and subsequent turns", so
+   * the later turns keep it): the role's own when Codex takes it (low / medium / high); with none set,
    * `medium` in a work run (the same default the Claude adapter writes, CLAUDE_SDK_DEFAULT_EFFORT) so Codex's own
    * default does not decide; none for setup-like runs and quick chats. A role effort Codex does not take (xhigh, max)
    * stays unset as before.

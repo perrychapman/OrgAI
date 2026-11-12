@@ -556,6 +556,7 @@ export class ContinuationDriver {
   userMessage(): void {
     this.cancel()
     this.held = false
+    this.directAnswerSettled = false
     this.thrashStopped = false
     this.compactionTracks.clear()
     this.lastEvaluatedTurnGen = -1
@@ -628,7 +629,12 @@ export class ContinuationDriver {
     }
     if (!plan && !nudgeBlocked(input)) input.turnsWithoutPlan = ++this.turnsWithoutPlan
     const decision = nextNudge(input)
-    if (!plan && input.directAnswerOnly && decision.kind === 'none' && input.turnsWithoutPlan === 1) this.directAnswerSettled = true
+    if (!plan && input.directAnswerOnly && decision.kind === 'none' && input.turnsWithoutPlan === 1) {
+      // A direct answer is not a plan-less work turn: the next plan-less turn (the user asking for work after a question)
+      // is still the first one, so it gets the set-plan nudge.
+      this.turnsWithoutPlan = 0
+      this.directAnswerSettled = true
+    }
     if (decision.limitReached && !this.limitWarned) {
       this.limitWarned = true
       this.host.log('warn', `Automatic-continue limit reached (${input.maxAutoContinues}); the orchestrator waits for you.`)

@@ -35,8 +35,8 @@ describe('harnessToolsFor: single-agent runs and engagements', () => {
     // engagement_context is for engagements only; the plan tools come without `staff` (no reports to staff).
     const base = [...SINGLE_TOOL_DEFS.map((d) => d.name).filter((n) => n !== ENGAGEMENT_CONTEXT_TOOL), 'app_reference'].sort()
     expect(names(harnessToolsFor(ctx, {}, { nativeSkills: true }))).toEqual(base)
-    // No skills in the run: no skill tools either.
-    expect(names(harnessToolsFor(ctx))).toEqual(base)
+    // The skill tools are there even with no skills at start (a skill approved mid-run is usable at once).
+    expect(names(harnessToolsFor(ctx))).toEqual([...base, 'list_skills', 'load_skill'].sort())
     const skilled = fakeCtx({ run: runSummary({ kind: 'work', team: 'single' }), skills: () => [{ id: 'sk', name: 'a', description: 'd', dir: '/x', files: [], roleIds: ['r-lead'] }] })
     const withSkills = names(harnessToolsFor(skilled))
     expect(withSkills).toEqual([...base, 'list_skills', 'load_skill'].sort())
