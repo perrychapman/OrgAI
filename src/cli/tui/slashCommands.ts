@@ -16,7 +16,8 @@ import { offersRetro } from './selectors'
 import { usageText } from './usageText'
 import { approvalsText } from './approvals'
 import { MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE } from '../../shared/liveModelSwitch'
-import type { Effort, PermissionMode, ProviderModel, RunOverrides, RunSummary, StaffingGoal } from '../../shared/types'
+import type { ConnectionId, Effort, PermissionMode, ProviderModel, RunOverrides, RunSummary, StaffingGoal } from '../../shared/types'
+import { projectConnection } from '../../shared/defaults'
 import { connectionName, modelChoices, pickModel as pickModelFromCatalog } from '../modelSwitch'
 import { parseSlashRunArgs } from '../runStartFlags'
 import type { SlashCommand, SlashContext, TuiState } from './types'
@@ -105,6 +106,12 @@ function startArgs(args: string): { prompt: string; overrides?: RunOverrides } {
 /** "model-id via Anthropic" for notices. */
 const selectionLabel = (m: Pick<ProviderModel, 'id' | 'connection'>, name?: string): string => `${cleanLine(m.id, 120)} via ${cleanLine(name ?? m.connection, 60)}`
 
+/**
+ * A choice staged for the next run applies to a project's runs only: a chat started in a folder with no project
+ * (runs:startQuick) takes none of model, effort, mode or goal, so staging one there is refused rather than lost.
+ */
+export const NO_PROJECT_STAGE = 'Run choices apply to a project\'s runs; this folder has no project, so its chat runs as configured. Open a project (or save this chat with /save-project) first.'
+
 /** /model: no argument lists the choices (a picker when the shell has one), else resolves a tier or id and switches (or stages when no run is followed). */
 async function runModel(ctx: SlashContext, args: string): Promise<void> {
   const s = ctx.state()
@@ -115,6 +122,11 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
       ctx.notify(needsRunReason(), 'warn')
       return
     }
+    const project = s.project
+    if (!project) {
+      ctx.notify(NO_PROJECT_STAGE, 'warn')
+      return
+    }
     const staged = ctx.session.getStaged?.() ?? {}
     const current = staged.model
     if (!want) {
@@ -122,14 +134,29 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
       ctx.notify(`Model: ${now} (for the next run). Use /model fast|everyday|deep|top|<model id>.`)
       return
     }
-    const models = await ctx.session.listModels(isTier(want.toLowerCase()) ? current?.connection : undefined)
-    const picked = pickModelFromList(models, want, current?.connection)
-    if ('error' in picked) {
-      ctx.notify(picked.error, 'warn')
-      return
+    // The next run starts on the project's connection, so the choice is resolved there: a tier through that
+    // connection's own tier map (as exec --model does), an id from that connection's catalog.
+    const connection = projectConnection(project)
+    const tier = want.toLowerCase()
+    let choice: { id: string; connection: ConnectionId; label?: string }
+    if (isTier(tier) && ctx.session.config) {
+      const infos = await ctx.session.config.connections()
+      const id = infos.find((i) => i.connection.id === connection)?.connection.tierModels?.[tier]
+      if (!id) {
+        ctx.notify(`The connection ${cleanLine(String(connection), 40)} maps no model to the ${tier} tier. Use a model id.`, 'warn')
+        return
+      }
+      choice = { id, connection }
+    } else {
+      const picked = pickModelFromList(await ctx.session.listModels(connection), want, connection)
+      if ('error' in picked) {
+        ctx.notify(picked.error, 'warn')
+        return
+      }
+      choice = picked
     }
-    const label = `${cleanLine(picked.label || picked.id, 80)} (${cleanLine(picked.id, 80)})`
-    ctx.session.stage({ model: { model: picked.id, connection: picked.connection } })
+    const label = `${cleanLine(choice.label || choice.id, 80)} (${cleanLine(choice.id, 80)})`
+    ctx.session.stage({ model: { model: choice.id, connection: choice.connection } })
     ctx.notify(`The next run starts on ${label}.`)
     return
   }
@@ -343,8 +370,9 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     name: 'model',
     args: '[<tier|model id>]',
     summary: "Switch the run's model (a short list without an argument)",
-    available: (s) => !s.readOnlyReason && s.activeRunId !== undefined,
-    unavailableReason: (s) => (s.readOnlyReason ? readOnlyText(s) : needsRunReason()),
+    // Without a followed run it stages the model for the next one.
+    available: (s) => !s.readOnlyReason,
+    unavailableReason: readOnlyText,
     run: (ctx, args) => guarded(ctx, () => runModel(ctx, args))
   },
   {
@@ -560,6 +588,10 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
           ctx.notify(`Effort is one of ${EFFORT_WORDS.join(', ')}.`, 'warn')
           return
         }
+        if (!ctx.state().project) {
+          ctx.notify(NO_PROJECT_STAGE, 'warn')
+          return
+        }
         ctx.session.stage({ effort: word as Effort })
         ctx.notify(`The next run starts at ${word} effort.${run ? ' The followed run keeps its own.' : ''}`)
       })
@@ -605,6 +637,10 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
         }
         if (!(GOAL_WORDS as readonly string[]).includes(word)) {
           ctx.notify(`Goal is one of ${GOAL_WORDS.join(', ')}.`, 'warn')
+          return
+        }
+        if (!ctx.state().project) {
+          ctx.notify(NO_PROJECT_STAGE, 'warn')
           return
         }
         ctx.session.stage({ goal: word as StaffingGoal })

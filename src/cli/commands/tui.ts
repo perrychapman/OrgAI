@@ -8,7 +8,7 @@
  * resolved once the TUI is connected (`prepare`): run refs through the live host, else the folder's project, else the
  * folder onboarding.
  */
-import { isOpenStatus } from '../../shared/view/runChains'
+import { newestContinuable } from '../../shared/view/runChains'
 import type { Project, RunOverrides, RunSummary, RunTeam } from '../../shared/types'
 import { quietInproc } from '../context'
 import { parseFlags } from '../flags'
@@ -117,8 +117,8 @@ export async function prepareResume(ctx: CliContext, conn: TuiHostConnection, re
   const runs: RunSummary[] = await src.runs(res.project.id).catch((e: unknown) => {
     throw hostFailure(e)
   })
-  const ended = runs.find((r) => !isOpenStatus(r.status))
-  if (!ended) throw usage('This project has no ended run to resume.')
+  const ended = newestContinuable(runs)
+  if (!ended) throw usage('This project has no ended work run to resume.')
   return { project: res.project, runId: ended.id, ...extra }
 }
 

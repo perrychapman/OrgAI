@@ -15,11 +15,13 @@ import { join } from 'node:path'
 
 const run = (over: Partial<RunSummary> = {}): RunSummary => ({ id: 'r1', projectId: 'p1', kind: 'work', prompt: 'x', status: 'idle', startedAt: 1, totalCostUsd: 0, ...over }) as RunSummary
 
-function state(over: Partial<RunSummary> = {}, texts: string[] = [], hasRun = true): TuiState {
+const PROJECT = { id: 'p1', name: 'P', provider: { id: 'claude', auth: { kind: 'subscription' } } }
+function state(over: Partial<RunSummary> = {}, texts: string[] = [], hasRun = true, project: unknown = PROJECT): TuiState {
   const transcript = texts.map((text, i) => ({ id: `e${i}`, agentId: 'root', at: i, block: { kind: 'text' as const, text } }))
   return {
     connection: 'live', folder: '/tmp/proj', runs: hasRun ? { r1: { summary: run(over), agents: {}, transcript, partials: {}, cards: { permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] }, recordLoaded: true } } : {},
-    runOrder: ['r1'], activeChain: hasRun ? ['r1'] : [], activeRunId: hasRun ? 'r1' : undefined, composeTarget: 'active', notices: [], resolved: [], cardSeq: 0
+    runOrder: ['r1'], activeChain: hasRun ? ['r1'] : [], activeRunId: hasRun ? 'r1' : undefined, composeTarget: 'active', notices: [], resolved: [], cardSeq: 0,
+    ...(project ? { project } : {})
   } as unknown as TuiState
 }
 
@@ -61,6 +63,19 @@ describe('slash /model', () => {
     await cmd('model').run(none.ctx, 'opus')
     expect(none.session.stage).toHaveBeenCalledWith({ model: { model: 'opus', connection: 'anthropic' } })
     expect(none.session.switchModel).not.toHaveBeenCalled()
+    // Only the project's connection is searched, and a tier goes through that connection's own tier map.
+    expect(none.session.listModels).toHaveBeenCalledWith('anthropic')
+    const tiered = fakeCtx(state({}, [], false))
+    ;(tiered.session as unknown as { config: unknown }).config = { connections: vi.fn(async () => [{ connection: { id: 'anthropic', tierModels: { fast: 'claude-cheap-1' } } }]) }
+    await cmd('model').run(tiered.ctx, 'fast')
+    expect(tiered.session.stage).toHaveBeenCalledWith({ model: { model: 'claude-cheap-1', connection: 'anthropic' } })
+    // A folder with no project (a chat) takes no staged choice.
+    const chat = fakeCtx(state({}, [], false, null))
+    await cmd('model').run(chat.ctx, 'opus')
+    await cmd('effort').run(chat.ctx, 'low')
+    await cmd('goal').run(chat.ctx, 'cost')
+    expect(chat.session.stage).not.toHaveBeenCalled()
+    expect(chat.ctx.notify).toHaveBeenCalledWith(expect.stringContaining('has no project'), 'warn')
     const saved = fakeCtx(state({ status: 'finished' }))
     saved.session.switchModel.mockResolvedValueOnce({ run: run(), applied: false, reason: 'Applies when you continue.' } as never)
     await cmd('model').run(saved.ctx, 'opus')
@@ -140,10 +155,15 @@ describe('clipboard', () => {
     expect(osc52('hi')).toBe('\x1b]52;c;aGk=\x07')
     const write = vi.fn()
     const run = vi.fn(async () => true)
-    const via = await copyToClipboard('hi', { write, run, platform: 'darwin', env: {} })
+    const which = vi.fn((name: string) => `/usr/bin/${name}`)
+    const via = await copyToClipboard('hi', { write, run, which, platform: 'darwin', env: {} })
     expect(write).toHaveBeenCalledWith('\x1b]52;c;aGk=\x07')
-    expect(run).toHaveBeenCalledWith('pbcopy', [], 'hi')
+    expect(run).toHaveBeenCalledWith('/usr/bin/pbcopy', [], 'hi')
     expect(via).toEqual(['terminal', 'pbcopy'])
+    // A tool not found on an absolute PATH entry is never run by its bare name.
+    const none = vi.fn(async () => true)
+    expect(await copyToClipboard('hi', { run: none, which: () => null, platform: 'win32', env: {} })).toEqual([])
+    expect(none).not.toHaveBeenCalled()
     expect(clipboardCommands('win32', {})[0].cmd).toBe('clip')
     expect(clipboardCommands('linux', { WAYLAND_DISPLAY: 'w' })[0].cmd).toBe('wl-copy')
     expect(clipboardCommands('linux', {})[0].cmd).toBe('xclip')

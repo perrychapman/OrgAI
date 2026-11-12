@@ -386,8 +386,8 @@ export class HostDispatcher {
 }
 
 /**
- * The user's own decisions (folder config trust, team files review) come from the window or the in-process CLI / TUI
- * (surface 'desktop' / 'inproc'). Any other surface (a socket client) is refused first, whatever scopes it holds.
+ * A decision only the user's own surfaces make: the window or the in-process CLI / TUI (surface 'desktop' / 'inproc').
+ * Any other surface (a socket client) is refused first, whatever scopes it holds.
  */
 function refuseSocketDecision(ctx: InvokeContext, what: string): void {
   if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', `${what} is the user's own decision, made in the OrgAI window or the terminal UI.`)
@@ -571,6 +571,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const chosen = Object.keys(choice)
     // The desktop and the in-process CLI / TUI (surface 'inproc': the user's own process) may choose them; a socket client may not.
     if (chosen.length && ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app and the terminal UI only: ${chosen.join(', ')}.`)
+    // They can raise spend (model, effort) or widen what the run may do (permission mode): in-process, 'configure' only.
+    if (chosen.length && ctx.surface === 'inproc' && !ctx.grantedScopes?.includes('configure')) throw new HostRpcFailure('scope_denied', `Choosing ${chosen.join(', ')} for a run needs the configure scope.`)
     return runs.start({
       project,
       prompt: input.prompt,
@@ -647,7 +649,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
     // Headless fields only from socket / inproc clients; overrides are checked against the project the run continues as.
     if (ctx.surface === 'desktop') return runs.continueRun(project, input.runId, input.text, input.images, { desktop: true })
-    if (!input.overrides && input.exec === undefined) return runs.continueRun(project, input.runId, input.text, input.images)
+    if (!input.overrides && input.exec === undefined) {
+      // A per-run permission mode the user chose in the terminal UI is carried only for an in-process client holding 'configure'.
+      if (ctx.surface === 'inproc' && ctx.grantedScopes?.includes('configure')) return runs.continueRun(project, input.runId, input.text, input.images, { allowWidening: true })
+      return runs.continueRun(project, input.runId, input.text, input.images)
+    }
     const o = checkRunOverrides(ctx, project, input.overrides)
     return runs.continueRun(project, input.runId, input.text, input.images, {
       ...(o.overrides ? { overrides: o.overrides } : {}),

@@ -160,17 +160,27 @@ export function inprocCliRoots(moduleDir: string, platform: NodeJS.Platform = pr
 
 /**
  * Two connected in-memory duplexes (a stand-in for a connected socket pair): what one writes the other reads, and ending
- * or destroying either side closes both. The write callback runs once the chunk is queued on the peer, so the host's
- * outbound queue never waits for a 'drain' that depends on the reader.
+ * or destroying either side closes both. Backpressure works as on a socket: when the reader's buffer is full (push
+ * returns false), the writer's callback waits until the reader asks for more (its read()), so a writer that respects
+ * write() / 'drain' (the host's outbound queue) never has more than one buffer of unread data in flight.
  */
-export function memoryStreamPair(): [Duplex, Duplex] {
+export function memoryStreamPair(highWaterMark = 64 * 1024 * 1024): [Duplex, Duplex] {
+  /** Per reader: the write callback of its peer, waiting for this side to read. */
+  const waiting = new Map<Duplex, () => void>()
   const make = (peer: () => Duplex): Duplex =>
     new Duplex({
-      highWaterMark: 64 * 1024 * 1024,
-      read() {},
+      highWaterMark,
+      read() {
+        const cb = waiting.get(this)
+        if (cb) {
+          waiting.delete(this)
+          cb()
+        }
+      },
       write(chunk: Buffer, _enc, cb) {
-        peer().push(chunk)
-        cb()
+        const other = peer()
+        if (other.push(chunk)) cb()
+        else waiting.set(other, cb)
       },
       final(cb) {
         peer().push(null)
