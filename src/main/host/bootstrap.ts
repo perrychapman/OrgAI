@@ -580,6 +580,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     updateProject: (id, fn) => {
       const saved = projects.update(id, fn)
       if (!saved) throw new Error('Project not found')
+      // Open windows and terminals see the new team at once, as for every other service that saves a project.
+      emitProject(saved)
       return saved
     },
     teamFilesState: (projectId) => teamFiles.check(projectId).state,

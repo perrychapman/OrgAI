@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EngagementDocumentInfo, EngagementNote, EngagementNoteContent, EngagementNoteWriter, Project } from '@shared/types'
 import {
@@ -258,9 +258,18 @@ export function evolutionLedgerFile(dataDir: string, projectId: string): string 
   return isSafeId(projectId) ? join(dataDir, 'evolution', `${projectId}.json`) : null
 }
 
-/** Remove a project's team-evolution ledger (its generations and snapshots) when the project is removed. */
+/** Remove a project's team-evolution ledger (its generations and snapshots), and any copy set aside as corrupt, when the project is removed. */
 export function removeEvolutionLedger(dataDir: string, projectId: string): boolean {
-  return removeFileIfExists(evolutionLedgerFile(dataDir, projectId))
+  const file = evolutionLedgerFile(dataDir, projectId)
+  if (!file) return false
+  let removed = removeFileIfExists(file)
+  try {
+    const dir = join(dataDir, 'evolution')
+    for (const name of readdirSync(dir)) if (name.startsWith(`${projectId}.json.corrupt-`)) removed = removeFileIfExists(join(dir, name)) || removed
+  } catch {
+    // no evolution folder
+  }
+  return removed
 }
 
 /** `<data>/projects/<projectId>/context`. */

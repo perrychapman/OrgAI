@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { EvolutionGeneration, EvolutionMetrics, EvolutionPlan, EvolutionRolePatch, Project, SkillSpec } from '../../shared/types'
 import { project, role, run } from './fixtures'
 import { effectiveRoleStaffing } from '../../shared/defaults'
+import { enforcedStaffingFloor } from '../runtime/staffing'
 import { SCOPE_OPEN, SCOPE_CLOSE, applyPlan, compressPrompt, patchFingerprint, planFingerprint, upsertScopeBlock } from './plan'
 import {
   MAX_GENERATIONS,
@@ -420,6 +421,19 @@ describe('validateEvolutionPlan: prompts, skills, limits, rejected', () => {
     const plain = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'deep', tier: 'deep', effort: 'medium' })])
     const raised = validateEvolutionPlan(plain, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto', minTier: 'deep' } })] }), { diagnosis: under('dev') })
     expect(raised.rolePatches[0]?.staffing?.minTier).toBe('deep')
+  })
+  it('a stored floor carried along with another staffing change is never a raise, nor an exemption from the floor rule', () => {
+    const odd = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'top', tier: 'fast', effort: 'high', staffing: { mode: 'auto', minTier: 'deep', maxEffort: 'high' } })])
+    const out = validateEvolutionPlan(odd, mkPlan({ rolePatches: [patch('dev', { tier: 'deep', staffing: { mode: 'auto', maxEffort: 'medium' } })] }))
+    const after = applyPlan(odd, out).roles[1]
+    expect(enforcedStaffingFloor(after, odd)).toBeUndefined()
+  })
+  it('floors are measured as resolveStaffing enforces them: a floor under a model-derived ceiling the runtime ignores is not "lower"', () => {
+    // sonnet runs on everyday, so the stored deep floor is not enforced; everyday would be a new floor, a raise.
+    const s0 = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'sonnet', tier: 'deep', effort: 'medium', staffing: { mode: 'auto', minTier: 'deep' } })])
+    const out = validateEvolutionPlan(s0, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto', minTier: 'everyday' } })] }))
+    expect(rules(out)).toContain('tier_raise')
+    expect(enforcedStaffingFloor(applyPlan(s0, out).roles[1], s0)).toBeUndefined()
   })
   it('a role patched in a recent generation is left alone (cooldown)', () => {
     const out = validateEvolutionPlan(project(), mkPlan({ rolePatches: [patch('dev', { effort: 'low' }), patch('review', { effort: 'low' })] }), { cooldownSlugs: ['dev'] })

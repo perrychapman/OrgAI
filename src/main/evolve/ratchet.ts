@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, cleanRoleStaffing, compareEffort, compareTier, effectiveRoleStaffing, settingTier, tierForModel } from '../../shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, cleanRoleStaffing, compareEffort, compareTier, settingTier, tierForModel } from '../../shared/defaults'
+import { enforcedStaffingFloor } from '../runtime/staffing'
 import { EFFORTS, MODEL_TIERS, SKILL_MAX_PER_PROJECT, TOOL_CATALOG } from '../../shared/types'
 import type {
   Effort,
@@ -212,7 +213,9 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     const curFloor = role.staffing?.minTier
     // The floor staffing enforces today (effectiveRoleStaffing drops a floor above the role's tier): a raise is measured
     // against this, so a floor the runtime ignored is never switched on by a patch.
-    const effFloor = effectiveRoleStaffing(role, project).minTier
+    const effFloor = enforcedStaffingFloor(role, project)
+    /** A floor raise this patch proposed explicitly and the gate accepted (with an under-provisioned finding). */
+    let floorRaised = false
     if (!fixed && rawPatch.staffing !== undefined) {
       const s = (rawPatch.staffing ?? {}) as Record<string, unknown>
       const curMode = role.staffing?.mode ?? 'auto'
@@ -226,7 +229,10 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
         else if (!ceiling) trim('tier_unknown_base', `${slug} has no known tier, so its staffing floor stays as it is`, slug)
         else if (compareTier(s.minTier, ceiling) > 0) trim('tier_raise', 'staffing floor above the role tier', slug)
         else if (compareTier(s.minTier, effFloor ?? 'fast') > 0 && !under) trim('tier_raise', 'staffing floor raised without an under-provisioned finding', slug)
-        else next.minTier = s.minTier
+        else {
+          next.minTier = s.minTier
+          if (compareTier(s.minTier, effFloor ?? 'fast') > 0) floorRaised = true
+        }
       }
       if (s.maxEffort !== undefined) {
         if (s.maxEffort === 'xhigh' || s.maxEffort === 'max') trim('effort_xhigh', 'staffing maxEffort "xhigh"/"max" is never set', slug)
@@ -241,7 +247,8 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     const raises: ('tier' | 'effort' | 'floor' | 'ceiling')[] = []
     if (out.tier !== undefined && cur && compareTier(out.tier, cur) > 0) raises.push('tier')
     if (out.effort !== undefined && compareEffort(out.effort, curEffort) > 0) raises.push('effort')
-    if (out.staffing?.minTier && compareTier(out.staffing.minTier, effFloor ?? 'fast') > 0) raises.push('floor')
+    // Only a floor this patch raised explicitly counts; a stored floor carried along is never a raise (nor an exemption).
+    if (floorRaised && out.staffing?.minTier && compareTier(out.staffing.minTier, effFloor ?? 'fast') > 0) raises.push('floor')
     if (out.staffing?.maxEffort && compareEffort(out.staffing.maxEffort, curMax) > 0) raises.push('ceiling')
     for (const extra of raises.slice(1)) {
       trim('one_raise_per_role', `${slug} may rise on one of tier, effort or staffing per generation; the ${extra} raise was dropped`, slug)
@@ -273,7 +280,7 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     // the patched role) may not exceed the one it enforced before, unless the floor raise is this role's one allowed raise.
     // A stored floor the runtime ignored (above the old tier) is otherwise switched on by any tier change that reaches it.
     if ((out.tier !== undefined || out.staffing) && raises[0] !== 'floor') {
-      const floorAfter = (o: EvolutionRolePatch): ModelTier | undefined => effectiveRoleStaffing(applyPlan({ ...project, roles: [role] }, { rolePatches: [o] }).roles[0], project).minTier
+      const floorAfter = (o: EvolutionRolePatch): ModelTier | undefined => enforcedStaffingFloor(applyPlan({ ...project, roles: [role] }, { rolePatches: [o] }).roles[0], project)
       const raised = (f: ModelTier | undefined): boolean => !!f && compareTier(f, effFloor ?? 'fast') > 0
       if (raised(floorAfter(out))) {
         const st: RoleStaffing = { ...(out.staffing ?? role.staffing ?? { mode: 'auto' }) }

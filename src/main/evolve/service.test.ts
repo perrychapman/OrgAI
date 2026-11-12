@@ -132,6 +132,7 @@ describe('apply and the single-trial rule', () => {
     const again = await h.svc.apply({ projectId: 'p1' })
     expect(again.applied).toBe(false)
     expect(again.reason).toContain('gen_1 finished its trial and was rolled back')
+    expect(again.teamFilesSynced).toBe(true) // the rollback wrote the team files
     expect(again.project.roles).toEqual(original.roles)
     expect(h.proj.roles).toEqual(original.roles)
     expect(h.svc.history('p1').trialId).toBeUndefined()

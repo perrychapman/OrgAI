@@ -273,7 +273,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     if (trial && settled?.state === 'held') return refuse(`Nothing was applied: ${settled.reason}.`)
     const busy = teamFilesBusy(project.id)
     if (busy) return refuse(`Nothing was applied; run evolve again once ${busy}.`)
-    if (open && settled?.state === 'rolled_back') return refuse(`Generation ${open.id} finished its trial and was rolled back (${settled.reason}); no new change was applied.`)
+    if (open && settled?.state === 'rolled_back') return { ...refuse(`Generation ${open.id} finished its trial and was rolled back (${settled.reason}); no new change was applied.`), teamFilesSynced: settled.teamFilesSynced === true }
     if (!plan.gate.ok) return refuse(`The safety gate refused this plan: ${plan.gate.violations.filter((v) => v.action === 'rejected').map((v) => v.rule).join(', ')}.`)
     if (plan.empty) return refuse(diagnosis.wasteScore < (input.minWaste ?? MIN_WASTE_DEFAULT) ? `Waste score ${diagnosis.wasteScore} is below the threshold; nothing to change.` : 'No safe change follows from the findings.')
 
@@ -441,7 +441,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
    * Decide a trial once its window is full: promote it, or roll it back when it regressed. 'pending' while runs are
    * still missing. Callers hold the project's serial chain.
    */
-  async function settleTrial(project: Project, ledger: Ledger, trial: StoredGeneration): Promise<{ state: 'pending'; have: number; need: number } | { state: 'held' | 'promoted' | 'rolled_back'; reason: string }> {
+  async function settleTrial(project: Project, ledger: Ledger, trial: StoredGeneration): Promise<{ state: 'pending'; have: number; need: number } | { state: 'held' | 'promoted' | 'rolled_back'; reason: string; teamFilesSynced?: boolean }> {
     const d = evaluateActiveTrial(trial, recordsOf(project.id, 50), effectiveConcurrency(project))
     if (d.state === 'pending') return { state: 'pending', have: d.have, need: d.need }
     if (d.regressed) {
@@ -452,7 +452,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     trial.trialMetrics = d.trialMetrics
     if (d.regressed) {
       const res = await rollbackCore(project.id, ledger, trial, `trial regressed: ${d.reason}`)
-      return { state: 'rolled_back', reason: res.unusable ? `${d.reason}; the snapshot was unusable, so the team was left unchanged` : d.reason }
+      return { state: 'rolled_back', reason: res.unusable ? `${d.reason}; the snapshot was unusable, so the team was left unchanged` : d.reason, teamFilesSynced: res.teamFilesSynced }
     }
     trial.status = 'promoted'
     trial.decidedAt = now()
