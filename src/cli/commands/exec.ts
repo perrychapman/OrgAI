@@ -23,7 +23,7 @@
  *   then exits 130 / 143; a second signal exits at once.
  * - The in-process host is stopped (force) before the command returns.
  */
-import { fstatSync, lstatSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { MAX_AUTO_CONTINUES_LIMIT, projectConnection } from '../../shared/defaults'
 import {
@@ -391,8 +391,14 @@ export function writeLastMessage(file: string, text: string): void {
   const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
   let created = false
   try {
-    writeFileSync(tmp, text, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    // Opened exclusively first, so a temporary file this call created is known even when the write itself fails (ENOSPC).
+    const fd = openSync(tmp, 'wx', 0o600)
     created = true
+    try {
+      writeSync(fd, text, null, 'utf8')
+    } finally {
+      closeSync(fd)
+    }
     renameSync(tmp, file)
   } catch (e) {
     // Only a file this call created is removed (a name that already existed is someone else's).
