@@ -20,6 +20,7 @@ import {
 } from '@shared/view/schedules'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
+import { scrollWithin } from '../../lib/scrollWithin'
 import { CHAT_CHANGES_SWITCH } from '../../lib/chatPermissions'
 import { adapterOfModel, isWideningMode, newRunPermissionChoices, permissionModeHelp, permissionModeName, wideningConfirmOptions, type RunModel } from '../../lib/runSettings'
 import { Dialog } from '../ui/Dialog'
@@ -95,6 +96,13 @@ export default function ScheduleEditor({
     setPickError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editing])
+
+  // A save refusal sits under the last field: bring it into view inside the dialog body (small windows).
+  useEffect(() => {
+    if (!saveError) return
+    const el = bodyRef.current?.querySelector<HTMLElement>('[data-testid="schedule-save-error"]')
+    if (el) scrollWithin(el, 'nearest')
+  }, [saveError])
 
   // The next runs stay current while the dialog is open.
   useEffect(() => {
@@ -461,7 +469,7 @@ export default function ScheduleEditor({
                 aria-describedby={err('budget').describedBy ?? id('budget-hint')}
               />
               <span className="hint" id={id('budget-hint')}>
-                The run stops when it reaches the cap. Empty uses the project&apos;s own cap, if any.
+                The run stops when it reaches the cap. {form.targetKind === 'team' ? "Empty uses the project's own cap, if any." : 'Empty means no cap of its own.'}
               </span>
               {errorText('budget')}
             </div>

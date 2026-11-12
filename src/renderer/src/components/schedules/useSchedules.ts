@@ -76,7 +76,9 @@ export function saveSchedulesPaused(paused: boolean): Promise<void> {
   const run = async (): Promise<void> => {
     const info = await window.orgai.settings.get()
     const { dataDir: _dataDir, appVersion: _appVersion, ...settings } = info
-    await window.orgai.settings.set({ ...settings, schedulesPaused: paused })
+    const saved = await window.orgai.settings.set({ ...settings, schedulesPaused: paused })
+    // Main keeps only the fields it knows: a build without schedules drops it, so trust the saved value only.
+    if (!!saved?.schedulesPaused !== paused) throw new Error('The pause setting was not saved. Schedules are not available yet.')
   }
   const result = pauseQueue.then(run, run)
   pauseQueue = result.catch(() => undefined)
