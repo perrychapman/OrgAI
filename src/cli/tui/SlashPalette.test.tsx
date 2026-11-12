@@ -66,13 +66,14 @@ describe('SlashPalette', () => {
     // interrupt / stop need an open active run.
     expect(t.frame()).not.toContain('/interrupt')
     await t.send('ru')
+    // A slow runner may not have redrawn after one tick: wait for the frame rather than read it at once.
+    await vi.waitFor(() => expect(t.frame().split('\n')[0]).toContain('/ru'))
     const f = t.frame()
-    expect(f.split('\n')[0]).toContain('/ru')
     expect(f).toContain('/run')
     expect(f).toContain('/runs')
     expect(f).not.toContain('/help')
     await t.send('zz')
-    expect(t.frame()).toContain('No matching command')
+    await vi.waitFor(() => expect(t.frame()).toContain('No matching command'))
     t.r.unmount()
   })
 
