@@ -163,6 +163,20 @@ export function resultText(e: Pick<ScheduleHistoryEntry, 'result' | 'reason' | '
   }
 }
 
+/** The short result word for a badge. */
+export function resultWord(r: ScheduleRunResult): 'Started' | 'Skipped' | 'Failed' {
+  return r === 'started' ? 'Started' : r === 'skipped' ? 'Skipped' : 'Failed'
+}
+
+/** Why a slot did not start, without the leading word (it sits beside resultWord): '' for a started entry. */
+export function resultWhy(e: Pick<ScheduleHistoryEntry, 'result' | 'reason' | 'detail'>): string {
+  if (e.result === 'started') return ''
+  const full = resultText(e)
+  const rest = full.replace(/^(Skipped:|Could not start\.)\s*/, '')
+  if (!rest) return e.result === 'failed' ? 'OrgAI could not start the run.' : ''
+  return rest.charAt(0).toUpperCase() + rest.slice(1)
+}
+
 /** The outcome of a started run: its end word, "Running" before it ends, '' for entries without a run. */
 export function outcomeText(e: Pick<ScheduleHistoryEntry, 'result' | 'outcome' | 'runId'>): string {
   if (e.outcome) return OUTCOME_TEXT[e.outcome] ?? ''
