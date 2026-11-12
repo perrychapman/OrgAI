@@ -344,6 +344,75 @@ export async function acquireOsLock(path: string, mode: LockMode, opts: AcquireO
   }
 }
 
+/** Restoring a shared hold failed during an upgrade or downgrade: the caller no longer holds anything on the path. */
+export class LockLostError extends Error {
+  readonly code = 'lost'
+  constructor(readonly path: string) {
+    super(`The hold on ${path} could not be restored.`)
+    this.name = 'LockLostError'
+  }
+}
+
+/**
+ * Turn this process's only shared hold on a path into an exclusive one (parallel-sessions.md 4.1 "Upgrading a session
+ * hold"). SQLite cannot upgrade a shared read in place: on the same connection ROLLBACK, then BEGIN EXCLUSIVE once; on
+ * busy, take shared again at once and throw LockBusyError. The caller must hold the resource's transaction lock so no
+ * other process tries the exclusive form meanwhile; then re-taking shared cannot fail (if it does, LockLostError).
+ * Returns the exclusive handle; the shared handle is consumed.
+ */
+export function upgradeToExclusive(shared: OsLockHandle): OsLockHandle {
+  const st = states.get(shared.path)
+  if (!st?.shared || shared.mode !== 'shared') throw new Error(`upgradeToExclusive: ${shared.path} is not held shared`)
+  if (st.shared.count !== 1 || st.queue.length > 0) throw new LockBusyError(shared.path, 'exclusive')
+  const db = st.shared.db
+  db.exec('ROLLBACK')
+  try {
+    db.exec('BEGIN EXCLUSIVE')
+  } catch (e) {
+    if (!isBusy(e)) {
+      st.shared = null
+      releaseConnection(db)
+      wakeNext(shared.path)
+      throw e
+    }
+    try {
+      db.exec('BEGIN')
+      db.prepare('SELECT count(*) FROM sqlite_schema').get()
+    } catch {
+      st.shared = null
+      releaseConnection(db)
+      wakeNext(shared.path)
+      throw new LockLostError(shared.path)
+    }
+    throw new LockBusyError(shared.path, 'exclusive')
+  }
+  st.shared = null
+  st.exclusive = db
+  // The old shared handle must not release anything any more.
+  ;(shared as { release: () => void }).release = () => {}
+  return makeHandle(shared.path, 'exclusive')
+}
+
+/** The reverse of upgradeToExclusive, inside the same transaction lock: ROLLBACK, take shared again on the connection. */
+export function downgradeToShared(exclusive: OsLockHandle): OsLockHandle {
+  const st = states.get(exclusive.path)
+  if (!st?.exclusive || exclusive.mode !== 'exclusive') throw new Error(`downgradeToShared: ${exclusive.path} is not held exclusive`)
+  const db = st.exclusive
+  db.exec('ROLLBACK')
+  st.exclusive = null
+  try {
+    db.exec('BEGIN')
+    db.prepare('SELECT count(*) FROM sqlite_schema').get()
+  } catch {
+    releaseConnection(db)
+    wakeNext(exclusive.path)
+    throw new LockLostError(exclusive.path)
+  }
+  st.shared = { db, count: 1 }
+  ;(exclusive as { release: () => void }).release = () => {}
+  return makeHandle(exclusive.path, 'shared')
+}
+
 /** Test seam: how many paths have in-process state (should be 0 when nothing is held or waiting). */
 export function _osLockStateCount(): number {
   return states.size
