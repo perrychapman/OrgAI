@@ -12,6 +12,9 @@ export interface TabItem {
   /** Spoken name of the count, e.g. "3 suggestions"; the tab's accessible name becomes "<label>, <countLabel>". */
   countLabel?: string
   countTestId?: string
+  /** A small unread dot after the label; `dotLabel` (e.g. "new reply") joins the accessible name: "<label>, <dotLabel>". */
+  dot?: boolean
+  dotLabel?: string
   disabled?: boolean
   testId?: string
 }
@@ -63,7 +66,7 @@ export function Tabs({
   // `data-ready` turns the transition on after the first measure, and a resize snaps (data-snap) instead of gliding.
   const [bar, setBar] = useState<{ x: number; w: number } | null>(null)
   const [ready, setReady] = useState(false)
-  const signature = tabs.map((t) => `${t.id}:${t.label}:${t.count ?? ''}`).join('|')
+  const signature = tabs.map((t) => `${t.id}:${t.label}:${t.count ?? ''}:${t.dot ? 1 : ''}`).join('|')
   const measure = (): void => {
     const list = listRef.current
     const el = refs.current.get(value)
@@ -142,12 +145,15 @@ export function Tabs({
             disabled={t.disabled}
             className="tabs-tab"
             data-testid={t.testId}
-            aria-label={t.count !== undefined && t.count > 0 && t.countLabel ? `${t.label}, ${t.countLabel}` : undefined}
+            aria-label={
+              t.count !== undefined && t.count > 0 && t.countLabel ? `${t.label}, ${t.countLabel}` : t.dot && t.dotLabel ? `${t.label}, ${t.dotLabel}` : undefined
+            }
             onClick={() => change(t.id)}
           >
             {t.icon && <Icon icon={t.icon} size="sm" />}
             {t.label}
             {t.count !== undefined && t.count > 0 && <span className="tabs-count" data-testid={t.countTestId}>{t.count}</span>}
+            {t.dot && <span className="tabs-dot" aria-hidden="true" data-testid={t.testId ? `${t.testId}-dot` : undefined} />}
           </button>
         )
       })}

@@ -2,7 +2,7 @@
 // Ctrl+Shift+N, the Projects view entry points, App settings > General > Advanced rows, and (when the main-process handlers for
 // runs.startQuick / skills.startAssist are merged) the Chat, MCP assistant and Skill assistant runs end to end.
 import path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab, windowShift } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, removeFixture, sleep, teamPanelTab, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E assistants (orgai test)'
@@ -56,6 +56,54 @@ async function checkSidebar(tag) {
   }
   const t = (await row('quick').getAttribute('title')) ?? ''
   check(/Ctrl\+Shift\+N|⌘⇧N/.test(t), `Chat row title mentions the accelerator ${tag}`, t)
+}
+
+/**
+ * A Chat, MCP assistant or Skill assistant session in the conversation layout: no run side panel (no landmark, rail or
+ * resize handle), one column, and the panel's other tabs in a strip above the conversation. Every tab opens; Conversation
+ * comes back; the strip follows the Tabs keyboard pattern. `must` lists tab test ids that have to be there.
+ */
+async function checkStageTabs(label, must) {
+  const shape = await page.evaluate(() => {
+    const body = document.querySelector('.run-body')
+    const r = (sel) => document.querySelector(sel)?.getBoundingClientRect()
+    return {
+      flag: body?.getAttribute('data-side-panel') ?? null,
+      panels: document.querySelectorAll('.run-body aside.side-panel, aside[aria-label="run panel"]').length,
+      rails: document.querySelectorAll('.run-body .side-rail').length,
+      handles: document.querySelectorAll('[data-testid=side-panel-resize]').length,
+      // The frame, not the stage: a wide frame puts an open decision tray beside the stage (an existing layout).
+      stage: Math.round(r('.run-body > .canvas-frame')?.width ?? 0),
+      body: Math.round(r('.run-body')?.width ?? 0),
+      tabs: [...document.querySelectorAll('[data-testid=run-stage-tabs] [role=tablist] [role=tab]')].map((t) => t.getAttribute('data-testid'))
+    }
+  })
+  check(shape.flag === 'none' && shape.panels === 0 && shape.rails === 0 && shape.handles === 0, `${label}: no run side panel, rail or resize handle`, JSON.stringify(shape))
+  check(shape.stage > 0 && shape.body - shape.stage <= 2, `${label}: the conversation frame takes the full width`, JSON.stringify(shape))
+  check(shape.tabs[0] === 'run-tab-conversation' && must.every((t) => shape.tabs.includes(t)), `${label}: the stage tab strip starts with Conversation and has ${must.join(', ')}`, JSON.stringify(shape.tabs))
+  check(!shape.tabs.includes('side-tab-transcript') && !shape.tabs.includes('side-tab-outputs') && !shape.tabs.includes('side-tab-knowledge'), `${label}: no Transcript, Outputs or Knowledge tab`, JSON.stringify(shape.tabs))
+  for (const id of shape.tabs.slice(1)) {
+    await page.locator(`[data-testid=run-stage-tabs] [data-testid=${id}]`).click()
+    await sleep(200)
+    const open = await page.evaluate((tid) => {
+      const tab = document.querySelector(`[data-testid=run-stage-tabs] [data-testid=${tid}]`)
+      const panel = tab ? document.getElementById(tab.getAttribute('aria-controls') ?? '') : null
+      return { selected: tab?.getAttribute('aria-selected') === 'true', panel: !!panel && panel.getBoundingClientRect().height > 0, conversation: (document.querySelector('[data-testid=conversation-transcript]')?.getClientRects().length ?? 0) > 0, composer: !!document.querySelector('.run-body .live-composer-bar') }
+    }, id)
+    check(open.selected && open.panel && !open.conversation && open.composer, `${label}: the ${id} tab opens in the stage, the composer stays`, JSON.stringify(open))
+  }
+  const conv = page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]')
+  await conv.click()
+  await sleep(200)
+  check(await visible('[data-testid=conversation-transcript]'), `${label}: Conversation shows the transcript again`)
+  await conv.focus()
+  await page.keyboard.press('ArrowRight')
+  await sleep(200)
+  const key = await page.evaluate(() => ({ focused: document.activeElement?.getAttribute('data-testid'), selected: document.activeElement?.getAttribute('aria-selected') }))
+  check(key.focused === shape.tabs[1] && key.selected === 'true', `${label}: ArrowRight moves to and selects the next tab`, JSON.stringify(key))
+  await page.keyboard.press('Home')
+  await sleep(200)
+  check((await conv.getAttribute('aria-selected')) === 'true', `${label}: Home returns to Conversation`)
 }
 
 async function openAssistant(id) {
@@ -334,10 +382,29 @@ try {
     const toggle = page.locator('[data-testid=run-layout-toggle]')
     check(await visible('[data-testid=run-conversation]'), 'a one-assistant chat opens in the conversation layout')
     check((await page.locator('.run-body').first().getAttribute('data-layout').catch(() => null)) === 'conversation', 'the layout toggle reports the conversation layout')
+    await checkStageTabs('Chat at 1600x1000', ['side-tab-usage', 'side-tab-logs'])
+    check((await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-plan]').count()) === 0, 'a Chat without a plan has no Plan tab in the stage strip')
+    // Show thinking: at the right end of the strip, on Conversation only.
+    const thinkingBox = page.locator('[data-testid=run-stage-tabs] [data-testid=run-stage-show-thinking]')
+    check((await thinkingBox.count()) === 1 && (await page.getByText('Show thinking', { exact: true }).count()) === 1, 'Show thinking is in the strip while Conversation is selected')
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-usage]').click()
+    await sleep(200)
+    check((await page.locator('[data-testid=run-stage-show-thinking]').count()) === 0, 'Show thinking is gone on the Usage tab')
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]').click()
+    await sleep(200)
+    check((await page.locator('[data-testid=run-stage-show-thinking]').count()) === 1, 'Show thinking is back on Conversation')
     for (const theme of ['dark', 'light']) {
       await setTheme(theme)
       await setSize(1024, 640)
       await sleep(500)
+      await checkStageTabs(`Chat at 1024x640 ${theme}`, ['side-tab-usage', 'side-tab-logs'])
+      const bar = await page.evaluate(() => {
+        const row = document.querySelector('.run-stage-tabs-row')?.getBoundingClientRect()
+        const box = document.querySelector('[data-testid=run-stage-show-thinking]')?.closest('.run-stage-thinking')?.getBoundingClientRect()
+        const bar = document.querySelector('.run-stage-tabs-bar')
+        return { fits: !!row && !!box && box.right <= row.right + 1 && box.left >= row.left, noScroll: !!bar && bar.scrollWidth <= bar.clientWidth + 1 }
+      })
+      check(bar.fits && bar.noScroll, `the strip with Show thinking does not overflow at 1024x640 (${theme})`, JSON.stringify(bar))
       const fit = await page.evaluate(() => {
         const vh = window.innerHeight
         const doc = document.scrollingElement
@@ -357,13 +424,40 @@ try {
       await shot(`chat-conversation-1600x1000-${theme}`)
     }
     await setTheme('dark')
+    // Sending from another stage tab brings the conversation back, so the reply is seen.
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-usage]').click()
+    await page.locator('.run-body .composer textarea').fill('One more short sentence, please.')
+    await page.locator('.run-body .composer textarea').press('Enter')
+    await sleep(600)
+    check((await page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]').getAttribute('aria-selected')) === 'true' && (await visible('[data-testid=conversation-transcript]')), 'a send from the Usage tab returns the stage to Conversation')
+    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    // New-reply cue: send, move to Usage before the reply lands; Conversation is marked and named, one cue, cleared on selecting it.
+    const convTab = page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]')
+    await page.locator('.run-body .composer textarea').fill('And one more, briefly.')
+    await page.locator('.run-body .composer textarea').press('Enter')
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-usage]').click()
+    await sleep(2500)
+    const cued = (await convTab.getAttribute('aria-label')) === 'Conversation, new reply' && (await page.locator('[data-testid=run-tab-conversation-dot]').count()) === 1
+    const landedOnConversation = (await convTab.getAttribute('aria-selected')) === 'true'
+    if (landedOnConversation) console.log('note: the mock reply landed before the Usage tab was chosen; the cue was covered by unit test only')
+    else check(cued, 'a reply landing under the Usage tab marks Conversation as "Conversation, new reply"')
+    if (!landedOnConversation && cued) {
+      await convTab.click()
+      await sleep(300)
+      check((await convTab.getAttribute('aria-label')) === null && (await page.locator('[data-testid=run-tab-conversation-dot]').count()) === 0, 'selecting Conversation clears the new-reply cue')
+    }
+    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
     await toggle.click()
     await sleep(500)
     check((await page.locator('.run-body').first().getAttribute('data-layout')) === 'canvas' && (await page.locator('.react-flow').count()) > 0 && !(await visible('[data-testid=run-conversation]')), '"Show agents" switches to the canvas')
     check((await toggle.getAttribute('aria-label')) === 'Show conversation', 'the toggle then reads "Show conversation"')
+    check((await page.locator('.run-body aside.side-panel').count()) === 1 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 0, 'on the canvas a Chat keeps the run side panel (a selected agent is read there)')
     await toggle.click()
     await sleep(400)
     check(await visible('[data-testid=run-conversation]'), '"Show conversation" switches back')
+    check((await page.locator('.run-body aside.side-panel').count()) === 0 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 1, 'back in the conversation the side panel is gone again, no stale layout')
+    const focusAfter = await page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName)
+    check(focusAfter === 'run-layout-toggle', 'focus stays on the layout toggle across the switch', String(focusAfter))
 
     await endSession(page)
     const save = page.locator('[data-testid=run-save-as-project]')
@@ -575,6 +669,51 @@ try {
     await page.locator('[data-testid=run-layout-toggle]').click()
     await sleep(500)
     check(await visible('[data-testid=run-conversation]'), 'the layout toggle shows the conversation for a default-team chat')
+    check((await page.locator('.run-body aside.side-panel').count()) === 0 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 1, 'a default-team chat in the conversation has no side panel either')
+    await endSession(page)
+
+    // A team work run of a stored project: the panel exists only on the canvas; in "Show conversation" the stage strip
+    // carries every tab the panel offered (Outputs here; Knowledge only for an engagement, see engagement2.mjs).
+    await openProject(page, NAME)
+    await projectTab(page, 'Live').click()
+    if (!(await page.locator('.new-run').count())) await page.keyboard.press('Control+t')
+    await page.locator('.new-run').waitFor({ timeout: 10_000 })
+    await page.locator('.composer textarea').fill('Say hello in one short sentence.')
+    await page.locator('.composer .btn.primary').click()
+    await page.locator('.run-body').first().waitFor({ timeout: 20_000 })
+    await sleep(800)
+    check((await page.locator('.run-body').first().getAttribute('data-layout')) === 'canvas', 'a team work run opens on the canvas')
+    check((await page.locator('.run-body aside.side-panel').count()) === 1 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 0, 'a team work run on the canvas has the run side panel and no stage strip')
+    check((await page.locator('.run-body aside.side-panel [data-testid=side-tab-transcript]').count()) === 1 && (await page.locator('.run-body aside.side-panel [data-testid=side-tab-outputs]').count()) === 1, 'the canvas panel has Transcript and Outputs tabs')
+    await page.locator('[data-testid=run-layout-toggle]').click()
+    await sleep(500)
+    check(await visible('[data-testid=run-conversation]'), '"Show conversation" shows the conversation of a team work run')
+    const workShape = await page.evaluate(() => ({
+      flag: document.querySelector('.run-body')?.getAttribute('data-side-panel') ?? null,
+      panels: document.querySelectorAll('.run-body aside.side-panel, aside[aria-label="run panel"]').length,
+      rails: document.querySelectorAll('.run-body .side-rail').length,
+      handles: document.querySelectorAll('[data-testid=side-panel-resize]').length,
+      tabs: [...document.querySelectorAll('[data-testid=run-stage-tabs] [role=tablist] [role=tab]')].map((t) => t.getAttribute('data-testid'))
+    }))
+    check(workShape.flag === 'none' && workShape.panels === 0 && workShape.rails === 0 && workShape.handles === 0, 'a team work run in Show conversation has no panel, rail or resize handle', JSON.stringify(workShape))
+    check(workShape.tabs[0] === 'run-tab-conversation' && ['side-tab-usage', 'side-tab-outputs', 'side-tab-logs'].every((t) => workShape.tabs.includes(t)) && !workShape.tabs.includes('side-tab-knowledge') && !workShape.tabs.includes('side-tab-transcript'), 'the work run stage strip has Conversation, Usage, Outputs and Logs (no Knowledge for a code project)', JSON.stringify(workShape.tabs))
+    check(workShape.tabs.includes('side-tab-plan'), 'the work run stage strip shows Plan before a plan exists (N2)', JSON.stringify(workShape.tabs))
+    await setSize(1024, 640)
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-outputs]').click()
+    await sleep(300)
+    const outputsFit = await page.evaluate(() => {
+      const p = document.querySelector('[data-testid=run-stage-tabs] [role=tabpanel][id*=outputs]')
+      const r = p?.getBoundingClientRect()
+      return { open: !!document.querySelector('[data-testid=run-stage-tabs] [data-testid=run-outputs]'), over: p ? p.scrollWidth - p.clientWidth : -1, inside: !!r && r.left >= 0 && r.right <= window.innerWidth + 0.5 }
+    })
+    check(outputsFit.open && outputsFit.over <= 1 && outputsFit.inside, 'the Outputs tab opens in the stage without horizontal overflow', JSON.stringify(outputsFit))
+    await setSize(1600, 1000)
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]').click()
+    await page.locator('[data-testid=run-layout-toggle]').click()
+    await sleep(500)
+    check((await page.locator('.run-body').first().getAttribute('data-layout')) === 'canvas' && (await page.locator('.run-body aside.side-panel').count()) === 1 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 0, 'back on the canvas the team work run has its panel again')
+    const backPanel = await page.evaluate(() => ({ rails: document.querySelectorAll('.run-body .side-rail').length, tabs: document.querySelectorAll('.run-body aside.side-panel [role=tab]').length }))
+    check(backPanel.rails === 0 && backPanel.tabs > 0, 'back on the canvas with an agent selected the panel is open, not the rail (1600x1000)', JSON.stringify(backPanel))
     await endSession(page)
 
     // Project-scope Skill assistant from Team > Catalog > Skills: opens in that project's Live tab with a role listed.
@@ -589,6 +728,7 @@ try {
     check((await pitem.count()) > 0, 'the project Skill assistant raises a proposal')
     const roleText = await pitem.locator('.skill-prop-roles').innerText().catch(() => '')
     check(/Who loads it:\s*\S/.test(roleText), 'the project skill proposal says who loads it', roleText)
+    await checkStageTabs('project Skill assistant', ['side-tab-usage', 'side-tab-logs'])
     await endSession(page)
 
     // Skill assistant
@@ -600,6 +740,7 @@ try {
     check((await item.count()) > 0, 'Skill assistant raises a proposal with proposal-skill-item')
     if (await item.count()) {
       await shot('skill-proposal-1600x1000')
+      await checkStageTabs('Skill assistant', ['side-tab-usage', 'side-tab-logs'])
       check((await page.locator('.run-tab-new').getAttribute('aria-label')) === 'New session', 'the "+" tab reads "New session" on the Skill assistant')
       check(!/unattended/i.test(await page.locator('[data-testid=run-meta]').innerText().catch(() => '')), 'Skill assistant run metadata has no "unattended"')
       const card = page.locator('article.decision-card', { has: page.locator('[data-testid=proposal-skill-item]') }).first()
@@ -622,6 +763,8 @@ try {
     check(app.windows().length === 1, 'the MCP assistant opens no new window', String(app.windows().length))
     check((await page.locator('.run-tab-new').getAttribute('aria-label')) === 'New session', 'the "+" tab reads "New session" on the MCP assistant')
     check(!/unattended/i.test(await page.locator('[data-testid=run-meta]').innerText().catch(() => '')), 'MCP assistant run metadata has no "unattended"')
+    await page.locator('[data-testid=run-conversation]').waitFor({ timeout: 10_000 }).catch(() => {})
+    await checkStageTabs('MCP assistant', ['side-tab-usage', 'side-tab-logs'])
     await endSession(page)
     // Build switch on: the run strip names the workspace.
     await openAssistant('harness')

@@ -324,6 +324,25 @@ try {
   await page.locator('.composer .btn.primary').click()
   await page.locator('[data-testid=run-conversation]').waitFor({ state: 'visible', timeout: 20_000 })
   check(true, 'an Ask run opens in the conversation layout')
+  // No panel in the conversation layout of any run: the stage strip carries the panel's tabs, Outputs and Knowledge included (an engagement).
+  const askShape = await page.evaluate(() => ({
+    flag: document.querySelector('.run-body')?.getAttribute('data-side-panel') ?? null,
+    panels: document.querySelectorAll('.run-body aside.side-panel, aside[aria-label="run panel"]').length,
+    rails: document.querySelectorAll('.run-body .side-rail').length,
+    handles: document.querySelectorAll('[data-testid=side-panel-resize]').length,
+    tabs: [...document.querySelectorAll('[data-testid=run-stage-tabs] [role=tablist] [role=tab]')].map((t) => t.getAttribute('data-testid'))
+  }))
+  check(askShape.flag === 'none' && askShape.panels === 0 && askShape.rails === 0 && askShape.handles === 0, 'an Ask run has no side panel, rail or resize handle', JSON.stringify(askShape))
+  check(askShape.tabs[0] === 'run-tab-conversation' && ['side-tab-usage', 'side-tab-outputs', 'side-tab-knowledge', 'side-tab-logs'].every((t) => askShape.tabs.includes(t)), 'the Ask stage strip has Conversation, Usage, Outputs, Knowledge and Logs', JSON.stringify(askShape.tabs))
+  await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-knowledge]').click()
+  await sleep(500)
+  const askKnowledge = await page.evaluate(() => {
+    const p = document.querySelector('[data-testid=run-stage-tabs] [role=tabpanel][id*=knowledge]')
+    const r = p?.getBoundingClientRect()
+    return { open: !!p && !!p.querySelector('.run-knowledge'), over: p ? p.scrollWidth - p.clientWidth : -1, inside: !!r && r.left >= 0 && r.right <= window.innerWidth + 0.5 }
+  })
+  check(askKnowledge.open && askKnowledge.over <= 1 && askKnowledge.inside, 'the Knowledge tab opens in the Ask stage without horizontal overflow', JSON.stringify(askKnowledge))
+  await page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]').click()
   check(await until(async () => /Mock reply to: What does the plan say\?/.test(await page.locator('[data-testid=conversation-transcript]').innerText()), 20_000), 'the conversation shows the mock reply', clean(await page.locator('[data-testid=conversation-transcript]').innerText().catch(() => '')).slice(0, 200))
   check(/Ask/.test(await page.locator('[data-testid=run-meta-ask]').innerText().catch(() => '')), 'the run meta says Ask · one assistant')
   await fitsWindow('Ask run (1600x1000 dark)')

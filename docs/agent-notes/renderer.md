@@ -80,7 +80,36 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
 - Run view: one 40 px run strip (`[data-testid=run-strip]`: run tabs plus Interrupt / End session / Org retrospective), then a 32 px canvas toolbar
   (`[data-testid=run-meta]` metadata, Hide finished switch, zoom IconButtons, the legend popover). The tray stacks under the canvas and docks
   beside it only in a frame of 1500 x 560 or more; `section.frame-tray[data-compact=true]` marks a frame under 480 px high.
-- Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.
+- Run view without the side panel (assistant sessions 2026-11-11, every run kind 2026-11-12): `lib/assistants.ts`
+  `hasRunSidePanel(layout)` is true only for the canvas layout (Pocket Office included) and false in the conversation
+  layout for every run kind (Chat, Chat saved as a project, MCP / Skill assistant, Ask, setup, Team assistant / org
+  change, team work runs shown as a conversation or opened as one by the ended-narrow rule; `isAssistantSession` is
+  gone). LiveRunView then renders no `SidePanel`, marks `.run-body[data-side-panel=none]`
+  (one grid column) and wraps the conversation in `components/RunDetailTabs.tsx` `RunStageTabs` (`run-stage-tabs`,
+  first tab `run-tab-conversation`). The run detail tabs have one implementation: `lib/runTabs.ts` (pure:
+  `showsPlanTab`, `showsOutputsTab`, `showsKnowledgeTab`, `runTabIds`, `resolveRunTab`) and `RunDetailTabs.tsx`
+  (`useRunTabs`, `RunTabBody`, `PlanView`), used by both TranscriptPanel (side panel) and the stage strip; the tab test
+  ids (`side-tab-plan`, `-usage`, `-logs`, ...) are shared. The strip shows Plan before a plan exists only for team
+  work runs (not Chat/quick, not `team: 'single'`); returning to the canvas with an agent selected reopens the panel
+  (`SidePanel` `revealOnMount`, auto-collapse still wins). Selection stays `sideTabByRun`; the conversation stays
+  mounted (hidden) under other tabs; a send resets the tab to Conversation. Every run on the canvas keeps the panel;
+  Outputs and Knowledge appear in the strip by `showsOutputsTab` / `showsKnowledgeTab` (work runs of stored projects,
+  engagements for Knowledge; their bodies work at stage width because `RunOutputs` falls back to its list/detail mode
+  without a `.side-panel` ancestor). The strip's Plan tab needs a plan for every kind
+  (`showsPlanTab` `stage`; the side panel still gives every work run one, with its "No plan yet" note, which is the only
+  thing a work run in the conversation layout does not get; the steps chip and the blocked-plan banner need a plan
+  anyway). A selected sub-agent's transcript and the agent meta/staffing lines belong to the canvas panel only. Checked by
+  `lib/assistants.test.ts`, `e2e/assistants.mjs` (team work run both layouts), `e2e/engagement2.mjs` (Ask run), `layout.mjs`,
+  `usage-app.mjs`; mock adapter only; `RunStageTabs` marks Conversation
+  (`Tabs` `dot`/`dotLabel`, "Conversation, new reply") when a reply or "your turn" lands under another tab and calls
+  `onReply` (LiveRunView's `setArrival`, the CanvasFrame announcer); Show thinking is a strip control held by LiveRunView
+  (`TranscriptPanel` `showThinking` prop, not a store key: it never was one). Usage tab: By agent rows come from
+  `agent.upsert` immediately while `summary.usage` (Cost card, run meta) is throttled up to `USAGE_THROTTLE_MS` (1 s,
+  `runManager.ts` `refreshUsage`), so the two can differ briefly after a turn; the mock e2e shows them equal after 2.5 s.
+  Checked by `lib/assistants.test.ts`,
+  `lib/runTabs.test.ts` and `e2e/assistants.mjs` (`checkStageTabs`); design notes and open items in
+  `docs/design/assistants-ui.md`.
+- Resizable columns share one width budget (on the run view only while the canvas shows, since the conversation layout has no panel; `lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.
 - Resizable columns: `components/layout/ResizeHandle` is a `role=separator` (vertical, `aria-valuenow/min/max`, focusable) inside the column it resizes, on the edge facing the neighbour, so it never overlaps the canvas. It supports captured pointer drag, Left/Right (16 px, Shift 64 px), Home/End and double-click to reset; `lib/panelWidth.ts` holds the pure clamp/drag/key helpers (tested) and `usePersistedWidth`. Sidebar: 200-420 px (default 232), localStorage `orgai.sidebarW`, App sets `--sidebar-w` on `.app` and the main area keeps at least 480 px; shown only in the full sidebar, not in the rail (the chosen width survives collapse/expand). Right `SidePanel`: 280 px up to whatever leaves the canvas 280 px (no fixed maximum), localStorage `orgai.sidePanelW.<persistKey|default>`, drives `--side-panel-w` on the parent grid (`.editor`, `.run-body`; unset means the CSS default 360 px / clamp(280px, 28cqi, 400px)) and the canvas keeps at least 280 px; hidden while the panel is collapsed. Dragging below the minimum does not snap to the rail. From a measured panel width of 480 px `SidePanel` sets `data-side-wide` on the parent; `.run-body[data-side-wide]` then moves the same `.composer` element (no remount) into the panel column under the transcript. The run frame docks its tray beside the stage only when the tray has content (`.frame-tray:not(:empty)`), else an empty tray column left a blank strip beside the canvas. The account popover's `UsageMeter` has no Refresh button or Updated text: it calls `refreshUsage()` on open when data is older than 60 s, then every 60 s while open (one call in flight, at most one attempt per minute even on failure). A non-current connection gets a section only while it is in use (`connectionInUse` via `lib/usage.ts` `connectionsInUse`) and has a report (`connectionOrder`); stale reports of unused connections neither show nor force a refresh.
 - Wide panel: `SidePanel` sets `data-side-wide` on its parent grid at panel width >= `PANEL_WIDE_PX` (480) and clears it below `PANEL_NARROW_PX` (448, hysteresis via `nextWide`). The Live view's canvas refit skips a resize caused by that layout switch. The composer is a container (`composer`) and drops its hint under 560 px; transcript text/user/thinking entries cap at 90ch.
 - Dev builds: a package.json version with a `dev` prerelease tag (`0.1.6-dev1`; `lib/buildChannel.ts` `isDevBuild`) shows a quiet info "Dev" Badge beside the wordmark (a "D" pip on the mark in the 56 px rail), `[data-testid=dev-build-badge]`, labelled "Dev build <version>", plus a "Dev build" badge by the version in App settings > About. e2e/layout.mjs expects it whenever package.json says `-dev`; drop the tag for a release. After a release, dev is bumped to `<next patch>-dev1` and the dev number counts up per dev build (`0.1.6-dev1`, `0.1.6-dev2`, ...) until the next release drops the tag.

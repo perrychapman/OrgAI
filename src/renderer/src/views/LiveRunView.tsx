@@ -24,7 +24,7 @@ import { isWorkingAgent } from '../lib/agentActivity'
 import type { AgentInstance, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind, RunSummary } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
-import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
+import { ASSISTANT_REPLY_LABEL, assistantModeLabel, hasRunSidePanel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
 import { chainCanvas, earlierLabel, isEarlierKey } from '../lib/chainView'
 import { foldFinished, groupParentOf, isSettledAt, nextSettleAt, settleTimerDelay } from '../lib/foldFinished'
 import { mergeChainFeed } from '../lib/transcriptRows'
@@ -57,6 +57,7 @@ import { fitOptions } from '../lib/canvasFit'
 import { DoneGroupNode, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
 import TranscriptPanel from '../components/TranscriptPanel'
+import { RunStageTabs } from '../components/RunDetailTabs'
 import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
 import RuleRequestCard from '../components/RuleRequestCard'
@@ -263,6 +264,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean | number>>({})
   // The frame's one polite line: new decisions and "Showing N agents under X" after an expand.
   const [arrival, setArrival] = useState<{ text: string; n: number } | undefined>(undefined)
+  // "Show thinking" for the stage conversation of an assistant session (no side panel to carry the control).
+  const [stageThinking, setStageThinking] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [msgNow, setMsgNow] = useState(() => Date.now())
   const [pickedDecision, setPickedDecision] = useState<string | null>(null)
@@ -327,6 +330,19 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const layout = runLayoutFor(run.summary, chosenLayout, { endedNarrow })
   const conversation = layout === 'conversation'
   const asAssistant = speaksAsAssistant(run.summary)
+  // The side panel exists only while the stage is the org chart. In the conversation layout, for every run kind, there is
+  // none: its tabs sit above the conversation (RunStageTabs). Focus left on the panel or stage strip that just went goes
+  // to the tab strip shown now.
+  const sidePanel = hasRunSidePanel(layout)
+  const hadSidePanel = useRef(sidePanel)
+  useLayoutEffect(() => {
+    if (hadSidePanel.current === sidePanel) return
+    hadSidePanel.current = sidePanel
+    const active = document.activeElement
+    if (active && active !== document.body && active.isConnected) return
+    const strip = sidePanel ? '.side-panel [role=tab][aria-selected=true], .side-rail button' : '[data-testid=run-stage-tabs] [role=tab][aria-selected=true]'
+    bodyRef.current?.querySelector<HTMLElement>(strip)?.focus({ preventScroll: true })
+  }, [sidePanel])
 
   // The chain up to the viewed run, oldest first (the viewed run is the newest in practice).
   const upto = useMemo(() => {
@@ -1055,6 +1071,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // Walk M2 (ux-review-org-change-session-pre.md): never on a run cut off by a quit, and an org change needs an approval.
   const setupDone = setupBannerShows({ summary: run.summary,setupComplete: project.setup?.state === 'complete', cut: !!run.cutWhile, approved: approvedKinds })
   const orgChangeRun = isOrgChangeRun(run.summary)
+  const conversationFeed = <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} showThinking={stageThinking} />
 
   return (
     <div className="run-view">
@@ -1084,7 +1101,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           {orgChangeRun ? 'Review or adjust the changes on the Team tab.' : 'The Architect is done. Review or adjust what it set up on the Team tab.'}
         </Banner>
       )}
-      <div className="run-body" ref={bodyRef} data-layout={layout}>
+      <div className="run-body" ref={bodyRef} data-layout={layout} data-side-panel={sidePanel ? undefined : 'none'}>
 
         <CanvasFrame frameRef={canvasRef} announcement={arrival}>
           <FrameToolbar dense label="Canvas toolbar">
@@ -1135,7 +1152,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameStage>
             {conversation ? (
               <div className={`conversation-stage${toggledTo === 'conversation' ? ' motion-view' : ''}`} data-testid="run-conversation">
-                <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} />
+                <RunStageTabs
+                  runId={runId}
+                  agent={rootAgent}
+                  logs={run.logs ?? []}
+                  conversation={conversationFeed}
+                  thinking={{ checked: stageThinking, onChange: setStageThinking }}
+                  onReply={() => setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))}
+                />
               </div>
             ) : options.presentation === 'pocket-office' ? (
               <OfficeScene mode="live" runId={runId} palette={options.scenePalette} controlRef={officeRef} agents={withOfficeDepartments([...agentLookup.values()].map((agent) => ({ ...officeAgentView(agent), parentId: agent.parentId, departmentContext: chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : undefined, context: [chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : 'Current session', agent.parentId ? `Reports to ${agentLookup.get(agent.parentId) ? agentLabel(agentLookup.get(agent.parentId)!) : 'lead'}` : 'Lead'].join(' · ') })))} messages={messages ?? []} selectedId={selectedAgentId ?? undefined} onSelect={selectAgent} />
@@ -1248,6 +1272,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           }
           onSubmit={async (text, images) => {
             setSessionBlock(null)
+            // Without a side panel the stage tabs hide the conversation: a send brings it back so the reply is seen.
+            if (conversation) setSideTab('transcript')
             if (sendMode === 'reply') await sendMessage(text, images)
             else if (sendMode === 'continue') await continueRun(runId, text, images)
             else if (!virtualId) await startRun(text, images ? { images } : undefined)
@@ -1263,22 +1289,24 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         )}
 
         </div>
-        <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} arrival={usageArrival}>
-          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent && !conversation ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent && !conversation) { event.preventDefault(); returnToOffice(selectedAgent.id) } }}>
-            {options.presentation === 'pocket-office' && selectedAgent && !conversation && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
+        {sidePanel && (
+        <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} revealOnMount={!hadSidePanel.current && sidePanel && !!selectedAgentId} arrival={usageArrival}>
+          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent) { event.preventDefault(); returnToOffice(selectedAgent.id) } }}>
+            {options.presentation === 'pocket-office' && selectedAgent && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
             <TranscriptPanel
               runId={runId}
               tagRunId={chainIds[chainIds.length - 1]}
-              agent={selectedAgent ?? (conversation ? rootAgent : undefined)}
+              agent={selectedAgent}
               entries={selectedAgent && !rootSelected ? entries : []}
-              feed={rootSelected || (!selectedAgent && conversation) ? feed : undefined}
-              lead={conversation ? undefined : loadEarlierRow}
+              feed={rootSelected ? feed : undefined}
+              lead={loadEarlierRow}
               logs={run.logs ?? []}
               finished={finishedGroup}
             />
-            {options.presentation === 'pocket-office' && selectedAgent && !conversation && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" tabIndex={0} aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
+            {options.presentation === 'pocket-office' && selectedAgent && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" tabIndex={0} aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
           </div>
         </SidePanel>
+        )}
       </div>
     </div>
   )
