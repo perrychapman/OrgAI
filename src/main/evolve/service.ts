@@ -301,6 +301,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     // The snapshot is on disk before anything changes, so a crash in between still leaves a way back.
     ledger.generations.push(gen)
     writeLedger(deps.dataDir, ledger)
+    let mutated = false
     try {
       deps.updateProject(project.id, (p) => {
         // The plan (and the snapshot already on disk) were made from `project`, perhaps around a model call: if the team
@@ -311,6 +312,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
         if (bad.length) throw new Error(`safety gate: ${bad.map((v) => v.rule).join(', ')}`)
         return out
       })
+      mutated = true
       for (const id of plan.pruneSkillIds) {
         try {
           deps.skills?.remove({ projectId: project.id, skillId: id })
@@ -342,13 +344,21 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       }
       writeLedger(deps.dataDir, ledger)
     } catch (e) {
+      const why = e instanceof Error ? e.message : String(e)
+      // The team changed already: the generation (on disk since before the change, with its snapshot) stays, so the
+      // trial is measured and can be rolled back; only a later step failed.
+      if (mutated) {
+        log('warn', `Evolution ${gen.id} applied to ${project.id}, but a later step failed: ${why}`)
+        const now = deps.getProject(project.id) ?? next
+        return { applied: true, reason: `Applied, but a later step failed (${why.slice(0, 200)}); the generation and its snapshot were recorded before the change.`, generation: pub(gen), project: now, diagnosis, plan, teamFilesSynced: await sync(now) }
+      }
       ledger.generations = ledger.generations.filter((g) => g !== gen)
       try {
         writeLedger(deps.dataDir, ledger)
       } catch {
         // the generation stays as a trial the next pass can roll back
       }
-      return refuse(`Applying the change failed: ${e instanceof Error ? e.message : String(e)}`)
+      return refuse(`Applying the change failed: ${why}`)
     }
     const after = deps.getProject(project.id) ?? next
     const teamFilesSynced = await sync(after)

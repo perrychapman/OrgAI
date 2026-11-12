@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -176,6 +176,26 @@ describe('apply and the single-trial rule', () => {
     state = undefined
     expect((await h.svc.afterRun({ projectId: 'p1', evolve: false })).ratchet).toBe('rolled_back')
     expect(h.proj.roles).toEqual(before.roles)
+  })
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('a failure after the team changed keeps the generation and its snapshot, and says the change was applied', async () => {
+    const h = harness()
+    const svc = createEvolveService({
+      ...h.deps,
+      updateProject: (id, fn) => {
+        const out = h.deps.updateProject(id, fn)
+        chmodSync(join(dir, 'evolution'), 0o500) // the ledger write after the change fails
+        return out
+      }
+    })
+    try {
+      const res = await svc.apply({ projectId: 'p1' })
+      expect(res.applied).toBe(true)
+      expect(res.reason).toContain('a later step failed')
+      expect(h.proj.roles.find((r) => r.slug === 'dev')?.effort).toBe('medium')
+      expect(svc.history('p1').generations.map((g) => g.id)).toEqual(['gen_1'])
+    } finally {
+      chmodSync(join(dir, 'evolution'), 0o700)
+    }
   })
   it('a trial still short of its window refuses with how many runs it has', async () => {
     const h = harness()

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, cleanRoleStaffing, compareEffort, compareTier, settingTier, tierForModel } from '../../shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, cleanRoleStaffing, compareEffort, compareTier, effectiveRoleStaffing, settingTier, tierForModel } from '../../shared/defaults'
 import { EFFORTS, MODEL_TIERS, SKILL_MAX_PER_PROJECT, TOOL_CATALOG } from '../../shared/types'
 import type {
   Effort,
@@ -210,6 +210,9 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     // effort, else high).
     const curMax: Effort = role.staffing?.maxEffort ?? role.effort ?? 'high'
     const curFloor = role.staffing?.minTier
+    // The floor staffing enforces today (effectiveRoleStaffing drops a floor above the role's tier): a raise is measured
+    // against this, so a floor the runtime ignored is never switched on by a patch.
+    const effFloor = effectiveRoleStaffing(role, project).minTier
     if (!fixed && rawPatch.staffing !== undefined) {
       const s = (rawPatch.staffing ?? {}) as Record<string, unknown>
       const curMode = role.staffing?.mode ?? 'auto'
@@ -222,7 +225,7 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
         else if (!isTier(s.minTier)) trim('tier_invalid', 'unknown minTier', slug)
         else if (!ceiling) trim('tier_unknown_base', `${slug} has no known tier, so its staffing floor stays as it is`, slug)
         else if (compareTier(s.minTier, ceiling) > 0) trim('tier_raise', 'staffing floor above the role tier', slug)
-        else if (compareTier(s.minTier, curFloor ?? 'fast') > 0 && !under) trim('tier_raise', 'staffing floor raised without an under-provisioned finding', slug)
+        else if (compareTier(s.minTier, effFloor ?? 'fast') > 0 && !under) trim('tier_raise', 'staffing floor raised without an under-provisioned finding', slug)
         else next.minTier = s.minTier
       }
       if (s.maxEffort !== undefined) {
@@ -238,7 +241,7 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     const raises: ('tier' | 'effort' | 'floor' | 'ceiling')[] = []
     if (out.tier !== undefined && cur && compareTier(out.tier, cur) > 0) raises.push('tier')
     if (out.effort !== undefined && compareEffort(out.effort, curEffort) > 0) raises.push('effort')
-    if (out.staffing?.minTier && compareTier(out.staffing.minTier, curFloor ?? 'fast') > 0) raises.push('floor')
+    if (out.staffing?.minTier && compareTier(out.staffing.minTier, effFloor ?? 'fast') > 0) raises.push('floor')
     if (out.staffing?.maxEffort && compareEffort(out.staffing.maxEffort, curMax) > 0) raises.push('ceiling')
     for (const extra of raises.slice(1)) {
       trim('one_raise_per_role', `${slug} may rise on one of tier, effort or staffing per generation; the ${extra} raise was dropped`, slug)
@@ -254,10 +257,17 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
         else out.staffing = st
       }
     }
-    // A lower tier never leaves the staffing floor above it (effectiveRoleStaffing would drop such a floor silently).
+    // A lower tier never leaves the staffing floor above it (effectiveRoleStaffing would drop such a floor silently), and
+    // the adjusted floor is never above the one staffing enforced before: the enforced floor, capped at the new tier, or
+    // none when none was enforced.
     if (out.tier !== undefined) {
       const floor = (out.staffing ?? role.staffing)?.minTier
-      if (floor && compareTier(floor, out.tier) > 0) out.staffing = { ...(out.staffing ?? role.staffing ?? { mode: 'auto' }), minTier: out.tier }
+      if (floor && compareTier(floor, out.tier) > 0) {
+        const st: RoleStaffing = { ...(out.staffing ?? role.staffing ?? { mode: 'auto' }) }
+        if (!effFloor) delete st.minTier
+        else st.minTier = compareTier(effFloor, out.tier) > 0 ? out.tier : effFloor
+        out.staffing = st
+      }
     }
     const adds: ToolName[] = []
     for (const t of Array.isArray(rawPatch.addTools) ? rawPatch.addTools : []) {
@@ -614,6 +624,22 @@ export function restoreSnapshot(project: Project, snap: GenerationSnapshot, plan
   const fail = (reason: string): RestoreResult => ({ ok: false, project, notes: [], restored: 0, reason })
   try {
     if (!snap || !Array.isArray(snap.edits) || !plan || !Array.isArray(plan.rolePatches)) return fail('the snapshot is malformed')
+    // The edits must be exactly what this generation's own plan did to the chart the snapshot recorded: a value changed
+    // in the ledger afterwards (a `pre` that the recorded chart does not hold) is refused, never restored.
+    if (!Array.isArray(snap.roles)) return fail('the snapshot is malformed')
+    const recorded = applyPlan({ ...project, roles: snap.roles }, plan)
+    for (const e of snap.edits) {
+      if (!isObj(e)) continue // a null entry restores nothing (skipped below too)
+      if (!isObj(e.pre) || !isObj(e.post)) throw new Error('an edit entry is malformed')
+      const was = snap.roles.find((r) => isObj(r) && r.id === e.id)
+      const now = recorded.roles.find((r) => r.id === e.id)
+      if (!was || !now) throw new Error('an edit names a role the snapshot does not hold')
+      for (const k of Object.keys(e.pre)) {
+        if (!(ALLOWED_FIELDS as readonly string[]).includes(k)) throw new Error(`unknown field ${k.slice(0, 20)}`)
+        const f = k as PatchedField
+        if (!equal(e.pre[f], fieldValue(was, f)) || !equal(e.post[f], fieldValue(now, f))) throw new Error('an edit does not match the chart and plan it was recorded with')
+      }
+    }
     const notes: string[] = []
     let restored = 0
     const patches = new Map(plan.rolePatches.map((p) => [p.slug, p]))

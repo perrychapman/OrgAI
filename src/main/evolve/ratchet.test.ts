@@ -393,6 +393,15 @@ describe('validateEvolutionPlan: prompts, skills, limits, rejected', () => {
     // Not fixed: restored as before.
     expect(restoreSnapshot(after, snap, plan).project.roles[1].effort).toBe('high')
   })
+  it('a tier cut never switches on a staffing floor the runtime was ignoring', () => {
+    // { model: 'top', tier: 'fast', minTier: 'top' }: effectiveRoleStaffing drops the floor (it is above the role's tier).
+    const odd = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'top', tier: 'fast', effort: 'medium', staffing: { mode: 'auto', minTier: 'top' } })])
+    const out = validateEvolutionPlan(odd, mkPlan({ rolePatches: [patch('dev', { tier: 'deep' })] }))
+    expect(out.rolePatches[0]?.tier).toBe('deep')
+    expect(out.rolePatches[0]?.staffing?.minTier).toBeUndefined()
+    // A floor patch measured against the enforced floor (none): deep is a raise and needs the finding.
+    expect(rules(validateEvolutionPlan(odd, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto', minTier: 'everyday' } })] })))).toContain('tier_raise')
+  })
   it('a role patched in a recent generation is left alone (cooldown)', () => {
     const out = validateEvolutionPlan(project(), mkPlan({ rolePatches: [patch('dev', { effort: 'low' }), patch('review', { effort: 'low' })] }), { cooldownSlugs: ['dev'] })
     expect(out.rolePatches.map((x) => x.slug)).toEqual(['review'])
@@ -615,13 +624,20 @@ describe('restoreSnapshot', () => {
     expect(restoreSnapshot(applied, noPrompt, gated).ok).toBe(false) // the plan never touched the prompt
   })
   it('a write or exec tool comes back only when this plan removed exactly that tool', () => {
-    const noBash = structuredClone(snap)
-    noBash.edits[0].pre.tools = ['Read', 'Edit', 'Write', 'Bash', 'NotebookEdit']
-    const r = restoreSnapshot(applied, noBash, gated)
+    const r = restoreSnapshot(applied, snap, gated)
     expect(r.ok).toBe(true)
-    const tools = r.project.roles.find((x) => x.slug === 'dev')!.tools
-    expect(tools).toContain('Bash')
-    expect(tools).not.toContain('NotebookEdit') // never in the plan's remove list
+    expect(r.project.roles.find((x) => x.slug === 'dev')!.tools).toContain('Bash')
+  })
+  it('a snapshot edited after the fact (a pre value the recorded chart does not hold) is refused whole', () => {
+    const extra = structuredClone(snap)
+    extra.edits[0].pre.tools = ['Read', 'Edit', 'Write', 'Bash', 'NotebookEdit']
+    expect(restoreSnapshot(applied, extra, gated).ok).toBe(false)
+    const louder = structuredClone(snap)
+    louder.edits[0].pre.effort = 'max'
+    const r = restoreSnapshot(applied, louder, gated)
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('does not match the chart and plan')
+    expect(r.project).toBe(applied)
   })
   it('a restored chart that would break the safety rules is refused whole', () => {
     const broken: Project = { ...applied, permissionMode: 'default' }
