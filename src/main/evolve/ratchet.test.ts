@@ -364,6 +364,35 @@ describe('validateEvolutionPlan: prompts, skills, limits, rejected', () => {
     const out = validateEvolutionPlan(p0, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday' })] }))
     expect(out.rolePatches[0]).toMatchObject({ tier: 'everyday', staffing: { mode: 'auto', minTier: 'everyday' } })
   })
+  it('tiers are compared as staffing reads them: a tier alias in the model wins, so a raise is never read as a cut', () => {
+    // { model: 'haiku', tier: 'top' } runs on fast; a patch to deep is a two-step raise, not a cut from top.
+    const mixed = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'haiku', tier: 'top', effort: 'medium' })])
+    const out = validateEvolutionPlan(mixed, mkPlan({ rolePatches: [patch('dev', { tier: 'deep' })] }))
+    expect(rules(out)).toContain('tier_raise')
+    expect(out.rolePatches).toHaveLength(0)
+    expect(validateEvolutionPlan(mixed, mkPlan({ rolePatches: [patch('dev', { tier: 'deep' })] }), { diagnosis: under('dev') }).rolePatches).toHaveLength(0)
+    expect(validateEvolutionPlan(mixed, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday' })] }), { diagnosis: under('dev') }).rolePatches[0]).toMatchObject({ tier: 'everyday' })
+  })
+  it('the root and a checking role keep their skill grants, even with a never-loaded finding', () => {
+    const d = { findings: [{ kind: 'prompt_deflation' as const, severity: 10, summary: '', evidence: [], data: { neverLoaded: 's1' } }] }
+    const p0 = project({ skills: [{ id: 's1', name: 'audit', description: 'd' } as SkillSpec] }, [role('lead', { id: 'r_lead', reportsTo: null, skills: ['s1'] }), role('dev', { skills: ['s1'] })])
+    const out = validateEvolutionPlan(p0, mkPlan({ rolePatches: [patch('lead', { removeSkills: ['s1'] }), patch('dev', { removeSkills: ['s1'] })] }), { diagnosis: d })
+    expect(rules(out)).toContain('skill_removal_protected')
+    expect(out.rolePatches.map((x) => x.slug)).toEqual(['dev'])
+  })
+  it('a rollback keeps the sizing of a role fixed since the generation, even where it still equals what the generation wrote', () => {
+    const before = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { id: 'r_dev', tier: 'deep', model: 'deep', effort: 'high' })])
+    const plan = mkPlan({ rolePatches: [patch('dev', { effort: 'medium' })] })
+    const after = applyPlan(before, plan)
+    const snap = snapshotOf(before, after, plan)
+    const fixedProject = { ...after, staffing: 'fixed' as const }
+    const r = restoreSnapshot(fixedProject, snap, plan)
+    expect(r.ok).toBe(true)
+    expect(r.project.roles[1].effort).toBe('medium')
+    expect(r.notes.join(' ')).toContain('kept the fixed staffing of dev')
+    // Not fixed: restored as before.
+    expect(restoreSnapshot(after, snap, plan).project.roles[1].effort).toBe('high')
+  })
   it('a role patched in a recent generation is left alone (cooldown)', () => {
     const out = validateEvolutionPlan(project(), mkPlan({ rolePatches: [patch('dev', { effort: 'low' }), patch('review', { effort: 'low' })] }), { cooldownSlugs: ['dev'] })
     expect(out.rolePatches.map((x) => x.slug)).toEqual(['review'])

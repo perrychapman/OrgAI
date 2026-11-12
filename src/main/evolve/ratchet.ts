@@ -34,6 +34,7 @@ import {
   WRITE_EXEC_TOOLS,
   applyPlan,
   effectiveConcurrency,
+  effectiveTier,
   isFixedRole,
   isPlanEmpty,
   isReviewRole,
@@ -80,7 +81,7 @@ const isEff = (v: unknown): v is Effort => typeof v === 'string' && (EFFORTS as 
 const isTool = (v: unknown): v is ToolName => typeof v === 'string' && (TOOL_CATALOG as readonly string[]).includes(v)
 const equal = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 
-const currentTier = (r: Role): ModelTier | undefined => r.tier ?? tierForModel(r.model) ?? settingTier(r.model)
+const currentTier = (r: Role): ModelTier | undefined => effectiveTier(r)
 
 /** True when a prompt carries a secret-shaped token the old prompt did not. */
 const introducesSecret = (next: string, prev: string): boolean => redactEvidence(next) !== next && redactEvidence(prev) === prev
@@ -290,8 +291,13 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     }
     if (drops.length) out.removeTools = [...new Set(drops)]
     const rs = (Array.isArray(rawPatch.removeSkills) ? rawPatch.removeSkills : []).filter((id): id is string => typeof id === 'string' && !!role.skills?.includes(id))
-    const rsOk = rs.filter((id) => unusedSkills.has(id))
+    let rsOk = rs.filter((id) => unusedSkills.has(id))
     if (rsOk.length !== rs.length) trim('skill_removal_unjustified', 'a grant was removed without a never-loaded or overlap finding', slug)
+    // Like tools: the root and a checking role keep their skill grants (an audit skill is often loaded rarely on purpose).
+    if (rsOk.length && protectedRole) {
+      trim('skill_removal_protected', `skill grants are never removed from ${slug} (root or checking role)`, slug)
+      rsOk = []
+    }
     if (rsOk.length) out.removeSkills = [...new Set(rsOk)]
     if (rawPatch.prompt !== undefined) {
       const pr = rawPatch.prompt
@@ -622,6 +628,10 @@ export function restoreSnapshot(project: Project, snap: GenerationSnapshot, plan
         return r
       }
       const next = { ...r } as unknown as Record<string, unknown>
+      // A role fixed since (its staffing mode, the project's, or a concrete model) runs as the user set it: its sizing
+      // fields stay, even where they still equal what the generation wrote.
+      const fixedNow = isFixedRole(project, r)
+      const SIZING: readonly string[] = ['tier', 'model', 'effort', 'staffing']
       const planTouches: Record<PatchedField, boolean> = {
         tier: patch.tier !== undefined,
         model: patch.tier !== undefined,
@@ -636,6 +646,10 @@ export function restoreSnapshot(project: Project, snap: GenerationSnapshot, plan
         const f = key as PatchedField
         if (!planTouches[f]) throw new Error(`field ${f} is not in the plan`)
         const cur = (r as unknown as Record<string, unknown>)[f]
+        if (fixedNow && SIZING.includes(f)) {
+          notes.push(`kept the fixed staffing of ${r.slug} (${f})`)
+          continue
+        }
         if (!equal(cur, edit.post[f])) {
           notes.push(`kept your later edit to ${r.slug}.${f}`)
           continue

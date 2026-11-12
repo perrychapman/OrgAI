@@ -29,6 +29,13 @@ describe('measure', () => {
     expect(m.medianCostUsd).toBe(2)
     expect(m.medianWallMs).toBe(20_000)
   })
+  it('a run the user stopped or that ended with the app is not measured', () => {
+    const stopped = run({ agents: [{ slug: 'dev' }] })
+    stopped.summary.endedBy = 'user'
+    const quit = run({ agents: [{ slug: 'dev' }] })
+    quit.summary.endedBy = 'app'
+    expect(measure([stopped, quit, run({ agents: [{ slug: 'dev' }] })]).runs).toBe(1)
+  })
   it('counts a run paused on a usage limit as measured and not first pass', () => {
     const paused = run({ agents: [{ slug: 'dev' }] })
     paused.summary.status = 'paused'

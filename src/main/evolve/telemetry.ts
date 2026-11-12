@@ -72,9 +72,13 @@ export function safeLine(s: string, max = EVIDENCE_LINE_MAX): string {
 
 const safeName = (s: unknown, max = 40): string => String(s ?? '').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, max)
 
-/** Finished work runs the engine measures: kind 'work', not a Chat (quick) or single-assistant run, ended finished or error. */
-export function isMeasuredRun(r: RunRecord): boolean {
+/**
+ * Finished work runs the engine measures: kind 'work', not a Chat (quick) or single-assistant run, ended finished or
+ * error (or paused on a usage limit), and not cut short by the user or by quitting (that says nothing about the team).
+ */
+export function isMeasuredRun(r: Pick<RunRecord, 'summary'>): boolean {
   const s = r.summary
+  if (s.endedBy === 'user' || s.endedBy === 'app') return false
   return s.kind === 'work' && !s.quick && s.projectId !== QUICK_PROJECT_ID && s.team !== 'single' && (s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && s.pausedUntil !== undefined))
 }
 

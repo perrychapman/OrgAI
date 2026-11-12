@@ -18,7 +18,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 const cleanRuns = (n: number, t0: number, over: Parameters<typeof run>[0] = {}): RunRecord[] =>
   Array.from({ length: n }, (_, i) => run({ startedAt: t0 + i * 1000, agents: [{ slug: 'dev', turns: 3, out: 400 }, { slug: 'dev', turns: 3, out: 400 }], assignments: [{ tier: 'deep' }, { tier: 'deep' }], ...over }))
 
-function harness(opts: { runs?: RunRecord[]; proj?: Project; complete?: EvolveServiceDeps['complete']; skills?: boolean | 'no-enable'; sync?: () => Promise<boolean>; skillFindings?: EvolveServiceDeps['skillFindings'] } = {}) {
+function harness(opts: { runs?: RunRecord[]; proj?: Project; complete?: EvolveServiceDeps['complete']; skills?: boolean | 'no-enable'; sync?: () => Promise<boolean>; skillFindings?: EvolveServiceDeps['skillFindings']; teamFilesState?: () => string | undefined } = {}) {
   let proj = opts.proj ?? project()
   let runs = opts.runs ?? cleanRuns(8, 1_000_000)
   const log: string[] = []
@@ -58,6 +58,7 @@ function harness(opts: { runs?: RunRecord[]; proj?: Project; complete?: EvolveSe
     complete: opts.complete,
     ...(opts.skills ? { skills: opts.skills === 'no-enable' ? { create: skills.create, remove: skills.remove, readDraft: skills.readDraft } : skills } : {}),
     ...(opts.skillFindings ? { skillFindings: opts.skillFindings } : {}),
+    ...(opts.teamFilesState ? { teamFilesState: opts.teamFilesState } : {}),
     now: () => NOW,
     log: (l, m) => log.push(`${l}: ${m}`)
   }
@@ -151,6 +152,30 @@ describe('apply and the single-trial rule', () => {
     expect(res.reason).toContain('the team changed while the plan was being made')
     expect(h.proj.roles.find((r) => r.slug === 'dev')?.effort).toBe(before?.effort)
     expect(h.svc.history('p1').generations).toEqual([])
+  })
+  it('team files waiting for approval (or with a problem) block apply, rollback and a regression rollback until they are settled', async () => {
+    let state: string | undefined = 'pending'
+    const h = harness({ teamFilesState: () => state })
+    const before = structuredClone(h.proj)
+    const blocked = await h.svc.apply({ projectId: 'p1' })
+    expect(blocked.applied).toBe(false)
+    expect(blocked.reason).toContain('waiting for approval')
+    expect(h.proj.roles).toEqual(before.roles)
+    state = undefined
+    expect((await h.svc.apply({ projectId: 'p1' })).applied).toBe(true)
+    state = 'problem'
+    const rb = await h.svc.rollback({ projectId: 'p1' })
+    expect(rb.rolledBack).toBe(false)
+    expect(rb.reason).toContain('problem in the .orgai/ team files')
+    // A regression waits: the trial stays open and nothing is written.
+    h.setRuns([...cleanRuns(3, NOW + 10, { status: 'error', agents: [{ slug: 'dev', state: 'error' }] }), ...cleanRuns(8, 1_000_000)])
+    const r = await h.svc.afterRun({ projectId: 'p1', evolve: false })
+    expect(r.ratchet).toBe('none')
+    expect(r.ratchetReason).toContain('regressed')
+    expect(h.svc.history('p1').trialId).toBe('gen_1')
+    state = undefined
+    expect((await h.svc.afterRun({ projectId: 'p1', evolve: false })).ratchet).toBe('rolled_back')
+    expect(h.proj.roles).toEqual(before.roles)
   })
   it('a trial still short of its window refuses with how many runs it has', async () => {
     const h = harness()

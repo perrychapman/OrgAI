@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, DEFAULT_MAX_CONCURRENT_SUBAGENTS, effectiveRoleStaffing, settingTier } from '../../shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, DEFAULT_MAX_CONCURRENT_SUBAGENTS, effectiveRoleStaffing, settingTier, tierForModel } from '../../shared/defaults'
 import type { EvolutionPlan, EvolutionRolePatch, EvolutionSkillPatch, Project, Role, Effort, ModelTier, ToolName } from '../../shared/types'
 import { EFFORTS, MODEL_TIERS } from '../../shared/types'
 
@@ -138,6 +138,19 @@ export function nextModelFor(role: Pick<Role, 'model'>, tier: ModelTier): string
   return aliasTier !== undefined && aliasTier !== tier ? CLAUDE_ALIAS_FOR_TIER[tier] : undefined
 }
 
+/**
+ * The tier a role really runs on, read as automatic staffing reads it (staffing.ts roleModelTier, resolveStaffing): a
+ * tier name or Claude alias in `model` wins over `tier` (`{ model: 'haiku', tier: 'top' }` runs on fast), then `tier`,
+ * then the family of a concrete model id; an 'inherit' role's own tier is its ceiling. Undefined when nothing says.
+ * Every before / after comparison of the gate and the synthesizer uses this, so a raise is never read as a cut.
+ */
+export function effectiveTier(r: Pick<Role, 'model' | 'tier'>): ModelTier | undefined {
+  const model = typeof r.model === 'string' ? r.model.trim() : ''
+  const tier = typeof r.tier === 'string' && (MODEL_TIERS as readonly string[]).includes(r.tier) ? r.tier : undefined
+  if (!model || model === 'inherit') return tier
+  return settingTier(model) ?? tier ?? tierForModel(model)
+}
+
 const staffingText = (s: Role['staffing']): string =>
   s ? [s.mode, s.minTier ? `floor ${s.minTier}` : '', s.maxEffort ? `max effort ${s.maxEffort}` : ''].filter(Boolean).join(', ') : 'none'
 
@@ -151,7 +164,7 @@ export function patchChanges(role: Pick<Role, 'tier' | 'model' | 'effort' | 'sta
   const out: string[] = []
   if (p.tier !== undefined) {
     const model = role ? nextModelFor(role, p.tier) : undefined
-    out.push(`tier ${from(role?.tier ?? settingTier(role?.model ?? ''))}${p.tier}${model ? ` (model ${role?.model ?? 'unset'} → ${model})` : ''}`)
+    out.push(`tier ${from(role ? effectiveTier(role) : undefined)}${p.tier}${model ? ` (model ${role?.model ?? 'unset'} → ${model})` : ''}`)
   }
   if (p.effort !== undefined) out.push(`effort ${from(role?.effort)}${p.effort}`)
   if (p.staffing) out.push(`staffing ${role ? `${staffingText(role.staffing)} → ` : ''}${staffingText(p.staffing)}`)

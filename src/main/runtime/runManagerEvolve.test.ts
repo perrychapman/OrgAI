@@ -99,6 +99,18 @@ describe('RunManager post-run evolve pass', () => {
     expect(m.evolvePassCount()).toBe(0)
   })
 
+  it('a run the user interrupted gets no pass, even if it then ends on its own before their next message', async () => {
+    const afterRun = vi.fn(async () => RESULT)
+    const { m, p } = rig({ evolveAfterRun: afterRun })
+    const run = await m.start({ project: p, prompt: '[mock:model-switch]', evolve: 'hybrid' })
+    await vi.waitFor(() => expect(['idle', 'finished']).toContain(m.summary(run.id)?.status))
+    await m.interrupt(run.id)
+    await m.finalizeExecRun(run.id, 'completed')
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    expect(await m.awaitEvolvePass(run.id)).toBeUndefined()
+    expect(afterRun).not.toHaveBeenCalled()
+  })
+
   it('evolve: true passes no strategy', async () => {
     const afterRun = vi.fn(async () => RESULT)
     const { m, p } = rig({ evolveAfterRun: afterRun })

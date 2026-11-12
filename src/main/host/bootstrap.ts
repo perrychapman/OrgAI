@@ -16,6 +16,7 @@ import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, Ru
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
 import { connectionConfigured, connectionIds, staffingGoalOf, staffingModeOf } from '../../shared/defaults'
 import { createEvolveService, type EvolveCompleteRequest, type EvolveService } from '../evolve/service'
+import { isMeasuredRun } from '../evolve/telemetry'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -581,11 +582,14 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       if (!saved) throw new Error('Project not found')
       return saved
     },
+    teamFilesState: (projectId) => teamFiles.check(projectId).state,
     listRunRecords: (projectId, limit) => {
       const out: RunRecord[] = []
+      // Only runs the engine measures count toward the limit (a stopped run or a chat must not crowd out a team run).
       for (const s of runStore.list(projectId)) {
         if (out.length >= limit) break
         if (s.status !== 'finished' && s.status !== 'error') continue
+        if (!isMeasuredRun({ summary: s })) continue
         const rec = runStore.getRecord(s.id)
         if (rec) out.push(rec)
       }

@@ -1990,8 +1990,9 @@ export class RunManager {
         }
       }
       // Team evolution: one post-run pass per run that finished or failed on its own, once its record is on disk (the
-      // engine decides which runs it measures). A run the user stopped, or one ended by quitting, gets none.
-      if ((outcome === 'finished' || outcome === 'failed') && !active.userStopped && !this.quitting && active.evolve) this.startEvolvePass(active)
+      // engine decides which runs it measures). A run the user stopped or interrupted (held until their next message),
+      // or one ended by quitting, gets none.
+      if ((outcome === 'finished' || outcome === 'failed') && !active.userStopped && !active.held && !this.quitting && active.evolve) this.startEvolvePass(active)
       if (exec) this.execEventSeen(active, e)
       else if (summary.conversationBudgetUsd !== undefined && (e.type === 'agent.upsert' || e.type === 'run.cost')) this.checkExecBudget(active, e.type === 'agent.upsert' ? e.agent : undefined)
     }
@@ -3816,8 +3817,8 @@ export class RunManager {
     this.evolvePassesInFlight++
     const pass = Promise.resolve()
       .then(() => {
-        // Quitting began between the run's end and this microtask: no pass (it would write the team while the folder is let go).
-        if (this.quitting) return undefined
+        // Quitting began, or the user interrupted, between the run's end and this microtask: no pass.
+        if (this.quitting || active.held) return undefined
         this.flush(active)
         return afterRun({ projectId: active.summary.projectId, evolve: true, ...(strategy === true ? {} : { strategy }), ...(evalWindowRuns !== undefined ? { evalWindowRuns } : {}) })
       })

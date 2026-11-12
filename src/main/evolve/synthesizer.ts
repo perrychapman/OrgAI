@@ -20,6 +20,7 @@ import {
   MAX_PLAN_SKILLS,
   MIN_WASTE_DEFAULT,
   effectiveConcurrency,
+  effectiveTier,
   isFixedRole,
   isPlanEmpty,
   tierMoves,
@@ -86,7 +87,7 @@ const addReason = (p: EvolutionRolePatch, r: string): void => {
   p.reason = safeLine(p.reason ? `${p.reason}; ${r}` : r, 240)
 }
 
-const roleTierOf = (r: Role): ModelTier | undefined => r.tier ?? tierForModel(r.model) ?? settingTier(r.model)
+const roleTierOf = (r: Role): ModelTier | undefined => effectiveTier(r)
 
 function fromFindings(project: Project, d: TeamEvolutionDiagnosis): Build {
   const b: Build = { patches: new Map(), notes: [], saveUsd: 0, saveTokens: 0, saveMs: 0, ops: new Map() }
