@@ -342,7 +342,8 @@ export class BridgedSessions {
    * project's staffing mode), so a request never goes past a ceiling and a fixed role keeps its chart values.
    */
   private staffedRole(role: Role, choice: BridgedRoleChoice, conn: RunConnection, input: BridgeSpawnInput, parent: RuntimeContext): Role {
-    if (!input.tier && !input.effort) return role
+    // Nothing asked for and no cost goal to apply: the role runs as configured.
+    if (!input.tier && !input.effort && staffingGoalOf(parent.project, parent.staffingGoal) !== 'cost') return role
     const resolved = resolveStaffing({
       role,
       project: parent.project,

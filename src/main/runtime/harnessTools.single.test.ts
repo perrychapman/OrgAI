@@ -32,8 +32,8 @@ describe('harnessToolsFor: single-agent runs and engagements', () => {
 
   it('a single-agent run gets exactly the single set plus the native skill tools', () => {
     const ctx = fakeCtx({ run: runSummary({ kind: 'work', team: 'single' }) })
-    // engagement_context is for engagements only; the plan tools come without `staff` (no reports to staff).
-    const base = [...SINGLE_TOOL_DEFS.map((d) => d.name).filter((n) => n !== ENGAGEMENT_CONTEXT_TOOL), 'app_reference'].sort()
+    // engagement_context stays (a code project's context notes); the plan tools come without `staff` (no reports to staff).
+    const base = [...SINGLE_TOOL_DEFS.map((d) => d.name), 'app_reference'].sort()
     expect(names(harnessToolsFor(ctx, {}, { nativeSkills: true }))).toEqual(base)
     // The skill tools are there even with no skills at start (a skill approved mid-run is usable at once).
     expect(names(harnessToolsFor(ctx))).toEqual([...base, 'list_skills', 'load_skill'].sort())
@@ -46,7 +46,7 @@ describe('harnessToolsFor: single-agent runs and engagements', () => {
     for (const kept of ['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'request_permission_rules', 'list_skill_library', 'read_library_skill']) {
       expect(withSkills).toContain(kept)
     }
-    expect(withSkills).not.toContain(ENGAGEMENT_CONTEXT_TOOL)
+    expect(withSkills).toContain(ENGAGEMENT_CONTEXT_TOOL)
     const plan = JSON.stringify(byName(harnessToolsFor(ctx), 'set_plan').inputSchema.shape.steps)
     expect(plan).not.toContain('staff')
     expect(Object.keys(byName(harnessToolsFor(ctx), 'update_plan').inputSchema.shape)).toEqual(['steps', 'add'])

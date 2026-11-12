@@ -50,6 +50,8 @@ async function guarded(ctx: SlashContext, fn: () => void | Promise<void>): Promi
 }
 
 const activeSummary = (s: TuiState) => (s.activeRunId ? s.runs[s.activeRunId]?.summary : undefined)
+/** The run a choice applies to: none while the composer starts a new run (/new, /ask), so the choice is staged for it. */
+const followedRun = (s: TuiState) => (s.composeTarget === 'new' ? undefined : activeSummary(s))
 
 /** The active run can be interrupted (its session is open). */
 function interruptible(s: TuiState): boolean {
@@ -116,7 +118,7 @@ export const NO_PROJECT_STAGE = 'Run choices apply to a project\'s runs; this fo
 /** /model: no argument lists the choices (a picker when the shell has one), else resolves a tier or id and switches (or stages when no run is followed). */
 async function runModel(ctx: SlashContext, args: string): Promise<void> {
   const s = ctx.state()
-  const run = activeSummary(s)
+  const run = followedRun(s)
   const want = cleanLine(args, 200)
   if (!run) {
     if (!ctx.session.listModels || !ctx.session.stage) {
@@ -578,7 +580,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     run: (ctx, args) =>
       guarded(ctx, () => {
         const word = cleanLine(args, 20).toLowerCase()
-        const run = activeSummary(ctx.state())
+        const run = followedRun(ctx.state())
         const staged = ctx.session.getStaged()
         if (!word) {
           const now = run?.rootEffort ?? staged.effort
@@ -606,7 +608,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     run: (ctx, args) =>
       guarded(ctx, async () => {
         const s = ctx.state()
-        const run = activeSummary(s)
+        const run = followedRun(s)
         const staged = ctx.session.getStaged()
         const word = cleanLine(args, 24)
         if (!word) {

@@ -188,6 +188,14 @@ export function memoryStreamPair(highWaterMark = 64 * 1024 * 1024): [Duplex, Dup
       },
       destroy(err, cb) {
         const other = peer()
+        // A write parked on a full reader settles now (it would otherwise wait for a read that never comes).
+        for (const side of [this, other]) {
+          const parked = waiting.get(side)
+          if (parked) {
+            waiting.delete(side)
+            parked()
+          }
+        }
         if (!other.destroyed) queueMicrotask(() => other.destroy())
         cb(err)
       }

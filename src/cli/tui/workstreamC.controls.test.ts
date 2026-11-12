@@ -81,6 +81,15 @@ describe('slash /model', () => {
     await cmd('model').run(saved.ctx, 'opus')
     expect(saved.ctx.notify).toHaveBeenCalledWith(expect.stringContaining('saved for the next message'), 'warn')
   })
+  it('while the composer starts a new run (/new), /model and /effort stage for it instead of acting on the followed run', async () => {
+    const s = { ...state({ status: 'idle' }), composeTarget: 'new' } as TuiState
+    const { ctx, session } = fakeCtx(s)
+    await cmd('model').run(ctx, 'opus')
+    expect(session.switchModel).not.toHaveBeenCalled()
+    expect(session.stage).toHaveBeenCalledWith({ model: { model: 'opus', connection: 'anthropic' } })
+    await cmd('effort').run(ctx, 'low')
+    expect(ctx.notify).toHaveBeenLastCalledWith('The next run starts at low effort.')
+  })
   it('pickModel prefers the current connection and reports unknown models', () => {
     const list = [model('a', 'x', 'fast'), model('b', 'y', 'fast', { recommended: true })]
     expect((pickModel(list, 'fast', 'x') as ProviderModel).id).toBe('a')

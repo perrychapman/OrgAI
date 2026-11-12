@@ -52,6 +52,7 @@ import { servicesForRole } from '../../shared/view/roleServices'
 import { isOpenStatus } from '../../shared/view/runChains'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, hostError, requireProject, runSubcommands, subscribeTopics, withHost, type SubcommandFn } from '../manage'
+import { quietInproc } from '../context'
 import { emit, emitLine, isJsonOutput, note, printText, safe, safeLine, type Json } from '../output'
 import { liveSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
@@ -367,6 +368,8 @@ const orgRetro: SubcommandFn = async (ctx, args) => {
     throw new CliError('An Org retrospective needs a terminal: the run lives inside this orgai, and ends with it. In a script or CI, use: orgai org retro <runRef> --unattended [--apply]', EXIT.usage)
   }
 
+  // The retrospective's terminal UI follows on this same host, so it starts quiet.
+  quietInproc(ctx)
   const target = await withHost(ctx, ['read'], async (client) => {
     const src = liveSource(client)
     const { runId, projects } = await resolveRunFromSource(ctx, src, ref)

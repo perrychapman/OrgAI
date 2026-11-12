@@ -63,6 +63,8 @@ import { RunStream, defaultRunStreamTimers, type RunStreamTimers, type SnapshotR
 import { TUI_FLAGS, findCommand } from '../commandTable'
 import { parseFlags, type FlagSpec } from '../flags'
 import { readStdinText } from '../manage'
+import { quietInproc } from '../context'
+import { randomBytes } from 'node:crypto'
 import { emit, emitLine, isJsonOutput, note, printText, safe, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { staffingLine } from '../staffingText'
@@ -386,12 +388,15 @@ export function writeLastMessage(file: string, text: string): void {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
   }
   if (existing && !existing.isFile()) throw new Error(existing.isSymbolicLink() ? 'it is a symbolic link' : 'it is not a regular file')
-  const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`
+  const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+  let created = false
   try {
     writeFileSync(tmp, text, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    created = true
     renameSync(tmp, file)
   } catch (e) {
-    rmSync(tmp, { force: true })
+    // Only a file this call created is removed (a name that already existed is someone else's).
+    if (created) rmSync(tmp, { force: true })
     throw e
   }
 }
@@ -500,6 +505,8 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
     }
   }
 
+  // stdout carries only the answer (-q) or the document (json): the host's own console lines go to its log file.
+  if (quiet || isJsonOutput(ctx)) quietInproc(ctx)
   // --evolve (the post-run pass changes the team) and --model / --effort (the run's root model and effort) need 'configure'.
   const session = await openSession(ctx, create || evolve !== undefined || modelFlag !== undefined || effortFlag !== undefined)
   return runAndFollow(ctx, session, runOutput, async () => {
@@ -576,6 +583,7 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
   const images = await loadImages(strs(v, 'image'), ctx.cwd)
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
 
+  if (isJsonOutput(ctx)) quietInproc(ctx)
   const session = await openSession(ctx, false)
   return runAndFollow(ctx, session, { quiet: false }, async () => {
     const src = liveSource(session.client)

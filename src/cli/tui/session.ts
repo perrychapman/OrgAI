@@ -460,7 +460,13 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
   }
   set(setConnection(state, 'live'))
 
+  // Choices for the next run this session starts (/model, /effort, /mode, /goal when no run is followed). One-shot: a
+  // start that succeeded used them all, a continuation used the goal (the only one it carries), so they are dropped
+  // then. A failed call keeps them for the retry.
+  let staged: StagedRunOptions = {}
   const focusRun = async (runId: string, list?: RunSummary[]): Promise<void> => {
+    // Choices staged for a new run do not wait hidden behind a followed run.
+    staged = {}
     const chain = await focusChain(runId, list)
     await stream?.resubscribe().catch((e: unknown) => {
       throw hostError(e)
@@ -558,10 +564,6 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     ...(firstOpen ? { firstOpen } : {})
   }
 
-  // Choices for the next run this session starts (/model, /effort, /mode, /goal when no run is followed). One-shot: a
-  // start that succeeded used them all, a continuation used the goal (the only one it carries), so they are dropped
-  // then. A failed call keeps them for the retry.
-  let staged: StagedRunOptions = {}
   const mergedOverrides = (over: RunOverrides | undefined): RunOverrides | undefined => {
     const base: RunOverrides = { ...(staged.goal ? { goal: staged.goal } : {}), ...(over ?? {}) }
     return Object.keys(base).length ? base : undefined

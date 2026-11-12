@@ -2892,8 +2892,9 @@ export const QUICK_TOOL_DEFS: HarnessToolDef[] = [setPlan, updatePlan, completeP
  * The tools of a single-agent run: SINGLE_TOOL_DEFS without engagement_context on a code project (it only reads the
  * engagement's context notes) and with the plan tools minus `staff`.
  */
-function singleToolDefs(engagement: boolean): HarnessToolDef[] {
-  return SINGLE_TOOL_DEFS.filter((d) => engagement || d !== engagementContextTool).map((d) => (d === setPlan ? setPlanSingle : d === updatePlan ? updatePlanSingle : d))
+function singleToolDefs(_engagement: boolean): HarnessToolDef[] {
+  // engagement_context stays on a code project too: its single assistant reads the context notes the user saved.
+  return SINGLE_TOOL_DEFS.map((d) => (d === setPlan ? setPlanSingle : d === updatePlan ? updatePlanSingle : d))
 }
 
 /**

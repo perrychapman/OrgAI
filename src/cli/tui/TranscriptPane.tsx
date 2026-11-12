@@ -534,7 +534,9 @@ function InlineTranscript(props: { rows: TranscriptRow[]; width: number; scope?:
     w.keys = new Set()
     w.items = []
   }
-  const rows = useMemo(() => compactToolRows(props.rows, props.detailsExpanded === true), [props.rows, props.detailsExpanded])
+  // Rows as they come, never compacted: a written row cannot change, so a compacted group that grew (a tool result, the
+  // next tool) would keep its old key and never print.
+  const rows = props.rows
   const printed = w.items.length
   for (const row of rows) {
     if (w.keys.has(row.key)) continue
