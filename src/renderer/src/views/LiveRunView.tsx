@@ -330,9 +330,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const layout = runLayoutFor(run.summary, chosenLayout, { endedNarrow })
   const conversation = layout === 'conversation'
   const asAssistant = speaksAsAssistant(run.summary)
-  // Chat, MCP assistant and Skill assistant sessions in the conversation layout have no side panel: its tabs sit above
-  // the conversation (RunStageTabs). Focus left on the panel or stage strip that just went goes to the tab strip shown now.
-  const sidePanel = hasRunSidePanel(run.summary, layout)
+  // The side panel exists only while the stage is the org chart. In the conversation layout, for every run kind, there is
+  // none: its tabs sit above the conversation (RunStageTabs). Focus left on the panel or stage strip that just went goes
+  // to the tab strip shown now.
+  const sidePanel = hasRunSidePanel(layout)
   const hadSidePanel = useRef(sidePanel)
   useLayoutEffect(() => {
     if (hadSidePanel.current === sidePanel) return
@@ -1070,7 +1071,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // Walk M2 (ux-review-org-change-session-pre.md): never on a run cut off by a quit, and an org change needs an approval.
   const setupDone = setupBannerShows({ summary: run.summary,setupComplete: project.setup?.state === 'complete', cut: !!run.cutWhile, approved: approvedKinds })
   const orgChangeRun = isOrgChangeRun(run.summary)
-  const conversationFeed = <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} showThinking={sidePanel ? undefined : stageThinking} />
+  const conversationFeed = <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} showThinking={stageThinking} />
 
   return (
     <div className="run-view">
@@ -1151,14 +1152,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameStage>
             {conversation ? (
               <div className={`conversation-stage${toggledTo === 'conversation' ? ' motion-view' : ''}`} data-testid="run-conversation">
-                {sidePanel ? conversationFeed : <RunStageTabs
-                    runId={runId}
-                    agent={rootAgent}
-                    logs={run.logs ?? []}
-                    conversation={conversationFeed}
-                    thinking={{ checked: stageThinking, onChange: setStageThinking }}
-                    onReply={() => setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))}
-                  />}
+                <RunStageTabs
+                  runId={runId}
+                  agent={rootAgent}
+                  logs={run.logs ?? []}
+                  conversation={conversationFeed}
+                  thinking={{ checked: stageThinking, onChange: setStageThinking }}
+                  onReply={() => setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))}
+                />
               </div>
             ) : options.presentation === 'pocket-office' ? (
               <OfficeScene mode="live" runId={runId} palette={options.scenePalette} controlRef={officeRef} agents={withOfficeDepartments([...agentLookup.values()].map((agent) => ({ ...officeAgentView(agent), parentId: agent.parentId, departmentContext: chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : undefined, context: [chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : 'Current session', agent.parentId ? `Reports to ${agentLookup.get(agent.parentId) ? agentLabel(agentLookup.get(agent.parentId)!) : 'lead'}` : 'Lead'].join(' · ') })))} messages={messages ?? []} selectedId={selectedAgentId ?? undefined} onSelect={selectAgent} />
@@ -1272,7 +1273,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           onSubmit={async (text, images) => {
             setSessionBlock(null)
             // Without a side panel the stage tabs hide the conversation: a send brings it back so the reply is seen.
-            if (!sidePanel) setSideTab('transcript')
+            if (conversation) setSideTab('transcript')
             if (sendMode === 'reply') await sendMessage(text, images)
             else if (sendMode === 'continue') await continueRun(runId, text, images)
             else if (!virtualId) await startRun(text, images ? { images } : undefined)
@@ -1290,19 +1291,19 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </div>
         {sidePanel && (
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} arrival={usageArrival}>
-          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent && !conversation ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent && !conversation) { event.preventDefault(); returnToOffice(selectedAgent.id) } }}>
-            {options.presentation === 'pocket-office' && selectedAgent && !conversation && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
+          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent) { event.preventDefault(); returnToOffice(selectedAgent.id) } }}>
+            {options.presentation === 'pocket-office' && selectedAgent && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
             <TranscriptPanel
               runId={runId}
               tagRunId={chainIds[chainIds.length - 1]}
-              agent={selectedAgent ?? (conversation ? rootAgent : undefined)}
+              agent={selectedAgent}
               entries={selectedAgent && !rootSelected ? entries : []}
-              feed={rootSelected || (!selectedAgent && conversation) ? feed : undefined}
-              lead={conversation ? undefined : loadEarlierRow}
+              feed={rootSelected ? feed : undefined}
+              lead={loadEarlierRow}
               logs={run.logs ?? []}
               finished={finishedGroup}
             />
-            {options.presentation === 'pocket-office' && selectedAgent && !conversation && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" tabIndex={0} aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
+            {options.presentation === 'pocket-office' && selectedAgent && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" tabIndex={0} aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
           </div>
         </SidePanel>
         )}

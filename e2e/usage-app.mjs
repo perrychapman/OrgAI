@@ -298,8 +298,15 @@ try {
     await sleep(800)
     const sel = await T('side-tab-usage').getAttribute('aria-selected').catch(() => null)
     check(sel === 'true', 'drilldown: usage-run-open lands on the run with the Usage side tab selected', String(sel))
-    const w = await page.evaluate(() => document.querySelector('aside.side-panel')?.getBoundingClientRect().width ?? 0)
-    check(w >= 478, 'drilldown: at 1024 the side panel is at least 480 px wide on arrival', String(w))
+    // An ended work run opens as the conversation under 1100 px: no side panel there, the Usage tab sits in the stage strip.
+    const shape = await page.evaluate(() => ({
+      layout: document.querySelector('.run-body')?.getAttribute('data-layout'),
+      w: document.querySelector('aside.side-panel')?.getBoundingClientRect().width ?? 0,
+      strip: !!document.querySelector('[data-testid=run-stage-tabs] [data-testid=side-tab-usage][aria-selected=true]'),
+      usage: !!document.querySelector('[data-testid=run-stage-tabs] [role=tabpanel][id*=usage]')
+    }))
+    if (shape.layout === 'conversation') check(shape.w === 0 && shape.strip && shape.usage, 'drilldown: at 1024 an ended run lands on the Usage tab of the stage strip, with no side panel', JSON.stringify(shape))
+    else check(shape.w >= 478, 'drilldown: at 1024 the side panel is at least 480 px wide on arrival', JSON.stringify(shape))
     const proj = await page.evaluate(() => window.orgai.projects.list().then((l) => l.length))
     void proj
     check(!!rowProject, 'drilldown: the opened run belongs to a project row', String(rowProject))

@@ -177,27 +177,40 @@ These supersede the earlier text above where they differ (idle label, "+" tab, S
   the composer are centred at 90ch and the composer stays under the stage even with a wide side panel
   (`.run-body[data-layout=conversation]` overrides `[data-side-wide]`). The decision tray is unchanged. A toolbar
   `IconButton` `run-layout-toggle` ("Show agents" / "Show conversation") is on every run; zoom, legend and Hide finished
-  are hidden in conversation mode. `.run-body[data-layout]` carries the current layout. The side panel stays for work,
-  setup, Ask and org change runs; for assistant sessions see "No side panel for assistant sessions" below.
-- No side panel for assistant sessions (2026-11-11): a Chat still in the Chat project, an MCP assistant and a Skill
-  assistant run (library or project scope; `lib/assistants.ts` `isAssistantSession`, `hasRunSidePanel(summary, layout)`)
-  in the conversation layout render no `SidePanel` (no "run panel" landmark, rail or resize handle;
-  `.run-body[data-side-panel=none]` is one column). The panel's Transcript tab only repeated the stage. Its other tabs sit
-  in one compact `Tabs` strip above the conversation (`components/RunDetailTabs.tsx` `RunStageTabs`,
+  are hidden in conversation mode. `.run-body[data-layout]` carries the current layout. The side panel exists only
+  while the stage is the org chart; see "No side panel in the conversation layout" below.
+- No side panel in the conversation layout (2026-11-11 for assistant sessions; generalised 2026-11-12 by the owner's
+  decision "anything that doesn't show the org chart should lose the panel"): `lib/assistants.ts`
+  `hasRunSidePanel(layout)` is true only for the canvas layout (the Pocket Office presentation included). In the
+  conversation layout, for every run kind (Chat, a Chat saved as a project, MCP and Skill assistants, Ask runs, setup
+  runs, Team assistant and org change sessions, team work runs switched to "Show conversation" or opened as a
+  conversation by the ended-narrow rule), LiveRunView renders no `SidePanel` (no "run panel" landmark, rail or resize
+  handle; `.run-body[data-side-panel=none]` is one column). The panel's Transcript tab only repeated the stage. Its other
+  tabs sit in one compact `Tabs` strip above the conversation (`components/RunDetailTabs.tsx` `RunStageTabs`,
   `run-stage-tabs`, label "Session details"): "Conversation" (`run-tab-conversation`, the `transcript` value) first,
-  then the panel's own tabs by the panel's own rule (`lib/runTabs.ts`: Plan for every work run, so a Chat has it, and
-  for other kinds once a plan exists; Usage; Logs; Outputs and Knowledge never apply to these runs). Other tabs replace
+  then the panel's own tabs by the panel's own rules (`lib/runTabs.ts`: Plan only once a plan exists, for every kind
+  (`showsPlanTab` `stage`; the panel on the canvas still gives every work run a Plan tab with its "No plan yet" note);
+  Usage; Logs; Outputs for work runs of stored projects and Knowledge for engagement work runs, Ask runs included;
+  never for Chat or the assistants). Outputs and Knowledge render the panel's bodies at stage width: no
+  `aside.side-panel` ancestor, so `RunOutputs` is in its single-column list/detail mode inside the 90ch column. Other tabs replace
   the stage; the conversation stays mounted and hidden so its scroll position survives; the composer, the run settings
   row and the decision tray stay in place. Tab bodies are the side panel's own (`RunTabBody`, `PlanView` moved there from
   TranscriptPanel), with the same `side-tab-*` test ids, so the reveal helpers and navigation targets work. Selection is
   still `sideTabByRun`; a stored tab the run lacks shows Conversation (`resolveRunTab`). Plan buttons, `sideTab`
-  navigation targets and the Usage page return set that value and land in the strip. A send from another tab brings
+  navigation targets and the Usage page return set that value and land in the strip (the Usage arrival cue and
+  `SidePanel` `revealOn` only act on a panel that exists, so in the conversation layout nothing tries to reveal one;
+  `revealOutputsTab` / `revealKnowledgeTab` find no collapsed rail and just focus the tab). A send from another tab brings
   Conversation back. On the canvas ("Show agents") the panel returns, since a selected agent is read there; when the
   panel or strip disappears under focus, focus goes to the strip now shown. No application menu item addresses the
-  run side panel (Toggle sidebar is the left sidebar); "Show conversation" swaps between the two. Checked by
-  `lib/assistants.test.ts`, `lib/runTabs.test.ts` and `e2e/assistants.mjs` `checkStageTabs` (Chat at 1600x1000 and
-  1024x640 in both themes, the canvas toggle both ways, a default-team Chat, the project and library Skill assistant,
-  the MCP assistant; every tab opens, ArrowRight and Home, a send from Usage returns to Conversation).
+  run side panel (Toggle sidebar is the left sidebar); "Show conversation" swaps between the two. A sub-agent selected
+  on the canvas stays selected in the store but its transcript is only read on the canvas. Checked by
+  `lib/assistants.test.ts` (every run kind by layout), `lib/runTabs.test.ts` and `e2e/assistants.mjs` `checkStageTabs`
+  (Chat at 1600x1000 and 1024x640 in both themes, the canvas toggle both ways, a default-team Chat, the project and
+  library Skill assistant, the MCP assistant; every tab opens, ArrowRight and Home, a send from Usage returns to
+  Conversation), the same file's team work run (canvas panel, "Show conversation" strip with Usage, Outputs and Logs,
+  Outputs tab without overflow at 1024x640, back to the canvas panel), `e2e/engagement2.mjs` (an Ask run: strip with
+  Outputs and Knowledge, Knowledge tab without overflow), `e2e/layout.mjs` and `e2e/usage-app.mjs` (an ended run opened
+  under 1100 px is a conversation: no panel, Usage selected in the strip). Mock adapter only.
 - H2: `openAssistant(id, { instruction?, fresh? })`: an instruction or `fresh` (Configure with AI `mcp-library-assist`,
   `openNewChat`) shows the start page; a plain sidebar click opens the run that needs you, else a live run, else the
   start page, never an ended run (`lib/assistantNav.ts` `assistantRunToOpen`; `settleWorkspace` follows it for virtual
@@ -307,9 +320,10 @@ The focused UX follow-up reran the built mock model-switch matrix and reviewed p
   moves to Usage and asserts the name, the dot and the clear on the mock adapter; the announcement text was not asserted
   and is untested by screen reader). Show thinking is back at the right end of the strip, on Conversation only (state
   held in LiveRunView, off by default, not persisted, as in the panel; e2e asserts presence on Conversation, absence on
-  Usage and no overflow at 1024x640 dark and light). Still open: the agent meta line and staffing detail are reachable
-  only through "Show agents" (not asked for). A Chat saved as a project and Ask runs keep the panel and its duplicate
-  Transcript tab (not assistant sessions). Screen-reader speech, 320 px reflow, zoom and reduced-motion OS setting are
+  Usage and no overflow at 1024x640 dark and light). Still open: the agent meta line (model, connection, tokens, worktree)
+  and staffing detail are reachable only through "Show agents" (not asked for; the Usage tab has the by-agent
+  figures). The panel's "No plan yet" note for a work run without a plan is not offered in the strip (2026-11-12;
+  a blocked plan always exists, so the banner's "Show the plan" and the steps chip still land). Screen-reader speech, 320 px reflow, zoom and reduced-motion OS setting are
   unverified (the dot has no animation).
 - The MCP start page cannot name the build folder before the run starts (the data-folder wording is shown).
 - `proposalNextByRun` entries are cleared only by Dismiss; the pointer is untested at narrow toolbar widths, and the
