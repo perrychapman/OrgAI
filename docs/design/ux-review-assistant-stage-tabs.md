@@ -80,3 +80,79 @@ A first-time user finds Usage and Logs without help, gets back to the conversati
 - Reply timing for M1 was reasoned from a screenshot taken after the reply (the mock replies in about a second); I did not capture a frame mid-stream on another tab.
 - Live thinking blocks and real multi-line replies: the mock does not produce them.
 - Screen-reader speech: not tested.
+
+---
+
+## Re-walk (2026-11-12)
+
+- Reviewer: UX Researcher. Build `d0378cc0` (worktree of dev), `npm run build`, driven with scripts on `e2e/lib.mjs`.
+- How it ran: `ORGAI_MOCK=1`, fresh temp data dir per script, no tokens. Sizes 1280x800 and 1024x640. Dark and light set through the real settings route (setting `data-theme` on the DOM was overwritten by the app, so those frames are not used). Keyboard pass at 1024x640 light on a team work run.
+- Compared with: `docs/design/assistants-ui.md` "No side panel in the conversation layout" and its Open items.
+- Shots: `e2e/shots/ux/rewalk/` (gitignored; scripts `a.mjs` to `d.mjs` beside them).
+
+### Verdict: PARTLY FIXED
+
+First-walk M1, M2 and M4 are fixed. The general rule works as written: in the conversation layout there is no panel, rail or resize handle, one strip, and nothing overflowed at 1024x640. What is weak is the handover between the two layouts of a team work run (the canvas keeps the agent's own transcript and meta, the strip keeps run-level tabs, and nothing says which is where), and that Setup and Team assistant sessions open on the canvas, not the conversation.
+
+### Status of the first walk
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| M1 new-reply cue | Fixed | Chat: sent, opened Usage, reply landed: tab named "Conversation, new reply" with a dot (`chat-m1-dot`); cleared on selecting Conversation. Announcement not checked. |
+| M2 Plan only with a plan | Fixed | Chat, Setup and Team assistant strips read Conversation / Usage / Logs. The gap this opens for work runs is N2 below. |
+| M4 Show thinking | Fixed | Checkbox at the right end of the strip on Conversation in every conversation-layout run walked (`a04`, `b02`, `setup-03`); absent on Usage, Outputs and Logs. Thinking text itself not seen (mock has none). |
+| M3 details in three places | Fixed for Ask | An Ask run in an engagement has Conversation / Usage / Outputs / Knowledge / Logs (`ask-01`). |
+| L1 canvas toggle cue | Open | See N1 and N5. |
+| M5 numbers disagree | Not reproduced | `a05-usage`: cost $0.00573 and by-agent 1.6k + 1.6k tokens add up with the run meta. |
+
+### Findings, ranked
+
+#### N1 (Medium). Canvas to conversation and back loses the selected agent's panel, and the selection is invisible in between
+
+- Screens: `a03-agent-selected`, `a04-conversation`, `a06-back-canvas` (1280x800 dark).
+- Repro: start a work run in a project, wait for the Implementer node, click it (the panel opens on "R1 Implementer" with model, tokens, Transcript, Show thinking). Click the toolbar toggle "Show conversation", then "Show agents".
+- Experience: in conversation the strip shows only Conversation / Usage / Outputs / Logs and the transcript is the orchestrator's; nothing says an agent is selected or where its transcript went. Back on the canvas the Implementer node is still highlighted but the panel is collapsed to the thin rail, so a highlighted agent has no detail beside it until the user finds the rail button. The composer reads "Replying to Orchestrator" throughout, even while the Implementer was selected on the canvas (pre-existing; it matters more now the selection survives a toggle unseen).
+- Why medium: nothing is lost, but a first-time user cannot tell how to read a sub-agent's own transcript from the conversation layout, and sees a selected node with no detail.
+- Smallest fix: reopen the panel on return when an agent was selected or the panel was open on leaving. Give the toggle a visible label or tooltip: "Show agents (agent transcripts and model details are here)". Optionally one quiet line under the strip while a sub-agent is selected: "Implementer is selected on the canvas. Show agents to read its transcript."
+
+#### N2 (Medium). A work run in conversation before its plan exists gives no sign a plan is coming
+
+- Screen: `b04-after` (1024x640).
+- Repro: start a work run, switch to "Show conversation". The orchestrator finishes a report and the transcript says "Continuing: asked the orchestrator to write a plan before it works." For about a minute (mock) the strip never has a Plan tab. The canvas panel always has a Plan tab (panel tabs read `Transcript, Plan, Usage, Outputs, Logs`).
+- Experience: the only hint is one grey info line inside the transcript. A user who knows the canvas Plan tab will think it is missing. The spec accepts this; the banner "Show the plan" and the steps chip cover only the blocked case.
+- Smallest fix: keep the no-empty-tab rule, but while a work run has no plan add the quiet text "No plan yet" to the run meta row, or show the Plan tab for team work runs with the panel's note: "The orchestrator has not written a plan yet. It appears here."
+- Not seen: a plan arriving while the user sat on the strip, so the moment the Plan tab appears (announcement, strip shift) is unobserved.
+
+#### N3 (Medium). Setup and Team assistant sessions start on the canvas at 1280x800, not on the conversation
+
+- Screens: `setup-01-1280-dark`, `team-02-session-1280-dark`; after the toggle `setup-02-conversation`, `team-05-conversation-1280-dark`; `setup-03-1024-light`.
+- Repro: Team > Design > "Add a security reviewer" > Start, or create a project with the Architect. At 1280x800 the run opens on the canvas: one Architect node, the permission card, a collapsed rail and the chart toolbar (zoom, "Canvas style", help). At 1024x640 the same setup run is the conversation (`setup-03`); the layout follows window width, so a resize makes the panel appear or vanish under the user.
+- Experience: for one agent the canvas is a box and a card; the interview the user came for is behind the rail or the toggle. The brief and spec list these sessions as conversation-stage runs. After "Show conversation" the strip reads Conversation / Usage / Logs and loses nothing a user would expect.
+- Smallest fix: open one-agent sessions (setup, org change, Chat) in the conversation layout at every width and keep the toggle for the chart. I observed this behaviour; I did not read the layout choice in source.
+
+#### N4 (Low). Ended-run layout depends on how it was opened
+
+- Screens: `c02-ended-1024-light`, `c06-usage-drill`.
+- A run that was live and then ended stays on the canvas, panel rail present, even at 1024x640 (`c02`). Opened fresh from the Usage page at 1024x640 the ended run is the conversation with Usage selected in the strip, no panel, no overflow (`c06`). So Outputs and Usage are findable and the Usage drilldown lands on the Usage tab, as asked. The composer line "Session ended just now. Send to continue with its memory." is intact. The same run can show a panel or not depending on how it was opened; no cue.
+
+#### N5 (Low). The way back to the chart is an unlabelled glyph far from the strip
+
+- `a04`, `ask-01`, `setup-03`: in conversation layout the toggle is a small org-chart icon at the far right of the meta row (accessible name "Show agents", visible focus ring `b02`). Recommended: show the words "Show agents" beside it above 1100 px.
+
+#### N6 (Low). Empty Outputs and Knowledge tabs are one small line at the top of a large empty stage
+
+- `ask-02-outputs-1280-dark`, `ask-02-knowledge-1280-dark`, `ask-03-*` (1024 light). Readable, centred in the 90ch column, no overflow or stretch. The Knowledge copy does not say it is about this session. Recommended: "Nothing recorded in this session yet. Items agents add while they work appear here."
+
+### Keyboard pass (1024x640 light, team work run)
+
+- Toggle focused, Enter: the layout flips and focus stays on the toggle. Tab order after it: Conversation tab, Show thinking, conversation scroll area, Show details summaries, the permission card buttons. The strip is one Tab stop; ArrowRight moved to and selected Usage, End selected Logs, Home returned to Conversation, focus ring visible (`b03-logs-1024-light`).
+- After the run went idle, focus was in the composer.
+
+### Not driven
+
+- Populated Outputs lists or detail and a populated Knowledge list in the strip (the mock gave empty states; I did not seed them). Line length and cramping with real content at 1024x640 is therefore unanswered.
+- A mock plan arriving while the user is in conversation (the mock wrote the nudge and no plan in my runs).
+- Selecting an agent by keyboard on the canvas; the rail button by keyboard; screen-reader speech including "New reply in the conversation"; 1600x1000; zoom; reduced motion.
+- Theme coverage: Team assistant and Setup dark 1280 and light 1024 only; Ask dark 1280 and light 1024 only; work run dark 1280 and light 1024.
+- Reopening an ended run from History (my row selector matched nothing); the Usage page drilldown was driven.
+- Live provider behaviour of any of this.
