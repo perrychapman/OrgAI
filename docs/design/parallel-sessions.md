@@ -1,7 +1,7 @@
 # Parallel `orgai` sessions: design spec
 
-Status: draft 9, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-8 by GPT Astra and Gemini
-Carbon; all sixteen reviews BLOCKED. Resolutions are in section 14. Owner direction (2026-11-11): "mirror Claude Code / Codex":
+Status: draft 10, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-9 by GPT Astra and Gemini
+Carbon; all eighteen reviews BLOCKED. Resolutions are in section 14. Owner direction (2026-11-11): "mirror Claude Code / Codex":
 any number of `orgai` processes at once, in any projects, on one CLI data folder, each terminal its own session. This
 reverses `cli-standalone-default.md` G4 ("one `orgai` host process per CLI data folder") and promotes its non-goal
 "parallel independent sessions like Claude Code" to a goal. Written against `pr/team-evolution` at b08d534f (the tip of
@@ -61,7 +61,7 @@ From the code (three research passes and four reviews):
    (`src/cli/inprocHost.ts:232-262`), refusing with exit 6 (`ownedMessage.ts:14`), because RunStore's constructor
    rewrites non-terminal runs (`ownership.ts:24-26`).
 2. **Run index is one file rewritten whole** (`runs.json`, fixed tmp, `.slice(-500)`, `store/runs.ts:186-205`).
-3. **Blind crash normalisation** in the RunStore constructor (`runs.ts:197`; it also sanitises fields, 102-126; an
+3. **Blind crash normalisation** in the RunStore constructor (in memory, persisted by the next write; `runs.ts:186-204`; it also sanitises fields, 102-126; an
    existing `endedBy` is kept, 128-145).
 4. **Load-once, rewrite-whole config stores** with fixed tmp names: `projects.json` (whole-project `save`,
    `projects.ts:579-647`), `settings.json`, `skill-library.json`, `mcp-library.json`, `connector-presets.json`,
@@ -222,8 +222,11 @@ code).
   project includes, for each such project, `team-<pid>` and (when its team files are active) `repo-<its repo>`, plus
   the `oauth-<owner>` locks of credentials the save moves; when team files are active it also includes `vault` (and
   the `oauth-<owner>` of an evicted server) because an auto-applied server removal can evict a tombstone and delete
-  that server's secrets (`commitTombstones`, `teamFiles/service.ts`, code). The table below is written with that
-  closure applied.
+  that server's secrets (`commitTombstones`, `teamFiles/service.ts`, code), and `library` when an active team-files
+  project's documents reference a catalog connector not yet in the library (`serverFor` → `connectorEntry` →
+  `connectorsAdd`). **Every row of the table below is a base set**: the coordinator adds the save-hook closure for
+  each stored project the operation saves, so a row never needs to repeat it, and the recording-lock tests check the
+  final set.
   **Effect discovery**: a coordinator's read includes every effect **and dependency** its services may have: library
   entries they link to or copy from (`linkLibrary`, `copyFromLibrary`: the source must not change or disappear during
   the link), templates they read, and connector entries a team-files or capability operation may add to or remove
@@ -240,7 +243,7 @@ code).
 | 5 | `plan-usage-<key>`, `models-discovery`, `prices-refresh` | 60 s | single-flight network |
 | 6 | `codex-start` | 60 s | Codex app-server start (may be taken under order 5) |
 | 7 | `outputs-<pid>` (sorted) | 15 s | every outputs mutation |
-| 7b | `output-file-<path>` (cache, keyed by `pathKey` of the output's canonical destination, sorted) | 15 s | the physical file of a registered output: validation (stale-content and unseen-change checks) through replacement or deletion and the metadata commit; two projects (or data folders) that registered the same file serialise on it |
+| 7b | `output-file-<hash>` (cache; `<hash>` = `sha256(pathKey(canonical destination))[0..32]`, the destination being `join(realpath(dirname(dest)), basename(dest))`; sorted) | 15 s | the physical file of a registered output: validation (stale-content and unseen-change checks) through replacement or deletion and the metadata commit; two projects (or data folders) that registered the same file serialise on it |
 | 8 | `knowledge-<pid>` | 15 s | knowledge graph |
 | 9 | `notes-<pid>`, `engagement-<pid>`, `staffing-<pid>` | 15 s | per-project data (staffing: `recordRunInStaffingProfile`) |
 | 10 | `permissions-<rules file>` (cache, keyed by `pathKey(rulesFileOf(target))`) | 15 s | permission rules, taken inside `permissionRules.ts` |
@@ -249,7 +252,10 @@ code).
 
 No transaction lock is held across a model call: evolution's hybrid synthesis, capability reviews and skill
 evaluations run their model step outside `team-<pid>` on a snapshot and commit under it only if the generation they
-started from is unchanged. Only orders 4-6 are held across a network call or a process start.
+started from is unchanged. **Process starts and network calls under locks**: provider, MCP server, Codex and custodian
+processes, and network calls, start only under orders 4-6 or with no transaction lock held at all (custodians: no lock,
+6.7). Two bounded local helpers are allowed under the locks that need them: `git` under `repo-<repo>` (order 3) and
+the OS trash call under `output-file-<hash>` (order 7b).
 
 **Lock sets per operation** (each an integration test through the real services with a recording lock layer,
 coordinator retry included):
@@ -280,11 +286,12 @@ coordinator retry included):
 | `projects:remapModels`, `connections:update` remapping | 2 (affected projects) → 3 (their repos) → 12 |
 | plan usage | 5 → 6 (Codex) → 12 |
 | knowledge adding a note | 8 → 9 |
-| output edit, delete, `deletePreview`'s capture, `OutputWatcher.tick` | 7 (`outputs-<pid>`) → 7b (`output-file-<path>`) |
-| `outputs:revise` | 7 → 7b for the capture, released before it starts or continues the run |
+| output edit, delete, restore, `deletePreview`'s capture, `OutputWatcher.tick`, `produce_output`, `register_output` | 7 (`outputs-<pid>`) → 7b (`output-file-<hash>`); `produce_output` renders outside the locks, then under them re-checks collision and capacity, writes and commits |
+| `outputs:revise` | 7 → 7b for validation and the capture, released before it starts, continues or sends to the run; 7 again around `recordRevision` and, on a failed send, `runEnded` |
 | `projects:setFolderConfigTrust` | 2 → 3 → 10 (`permissions-<rules file>`) → 12; the rule removal runs before the `config` update, never inside its transform |
 | `skills:applySuggestion` | 2 → 3 → 11 → 12, re-checking under the locks that the suggestion is not yet applied |
-| connections add, update, remove, logout, key save | 4 (when OAuth) → 11 → 12, the vault change and `settings.json` in one section; a background probe's status rewrite 12 |
+| connections add, update, remove, logout, key save | 4 (when OAuth) → 11 → 12, following the endpoint-bound key protocol (6.9); a background probe's status rewrite 12 |
+| `projects:save` (`projects edit`), `skills:applyImport`, `skills:undoImport`, `plugins:upsert`, `plugins:remove`, `mcp:setProjectOverrides` | 2 → 12 (closure added) |
 | staffing record at run end | 9 (`staffing-<pid>`) |
 | worktree integrate | claim (exempt) → 3 |
 | journal recovery | the journal's recorded `requiredLocks` (4.9) |
@@ -322,8 +329,8 @@ coordinator retry included):
 - **Provider session binding.** Every point that records a provider session id (`session.started`, a `run.status`
   that sets or changes `sessionId`, continuation, restart; `runManager.ts:1883-1938, 4995-4998`, code) binds it under
   the chain claim: key `sha256("<adapter>\0<sessionId>")` with `<adapter>` the adapter whose session store holds it
-  (`claude`, `codex`, or `mock` in tests); the exec-finalising path that records a session id
-  (`finalizingExecRuns`, `runManager.ts`, code) binds it before its early return; the binding file `control/sessions/<key>.json` `{ chainId }` is published atomically (write
+  (`claude`, `codex`, or `mock` in tests); the exec-finalising path that records a session id (the
+  `active.finalizing && !active.finalEmitting` early return, `runManager.ts:1885`, code) binds it before returning; the binding file `control/sessions/<key>.json` `{ chainId }` is published atomically (write
   `<key>.json.tmp-<hostId>-<random>` with `wx`, fsync, `link` to `<key>.json`, unlink the tmp; `EEXIST` → read the
   existing file: same `chainId` is success (idempotent), another `chainId` refuses the binding and ends the run with an
   error, "This provider session belongs to another conversation"). Conversion creates the bindings of migrated
@@ -512,9 +519,12 @@ The OS frees a dead host's locks, but agents, shells, git, MCP servers or Codex 
   spawns it records a **pending spawn** `{ chainId?, kind, since }` (`chainId` absent for host-level processes:
   Codex app-server, MCP stdio servers, git checks); after the spawn it replaces that entry with the child's pid and
   start time (durable); an unresolved pending spawn makes the evidence uncertain. The Claude adapter passes a spawn
-  callback to the SDK (`spawnClaudeCodeProcess`, **unverified** in SDK 0.3.312; fallback: the adapter resolves the
-  pending spawn from the process table, the new child of this host running the Claude binary, and until it does the
-  evidence stays uncertain). Read-only probes that run before the host is registered (shell environment, system
+  callback to the SDK (`spawnClaudeCodeProcess`, **unverified** in SDK 0.3.318, `package.json`); fallback: the adapter
+  resolves pending spawns from the process table: every newly seen child of this host running the Claude binary is
+  associated with every Claude pending spawn unresolved at that moment (several concurrent `query()` calls are not told
+  apart, conservatively), and when a `query()` settles while its pending spawn is still unresolved, the host takes one
+  descendant snapshot (recording anything that survived) and then clears that pending spawn. Until then the evidence
+  stays uncertain. Read-only probes that run before the host is registered (shell environment, system
   certificates, folder-trust `ls`/`icacls`, the host's own start-time `ps`) are exempt: they run in a neutral folder
   and finish before anything is opened. Every 5 s it adds
   newly seen descendants and keeps every descendant it has ever recorded until it has seen that process exit (a
@@ -556,7 +566,11 @@ The OS frees a dead host's locks, but agents, shells, git, MCP servers or Codex 
   For every resource key it touches an immutable **locator** `control/journal/by-resource/<key>/<opId>` (an empty file
   whose name is the operation id) is created and its parent fsynced, so an operation on any of those resources finds
   it; state is always read from the canonical `ops/<opId>.json`, never through a locator. Resource keys: `project-<pid>`, `library`, `mcp-build-<entryId>`, `skill-<entryId>`,
-  `outputs-<pid>`, `output-file-<path>`, `notes-<pid>`, `templates`, `chain-<chainId>` (promotion).
+  `outputs-<pid>`, `output-file-<hash>`, `notes-<pid>`, `templates`, `chain-<chainId>` (promotion). An operation on an
+  output file also writes a **shared locator** `<user cache>/orgai/journal/output-file-<hash>/<folderId>-<opId>.json`
+  (`{ dataFolder, opId }`, durable, removed last). Another data folder that takes `output-file-<hash>` and finds a
+  shared locator from a different folder does not recover it: it refuses ("An unfinished change to this file from
+  <folder> must be finished there first; start OrgAI on that folder.") until that folder's recovery removes it.
 - **Durable ordering**: (1) canonical journal written and fsynced, then its locators (files and directories
   fsynced); (2) for each step: mark it `started` (durable), make its effect durable (tmp + fsync + rename + directory
   fsync through one shared atomic-write helper, which notes, templates and every other journaled store use), mark it
@@ -788,10 +802,15 @@ releases; a crash releases the lock (OS). Each process still probes only when it
 - Every mutation (`set`, `setMany`, `clear`, `delete`, `deletePrefix`, `purge`, `undelete`, `confirmDeletes`) becomes async:
   take `vault` (order 11), reload from disk, apply its delta to the fresh vault, commit, release. No custodian call
   (macOS Keychain `security`, Secret Service `secret-tool`, DPAPI through PowerShell; possibly an interactive unlock)
-  runs under `vault`: the first vault's key is generated and stored under a candidate `vaultId` before the lock, then
-  under `vault` the absence is re-checked and `vault.json` written with that id (if another session won, the candidate
-  custodian entry is discarded and the winner's key opened outside the lock); `ensureFreshVault()` opens keys outside
-  the lock. Open-time reconcile and legacy retirement take `vault` only for their disk read-decide-write.
+  runs under `vault` or under any other transaction lock: the first vault's key is prepared before any lock, then
+  under `vault` the absence is re-checked and `vault.json` written with that id. If another session won, the loser
+  discards its candidate **by scheme**: OS keyring custodians addressed by `vaultId` (`keychain`, `secret-service`)
+  delete the candidate's own item; the key-file custodian (`ORGAI_CLI_VAULT_KEY_FILE`, which ignores `vaultId`,
+  `custodians/keyFile.ts:780-816`, code) and DPAPI (key inline in the vault file) only zero the candidate in memory and
+  never delete a key file. Creating a missing key file is published atomically (tmp, fsync, `link`; `EEXIST` → read
+  the committed file) so no session sees a half-written key. `ensureFreshVault()` opens keys outside every lock; a
+  coordinator that finds, under `vault`, a vault whose key this process has not opened throws a retry signal: it
+  releases its whole lock set, runs `ensureFreshVault()`, and starts over. Open-time reconcile and legacy retirement take `vault` only for their disk read-decide-write.
 - Exclusive operations hold `admission` exclusive from before the store opens (4.6). Phase 2 converts every caller
   (`McpService`, `ConnectionService`, `TeamFilesService`, `SetupService`, `KitService`, `RunManager` (install cards),
   `dispatcher.ts` (project removal)) to the async API.
@@ -802,6 +821,21 @@ Each CLI process writes `v2/logs/orgai-<YYYYMMDD-HHMMSS>-<hostId>.log` (2 MB, on
 files or 14 days, never a live host's. The desktop keeps today's log location (`app.getPath('logs')/main.log`, or
 `<ORGAI_DATA_DIR>/logs` when `ORGAI_DATA_DIR` is set, `index.ts`, code); it is the folder's only host, so one file is
 safe. `doctor` names this process's file; the TUI `/logs` (run logs) is unchanged.
+
+### 6.9 Connection endpoints and keys
+
+A connection's endpoint (in `settings.json`) and its key (in the vault) are bound so a mismatched pair is never used:
+
+- Each key is stored under a generation-specific name, `connection-<id>-g<generation>`, with the endpoint digest it
+  belongs to (`sha256` of the normalised base URL, proxy host and auth scheme). The connection in `settings.json`
+  carries `keyGeneration`.
+- Changing the endpoint or the key: under 4 (if OAuth) → 11 → 12, write the new key under generation `g+1` with the new
+  endpoint digest (durable), then the connection with the new endpoint and `keyGeneration: g+1` (durable), then delete
+  generation `g`. A crash at any point leaves either the old pair complete or the new pair complete; a leftover
+  generation is removed by housekeeping when the connection no longer names it.
+- Readers (run starts, discovery, probes) read the connection, then the key of its `keyGeneration`, and use it only if
+  the key's endpoint digest equals the digest of the endpoint they read; otherwise they re-read (up to 3 times) and then
+  fail with "This connection is being changed in another session; try again." No lock is held across the network call.
 
 ## 7. CLI
 
@@ -861,8 +895,11 @@ writers are covered by the operation tests of section 11, not by the scanner.
 - **Protected paths** (the self-control gate, `selfControlGate.ts:149-166`, code): the whole of `control/` and `v2/`
   is protected, with these carve-outs that stay usable by agents: the run's own scratch folder
   `v2/quick/<its chainId>/` and its host's `v2/harness-workspace/<hostId>/` (read and write), and the run's own staged
-  skills `v2/tmp/skills/<hostId>/<runId>-<random>/` (read only; staged per run with today's `0500`/`0400` modes,
-  `claudeSkills.ts`, code). Everything
+  skills `v2/tmp/skills/<hostId>/<runId>-<random>/`: `Read`, `Glob` and `Grep` allowed, file-edit tools denied, and
+  `Bash` only to run a staged skill script by its exact path (the existing skill-script allowance); any other `Bash`
+  reference to the folder is denied as for reference directories. New in phase 3 (today's `claudeSkills.ts` sets no
+  modes): after staging, files are made `0400` (`0500` for scripts) and folders `0500` on POSIX, read-only attributes
+  on Windows; cleanup and housekeeping restore `0700`/`0600` before removing them. Everything
   else under `v2/` (stores, `runs/`, `projects/`, `FORMAT.json`, `MANIFEST.json`, `mcp-builds/`, `codex/`, other
   chains' scratch folders, vault files) and today's entries at the folder root stay protected, plus the realpath of the
   cache lock folder, `realpath(gitCommonDir)/orgai-worktrees` and `orgai-repo.lock`, and each report worktree's `.git`
@@ -1024,6 +1061,17 @@ Unit and integration (vitest, real child processes, mock adapter, no tokens):
   `vault`; a same-TUI follow-up during the title tail succeeds; `withChainClaim` on a chain whose first run was pruned;
   team-files status seen by another session after an approval; project creation at `rootDataDir` or `control/`
   refused.
+- Draft-10 cases: crash after each step of an endpoint change and a reader paused between reading the connection and
+  its key: the destination only ever receives its own key; two sessions creating the first vault with one provisioned
+  key file (existing and not yet existing), the loser's cleanup, then a fresh process opens the winner's vault; a vault
+  created by another session met inside a coordinator: release, open the key outside locks, retry; output `produce`,
+  `restore` and `register` on a file another project registered, with a delete paused after its check; `outputs:revise`
+  recording its revision under the outputs lock; a crash in data folder X between replacing an output file and its
+  metadata, then an edit from folder Y refused until X recovers; every project-saving row of 4.2 with team files active
+  and an evictable tombstone and an uninstalled catalog connector, through the recording lock layer (closure added);
+  staged skills: edit tools and non-script `Bash` references denied, scripts run, cleanup succeeds after the modes;
+  two concurrent and one fast-failing Claude `query()` under the process-table fallback: pending spawns resolved or
+  cleared, never left open in a live host.
 - Write-path inventory (section 8). `message_run` `other-session`, `list_runs` notice, setup claim, admission wait,
   registry and status JSON, per-process logs, network-FS warning (simulated `statfs`), advisory strings sanitised.
 - Removed or changed: CLI `wait: 'none'` ownership tests; `inprocHost.test.ts` "second host refused";
@@ -1307,3 +1355,24 @@ its area, the Reviewer). Hot files take one claim at a time (CLAUDE.md).
 | M2 | title abort, same-host follow-up, pruned chain root, `mock` adapter, finalising binding | 4.3 |
 | M3 | team-files status memo | 6.3 |
 | L1 | citations | 4.1, 6.8; `RunStore` method names in 4.3 are the new API (today's `upsert`, `saveRecord`, `removeRecord` map onto them) |
+
+### 14.16 Draft 9, Astra (round 9)
+
+| # | Finding | Resolution (draft 10) |
+|---|---|---|
+| 1 | endpoint and key published separately | 6.9 generation-named keys bound to an endpoint digest; readers check the binding |
+| 2 | loser cleanup deletes a shared key file | 6.7 scheme-aware discard; key files and DPAPI never deleted |
+| 3 | output journals not discoverable across data folders | 4.9 shared locator in the cache; other folders refuse until recovered |
+| 4 | rows vs closure; process starts under order 3 | 4.2 rows are base sets, closure added by the coordinator; explicit process-start rule |
+| Low | §3 wording | 3 |
+
+### 14.17 Draft 9, Carbon (round 9)
+
+| # | Finding | Resolution (draft 10) |
+|---|---|---|
+| 1 | key-file candidate discard, half-written key file, custodian calls under other locks | 6.7 |
+| 2 | output `produce` / `restore` / `register`, revise, locator key, trash call | 4.2, 4.9 |
+| 3 | rows missing the closure; unlisted saving RPCs | 4.2 base sets plus closure (library, OAuth owner, vault included); rows added |
+| 4 | staged-skill modes claimed but absent | 9 specified as new work |
+| 5 | Claude fallback with concurrent or fast `query()` | 4.8 |
+| 6 | SDK version, finalising guard name | 4.8, 4.3 |
