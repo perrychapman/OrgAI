@@ -1,20 +1,26 @@
 /**
  * The orgai host (cli-standalone-default.md 4.1): a pure-Node OrgAI host inside the CLI process, the only host there is.
  * Ownership is taken with `wait: 'none'`, so another orgai on the data folder is refused at once with exit 6 (its pid and
- * cwd come from daemon.json). The host's socket serves its own process only: a hello needs the memory-only `ownerKey`
- * proof, which is how this process's client gets every scope (anything else is refused `not_owner`). Secure storage is the
+ * cwd come from daemon.json). By default the host listens on nothing (`listen: false`: no Unix socket or named pipe, no
+ * daemon.secret, no icacls, and no lsof / ps peer check): this process's own commands and the terminal UI reach it
+ * through `connectLocal`, an in-memory stream pair served by the same HostSocketServer code (surface 'inproc'), which
+ * keeps the JSON codec, frame caps, run subscriptions and journal of the socket path. With `listen: true` it also binds
+ * the socket, and that socket serves its own process only: a hello needs the memory-only `ownerKey` proof, which is how
+ * this process's client gets every scope (anything else is refused `not_owner`). Secure storage is the
  * CLI's own vault (product 'cli') with the CLI's environment overlay: no safeStorage outside Electron, and values this
  * host stores go to vault.json (created lazily by prepareWrite). There is no desktop, so window:openRun answers
  * desktop_unavailable. Always loaded through a dynamic import (its own chunk, out/cli/inprocHost.mjs). Electron-free;
  * relative imports only.
  */
 import { writeSync } from 'node:fs'
+import { Duplex } from 'node:stream'
+import type { Socket } from 'node:net'
 import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
-import { newNonce } from '../main/host/protocol'
+import { LineReader, newNonce } from '../main/host/protocol'
 import { ShutdownRefusedError } from '../main/host/shutdown'
 import { HostSocketServer } from '../main/host/socketServer'
 import { installLogging, log } from '../main/log'
@@ -25,7 +31,9 @@ import type { CustodianFactory } from '../main/store/vaultTypes'
 import { ownedMessage, ownerWordsOf } from './ownedMessage'
 import { openUrl } from './openUrl'
 import { unavailableCustodianFactory } from '../main/store/unavailableCustodian'
-import { CliError, EXIT, type InprocHostHandle } from './types'
+import { DEFAULT_CALL_TIMEOUT_MS, SocketHostClient } from './client/hostClient'
+import { CliError, EXIT, type ConnectResult, type InprocHostHandle } from './types'
+import { RPC_BULK_FRAME_MAX_BYTES, type HostClientKind, type HostScope } from '../shared/types'
 import { CLI_VERSION } from './version'
 
 export interface StartInprocHostOptions {
@@ -45,6 +53,12 @@ export interface StartInprocHostOptions {
    * management command's fallback host keeps connection probes and turns off discovery, prices and the usage monitor.
    */
   background?: HostBackgroundOptions
+  /**
+   * Bind the owner-only socket (and write daemon.secret) as before. Default false: the process serves itself through
+   * connectLocal, and a second orgai on the folder is still refused through daemon.json (`listening: false`) and the
+   * live pid. Tests of the raw socket pass true.
+   */
+  listen?: boolean
   /** This process's cwd, written to daemon.json as `ownerCwd` for the refusal other terminals print. Default process.cwd(). */
   cwd?: string
   /**
@@ -144,6 +158,35 @@ export function inprocCliRoots(moduleDir: string, platform: NodeJS.Platform = pr
   return orgaiCliRootsOf(p.resolve(moduleDir, '..', '..'), platform)
 }
 
+/**
+ * Two connected in-memory duplexes (a stand-in for a connected socket pair): what one writes the other reads, and ending
+ * or destroying either side closes both. The write callback runs once the chunk is queued on the peer, so the host's
+ * outbound queue never waits for a 'drain' that depends on the reader.
+ */
+export function memoryStreamPair(): [Duplex, Duplex] {
+  const make = (peer: () => Duplex): Duplex =>
+    new Duplex({
+      highWaterMark: 64 * 1024 * 1024,
+      read() {},
+      write(chunk: Buffer, _enc, cb) {
+        peer().push(chunk)
+        cb()
+      },
+      final(cb) {
+        peer().push(null)
+        cb()
+      },
+      destroy(err, cb) {
+        const other = peer()
+        if (!other.destroyed) queueMicrotask(() => other.destroy())
+        cb(err)
+      }
+    })
+  const a: Duplex = make(() => b)
+  const b: Duplex = make(() => a)
+  return [a, b]
+}
+
 export async function startInprocHost(opts: StartInprocHostOptions): Promise<InprocHost> {
   try {
     setOrgaiCliRoots(inprocCliRoots(dirname(fileURLToPath(import.meta.url))))
@@ -183,6 +226,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       appVersion: CLI_VERSION,
       hostInstanceId,
       wait: 'none',
+      listen: opts.listen === true,
       warn: (m) => void heldWarnings.push(m),
       ownerCwd: opts.cwd ?? process.cwd(),
       onConnection: (s) => server.accept(s)
@@ -289,6 +333,31 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   }
   server.attach(host)
   const booted = host
+  const connectLocal: NonNullable<InprocHostHandle['connectLocal']> = async (scopes: HostScope[], local: { clientKind?: HostClientKind; cwd?: string } = {}): Promise<ConnectResult> => {
+    const daemon = ownership.info
+    const [clientSide, serverSide] = memoryStreamPair()
+    const clientKind = local.clientKind ?? 'cli'
+    const accepted = server.acceptLocal(serverSide as unknown as Socket, { clientKind, pid: process.pid, requestedScopes: scopes })
+    if (!accepted.ok) {
+      clientSide.destroy()
+      const code = accepted.error.code
+      return { ok: false, reason: code === 'host_draining' ? 'draining' : code === 'host_starting' ? 'starting' : 'refused', message: accepted.error.message, daemon }
+    }
+    const hello = {
+      protocolVersion: 1 as const,
+      hostInstanceId,
+      hostKind,
+      appVersion: CLI_VERSION,
+      dataDir,
+      mock: opts.mock,
+      grantedScopes: accepted.grantedScopes,
+      // No handshake took place (the stream pair is in-process), so there is no proof to carry.
+      hostProof: ''
+    }
+    const reader = new LineReader()
+    reader.maxLineBytes = RPC_BULK_FRAME_MAX_BYTES
+    return { ok: true, client: new SocketHostClient(clientSide, reader, hello, daemon, DEFAULT_CALL_TIMEOUT_MS) }
+  }
 
   return {
     host: booted,
@@ -297,6 +366,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     closed,
     ownerKey,
     hostInstanceId,
+    connectLocal,
     status: () => booted.hostControl.status(),
     async stop(force: boolean): Promise<void> {
       if (cleaned) return closed

@@ -78,7 +78,7 @@ describe('startInprocHost', () => {
   })
 
   it('serves only its own process: a hello without the in-memory owner proof is refused not_owner (spec 4.1)', async () => {
-    const h = await start()
+    const h = await start(new Map(), { listen: true })
     expect(h.ownerKey).toMatch(/^[0-9a-f]{64}$/)
     expect(h.hostInstanceId).toBe(JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')).hostInstanceId)
     // The key is never written to the run folder.
@@ -100,6 +100,26 @@ describe('startInprocHost', () => {
     if (!owner.ok) throw new Error(owner.message)
     expect(owner.client.hello.grantedScopes).toEqual([...all])
     owner.client.close()
+  })
+
+  it('listens on nothing by default and serves its own process through connectLocal (surface inproc)', async () => {
+    const h = await start()
+    const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
+    expect(daemon.listening).toBe(false)
+    expect(existsSync(join(dataDir, 'run', 'daemon.secret'))).toBe(false)
+    // A foreign process finds no listener.
+    const foreign = await connectHost({ dataDir, scopes: ['read'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
+    expect(foreign).toMatchObject({ ok: false, reason: 'refused' })
+    const c = await h.connectLocal!(['read', 'operate', 'configure'], { clientKind: 'tui' })
+    if (!c.ok) throw new Error(c.message)
+    expect(c.client.hello.grantedScopes).toEqual(['read', 'operate', 'configure'])
+    const status = await c.client.call<{ state: string }>('host.status')
+    expect(status.state).toBe('ready')
+    // Scopes still gate: no 'decide' was granted.
+    await expect(c.client.call('runs:decide', [{}])).rejects.toMatchObject({ data: { code: 'scope_denied' } })
+    // The single-owner guarantee does not depend on a socket.
+    await expect(startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false })).rejects.toMatchObject({ exitCode: 6 })
+    c.client.close()
   })
 
   it('a second host on the same data dir is refused at once with exit 6, naming the owner (spec 4.2)', async () => {

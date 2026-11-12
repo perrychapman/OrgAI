@@ -386,6 +386,14 @@ export class HostDispatcher {
 }
 
 /**
+ * The user's own decisions (folder config trust, team files review) come from the window or the in-process CLI / TUI
+ * (surface 'desktop' / 'inproc'). Any other surface (a socket client) is refused first, whatever scopes it holds.
+ */
+function refuseSocketDecision(ctx: InvokeContext, what: string): void {
+  if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', `${what} is the user's own decision, made in the OrgAI window or the terminal UI.`)
+}
+
+/**
  * A channel whose call changes host state (Wave 7, cli-standalone.md 4.3): a registry request entry with a scope above
  * 'read' that is not a lifecycle call (host.stop). Desktop-only channels are leased by ipc.ts's own wrapper.
  */
@@ -561,7 +569,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       ...(input.permissionMode ? { permissionMode: input.permissionMode } : {})
     }
     const chosen = Object.keys(choice)
-    if (chosen.length && ctx.surface !== 'desktop') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app only: ${chosen.join(', ')}.`)
+    // The desktop and the in-process CLI / TUI (surface 'inproc': the user's own process) may choose them; a socket client may not.
+    if (chosen.length && ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app and the terminal UI only: ${chosen.join(', ')}.`)
     return runs.start({
       project,
       prompt: input.prompt,
@@ -650,7 +659,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.runsSwitchModel, (_e, raw: unknown) => runs.switchModel(raw as import('@shared/types').SwitchRunModelInput))
   // Desktop only: the registry scope ('configure') only gates the params; this refusal comes first, before any parsing.
   handle(IPC.runsSetPermissionMode, (ctx, raw: unknown) => {
-    if (ctx.surface !== 'desktop') throw new HostRpcFailure('scope_denied', "Changing a run's permission mode is available in the desktop app only.")
+    if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', "Changing a run's permission mode is available in the desktop app and the terminal UI only.")
     return runs.setPermissionMode(setPermissionModeArgs(raw))
   })
   handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))

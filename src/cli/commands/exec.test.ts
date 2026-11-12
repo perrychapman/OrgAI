@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -576,6 +576,20 @@ describe('orgai resume', () => {
     expect(f.connectCalls).toEqual([])
   })
 
+  it('--latest / -l resumes the newest ended run (the default), is refused with a run id, and reaches the terminal UI', async () => {
+    const f = live()
+    resumeTui.calls.length = 0
+    expect(await runResume(f.ctx, ['--latest'])).toBe(0)
+    expect(await runResume(f.ctx, ['-l'])).toBe(0)
+    expect(resumeTui.calls).toEqual([['--latest'], ['-l']])
+    await expect(runResume(f.ctx, ['R1', '--latest'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--latest') })
+    const runs = [summary('run_live03', { startedAt: 300, status: 'running' }), summary('run_end002', { startedAt: 200, status: 'finished' })]
+    const h = execHost({ answers: { 'runs:list': () => runs, 'runs:continue': () => started(), 'runs:subscribe': () => snapshotOf(record(finalSummary('completed'))) } })
+    const g = live({ connect: [h] })
+    expect(await runResume(g.ctx, ['--latest', '--exec', '--prompt', 'more'])).toBe(0)
+    expect(h.callsOf('runs:continue')[0]).toMatchObject([{ runId: 'run_end002', text: 'more', exec: true }])
+  })
+
   it('continues R# with exec: true and follows the new run', async () => {
     const old = summary('run_old001', { startedAt: 50, status: 'finished', execOutcome: 'completed' })
     const h = execHost({ answers: { 'runs:list': () => [old], 'runs:continue': () => started({ resumedFrom: 'run_old001' }) } })
@@ -639,3 +653,145 @@ describe('lastRootText', () => {
     expect(lastRootText(null)).toBeNull()
   })
 })
+
+describe('orgai exec: scripting upgrades', () => {
+  const completed = () => ({ 'runs:subscribe': () => snapshotOf(record(finalSummary('completed'), { transcript: [text('e1', 'Working on it'), text('e2', 'All done.')] })) })
+
+  it('a prompt argument plus piped stdin: the stdin goes in <stdin> tags before the instruction', async () => {
+    stdin = 'diff --git a/x b/x\n+added\n'
+    const h = execHost({ answers: completed() })
+    const f = live({ connect: [h] })
+    expect(await runExec(f.ctx, ['review this'])).toBe(EXIT.ok)
+    expect(h.callsOf('runs:start')[0]).toMatchObject([{ prompt: '<stdin>\ndiff --git a/x b/x\n+added\n</stdin>\n\nreview this' }])
+  })
+
+  it('an argument with an empty stdin, or a terminal stdin, is the argument alone', async () => {
+    const h = execHost({ answers: completed() })
+    expect(await runExec(live({ connect: [h] }).ctx, ['just this'])).toBe(EXIT.ok)
+    expect(h.callsOf('runs:start')[0]).toMatchObject([{ prompt: 'just this' }])
+    stdin = 'ignored'
+    const t = execHost({ answers: completed() })
+    expect(await runExec(live({ connect: [t], stdinIsTTY: true }).ctx, ['just this'])).toBe(EXIT.ok)
+    expect(t.callsOf('runs:start')[0]).toMatchObject([{ prompt: 'just this' }])
+  })
+
+  it('the optional stdin read is bounded by an idle wait (never a forever read next to an argument)', async () => {
+    let seen: { idleMs?: number } | undefined
+    execIo.readStdin = async (_max, opts) => {
+      seen = opts
+      return ''
+    }
+    const h = execHost({ answers: completed() })
+    expect(await runExec(live({ connect: [h] }).ctx, ['hello'])).toBe(EXIT.ok)
+    expect(seen?.idleMs).toBeGreaterThan(0)
+  })
+
+  it('a stdin that stayed silent past the idle wait is left out with a warning, never dropped silently', async () => {
+    execIo.readStdin = async (_max, opts) => {
+      opts?.onIdle?.()
+      return ''
+    }
+    const h = execHost({ answers: completed() })
+    const l = live({ connect: [h] })
+    expect(await runExec(l.ctx, ['hello'])).toBe(EXIT.ok)
+    expect(h.callsOf('runs:start')[0]).toMatchObject([{ prompt: 'hello' }])
+    expect(l.err()).toContain('Nothing arrived on stdin')
+    expect(l.err()).toContain('< file')
+  })
+
+  it('--quiet prints only the final answer on stdout; errors still reach stderr; json is unchanged', async () => {
+    const h = execHost({ answers: completed() })
+    const f = live({ connect: [h] })
+    expect(await runExec(f.ctx, ['-q', 'go'])).toBe(EXIT.ok)
+    expect(f.out()).toBe('All done.\n')
+    expect(f.err()).toBe('')
+
+    const b = execHost({ answers: { 'runs:subscribe': () => snapshotOf(record(finalSummary('blocked'), { transcript: [text('e2', 'Stuck.')] })), 'runs:get': () => record(finalSummary('blocked'), { transcript: [text('e2', 'Stuck.')] }) } })
+    const g = live({ connect: [b] })
+    expect(await runExec(g.ctx, ['--quiet', 'go'])).toBe(EXIT_BLOCKED)
+    expect(g.out()).toBe('Stuck.\n')
+    expect(g.err()).toContain('Blocked')
+
+    const j = execHost({ answers: completed() })
+    const k = live({ connect: [j], globals: { outputFormat: 'json' } })
+    expect(await runExec(k.ctx, ['--quiet', 'go'])).toBe(EXIT.ok)
+    expect(JSON.parse(k.out())).toMatchObject({ outcome: 'completed', result: 'All done.' })
+  })
+
+  it('--output-last-message writes the final answer to a file (relative to the cwd)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-exec-last-'))
+    try {
+      const h = execHost({ answers: completed() })
+      const f = fakeContext({ cwd: dir, store: { hostState: 'ready', projects: [p1] }, connect: [h], resolveProject: () => ({ via: 'flag', project: p1 }) })
+      expect(await runExec(f.ctx, ['--output-last-message', 'last.txt', 'go'])).toBe(EXIT.ok)
+      expect(readFileSync(join(dir, 'last.txt'), 'utf8')).toBe('All done.')
+      // Without --quiet the normal progress output is still printed.
+      expect(f.out()).toContain('Completed')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  describe('--model, --effort and --continue', () => {
+    const answers = (extra: Record<string, (p: unknown) => unknown> = {}) => ({
+      ...completed(),
+      'connections:list': () => [{ connection: { id: 'anthropic', tierModels: { fast: 'haiku', everyday: 'sonnet', deep: 'opus' } } }],
+      'models:list': () => [
+        { id: 'sonnet', connection: 'anthropic' },
+        { id: 'claude-x', connection: 'anthropic' },
+        { id: 'gpt-x', connection: 'openai' }
+      ],
+      ...extra
+    })
+
+    it('a tier name resolves to the project connection\'s model; --effort rides along', async () => {
+      const h = execHost({ answers: answers() })
+      expect(await runExec(live({ connect: [h] }).ctx, ['--model', 'deep', '--effort', 'high', 'go'])).toBe(EXIT.ok)
+      expect(h.callsOf('runs:start')[0]).toMatchObject([{ projectId: 'p1', modelSelection: { model: 'opus', connection: 'anthropic' }, effort: 'high' }])
+    })
+
+    it('a model id must be listed on the project connection; -m is the short flag', async () => {
+      const h = execHost({ answers: answers() })
+      expect(await runExec(live({ connect: [h] }).ctx, ['-m', 'claude-x', 'go'])).toBe(EXIT.ok)
+      expect(h.callsOf('runs:start')[0]).toMatchObject([{ modelSelection: { model: 'claude-x', connection: 'anthropic' } }])
+      const bad = execHost({ answers: answers() })
+      await expect(runExec(live({ connect: [bad] }).ctx, ['-m', 'gpt-x', 'go'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('not a model of the connection') })
+      expect(bad.callsOf('runs:start')).toHaveLength(0)
+      const unmapped = execHost({ answers: answers() })
+      await expect(runExec(live({ connect: [unmapped] }).ctx, ['-m', 'top', 'go'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('top tier') })
+    })
+
+    it('without the flags runs:start carries neither field; a bad effort and a quick run are usage errors', async () => {
+      const h = execHost({ answers: answers() })
+      expect(await runExec(live({ connect: [h] }).ctx, ['go'])).toBe(EXIT.ok)
+      expect((h.callsOf('runs:start')[0] as unknown[])[0]).not.toHaveProperty('modelSelection')
+      expect((h.callsOf('runs:start')[0] as unknown[])[0]).not.toHaveProperty('effort')
+      for (const argv of [['--effort', 'extreme', 'go'], ['--quick', '--model', 'deep', 'go'], ['--quick', '--effort', 'low', 'go']]) {
+        await expect(runExec(live().ctx, argv), argv.join(' ')).rejects.toMatchObject({ exitCode: EXIT.usage })
+      }
+    })
+
+    it('--continue (-c) continues the newest ended run of the project headless; it refuses to combine with new-run choices', async () => {
+      const open = summary('run_open', { status: 'running', startedAt: 300 })
+      const ended = summary('run_prev', { status: 'finished', startedAt: 200 })
+      const h = execHost({ answers: answers({ 'runs:list': () => [open, ended], 'runs:continue': () => started() }) })
+      expect(await runExec(live({ connect: [h] }).ctx, ['-c', 'and more'])).toBe(EXIT.ok)
+      expect(h.callsOf('runs:continue')[0]).toMatchObject([{ runId: 'run_prev', text: 'and more', exec: true, overrides: { execMode: true } }])
+      expect(h.callsOf('runs:start')).toHaveLength(0)
+
+      const none = execHost({ answers: answers({ 'runs:list': () => [open] }) })
+      await expect(runExec(live({ connect: [none] }).ctx, ['--continue', 'x'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('no ended run') })
+      for (const argv of [['-c', '--model', 'deep', 'x'], ['-c', '--quick', 'x'], ['-c', '--create-project', 'x'], ['-c', '--team', 'single', 'x']]) {
+        await expect(runExec(live().ctx, argv), argv.join(' ')).rejects.toMatchObject({ exitCode: EXIT.usage })
+      }
+    })
+  })
+
+  it('the exec host boots without model discovery and the usage monitor (EXEC_INPROC)', async () => {
+    const h = execHost({ answers: completed() })
+    const f = live({ connect: [h] })
+    await runExec(f.ctx, ['go'])
+    expect(f.inprocCalls[0]).toMatchObject({ background: { modelDiscovery: false, usageMonitor: false, communityPrices: true } })
+  })
+})
+const EXIT_BLOCKED = EXEC_OUTCOME_EXIT_CODE.blocked

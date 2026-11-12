@@ -105,11 +105,14 @@ export interface CreateOptions {
   client?: string
   template?: string
   importAgents?: boolean
+  /** --adopt-team-files: start from the folder's `.orgai/` team as read, after printing everything it would adopt. */
+  adoptTeamFiles?: boolean
 }
 
 /** Flag combinations refused before any host starts (exit 2). */
 export function checkCreateOptions(o: CreateOptions): void {
   if (o.importAgents && o.template !== undefined) throw usage('Use --import-agents or --template, not both.')
+  if (o.adoptTeamFiles && (o.template !== undefined || o.importAgents || o.kind === 'engagement')) throw usage('--adopt-team-files starts a code project from the folder\'s own team; leave out --template, --import-agents and --kind engagement.')
   if (o.client !== undefined && o.kind !== 'engagement') throw usage('--client applies to engagements: add --kind engagement.')
   if (o.name !== undefined && !o.name.trim()) throw usage('--name needs a project name.')
   if (o.template !== undefined && !o.template.trim()) throw usage('--template needs a template id (orgai team templates list).')
@@ -122,20 +125,35 @@ export const CREATE_FLAGS = {
   brief: { type: 'string' },
   client: { type: 'string' },
   template: { type: 'string' },
-  'import-agents': { type: 'boolean' }
+  'import-agents': { type: 'boolean' },
+  'adopt-team-files': { type: 'boolean' }
 } as const
 
-export function createOptionsOf(v: { name?: string; kind?: string; brief?: string; client?: string; template?: string; 'import-agents'?: boolean }): CreateOptions {
+export function createOptionsOf(v: { name?: string; kind?: string; brief?: string; client?: string; template?: string; 'import-agents'?: boolean; 'adopt-team-files'?: boolean }): CreateOptions {
   const o: CreateOptions = {
     ...(v.name !== undefined ? { name: v.name } : {}),
     ...(v.kind !== undefined ? { kind: parseKind(v.kind) } : {}),
     ...(v.brief !== undefined ? { brief: v.brief } : {}),
     ...(v.client !== undefined ? { client: v.client } : {}),
     ...(v.template !== undefined ? { template: v.template } : {}),
-    ...(v['import-agents'] ? { importAgents: true } : {})
+    ...(v['import-agents'] ? { importAgents: true } : {}),
+    ...(v['adopt-team-files'] ? { adoptTeamFiles: true } : {})
   }
   checkCreateOptions(o)
   return o
+}
+
+/** Everything `--adopt-team-files` would adopt, as stderr lines: servers with their launch target, settings, roles, skills. */
+export function adoptionDetails(folder: string, found: NonNullable<ProjectPathCheck['teamFiles']>): string[] {
+  const lines = [`Adopting the team files in ${safeLine(folder)}/.orgai (untrusted text from the folder):`]
+  lines.push(`  Roles: ${found.roleCount}${found.roles.length ? ` (${found.roles.map((r) => safeLine(r.name)).join(', ')})` : ''}`)
+  for (const r of found.roles) if (r.elevated.length) lines.push(`    ${safeLine(r.name)} has elevated tools: ${r.elevated.map(safeLine).join(', ')}`)
+  lines.push(`  Skills: ${found.skills.length}${found.skills.length ? ` (${found.skills.map((k) => safeLine(k.name) + (k.scripts.length ? ` with scripts ${k.scripts.map(safeLine).join(', ')}` : '')).join('; ')})` : ''}`)
+  lines.push(`  MCP servers: ${found.mcpServers.length}`)
+  for (const m of found.mcpServers) lines.push(`    ${safeLine(m.name)}: ${safeLine(m.target)}${m.secretNames.length ? ` (secrets: ${m.secretNames.map(safeLine).join(', ')})` : ''}`)
+  for (const x of found.settings ?? []) lines.push(`  ${safeLine(x.label)}: ${safeLine(x.value)}`)
+  for (const w of found.warnings) lines.push(`  Warning: ${safeLine(`${w.file}: ${w.message}`)}`)
+  return lines
 }
 
 /** projects:checkPath for an absolute folder. */
@@ -166,6 +184,22 @@ export async function createProjectIn(ctx: CliContext, client: HostClient, folde
     }
   }
   const name = (o.name ?? '').trim() || check.suggestedName || basename(folder) || 'Project'
+  // A folder's own `.orgai/` team is untrusted (a cloned repo): by default no digest is sent, so the host applies only the
+  // low-power changes and holds the rest for review (the app or the terminal UI). Only --adopt-team-files sends it, after
+  // everything it would adopt is printed. Never implicit, and never from exec.
+  const found = check.teamFiles
+  let teamDigest: string | undefined
+  if (found && (o.kind ?? 'code') !== 'engagement') {
+    if (o.adoptTeamFiles) {
+      if (!found.digest) throw usage("This folder's team files cannot be adopted as they are (they have problems or too many changes); review them in the OrgAI app.")
+      ctx.io.stderr.write(`${adoptionDetails(folder, found).join('\n')}\n`)
+      teamDigest = found.digest
+    } else {
+      ctx.io.stderr.write(`${safeLine(folder)}/.orgai holds team files. They are pending review, not adopted. Adopt them with --adopt-team-files (it prints what they contain first), or review them in the OrgAI app or the terminal UI.\n`)
+    }
+  } else if (o.adoptTeamFiles) {
+    throw usage('--adopt-team-files needs a folder that holds team files (.orgai/).')
+  }
   const input: ProjectCreateInput = {
     name,
     path: folder,
@@ -173,7 +207,8 @@ export async function createProjectIn(ctx: CliContext, client: HostClient, folde
     kind: o.kind ?? 'code',
     ...(ctx.env.ORGAI_MOCK === '1' ? { mock: true } : {}),
     ...(importAgents ? { importAgents } : {}),
-    ...(o.template !== undefined ? { templateId: o.template } : {})
+    ...(o.template !== undefined ? { templateId: o.template } : {}),
+    ...(teamDigest ? { teamFiles: { digest: teamDigest } } : {})
   }
   let project = await hostCall<Project>(client, 'projects:create', [input])
   if (o.client !== undefined && o.client.trim()) {
@@ -340,7 +375,7 @@ const runCheck: CommandFn = async (ctx, args) => {
 
 const runCreate: CommandFn = async (ctx, args) => {
   const { values, positionals } = parseFlags(args, CREATE_FLAGS)
-  if (positionals.length > 1) throw usage('Use: orgai projects create [<folder>] [--name <name>] [--kind code|engagement] [--brief <text>] [--client <name>] [--template <id> | --import-agents]')
+  if (positionals.length > 1) throw usage('Use: orgai projects create [<folder>] [--name <name>] [--kind code|engagement] [--brief <text>] [--client <name>] [--template <id> | --import-agents | --adopt-team-files]')
   const opts = createOptionsOf(values)
   const folder = folderArg(ctx, positionals[0])
   return withHost(ctx, [...CONFIGURE], async (client) => {

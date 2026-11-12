@@ -100,6 +100,24 @@ export function moveDown(b: TextBuffer): TextBuffer | null {
   return { text: b.text, cursor: offsetAt(b.text, line + 1, col) }
 }
 
+/** Alt+B: to the start of the previous word (whitespace-delimited; crosses line breaks). */
+export function wordLeft(b: TextBuffer): TextBuffer {
+  const c = clampCursor(b)
+  let i = c
+  while (i > 0 && /\s/.test(b.text[i - 1])) i--
+  while (i > 0 && !/\s/.test(b.text[i - 1])) i--
+  return { text: b.text, cursor: i }
+}
+
+/** Alt+F: to the end of the next word (whitespace-delimited; crosses line breaks). */
+export function wordRight(b: TextBuffer): TextBuffer {
+  const c = clampCursor(b)
+  let i = c
+  while (i < b.text.length && /\s/.test(b.text[i])) i++
+  while (i < b.text.length && !/\s/.test(b.text[i])) i++
+  return { text: b.text, cursor: i }
+}
+
 /** Ctrl+U: delete from the line start to the cursor. */
 export function killToLineStart(b: TextBuffer): TextBuffer {
   const c = clampCursor(b)

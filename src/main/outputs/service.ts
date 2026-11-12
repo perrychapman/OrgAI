@@ -39,8 +39,7 @@ import { hiddenCharProblem } from '../capabilities/sanitize'
 import { log } from '../log'
 import { isInsideEither } from '../quick/scratch'
 import type { OutputScope, OutputSource, OutputWriteResult, OutputReadResult, OutputsServiceApi, OutputsServiceEvents, OutputsServiceOptions } from './api'
-import { compareFiles, textForAgent, thumbForFile } from './formats'
-import type { DeckImageReader } from './formats'
+import type { DeckImageReader, textForAgent } from './formats'
 import {
   NOT_OPENABLE_MESSAGE,
   checkDeletableFile,
@@ -68,9 +67,7 @@ import {
   writeNotes,
   writeRevisions
 } from './notes'
-import { previewFile } from './preview'
 import { type OutputVersionMeta, type StoredOutput, applyVersionFields, createOutputStore, newOutputId } from './store'
-import { mermaidProblem, renderProduced, svgProblem } from './writers'
 import {
   VersionStorageFullError,
   assertVersionRoom,
@@ -96,6 +93,15 @@ import {
  */
 
 /** Previews run on the main thread and one can hold hundreds of MB, so one runs at a time per process; later calls wait. */
+// The writers (docx, exceljs, jszip), the previews (mammoth, exceljs) and the format layer pull in about 3 MB of document
+// libraries; they load once, on first use, so a host that never produces or previews an output never parses them.
+let writersLoad: Promise<typeof import('./writers')> | undefined
+let previewLoad: Promise<typeof import('./preview')> | undefined
+let formatsLoad: Promise<typeof import('./formats')> | undefined
+const writersModule = (): Promise<typeof import('./writers')> => (writersLoad ??= import('./writers'))
+const previewModule = (): Promise<typeof import('./preview')> => (previewLoad ??= import('./preview'))
+const formatsModule = (): Promise<typeof import('./formats')> => (formatsLoad ??= import('./formats'))
+
 const PREVIEW_QUEUE_MAX = 8
 const PREVIEW_BUSY = 'Too many previews are loading. Try again in a moment.'
 let previewTail: Promise<unknown> = Promise.resolve()
@@ -437,7 +443,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
           return readRegularCapped(c.path, OUTPUT_PPTX_IMAGE_MAX_BYTES, c)
         }
       }
-      const bytes = await renderProduced(input, images)
+      const bytes = await (await writersModule()).renderProduced(input, images)
       const separate = input.separate === true
       const realOf = (abs: string): string | undefined => {
         try {
@@ -603,7 +609,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
     } catch (err) {
       return { kind: 'none', reason: (err as Error).message }
     }
-    return queuedHeavy(() => previewFile(path, e.kind), { kind: 'none', reason: PREVIEW_BUSY })
+    return queuedHeavy(async () => (await previewModule()).previewFile(path, e.kind), { kind: 'none', reason: PREVIEW_BUSY })
   }
 
   async function thumb(scope: OutputScope, outputId: string, version: number): Promise<OutputThumb> {
@@ -611,7 +617,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       checkScope(scope)
       const e = entryOf(scope.projectId, outputId)
       const path = versionFile(scope, e, version)
-      return await queuedThumb(() => thumbForFile(path, e.kind), { kind: 'none' })
+      return await queuedThumb(async () => (await formatsModule()).thumbForFile(path, e.kind), { kind: 'none' })
     } catch {
       return { kind: 'none' }
     }
@@ -623,7 +629,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       const e = entryOf(scope.projectId, input.outputId)
       const a = versionFile(scope, e, input.a)
       const b = versionFile(scope, e, input.b)
-      return await queuedHeavy(() => compareFiles(a, b, e.kind), { kind: 'none', reason: PREVIEW_BUSY } as OutputDiff)
+      return await queuedHeavy(async () => (await formatsModule()).compareFiles(a, b, e.kind), { kind: 'none', reason: PREVIEW_BUSY } as OutputDiff)
     } catch (err) {
       return { kind: 'none', reason: (err as Error).message }
     }
@@ -654,8 +660,8 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
     }
   }
 
-  function checkEditText(kind: OutputKind, text: string): string | null {
-    if (kind === 'svg') return svgProblem(text) ? 'This drawing contains active content.' : null
+  async function checkEditText(kind: OutputKind, text: string): Promise<string | null> {
+    if (kind === 'svg') return (await writersModule()).svgProblem(text) ? 'This drawing contains active content.' : null
     if (kind === 'json') {
       try {
         JSON.parse(text)
@@ -664,7 +670,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       }
       return null
     }
-    if (kind === 'mermaid') return mermaidProblem(text)
+    if (kind === 'mermaid') return (await writersModule()).mermaidProblem(text)
     if (text.includes('\u0000')) return 'The text contains a NUL character.'
     return null
   }
@@ -677,7 +683,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       if (typeof input.text !== 'string') return { refused: 'The text is not valid.' }
       const bytes = Buffer.from(input.text, 'utf8')
       if (bytes.length > OUTPUT_EDIT_MAX_BYTES) return { refused: 'That text is too large to save here.' }
-      const problem = checkEditText(e0.kind, input.text)
+      const problem = await checkEditText(e0.kind, input.text)
       if (problem) return { refused: problem }
       let file: string
       try {
@@ -929,7 +935,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       const version = input.version ?? current
       if (!versionExists(e, version)) throw new Error(NO_VERSION)
       const path = versionFile(scope, e, version)
-      const r = await queuedHeavy(() => textForAgent(path, e.kind), { refused: PREVIEW_BUSY } as Awaited<ReturnType<typeof textForAgent>>)
+      const r = await queuedHeavy(async () => (await formatsModule()).textForAgent(path, e.kind), { refused: PREVIEW_BUSY } as Awaited<ReturnType<typeof textForAgent>>)
       if ('refused' in r) throw new Error(r.refused)
       return { action: 'read', id: e.id, title: e.title, kind: e.kind, version, text: r.text, truncated: r.truncated }
     }

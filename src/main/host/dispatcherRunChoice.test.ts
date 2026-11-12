@@ -101,14 +101,21 @@ describe('runs:start per-run root choices', () => {
     expect(runs.start).not.toHaveBeenCalled()
   })
 
-  it.each(['socket', 'inproc'] as const)('a %s client with any of the fields is refused, naming them', async (surface) => {
+  it('a socket client with any of the fields is refused, naming them', async () => {
     const { d, runs } = setup()
-    const err = await failure(d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', ...CHOICE }], rpc(ALL, surface)))
+    const err = await failure(d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', ...CHOICE }], rpc(ALL, 'socket')))
     expect(err.code).toBe('bad_request')
-    expect(err.message).toBe('These run options are available in the desktop app only: modelSelection, effort, permissionMode.')
-    const one = await failure(d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', permissionMode: 'plan' }], rpc(ALL, surface)))
-    expect(one.message).toBe('These run options are available in the desktop app only: permissionMode.')
+    expect(err.message).toBe('These run options are available in the desktop app and the terminal UI only: modelSelection, effort, permissionMode.')
+    const one = await failure(d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', permissionMode: 'plan' }], rpc(ALL, 'socket')))
+    expect(one.message).toBe('These run options are available in the desktop app and the terminal UI only: permissionMode.')
     expect(runs.start).not.toHaveBeenCalled()
+  })
+
+  it('the in-process client (terminal UI, exec) may choose them: they reach RunManager as userChoice', async () => {
+    const { d, runs } = setup()
+    await d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', ...CHOICE }], rpc(ALL, 'inproc'))
+    expect(runs.start.mock.calls[0][0]).toMatchObject({ userChoice: CHOICE })
+    await expect(d.invokeRpc(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', effort: 'extreme' }], rpc(ALL, 'inproc'))).rejects.toMatchObject({ code: 'bad_request' })
   })
 
   it('a socket client without the fields is unchanged (no userChoice, overrides rules as before)', async () => {
@@ -162,19 +169,27 @@ describe('runs:setPermissionMode', () => {
     expect(runs.setPermissionMode).not.toHaveBeenCalled()
   })
 
-  it.each(['socket', 'inproc'] as const)("a %s client holding every scope is refused with the handler's scope_denied", async (surface) => {
+  it("a socket client holding every scope is refused with the handler's scope_denied", async () => {
     const { d, runs } = setup()
-    const err = await failure(d.invokeRpc(IPC.runsSetPermissionMode, [{ runId: 'run_1', mode: 'plan' }], rpc(ALL, surface)))
+    const err = await failure(d.invokeRpc(IPC.runsSetPermissionMode, [{ runId: 'run_1', mode: 'plan' }], rpc(ALL, 'socket')))
     expect(err.code).toBe('scope_denied')
-    expect(err.message).toBe("Changing a run's permission mode is available in the desktop app only.")
+    expect(err.message).toBe("Changing a run's permission mode is available in the desktop app and the terminal UI only.")
     expect(runs.setPermissionMode).not.toHaveBeenCalled()
   })
 
-  it('the handler refuses before parsing: a malformed input from a client is still scope_denied', async () => {
+  it('the in-process client holding configure changes the mode; without configure the gate refuses it', async () => {
+    const { d, runs } = setup()
+    await d.invokeRpc(IPC.runsSetPermissionMode, [{ runId: 'run_1', mode: 'plan', extra: 1 }], rpc(ALL, 'inproc'))
+    expect(runs.setPermissionMode).toHaveBeenCalledWith({ runId: 'run_1', mode: 'plan' })
+    const err = await failure(d.invokeRpc(IPC.runsSetPermissionMode, [{ runId: 'run_1', mode: 'plan' }], rpc(['read', 'operate'], 'inproc')))
+    expect(err.code).toBe('scope_denied')
+  })
+
+  it('the handler refuses before parsing: a malformed input from a socket client is still scope_denied', async () => {
     const { d } = setup()
     const err = await failure(d.invokeRpc(IPC.runsSetPermissionMode, [{ runId: 5, mode: 'yolo' }], rpc(ALL)))
     expect(err.code).toBe('scope_denied')
-    expect(err.message).toBe("Changing a run's permission mode is available in the desktop app only.")
+    expect(err.message).toBe("Changing a run's permission mode is available in the desktop app and the terminal UI only.")
   })
 
   it("a client without the 'configure' scope is refused at the gate", async () => {

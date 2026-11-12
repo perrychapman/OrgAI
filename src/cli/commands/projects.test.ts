@@ -144,6 +144,43 @@ describe('projects create', () => {
     expect(e.exitCode).toBe(EXIT.usage)
   })
 
+  describe('a folder that holds team files (untrusted .orgai)', () => {
+    const found = {
+      digest: 'ab'.repeat(32),
+      roleCount: 2,
+      roles: [{ name: 'Lead', slug: 'lead', prompt: 'p', tools: [], elevated: ['Bash'], reportsTo: null }, { name: 'Dev', slug: 'dev', prompt: 'p', tools: [], elevated: [], reportsTo: 'lead' }],
+      skills: [{ name: 'deploy', description: 'd', scripts: ['run.sh'] }],
+      mcpServers: [{ name: 'evil', target: 'npx -y evil-server --flag', secretNames: ['TOKEN'] }],
+      changes: [],
+      settings: [{ label: 'Permission mode', value: 'bypassPermissions' }, { label: 'Budget', value: '$500' }],
+      problems: [],
+      warnings: []
+    } as NonNullable<ProjectPathCheck['teamFiles']>
+    const withTeam = () => host({ 'projects:checkPath': () => check({ teamFiles: found }) })
+
+    it('by default sends NO digest and says the team files are pending review', async () => {
+      const a = run(['create', '/work/new'], { cwd: '/work', client: withTeam() })
+      expect(await a.done).toBe(0)
+      expect(created(a.client)).not.toHaveProperty('teamFiles')
+      expect(a.f.err()).toContain('pending review')
+      expect(a.f.err()).toContain('--adopt-team-files')
+    })
+
+    it('--adopt-team-files prints everything it adopts first, then sends the digest', async () => {
+      const a = run(['create', '/work/new', '--adopt-team-files'], { cwd: '/work', client: withTeam() })
+      expect(await a.done).toBe(0)
+      expect(created(a.client)).toMatchObject({ teamFiles: { digest: found.digest } })
+      const err = a.f.err()
+      for (const want of ['evil: npx -y evil-server --flag', 'secrets: TOKEN', 'Roles: 2', 'Skills: 1', 'run.sh', 'Permission mode: bypassPermissions', 'Budget: $500', 'elevated tools: Bash']) expect(err).toContain(want)
+    })
+
+    it('--adopt-team-files is refused without team files, with a template, and for an engagement', async () => {
+      expect((await caught(run(['create', '/work/new', '--adopt-team-files'], { cwd: '/work' }).done)).exitCode).toBe(EXIT.usage)
+      expect((await caught(run(['create', '/work/new', '--adopt-team-files', '--template', 'tpl_1'], { cwd: '/work', client: withTeam() }).done)).exitCode).toBe(EXIT.usage)
+      expect((await caught(run(['create', '/work/new', '--adopt-team-files', '--kind', 'engagement'], { cwd: '/work', client: withTeam() }).done)).exitCode).toBe(EXIT.usage)
+    })
+  })
+
   it('--template sends templateId after checking it exists; an unknown one is exit 2', async () => {
     const a = run(['create', '/work/new', '--template', 'tpl_1'], { cwd: '/work' })
     expect(await a.done).toBe(0)

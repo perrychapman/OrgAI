@@ -4,7 +4,7 @@
  * its existing tests. Relative imports only (noElectronImport.test.ts).
  */
 import { existsSync } from 'node:fs'
-import { APP_REFERENCE_ACTIONS, type AppReferenceQuery } from '../../shared/types'
+import { APP_REFERENCE_ACTIONS, isStaffingGoal, type AppReferenceQuery } from '../../shared/types'
 import type {
   FolderConfigTrustInput,
   ProjectCreateInput,

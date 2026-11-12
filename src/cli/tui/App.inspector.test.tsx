@@ -656,8 +656,11 @@ describe('/usage, /retro and /focus', () => {
     expect(ended.session.startRetro).toHaveBeenCalledWith('run1')
   })
 
-  it('there is no /save-project', () => {
-    expect(SLASH_COMMANDS.some((c) => c.name.includes('save'))).toBe(false)
+  it('/save-project exists but is offered only for a followed chat (quick run)', () => {
+    const c = SLASH_COMMANDS.find((x) => x.name === 'save-project')
+    expect(c).toBeDefined()
+    expect(c?.available?.({ activeRunId: 'r', runs: { r: { summary: { quick: {} } } } } as never)).toBe(true)
+    expect(c?.available?.({ activeRunId: 'r', runs: { r: { summary: {} } } } as never)).toBe(false)
   })
 
   it('m maximises the transcript and brings the panes back', async () => {

@@ -308,16 +308,17 @@ export interface RowCache {
   expanded?: boolean
   width: number
   env: TuiEnv
-  rows: Map<string, { row: TranscriptRow; lines: DisplayLine[] }>
+  rows: Map<string, { row: TranscriptRow; collapsedLines?: DisplayLine[]; expandedLines?: DisplayLine[] }>
 }
 
 const sameRow = (a: TranscriptRow, b: TranscriptRow): boolean =>
   a.kind === b.kind && a.text === b.text && a.tone === b.tone && a.agentLabel === b.agentLabel && a.identityTone === b.identityTone
 
 export function build(rows: readonly TranscriptRow[], omitted: number, width: number, env: TuiEnv, cache?: RowCache, compact = false, expanded = false): Built {
-  if (cache && (cache.width !== width || cache.env !== env || cache.compact !== compact || cache.expanded !== expanded)) {
+  // Toggling `expanded` keeps the cache: each entry has a collapsed and an expanded slot, so Ctrl+O re-wraps nothing
+  // that was already wrapped for the other state.
+  if (cache && (cache.width !== width || cache.env !== env || cache.compact !== compact)) {
     cache.compact = compact
-    cache.expanded = expanded
     cache.width = width
     cache.env = env
     cache.rows.clear()
@@ -346,17 +347,23 @@ export function build(rows: readonly TranscriptRow[], omitted: number, width: nu
       speaker = who
     }
     const display = compact ? { ...row, agentLabel: undefined } : row
-    let wrapped = cache?.rows.get(row.key)
-    if (!wrapped || !sameRow(wrapped.row, display)) {
-      wrapped = { row: display, lines: rowLines(display, width, env) }
+    let entry = cache?.rows.get(row.key)
+    if (!entry || !sameRow(entry.row, display)) {
+      entry = { row: display }
+      cache?.rows.set(row.key, entry)
+    }
+    let wrappedLines = expanded ? entry.expandedLines : entry.collapsedLines
+    if (!wrappedLines) {
+      wrappedLines = rowLines(display, width, env)
       if (compact && !expanded && (row.kind === 'tool' || row.kind === 'result')) {
         const segments = cutSegs([...((rowStyle(display, env).prefixSegs) ?? []), { text: row.text.replace(/\s+/g, ' '), tone: 'muted' }], width, env)
-        wrapped.lines = [{ text: segText(segments), style: rowStyle(display, env), segs: segments }]
+        wrappedLines = [{ text: segText(segments), style: rowStyle(display, env), segs: segments }]
       }
-      cache?.rows.set(row.key, wrapped)
+      if (expanded) entry.expandedLines = wrappedLines
+      else entry.collapsedLines = wrappedLines
     }
     seen.add(row.key)
-    wrapped.lines.forEach((l, i) => {
+    wrappedLines.forEach((l, i) => {
       lines.push({ key: `${row.key}:${i}`, segs: l.segs ?? [{ text: l.text, tone: l.style.tone, dim: l.style.dim, bold: l.style.bold }] })
       rowOfLine.push(row.key)
     })
@@ -397,7 +404,7 @@ export function groupToolRows(rows: TranscriptRow[], expanded = false): Transcri
 }
 
 export function TranscriptPane(props: TranscriptPaneProps & { mode: BufferMode }) {
-  if (props.mode === 'inline') return <InlineTranscript rows={props.rows} width={props.width} />
+  if (props.mode === 'inline') return <InlineTranscript rows={props.rows} width={props.width} scope={props.scope} detailsExpanded={props.detailsExpanded} />
   return <FullTranscript {...props} />
 }
 
@@ -511,11 +518,25 @@ function FullTranscript(props: TranscriptPaneProps) {
   return <PaneLines width={width} height={height} lines={view} env={env} align={anchor ? 'top' : 'bottom'} />
 }
 
-function InlineTranscript(props: { rows: TranscriptRow[]; width: number }) {
+/** Printed rows kept for the Static list; older ones (already written to the terminal) are retired to a stub. */
+export const INLINE_RETAINED_MAX = 500
+const RETIRED: TranscriptRow = { key: '', runId: '', kind: 'system', text: '' }
+
+function InlineTranscript(props: { rows: TranscriptRow[]; width: number; scope?: string; detailsExpanded?: boolean }) {
   const env = useTuiEnv()
-  const written = useRef<{ keys: Set<string>; items: TranscriptRow[] }>({ keys: new Set(), items: [] })
+  const written = useRef<{ scope: string | undefined; generation: number; keys: Set<string>; items: TranscriptRow[] }>({ scope: props.scope, generation: 0, keys: new Set(), items: [] })
   const w = written.current
-  for (const row of props.rows) {
+  // A different chain: what was written belongs to the old one. A new Static (keyed by generation) prints the new
+  // chain's rows from its own start, because one Static only ever appends.
+  if (w.scope !== props.scope) {
+    w.scope = props.scope
+    w.generation++
+    w.keys = new Set()
+    w.items = []
+  }
+  const rows = useMemo(() => compactToolRows(props.rows, props.detailsExpanded === true), [props.rows, props.detailsExpanded])
+  const printed = w.items.length
+  for (const row of rows) {
     if (w.keys.has(row.key)) continue
     if (w.items.length && row.kind === 'user' && w.items.at(-1)?.kind !== 'divider') {
       w.items.push({ key: `${row.key}:gap`, runId: row.runId, kind: 'system', text: '' })
@@ -523,11 +544,14 @@ function InlineTranscript(props: { rows: TranscriptRow[]; width: number }) {
     w.keys.add(row.key)
     w.items.push(row)
   }
+  // Bounded history: rows already written are never read again, so only a stub stays for all but the newest few.
+  for (let i = 0; i < Math.min(printed, w.items.length - INLINE_RETAINED_MAX); i++) w.items[i] = RETIRED
+  if (w.keys.size > rows.length + INLINE_RETAINED_MAX * 4) w.keys = new Set(rows.map((r) => r.key))
   // Static writes items from the last index it saw, so it must get a list that only ever grows.
   const items = w.items.slice()
   const width = Math.max(0, Math.floor(props.width))
   return (
-    <Static items={items}>
+    <Static key={w.generation} items={items}>
       {(row) => (
         <Box key={row.key} flexDirection="column">
           {(width > 0 ? rowLines(row, width, env) : [{ text: `${rowStyle(row, env).prefix}${row.text}`, style: rowStyle(row, env) }]).map(
@@ -542,4 +566,3 @@ function InlineTranscript(props: { rows: TranscriptRow[]; width: number }) {
     </Static>
   )
 }
-

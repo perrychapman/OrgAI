@@ -366,7 +366,8 @@ const orgRetro: SubcommandFn = async (ctx, args) => {
     const project = projects.find((p) => p.id === s.projectId)
     if (!project) throw new CliError('The run’s project was not found.', EXIT.usage)
     return { projectId: s.projectId, runId: s.id, project }
-  })
+    // The retrospective's terminal session follows on this same host (one boot, not two).
+  }, { keepHost: true })
 
   return runInteractiveRun(
     ctx,

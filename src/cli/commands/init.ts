@@ -18,7 +18,7 @@ import { runInteractiveRun, type InteractiveRunSpec } from './interactive'
 import { CREATE_FLAGS, checkFolder, createOptionsOf, createProjectIn, folderArg, projectFacts, projectLines } from './projects'
 import { hasTty, managedOf, worktreeRefusal } from './tui'
 
-export const INIT_NO_TTY_MESSAGE = 'orgai init needs a terminal for the Architect interview; pass --skip-architect to create the project with the default team.'
+export const INIT_NO_TTY_MESSAGE = 'orgai init needs a terminal for the Architect interview; pass --skip-architect to create the project with the default team (team files in the folder wait for review unless you pass --adopt-team-files).'
 export const ARCHITECT_LABEL = 'Architect setup'
 
 /** Swappable in tests: the interactive run (commands/interactive.ts). */
@@ -53,7 +53,8 @@ export const runInit: CommandFn = async (ctx, args) => {
       return { project, existing: true }
     }
     return { project: await createProjectIn(ctx, client, folder, check, opts), existing: false }
-  })
+    // Without --skip-architect the Architect follows on this same host (one boot, not two).
+  }, { keepHost: !skip })
   const { project, existing } = outcome
 
   if (skip) {

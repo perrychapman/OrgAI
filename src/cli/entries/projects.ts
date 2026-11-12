@@ -13,6 +13,7 @@ export const ENTRY: CommandEntry = {
     { name: 'client', takesValue: true, summary: 'create / set (engagements): who the work is for; set --client "" clears it' },
     { name: 'template', takesValue: true, summary: 'create: start from this team template id' },
     { name: 'import-agents', takesValue: false, summary: 'create: start with the agent definitions found in the folder' },
+    { name: 'adopt-team-files', takesValue: false, summary: "create: start from the folder's own .orgai team files (prints everything they contain first; otherwise they wait for review)" },
     { name: 'max-budget', takesValue: true, summary: 'set: estimated cost cap per run in USD, or none' },
     { name: 'max-depth', takesValue: true, summary: 'set: levels of reports that may spawn reports (1-5), or auto' },
     { name: 'max-concurrent', takesValue: true, summary: 'set: reports running at once (1-32), or auto' },
