@@ -88,6 +88,10 @@ test('checkBundle refuses a missing file and a bundle of another version', () =>
     const cli = path.join(root, 'out', 'cli')
     assert.doesNotThrow(() => checkBundle(cli, '9.9.9'))
     assert.throws(() => checkBundle(cli, '9.9.10'), /does not carry version 9\.9\.10/)
+    // The minified bundle writes the version as a template literal.
+    fs.writeFileSync(path.join(cli, 'orgai.mjs'), 'var C=`9.9.11`;export{C};')
+    assert.doesNotThrow(() => checkBundle(cli, '9.9.11'))
+    assert.throws(() => checkBundle(cli, '9.9.1'), /does not carry version 9\.9\.1/)
     fs.rmSync(path.join(cli, 'tui.mjs'))
     assert.throws(() => checkBundle(cli, '9.9.9'), /missing tui\.mjs/)
   } finally {
