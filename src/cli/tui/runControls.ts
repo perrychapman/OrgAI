@@ -65,7 +65,8 @@ export function modelSwitchBlock(s: TuiState, target: Pick<ProviderModel, 'conne
 
 /** The modes the followed run accepts (the CYCLE_MODES subset); all of them when no run is followed. */
 export function modeChoices(s: TuiState): PermissionMode[] {
-  const run = activeSummary(s)
+  // A composer starting a new run (/new, /ask) follows no run: every mode can be staged for the new one.
+  const run = s.composeTarget === 'new' ? undefined : activeSummary(s)
   if (!run) return [...CYCLE_MODES]
   const allowed = runPermissionModeChoices(run)
   return CYCLE_MODES.filter((m) => allowed.includes(m))

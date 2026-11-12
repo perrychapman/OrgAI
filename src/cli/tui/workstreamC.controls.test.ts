@@ -120,6 +120,11 @@ describe('slash /effort /mode /goal', () => {
     await cmd('goal').run(ctx, 'fast')
     expect(session.stage).toHaveBeenCalledTimes(1)
   })
+  it('a new-run composer offers every mode, whatever the run still followed allows', () => {
+    const setup = state({ kind: 'setup' })
+    expect(modeChoices(setup)).toEqual([])
+    expect(modeChoices({ ...setup, composeTarget: 'new' } as TuiState)).toEqual(['default', 'acceptEdits', 'plan', 'auto'])
+  })
   it('mode helpers: chat runs offer fewer modes, nextMode cycles', () => {
     expect(modeChoices(state({ quick: {} as never }))).toEqual(['default', 'plan'])
     expect(modeChoices(state({ kind: 'setup' }))).toEqual([])
