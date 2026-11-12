@@ -9,11 +9,13 @@
  *
  * Electron-free (noElectronImport.test.ts lists it); relative imports only.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunRecord, RunSummary } from '../../shared/types'
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
 import { connectionConfigured, connectionIds, staffingGoalOf, staffingModeOf } from '../../shared/defaults'
+import { createEvolveService, type EvolveCompleteRequest, type EvolveService } from '../evolve/service'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -439,8 +441,11 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     emit: (event) => events.emit(OUTPUTS_IPC.outputsChanged, event)
   })
+  // Team evolution (src/main/evolve/): the service is built right after RunManager (it completes through it); the post-run hook reads it lazily.
+  let evolveService: EvolveService | undefined
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    evolveAfterRun: (input) => (evolveService ? evolveService.afterRun(input) : Promise.reject(new Error('Team evolution is not available.'))),
     selfKnowledge: {
       reference: (q, o) => reference.query(q, o),
       navigate: (e) => opts.desktop?.navigate?.(e) ?? false,
@@ -564,6 +569,85 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     complete: (project, input) => rm.completeForProject(project, input)
   })
   skillEvaluationService = skillEvaluation
+  // The engine's single hybrid completion names no project; the call chain carries it (AsyncLocalStorage), so the
+  // completion runs on the connection of the project being analysed.
+  const evolveProject = new AsyncLocalStorage<string>()
+  const evolveEngine = createEvolveService({
+    dataDir,
+    getProject: (id) => projects.get(id) ?? undefined,
+    // ProjectStore.update saves through the team files hook, so `.orgai/` follows the change on its own.
+    updateProject: (id, fn) => {
+      const saved = projects.update(id, fn)
+      if (!saved) throw new Error('Project not found')
+      return saved
+    },
+    listRunRecords: (projectId, limit) => {
+      const out: RunRecord[] = []
+      for (const s of runStore.list(projectId)) {
+        if (out.length >= limit) break
+        if (s.status !== 'finished' && s.status !== 'error') continue
+        const rec = runStore.getRecord(s.id)
+        if (rec) out.push(rec)
+      }
+      return out
+    },
+    staffingProfile: (projectId) => {
+      const p = projects.get(projectId)
+      return { mode: staffingModeOf(p), goal: staffingGoalOf(p) }
+    },
+    skillFindings: (projectId) => skillEvaluation.last(projectId)?.findings ?? [],
+    skills: {
+      create: (input) => skills.create(input, 'suggestion'),
+      remove: (input) => skills.remove(input),
+      readDraft: (projectId, skillId) => {
+        try {
+          const info = skills.list(projectId).find((s) => s.spec.id === skillId)
+          if (!info) return null
+          return { name: info.spec.name, description: info.spec.description, body: skills.read({ projectId, skillId }).body }
+        } catch {
+          return null
+        }
+      }
+    },
+    // The project save already wrote `.orgai/` through the team files hook, but only for a project whose team files were
+    // opened ('not-written' = a code project nobody opened yet: nothing was written, and evolving does not open it).
+    syncTeamFiles: async (project) => {
+      try {
+        return teamFiles.check(project.id).state !== 'off'
+      } catch {
+        return false
+      }
+    },
+    // Without a project in scope there is no connection to complete on, and the engine falls back to its deterministic plan.
+    complete: async (req: EvolveCompleteRequest) => {
+      const id = evolveProject.getStore()
+      const project = id ? projects.get(id) : undefined
+      if (!project) throw new Error('No project to complete for.')
+      let usage: { inputTokens: number; outputTokens: number; costUsd?: number } | undefined
+      const done = await rm.completeForProject(project, {
+        system: req.system,
+        prompt: req.prompt,
+        kind: 'draft',
+        tier: 'fast',
+        ...(req.signal ? { signal: req.signal } : {}),
+        onUsage: (u) => {
+          usage = { inputTokens: Number(u?.tokens?.input) || 0, outputTokens: Number(u?.tokens?.output) || 0, ...(typeof u?.costUsd === 'number' ? { costUsd: u.costUsd } : {}) }
+          // No app-level usage ledger exists for helper calls (run titles are only logged too): log with project and model.
+          log.info(`Evolve: hybrid call for ${project.id} used ${usage.inputTokens} input + ${usage.outputTokens} output tokens${u?.model ? ` on ${u.model}` : ''}${usage.costUsd !== undefined ? ` ($${usage.costUsd})` : ''}`)
+        }
+      })
+      // The engine copies this usage into plan.usage.
+      return { text: done.text, ...(usage ? { usage } : {}) }
+    },
+    log: (level, message) => (level === 'warn' ? log.warn(`Evolve: ${message}`) : log.info(`Evolve: ${message}`))
+  })
+  evolveService = {
+    analyze: (i) => evolveProject.run(i.projectId, () => evolveEngine.analyze(i)),
+    apply: (i) => evolveProject.run(i.projectId, () => evolveEngine.apply(i)),
+    history: (id) => evolveEngine.history(id),
+    rollback: (i) => evolveProject.run(i.projectId, () => evolveEngine.rollback(i)),
+    afterRun: (i) => evolveProject.run(i.projectId, () => evolveEngine.afterRun(i))
+  }
   if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
   const caps = new CapabilityService({
     projects,
@@ -735,6 +819,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     templates,
     kit,
     teamFiles,
+    evolve: evolveService,
     outputs,
     outputWatcher,
     events,

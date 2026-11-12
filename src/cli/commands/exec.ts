@@ -35,9 +35,12 @@ import {
   isPermissionMode,
   isStaffingGoal,
   isModelTier,
+  EVOLVE_STRATEGIES,
   type ConnectionInfo,
   type ProviderModel,
   type AgentInstance,
+  type EvolvePostRunResult,
+  type EvolveStrategy,
   type ExecOutcome,
   type HeadlessDecisionPolicy,
   type HostScope,
@@ -421,6 +424,15 @@ export async function resolveModelSelection(client: HostClient, project: Project
   return { model: want, connection }
 }
 
+/** `--evolve` (true) or `--evolve=deterministic|hybrid`: what to pass as StartRunInput.evolve, undefined when absent. */
+export function evolveFlag(v: Values): true | EvolveStrategy | undefined {
+  const raw = v.evolve
+  if (raw === undefined || raw === false) return undefined
+  if (raw === true) return true
+  if (typeof raw === 'string' && (EVOLVE_STRATEGIES as readonly string[]).includes(raw)) return raw as EvolveStrategy
+  throw usage(`--evolve takes ${EVOLVE_STRATEGIES.join(' or ')} (attached as --evolve=<strategy>), not "${safeLine(String(raw)).slice(0, 40)}".`)
+}
+
 // ---------- orgai exec ----------
 
 export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
@@ -440,9 +452,12 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
   if (continueRun && (quick || create)) throw usage('--continue continues a run of this project; leave out --quick and --create-project.')
   if (continueRun && (modelFlag !== undefined || effortFlag !== undefined)) throw usage('--model and --effort start a new run with those choices; they cannot change a run that --continue continues.')
   if (continueRun && str(v, 'team') !== undefined) throw usage('--team applies to a new run; --continue keeps the run\'s own team.')
+  const evolve = evolveFlag(v)
+  if (evolve !== undefined && quick) throw usage('--evolve changes the project\'s team; leave out --quick.')
+  if (evolve !== undefined && continueRun) throw usage('--evolve applies to a new run; leave out --continue.')
   const quiet = v.quiet === true
   const lastMessageFile = str(v, 'output-last-message')
-  const runOutput: RunOutput = { quiet, ...(lastMessageFile !== undefined ? { lastMessageFile: resolve(ctx.cwd, lastMessageFile) } : {}) }
+  const runOutput: RunOutput = { quiet, ...(evolve !== undefined ? { evolve: true } : {}), ...(lastMessageFile !== undefined ? { lastMessageFile: resolve(ctx.cwd, lastMessageFile) } : {}) }
   const team = choice(v, 'team') as 'default' | 'single' | undefined
   if (quick && create) throw usage('Use --quick or --create-project, not both.')
   if (v['allow-edits'] === true && !quick) throw usage('--allow-edits applies to --quick runs only.')
@@ -462,7 +477,8 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
     }
   }
 
-  const session = await openSession(ctx, create)
+  // --evolve needs 'configure': the post-run pass changes the team.
+  const session = await openSession(ctx, create || evolve !== undefined)
   return runAndFollow(ctx, session, runOutput, async () => {
     if (quick) {
       if (overridesNeedConfigure(undefined, overrides)) await session.needConfigure()
@@ -502,7 +518,8 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
         ...(images.length ? { images } : {}),
         overrides,
         ...(selection ? { modelSelection: selection } : {}),
-        ...(effortFlag !== undefined ? { effort: effortFlag } : {})
+        ...(effortFlag !== undefined ? { effort: effortFlag } : {}),
+        ...(evolve !== undefined ? { evolve } : {})
       }
     ])
   })
@@ -653,6 +670,12 @@ export interface RunOutput {
   quiet: boolean
   /** Also write the final answer here. */
   lastMessageFile?: string
+  /**
+   * Team evolution: after the run is finalized, wait for the post-run ratchet pass (org:evolveAfterRun) and report it:
+   * an `evolve` member of the json / stream-json result, one stderr line in text mode. The run must have been started
+   * with `evolve`, on a session that holds 'configure'.
+   */
+  evolve?: boolean
   /** The caller prints the result itself (a loop): nothing is printed here, and the transcript is not followed in text. */
   silent?: boolean
   /** The session (and an in-process host) stays up after the run; the caller cleans it up. Only the follower is closed. */
@@ -661,7 +684,7 @@ export interface RunOutput {
   onResult?: (r: ExecRunResult) => void
 }
 
-/** How one followed run ended, for a caller that runs several. */
+/** How one followed run ended, for a caller that runs several (`org evolve loop`). */
 export interface ExecRunResult {
   runId: string | null
   outcome: ExecOutcome | null
@@ -669,6 +692,16 @@ export interface ExecRunResult {
   summary: RunSummary | null
   record: RunRecord | null
   result: string | null
+  evolve: EvolvePostRunResult | null | undefined
+}
+
+/** The one stderr line `exec --evolve` prints in text mode. */
+export function evolveLine(r: EvolvePostRunResult | null | undefined, error?: string): string {
+  if (!r) return error ? `Team evolution: the post-run pass failed (${safeLine(error)}).` : 'Team evolution: no post-run pass ran for this run.'
+  const parts: string[] = [`ratchet ${r.ratchet}${r.ratchetReason ? ` (${safeLine(r.ratchetReason)})` : ''}`]
+  if (r.applied) parts.push(`applied ${safeLine(r.applied.id)} as a trial: ${safeLine(r.applied.summary)}`)
+  else if (r.wasteScore !== undefined) parts.push(`waste score ${r.wasteScore}, no new generation`)
+  return `Team evolution: ${parts.join('; ')}.`
 }
 
 export async function runAndFollow(ctx: CliContext, session: Session, output: RunOutput, start: () => Promise<RunSummary>): Promise<number> {
@@ -797,6 +830,17 @@ export async function runAndFollow(ctx: CliContext, session: Session, output: Ru
       const state = runs.get(summary.id)
       const status = statusText(statusViewOf({ summary, plan: rec?.plan, agents: rec?.agents ?? state?.agents }))
       const result = lastRootText(rec)
+      // Team evolution: the pass RunManager started when the run ended (never started here); a failure is reported, not fatal.
+      let evolveResult: EvolvePostRunResult | null | undefined
+      let evolveError: string | undefined
+      if (output.evolve) {
+        try {
+          evolveResult = await session.client.call<EvolvePostRunResult | null>('org:evolveAfterRun', [{ runId: summary.id }], { timeoutMs: 10 * 60_000 })
+        } catch (e) {
+          evolveResult = null
+          evolveError = e instanceof Error ? e.message : String(e)
+        }
+      }
       const doc: Json = {
         runId: summary.id,
         execChainId: chainId ?? summary.overrides?.execChainId ?? execChainId ?? summary.id,
@@ -804,9 +848,10 @@ export async function runAndFollow(ctx: CliContext, session: Session, output: Ru
         exitCode: code,
         status,
         summary,
-        result
+        result,
+        ...(output.evolve ? { evolve: (evolveResult ?? { ratchet: 'none', skipped: true, ...(evolveError ? { error: safeLine(evolveError) } : {}) }) as unknown as Json } : {})
       }
-      output.onResult?.({ runId: summary.id, outcome, exitCode: code, summary, record: rec, result })
+      output.onResult?.({ runId: summary.id, outcome, exitCode: code, summary, record: rec, result, evolve: evolveResult })
       if (silent) {
         // The caller prints.
       } else if (stream) emitLine(ctx, { type: 'result', ...doc })
@@ -816,6 +861,7 @@ export async function runAndFollow(ctx: CliContext, session: Session, output: Ru
         if (result) printText(ctx, result.replace(/\n+$/, ''))
         if (outcome !== 'completed' && outcome !== 'completed-unplanned') warn(ctx, `${OUTCOME_LABEL[outcome] ?? safeLine(outcome)} (${EXEC_OUTCOME_EXIT_CODE[outcome] ?? EXIT.failure})`)
       } else printText(ctx, `${st.bold(OUTCOME_LABEL[outcome] ?? safeLine(outcome))} · ${styleStatus(st, status)} · ${costText(summary)}`)
+      if (output.evolve && !json && !silent) warn(ctx, evolveLine(evolveResult, evolveError))
       if (output.lastMessageFile) {
         try {
           writeFileSync(output.lastMessageFile, result ?? '', 'utf8')
@@ -1014,7 +1060,7 @@ export async function runAndFollow(ctx: CliContext, session: Session, output: Ru
   if (output.keepSession) session.releaseFollower()
   else await session.cleanup()
   if (code === -1) throw failure instanceof CliError ? failure : hostFailure(failure)
-  if (!finalized) output.onResult?.({ runId: newest ?? null, outcome: null, exitCode: code, summary: null, record: null, result: null })
+  if (!finalized) output.onResult?.({ runId: newest ?? null, outcome: null, exitCode: code, summary: null, record: null, result: null, evolve: undefined })
   if (json && !finalized && !silent) {
     // Interrupted (or the host went away) before an outcome: still give scripts a final document.
     const doc: Json = { runId: newest ?? null, execChainId: execChainId ?? null, outcome: null, exitCode: code, status: null, summary: null, result: null }

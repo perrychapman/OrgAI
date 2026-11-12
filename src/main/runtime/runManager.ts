@@ -115,6 +115,7 @@ import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL
 import { runModelLogs } from './runModels'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
 import type { DelegationGate, SelfKnowledgeHooks } from './types'
+import type { EvolvePostRunResult, EvolveStrategy } from '@shared/types'
 import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
 import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
 import { clampText } from '../capabilities/sanitize'
@@ -394,6 +395,9 @@ export function quitEndedWhile(status: RunSummary['status'], openCard: boolean):
 
 interface ActiveRun {
   summary: RunSummary
+  /** Team evolution: run the post-run ratchet pass once when this run ends (StartInput.evolve; work runs only). */
+  evolve?: EvolveStrategy | true
+  evolveWindowRuns?: number
   session?: RuntimeSession
   pending: PendingCardMaps['pending']
   pendingProposals: PendingCardMaps['pendingProposals']
@@ -729,6 +733,11 @@ export interface RunManagerOptions {
    * policy is turned into `fail` when a run starts, whichever path brought it (cli-standalone-default.md 4.3).
    */
   noWaitPolicy?: boolean
+  /**
+   * Team evolution (evolve/service.ts afterRun): the post-run ratchet pass of a run started with `evolve`. Never starts a
+   * run; errors are swallowed and logged here. Missing = `evolve` on a start is ignored.
+   */
+  evolveAfterRun?: (input: { projectId: string; evolve: true; strategy?: EvolveStrategy; evalWindowRuns?: number }) => Promise<EvolvePostRunResult>
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
   /**
@@ -990,6 +999,13 @@ export interface StartInput {
   /** The caller holds the 'configure' scope: widening overrides apply (runOverrides.ts effectiveRunProject). */
   allowWidening?: boolean
   /**
+   * Team evolution (StartRunInput.evolve): after this run ends, one post-run ratchet pass (RunManagerOptions.evolveAfterRun).
+   * Honoured for stored-project work runs that are not quick runs; dropped otherwise. Not carried by continuations.
+   */
+  evolve?: boolean | EvolveStrategy
+  /** With `evolve`: how many finished runs a trial generation the pass applies is measured over (1..10; the engine's default otherwise). */
+  evolveWindowRuns?: number
+  /**
    * The desktop user's start-time choices (StartRunInput.modelSelection / effort / permissionMode). Only the desktop
    * runs:start handler sets it; RunManager validates each against the catalog, effortOptionsFor and
    * runPermissionModeChoices and refuses (throws) before a run exists.
@@ -1235,8 +1251,13 @@ export function refreshRoleGrants(running: Role[], saved: readonly Role[]): void
   }
 }
 
+/** How many post-run evolve passes RunManager remembers for awaitEvolvePass. */
+const EVOLVE_PASSES_KEPT = 50
+
 export class RunManager {
   private runs = new Map<string, ActiveRun>()
+  /** Run id -> its post-run evolve pass (bounded; startEvolvePass / awaitEvolvePass). */
+  private evolvePasses = new Map<string, Promise<EvolvePostRunResult | undefined>>()
   /** Paused run id -> its auto-resume timer. Lives only as long as the app process. */
   /** Every pending title query, live run or not, with its project id; stopAll and removeProject abort them. */
   private titleAborts = new Map<AbortController, string>()
@@ -1633,6 +1654,8 @@ export class RunManager {
     overrides: rawOverrides,
     allowWidening,
     userChoice,
+    evolve: rawEvolve,
+    evolveWindowRuns,
     [CARRIED_CHOICES]: carried
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
@@ -1768,6 +1791,9 @@ export class RunManager {
     if (chosenMode) summary.permissionModeChosen = true
     if (rootEffort) summary.rootEffort = rootEffort
     const exec = !!overrides?.execMode
+    // Team evolution: stored-project work runs only (never setup, quick, single-assistant or virtual-project runs).
+    const evolveMode: EvolveStrategy | true | undefined =
+      rawEvolve && kind === 'work' && !quick && !buildWorkspace && team !== 'single' && !isVirtualProjectId(project.id) && this.options.evolveAfterRun ? (rawEvolve === true ? true : rawEvolve) : undefined
     const active: ActiveRun = {
       summary,
       adapter: choice.adapter,
@@ -1806,6 +1832,7 @@ export class RunManager {
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {}),
       ...(allowWidening ? { allowWidening: true } : {}),
+      ...(evolveMode ? { evolve: evolveMode, ...(evolveWindowRuns !== undefined ? { evolveWindowRuns } : {}) } : {}),
       ...(chosenMode ? { chosenMode } : {}),
       rootTurnGen: 0,
       activityGen: 0,
@@ -1960,6 +1987,8 @@ export class RunManager {
           if (settled !== agent) emit({ type: 'agent.upsert', runId: summary.id, agent: settled })
         }
       }
+      // Team evolution: one post-run pass per run, once its record is on disk (the engine decides which runs it measures).
+      if (outcome && active.evolve) this.startEvolvePass(active)
       if (exec) this.execEventSeen(active, e)
       else if (summary.conversationBudgetUsd !== undefined && (e.type === 'agent.upsert' || e.type === 'run.cost')) this.checkExecBudget(active, e.type === 'agent.upsert' ? e.agent : undefined)
     }
@@ -3766,6 +3795,37 @@ export class RunManager {
     } catch (e) {
       console.error('Failed to persist run record:', e)
     }
+  }
+
+  /**
+   * Team evolution: the single post-run pass of a run started with `evolve`. Off the critical path (a microtask after the
+   * record is flushed), never throws, never starts a run. The promise is kept (bounded) so a headless caller can wait
+   * for it through awaitEvolvePass.
+   */
+  private startEvolvePass(active: ActiveRun): void {
+    const afterRun = this.options.evolveAfterRun
+    const runId = active.summary.id
+    const strategy = active.evolve
+    const evalWindowRuns = active.evolveWindowRuns
+    active.evolve = undefined
+    if (!afterRun || this.evolvePasses.has(runId) || !strategy) return
+    // The record (transcript, usage, plan) is what the engine measures; the closing usage refresh lands right after this event.
+    const pass = Promise.resolve()
+      .then(() => {
+        this.flush(active)
+        return afterRun({ projectId: active.summary.projectId, evolve: true, ...(strategy === true ? {} : { strategy }), ...(evalWindowRuns !== undefined ? { evalWindowRuns } : {}) })
+      })
+      .catch((e: unknown) => {
+        log.warn(`Run ${runId}: the post-run evolve pass failed: ${logText(String((e as Error)?.message ?? e))}`)
+        return undefined
+      })
+    this.evolvePasses.set(runId, pass)
+    while (this.evolvePasses.size > EVOLVE_PASSES_KEPT) this.evolvePasses.delete(this.evolvePasses.keys().next().value as string)
+  }
+
+  /** The post-run evolve pass of a run, resolved when it settles; undefined when the run had none (not started with evolve, stopped, still live, or the pass failed). */
+  async awaitEvolvePass(runId: string): Promise<EvolvePostRunResult | undefined> {
+    return this.evolvePasses.get(runId)
   }
 
   /** Runs whose session is still open. */
