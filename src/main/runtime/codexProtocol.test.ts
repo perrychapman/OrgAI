@@ -202,7 +202,7 @@ describe('dynamic tool specs', () => {
   it('turns every harness tool into a function spec with a JSON schema from zod', () => {
     const tools = harnessToolsFor(fakeCtx())
     const specs = tools.map(dynamicToolSpec)
-        expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'propose_mcp_servers', 'list_skill_library', 'read_library_skill', 'propose_skills', 'request_permission_rules', 'list_runs', 'message_run', 'produce_output', 'register_output', 'read_output', 'app_reference'])
+        expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'propose_mcp_servers', 'list_skill_library', 'read_library_skill', 'propose_skills', 'request_permission_rules', 'list_runs', 'message_run', 'produce_output', 'register_output', 'read_output', 'list_skills', 'load_skill', 'app_reference'])
     const setPlan = specs[0]
     expect(setPlan).toMatchObject({ type: 'function' })
     const schema = setPlan.inputSchema as { type: string; required: string[]; properties: Record<string, { type?: string }> }

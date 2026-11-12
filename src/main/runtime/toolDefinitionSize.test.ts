@@ -36,17 +36,17 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  * The Codex team-root bound rose to 20,050 (about 0.2% headroom).
  */
 /*
- * Lean surface (reports of a code project get no output tools or app_reference; no skill tools without skills; the single
- * assistant has no engagement_context on a code project and no plan `staff` field; produce_output's description is
- * shorter):
- *   team root          Claude 17,759 -> 17,657   Codex 19,888 -> 19,313 (no skill tools without skills)
- *   writing report     Claude  5,981 ->    442   Codex  6,484 ->    448 (request_permission_rules only)
- *   single assistant   Claude 10,257 ->  9,019   Codex 10,814 ->  9,097
+ * Lean surface (reports of a code project get no output tools or app_reference; the single assistant has no
+ * engagement_context on a code project and no plan `staff` field; produce_output's description is shorter). Codex keeps
+ * list_skills / load_skill even with no skills at start (a skill approved mid-run must be loadable):
+ *   team root          Claude 17,759 -> 17,657   Codex 19,888 -> 19,950
+ *   writing report     Claude  5,981 ->    442   Codex  6,484 ->    921 (request_permission_rules and the skill tools)
+ *   single assistant   Claude 10,257 ->  9,019   Codex 10,814 ->  9,574
  */
 const BUDGET: Record<string, { claude: number; codex: number }> = {
-  orchestrator: { claude: 17_800, codex: 19_600 },
-  implementer: { claude: 500, codex: 510 },
-  single: { claude: 9_100, codex: 9_200 }
+  orchestrator: { claude: 17_800, codex: 20_050 },
+  implementer: { claude: 500, codex: 1_000 },
+  single: { claude: 9_100, codex: 9_650 }
 }
 
 const CASES: { label: string; slug: MeasureSlug; opts: { isolation: boolean; arch: boolean } }[] = [

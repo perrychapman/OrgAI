@@ -2919,8 +2919,9 @@ export function harnessToolsFor(ctx: RuntimeContext, hooks: HarnessToolHooks = {
   if (ctx.run.kind === 'work' && ctx.run.quick) return bind([...QUICK_TOOL_DEFS, ...selfKnowledgeDefsFor('quick')], ctx, hooks)
   const engagement = projectKindOf(ctx.project) === 'engagement'
   // Single (Ask) runs: read-only recall on an engagement (SINGLE_TOOL_DEFS is shared with code projects); no writes to the graph.
-  // Codex-style skill tools only when the run has skills to list (the Claude adapter likewise adds its Skill tool per granted role).
-  const skillTools = options.nativeSkills || (ctx.skills?.().length ?? 0) === 0 ? [] : skillToolDefs()
+  // Codex-style skill tools are offered even when the run starts with no skills: a skill approved mid-run through
+  // propose_skills is in effect at once, and an adapter fixes its tool list when a thread starts.
+  const skillTools = options.nativeSkills ? [] : skillToolDefs()
   if (ctx.run.kind === 'work' && ctx.run.team === 'single') return bind([...singleToolDefs(engagement), ...(engagement ? [knowledgeRecallTool] : []), ...skillTools, ...selfKnowledgeDefsFor('single')], ctx, hooks)
   // Engagement work runs: the context notes and the knowledge graph (every role); never single, quick or setup-like runs.
   const defs = [...WORK_TOOL_DEFS, ...(engagement ? [engagementContextTool, knowledgeRecallTool, knowledgeTool] : []), ...skillTools, ...selfKnowledgeDefsFor('work')]

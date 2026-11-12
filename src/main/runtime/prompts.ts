@@ -339,7 +339,7 @@ export function staffingText(goal: StaffingGoal = 'balanced', onCall = false): s
   return (
     (onCall
       ? // A mid-level lead has no plan: it staffs on the spawn call itself.
-        'When you hand out work (the rule above decides if any), give tier and effort on the spawn call; the harness applies them when you start that role, never above what the role allows. '
+        'When you hand out work (the rule above decides if any), set its tier and effort on the spawn call itself (on an Agent call, as the model alias for the tier and the effort field; on spawn_report or delegate_agent, as tier and effort); the harness applies them when you start that role, never above what the role allows. '
       : 'In the plan, give each step you hand out (the rule above decides if any) staff (role, tier, effort), after (steps it waits for; omit it if it can start now) and paths (files it will change); ' +
         'the harness applies the tier and effort when you start that role, never above what the role allows. ') +
     'Tier fast for search, mechanical edits, running checks and summaries; everyday for well-specified implementation, tests and routine review; deep for ambiguous design, cross-module change, hard debugging and security review. ' +

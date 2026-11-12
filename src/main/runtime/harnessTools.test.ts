@@ -822,13 +822,12 @@ describe('list_skills and load_skill', () => {
     return { ctx, tools: harnessToolsFor(ctx, {}, opts) }
   }
 
-  it('is absent with nativeSkills and in setup, and with no skills at start', () => {
+  it('is absent with nativeSkills and in setup; present with no skills at start (a skill approved mid-run must be loadable)', () => {
     const names = (t: HarnessTool[]) => t.map((x) => x.name)
     expect(names(toolsFor([mkSkill()]).tools)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
     expect(names(toolsFor([mkSkill()], { nativeSkills: true }).tools)).not.toContain('load_skill')
-    // Not offered when the run has no skills (they would only answer "none granted"); they still read ctx.skills() at call time.
-    expect(names(toolsFor([]).tools)).not.toContain('list_skills')
-    expect(names(toolsFor([]).tools)).not.toContain('load_skill')
+    // propose_skills says a new grant is usable at once, and Codex fixes a thread's tools at thread/start.
+    expect(names(toolsFor([]).tools)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
     expect(names(setupTools(fakeCtx({ skills: () => [mkSkill()] })))).not.toContain('load_skill')
     expect(isBlockingHarnessTool('load_skill')).toBe(false)
     expect(isBlockingHarnessTool('list_skills')).toBe(false)
