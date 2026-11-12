@@ -14,12 +14,10 @@ import {
   defaultIsAlive,
   emptyEvidenceText,
   parseLsofCwd,
-  readEvidence,
-  startsMatch
+  readEvidence
 } from './consumers'
 import { hostLockPath } from './hostRegistry'
-import { parseProcessTable, readProcessTable } from './shutdown'
-import { processStartTime } from './processInfo'
+import { readStartTokenTable, startTokenOfSync, type StartTokenTable } from './startTokens'
 
 let dir: string
 let file: string
@@ -43,17 +41,18 @@ const sleeper = (cwd?: string): ChildProcess => {
 }
 const exited = (c: ChildProcess): Promise<void> => new Promise((ok) => (c.exitCode !== null || c.signalCode ? ok() : c.once('exit', () => ok())))
 const evidence = (over: Partial<ConstructorParameters<typeof ConsumerEvidence>[0]> = {}): ConsumerEvidence => new ConsumerEvidence({ file, hostInstanceId: 'aaaaaaaaaaaa', ...over })
+const T = (rows: [number, number, string | null][]): StartTokenTable => new Map(rows.map(([pid, ppid, token]) => [pid, { ppid, token }]))
 const noCwd = (): number[] => []
 
 describe('ConsumerEvidence', () => {
   it('records a pending spawn durably, then resolves it to a pid and start time', () => {
-    const ev = evidence({ startTimeOf: () => 'Mon Jan  1 00:00:00 2026' })
+    const ev = evidence({ startTokenOf: () => 'lstart:Mon Jan 1 00:00:00 2026' })
     const id = ev.recordPendingSpawn({ chainId: 'run_1', kind: 'claude' })
     expect(readEvidence(file)!.pending).toEqual([expect.objectContaining({ id, chainId: 'run_1', kind: 'claude' })])
     ev.resolvePendingSpawn(id, { pid: 4242 })
     const data = readEvidence(file)!
     expect(data.pending).toEqual([])
-    expect(data.descendants).toEqual([expect.objectContaining({ pid: 4242, start: 'Mon Jan 1 00:00:00 2026' })])
+    expect(data.descendants).toEqual([expect.objectContaining({ pid: 4242, start: 'lstart:Mon Jan 1 00:00:00 2026' })])
   })
 
   it('clears a pending spawn only by its own id', () => {
@@ -75,19 +74,50 @@ describe('ConsumerEvidence', () => {
 
   it('snapshot adds new descendants and keeps a reparented one until it is seen to exit', () => {
     const ev = evidence({ hostPid: 100, platform: 'linux' })
-    const table = (text: string) => parseProcessTable(text)
     // 200 is a child of host 100, 300 a grandchild
-    expect(ev.snapshot(table('100 1 S Mon Jan 1 00:00:00 2026\n200 100 S Mon Jan 1 00:00:01 2026\n300 200 S Mon Jan 1 00:00:02 2026'))).toBe(true)
+    expect(ev.snapshot(T([[100, 1, 'ticks:1'], [200, 100, 'ticks:2'], [300, 200, 'ticks:3']]))).toBe(true)
     expect(readEvidence(file)!.descendants.map((d) => d.pid)).toEqual([200, 300])
     // 200 exits; 300 is reparented to init and no longer under the host: stays listed
-    ev.snapshot(table('100 1 S Mon Jan 1 00:00:00 2026\n300 1 S Mon Jan 1 00:00:02 2026'))
+    ev.snapshot(T([[100, 1, 'ticks:1'], [300, 1, 'ticks:3']]))
     expect(readEvidence(file)!.descendants.map((d) => d.pid)).toEqual([300])
-    // 300 is replaced by an unrelated process that reuses the pid (other start time): seen to exit
-    ev.snapshot(table('100 1 S Mon Jan 1 00:00:00 2026\n300 1 S Tue Feb 2 00:00:00 2026'))
+    // 300 is replaced by an unrelated process that reuses the pid (other token): seen to exit
+    ev.snapshot(T([[100, 1, 'ticks:1'], [300, 1, 'ticks:99']]))
     expect(readEvidence(file)!.descendants).toEqual([])
-    // a zombie counts as gone
-    ev.snapshot(table('100 1 S Mon Jan 1 00:00:00 2026\n400 100 S Mon Jan 1 00:00:05 2026'))
-    ev.snapshot(table('100 1 S Mon Jan 1 00:00:00 2026\n400 100 Z Mon Jan 1 00:00:05 2026'))
+  })
+
+  it('an unreadable token in the table certifies nothing; a null recorded token stays until the pid is gone', () => {
+    const ev = evidence({ hostPid: 100 })
+    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'x' }), { pid: 200, startToken: null })
+    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'x' }), { pid: 300, startToken: 'ticks:3' })
+    ev.snapshot(T([[100, 1, 'ticks:1'], [200, 100, 'ticks:2'], [300, 100, null]]))
+    // the null-token child is not upgraded, the token-less row does not clear 300
+    expect(readEvidence(file)!.descendants).toEqual([
+      expect.objectContaining({ pid: 200, start: null }),
+      expect.objectContaining({ pid: 300, start: 'ticks:3' })
+    ])
+    ev.snapshot(T([[100, 1, 'ticks:1']]))
+    expect(readEvidence(file)!.descendants).toEqual([])
+  })
+
+  it('a spawn recorded while the table read was in flight survives the merge', async () => {
+    let release!: (t: StartTokenTable) => void
+    const ev = evidence({ hostPid: 100, readTable: () => new Promise<StartTokenTable>((ok) => (release = ok)) })
+    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'old' }), { pid: 200, startToken: 'ticks:2' })
+    const p = ev.refresh()
+    // while the read is in flight: a new spawn, resolved after the table was taken
+    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'new' }), { pid: 500, startToken: 'ticks:5' })
+    const pendingId = ev.recordPendingSpawn({ kind: 'still-pending' })
+    // the table shows 200 gone and has no 500
+    release(T([[100, 1, 'ticks:1']]))
+    await p
+    const data = readEvidence(file)!
+    expect(data.descendants.map((d) => d.pid)).toEqual([500])
+    expect(data.pending.map((x) => x.id)).toEqual([pendingId])
+    expect(ev.current().descendants.map((d) => d.pid)).toEqual([500])
+    // the next table, read after the spawn, judges it normally
+    await (async () => {
+      ev.snapshot(T([[100, 1, 'ticks:1']]))
+    })()
     expect(readEvidence(file)!.descendants).toEqual([])
   })
 
@@ -116,7 +146,7 @@ describe('ConsumerEvidence', () => {
     expect(after).toContain(grand)
     expect(after).not.toContain(sh.pid)
     process.kill(grand, 'SIGKILL')
-    const table = await readProcessTable()
+    const table = await readStartTokenTable()
     expect(table).not.toBeNull()
   })
 })
@@ -153,8 +183,8 @@ describe('consumerCheck', () => {
   it('does not count a reused pid with a different start time as alive', async () => {
     const c = sleeper()
     const ev = evidence()
-    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'x' }), { pid: c.pid!, startTime: 'Mon Jan  1 00:00:00 2001' })
-    if (processStartTime(c.pid!) !== undefined) {
+    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'x' }), { pid: c.pid!, startToken: 'lstart:Mon Jan 1 00:00:00 2001' })
+    if (process.platform === 'darwin') {
       expect(await consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd })).toBe('pass')
     }
   })
@@ -206,16 +236,21 @@ describe('helpers', () => {
 
   it('collectExcludedPids has self, ancestors, live hosts and their descendants', () => {
     const ev = evidence()
-    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'x' }), { pid: 555, startTime: 's' })
-    const table = parseProcessTable('1 0 S a\n20 1 S b\n30 20 S c')
+    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'x' }), { pid: 555, startToken: 's' })
+    const table = T([[1, 0, 'a'], [20, 1, 'b'], [30, 20, 'c']])
     const set = collectExcludedPids({ table, selfPid: 30, liveHosts: [{ pid: 999, childrenFile: file }] })
     expect([...set].sort((a, b) => a - b)).toEqual([1, 20, 30, 555, 999])
   })
 
-  it('startsMatch treats unknown as a match and collapses whitespace', () => {
-    expect(startsMatch(undefined, 'x')).toBe(true)
-    expect(startsMatch('Mon Jan  1 00:00:00 2026', 'Mon Jan 1 00:00:00 2026')).toBe(true)
-    expect(startsMatch('Mon Jan 1 00:00:00 2026', 'Tue Jan 2 00:00:00 2026', 'linux')).toBe(false)
+  it('a null recorded token is uncertain while the pid exists, and passes once it is gone', async () => {
+    const c = sleeper()
+    const ev = evidence()
+    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'x' }), { pid: c.pid!, startToken: null })
+    expect(await consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd })).toBe('uncertain')
+    c.kill('SIGKILL')
+    await exited(c)
+    expect(startTokenOfSync(c.pid!)).toBe('gone')
+    expect(await consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd })).toBe('pass')
   })
 })
 
@@ -247,7 +282,7 @@ describe('canRemoveDeadHostEvidence', () => {
     const ev = new ConsumerEvidence({ file: f })
     const id = ev.recordPendingSpawn({ kind: 'claude' })
     expect(await canRemoveDeadHostEvidence({ ...base, controlDir: control })).toBe(false)
-    ev.resolvePendingSpawn(id, { pid: 4242, startTime: 's' })
+    ev.resolvePendingSpawn(id, { pid: 4242, startToken: 's' })
     expect(await canRemoveDeadHostEvidence({ ...base, isAlive: () => true, controlDir: control })).toBe(false)
     expect(await canRemoveDeadHostEvidence({ ...base, controlDir: control })).toBe(true)
     rmSync(f)

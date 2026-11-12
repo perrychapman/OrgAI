@@ -9,7 +9,11 @@
  * - the consumer check a reader runs on a dead host's evidence: 'pass', `{ status: 'live', pids }` or 'uncertain';
  * - the retention rule (`canRemoveDeadHostEvidence`): evidence goes only with a free host lock AND a passing check.
  *
- * Liveness and cwd lookups are injectable; the defaults use processInfo.ts and `lsof -a -d cwd -Fn` (macOS/Linux; on
+ * Every start time is a canonical tagged token from startTokens.ts (one format per platform, the same for a single pid
+ * and for the table). A recorded child with `start: null` is uncertain until it is seen to exit; a failed table read
+ * never clears or certifies anything.
+ *
+ * Liveness and cwd lookups are injectable; the defaults use startTokens.ts and `lsof -a -d cwd -Fn` (macOS/Linux; on
  * Windows the cwd check is 'unavailable' and the caller treats the case as uncertain).
  *
  * Electron-free; relative imports only.
@@ -20,8 +24,7 @@ import { randomBytes } from 'node:crypto'
 import { join, sep } from 'node:path'
 import { probeOsLock } from '../store/shared/osLock'
 import { writeFileAtomic } from '../store/shared/atomicWrite'
-import { descendantsOf, parseProcessTable, readProcessTable, type ProcessTable } from './shutdown'
-import { processLiveness, processStartTime, sameStartTime } from './processInfo'
+import { readStartTokenTable, sameStartToken, startTokenOfSync, type StartTokenTable } from './startTokens'
 import { neutralCwd } from './systemBinaries'
 
 export const EVIDENCE_VERSION = 1
@@ -36,8 +39,8 @@ export interface PendingSpawn {
 
 export interface RecordedDescendant {
   pid: number
-  /** Opaque start time (process table text, whitespace collapsed; or processStartTime). Absent when unknown. */
-  start?: string
+  /** Canonical start token (startTokens.ts). `null` when it could not be read: uncertain until seen exited. */
+  start: string | null
   since: number
 }
 
@@ -64,25 +67,6 @@ export function emptyEvidenceText(hostInstanceId?: string): string {
   return JSON.stringify(emptyEvidence(hostInstanceId), null, 2) + '\n'
 }
 
-const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim()
-
-/**
- * Whether two start times can be the same process. Unknown on either side matches (the caller never reports a process
- * gone when unsure); a Windows FILETIME tick count against an ISO instant cannot be compared and also matches.
- */
-export function startsMatch(a: string | undefined, b: string | undefined, platform: NodeJS.Platform = process.platform): boolean {
-  if (a === undefined || b === undefined || a === '' || b === '') return true
-  const x = collapse(a)
-  const y = collapse(b)
-  if (x === y) return true
-  if (platform === 'win32') {
-    const xd = /^\d+$/.test(x)
-    const yd = /^\d+$/.test(y)
-    if (xd !== yd) return true
-  }
-  return sameStartTime(x, y, platform)
-}
-
 /** Read and validate an evidence file; null when missing, unreadable or malformed. */
 export function readEvidence(file: string): ConsumerEvidenceData | null {
   let raw: unknown
@@ -104,14 +88,17 @@ export function readEvidence(file: string): ConsumerEvidenceData | null {
   for (const d of o.descendants) {
     const q = d as Record<string, unknown>
     if (!q || !Number.isSafeInteger(q.pid) || (q.pid as number) <= 0) return null
-    if (q.start !== undefined && typeof q.start !== 'string') return null
+    if (q.start !== undefined && q.start !== null && typeof q.start !== 'string') return null
   }
   for (const c of Object.values(o.chains as Record<string, unknown>)) {
     const q = c as Record<string, unknown>
     if (!q || !strs(q.worktrees) || !strs(q.mcpBuildDirs)) return null
     if (q.scratchDir !== undefined && typeof q.scratchDir !== 'string') return null
   }
-  return raw as ConsumerEvidenceData
+  const data = raw as ConsumerEvidenceData
+  // A missing start is no token.
+  data.descendants = data.descendants.map((d) => ({ pid: d.pid, start: typeof d.start === 'string' ? d.start : null, since: d.since }))
+  return data
 }
 
 export interface ConsumerEvidenceOptions {
@@ -121,10 +108,10 @@ export interface ConsumerEvidenceOptions {
   hostPid?: number
   /** Pids left out with their subtree (the desktop host's own Chromium helpers). */
   exclude?: ReadonlySet<number>
-  /** Process-table reader (default shutdown.ts readProcessTable). */
-  readTable?: () => Promise<ProcessTable | null>
-  /** Start time of a just-spawned pid (default processStartTime, synchronous). */
-  startTimeOf?: (pid: number) => string | undefined
+  /** Start-token table reader (default startTokens.ts readStartTokenTable); null means unreadable. */
+  readTable?: () => Promise<StartTokenTable | null>
+  /** Start token of a just-spawned pid (default startTokenOfSync, synchronous). */
+  startTokenOf?: (pid: number) => string | null | 'gone'
   now?: () => number
   platform?: NodeJS.Platform
 }
@@ -138,6 +125,9 @@ export class ConsumerEvidence {
   private readonly now: () => number
   private readonly platform: NodeJS.Platform
   private timer: ReturnType<typeof setInterval> | undefined
+  /** In-memory only: a counter bumped by every descendant record, and the counter value at which each pid was recorded. */
+  private seq = 0
+  private readonly recordedAt = new Map<number, number>()
 
   constructor(private readonly opts: ConsumerEvidenceOptions) {
     this.now = opts.now ?? Date.now
@@ -173,10 +163,13 @@ export class ConsumerEvidence {
     return id
   }
 
-  /** Replace a pending spawn with the child's pid and start time. Durable, synchronous. */
-  resolvePendingSpawn(id: string, child: { pid: number; startTime?: string }): void {
-    const start = child.startTime ?? this.safeStartTime(child.pid)
-    this.addDescendant(child.pid, start)
+  /**
+   * Replace a pending spawn with the child's pid and start token. Durable, synchronous. A token that cannot be read
+   * records `start: null` (uncertain until seen exited); a child already gone is not recorded.
+   */
+  resolvePendingSpawn(id: string, child: { pid: number; startToken?: string | null }): void {
+    const token = child.startToken !== undefined ? child.startToken : this.safeStartToken(child.pid)
+    if (token !== 'gone') this.addDescendant(child.pid, token, true)
     this.data.pending = this.data.pending.filter((p) => p.id !== id)
     this.flush()
   }
@@ -188,25 +181,28 @@ export class ConsumerEvidence {
     if (this.data.pending.length !== before) this.flush()
   }
 
-  private safeStartTime(pid: number): string | undefined {
+  private safeStartToken(pid: number): string | null | 'gone' {
     try {
-      return (this.opts.startTimeOf ?? ((p: number) => processStartTime(p, this.platform)))(pid)
+      return (this.opts.startTokenOf ?? ((p: number) => startTokenOfSync(p, this.platform)))(pid)
     } catch {
-      return undefined
+      return null
     }
   }
 
-  private addDescendant(pid: number, start: string | undefined): void {
-    const s = start === undefined ? undefined : collapse(start)
+  /** `own`: the token comes from the host's own spawn of this pid (authoritative: it may fill a null token). */
+  private addDescendant(pid: number, start: string | null, own = false): void {
     const known = this.data.descendants.find((d) => d.pid === pid)
     if (known) {
-      if (startsMatch(known.start, s, this.platform)) {
-        if (known.start === undefined && s !== undefined) known.start = s
+      if (known.start === null) {
+        if (own && start !== null) known.start = start
         return
       }
+      if (start === null || sameStartToken(known.start, start)) return
+      // a different incarnation of the same pid: the recorded one has exited
       this.data.descendants = this.data.descendants.filter((d) => d !== known)
     }
-    this.data.descendants.push({ pid, ...(s !== undefined ? { start: s } : {}), since: this.now() })
+    this.data.descendants.push({ pid, start, since: this.now() })
+    this.recordedAt.set(pid, ++this.seq)
   }
 
   /** Set or replace one chain's resources (scratch folder, worktree paths, MCP build directories). */
@@ -227,31 +223,68 @@ export class ConsumerEvidence {
     }
   }
 
-  /**
-   * Fold one process table into the evidence: add every newly seen live descendant of the host, and drop a recorded
-   * descendant only when the table shows it exited (missing, zombie, or a different start time: pid reuse). A
-   * reparented descendant is still recorded even though it is no longer under the host. Returns whether it changed.
-   */
-  snapshot(table: ProcessTable): boolean {
-    const before = JSON.stringify(this.data.descendants)
+  /** Live (non-root) descendants of the host in the table, breadth first; `exclude` pids are left out with their subtree. */
+  private descendantRows(table: StartTokenTable): { pid: number; token: string | null }[] {
     const hostPid = this.opts.hostPid ?? process.pid
-    const kept = this.data.descendants.filter((d) => {
+    const children = new Map<number, number[]>()
+    for (const [pid, row] of table) {
+      if (pid === row.ppid) continue
+      const list = children.get(row.ppid)
+      if (list) list.push(pid)
+      else children.set(row.ppid, [pid])
+    }
+    const ft = (t: string | null | undefined): bigint | undefined => (t && t.startsWith('ft:') ? BigInt(t.slice(3)) : undefined)
+    const out: { pid: number; token: string | null }[] = []
+    const seen = new Set<number>([hostPid])
+    const queue = [hostPid]
+    while (queue.length) {
+      const pid = queue.shift()!
+      const parentTicks = ft(table.get(pid)?.token)
+      for (const c of children.get(pid) ?? []) {
+        if (seen.has(c)) continue
+        const row = table.get(c)!
+        // Windows never re-parents: a child created before its claimed parent is a stale-parent orphan.
+        const childTicks = ft(row.token)
+        if (parentTicks !== undefined && (childTicks === undefined || childTicks < parentTicks)) continue
+        seen.add(c)
+        if (this.opts.exclude?.has(c)) continue
+        queue.push(c)
+        out.push({ pid: c, token: row.token })
+      }
+    }
+    return out
+  }
+
+  /**
+   * Fold one start-token table into the CURRENT state (synchronously, at commit time): add every newly seen live
+   * descendant of the host, and drop a recorded descendant only when the table shows it exited (pid missing, or a
+   * different token: pid reuse). A reparented descendant stays recorded. A recorded child with a null token stays until
+   * its pid is missing; an unreadable token in the table certifies nothing. Entries recorded after `sinceSeq` (the
+   * `recordSeq` captured before the table read began) are not judged by this table. Returns whether anything changed.
+   */
+  snapshot(table: StartTokenTable, sinceSeq: number = Number.POSITIVE_INFINITY): boolean {
+    const before = JSON.stringify(this.data.descendants)
+    this.data.descendants = this.data.descendants.filter((d) => {
+      if ((this.recordedAt.get(d.pid) ?? 0) > sinceSeq) return true
       const row = table.get(d.pid)
-      if (!row || row.zombie) return false
-      return startsMatch(d.start, row.start, this.platform)
+      if (!row) return false
+      if (d.start === null || row.token === null) return true
+      return sameStartToken(d.start, row.token)
     })
-    this.data.descendants = kept
-    for (const row of descendantsOf(table, hostPid, this.opts.exclude)) this.addDescendant(row.pid, row.start)
+    const have = new Set(this.data.descendants.map((d) => d.pid))
+    for (const row of this.descendantRows(table)) if (!have.has(row.pid)) this.addDescendant(row.pid, row.token)
+    for (const pid of [...this.recordedAt.keys()]) if (!this.data.descendants.some((d) => d.pid === pid)) this.recordedAt.delete(pid)
     const changed = JSON.stringify(this.data.descendants) !== before
     if (changed) this.flush()
     return changed
   }
 
-  /** Read the process table and fold it in. An unreadable table changes nothing. */
+  /** Read the table and fold it into the current state when the read finishes. An unreadable table changes nothing. */
   async refresh(): Promise<boolean> {
-    const table = await (this.opts.readTable ?? (() => readProcessTable()))()
+    const startedAt = this.seq
+    const table = await (this.opts.readTable ?? (() => readStartTokenTable(this.platform)))()
     if (!table) return false
-    return this.snapshot(table)
+    return this.snapshot(table, startedAt)
   }
 
   /** Refresh every `intervalMs` (spec: 5 s). The timer does not keep the process alive. */
@@ -275,8 +308,11 @@ export type CwdHolders = number[] | 'unavailable'
 
 export interface ConsumerCheckOptions {
   evidenceFile: string
-  /** True when `pid` is (probably) still the process that recorded `startTime`. Unknown answers must be true. */
-  isAlive?: (pid: number, startTime?: string) => boolean
+  /**
+   * Whether `pid` is still the process recorded with `start`: true, false, or 'unknown' (a null recorded token, or the
+   * current token cannot be read). Default: startTokens.ts.
+   */
+  isAlive?: (pid: number, start: string | null) => boolean | 'unknown'
   /** Pids whose working directory is inside any of `paths`; 'unavailable' where there is no such check (Windows). */
   cwdHolders?: (paths: string[]) => CwdHolders | Promise<CwdHolders>
   /** OrgAI-private folders to check in addition to the chain resources in the evidence (harness-workspace, auth-cwd). */
@@ -285,18 +321,12 @@ export interface ConsumerCheckOptions {
 
 export type ConsumerCheckResult = 'pass' | { status: 'live'; pids: number[] } | 'uncertain'
 
-/** Default liveness: pid probe plus start-time comparison; an unknown start time counts as alive (never reports gone when unsure). */
-export function defaultIsAlive(pid: number, startTime?: string): boolean {
-  const platform = process.platform
-  const liveness = processLiveness(pid, startTime === undefined ? undefined : startTime, {
-    // Windows table ticks and processStartTime instants are not comparable: probe by pid only there.
-    startTimeOf: (p) => {
-      const cur = processStartTime(p, platform)
-      if (cur === undefined) return undefined
-      return startsMatch(startTime, cur, platform) ? startTime : cur
-    }
-  })
-  return liveness !== 'dead'
+/** Default liveness from startTokens.ts: 'gone' is false; a null recorded or current token is 'unknown'; else a token comparison. */
+export function defaultIsAlive(pid: number, start: string | null): boolean | 'unknown' {
+  const cur = startTokenOfSync(pid)
+  if (cur === 'gone') return false
+  if (cur === null || start === null) return 'unknown'
+  return sameStartToken(start, cur)
 }
 
 /** Pids from `lsof -a -d cwd -Fn` output whose cwd is a path inside one of `paths` (or equal to it). */
@@ -341,7 +371,7 @@ export function defaultCwdHolders(exclude: ReadonlySet<number> | (() => Readonly
 
 /** Pids the cwd check must not count: this process, its ancestors, live hosts and their recorded descendants. */
 export function collectExcludedPids(opts: {
-  table: ProcessTable | null
+  table: ReadonlyMap<number, { ppid: number }> | null
   liveHosts: { pid: number; childrenFile: string }[]
   selfPid?: number
 }): Set<number> {
@@ -365,8 +395,8 @@ export function collectExcludedPids(opts: {
 }
 
 /**
- * The consumer check (4.8): 'uncertain' when the evidence is missing/unreadable or a pending spawn is unresolved;
- * `{ status: 'live', pids }` when a recorded descendant is alive with its start time or a process holds its cwd inside
+ * The consumer check (4.8): 'uncertain' when the evidence is missing/unreadable or a pending spawn is unresolved or a recorded descendant's token is unknown (null) and its pid still exists;
+ * `{ status: 'live', pids }` when a recorded descendant is alive with its start token or a process holds its cwd inside
  * a private path; 'pass' otherwise. A found process wins over uncertainty (the refusal names the pids). A cwd check
  * that is 'unavailable' makes the case uncertain.
  */
@@ -375,7 +405,12 @@ export async function consumerCheck(opts: ConsumerCheckOptions): Promise<Consume
   if (!ev) return 'uncertain'
   const isAlive = opts.isAlive ?? defaultIsAlive
   const live = new Set<number>()
-  for (const d of ev.descendants) if (isAlive(d.pid, d.start)) live.add(d.pid)
+  let unknown = false
+  for (const d of ev.descendants) {
+    const a = isAlive(d.pid, d.start)
+    if (a === true) live.add(d.pid)
+    else if (a === 'unknown') unknown = true
+  }
 
   const paths = new Set<string>(opts.privatePaths ?? [])
   for (const c of Object.values(ev.chains)) {
@@ -386,7 +421,7 @@ export async function consumerCheck(opts: ConsumerCheckOptions): Promise<Consume
   if (holders !== 'unavailable') for (const p of holders) live.add(p)
 
   if (live.size > 0) return { status: 'live', pids: [...live].sort((a, b) => a - b) }
-  if (ev.pending.length > 0 || holders === 'unavailable') return 'uncertain'
+  if (ev.pending.length > 0 || unknown || holders === 'unavailable') return 'uncertain'
   return 'pass'
 }
 
@@ -408,5 +443,3 @@ export async function canRemoveDeadHostEvidence(opts: CanRemoveOptions): Promise
   return result === 'pass'
 }
 
-/** Test and tooling helper: parse a `ps` table text. */
-export { parseProcessTable }
