@@ -89,6 +89,98 @@
   border-radius: var(--radius-sm);
 }
 
+/* Schedules proposal: one block per change, field / value pairs in a definition list. Agent text wraps, never scrolls sideways. */
+.sched-prop {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.sched-prop-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sched-prop-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.sched-prop-item[data-action='create'] {
+  background: var(--success-soft);
+}
+.sched-prop-item[data-action='update'] {
+  background: var(--warning-soft);
+}
+.sched-prop-item[data-action='remove'] {
+  background: var(--danger-soft);
+}
+.sched-prop-item[data-action='pause'],
+.sched-prop-item[data-action='resume'] {
+  background: var(--info-soft);
+}
+.sched-prop-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.sched-prop-name {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.sched-prop-summary {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.sched-prop-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+}
+.sched-prop-field {
+  display: grid;
+  grid-template-columns: minmax(7rem, 30%) minmax(0, 1fr);
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.sched-prop-field dt {
+  color: var(--text-secondary);
+}
+.sched-prop-field dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sched-prop-field dd .mcp-prop-text {
+  margin: 0;
+}
+.sched-prop-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.sched-prop-note > svg {
+  flex: none;
+  margin-top: var(--space-1);
+}
+
 /* A failed read of the current servers or instructions: said in words, in the warning text colour. */
 .proposal-read-error {
   display: flex;

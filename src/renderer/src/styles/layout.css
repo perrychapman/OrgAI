@@ -374,6 +374,20 @@ button.run-meta-item:focus-visible {
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
+/* "Scheduled: <name>": the text truncates; the item stays until the whole line hides, so it outlasts the cost. */
+.run-meta-scheduled {
+  max-width: 34ch;
+  min-width: 0;
+}
+.run-meta-scheduled > svg {
+  flex: none;
+}
+.run-meta-scheduled-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .run-meta-steps.blocked {
   color: var(--warning-text);
 }
@@ -402,6 +416,11 @@ button.run-meta-item:focus-visible {
   .run-meta-agents,
   .run-meta-staffing {
     display: none;
+  }
+}
+@container frame (max-width: 420px) {
+  .run-meta-scheduled {
+    max-width: 20ch;
   }
 }
 @container frame (max-width: 340px) {
