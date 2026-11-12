@@ -39,7 +39,8 @@ declared earlier in the file and a const cannot be read before it is initialised
 separately in `jsonCodec.allChannels`, the registry and the tests. Landed (2026-11-12): the code below plus
 `SCHEDULE_NAME_MAX_CHARS` 80, `SCHEDULE_PROMPT_MAX_CHARS` 8,000, `SCHEDULE_CRON_MAX_CHARS` 120, `LIST_SCHEDULES_TOOL`,
 `PROPOSE_SCHEDULE_TOOL`, `ScheduleProposalItem`, `SchedulesProposalPayload` and `OrgAIApi.schedules` / `onSchedulesChanged`.
-`'show-schedules'` is not yet in `MENU_ACTIONS` (adding it forces menu and renderer behaviour; the renderer engineer adds it).
+`'show-schedules'` was added to `MENU_ACTIONS` with the renderer (section 5.1), and `Schedule.lastEntry?` (the newest
+history entry, main-owned) was added for the list rows.
 
 ```ts
 export type ScheduleTiming =
@@ -250,6 +251,72 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
 - Empty state teaches the chat path: "Ask in Chat, for example: 'Review new pull requests every night at midnight'",
   with a New schedule button.
 - Both themes, both supported window sizes, keyboard reachable, reduced motion respected (no new motion needed).
+
+### 5.1 As built (renderer, 2026-11-12)
+
+Files: `views/SchedulesView.tsx`, `components/schedules/{useSchedules.ts, ScheduleRow.tsx, ScheduleHistory.tsx,
+ScheduleEditor.tsx}`, `styles/schedules.css`, `components/proposals/SchedulesProposalBody.tsx`, `lib/scheduleProposal.ts`,
+the pure view-model `src/shared/view/schedules.ts` (row, chip, history wording, editor <-> `ScheduleSaveInput`, permission
+choices; CLI-reusable), the store's `view: 'schedules'` / `openSchedules({ scheduleId? })` / `schedulesFocus`, the sidebar
+entry after Usage, View > Schedules (`show-schedules`, target 'main', no accelerator, always enabled), the atlas surface
+`schedules` (also the surface of `APP_SETTING_DOCS.schedulesPaused`) and its `open_in_app` target.
+
+Contract addition (approved): `Schedule.lastEntry?` (the newest history entry) feeds the row's "Last result", because
+`schedules:history` clears `unread` and cannot be read per row. Without it the row falls back to "N failed in a row" /
+"Last due <time>" / "Not run yet".
+
+Deviations and decisions:
+- Editor is the shared `Dialog` (size lg). "Every n hours" is "Every few hours" with a count and an hours / minutes unit
+  (an agent-made 90-minute interval stays editable); Weekly has weekday checkboxes (Monday first); Custom shows the
+  five-field hint. Problems show after the first Save (timing problems at once, since the next runs depend on them); Save
+  focuses the field a problem is about. A single run in the past is refused in the form ("Choose a time in the future.").
+- The interval anchor is kept while the interval is unchanged, so an edit does not move the slots. Edit sends `null` to
+  clear model / mode / cap the stored schedule had, and `expectedUpdatedAt`; create sends `enabled: true`. Expiry is not
+  editable in v1 (kept as stored).
+- Permission modes: a team target offers every work-run mode, a Chat target only the Chat modes (Ask for everything risky,
+  Never ask, Plan only); never bypass. Switching target drops a mode the new target refuses. A mode that asks less than
+  the target's own (the project's mode; Chat: Ask for everything risky) is confirmed with schedule wording ("Let every run
+  of this schedule use X? ... including while you are away"), unless mode and target are both unchanged.
+- Model uses the New run page's model chip (`StartModelControl`); with nothing picked it reads "Project default" for
+  both targets (for Chat that means the Chat model).
+- Pause all is a switch in the page header, saved through `settings:set`; the page trusts only the value main returns, so
+  a build whose main drops `schedulesPaused` says "The pause setting was not saved." While on, a warning banner explains
+  that due times are recorded as skipped, and rows read "Held: all schedules paused".
+- History is a disclosure per row (loading it clears unread; the list reloads only when the row had unread): a table of
+  when (title: due and handled times), trigger (On schedule / Missed run, caught up / Run now), result badge plus the reason
+  in words, outcome in run status words (Finished / Failed / Stopped / Needs you; "Running" before it ends), cost (unknown
+  is "unknown", not ended is a dash) and "Open run" (focusRun, then the run view, focus settled on the composer).
+- Run now, Pause / Resume, Edit, Delete (ConfirmDialog, danger) per row; a Done schedule offers no Resume (edit it).
+  Action results go to one polite live region; failures show as a danger banner (role=alert), not twice.
+- The "Scheduled: <name>" run meta button opens the page on that schedule's row (heading focused).
+- The proposal card lists per item: action, name, main summary, What to do, Runs as, Folder (full path, Chat), When, Next
+  runs (main-written), If a run is missed, Model, Permission mode, Spend cap, and the unattended / approval sentences
+  under create / update / resume. Buttons: Approve, Request changes, Not now.
+- Error path: every `window.orgai.schedules` call may reject; the page shows "Schedules could not be loaded" with Try
+  again, the editor shows the save refusal in view (role=alert), the history shows its own error line.
+
+Stable test ids (for `e2e/schedules.mjs`): page `schedules-view`, nav `nav-schedules`, `schedules-new`,
+`schedules-empty` / `schedules-empty-new` / `schedules-empty-chat`, `schedules-error` / `schedules-retry`,
+`schedules-loading`, `schedules-list`, `schedules-live`, `schedules-action-error`, `schedules-pause-all`,
+`schedules-paused-banner`; row `schedule-row` (`data-schedule-id`, `data-state`), `schedule-state`,
+`schedule-state-reason`, `schedule-unread`, `schedule-target`, `schedule-timing`, `schedule-next`, `schedule-last`,
+`schedule-run-now`, `schedule-toggle`, `schedule-edit`, `schedule-delete`, `schedule-delete-confirm`,
+`schedule-history-toggle`, `schedule-history`, `schedule-history-row` (`data-result`, `data-reason`),
+`schedule-history-open`, `schedule-history-empty`, `schedule-history-error`, `schedule-history-open-error`; editor
+`schedule-editor`, `schedule-field-name`, `-prompt`, `-target-team`, `-target-ask`, `-project`, `-single`, `-folder`,
+`-folder-browse`, `-folder-clear`, `-allow-edits`, `-preset`, `-time`, `-days`, `-day-<0..6>`, `-every`, `-every-unit`,
+`-once-date`, `-once-time`, `-cron`, `-missed-run-once`, `-missed-skip`, `-model` (chip inside: `run-model-change`),
+`-permission`, `-budget`, `schedule-next-runs`, `schedule-next-run`, `schedule-error-<field>`,
+`schedule-unattended-note`, `schedule-save`, `schedule-cancel`, `schedule-save-error`, `schedule-permission-confirm`;
+card `proposal-schedules`, `proposal-schedule-item` (`data-action`), `proposal-schedule-next`,
+`proposal-schedule-note`, `proposal-schedule-hidden`; run meta `run-meta-scheduled`.
+
+Verified: unit tests (`src/shared/view/schedules.test.ts`, `lib/scheduleProposal.test.ts`, `lib/proposalSummary.test.ts`,
+`lib/runSettings.test.ts`, `src/main/appMenu.test.ts`, atlas and appNavigate tests); a token-free walk of the built app on
+the mock adapter before the runtime half merged (error state, editor, validation, next runs, Chat modes, keyboard order,
+save refusal in view, pause refusal; 1024x640 and 1600x1000, dark and light). Not verified: the list, rows, history,
+Run now, the proposal card and the run meta label against real data (need the runtime half), the widening confirmation
+in the app (mock projects run Unattended), screen-reader speech.
 
 ## 6. Security and spend notes (for the Reviewer)
 
