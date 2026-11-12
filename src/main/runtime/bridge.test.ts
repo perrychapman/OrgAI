@@ -175,6 +175,24 @@ describe('BridgedSessions.spawn', () => {
     void done
   })
 
+  it('applies tier and effort from the call to the bridged root inside its ceilings, and ignores them on a fixed project', async () => {
+    const tierModels = { deep: 'gpt-d', everyday: 'gpt-e', fast: 'gpt-f' }
+    const conn: RunConnection = { ...OPENAI_CONN, tierModels }
+    const roles = chart().map((x) => (x.id === 'r-oa' ? { ...x, model: 'gpt-d', tier: 'deep' as const, effort: 'high' as const } : x))
+    const run = async (project: Partial<Project> = {}, ask: { tier?: 'deep' | 'everyday' | 'fast' | 'top'; effort?: 'low' | 'high' | 'max' } = {}) => {
+      const r = rig({ roles, project })
+      ;(r.b as unknown as { deps: { connections: Map<string, RunConnection> } }).deps.connections.set(bridgeKey('openai', 'codex'), conn)
+      void r.b.spawn({ role: 'oa', brief: 'x', ...ask })
+      await tick()
+      return r.codex.ctx.roles.find((x) => x.id === 'r-oa')!
+    }
+    expect(await run({}, { tier: 'fast', effort: 'low' })).toMatchObject({ model: 'gpt-f', tier: 'fast', effort: 'low' })
+    // Above the role's own tier / effort ceiling: clamped to it.
+    expect(await run({}, { tier: 'top', effort: 'max' })).toMatchObject({ model: 'gpt-d', tier: 'deep', effort: 'high' })
+    expect(await run({ staffing: 'fixed' }, { tier: 'fast', effort: 'low' })).toMatchObject({ model: 'gpt-d', tier: 'deep', effort: 'high' })
+    expect(await run()).toMatchObject({ model: 'gpt-d', tier: 'deep', effort: 'high' })
+  })
+
   it('remaps ids of the child root and its nested agents, handles included', async () => {
     const r = rig()
     const done = r.b.spawn({ role: 'oa', brief: 'go', parentAgentId: ROOT_AGENT_ID })

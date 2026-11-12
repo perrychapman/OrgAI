@@ -43,7 +43,8 @@ describe('[mock:config-change] script', () => {
   })
 
   it('runs every step through the work-run tools and finishes the turn', async () => {
-    const ctx = fakeCtx({ prompt: `Change the config ${CONFIG_CHANGE_TOKEN}`, autoContinue: false })
+    const skills = [{ id: 's1', name: 'alpha', description: 'd', dir: '/nowhere', files: [{ path: 'SKILL.md', bytes: 1 }], roleIds: ['r-lead'] }] as RunSkill[]
+    const ctx = fakeCtx({ prompt: `Change the config ${CONFIG_CHANGE_TOKEN}`, autoContinue: false, skills: () => skills })
     const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
     const texts = () => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === ROOT_AGENT_ID && e.entry.block.kind === 'text' ? [e.entry.block.text] : []))
     await vi.waitFor(() => expect(texts()).toContain('Config change done.'))

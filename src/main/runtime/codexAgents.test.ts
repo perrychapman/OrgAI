@@ -15,6 +15,8 @@ import {
   networkToolNames,
   networkToolSpecs,
   reportMessage,
+  capHandback,
+  REPORT_HANDBACK_MAX_CHARS,
   type NetworkHost,
   type SpawnRequest
 } from './codexAgents'
@@ -275,6 +277,13 @@ describe('report delivery text', () => {
   it('formats completed and failed reports', () => {
     const child = { handle: 'engineer-1', name: 'Engineer', roleSlug: 'engineer' }
     expect(reportMessage(child, { status: 'completed', result: 'All done' })).toBe('Harness: report from engineer-1 (Engineer):\n\nAll done')
+    const big = `HEAD${'x'.repeat(40_000)}TAIL`
+    const capped = reportMessage(child, { status: 'completed', result: big })
+    expect(capped.length).toBeLessThan(REPORT_HANDBACK_MAX_CHARS + 400)
+    expect(capped).toContain('HEAD')
+    expect(capped).toContain('TAIL')
+    expect(capped).toContain('characters of the report left out')
+    expect(capHandback('y'.repeat(REPORT_HANDBACK_MAX_CHARS))).toBe('y'.repeat(REPORT_HANDBACK_MAX_CHARS))
     expect(reportMessage(child, { status: 'failed', error: 'usage limit' })).toContain('it failed (usage limit)')
     expect(reportMessage(child, { status: 'completed' })).toContain('without a written report')
     expect(childFirstMessage('the orchestrator', ' Do X ')).toMatch(/^Do X\n\n---\nYou were spawned by the orchestrator/)

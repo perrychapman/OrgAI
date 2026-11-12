@@ -4,7 +4,7 @@ import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcri
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, Effort, ModelTier, ImageAttachment, McpServerSpec, PermissionMode, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
-import { cleanRequiredReports, effortOptionsFor, mcpServersForRole, newId, projectKindOf, settingTier } from '@shared/defaults'
+import { cleanRequiredReports, effortOptionsFor, mcpServersForRole, newId, projectKindOf, settingTier, staffingGoalOf } from '@shared/defaults'
 import { PermissionModeRefusal } from './permissionModeRefusal'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo,type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
@@ -1414,6 +1414,7 @@ export class MockSession implements RuntimeSession {
       tierModels: () => ctx.connection?.tierModels ?? {},
       adapterEfforts: effortOptionsFor('mock'),
       plan: () => ctx.getPlan(),
+      goal: () => staffingGoalOf(ctx.project, ctx.staffingGoal),
       // The project profile's default pick for an unrequested spawn (spec 4.5); none on a fixed project.
       ...staffingProfileDep(ctx)
     })

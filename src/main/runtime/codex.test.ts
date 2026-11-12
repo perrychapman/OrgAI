@@ -599,8 +599,18 @@ describe('CodexAdapter session', () => {
     // The prompt, then the hidden staffing brief: a new project's root with reports gets the cost line with its defaults.
     expect(s.turnStarts('th-1')[0].params.input).toEqual([{ type: 'text', text: expect.stringMatching(/^Build the thing\n\n---\n/), text_elements: [] }])
     expect(s.turnStarts('th-1')[0].params.input[0].text).toContain('a report writes nothing for about 30 s')
+    // A work-run root with no effort of its own starts on the same default as Claude's (medium).
+    expect(s.turnStarts('th-1')[0].params.effort).toBe('medium')
     expect(ctx.events).toContainEqual({ type: 'run.status', runId: 'run-1', status: 'running', sessionId: 'th-1' })
     expect(lastAgent(ctx, 'root')).toMatchObject({ roleSlug: 'lead', model: 'gpt-test', state: 'thinking' })
+  })
+
+  it('keeps a root role effort Codex takes instead of the medium default', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ roles: [role({ id: 'lead', slug: 'lead', effort: 'high' })], autoContinue: false })
+    session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers[0].turnStarts('th-1')).toHaveLength(1))
+    expect(servers[0].turnStarts('th-1')[0].params.effort).toBe('high')
   })
 
   it('a Codex version warning from the app-server becomes one run warning per session (cli-standalone 6.2)', async () => {
@@ -658,8 +668,8 @@ describe('CodexAdapter session', () => {
     const childStart = s.of('thread/start')[1].params
     expect(childStart.developerInstructions).toContain('You are engineer.')
     expect(childStart.sandbox).toBe('workspace-write')
-    // A report without reports of its own gets only the every-agent tools (request_permission_rules, produce_output, register_output, read_output, list_skills, load_skill).
-    expect((childStart.dynamicTools as { name: string }[]).map((t) => t.name)).toEqual(['request_permission_rules', 'produce_output', 'register_output', 'read_output', 'list_skills', 'load_skill', 'app_reference'])
+    // A report without reports of its own gets only the every-agent tools: request_permission_rules and the skill tools (outputs belong to the root on a code project, app_reference to roles that spawn).
+    expect((childStart.dynamicTools as { name: string }[]).map((t) => t.name)).toEqual(['request_permission_rules', 'list_skills', 'load_skill'])
     expect(s.turnStarts('th-2')[0].params.input[0].text).toContain('Build the login form')
     const childId = ctx.events.find((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1')!.agent.id
     expect(lastAgent(ctx, childId)).toMatchObject({ handle: 'engineer-1', parentId: 'root', spawnToolUseId: 'c-spawn', roleSlug: 'engineer' })
@@ -2830,7 +2840,7 @@ describe('CodexAdapter skills', () => {
     expect(ctx.events.some((e) => e.type === 'skill.used')).toBe(false)
   })
 
-  it('has the skill tools even without skills at start (they read ctx.skills() at call time)', async () => {
+  it('has the skill tools even without skills at start (a skill approved mid-run is usable at once)', async () => {
     const { adapter, servers } = setup()
     session = await adapter.start(fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 }))
     const s = servers[0]

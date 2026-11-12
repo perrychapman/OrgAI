@@ -371,7 +371,7 @@ describe('read_output', () => {
     const schema = jsonSchemaOf(tool.inputSchema) as { properties: Record<string, unknown>; required?: string[] }
     expect(schema.required).toEqual(['action'])
     expect(Object.keys(schema.properties).sort()).toEqual(['action', 'outputId', 'version'])
-    expect(tool.audience).toBe('all')
+    expect(tool.audience).toBe('root') // a code project's reports have no output tools (engagements keep 'all')
     expect(isBlockingHarnessTool(OUTPUT_TOOLS.read)).toBe(false)
     expect(tool.description).toContain('before you revise')
   })
@@ -395,10 +395,18 @@ describe('where the tools are offered', () => {
     }
   })
 
-  it('are offered to every role and never block on the user', () => {
-    for (const t of harnessToolsFor(fakeCtx()).filter((x) => all.includes(x.name as never))) {
+  it('engagement roles all get them; on a code project only the root does; none block on the user', () => {
+    for (const t of harnessToolsFor(fakeCtx({ project: project({ kind: 'engagement' }) })).filter((x) => all.includes(x.name as never))) {
       expect(t.audience).toBe('all')
       expect(isBlockingHarnessTool(t.name)).toBe(false)
     }
+    const code = harnessToolsFor(fakeCtx()).filter((x) => all.includes(x.name as never))
+    expect(code).toHaveLength(3)
+    for (const t of code) {
+      expect(t.audience).toBe('root')
+      expect(isBlockingHarnessTool(t.name)).toBe(false)
+    }
+    // A single (Ask) run has one agent: unchanged.
+    for (const t of harnessToolsFor(fakeCtx({ run: runSummary({ team: 'single' }) })).filter((x) => all.includes(x.name as never))) expect(t.audience).toBe('all')
   })
 })

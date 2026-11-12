@@ -107,7 +107,7 @@ import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, PERMISSION_MODE_OPTIONS, isBuiltinConnectionId, isEffort, isPermissionMode, runPermissionModeChoices, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, RUN_TITLE_MAX_CHARS, PERMISSION_MODE_OPTIONS, isBuiltinConnectionId, isEffort, isPermissionMode, runPermissionModeChoices, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
@@ -483,6 +483,9 @@ interface ActiveRun {
   /** knowledgeBrief() was computed (also when it was undefined); the text is constant for the run. */
   knowledgeBriefDone?: boolean
   knowledgeBriefText?: string
+  /** engagementDocument() was read (also when it was undefined); like the brief, the text is constant for the run so a resumed session keeps a cache-stable prompt prefix. */
+  engagementDocumentDone?: boolean
+  engagementDocumentText?: string
   /** Time with at least one decision card open. */
   waiting: IntervalTimer
   /** Time held on a usage limit, until the user's next send or the run's end. */
@@ -1974,7 +1977,12 @@ export class RunManager {
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
     // Advisory title from the fast model; never awaited, never fails the run.
     // The harness's own resume message is never titled (the continued run's title is carried instead).
-    if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
+    if (kind === 'work' && exec && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
+      // A headless exec run is never titled by a model call (no spend, nothing for the finalizer to wait on): its title
+      // is the first line of its prompt, bounded.
+      const first = prompt.trim().split(/\r?\n/)[0].replace(/\s+/g, ' ').trim()
+      summary.title = first.length > RUN_TITLE_MAX_CHARS ? `${first.slice(0, RUN_TITLE_MAX_CHARS - 1).trimEnd()}…` : first
+    } else if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
       active.titleTask = this.titleRun(active, adapter, {
         prompt,
         cwd: project.path,
@@ -2407,7 +2415,15 @@ export class RunManager {
               savedRules: () => withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) })),
               saveProjectRules: (rules: string[]) => addRulesReport({ file: this.rulesFileFor(live) }, rules)
             }),
-        ...(!writesToProjectFolder(project) ? { engagementDocument: () => (this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined) } : {}),
+        ...(!writesToProjectFolder(project) ? {
+              engagementDocument: () => {
+                if (!active.engagementDocumentDone) {
+                  active.engagementDocumentDone = true
+                  active.engagementDocumentText = this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined
+                }
+                return active.engagementDocumentText
+              }
+            } : {}),
         // Context notes: work runs of an engagement and single-agent runs; never Chat, setup-like or trust-restricted runs.
         ...(this.options.engagementNotes && kind === 'work' && !bare && !restricted && (projectKindOf(project) === 'engagement' || team === 'single')
           ? {
@@ -3676,7 +3692,15 @@ export class RunManager {
     active.titleAbort = abort
     this.titleAborts.set(abort, active.summary.projectId)
     try {
-      const title = await generateRunTitle(adapter, { ...input, signal: abort.signal }, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
+      const title = await generateRunTitle(
+        adapter,
+        {
+          ...input,
+          signal: abort.signal,
+          // Title spend is logged (it is not an agent's usage, so it is not in the run totals).
+          onUsage: (u) => log.info(`Run ${runId}: title used ${(Number(u?.tokens?.input) || 0) + (Number(u?.tokens?.output) || 0)} tokens${u?.model ? ` on ${u.model}` : ''}`)
+        },
+        (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
       if (!title || abort.signal.aborted) return
       const live = this.runs.get(runId) === active
       if (!live) {

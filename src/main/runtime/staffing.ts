@@ -85,6 +85,12 @@ export interface ResolveStaffingInput {
    * at most one step up, in tier or in effort, never past the ceilings and never into `top` (D9).
    */
   escalatedFrom?: StaffingRequest
+  /**
+   * The run's staffing goal. With 'cost', an auto role nobody asked anything of (no request, no profile value) starts one
+   * tier below its ceiling (never below minTier) and, with no effort of its own, at 'medium' (never above the effort
+   * ceiling), instead of the ceiling. Absent or other goals: unchanged.
+   */
+  goal?: StaffingGoal
 }
 
 /**
@@ -426,7 +432,19 @@ export function resolveStaffing(input: ResolveStaffingInput): ResolvedStaffing {
   if (!escalatedFrom) {
     // ---- 3. pick ----
     source = requested ? 'orchestrator' : profile ? 'profile' : 'role'
-    const pick = { tier: requested?.tier ?? profile?.tier ?? ceiling, effort: requested?.effort ?? profile?.effort ?? roleEffort }
+    const cost = input.goal === 'cost'
+    const downTier = cost && !requested?.tier && !profile?.tier ? tierDown(ceiling) : undefined
+    const costTier = downTier && (!floor || compareTier(downTier, floor) >= 0) ? downTier : ceiling
+    const costEffort: Effort | undefined =
+      cost && !requested?.effort && !profile?.effort && !roleEffort && input.adapterEfforts.includes('medium')
+        ? compareEffort('medium', effortCeiling) <= 0
+          ? 'medium'
+          : effortCeiling
+        : undefined
+    const pick = {
+      tier: requested?.tier ?? profile?.tier ?? costTier,
+      effort: requested?.effort ?? profile?.effort ?? roleEffort ?? costEffort
+    }
     // ---- 4. clamp ----
     const who = ASKER[source === 'orchestrator' ? 'orchestrator' : source === 'profile' ? 'profile' : 'role']
     ;({ tier, effort } = clamp(pick.tier, pick.effort, who))
